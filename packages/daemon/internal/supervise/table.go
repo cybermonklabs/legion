@@ -2314,12 +2314,17 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // claim a restart restored, this daemon reads the turn's start and end itself, which answers the
 // question the restart left (askFirst), as the agent's answer that it is streaming does
 // (askTurnOver), so the question goes before the decision: only a start that names the pending
-// delivery confirms it. Left standing, the question would take a start that names no delivery —
-// an Envoy follow-up — for the owed task's turn, and the turn's end would retire the task unsent
-// (settle). Under this daemon's own compaction the turn is recorded on the compaction too: its
-// end would otherwise reach an idle claim, where it means nothing, and the compaction's end would
-// send the owed task into a running agent (compactEnded). A restored claim whose times show a
-// turn open is in the turn an earlier daemon saw start, and a start read again changes nothing.
+// delivery confirms it, and only the shim's replay of a start names one (StreamTurnStart). Oh My
+// Pi's own agent_start names none, so an Envoy follow-up and the turn of the task's prompt that Oh
+// My Pi parked until the handoff ended start alike: neither confirms the task, the worker's calls
+// inside either meet it unconfirmed, and the end of either sends it again. That is told twice,
+// never not at all, the lesser fault (confirmCarrying), and main and this branch before its merge
+// did the same. Left standing, the question would take either start for the owed task's turn, and
+// the turn's end would retire the task as served, though no turn of it was seen (settle). Under
+// this daemon's own compaction the turn is recorded on the compaction too: its end would otherwise
+// reach an idle claim, where it means nothing, and the compaction's end would send the owed task
+// into a running agent (compactEnded). A restored claim whose times show a turn open is in the
+// turn an earlier daemon saw start, and a start read again changes nothing.
 //
 // A busy answer and a compaction never meet: a compaction is taken only from a ready or idle claim
 // (compactStart), and a busy answer records only a ready or idle one.

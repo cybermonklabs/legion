@@ -934,9 +934,16 @@ func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 
 	h.wantState(StateIdle)
+	wantOwedSentNext(t, h, owed)
+}
+
+// wantOwedSentNext is the check that the next send after the restart's ladder carries owed, the
+// task the restored claim owes.
+func wantOwedSentNext(t *testing.T, h *harness, owed string) {
+	t.Helper()
 	prompts := h.wantPrompts(ladderSends + 1)
 	if prompts[ladderSends].DeliveryID != owed {
-		t.Fatalf("the send after that turn carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
+		t.Fatalf("the send after the restart carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
 	}
 }
 
@@ -961,10 +968,7 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 	h.connect()
 
 	h.wantState(StateIdle)
-	prompts := h.wantPrompts(ladderSends + 1)
-	if prompts[ladderSends].DeliveryID != owed {
-		t.Fatalf("the send after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
-	}
+	wantOwedSentNext(t, h, owed)
 	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
 		t.Fatalf("the claim holds %+v, want the task %s kept unconfirmed until a turn of it starts", got, owed)
 	}
@@ -972,12 +976,10 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 
 // The same restart, and the agent does not answer the question: its get_state fails, so the
 // restored claim stays working with the question armed. Then a turn starts that names no delivery
-// — an Envoy follow-up, say — and ends. That start is no sign that the owed task reached the agent.
-// This daemon reads the turn's start and end itself, so the start answers the restart's question,
-// and only a start that names the pending delivery confirms it. The task stays pending and
-// unconfirmed through the turn, and the turn's end sends it. The control: with the restart's
-// question left standing at that start (turnStartedWhileBusy's beginTurn), the start confirms the
-// task, the end retires it as served, and no prompt ever carries it.
+// — an Envoy follow-up, or the turn of the task's prompt that Oh My Pi parked, which start alike —
+// and ends. The task stays pending and unconfirmed through the turn, and the turn's end sends it.
+// The row guards `m.askFirst = false` in turnStartedWhileBusy: without it the start confirms the
+// task, the end retires it as served, and no prompt after the restart carries it.
 func TestARestartWhileASessionIsBeingCompactedKeepsTheOwedTaskThroughATurnThatNamesNoDelivery(t *testing.T) {
 	h := restartedMidCompaction(t)
 	owed := h.pending().ID
@@ -996,15 +998,12 @@ func TestARestartWhileASessionIsBeingCompactedKeepsTheOwedTaskThroughATurnThatNa
 	if got := h.claim().Pending; got == nil || got.ID != owed {
 		t.Fatalf("after that turn's end the claim holds %+v, want the task %s still owed", got, owed)
 	}
-	prompts := h.wantPrompts(ladderSends + 1)
-	if prompts[ladderSends].DeliveryID != owed {
-		t.Fatalf("the send after that turn carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
-	}
+	wantOwedSentNext(t, h, owed)
 }
 
 // The same restart with the question unanswered, and the turn that starts names the owed task: the
-// turn Oh My Pi starts for that task's prompt once the handoff is over. That start confirms the
-// task, as a start naming the pending delivery does in any claim.
+// shim's replay of a start it saw for that delivery (shimwire's dedupe). That start confirms the
+// task, as such a start does in a ready claim.
 func TestARestartWhileASessionIsBeingCompactedConfirmsTheOwedTaskAtAStartThatNamesIt(t *testing.T) {
 	h := restartedMidCompaction(t)
 	owed := h.pending().ID
