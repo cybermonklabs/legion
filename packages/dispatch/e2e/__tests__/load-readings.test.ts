@@ -8,11 +8,19 @@
  *  `fixtures/load-readings/`, and assert what each reader must take from them, never a bound. */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import type { Page } from "@playwright/test";
+import { errors, type Page } from "@playwright/test";
 
+import {
+  HEADER_SELECTORS,
+  LOAD_ACTS,
+  LOAD_ROW_SELECTOR,
+  makeSteps,
+  VIEW_ROW_SELECTOR,
+} from "../issue-page-load";
 import {
   actBounds,
   actReading,
+  BOX_GROUPS,
   type BoxEntry,
   boundHolds,
   boxesMoved,
@@ -29,9 +37,12 @@ import {
   longestEvent,
   longestTaskAfter,
   longestTaskAfterViewRow,
+  NAMED_GROUP,
   NOT_APPLICABLE,
+  type PageConfig,
   type RequestSpan,
   type ResourceEntry,
+  ROWS_GROUP,
   readingLine,
   watchLoadRequests,
 } from "../load-instruments";
@@ -536,25 +547,41 @@ class QueuedObserver {
   }
 }
 
-/** Runs the init script (`instrumentPage`) against stand-ins of the page: `QueuedObserver`, a
- *  window and a document that draw nothing, and a frame loop that never ticks. Hands `body` what
- *  the script put on the window, and puts the globals back after. */
-function withStandIns(body: (instruments: NonNullable<Window["__loadInstruments"]>) => void): void {
-  const page: Record<string, unknown> = { addEventListener: () => {}, innerHeight: 900 };
-  page.top = page;
+/** The init script's config, as `installInstruments` gives it from the load rows' selectors. */
+const PAGE_CONFIG: PageConfig = {
+  boxes: "none",
+  groups: BOX_GROUPS,
+  header: HEADER_SELECTORS,
+  named: null,
+  namedGroup: NAMED_GROUP,
+  rows: LOAD_ROW_SELECTOR,
+  rowsGroup: ROWS_GROUP,
+  viewRow: BOX_GROUPS["view row's controls"].join(", "),
+  viewRows: VIEW_ROW_SELECTOR,
+};
+
+/** Runs the init script (`instrumentPage`) against stand-ins of the page's globals: `QueuedObserver`
+ *  and the `window` and `document` given, and a message channel and a frame loop that never
+ *  deliver unless given too. Hands `body` what the script put on the window, and puts the globals
+ *  back after. */
+async function withStandIns(
+  page: {
+    readonly MessageChannel?: unknown;
+    readonly document: object;
+    readonly requestAnimationFrame?: unknown;
+    readonly window: Record<string, unknown>;
+  },
+  body: (instruments: NonNullable<Window["__loadInstruments"]>) => Promise<void> | void
+): Promise<void> {
+  page.window.top = page.window;
   const standIns: Record<string, unknown> = {
     MessageChannel: class {
       port1 = { onmessage: null };
       port2 = { postMessage: () => {} };
     },
     PerformanceObserver: QueuedObserver,
-    document: {
-      fonts: { addEventListener: () => {} },
-      querySelector: () => null,
-      querySelectorAll: () => [],
-    },
     requestAnimationFrame: () => 0,
-    window: page,
+    ...page,
   };
   const saved = Object.keys(standIns).map(
     (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const
@@ -562,20 +589,10 @@ function withStandIns(body: (instruments: NonNullable<Window["__loadInstruments"
   try {
     Object.assign(globalThis, standIns);
     QueuedObserver.observing.clear();
-    instrumentPage({
-      boxes: "none",
-      groups: {},
-      header: [],
-      named: null,
-      namedGroup: "the named row",
-      rows: "[data-node-row]",
-      rowsGroup: "rows in the viewport",
-      viewRow: "[data-filter-row]",
-      viewRows: "[data-node-row]",
-    });
-    const instruments = (page as unknown as Window).__loadInstruments;
+    instrumentPage(PAGE_CONFIG);
+    const instruments = (page.window as unknown as Window).__loadInstruments;
     if (instruments === undefined) throw new Error("the init script put nothing on the window");
-    body(instruments);
+    await body(instruments);
   } finally {
     for (const [name, descriptor] of saved) {
       if (descriptor === undefined) Reflect.deleteProperty(globalThis, name);
@@ -584,8 +601,16 @@ function withStandIns(body: (instruments: NonNullable<Window["__loadInstruments"
   }
 }
 
-test("the init script's readers take the entries an observer has queued and not yet handed over, so a load's end counts a long task whose callback has not run", () => {
-  withStandIns((instruments) => {
+test("the init script's readers take the entries an observer has queued and not yet handed over, so a load's end counts a long task whose callback has not run", async () => {
+  const quiet = {
+    document: {
+      fonts: { addEventListener: () => {} },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+    window: { addEventListener: () => {}, innerHeight: 900 },
+  };
+  await withStandIns(quiet, (instruments) => {
     const tasks = QueuedObserver.observing.get("longtask");
     const resource = QueuedObserver.observing.get("resource");
     if (tasks === undefined || resource === undefined) {
@@ -622,6 +647,157 @@ test("the init script's readers take the entries an observer has queued and not 
       "http://127.0.0.1:8080/api/v1/issues/LAY-1/tree",
     ]);
   });
+});
+
+/** A box as `getBoundingClientRect` answers it, of the stand-in page below. */
+interface StandInBox {
+  readonly bottom: number;
+  readonly height: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+  readonly width: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+/** The box at `x`, `y` of `width` by `height`. */
+function boxAt(x: number, y: number, width: number, height: number): StandInBox {
+  return { bottom: y + height, height, left: x, right: x + width, top: y, width, x, y };
+}
+
+// Row 5 of builds Job `e2e-rows-7pffd`, at 1440 px, made a fold, an unfold, `j` and `k`, and then
+// read no result of Keys or of any view press. Its first outline row stood at 714 px and the
+// check under it ran to 985 px, below the 900 px viewport, so `j` scrolled the page about 93 px to
+// bring that check on screen. From 761 px up the band of the issue's key and title stays at the
+// top and the view row scrolls with the page, so the view row was then under the band, and a
+// press at Keys' centre as the page stood landed on the band. The stand-in page is that page: the
+// band of 63 px, and the view row at 97 px on a page at its top, scrolled 93 px.
+test("an act after the load presses its control where a reader can, scrolling it back from under the band an earlier act scrolled it to", async () => {
+  const keys = LOAD_ACTS[1440].find((act) => act.kind === "keys");
+  const step = keys?.steps[0];
+  if (
+    keys === undefined ||
+    step?.input.kind !== "press" ||
+    step.input.target.kind !== "control" ||
+    step.result.kind !== "present"
+  ) {
+    throw new Error("the acts at 1440 px hold no press on Keys that opens a list");
+  }
+  let scrolled = 93;
+  let open = false;
+  let scrolls = 0;
+  const pressed: string[] = [];
+  const element = (
+    name: string,
+    words: string,
+    box: () => StandInBox,
+    scrollIntoView = () => {}
+  ) => {
+    const drawn = {
+      contains: (other: unknown) => other === drawn,
+      getBoundingClientRect: box,
+      name,
+      querySelector: () => null,
+      scrollIntoView: () => {
+        scrolls += 1;
+        scrollIntoView();
+      },
+      textContent: words,
+    };
+    return drawn;
+  };
+  const band = element("the band", "LAY›LAY-1", () => boxAt(56, 0, 1384, 63));
+  const viewRow = element("the view row", "", () => boxAt(56, 97 - scrolled, 1384, 34));
+  // Scrolled into view, Keys would come to the middle of the viewport, as far as the page's top
+  // lets it: back to the page's top.
+  const keysButton = element(
+    "Keys",
+    "Keys",
+    () => boxAt(1340, 98 - scrolled, 56, 32),
+    () => {
+      scrolled = Math.max(0, 98 + 16 - 450);
+    }
+  );
+  const list = element("the list of keys", "", () => boxAt(420, 200, 600, 400));
+  const elementFromPoint = (x: number, y: number) =>
+    [...(open ? [list] : []), band, keysButton, viewRow].find((drawn) => {
+      const box = drawn.getBoundingClientRect();
+      return x >= box.left && x < box.right && y >= box.top && y < box.bottom;
+    }) ?? null;
+  const selected: Record<string, () => unknown[]> = {
+    "[data-filter-row]": () => [viewRow],
+    "[data-identity-block]": () => [band],
+    [step.input.target.selector]: () => [keysButton],
+    [step.result.selector]: () => (open ? [list] : []),
+  };
+  // The page's frames, each run when the stand-in of Playwright waits on the page, and the
+  // messages each frame posts, delivered once its callbacks have run.
+  const callbacks: ((time: number) => void)[] = [];
+  const messages: number[] = [];
+  const port: { onmessage: ((message: { readonly data: number }) => void) | null } = {
+    onmessage: null,
+  };
+  const frame = () => {
+    for (const callback of callbacks.splice(0)) callback(performance.now());
+    for (const index of messages.splice(0)) port.onmessage?.({ data: index });
+  };
+  const listeners = new Map<string, ((event: unknown) => void)[]>();
+  const playwright = {
+    keyboard: { press: async () => {} },
+    mouse: {
+      // A press reaches what is topmost at its point; the page hears its pointerdown whatever it
+      // reached.
+      click: async (x: number, y: number) => {
+        const hit = elementFromPoint(x, y);
+        pressed.push(hit?.name ?? "nothing");
+        for (const listener of listeners.get("pointerdown") ?? []) {
+          listener({ isTrusted: true, timeStamp: performance.now(), type: "pointerdown" });
+        }
+        if (hit === keysButton) open = true;
+      },
+    },
+    waitForFunction: async (answers: (argument: unknown) => unknown, argument: unknown) => {
+      for (let frames = 0; frames < 10; frames += 1) {
+        frame();
+        const answer = answers(argument);
+        if (answer) return { jsonValue: async () => answer };
+      }
+      throw new errors.TimeoutError("no frame of the stand-in page answered");
+    },
+  };
+  await withStandIns(
+    {
+      MessageChannel: class {
+        port1 = port;
+        port2 = { postMessage: (index: number) => messages.push(index) };
+      },
+      document: {
+        elementFromPoint,
+        fonts: { addEventListener: () => {} },
+        querySelector: (selector: string) => selected[selector]?.()[0] ?? null,
+        querySelectorAll: (selector: string) => selected[selector]?.() ?? [],
+      },
+      requestAnimationFrame: (callback: (time: number) => void) => callbacks.push(callback),
+      window: {
+        addEventListener: (type: string, listener: (event: unknown) => void) => {
+          listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+        },
+        innerHeight: 900,
+      },
+    },
+    async (instruments) => {
+      // As the page stands, a press at Keys' centre lands on the band.
+      expect(elementFromPoint(1340 + 28, 98 - scrolled + 16)?.name).toBe("the band");
+      const made = await makeSteps(playwright as unknown as Page, 0, keys.steps, "now");
+      expect(scrolls, "Keys was not scrolled back into view once").toBe(1);
+      expect(pressed, "the press did not reach Keys").toEqual(["Keys"]);
+      const reading = actReading(instruments.record(), made.last);
+      expect(reading.act).toBe("a press on Keys");
+      expect(reading.read).toBeNull();
+      expect(reading.shown, "the press on Keys read no result").not.toBeNull();
+    }
+  );
 });
 
 // ---------------------------------------------------------------------------------------------

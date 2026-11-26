@@ -35,6 +35,7 @@ import {
   makeInput,
   readingLine,
   resultShown,
+  revealStep,
   watchLoadRequests,
 } from "./load-instruments";
 import { resetDatabase } from "./seed";
@@ -678,10 +679,12 @@ export async function fiveLoads<T>(
 /**
  * Makes `steps` on the load's page, the first under the index `first` and each after it under the
  * next: each armed once it can be made (the first at `when`, every other at once), made, and
- * waited on until its result shows. `settle` runs before each measured step: a row of acts after
- * the load waits for the load to end again there. A step whose result does not show ends the
- * steps, since the step after it has nothing to act on. Answers the index of the last step, the
- * act measured, and the index the next steps start at.
+ * waited on until its result shows. A step armed at once is first brought where a press reaches
+ * its control (`revealStep`), which an earlier act may have scrolled away; a step made at a first
+ * drawing is made where its target was first drawn. `settle` runs before each measured step, after
+ * that: a row of acts after the load waits for the load to end again there. A step whose result
+ * does not show ends the steps, since the step after it has nothing to act on. Answers the index
+ * of the last step, the act measured, and the index the next steps start at.
  */
 export async function makeSteps(
   page: Page,
@@ -691,8 +694,10 @@ export async function makeSteps(
   settle?: () => Promise<unknown>
 ): Promise<{ readonly last: number; readonly next: number }> {
   for (const [at, step] of steps.entries()) {
+    const armedAt = at === 0 ? when : "now";
+    if (armedAt === "now") await revealStep(page, step);
     if (step.measured) await settle?.();
-    const point = await armStep(page, first + at, step, at === 0 ? when : "now");
+    const point = await armStep(page, first + at, step, armedAt);
     await makeInput(page, step, point);
     if (!(await resultShown(page, first + at, ACT_RESULT_MS))) break;
   }

@@ -700,6 +700,11 @@ interface LoadInstruments {
   probe(): { readonly now: number; readonly tasks: readonly TaskEntry[] };
   /** What the init script has collected. */
   record(): LoadRecord;
+  /** Whether a press at the centre of `step`'s target, where it is a control, reaches it: the
+   *  control is drawn, and the topmost element at its centre is it or inside it. Where it is not,
+   *  the control is scrolled to the middle of the viewport, and the answer is false until the
+   *  next frame reads it again. True for a key and for a row's fold control. */
+  reveal(step: ActStep): boolean;
   /** Whether the step armed under `index` has shown its result. */
   shown(index: number): boolean;
 }
@@ -1137,6 +1142,16 @@ export function instrumentPage(config: PageConfig): void {
         vitals: window.webVitals !== undefined,
       };
     },
+    reveal: (step) => {
+      if (step.input.kind !== "press" || step.input.target.kind !== "control") return true;
+      const found = control(step.input.target);
+      if (found === null) return false;
+      const box = found.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      if (hit !== null && found.contains(hit)) return true;
+      found.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+      return false;
+    },
     shown: (index) => acts[index]?.result != null,
   };
 }
@@ -1340,6 +1355,30 @@ export async function armStep(
           ? `nothing drew its target, ${JSON.stringify(step.input.target)}`
           : `the page never drew ${when === "rows" ? "a row" : "the view row"}`
       }`
+    );
+  }
+}
+
+/**
+ * Waits until a press at the centre of `step`'s target, where it is a control, reaches it,
+ * scrolling the control into the viewport where the page has moved it out of reach: an act made
+ * once the reader has moved the page - after `j` brought a lower row on screen, at 1440 px the
+ * view row scrolls under the band that stays at the top, and at 390 px the header scrolls away -
+ * is made where a reader makes it, at a control they can press. A press at the first drawing is
+ * made where its target was first drawn and never waits for this (`makeSteps`).
+ */
+export async function revealStep(page: Page, step: ActStep): Promise<void> {
+  try {
+    await page.waitForFunction(
+      (revealing) => window.__loadInstruments?.reveal(revealing) === true,
+      step,
+      { polling: "raf", timeout: ARM_MS }
+    );
+  } catch (error) {
+    if (!(error instanceof errors.TimeoutError)) throw error;
+    throw new Error(
+      `${step.name} could not be made within ${ARM_MS} ms: no press at its target's centre ` +
+        `reached it, scrolled into view or not: ${JSON.stringify(step.input)}`
     );
   }
 }
