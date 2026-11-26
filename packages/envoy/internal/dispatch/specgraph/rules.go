@@ -196,7 +196,7 @@ func (v *validator) ids() {
 		id, kind string
 		pos      Position
 	}
-	all := make([]held, 0, len(v.tree.Statements)+len(v.tree.Checks)+len(v.tree.Components)+len(v.tree.Terms))
+	all := make([]held, 0, len(Nodes(v.tree)))
 	for _, n := range Nodes(v.tree) {
 		all = append(all, held{n.NodeID(), n.KindName(), n.NodePos()})
 	}

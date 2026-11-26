@@ -18,8 +18,9 @@ import (
 // answers EINVAL for RENAME_NOREPLACE. On such a system print still moves each entry of the
 // directory that is no spec file back into it after the exchange (a file that is no spec file, a
 // subdirectory and a symbolic link), and leaves nothing beside it: it moves a file or a link by a
-// second name and a removal, which refuse an existing name, and a directory by a rename after it
-// finds no entry of that name. The stand-in answers EINVAL for each rename with no-replace. A
+// second name and a removal, which refuse an existing name, and a directory by taking the name
+// itself, an empty directory, which the system refuses where an entry has it, and renaming over
+// what it took. The stand-in answers EINVAL for each rename with no-replace. A
 // system that refuses those moves too refuses print before any change, and the line names the
 // system's refusal: the directory is as it was, and nothing is beside it. The control is the same
 // run on the file system of the process.

@@ -150,8 +150,9 @@ func (osFileSystem) remove(path string) error                  { return os.Remov
 // killed leaves the new or the old directory beside dir, with its record, which the next run
 // finishes (cleanLeftovers). A directory that the process may not write
 // is refused, as the files of such a directory were, and so is a parent that it may not write,
-// where the new directory goes, and an owner that it may not give the new directory, each with the
-// way out (writable, sameOwner). warnings is a line for each step after the exchange that did not
+// where the new directory goes, and an owner or a group that the process may give the new
+// directory and the system refuses, each with the way out (writable, sameOwner). warnings is a
+// line for each step after the exchange that did not
 // finish, or for an entry that another program changed while the run built the new directory,
 // which writeDir keeps beside dir; kept is whether it kept such an entry, which a person must
 // compare with dir. Each change that it makes in the file system goes through fsys.

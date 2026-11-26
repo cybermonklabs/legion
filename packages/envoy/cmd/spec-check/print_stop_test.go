@@ -37,8 +37,10 @@ import (
 // out of a file into a new file; a run over a directory that holds entries that print does not own
 // (a file, a subdirectory and a symbolic link); a run into a directory that does not exist, which
 // the lock makes; a run where the system refuses each hard link, so print copies each file that it
-// keeps; and a run that print refuses, because the system refuses the exchange, whose next run is
-// refused too and leaves the tree as it was. No run of print removes a spec file: the files that it
+// keeps; a run over such entries where the system refuses a rename that keeps an existing name, so
+// each move back takes its name and renames over it; and a run that print refuses, because the
+// system refuses the exchange, whose next run is refused too and leaves the tree as it was. No run
+// of print removes a spec file: the files that it
 // leaves hold each file that it read (specgraph.ReadLayout keeps each), and Layout.Place empties
 // none, so the shape nearest to that one moves a node out of a file. Two controls must fail: the
 // write of the head before this change, which renamed its files one at a time, and a change made
@@ -114,9 +116,9 @@ func TestAStopAfterEachCallOfPrintLeavesTheFilesBeforeOrAfter(t *testing.T) {
 		}, ""},
 		// A file system that exchanges two directories and answers EINVAL for a rename with
 		// no-replace, as a gVisor volume does: print moves each entry that it does not own back by
-		// a second name and a removal, or for a directory by a rename, so a stop between the two
-		// steps of a move leaves one entry under two names, which the next run, on the same file
-		// system, must finish.
+		// a second name and a removal, or by taking the name and renaming over it, so a stop
+		// between the two steps leaves one entry under two names, or an empty entry at the name
+		// that the move took, which the next run, on the same file system, must finish.
 		{"a run over entries that print does not own, where the system refuses a rename with no-replace", func(t *testing.T) stopRun {
 			r := newStopRun(t, others(t, stopTree(t, stopClaims(6), limit)), stopClaims(6, "claim-ab", "claim-ad"), []string{"claim-ab", "claim-ad"}, limit,
 				"claim-ab.yaml", "claim-ad.yaml")

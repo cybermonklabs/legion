@@ -91,8 +91,9 @@ func TestIsID(t *testing.T) {
 // The id rule has one source, the pattern of the schema's id ($defs/id): slug, the Go form of the
 // rule that Validate, IsID and the approved reader read, is compiled from it, so the schema and Go
 // cannot refuse two sets of values, and Validate, which leaves a value that is no id to the
-// schema, gives one problem for it. A schema whose pattern is another text fails this test, and
-// one that Go cannot compile fails the build of the package (slug panics).
+// schema, gives one problem for it. The test reads that one source twice, so it holds the two
+// apart no further than that slug is compiled and not written: a schema with no such pattern fails
+// it, and one whose pattern Go cannot compile panics as the package loads, before any test runs.
 func TestSlugIsTheSchemasIDPattern(t *testing.T) {
 	t.Parallel()
 	var schema struct {
