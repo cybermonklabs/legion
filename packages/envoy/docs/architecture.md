@@ -191,7 +191,7 @@ attempt:
 | Neither store knows the session (no entry within the gone horizon and no record, which also covers a session id no session can register under) | `404 {"error":"no live session <id>"}` |
 | The store read did not answer (its second ran out, or the read failed any other way) | `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` |
 | The target's entry, or for a target with no entry its known-session record when that record carries capabilities, does not advertise the frame's `delivery.mode`, or that mode cannot be read unambiguously | `403` naming the session, and the mode when it could be read |
-| The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload |
+| The message's payload is past the server's max payload, or its publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload, with no `Retry-After`, recorded `too_large`. A payload past the bound is refused before anything is read, waited for, reported or stored (`bus.Client.EnvelopeRefusal`), and an envelope only its other fields carry past it is refused at its publish before the publish reads the request's deadline (`payloadRefusal`, `internal/bus/nats.go`): a deadline the reads spent never turns a message no publish can carry into the `503` below |
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The stream answers the publish as a duplicate of another request's copy (a repeat under the same key), and the listener reads that copy back at the sequence the verdict named | `200` as the rows above, with `duplicate: true` and an answer read from the stored copy (`publishHeld`, `cmd/listener/stored_copy.go`): the copy's envelope whole (its `event_id`, `issued_at` and body) to the request's own copy and to the copy's own sender (the same `source` and the `source_session` the copy names, and, where the request presents a broker token, the session it proves; a copy that names no session is whole only to its own request); to anyone else, where the request names `Envoy-Reads: key-taken` (`listenerwire.ReadsHeader`), only the copy's `event_id`, times, `topic`, `dedupe_key` and `expects_reply`, and otherwise the envelope the listener built for the request (`requestSender.answer`); the record line names the copy's `event_id` and the request's own sender; a verdict on the bus's own resend that names this request's first send is answered as a new copy, with no `duplicate`; a role send's repeat from a session that has since taken the role, which forwards nothing, is answered from the forward this listener's record names for the earlier holder for the same request (`settledBeforeForward`): the record is the listener's own and lasts 10 minutes; a repeat after that or on another listener answers its own new envelope, as at main |
@@ -217,8 +217,10 @@ role send's first role-holder resolution that did not answer, exactly the same w
 resolution (the claim read and the holder's session read; it writes nothing to the role bucket, so
 a holder it finds past the live window keeps its claim) runs
 inside the same 3.5 s budget, and one the budget runs out on is that 503 too, naming the call that
-did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged. Its role 404s
-(`unclaimed`, `holder_lapsed`) keep their bodies, and a role send gives one only when the listener
+did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged, and its 413 is
+decided as the send route's is, before the stamp or a role's resolution
+(`bus.Client.EnvelopeRefusal`). Its role 404s (`unclaimed`, `holder_lapsed`) keep their bodies,
+and a role send gives one only when the listener
 kept nothing: the request sent `keep: false`; the role's token is one `roles.Valid` refuses, which
 no claim can ever name; or the keep itself failed, also a keep whose publish went out and was
 never acknowledged, which may have stored the copy, as at main. A role send whose message the

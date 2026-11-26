@@ -2563,6 +2563,63 @@ func (c *Client) refused(err error, size int) error {
 	return err
 }
 
+// maxPayload is the max payload the client's connection was last told by a server, or 0 for a nil
+// client, a client with no connection and a connection that has never connected. nats.go v1.55.0
+// reads it from the connection's info (nats.go:6619-6623), which only a server's INFO writes
+// (processInfo, nats.go:4317) and nothing clears: while the connection reconnects it is still the
+// last server's bound, and before the first connect, as WithConnectInBackground leaves a client,
+// it is 0.
+func (c *Client) maxPayload() int64 {
+	if c == nil {
+		return 0
+	}
+	if conn := c.Connection(); conn != nil {
+		return conn.MaxPayload()
+	}
+	return 0
+}
+
+// payloadRefusal refuses an envelope of size encoded bytes past the server's max payload
+// (maxPayload), as the ErrTooLarge refused names nats.go's own refusal of it, and returns nil for
+// any other. Each publish that encodes an envelope asks it first, before it waits for a reconnect
+// or reads its context (PublishStoredAck, PublishCoreContext, StartRequestStoredTo). nats.go
+// refuses such bytes before it sends anything, but only after it has read the context: its
+// JetStream request returns ctx.Err() first (nats.go v1.55.0 context.go:47-51), and
+// publishConfirmed reads the context before the core publish. So a publish whose caller had spent
+// its deadline before the publish - the listener's send route, whose budget a large body's read
+// under load can spend - was answered with that deadline's error, which the route answers as a bus
+// that did not answer, asking for the same bytes again. The bytes are the whole of the refusal, so
+// it is decided first.
+//
+// A bound of 0, a connection that has never connected, refuses nothing here; the publish then
+// waits for the connection, and nats.go's own check answers the bytes at the publish once it has
+// connected and read the bound (it skips that check too until then: nats.go:4750-4751, initc set
+// for the first connect at :3005 and cleared at :3045 and :3629). size is the envelope's data
+// alone, without the headers nats.go adds (a Nats-Msg-Id), so this refuses only what nats.go would:
+// an envelope that only its headers carry past the bound is still refused by nats.go's own check.
+func (c *Client) payloadRefusal(size int) error {
+	if bound := c.maxPayload(); bound > 0 && int64(size) > bound {
+		return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes", ErrTooLarge, size, bound)
+	}
+	return nil
+}
+
+// EnvelopeRefusal is the refusal a publish of item meets for its size, or nil, judged before
+// anything is read or waited for, for a caller that does bus work on the publish's behalf first:
+// the listener's send and publish routes ask it before their reads, their sender stamp, a wake and
+// a role's resolution, so a message no publish can carry is answered 413 at once instead of after
+// waits that can spend the request's deadline. It judges the payload alone, without encoding the
+// envelope: an encoded envelope carries its payload whole, each byte as at least one, so a payload
+// past the server's max payload is an envelope past it. An envelope that only its other fields
+// carry past the bound is refused at the publish itself (payloadRefusal), which reads no context
+// either. A nil client, and one whose connection has never connected, refuse nothing (maxPayload).
+func (c *Client) EnvelopeRefusal(item contracts.Envelope) error {
+	if bound := c.maxPayload(); bound > 0 && int64(len(item.Payload)) > bound {
+		return fmt.Errorf("%w: a payload of %d bytes against the server's max payload of %d bytes", ErrTooLarge, len(item.Payload), bound)
+	}
+	return nil
+}
+
 // publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
 // PublishCoreContext of a caller that passed no deadline of its own: their wait for a reconnect
 // and their flush or JetStream acknowledgement together. A publish window's sends take
@@ -2695,15 +2752,19 @@ type StoredAck struct {
 // holds, and Resent where it answers a resend. Its refusals are those of every stored publish,
 // which publishJetStream describes (ErrTooLarge, ErrRefused, ErrPublishDenied, ErrStreamFull), and
 // ErrDuplicateInProcess while a clustered stream is still storing an earlier publish under the
-// same id; subject must be one the stream captures, or nothing answers the publish. A failure
-// after a send that nothing answered wraps ErrUnacknowledged, since the stream may hold the copy
-// (sendStored).
+// same id; subject must be one the stream captures, or nothing answers the publish. An envelope
+// past the server's max payload is ErrTooLarge whatever ctx is, decided before the bound, the
+// reconnect wait and the send (payloadRefusal). A failure after a send that nothing answered wraps
+// ErrUnacknowledged, since the stream may hold the copy (sendStored).
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
 	}
 	data, err := json.Marshal(item)
 	if err != nil {
+		return StoredAck{}, err
+	}
+	if err := c.payloadRefusal(len(data)); err != nil {
 		return StoredAck{}, err
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
@@ -2946,13 +3007,17 @@ func preconditionLost(err error) bool {
 // than wait for a reconnect or dial one, and publishConfirmed refuses it immediately before the
 // publish, which also catches a cancel that lands as a reconnect completes. A deadline arrives
 // spent through publishHandler (cmd/listener/api.go), whose reads before the publish (the sender
-// stamp's) share the route's deadline with it.
+// stamp's) share the route's deadline with it. An envelope past the server's max payload is
+// ErrTooLarge whatever ctx is, decided before both (payloadRefusal).
 func (c *Client) PublishCoreContext(ctx context.Context, subject string, item contracts.Envelope) error {
 	if err := checkSubject(subject); err != nil {
 		return err
 	}
 	data, err := json.Marshal(item)
 	if err != nil {
+		return err
+	}
+	if err := c.payloadRefusal(len(data)); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, publishBound)
@@ -3015,7 +3080,9 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // recipient, however many attempts it makes, and the stream acknowledges each repeat as a
 // duplicate, which counts as stored. An error here is the publish's own, before any reply could
 // arrive (a refused, denied or invalid forward, a connection that never came back within
-// timeout); every returned forward must be waited for, which releases its reply subscription.
+// timeout); every returned forward must be waited for, which releases its reply subscription. An
+// envelope past the server's max payload is ErrTooLarge however little of timeout is left,
+// decided before the connect and the window's check (payloadRefusal).
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
 	if msgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)
@@ -3025,6 +3092,9 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	data, err := json.Marshal(item)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.payloadRefusal(len(data)); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

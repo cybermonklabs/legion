@@ -491,8 +491,8 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 	})
 	t.Logf("bus refused the publish: %s", refusal.Error)
 
-	// An envelope past the server's max payload: nats.go refuses it before sending, which the bus
-	// reports as bus.ErrTooLarge, and that is the caller's own 413, not a bus that did not answer.
+	// A payload past the server's max payload: the route refuses it as bus.ErrTooLarge before any
+	// bus work (bus.Client.EnvelopeRefusal), the caller's own 413, not a bus that did not answer.
 	oversized, oversizedRecord := serveRecorded(t,
 		func(logger *logging.Logger) http.HandlerFunc { return sendHandler(state, logger) },
 		postJSON("/v1/messages/send", sendBody(map[string]any{

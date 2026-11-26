@@ -886,6 +886,15 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
 			return
 		}
+		// A message no publish can carry is the 413 now, before anything below waits: the
+		// target's read, the role claim's, the probe and the sender stamp share ctx with the
+		// publish, and a deadline they spend (a large body read slowly spends it before them)
+		// would otherwise answer it as a bus that did not answer, asking for the same bytes again
+		// (bus.Client.EnvelopeRefusal). It costs the sender nothing and reports no wake.
+		if err := d.client.EnvelopeRefusal(item); err != nil {
+			record.refuseBusUnavailable(w, err)
+			return
+		}
 		charge, admitted := d.senderLimit.admit(w, r, record, item)
 		if !admitted {
 			return
@@ -1366,6 +1375,13 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error(), "topic")
 				return
 			}
+		}
+		// A message no publish can carry is the 413 now, before the sender stamp, a role's
+		// resolution or a keep can spend this request's deadline, as the send route answers it
+		// (bus.Client.EnvelopeRefusal).
+		if err := d.client.EnvelopeRefusal(item); err != nil {
+			record.refuseBusUnavailable(w, err)
+			return
 		}
 		charge, admitted := d.senderLimit.admit(w, r, record, item)
 		if !admitted {
