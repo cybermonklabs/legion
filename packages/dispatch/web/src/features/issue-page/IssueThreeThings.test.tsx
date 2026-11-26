@@ -42,7 +42,7 @@ import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords } from "./tree-drafts";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { treeNode as answerNode, treeAnswer } from "./tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswerNode } from "./tree-read/tree-read";
+import { outlineQuery, type TreeAnswerNode, viewQuery } from "./tree-read/tree-read";
 
 /**
  * The head of the page draws the issue in plain language: at most three bullets, each one spoken
@@ -115,11 +115,11 @@ function SlotNames({ onNames }: { onNames: (lineNames: LineNames) => void }): Re
 
 /** The head as a slot draws it: what the summary cites named by the names the page published
  *  (`slots/contents.tsx`, `useIssueNames`), and the two rows counted over `root`, the whole tree
- *  the summary is a node of, under the words `query` as the slot counts them, once the reads the
- *  tree is built from hold (`held`). The names are read beside the head, under a query client of
- *  their own that holds nothing - the page's rule for an author reads the agent registry's cache
- *  (`useAgentText`) - and the head is drawn with no `QueryClientProvider` around it, so a request
- *  of its own would throw (R20). */
+ *  the summary is a node of, as Graph's read holds it, under the words `query` as the slot counts
+ *  them, once the reads the tree is built from hold (`held`). The names are read beside the head,
+ *  under a query client of their own that holds nothing - the page's rule for an author reads the
+ *  agent registry's cache (`useAgentText`) - and the head is drawn with no `QueryClientProvider`
+ *  around it, so a request of its own would throw (R20). */
 function Head({
   held = true,
   look,
@@ -138,7 +138,7 @@ function Head({
   );
   const [lineNames, setLineNames] = useState<LineNames | undefined>(undefined);
   const counts = useMemo(
-    () => briefCounts({ namesHeld: held, readsHeld: held, root }, query),
+    () => briefCounts({ namesHeld: held, readsHeld: held, root }, query, "graph"),
     [held, query, root]
   );
   return (
@@ -943,8 +943,9 @@ function fullyReadIssue(): TreeNode {
 }
 
 /** A client holding every read the Contents slot's tree is built from, answered with nothing but
- *  the spec's summary, which the tree read holds: no document's blocks are a read of their own.
- *  A case leaves out the one it holds back. */
+ *  the spec's summary, which the tree read holds, and Plan's view read, which the load sends with
+ *  Conversation and holds no task: no document's blocks are a read of their own. A case leaves
+ *  out the one it holds back. */
 function seededClient(): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -961,6 +962,7 @@ function seededClient(): QueryClient {
       block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
     ])
   );
+  client.setQueryData(viewQuery(KEY, "plan").queryKey, treeAnswer([]));
   return client;
 }
 
@@ -1064,6 +1066,43 @@ test("the Contents pane's rows draw their labels alone while a read of the tree 
     }
   } finally {
     messages.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// R1 under Conversation: Conversation's read holds no plan task, so the plan's tasks are Plan's
+// view read's, which the load sends with the page. While it holds no answer the rows draw their
+// labels alone, though every other read the tree is built from holds one and the sentences are
+// drawn, since the plan would read as holding no task; once it answers they count.
+test("under Conversation the Contents pane's rows draw their labels alone while Plan's view read holds no answer, and count once it does", async () => {
+  const client = seededClient();
+  const planKey = viewQuery(KEY, "plan").queryKey;
+  client.removeQueries({ queryKey: planKey });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [summaryTarget()],
+  } as never);
+  try {
+    const view = drawContents(client, issueDetails());
+    try {
+      await waitFor(() =>
+        expect(
+          view.getByTestId("issue-three-things").querySelectorAll("li").length
+        ).toBeGreaterThan(0)
+      );
+      expect(rowTexts(view)).toEqual([CONTROL_LABELS.in_short_how, CONTROL_LABELS.in_short_shown]);
+      await act(async () => {
+        client.setQueryData(planKey, treeAnswer([]));
+      });
+      await waitFor(() =>
+        expect(rowTexts(view)).toEqual([
+          `${CONTROL_LABELS.in_short_how}${EMPTY_STATE_LINES.plan}`,
+          `${CONTROL_LABELS.in_short_shown}${EMPTY_STATE_LINES.verification}`,
+        ])
+      );
+    } finally {
+      view.unmount();
+    }
+  } finally {
     names.mockRestore();
   }
 });

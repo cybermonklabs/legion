@@ -37,6 +37,7 @@ import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
 import { presetOf } from "../issue-address";
+import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
 import {
@@ -387,6 +388,17 @@ export const viewQuery = (key: string, filter: TreeFilter, version?: number) =>
 export function outlineOf(preset: Preset): Outline | undefined {
   if (preset === "graph") return "graph";
   return preset === "conversation" || isFilter(preset) ? "conversation" : undefined;
+}
+
+/**
+ * Whether the plan's tasks are still to be read under `preset`: Conversation's read, and the read
+ * beside each filter, holds no plan task, so there they are Plan's view read's, which a load of
+ * Conversation or of a filter sends with the page (`ViewReadProvider`'s `sentWithLoad`), and the
+ * issue's node holds it (`TreeNode.views`) once it has answered. Until then a count of the plan's
+ * tasks would read 0 for what the page has not read yet. Graph's read holds them.
+ */
+export function planTasksOut(root: Pick<TreeNode, "views">, preset: Preset): boolean {
+  return outlineOf(preset) === "conversation" && root.views?.plan === undefined;
 }
 
 /**

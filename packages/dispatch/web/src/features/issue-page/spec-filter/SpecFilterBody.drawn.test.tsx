@@ -863,19 +863,22 @@ test("a cell whose group is headed by its question draws the question's first se
   }
 });
 
-/** `ref`'s tie as `shaped` makes it, made at `created`, whose far end - the statement - last
- *  changed at `changed`. */
-function tieChangedAt(ref: string, created: string, changed: string | null): DecisionLink {
+/** `ref`'s tie as `shaped` makes it, which the decisions read says the statement changed after
+ *  (`changed`), with its far end's `changed_at` as `changedAt`. */
+function tieChanged(ref: string, changed: boolean, changedAt: string | null = null): DecisionLink {
   const tie = shaped(ref);
-  return { ...tie, created_at: created, to: { ...tie.to, changed_at: changed } };
+  return {
+    ...tie,
+    changed_since_tie: changed,
+    created_at: "2026-11-14T10:00:00Z",
+    to: { ...tie.to, changed_at: changedAt },
+  };
 }
 
 // R5: where a statement's words changed after the tie that names its decision, its because line
-// says "Changed since": the tie's far end's `changed_at` is later than the tie's `created_at`,
-// both of today's decisions read, read as the times they name. A statement the decision named
-// after its last change says nothing of it, and so does r3, whose two times would order the
-// other way read as text: its far end changed 0.12 s past the second, before the tie made
-// 0.123456 s past it, though "…00.12Z" sorts after "…00.123456Z".
+// says "Changed since": the tie's own `changed_since_tie` in the decisions read. A statement the
+// server says is unchanged since its tie says nothing of it, r3 too, whose far end carries a
+// `changed_at` after the tie's `created_at`: the page reads no time of its own for it.
 test("a statement changed after its tie says Changed since", () => {
   const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2"), statement("r3"), decisionNode("d1")]),
@@ -884,13 +887,9 @@ test("a statement changed after its tie says Changed since", () => {
         block_id: "d1",
         kind: "agent",
         links: [
-          tieChangedAt(statementRef("r1"), "2026-11-14T10:00:00Z", "2026-11-15T08:00:00Z"),
-          tieChangedAt(statementRef("r2"), "2026-11-14T10:00:00Z", "2026-11-14T09:00:00Z"),
-          tieChangedAt(
-            statementRef("r3"),
-            "2026-11-14T10:00:00.123456Z",
-            "2026-11-14T10:00:00.12Z"
-          ),
+          tieChanged(statementRef("r1"), true),
+          tieChanged(statementRef("r2"), false),
+          tieChanged(statementRef("r3"), false, "2026-11-15T08:00:00Z"),
         ],
       }),
     ]
