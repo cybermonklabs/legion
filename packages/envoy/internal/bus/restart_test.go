@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The listener opens its interest registry, session registry and CI store from client.Conn once,
@@ -89,6 +90,8 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 		t.Fatalf("flush subscription: %v", err)
 	}
 	waitFor(t, "the client to reconnect", client.Connected)
+	// A window, not a wait: the publish that failed must never be sent, and two seconds after the
+	// reconnect is how long the test watches for it.
 	select {
 	case message := <-received:
 		t.Fatalf("the publish that failed was sent after the reconnect: %s", message.Data)
@@ -157,11 +160,7 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.reconnect-during-drain", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 
 	logs := clientLogs.fromHere()
 	drained := make(chan error, 1)
@@ -169,10 +168,10 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	srv.Stop(t)
 	srv.Start(t)
-	select {
-	case <-drained:
-	case <-time.After(14 * time.Second):
-		t.Fatal("the reconnect during the drain did not end it before its deadline")
+	// Drain returns context.DeadlineExceeded once its 15 s deadline passes, so its own answer says
+	// whether the reconnect ended it first.
+	if err := testwait.Receive(t, "the drain to end", drained); errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the reconnect during the drain did not end it before its deadline: %v", err)
 	}
 	if !client.Conn.IsClosed() {
 		t.Fatal("the drain ended with the reconnected connection still open")
@@ -313,11 +312,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 	logs := clientLogs.fromHere()
 	srv.Stop(t)
 	srv.Start(t)
-	select {
-	case <-reconnected:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect never finished restoring the subscriptions")
-	}
+	testwait.Receive(t, "the reconnect to finish restoring the subscriptions", reconnected)
 	if !durable.IsValid() || !role.IsValid() {
 		t.Fatalf("a reconnect in place tore down the subscriptions Subscribe returned (durable valid %t, role valid %t)", durable.IsValid(), role.IsValid())
 	}
@@ -399,11 +394,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			logs := clientLogs.fromHere()
 			srv.Stop(t)
 			srv.Start(t)
-			select {
-			case <-hooked:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the reconnect never ran its hook")
-			}
+			testwait.Receive(t, "the reconnect to run its hook", hooked)
 			if !tc.stop {
 				const retried = "envoy nats reconnect hook failed; it is retried"
 				const uncovered = "envoy nats reconnect hooks have not succeeded"
