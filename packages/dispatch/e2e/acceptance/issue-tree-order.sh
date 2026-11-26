@@ -42,8 +42,9 @@
 # /api/v1/issues/{key}/decisions among them; a route missing at this head fails, naming it.
 # It searches Go source only: the Verification fixture quotes the names but implements neither lookup.
 #
-# Last it reads O's one dependency through GET /api/v1/issues/{key}, GET
-# /api/v1/issues/{key}/summary and GET /api/v1/issues/{key}/events, blocked_by beside needs in
+# Last it reads O's one dependency through GET /api/v1/issues/{key}, GET /api/v1/issues (the
+# summary read: its rows are model.IssueSummary) and GET /api/v1/issues/{key}/events, blocked_by
+# beside needs in
 # each, both naming W; a PATCH naming needs and blocked_by with the same targets is served from
 # them and one whose two lists differ is refused 400 naming both; and every field O's issue read
 # answered before the upgrade still answers, not null, once O has converted.
@@ -448,10 +449,15 @@ tree_want 200 "$section" "read $ordered"
 cp "$work/body" "$work/issue.after.json"
 expect "$section" "GET /api/v1/issues/$ordered answers blocked_by beside needs, each naming $blocker" \
   "$(jq -cn --arg b "$blocker" '[[$b], [$b]]')" '[.blocked_by, .needs]'
-tree_send GET "/api/v1/issues/$ordered/summary"
-tree_want 200 "$section" "read $ordered's summary"
-expect "$section" "GET /api/v1/issues/$ordered/summary answers blocked_by beside needs, each naming $blocker" \
-  "$(jq -cn --arg b "$blocker" '[[$b], [$b]]')" '[.blocked_by, .needs]'
+# The summary read is the list read's row (model.IssueSummary, which carries blocked_by beside
+# needs): GET /api/v1/issues/{key}/summary is the reference summary (key, project, title, status,
+# documents) and answers neither.
+tree_send GET "/api/v1/issues?project=${ordered%%-*}"
+tree_want 200 "$section" "read the issue list of ${ordered%%-*}"
+expect "$section" "GET /api/v1/issues lists $ordered with blocked_by beside needs, each naming $blocker" \
+  "$(jq -cn --arg b "$blocker" '[[$b], [$b]]')" \
+  --arg k "$ordered" '[(if type == "array" then . else .issues end)[] | select(.key == $k) | [.blocked_by, .needs]]
+    | if length == 1 then .[0] else "the list holds \(length) rows of " + $k end'
 tree_send GET "/api/v1/issues/$ordered/events"
 tree_want 200 "$section" "read $ordered's events"
 expect "$section" "GET /api/v1/issues/$ordered/events answers each blocked_by beside needs, the same targets, naming $blocker" true \
