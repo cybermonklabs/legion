@@ -27,7 +27,9 @@
 # with no step to take. It answers UNKNOWN too when it could read nothing to judge. That is a
 # failed command, a line of other than 16 words, or a log with no read line. So does a log line
 # that holds the read line's message and is no JSON, and a record whose agent the agents file
-# lacks. A usage error is exit 2 too, with the usage on stderr.
+# lacks. The line `Experiment <experiment>: variant <variant>.` is no run, and is read only right
+# after the header, as step-records-read.sh reads it. A usage error is exit 2 too, with the usage
+# on stderr.
 #
 # It runs where the operator runs `dispatch` by hand, with the operator's own credential. That is
 # the `dispatch` command on PATH (packages/envoy-client's bin), and the session the shell names

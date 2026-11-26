@@ -5672,6 +5672,10 @@ Each item below names an input, then what it means.
 
 Each item below names what it reads, then how.
 
+- Where the issue's newest run is in an experiment, `dispatch steps` prints `Experiment <experiment>: variant <variant>.` right after its header.
+  That line is read at line 2 alone, as [`step-records-read.sh`](#step-records-readsh) reads it.
+  Anywhere else it is no run, and the verdict is `UNKNOWN`.
+
 - A record's read lines are those of its issue, task, place (the line's step), kind and start.
   Two starts are one where they differ by less than 1 µs, since `dispatch steps` prints six fraction digits at most.
 
