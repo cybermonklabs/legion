@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -27,25 +28,34 @@ var probeCandidates = []struct {
 	name string
 	take takeCommands
 }{
-	{"duplicate (base)", workspace.BesideTakeCommands},
-	{"rebase -b @ onto heads(beside | task)", func(dir, prefix, own, task string) []string {
+	// Names: no shell or revset characters, since each names a temporary directory the shim's
+	// recording jj writes to unquoted.
+	{"P1 duplicate base", workspace.BesideTakeCommands},
+	{"P2 rebase b onto heads of beside and task", func(dir, prefix, own, task string) []string {
 		onto := `heads((` + besideHeads(prefix, own) + `) | remote_bookmarks(exact:"` + task + `", exact:"origin"))`
 		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
 	}},
-	{"new -A @- -A (beside heads ~ ::@) -B @", func(dir, prefix, own, task string) []string {
+	{"P3 new A at-parent A beside not under at B at", func(dir, prefix, own, task string) []string {
 		after := `heads(` + besideHeads(prefix, own) + `) ~ ::@`
 		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "new", "--insert-after", "@-", "--insert-after", after, "--insert-before", "@", "--message", "merge: the steps beside the fix"})}
 	}},
-	{"new -A heads(@- | beside heads) -B @", func(dir, prefix, own, task string) []string {
+	{"P4 new A heads of at-parent and beside B at", func(dir, prefix, own, task string) []string {
 		after := `heads(@- | (` + besideHeads(prefix, own) + `))`
 		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "new", "--insert-after", after, "--insert-before", "@", "--message", "merge: the steps beside the fix"})}
+	}},
+	{"P5 rebase b onto heads of what origin holds but own", func(dir, prefix, own, task string) []string {
+		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
+		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
 	}},
 }
 
 type probeCase struct {
 	takeCase
-	second    bool // a second step beside the fix pushes a commit forked at the head
-	pushFirst bool // the fix pushes F before the first take and again after it
+	second       bool // a second step beside the fix pushes a commit forked at the head
+	pushFirst    bool // the fix pushes F before the first take and again after it
+	noOwn        bool // the fix commits nothing of its own
+	mergeForward bool // main moves on origin and the fix's first act is a merge of it
+	promptRebase bool // before each take, the fix runs its prompt's fetch and rebase onto the task's head
 }
 
 var probeCases = []probeCase{
@@ -57,6 +67,11 @@ var probeCases = []probeCase{
 	{takeCase: takeCase{name: "F: two steps beside the fix, then the take again", tester: true}, second: true},
 	{takeCase: takeCase{name: "G: the fix pushes F before the take and after it, then the take again", tester: true}, pushFirst: true},
 	{takeCase: takeCase{name: "H: G in a fresh pod", tester: true, fresh: true}, pushFirst: true},
+	{takeCase: takeCase{name: "I: a merge forward in the fix's stack, then the take again", tester: true}, mergeForward: true},
+	{takeCase: takeCase{name: "J: no commit of the fix's own, one step beside, then the take again", tester: true}, noOwn: true},
+	{takeCase: takeCase{name: "K: no commit of the fix's own, two steps beside, then the take again", tester: true}, noOwn: true, second: true},
+	{takeCase: takeCase{name: "M: the prompt's rebase before each take", tester: true}, promptRebase: true},
+	{takeCase: takeCase{name: "N: I with the prompt's rebase before each take", tester: true}, mergeForward: true, promptRebase: true},
 }
 
 func TestProbeTakes(t *testing.T) {
@@ -114,6 +129,10 @@ func probeRun(t *testing.T, jj string, take takeCommands, c probeCase) string {
 		return out
 	}
 	runTake := func(r *copyRig) {
+		if c.promptRebase {
+			run(r, r.fixDir, `jj -R "$LEGION_WORKSPACE-fix" git fetch`)
+			run(r, r.fixDir, `jj -R "$LEGION_WORKSPACE-fix" rebase -b @- -d '`+taskBranch+`@origin'`)
+		}
 		for _, command := range take(r.fixDir, prefix, own, taskBranch) {
 			run(r, r.fixDir, command)
 		}
@@ -139,7 +158,17 @@ func probeRun(t *testing.T, jj string, take takeCommands, c probeCase) string {
 		pod.commit(pod.clone, "review.txt", "test: the reviewer's case")
 		run(pod, pod.clone, "jj bookmark set "+reviewer+" -r @- && jj git push --remote origin --bookmark "+reviewer)
 	}
-	pod.commit(pod.fixDir, "fix.txt", "fix: the failure")
+	if c.mergeForward {
+		pod.jjIn(pod.clone, "new", "main@origin")
+		moved := pod.commit(pod.clone, "base.txt", "chore: the base moves")
+		fixturegit.Isolated(t, t.TempDir()).Run(pod.clone, "git", "push", "--quiet", origin, moved+":refs/heads/main")
+		run(pod, pod.fixDir, `jj -R "$LEGION_WORKSPACE-fix" git fetch --remote origin --branch main`)
+		run(pod, pod.fixDir, `jj -R "$LEGION_WORKSPACE-fix" new @- main@origin -m 'merge: the base into the task'`)
+		run(pod, pod.fixDir, `jj -R "$LEGION_WORKSPACE-fix" new`)
+	}
+	if !c.noOwn {
+		pod.commit(pod.fixDir, "fix.txt", "fix: the failure")
+	}
 	if c.pushFirst {
 		pushOwn(pod)
 	}
