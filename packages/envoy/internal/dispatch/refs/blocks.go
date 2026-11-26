@@ -453,8 +453,10 @@ type IndexedVersion struct {
 // its rendered blocks (Blocks), the Mentions of its text (Located), its `block[]` values
 // (Pointers), and the deployment its text was read against (ServerURL), whose dashboard URLs are
 // references and which each block's excerpt is cut around (BlockExcerpt); what the typed-node pass
-// read of the version (Typed, DecisionFacts), and what the caller states beside the pass under the
-// same event (Beside).
+// read of the version (Typed, DecisionFacts), what the caller states beside the pass under the
+// same event (Beside), and whether the pass retires the document's own index into its issue's room
+// (Retires: docs' retireDocuments), so that every block leaves the document while each version
+// keeps its record of the texts it held (BlockIndexing.retires).
 type VersionBlocks struct {
 	ArtifactID string
 	Record     IndexedVersion
@@ -466,6 +468,7 @@ type VersionBlocks struct {
 	ServerURL  string
 	Typed      TypedFacts
 	Beside     graphstore.Uncaused
+	Retires    bool
 }
 
 // BlockIndexing is one version's block index, planned against what the index holds
@@ -509,6 +512,13 @@ type BlockIndexing struct {
 	texts                                        []*string
 	since, textVersions                          []int32
 	sinceAt                                      []time.Time
+	// retires says the pass retires the document's own index into its issue's room
+	// (VersionBlocks.Retires): its blocks are deleted because they left for the room, where their
+	// text goes on under the room's tree artifact, and not because the version it covers dropped
+	// them. That version holds them still, so the pass records no text of a deleted block
+	// (queueRows): a row recording one deleted at that version would answer the read of the
+	// version's text (BlockTextAt, a reference pinned to it) that the version holds no such block.
+	retires bool
 	// candidates are the blocks among ids whose changed version another renderer version stored
 	// or none stamped and that aloneCandidates keeps, which KeepRespelled reads and decides;
 	// respelledIDs, respelledSums and respelledExcerpts are those it keeps the changed version of,
@@ -747,7 +757,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	number, versionAt := newest.Number, newest.At
 	indexing := BlockIndexing{
 		artifactID: artifactID, refKey: record.RefKey, version: number, versionAt: versionAt,
-		versions: versions, rule: rule, held: index,
+		versions: versions, rule: rule, held: index, retires: version.Retires,
 	}
 	// The stand of each document the pass covers: artifactID's own the index holds, and each other
 	// document's of an issue room as the transaction's earlier indexing of the room left it
@@ -1437,7 +1447,8 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 // their excerpts, their node columns and the parent the placement gives each (rowParents), so a
 // row the insert writes carries its parent and no statement after it touches the row again
 // (queueBlockParents); and the text each of those blocks has at its version, recorded in
-// document_block_texts, a deleted block's as no text. A block index queues them inside
+// document_block_texts, a deleted block's as no text but in a retirement (retires), which records
+// none of a block it deletes. A block index queues them inside
 // its revision fence (Queue), and the typed-node pass of a deferred version queues the rows of the
 // typed blocks it removes and of the requirements, checks and plan tasks it writes
 // (DecisionIndexing.Queue). The delete and the insert of document_blocks claim the head rows kept
@@ -1479,12 +1490,24 @@ func (b BlockIndexing) queueRows(batch *store.WriteBatch) {
 				                       else excluded.parent_block_id end
 		`, artifactID, b.ids, b.types, b.sums, b.excerpts, b.since, b.sinceAt, BlockNodeKind, MaxBlockNodeBytes, b.rowParents())
 	}
-	if len(b.textIDs) > 0 {
+	textIDs, texts, textVersions := b.textIDs, b.texts, b.textVersions
+	if b.retires {
+		// A retirement deletes blocks the version it covers still holds (retires): of the texts,
+		// it records only those it writes, which no block it deletes has.
+		textIDs, texts, textVersions = nil, nil, nil
+		for index, held := range b.texts {
+			if held != nil {
+				textIDs, texts = append(textIDs, b.textIDs[index]), append(texts, held)
+				textVersions = append(textVersions, b.textVersions[index])
+			}
+		}
+	}
+	if len(textIDs) > 0 {
 		batch.Queue(fmt.Sprintf("record the block texts of version %d of %s", version, artifactID), `
 			insert into document_block_texts (artifact_id, block_id, version, text)
 			select $1::uuid, t.id, t.version, t.text from unnest($2::text[], $3::text[], $4::int[]) as t (id, text, version)
 			on conflict (artifact_id, block_id, version) do update set text = excluded.text
-		`, artifactID, b.textIDs, b.texts, b.textVersions)
+		`, artifactID, textIDs, texts, textVersions)
 	}
 }
 

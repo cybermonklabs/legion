@@ -1779,9 +1779,10 @@ func parseVersionNumber(text string) (int, bool) {
 }
 
 // getArtifactVersion answers one version of an artifact on all four version routes: a document's
-// text as artifactVersionText, or as its Markdown under its file name at the download address,
-// each as the one renderer answers the version (docs.RenderVersion) and naming what its bytes are
-// in renderSourceHeader, and a file's or an image's bytes (serveFileVersion).
+// text, or an issue's tree artifact's (readsAsDocument), as artifactVersionText, or as its Markdown
+// under its file name at the download address, each as the one renderer answers the version
+// (docs.RenderVersion) and naming what its bytes are in renderSourceHeader, and a file's or an
+// image's bytes (serveFileVersion).
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	reader, _, err := s.optionalActor(r)
 	if err != nil {
@@ -1810,7 +1811,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	// The file name is the artifact's name as this read finds it, so a renamed document downloads
 	// under its new name, and an older version's carries its number (versionFilename).
 	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
-	if artifact.Kind == "doc" {
+	if readsAsDocument(artifact) {
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number)
 		if err != nil {
 			s.writeHandlerError(w, err)
