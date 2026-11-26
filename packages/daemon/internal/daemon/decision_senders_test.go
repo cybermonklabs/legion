@@ -55,6 +55,9 @@ var storedTaskReaders = map[string]string{
 		"rendered again from its wait at each send (workflow.Engine.SendArchitectStart)",
 	senderModule + "workflow.reviewedCommitStays": "it reads only whether the reviewer's row holds an entry's task, to decide " +
 		"whether a review moves the commit the reviewer read, and sends no text",
+	"(*" + senderModule + "workflow.Engine).ranUnreported": "it reads only whether the role's row holds an entry's task, the " +
+		"durable mark that the role started its step in this run (main's #5463), to decide whether a late completion reports " +
+		"that run, and sends no text",
 	senderModule + "workflow.namingTheReviewRound": "it reads only whether the reviewer's row holds an entry's task, to name that " +
 		"entry's number in a reviewer's round sentences; it sends no stored text, and a reviewer's task names no person's review " +
 		"of a design document",
