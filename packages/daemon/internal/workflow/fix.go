@@ -536,7 +536,7 @@ func fixReports(w Walk, rows []record.PhaseRow, fix record.TaskFix) string {
 			continue
 		}
 		row := record.PhaseRowOf(rows, role)
-		if !row.Completed() || row.HandoffRecord == "" {
+		if row.HandoffRecord == "" {
 			continue
 		}
 		sentences += fmt.Sprintf(" The %s of step %d reports: %s. Its report is %s. It is part of your fix.", role, i+1, row.Summary, row.HandoffRecord)
