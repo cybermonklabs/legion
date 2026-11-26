@@ -331,7 +331,9 @@ func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 		r.stop()
 		other := givenTask(t, "Build the other widget.", "implementer", "reviewer")
 		other.ID = "b"
-		mustTake(t, "the version without task a", r.apply("version-3", ownersPlan(t, "LEGION-208", 1, 3, other)))
+		version := ownersPlan(t, "LEGION-208", 1, 3, other)
+		version.Plan.ArtifactID = "plan-artifact" // the document of the version in force (seedStepsPlan)
+		mustTake(t, "the version without task a", r.apply("version-3", version))
 		assertStrings(t, "the deletions", r.deletions(), task)
 	})
 	t.Run("a task with no fix deletes nothing at any end", func(t *testing.T) {
