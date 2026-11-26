@@ -35,19 +35,21 @@
 # its text, never a whole file, and only a line that serves what R11 keeps: the Decisions view, its
 # tab, its dispatch://KEY/decisions route and its query key; GATED_STEPS and DocumentRoleSchema,
 # which keep the value for one release as a value they read; and the generated step types, since
-# the gated-steps write still admits it. A line that is the word alone, in a list or a union, is
-# admitted by the declaration it stands in as well (PRESET_ORDER, PLAIN_ISSUE_TABS and IssueTab,
-# and a test's TreeRead and TREE_READS). A test's line is admitted only where it exercises one of
-# those, or feeds the client a stored step or a document role GATED_STEPS or DocumentRoleSchema
-# still reads, and so is the base release's gated steps seed-decisions.sh publishes, which must
-# still hold the step. It prints each admitted line with what it serves, and fails on any other:
-# gated-steps.ts, or a step list of gated-step-approvals.e2e.ts, among them. Before it reads the
-# checkout it reads a planted instance through the same search and the same admission, as the first
-# sweep does: a scratch git repository under the run's own directory holding a copy of
-# gated-steps.ts, of each file it admits lines of the view, its tab or its route from
-# (DecisionsPanel.tsx, issue-tab-list.ts, IssuePage.tsx, page-words.ts and routes.ts) and of a web
-# test (gated-steps.test.ts), each with one line sending the step added, printed as
-# `planted hit …`, each of which must be reported as a hit. It then reads the daemon's
+# the gated-steps write still admits it. The page reads the Decisions view from the tree read's
+# decisions view (`?view=decisions`, #4180), which answers the issue's decisions query, so a line
+# that reads that view, or names that query among the issue's queries, serves the view. A line that
+# is the word alone, in a list or a union, is admitted by the declaration it stands in as well
+# (PRESET_ORDER and IssueTab, and a test's TreeRead and TREE_READS). A test's line is admitted only
+# where it exercises one of those, or feeds the client a stored step or a document role GATED_STEPS
+# or DocumentRoleSchema still reads, and so is the base release's gated steps seed-decisions.sh
+# publishes, which must still hold the step. It prints each admitted line with what it serves, and
+# fails on any other: gated-steps.ts, or a step list of gated-step-approvals.e2e.ts, among them.
+# Before it reads the checkout it reads a planted instance through the same search and the same
+# admission, as the first sweep does: a scratch git repository under the run's own directory
+# holding a copy of gated-steps.ts, of each file it admits lines of the view, its tab or its route
+# from (DecisionsPanel.tsx, issue-tab-list.ts, IssuePage.tsx, page-words.ts, routes.ts and
+# client.ts) and of a web test (gated-steps.test.ts), each with one line sending the step added,
+# printed as `planted hit …`, each of which must be reported as a hit. It then reads the daemon's
 # contract, which narrows now: legionDesignStep in packages/contracts/src/legion-api.ts (through
 # the two schemas that export it, LegionGateRegisterRequest's step and
 # LegionControllerSecretResponse's designGateSteps, which bun parses) and the `register_gate` step
@@ -407,16 +409,33 @@ step_admission() {
         printf 'the dispatch://KEY/decisions route (IssueRoute)'
       elif [[ "$bare" == "| ${quoted_word}" && "$declaration" == IssueTab ]]; then
         printf 'the Decisions tab the dispatch://KEY/decisions route opens (IssueTab)'
-      elif [[ "$bare" == "${quoted_word}," && "$declaration" == PLAIN_ISSUE_TABS ]]; then
-        printf 'the dispatch://KEY/decisions route (PLAIN_ISSUE_TABS)'
+      elif [[ "$text" == *"ISSUE_TAB_ROUTES = [...PLAIN_ISSUE_TABS, ${quoted_word}]"* ]]; then
+        printf 'the dispatch://KEY/decisions route (ISSUE_TAB_ROUTES)'
       fi
       ;;
     packages/dispatch/web/src/features/refs/routes.test.ts)
       [[ "$text" != *"kind: ${quoted_word} as const"* && "$text" != *"issueTabForRoute(route, undefined)).toBe(${quoted_word})"* ]] ||
         printf 'test material: the dispatch://KEY/decisions route' ;;
     packages/dispatch/web/src/__tests__/event-feed.test.ts)
-      [[ "$text" != *"decisions: { key: [${quoted_word}, "* && "$text" != *"spares: [${quoted_word}],"* ]] ||
+      [[ "$text" != *"decisions: { key: [${quoted_word}, "* && "$text" != *"spares: [${quoted_word}],"* &&
+        ! "$text" =~ refreshes:\ \[.*${dq}decisions${dq} && "$bare" != "[${quoted_word}, ${dq}CORE-1${dq}]," ]] ||
         printf 'test material: the query key of the Decisions view' ;;
+    # This branch's Decisions view (#4180): the client reads it from the tree read's decisions
+    # view, its tests answer and expect that read, and an e2e driver reads the decisions query that
+    # view answers among the issue's query nodes. Each is admitted by its text, so any other line of
+    # these files that spells the word is still a hit.
+    packages/dispatch/web/src/api/client.ts)
+      [[ "$text" != *"getIssueTree(key, { view: ${quoted_word}"* ]] ||
+        printf 'the Decisions view, read from the tree read'"'"'s decisions view' ;;
+    packages/dispatch/web/src/features/doc/ProofDocument.spec-marks.test.tsx)
+      [[ "$bare" != "view: ${quoted_word}," && "$text" != *"toHaveBeenCalledWith(${dq}CORE-1${dq}, { view: ${quoted_word} })"* ]] ||
+        printf 'test material: the Decisions view, read from the tree read'"'"'s decisions view' ;;
+    packages/dispatch/web/src/features/doc/ProofDocument.test.tsx)
+      [[ "$text" != *"url.searchParams.get(${dq}view${dq}) === ${quoted_word}"* ]] ||
+        printf 'test material: the Decisions view, read from the tree read'"'"'s decisions view' ;;
+    packages/dispatch/e2e/acceptance/issue-relations-read.sh)
+      [[ "$text" != *"(keys | sort) == [${quoted_word}, ${dq}plan${dq}, ${dq}spec${dq}, ${dq}verification${dq}]"* ]] ||
+        printf 'test material: the decisions query, which the Decisions view answers' ;;
     packages/dispatch/web/src/features/issue-page/IssuePresets.test.tsx)
       [[ ! "$bare" =~ ^\[${dq}\{[A-Za-z]+\}${dq},\ ${dq}decisions${dq}\],$ ]] ||
         printf 'test material: the Decisions tab of the filter row' ;;
@@ -488,6 +507,7 @@ readonly -a planted_step_paths=(
   packages/dispatch/web/src/features/issue/IssuePage.tsx
   packages/dispatch/web/src/features/issue-page/page-words.ts
   packages/dispatch/web/src/features/refs/routes.ts
+  packages/dispatch/web/src/api/client.ts
   packages/dispatch/web/src/features/issue/gated-steps.test.ts
 )
 declare -A planted_step_line=()

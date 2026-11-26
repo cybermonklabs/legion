@@ -245,6 +245,7 @@ var readsWithoutAViewer = map[string]string{
 	"PreventionRetractions": serverWork + " - the index pass, a retirement and the backfill read the prevented_by tuples at the checks " +
 		"they end, under those checks' owner lock, to retract each; its writer signs the retractions and views nothing",
 	"QueueAskPartIDs":    nodeDetail,
+	"ReadBlockIDCensus":  "it answers no reader: `envoy-dispatch census --block-ids` reads the block ids an issue's spec, Verification and plan share, for the whole instance, as a one-off task a deployment runs under the server's own identity",
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadCommentPage":    treeWalk + " - the page of the issue's conversation comments a walk of the skeleton takes (WalkIssueSkeleton), and the position of its oldest; no comment is a node the store takes reserved for its author (graphstore.AdmitAuthorOnly), so every reader the issue's read admits may see each comment of the page, and each is answered the same page",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",

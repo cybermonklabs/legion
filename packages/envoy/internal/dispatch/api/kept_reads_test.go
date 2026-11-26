@@ -44,7 +44,9 @@ func askQuestion(t *testing.T, handler http.Handler, id string) string {
 //     (docs.RenderAt). On the converted issue the question moves the query's record, so the drain
 //     a recorded result runs writes a version of the decisions query; the request and its
 //     approval move nothing of it, so the drain after each leaves the query's newest version where
-//     it stood, and ?view=decisions answers no node of the request.
+//     it stood, and ?view=decisions answers no node of the request. The read with no view answers
+//     the approved request's node, an answered ask, with no decision member: a node the decisions
+//     query does not take is no decision on any read.
 func TestTheKeptReadsAnswerFromTheStore(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -164,6 +166,10 @@ func TestTheKeptReadsAnswerFromTheStore(t *testing.T) {
 			if given := drained("after the approval"); given != asked {
 				t.Errorf("the drain after the approval of notes.md leaves the decisions query at version %d, want it at %d: an approved request is no node of the query",
 					given, asked)
+			}
+			if held := treeRead(t, handler, issue.Key, "", "alice", false).nodesNamed(graphstore.KindAsk, approved.ID); len(held) != 1 || held[0].Decision != nil {
+				t.Errorf("the read with no view answers the approved request %s as %s, want its node once with no decision member: the decisions query takes no request of an approval",
+					approved.ID, entryJSON(t, held))
 			}
 			open := requestApproval(t, handler, verification.ID)
 

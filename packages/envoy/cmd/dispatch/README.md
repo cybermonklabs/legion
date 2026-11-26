@@ -6311,7 +6311,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A document an issue first holds under `verification.md` or `plan.md` carries that role (`artifacts.role`, `verification` or `plan`), which the row keeps for good:
     a later upload of the same name is that document's next version, and no upload moves a role.
-    An issue holds at most one document of each role, and the issue read names both (`verification_artifact_id` and `plan_artifact_id`), as the Verification and Plan tabs find them.
+    An issue holds at most one document of each role, and the issue read's `queries` names each, as the Verification and Plan tabs find them: the entry of the query of that name (`verification` or `plan`) holds the document's id as `artifact_id`, the role document on an issue that has not converted and the query node on a converted one.
+    `verification_artifact_id` and `plan_artifact_id` name the same two artifacts, kept for one release for a page and a client of the release before; a page of this release reads them only from a server of that release, which answers no `queries`.
 
   - A document stored under one of those names before its role existed carries no role, and a reader finds it by its slug instead;
     the next upload of that name sets the role on the row it already has.

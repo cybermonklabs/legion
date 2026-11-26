@@ -1771,10 +1771,24 @@ func (b *issueTreeBuilder) requirementChecks(target refs.Target) *int {
 
 // readDecisions reads, through the one builder of a decision's members (decisionread.Decisions),
 // each decision node the answer holds and each ask a person answered, which the decisions read
-// answers as a person's decision.
+// answers as a person's decision, where the decisions query takes it: a node of the walk only
+// where the query's rule takes it (queryTakes, docs' IssueTree.Takes), as the decisions view
+// answers it, so on every read a request of a document's approval, an ask of the issue and no
+// question it asked, carries no decision however it was answered. A decision or an ask outside
+// the walk is a node of another issue a part_of brings in (readOthers), never an ask, or a tie
+// the spec and the verification views bring in (readTies): a decision, or an ask whose block
+// states its shaped tuple, a question, since a request of an approval has no block; the rule takes
+// each of them.
 func (b *issueTreeBuilder) readDecisions(answer []refs.Target) error {
+	taken := b.taken
+	if b.view != graphstore.QueryDecisions {
+		taken = b.queryTakes(graphstore.QueryDecisions)
+	}
 	var nodes []decisionread.Node
 	for _, target := range answer {
+		if b.entries[target].walk >= 0 && !taken[target] {
+			continue
+		}
 		switch {
 		case target.Kind == refs.BlockNodeKind && b.entries[target].typ == refs.DecisionSupertag:
 			nodes = append(nodes, decisionread.Node{Kind: refs.BlockNodeKind, ID: target.ID})
