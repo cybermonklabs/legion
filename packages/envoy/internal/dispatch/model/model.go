@@ -119,16 +119,35 @@ type Credential struct {
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
 	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it, read as
-	// its base word (ciphertoken.Caller.ProjectScope): named, person, none, public or results. A
-	// narrowed token carries its base word with ReadOnly; a results token carries ResultsOnly and
-	// CI; a job's public token carries its private Projects list. Empty for every other credential.
+	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
+	// mapped to its one project, or to none for an account entry that names a person and no
+	// project or neither; `person`, a token held to no one project, a person's own or a
+	// machine's nobody signed in on; `none`, the read entry's token's; `public`, a job's token
+	// that names no one project, which writes wherever a token naming no project may, since no
+	// write check reads its list (Projects) at this release; or `results`, a results token's,
+	// which carries ResultsOnly and CI. A token narrowed to reading carries the word it narrows,
+	// with ReadOnly beside it. Empty for every other credential. A broker-issued token that names
+	// a service and no person writes only under `named` or `public` — a job's two shapes, and
+	// under `named` an account entry's naming no person, whose writes are recorded under its
+	// account — and is refused every write under any other (writeNeedsASignedInPerson).
 	ProjectScope string
-	// Projects is the broker token's ciphertoken.Caller.Projects list, sorted, and nil for every
-	// other credential until a later slice sets a personal token's agent_tokens.projects.
+	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
+	// nil for every other credential until a later slice sets a personal token's
+	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
 	Projects []string
-	// ResultsOnly is a broker-issued token that writes only its project's spec-check results.
+	// ResultsOnly is a broker-issued token that writes only the results of its project's spec
+	// checks (ciphertoken.ScopeResults): one the secrets broker minted from a result entry for one
+	// CI run, naming a person, one project and the run. The person stays inside the server: a
+	// result, an answer and the access log name the run (SpecCheckRecorder). Dispatch serves it on
+	// the routes its results list names (resultsScopeRoutes) alone and answers it 403
+	// RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route
+	// does. False for every other credential.
 	ResultsOnly bool
-	// CI is the run a ResultsOnly credential was minted for; nil for every other credential.
+	// CI is the run a ResultsOnly credential was minted for, as the broker answered it: what that
+	// credential writes is held to the run's commit, repository and check run. Nil for every other
+	// credential.
 	CI *oauthwire.CIRun
 }
 

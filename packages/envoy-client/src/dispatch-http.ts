@@ -3063,7 +3063,7 @@ export class DispatchClient {
   }
 
   /**
-   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `related`,
+   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `fileRoundTrip`, `related`,
    * `dryRunResult`), `row` its row of the write table, which stores nothing (`rowStores`). It is
    * sent as a write is, under a key of its own, so an attempt with no definitive answer is asked
    * again under that key (`#jsonAnswer`). Such a repeat can come back as a replayed 2xx reading

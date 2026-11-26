@@ -397,17 +397,19 @@ type Claims struct {
 	Service string
 	// Scope is what Projects means, and is always one of ProjectScopeNamed, ProjectScopePerson,
 	// ProjectScopeNone, ProjectScopeResults or ProjectScopePublic: every constructor sets it, so a
-	// reader never has to read an empty list as any of them. ProjectScopeNone is a read entry's and
-	// holds oauthwire.ScopeRead; ProjectScopeResults is a result entry's and holds
-	// oauthwire.ScopeResults; a job entry's scope is its list's, ProjectScopeNamed or
+	// reader never has to read an empty list as any of them. ProjectScopeNone is a read entry's,
+	// and is the one scope under which the minted token holds the OAuth scope oauthwire.ScopeRead;
+	// ProjectScopeResults is a result entry's, and is the one under which it holds
+	// oauthwire.ScopeResults. A job entry's is its list's (JobProjects.Scope): ProjectScopeNamed or
 	// ProjectScopePublic, the latter a job entry's alone.
 	Scope ProjectScope
 	// Projects is the token's list of projects, sorted, each once: the entry's one project for a
 	// ProjectScopeNamed token (none for an account entry naming none), for a ProjectScopePerson
 	// token the projects its trade asked for, nil for none, the result entry's one project for a
-	// ProjectScopeResults token, a job entry's whole list under ProjectScopeNamed or
-	// ProjectScopePublic, and nil for a ProjectScopeNone token, which names no project. The slice
-	// is this Claims' own.
+	// ProjectScopeResults token, whose results alone it writes, for a job entry's token its entry's
+	// whole list whatever the trade asked for (one project under ProjectScopeNamed, the private
+	// projects under ProjectScopePublic, nil for none), and nil for a ProjectScopeNone token,
+	// which names no project. The slice is this Claims' own.
 	Projects []string
 	// Job is whether a job entry made this decision, which grant sets from the entry's job list
 	// (JobProjects.Listed), so a job's token names the entry's listed identity as its service, no

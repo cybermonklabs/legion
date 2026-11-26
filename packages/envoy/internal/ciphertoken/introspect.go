@@ -43,11 +43,14 @@ const (
 	// which holds ScopeRead and nothing else beside it (shapeOf) and which a verifier accepts
 	// only under Options.ServesReadOnly.
 	ProjectScopeNone = oauthwire.ProjectScopeNone
-	// ProjectScopeResults means Project is the one project whose results the token writes, for the
-	// run it carries, and it writes nothing else: a results token, which holds ScopeResults alone.
+	// ProjectScopeResults means Projects is the one project whose results the token writes, for
+	// the run it carries, and it writes nothing else: a results token, which holds ScopeResults
+	// and nothing else beside it (shapeOf) and which a verifier accepts only under
+	// Options.ServesResults.
 	ProjectScopeResults = oauthwire.ProjectScopeResults
 	// ProjectScopePublic means the token is a job's whose entry names public: it names a service
-	// and no person, reaches every public project, and Projects is its private list.
+	// and no person, it reaches every public project, and Projects is the 0 to
+	// oauthwire.MaxProjects private projects its entry lists (shapeOf).
 	ProjectScopePublic = oauthwire.ProjectScopePublic
 )
 
@@ -57,16 +60,26 @@ const (
 // scope named or person it is no session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
 
-// ScopeResults is the one OAuth scope a results token holds, beside ProjectScopeResults.
+// ScopeResults is the one OAuth scope a results token holds, carried here for the reason
+// ScopeRead is. Beside ProjectScopeResults it is a results token, and beside any other project
+// scope it is no session's credential (ErrNotASession).
 const ScopeResults = oauthwire.ScopeResults
 
-// CIRun is the GitHub Actions run a results token was minted for, as the broker answers it.
+// CIRun is the GitHub Actions run a results token was minted for, as the broker answers it
+// (Introspection.CI), carried here for the reason the project scopes are.
 type CIRun = oauthwire.CIRun
 
-// ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token.
+// ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
+// answer's space-separated Scope: the broker's own wire name, carried here for the reason
+// ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
+// person, shapeOf reads a token that names a person and holds it as it reads one that does not.
+// A named answer that names no person and holds any scope word, this one included, is no
+// session's credential (shapeOf).
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
-// LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under.
+// LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
+// legion-daemon:<PROJECT>: the broker's own spelling (oauthwire), carried here for the reason
+// ScopeLegionStatus is.
 const LegionDaemonSessionPrefix = oauthwire.LegionDaemonSessionPrefix
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
@@ -120,9 +133,13 @@ func cutOf(answer Introspection) (time.Time, error) {
 // naming neither). ReadOnly and ResultsOnly are shapeOf's verdict on the answer, which
 // sessionCaller reached and hands over as shape, and cut is the answer's cut, which sessionCaller
 // read (cutOf): callerOf runs only on an answer sessionCaller accepted, and sessionCaller lets a
-// read-only or results answer through only with its switch set. A results run is copied, so a
-// reader of Caller shares nothing with the cached answer. LegionStatus is whether Scope holds
-// ScopeLegionStatus, read one word at a time as shapeOf reads it.
+// read-only or a results answer through only with its switch set, which only a verifier that
+// serves one sets, so a Caller marked either way is one such a verifier accepted. The run of a
+// results answer is copied, so a reader of the Caller shares nothing with the answer the cache
+// keeps for the next request.
+// LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// shapeOf reads it and with no slice built, since this too runs on every request a verifier
+// decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 	caller := Caller{
 		Session:      answer.Session,

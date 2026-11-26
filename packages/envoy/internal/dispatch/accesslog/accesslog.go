@@ -39,8 +39,9 @@ const (
 	KindService = "service"
 	// KindBrokerToken is an access token the secrets broker issued, presented under the DPoP
 	// scheme and proved against the key it is bound to, by the person its session acts for, by
-	// `service:<service>` for a token that names no person, or, for a results token, by the
-	// session of the CI run it was minted for.
+	// `service:<service>` for a token that names no person (a machine's, or a job's, whose
+	// service is its entry's identity), or, for a results token, by the session of the CI run
+	// it was minted for.
 	KindBrokerToken = "broker-token"
 	// KindSharedToken is the deployment's shared agent token with no session named: it proves
 	// no owner, so the line names none.

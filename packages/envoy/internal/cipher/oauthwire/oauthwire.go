@@ -1,9 +1,12 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
-// callers it answers share: the clients they present, scopes a machine login, a read token, a
-// result entry's token and a Legion daemon's token hold, the names the token exchange knows a
-// subject token by, the fields the broker adds to a token answer, the run a result entry's token
-// carries, the daemon-session prefix and the grammar of a token's list of projects. It imports
-// nothing of the broker so clients read it without the broker's storage.
+// callers it answers share: the clients they present, the scope a machine login asks for, the
+// ones a read token, a result entry's token and a Legion daemon's token hold, the names the token
+// exchange knows a subject token by, the header of a read trade's holder proof, the fields the
+// broker adds to a token answer, the run a result entry's token carries and how that run's
+// workflow and principal are read from it, the session prefix a Legion daemon's own entry fixes,
+// and the one grammar of a token's list of projects. It imports nothing of the broker — only
+// the standard library and the project-key rule internal/contracts generates — so the
+// agent-secrets helper reads it without the broker's storage.
 package oauthwire
 
 import (
@@ -40,12 +43,28 @@ const (
 	// scope is "read person". No other token holds it.
 	ScopePerson = "person"
 	// ScopeResults is the one OAuth scope a token minted from a result entry
-	// (BROKER_EXCHANGE_RESULT_WORKFLOWS) holds, beside the project scope ProjectScopeResults.
+	// (BROKER_EXCHANGE_RESULT_WORKFLOWS) holds, beside the project scope ProjectScopeResults: a
+	// token that writes the results of its one project's spec checks for the run it carries
+	// (Introspection.CI), and nothing else, on the routes a resource server lists for it. The
+	// entry decides it, never the request: the exchange client is not registered for it, so the
+	// library refuses a request that names it invalid_scope under every entry, and a result
+	// entry's trade that asks for ScopeRead is refused invalid_scope, since no result entry's
+	// token is narrowed.
 	ScopeResults = "results"
-	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token.
+	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
+	// token of an account entry that names a project and fixes the session legion-daemon:<that
+	// project>, for a trade that does not ask for ScopeRead. Dispatch lets a credential that holds
+	// it write a Legion issue's status where DISPATCH_LEGION_STATUS_SCOPE refuses that write to
+	// others but the architect of an issue above. The entry decides it, never the request: the
+	// exchange client is not registered for it, so the library refuses a request that names it
+	// invalid_scope. A resource server that does not read the word accepts the token and ignores it.
 	ScopeLegionStatus = "legion-status"
 	// LegionDaemonSessionPrefix starts the session name a Legion daemon writes its project's
-	// issues under.
+	// issues under: legion-daemon:<PROJECT>. The broker marks an entry that fixes it for its own
+	// project as a Legion daemon's own (exchange.Claims.LegionStatus), and Dispatch reads it
+	// through ciphertoken.LegionDaemonSessionPrefix: one spelling for both ends of this module.
+	// The daemon's DaemonSession (packages/daemon/internal/dispatch/client.go), another Go module,
+	// writes the name and changes together with this one.
 	LegionDaemonSessionPrefix = "legion-daemon:"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
@@ -232,11 +251,19 @@ const (
 	// this build accepts it only where it asks to (ciphertoken).
 	ProjectScopeNone = "none"
 	// ProjectScopeResults is a token that may write the results of the one project it names, for
-	// the run it carries, and nothing else.
+	// the run it carries, and nothing else: the token a result entry mints, which holds the scope
+	// ScopeResults beside it. A resource server of a build that predates it refuses it, as it
+	// refuses ProjectScopeNone, and one of this build accepts it only where it asks to
+	// (brokertoken).
 	ProjectScopeResults = "results"
 	// ProjectScopePublic is a token a job entry naming `public` mints: it names the entry's
-	// identity as its service and no person and its Projects holds the private projects its job
-	// entry lists.
+	// identity as its service and no person, it reaches every public project, which no list
+	// names, and its Projects holds the private projects the entry lists, 0 to MaxProjects of
+	// them, whatever the trade named. The word itself is no project key and is never in
+	// Projects. It holds no OAuth scope, and no trade narrows it to reading: the exchange refuses
+	// that trade. A resource server of a build that predates it refuses it, since it does not
+	// know the word, and one of this build accepts it only beside a service, no person, no OAuth
+	// scope and no cut (ciphertoken).
 	ProjectScopePublic = "public"
 	// ProjectScopeReadNamed is a ProjectScopeNamed token narrowed to reading: its trade asked for
 	// ScopeRead, and it names the person and the projects the same trade would have named without
@@ -496,13 +523,17 @@ type Introspection struct {
 	// none narrowed to reading (ProjectScopeReadNamed, ProjectScopeReadPerson,
 	// ProjectScopeReadNone), whose Projects mean what its base word's do. A job's token carries
 	// ProjectScopeNamed or ProjectScopePublic beside its Service and no Person; a results token
-	// carries ProjectScopeResults. A machine login's own token carries neither this nor Projects.
+	// carries ProjectScopeResults. A machine login's own token, which no exchange decided for,
+	// carries neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
-	// project, or none for an account entry that names none; for a ProjectScopePerson token, the 0
-	// to MaxProjects projects its trade asked for; for a ProjectScopePublic token, the private
-	// projects its job entry lists; for a ProjectScopeResults token, the one project whose results
-	// it may write; and for a ProjectScopeNone token, none. Sorted, each once; absent for none.
+	// project, or none for an account entry that names a person and no project or for one that
+	// names neither a person nor a project (<account>== of BROKER_EXCHANGE_ACCOUNTS), whose token
+	// acts as the account, and always one for a job's token; for a ProjectScopePerson token, the 0
+	// to MaxProjects projects its trade asked for, each one its person could see then, and none for
+	// a token that names a service; for a ProjectScopePublic token, the 0 to MaxProjects private
+	// projects its job entry lists, the whole list whatever the trade named; for a
+	// ProjectScopeResults token, the one project whose results it may write; for a
 	// ProjectScopeNone token, none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An

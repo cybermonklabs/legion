@@ -69,9 +69,14 @@ const (
 	// oauthwire.ProjectScopePerson, oauthwire.ProjectScopeNone, oauthwire.ProjectScopeResults or
 	// oauthwire.ProjectScopePublic: none for a read entry's token, which is granted
 	// oauthwire.ScopeRead beside it; results for a result entry's token alone, which is granted
-	// oauthwire.ScopeResults beside it; public for a job entry's alone; or for a trade that asked
-	// for oauthwire.ScopeRead the narrowed word of named, person or none (writeProjectScope). It is
-	// written always, so a reader never has to take an absent list as a decision.
+	// oauthwire.ScopeResults beside it; or for a trade that asked for oauthwire.ScopeRead the
+	// narrowed word of named, person or none (oauthwire.ProjectScopeReadNamed,
+	// oauthwire.ProjectScopeReadPerson, oauthwire.ProjectScopeReadNone), whose projects mean what
+	// its base word's do (writeProjectScope); and public for a job entry's alone. A job's token is
+	// named or public as its entry's list is, and asks Dispatch nothing (projectAccess), because
+	// the operator's entry chose its list and it names no person whose sight of a project there
+	// is to check; no trade narrows it. It is written always, so a reader never has to take an
+	// absent list as "every project", "no project at all" or a claim nobody decided.
 	ClaimProjectScope = "project_scope"
 	// ClaimProjects is the token's list of projects in its stored spelling: the keys separated by
 	// one space (oauthwire.JoinProjects), and the empty string for none, which is all a token of

@@ -14,8 +14,12 @@ import (
 // projectAccess's ParseProjects, with no log line naming the entry (seen against the real binary at
 // b10331eb0a with BROKER_EXCHANGE_ACCOUNTS=system:serviceaccount:agent-sessions:agent-session=priv=erin@example.com,
 // which booted and answered every pod trade 500 server_error, where the merge base minted). So the
-// set refuses it at boot, naming the entry, for each setting that names a project. A job entry's
-// projects are parsed before they reach the set, which refuses their key at that setting.
+// set refuses it at boot, naming the entry, for each of the four settings that name a project.
+//
+// A job entry's projects never reach the set as text: each of the three job settings reads its
+// projects field through ParseJobProjects, and a JobProjects is built by nothing else, so such a
+// key is refused there, naming the key, whether it is a named list's one key or one of public's,
+// and the setting's own refusal wraps that with the entry.
 func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 	for _, bad := range []string{"priv", "Acme", "A", "TOOLONGPROJ", "AC-ME", "ACME PRIV"} {
 		t.Run(bad, func(t *testing.T) {

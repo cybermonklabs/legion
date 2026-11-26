@@ -705,8 +705,10 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
  *  `dispatch result` record of an issue's check, whose dry run prints the pull-request body line
  *  the record would print, since that line is Dispatch's to write and a copy written here would
  *  be a second grammar. Every other dry run, a retraction's and a CI job's record of a check of
- *  the spec files (`project`) included, prints the arguments and sends nothing; a command whose
- *  dry run asks Dispatch before it writes uses its command-table step.
+ *  the spec files (`project`) included, prints the arguments and writes nothing. A command whose
+ *  call asks Dispatch something before it writes asks that too, through its step in the command
+ *  table (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store its text.
+ *  A dry run with no such question sends nothing.
  */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
   return (

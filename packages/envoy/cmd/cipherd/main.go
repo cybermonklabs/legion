@@ -535,8 +535,10 @@ func main() {
 	// The exchange's listed identities, read here, before the request machine, which reads the
 	// project an operator's entry maps a pod's or a machine's account to from the same entries
 	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
-	// disagree on a credential's project. Job entries share their kinds' entry lists, while result
-	// entries remain a distinct workflow kind.
+	// disagree on a credential's project. A job's account and workflow entries are entries of the
+	// same kinds, each naming its projects in place of a person (exchange.JobProjects); Load has
+	// refused an identity a job setting and another setting both list, naming the two. Result
+	// entries remain a distinct workflow kind, with their own list passed to the same set.
 	exchangePolicy, err := exchange.NewSet(slices.Concat(cfg.ExchangeAccounts, cfg.ExchangeJobAccounts), cfg.ExchangeReadAccounts,
 		slices.Concat(cfg.ExchangeWorkflows, cfg.ExchangeJobWorkflows), cfg.ExchangeResultWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
 	fatal(err)

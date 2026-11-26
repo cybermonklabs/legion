@@ -562,7 +562,8 @@ func TestAnUnreachableUpstreamIsNotNamedToTheCommand(t *testing.T) {
 	}
 	r, _ = newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
 	// The destination's address now dials a loopback port the test holds bound and never
-	// listening (testport.Refused), which the transport's error names.
+	// listening (testport.Refused), which the transport's error names. It refuses every dial:
+	// this is not a closed listener's port, which any process can take and answer.
 	destination := net.JoinHostPort(privateAddress.String(), privatePort)
 	dialled := testport.Refused(t)
 	_, dialledPort, err := net.SplitHostPort(dialled)

@@ -235,10 +235,20 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// token without read would be: one narrowed from a token that acts as its person still acts
 	// for that person, so it holds the person scope, and every other holds none. The scope read
 	// itself is carried as the credential's ReadOnly mark and never as a scope a route could
-	// require, so no recorded act names it. A results token's one scope is carried as its
-	// ResultsOnly mark. A token scoped to one project whose answer holds legion-status gets that
-	// scope alone; oneProject holds both the legion-status rule and the one project a results or
-	// named token may write.
+	// require, so no recorded act names it. A results token's one scope, results, is carried the
+	// same way, as its ResultsOnly mark.
+	//
+	// A token scoped to one project whose answer holds legion-status gets that scope alone
+	// (legionStatusScopes). The broker grants it to a Legion daemon's own token only. A named
+	// token that names no project, including the shared public-session account's token, which
+	// names a person, gets no scope: legion-status on it would allow status writes to Legion
+	// issues of every project. Dispatch does not check the token's session: the broker decides
+	// who holds the scope. No credential holds it beside person, and no act records it: the act
+	// of a proven session (bearerSessionActor) and of a person (actingPerson) record the
+	// credential's scopes through actScopes, which leaves legion-status out. oneProject is also
+	// the test for the one project the token may write (actor.Project, below), for a named token
+	// or a results token, so the scope and project checks cannot drift apart. A results token
+	// never holds legion-status.
 	oneProject := (caller.ProjectScope == ciphertoken.ProjectScopeNamed || caller.ResultsOnly) && len(caller.Projects) == 1
 	var scopes []string
 	switch {
@@ -252,9 +262,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		ID:   caller.Session,
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, with the cut it reads at, and results tokens carry their run. The
-		// project scope and list are carried as the broker answered them, so the write and result
-		// gates decide each token kind from its own fields.
+		// is marked as one, with the cut it reads at, and a results token is marked as such with its
+		// run, which are what refuseLimitedToken reads and the results route holds the result to;
+		// the project scope and the list are carried as the broker answered them, the scope as its
+		// base word (ciphertoken.Caller.ProjectScope), which is what writeNeedsASignedInPerson
+		// reads of a caller naming a service and no person: a job's token and an account entry's
+		// token naming no person write, and a machine's nobody signed in on does not.
 		Credential: &model.Credential{
 			Scopes:       scopes,
 			Session:      caller.Session,
@@ -283,6 +296,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// ciphertoken refuses a named token naming two, and a named token naming no person, no
 	// project and a service that is no account. A token narrowed from a named one names its
 	// project too, as the project it reads as, and writes none.
+	// A results token names its one project too, whose results are the only thing it writes.
 	// A token acting as its person carries the list its trade asked for
 	// (ciphertoken.Caller.Projects), and that list limits no write here: a dev box session's
 	// person writes wherever they may, and the token of a machine naming a service and no person

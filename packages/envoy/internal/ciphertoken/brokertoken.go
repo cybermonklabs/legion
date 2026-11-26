@@ -556,9 +556,12 @@ func SessionCaller(answer Introspection) (Caller, error) {
 // sessionCaller is the one reading of the broker's answer about a token as a session's caller:
 // Verify and Live make it through live with their verifier's Options.ServesReadOnly and
 // Options.ServesResults, and the NATS auth service through SessionCaller with both off. The token
-// is live, bound to a key, and issued for acting as a session in a shape this package reads: a
-// read-only one only when servesReadOnly is set, a results one only when servesResults is set, and
-// a job's service token in its named or public shape.
+// is live (ErrNotActive), bound to a key (ErrKeyMismatch: no proof can be the key it does not
+// have), and issued for acting as a session in a shape this package reads, a read-only one only
+// when servesReadOnly is set and a results one only when servesResults is (ErrNotASession); the
+// Caller it names is callerOf the answer. A job's token, which names a service and no person,
+// is read in its two shapes: named with exactly one project, and public with 0 to
+// oauthwire.MaxProjects private projects.
 func sessionCaller(answer Introspection, servesReadOnly, servesResults bool) (Caller, error) {
 	if !answer.Active {
 		return Caller{}, ErrNotActive
@@ -634,13 +637,21 @@ type tokenShape int
 
 const (
 	// shapeNotASession is an answer no verifier reads as a session's token, whatever its
-	// switches: a project scope that is absent or a word this package does not know; none outside
-	// shapeReadOnly; results outside shapeResults; public beside a person, without a service or
-	// beside any OAuth scope or cut; a named personless token beside OAuth scope; a limited scope,
-	// cut or run beside a shape the broker never mints; or a narrowed scope outside shapeReadOnly.
+	// switches: a project scope that is absent or a word this package does not know; the project
+	// scope none in any shape but shapeReadOnly's or beside a cut; the project scope results in
+	// any shape but shapeResults'; the project scope public beside a person, without a service
+	// or beside any OAuth scope or a cut; the project scope named beside no person and any OAuth
+	// scope; the scope read or results or a cut beside the project scope named or person; a
+	// narrowed project scope in any shape but shapeReadOnly's; or a run beside any token but a
+	// results token.
 	shapeNotASession tokenShape = iota
-	// shapeOrdinary is named or person with no limited scope, cut or run, or a public job token
-	// beside a service, no person, no OAuth scope, no cut and no run.
+	// shapeOrdinary is the project scope named beside a person with neither the scope read nor
+	// the scope results and no cut or run; named beside no person with no OAuth scope, no cut
+	// and no run; the project scope person with neither the scope read nor the scope results and
+	// no cut or run; or the project scope public beside a service, no person, no OAuth scope, no
+	// cut and no run: every token the broker minted before read entries existed, every job's
+	// token, and every token it mints from any other entry than a read or result entry, for a
+	// trade that does not ask for read.
 	shapeOrdinary
 	// shapeReadOnly is a token that only reads, which a verifier accepts only under
 	// Options.ServesReadOnly. It is the token a read entry mints (BROKER_EXCHANGE_READ_ACCOUNTS):
