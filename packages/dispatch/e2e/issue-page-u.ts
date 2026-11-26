@@ -119,12 +119,12 @@ export async function viewNodesOf(key: string, view: TreeView): Promise<IssueTre
 }
 
 /**
- * The decisions read that the gates on whether the seeds' decisions are nodes read
- * (`decisionNodesGate`, `partUGate`): the one the page received (`decisionsReadOf`), and where it
- * received none - the page sends its view read only once Decisions is pressed - the read of the
- * Decisions view the row sends itself, so the gate reads what the server holds and not whether
- * the page asked. A row whose server may serve no such view gates on `decisionsViewServedGate`
- * first.
+ * The decisions read that the gate on whether the seeds' decisions are nodes reads
+ * (`decisionNodesGate`): the one the page received (`decisionsReadOf`), and where it received
+ * none - the page sends its view read only once Decisions is pressed - the read of the Decisions
+ * view the row sends itself, so the gate reads what the server holds and not whether the page
+ * asked. A row whose server may serve no such view gates on `decisionsViewServedGate` first.
+ * `partUGate` reads no read: it checks the code under test (`issue-page-t-tree.ts`).
  */
 export async function heldDecisionsRead(
   key: string,

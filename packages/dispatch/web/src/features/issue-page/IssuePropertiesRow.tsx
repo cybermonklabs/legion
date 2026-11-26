@@ -91,9 +91,10 @@ export function IssuePropertiesRow({
   // observer, so each read here takes that rule too, and the count costs no request of its own
   // (`waiting.ts`). A statement is one by the rule the outline's review list reads
   // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
-  // The decisions are the decisions view read's wherever the page holds it, which holds each of
-  // them however many pages of the tree read the page holds, watched under the key the page
-  // reads it by and never sent (`treeRead`), so the count sends no view read of its own.
+  // The decisions, and each Change that read hangs under its decision, are the decisions view
+  // read's wherever the page holds it, which holds each of them however many pages of the tree
+  // read the page holds, watched under the key the page reads it by and never sent (`treeRead`),
+  // so the count sends no view read of its own.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });

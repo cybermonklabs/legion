@@ -8,7 +8,9 @@ import { api } from "../../../api/client";
 import { conversationTreeKey } from "../../../api/queries";
 import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
+import { DECISIONS_WORDS } from "../page-words";
 import { presetView } from "../presets";
+import { pagedAnswer } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
@@ -33,6 +35,7 @@ import {
   treeAnswer,
 } from "./decisions-fixtures";
 import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
+import { entryStanding } from "./entry-standing";
 
 /**
  * The seam between the page's reads and the Decisions view.
@@ -164,8 +167,9 @@ async function seamOf(quote: string) {
     decision("minor"),
   ];
   // The reader's Change on the second decision, made after both last changed, anchored on the
-  // spec with its anchor quoting `quote`. The comments read holds it, and the tree read hangs it
-  // under the second decision.
+  // spec with its anchor quoting `quote`. The comments read holds it, and the decisions view and
+  // the tree read each hang it under the second decision, as the server's view carries each
+  // comment on the text of a node it returns.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
@@ -197,22 +201,17 @@ async function seamOf(quote: string) {
     closing("a-late", { at: "2026-11-14T09:00:00Z", kind: "answered" }),
     closing("a-tie-mine", { at: tie, kind: "answered" }),
   ];
-  const parts = await entriesOf(
-    children,
-    treeAnswer(made),
-    asks,
-    [change],
-    treeAnswer([
-      ...made,
-      changeComment(change.id, "asked", change.created_at, change.body, change.author),
-    ])
-  );
+  const read = treeAnswer([
+    ...made,
+    changeComment(change.id, "asked", change.created_at, change.body, change.author),
+  ]);
+  const parts = await entriesOf(children, read, asks, [change], read);
   return { change, parts };
 }
 
 // The seam gives the view the model's parts from the reads the page's tree already made and the
 // decisions view the page holds. Bob's answers stand in a part of their own, what others decided,
-// newest first, and not among the reader's decisions (decision 502). The tree read hangs the
+// newest first, and not among the reader's decisions (decision 502). The decisions view hangs the
 // reader's Change under the second decision, so the second leaves the review list for her
 // decisions and the first still waits.
 test("the seam gives the model's parts from today's reads and makes no request", async () => {
@@ -265,8 +264,8 @@ test("a Change stands under the decision it was asked on, where another decision
   expect(parts.review[0]).not.toHaveProperty("change");
 });
 
-// R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any more. The tree read
-// still hangs it under its decision, with no body and no mark of the delete, and the comments
+// R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any more. The decisions
+// view still hangs it under its decision, with no body and no mark of the delete, and the comments
 // read says it was deleted: the decision is back on the review list and carries no Change. The
 // same Change not deleted moves the decision to the reader's own.
 test("a Change its author deleted asks nothing, and its decision waits for review again", async () => {
@@ -277,9 +276,9 @@ test("a Change its author deleted asks nothing, and its decision waits for revie
   const asked = { deleted_at: null, edited_at: null, id: "change-asked" } as Comment;
   const deleted = { ...asked, deleted_at: "2026-11-15T10:00:00Z", deleted_by: READER_ACTOR };
 
-  const standing = await entriesOf(children, treeAnswer(made), [], [asked], tree);
+  const standing = await entriesOf(children, tree, [], [asked], tree);
   expect([idsOf(standing).review, idsOf(standing).yours]).toEqual([[], [D("asked")]]);
-  const gone = await entriesOf(children, treeAnswer(made), [], [deleted], tree);
+  const gone = await entriesOf(children, tree, [], [deleted], tree);
   expect([idsOf(gone).review, idsOf(gone).yours]).toEqual([[D("asked")], []]);
   expect(gone.review[0]).not.toHaveProperty("change");
 });
@@ -604,6 +603,40 @@ test("a decision the view read holds stands in its part where the tree read has 
     [...idsOf(parts).review].sort(),
     "the review list holds each waiting decision the Decisions view read holds"
   ).toEqual([D("first"), D("later")].sort());
+});
+
+// R3 (dispatch://INFRA-4097/spec#b-r-change): a Change is the comment the tree read hangs under
+// its decision node, and the Decisions view read carries each comment on the text of a node it
+// returns, as context. Conversation's read is paged, and its first page here ends before the
+// later decision, which the view read holds with the reader's Change under it. The Change is read
+// from the view read, so that decision stands with the reader's own decisions, reads "Changed by"
+// with her name and is not on the review list, as a decision on the first page with its Change
+// does.
+test("a waiting decision past Conversation's first page with the reader's Change in the view read stands with her decisions", async () => {
+  const children = [statement("s1"), decisionNode("first")];
+  const tied = { decision: { links: [shaped(specRef("s1"))] } };
+  const asked = {
+    ...changeComment("change-later", "later", "2026-11-15T09:00:00Z", "Name the read."),
+    role: "context" as const,
+  };
+  const view = treeAnswer([decision("first", tied), decision("later", tied), asked]);
+  const firstPage = pagedAnswer(treeAnswer([decision("first", tied)]), "next-page", 30);
+  const parts = await entriesOf(children, view, [], [], firstPage);
+
+  expect(
+    { review: idsOf(parts).review, yours: idsOf(parts).yours },
+    "the later decision, its Change in the view read, does not stand with the reader's decisions"
+  ).toEqual({ review: [D("first")], yours: [D("later")] });
+  const later = parts.yours[0];
+  expect(later).toMatchObject({
+    change: { by: READER_ACTOR, id: asked.id },
+    kind: "decision",
+    standing: "change_requested",
+  });
+  expect(
+    later === undefined ? undefined : entryStanding(later, (actor) => actor.id)?.words,
+    "the later decision does not read Changed by with the reader's name"
+  ).toBe(`${DECISIONS_WORDS.changed_by} ${READER}`);
 });
 
 // The seam's reads are refreshed by the events that change them alone, as every read of the page

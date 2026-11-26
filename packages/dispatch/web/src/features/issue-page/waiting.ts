@@ -36,11 +36,14 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * which question is a person's decision, which never waits for review, and which agent's
  * decision restates that answer and is no decision at all (`restatesAnswer`), so the count is
  * the same without them. One the reader asked to change waits on its agent and is not counted,
- * by the outline's one rule (`decisionNodeChanges`): its Change is a comment Conversation's read
- * hangs under its node, whether or not the comments read holds that comment yet, so the count
- * matches no quote and reads no block of a document. A Change its author deleted asks nothing
- * any more, as in the outline: `comments`, the page's comments read, says which were
- * (`deletedPostIds`), since the tree read answers a deleted comment with no mark of the delete.
+ * by the outline's one rule (`decisionNodeChanges`): its Change is a comment the read the
+ * decisions are counted from hangs under its node - the decisions view read, which carries each
+ * comment on a node it holds, wherever the page holds it, and Conversation's read only until
+ * then - whether or not the comments read holds that comment yet, so the count matches no quote
+ * and reads no block of a document. A Change on a decision past the pages of Conversation's read
+ * held so far is so read with its decision. A Change its author deleted asks nothing any more,
+ * as in the outline: `comments`, the page's comments read, says which were (`deletedPostIds`),
+ * since the tree read answers a deleted comment with no mark of the delete.
  *
  * A decision a person decided, whose `decided_by` names a person, is that person's decision and
  * never waits for review (`decision-nodes.ts`' `decidedByPerson`, INFRA-1196's decision 516), so
@@ -88,14 +91,16 @@ export function waitingOnReader(
   }: {
     /** The page's comments read, which says which Changes their author deleted. */
     readonly comments?: readonly Pick<Comment, "deleted_at" | "id">[];
-    /** The decisions view read, where the page holds it. */
+    /** The decisions view read, where the page holds it, which hangs each Change under its
+     *  decision. */
     readonly decisions?: TreeAnswer;
-    /** Conversation's read, which hangs each Change under its decision. */
+    /** Conversation's read, which stands in for the decisions view read until the page holds
+     *  it. */
     readonly tree: TreeAnswer | undefined;
   }
 ): WaitingOnReader {
-  // The decisions and the questions are the decisions view's where the page holds it, and the
-  // tree read's until then; the Changes are the tree read's, which hangs each under its decision.
+  // The decisions, the questions and the Changes are the decisions view's where the page holds
+  // it, and the tree read's until then.
   const counted = decisions ?? tree;
   const overtaken = overtakenAsks(issue, viewer === undefined ? undefined : counted);
   const open =
@@ -114,12 +119,13 @@ export function waitingOnReader(
     );
   const asks = open.length - approvals.length;
   // Nothing waits on a reader whose login has not resolved, so the decisions are read only for
-  // one who has. The decision nodes a Change waits on, by the node's id, are from the tree read
-  // alone, as the outline finds them, so the two agree while the comments read is out or older.
-  // A Change its author deleted asks nothing any more, as in the outline.
+  // one who has. The decision nodes a Change waits on, by the node's id, are from the read the
+  // decisions are counted from alone, by the one rule every reader of a Change reads, so the
+  // count does not move while the comments read is out or older. A Change its author deleted
+  // asks nothing any more, as in the outline.
   let reviewing = 0;
   if (viewer !== undefined && counted !== undefined) {
-    const changes = decisionNodeChanges(tree ?? counted, undefined, deletedPostIds(comments));
+    const changes = decisionNodeChanges(counted, undefined, deletedPostIds(comments));
     reviewing = [...decisionsOfAnswer(counted, issue.key).values()].filter(
       (decision) =>
         !decidedByPerson(decision) &&

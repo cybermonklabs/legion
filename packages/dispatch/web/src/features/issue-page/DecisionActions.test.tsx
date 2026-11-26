@@ -634,8 +634,11 @@ test("a refused Keep keeps the decision waiting and reads the tree again", async
   );
   const user = userEvent.setup();
   const { client, unmount } = renderActions();
-  // The Decisions view, held as the page holds it once that view has been open.
-  client.setQueryData(viewKey(KEY, "decisions"), client.getQueryData(conversationTreeKey(KEY)));
+  // The Decisions view, held as the page holds it once that view has been open. The node watches
+  // it too, so it is drawn again as the view lands.
+  await act(async () => {
+    client.setQueryData(viewKey(KEY, "decisions"), client.getQueryData(conversationTreeKey(KEY)));
+  });
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
     const alert = await screen.findByRole("alert");
@@ -814,8 +817,10 @@ test("Keep drops every held view, the Spec view's among them", async () => {
   const user = userEvent.setup();
   const { client, unmount } = renderActions();
   const held = client.getQueryData<TreeAnswer>(conversationTreeKey(KEY));
-  client.setQueryData(viewKey(KEY, "decisions"), held);
-  client.setQueryData(viewKey(KEY, "spec"), held);
+  await act(async () => {
+    client.setQueryData(viewKey(KEY, "decisions"), held);
+    client.setQueryData(viewKey(KEY, "spec"), held);
+  });
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
     await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
