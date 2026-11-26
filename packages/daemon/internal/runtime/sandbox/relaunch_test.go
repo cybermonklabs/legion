@@ -1992,11 +1992,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
 			}
 			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
-			// the fake clock's moment, plus the termination grace. It moves only once the runtime has
-			// finished writing the Start (written): an end of the deadline inside the write closes the
-			// connection, as a write the context cuts does, and the Stop that follows would find no
-			// launcher.
-			delayed.written()
+			// the fake clock's moment, plus the termination grace.
 			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
 			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
 				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
@@ -2068,16 +2064,18 @@ type scriptedStartLauncher struct {
 	stops   chan shimwire.LauncherStop
 }
 
-// written returns once the runtime has finished writing the frame the scripted launcher last read
-// and stopped watching that write's context: requestSession holds the session's lock through both,
-// and the launcher reads the frame only while the write holds it.
-func (d *scriptedStartLauncher) written() {
-	d.session.mu.Lock()
-	defer d.session.mu.Unlock()
-}
-
 func (g *rig) scriptedStartLauncher(
 	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult,
+) *scriptedStartLauncher {
+	g.t.Helper()
+	return g.scriptedStartLauncherOver(token, running, answer, nil)
+}
+
+// scriptedStartLauncherOver is scriptedStartLauncher with the daemon's end of the connection
+// handed to the runtime through wrap, when wrap is not nil: the connection the runtime writes its
+// requests to and reads the launcher's frames from.
+func (g *rig) scriptedStartLauncherOver(
+	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult, wrap func(net.Conn) net.Conn,
 ) *scriptedStartLauncher {
 	g.t.Helper()
 	g.r.launchers.mu.Lock()
@@ -2087,6 +2085,9 @@ func (g *rig) scriptedStartLauncher(
 		old.close()
 	}
 	server, client := net.Pipe()
+	if wrap != nil {
+		server = wrap(server)
+	}
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,

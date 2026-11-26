@@ -3217,7 +3217,10 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // keep its issue in the waiting line for ever and take a slot from work that could use it.
 // Finishing the row deletes it, exactly as the outbox's own fence would. An issue that returns to
 // work is owed its start again by the return itself (workflow.Engine.ReturnToWork), at a new
-// entry, so nothing of the stopped run's row is needed then.
+// entry, so nothing of the stopped run's row is needed then. The daemon's store reads the same
+// phase and generation fence where a waiting start silences a backstop
+// (store.PodRecords.WaitsForItsSlot), since a row this repair will finish brings no worker back: a
+// change to this fence changes that one too.
 //
 // An issue at phase done is read by its absence: the project's live read leaves it out
 // (record.Store.LiveIssues), so its record is not here, and a row of it is finished too.

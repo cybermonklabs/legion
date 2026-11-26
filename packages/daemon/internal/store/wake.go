@@ -847,3 +847,33 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 	}
 	return open, nil
 }
+
+// WaitsForItsSlot is whether issue owes a worker a start that waits for its admission slot while
+// no slot of the issue stands (slotWaitingStart): the issue gave its slot back to wait on another,
+// or had its work come back, and waits in the admission line. The outbox holds that start back
+// until the slot comes, and the start then wakes the worker an idle release suspended. So a
+// backstop of such an issue wakes no one (the workflow's podBackstopDue): a wake would put the
+// worker to its phase's work while the admission cap says the issue may not run.
+//
+// Only a start of the issue's current phase and generation counts. An older one stays in the
+// outbox until admission finishes it without acting (admit's finishFencedStarts), which a pause
+// defers and a dead lane's lease delays, so it brings no worker back; a backstop it silenced
+// would leave the released worker with nothing to wake it once that row goes. Phase and
+// generation are the whole fence here although finishFencedStarts also finishes a row whose
+// issue is out of Legion's work, which keeps its phase and generation (R20 of
+// dispatch://INFRA-3320), and one a retired claim's stop outlived: the backstop's wake refuses the
+// first itself (the workflow's wakeReleased reads the issue's own standing, pods.Standing's
+// InWorkflow, which refuses the four statuses out of the workflow, record.OutOfWorkflowStatuses,
+// every status of Dispatch's that is out of Legion's work), and a retired claim is never the
+// released claim the backstop wakes.
+func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	var waits bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`
+		and exists (select 1 from issues i where i.key = outbox.issue
+			and i.phase = outbox.payload->>'phase'
+			and i.generation = coalesce((outbox.payload->>'generation')::bigint, 0)))`,
+		issue).Scan(&waits); err != nil {
+		return false, fmt.Errorf("read whether %s waits for its admission slot: %w", issue, err)
+	}
+	return waits, nil
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -51,7 +52,7 @@ func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
 		"case \"$PI_CONFIG_FILES\" in *tester.yml*beta.yml*)\n" +
 		"  echo \"error: Failed to parse config overlay $PI_CONFIG_FILES: SyntaxError\" >&2; exit 1;; esac\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	tester, alpha, beta := filepath.Join(dir, "tester.yml"), filepath.Join(dir, "alpha.yml"), filepath.Join(dir, "beta.yml")

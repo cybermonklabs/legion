@@ -2027,7 +2027,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", StatusCallResponse{Queued: []QueuedStatusWrite{{Issue: "LEGION-208", Status: "backlog", Row: 41}}})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
-	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
+	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
 	golden(t, "gate-register.json", GateRegisterResponse{})
 	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}, Queued: []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 43}}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})
