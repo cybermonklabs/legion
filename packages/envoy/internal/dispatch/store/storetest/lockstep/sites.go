@@ -60,19 +60,20 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_delivery.go#queueAnsweredDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	// The ask block a settlement opens, whose node is written before its row and caused by the
-	// event the settlement appends: its lock steps are driven with the document service's other
-	// store writers, since api's TestEveryObjectNodeWriterTakesTheStoreLockOrder comes with the
-	// object-node writers below.
-	"docs/ask_blocks.go#createAskBlock": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	"api/reviews.go#openApprovalAsk":    "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	// The object nodes a request's own write states - a document's (queueNewArtifact) and its removal's
-	// (removeArtifact), an approval request's (openApprovalAsk), a message's
-	// (createStoredMessage), a session's reply's (insertSessionReply) and a broadcast copy's
-	// (writeBroadcast) - come with the slices that carry those writers: S3c-documents for the
-	// documents, the ask block and the approval request, S4 for the messages. Each of them is
-	// driven through the order the object nodes share (QueueNodes, then QueueCaused) by api's
-	// TestEveryObjectNodeWriterTakesTheStoreLockOrder, which comes with them.
+	// The node of every issue, document, ask and message a request creates, in the project or
+	// between the parties it belongs to: written before its row, and caused by the event the
+	// create appends after it. createIssue, storeArtifact with queueNewArtifact, and createAskFor
+	// are listed above for their block index and follow, and their drivers hold the node step too;
+	// these are the others. Their order - the owner lock their path already takes, the node before
+	// the row, the event before the tuples - is the order of the write they share (QueueNodes, then
+	// QueueCaused; a route that appends its event at once queues the cause in the event's own
+	// batch, appendCausingEvent), and api's TestEveryObjectNodeWriterTakesTheStoreLockOrder drives
+	// each of them through it.
+	"api/broadcasts.go#writeBroadcast":           "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/message_delivery.go#insertSessionReply": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/messages.go#createStoredMessage":        "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/reviews.go#openApprovalAsk":             "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"docs/ask_blocks.go#createAskBlock":          "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The removal of an untouched document states its node gone, before its row goes, caused by
 	// the artifact.removed event it appends after the row (Write of the node the document's
 	// create would have written, for a document an earlier build made with none, then
