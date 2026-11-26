@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -261,7 +263,7 @@ func awaitLockWait(t *testing.T, st *Store) {
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var waiting int
 		if err := st.Pool().QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			where datname = current_database() and `+lockwaittest.Waiting).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {

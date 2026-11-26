@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testexec"
+
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -63,7 +65,7 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 	marker := func(name string) (program, left string) {
 		left = filepath.Join(root, name+"-ran")
 		program = filepath.Join(root, name+".sh")
-		if err := os.WriteFile(program, []byte("#!/bin/sh\ntouch '"+left+"'\ncat >/dev/null\nexit 1\n"), 0o755); err != nil {
+		if err := testexec.WriteFile(program, []byte("#!/bin/sh\ntouch '"+left+"'\ncat >/dev/null\nexit 1\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return program, left
@@ -75,7 +77,7 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 	}
 	// okSigner signs: it answers an armored block, so the fixture can sign the working copy.
 	okSigner := filepath.Join(root, "ok-sign.sh")
-	if err := os.WriteFile(okSigner, []byte("#!/bin/sh\ncat >/dev/null\nprintf -- '-----BEGIN PGP SIGNATURE-----\\nfixture\\n-----END PGP SIGNATURE-----\\n'\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(okSigner, []byte("#!/bin/sh\ncat >/dev/null\nprintf -- '-----BEGIN PGP SIGNATURE-----\\nfixture\\n-----END PGP SIGNATURE-----\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// The launcher's own environment reaches the configuration the fixture writes: the home whose
