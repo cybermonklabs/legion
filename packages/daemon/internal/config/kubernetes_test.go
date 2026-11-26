@@ -429,12 +429,12 @@ func TestTheRepositoryCacheCanRequestLessMemoryThanItsLimit(t *testing.T) {
 // read as written. One without the other is refused naming the missing key, a blank value and an
 // unfilled `${…}` placeholder naming the key itself, a bucket that is no bucket's name naming the
 // shape, and an account that is no ServiceAccount's name (a capital or an underscore, a slash, or
-// past 253 characters) naming the key and the value. A cache account that is the one every other
-// pod runs as is refused: the configured runtime.kubernetes.pod.service_account, or, where that is
-// unset, the namespace's `default`, which is what every such pod runs as. The bucket's grant goes to
-// the cache's account, and on that account it would reach every pod. So is the controller's own
-// account, runtime.kubernetes.pod.controller_service_account, on which the grant would reach the
-// controller's pod.
+// past 253 characters) naming the key and the value. A cache account that is the one the issue
+// pods run as is refused: the configured runtime.kubernetes.pod.service_account, or, where that is
+// unset, the namespace's `default`, which is what every issue pod then runs as. The bucket's grant
+// goes to the cache's account, and on that account it would reach every issue pod. So is the
+// controller's own account, runtime.kubernetes.pod.controller_service_account, on which the grant
+// would reach the controller's pod.
 func TestRepositoryCacheBucketSettings(t *testing.T) {
 	const key = "runtime.kubernetes.repository_cache"
 	cache := func(members string) string { return kubernetesFile + "    repository_cache: {" + members + "}\n" }
@@ -475,9 +475,9 @@ func TestRepositoryCacheBucketSettings(t *testing.T) {
 		{name: "an account past 253 characters", body: cache("bucket: example-legion-packs, service_account: " + strings.Repeat("a", 300)),
 			want: serviceAccountRefusal(key+".service_account", strings.Repeat("a", 300))},
 		{name: "the configured pod account", body: withPodAccount("legion-worker", "bucket: example-legion-packs, service_account: legion-worker"),
-			want: key + `.service_account "legion-worker" must differ from runtime.kubernetes.pod.service_account, the account every other pod runs as: the bucket's grant to it would reach every pod`},
+			want: key + `.service_account "legion-worker" must differ from runtime.kubernetes.pod.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod`},
 		{name: "default where no pod account is set", body: cache("bucket: example-legion-packs, service_account: default"),
-			want: key + `.service_account "default" must differ from the account every other pod runs as, the namespace's default while runtime.kubernetes.pod.service_account is unset: the bucket's grant to it would reach every pod`},
+			want: key + `.service_account "default" must differ from the account the issue pods run as, the namespace's default while runtime.kubernetes.pod.service_account is unset: the bucket's grant to it would reach every issue pod`},
 		{name: "the controller's own account", body: "controller: daemon\n" + kubernetesFile +
 			"    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-controller}\n",
 			want: key + `.service_account "legion-controller" must differ from runtime.kubernetes.pod.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod`},

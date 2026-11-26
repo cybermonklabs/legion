@@ -905,9 +905,9 @@ const defaultServiceAccount = "default"
 // refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder) and an
 // account that is no ServiceAccount's name (serviceAccountName). The bucket must have the shape
 // workspace.ValidBucketName holds it to, the one rule a fetch holds a /packs manifest's bucket to as
-// well. The account must not be the one every other pod runs as: pod.ServiceAccount, the file's
+// well. The account must not be the one the issue pods run as: pod.ServiceAccount, the file's
 // runtime.kubernetes.pod.service_account, or defaultServiceAccount where the file sets none, since
-// the bucket's grant to that account would reach every pod of the deployment. Nor may it be
+// the bucket's grant to that account would reach every issue pod of the deployment. Nor may it be
 // pod.ControllerServiceAccount, the controller's own account where the file names one, since the
 // grant would then reach the controller's pod.
 func readCacheBucket(fields map[string]*yaml.Node, key string, pod PodConfig) (bucket, account string, err error) {
@@ -937,9 +937,9 @@ func readCacheBucket(fields map[string]*yaml.Node, key string, pod PodConfig) (b
 	case !workspace.ValidBucketName(bucket):
 		return "", "", fmt.Errorf("%s.bucket %q must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots", key, bucket)
 	case podAccount != "" && account == podAccount:
-		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.service_account, the account every other pod runs as: the bucket's grant to it would reach every pod", key, account, podKey)
+		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod", key, account, podKey)
 	case podAccount == "" && account == defaultServiceAccount:
-		return "", "", fmt.Errorf("%s.service_account %q must differ from the account every other pod runs as, the namespace's %s while %s.service_account is unset: the bucket's grant to it would reach every pod",
+		return "", "", fmt.Errorf("%s.service_account %q must differ from the account the issue pods run as, the namespace's %s while %s.service_account is unset: the bucket's grant to it would reach every issue pod",
 			key, account, defaultServiceAccount, podKey)
 	case pod.ControllerServiceAccount != "" && account == pod.ControllerServiceAccount:
 		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod", key, account, podKey)

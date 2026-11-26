@@ -1480,13 +1480,13 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 				o.Pod.ServiceAccount = "legion-worker"
 				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "legion-worker"
 			},
-			"repository cache ServiceAccount legion-worker is the one every other pod runs as",
+			"repository cache ServiceAccount legion-worker is the one the issue pods run as",
 		},
 		"a cache account of default, which the pods run as when they name none": {
 			func(o *Options) {
 				o.RepositoryCache.Bucket, o.RepositoryCache.ServiceAccount = "example-legion-packs", "default"
 			},
-			"repository cache ServiceAccount default is the one every other pod runs as",
+			"repository cache ServiceAccount default is the one the issue pods run as",
 		},
 		"a cache account the controller's pod runs as": {
 			func(o *Options) {
