@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // handoverRecords is how many of role's takeover records hand previous's messages to successor
@@ -85,9 +88,10 @@ func TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord(t *testing.T) {
 
 		taker := rig.startTaker(t, handoverNew)
 		refused := rig.postClaimReplacing(handoverNew, handoverRole, handoverOld, "")
-		t.Run("case: the claim is answered 503 with Retry-After, and it stands", func(t *testing.T) {
-			if refused.Code != http.StatusServiceUnavailable || refused.Header().Get("Retry-After") != "1" {
-				t.Errorf("the claim whose handover record did not store answered %d (Retry-After %q) %s; want 503 with Retry-After: 1", refused.Code, refused.Header().Get("Retry-After"), refused.Body.String())
+		t.Run("case: the claim is answered 503 with Retry-After and the code that says it stands", func(t *testing.T) {
+			var answer listenerwire.APIError
+			if err := json.Unmarshal(refused.Body.Bytes(), &answer); err != nil || refused.Code != http.StatusServiceUnavailable || refused.Header().Get("Retry-After") != "1" || answer.Code != listenerwire.CodeHandoverUnrecorded {
+				t.Errorf("the claim whose handover record did not store answered %d (Retry-After %q) %s; want 503 with Retry-After: 1 and the code %s", refused.Code, refused.Header().Get("Retry-After"), refused.Body.String(), listenerwire.CodeHandoverUnrecorded)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -103,6 +107,53 @@ func TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord(t *testing.T) {
 			copiesRequireEach(t, received, handoverNew, direct...)
 		})
 	})
+}
+
+// A previous_session_id no session consumer can be named for (bus.SessionConsumerName: a ".", "*",
+// ">", "/", "\" or whitespace) names no session a handover could copy from, and some such ids are
+// no key the known-session bucket reads at all, whose read the handover's rule would answer 503 on
+// every try while the claim stands, a loop with no end. So the claim route answers 400 naming the
+// field before it writes anything: the role stays unclaimed. Each case fails where such a claim is
+// judged by the rule (503, or 200 with a refusal) or lands; the control is the same claim naming a
+// session id a consumer can be named for, which no session registered, so it lands and is answered
+// the rule's refusal as its warning.
+func TestAClaimNamingAnIDNoConsumerCanBeNamedForIsRefused400(t *testing.T) {
+	rig := newCopiesRig(t)
+	rig.startTaker(t, handoverNew)
+	for _, row := range []struct {
+		name     string
+		replaced string
+		status   int
+	}{
+		{"case: an id with a space, which no known-session key takes", "ses with space", http.StatusBadRequest},
+		{"case: an id with a wildcard", "ses_wild*", http.StatusBadRequest},
+		{"case: an id with a dot, a key the bucket takes but no consumer name", "ses.dotted", http.StatusBadRequest},
+		{"control: an id a consumer can be named for, which no session registered", "ses_never_registered", http.StatusOK},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			recorder := rig.postClaimReplacing(handoverNew, handoverRole, row.replaced, "")
+			var answer listenerwire.APIError
+			_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			claim, err := rig.harness.registry.RoleClaim(ctx, handoverRole)
+			if row.status == http.StatusBadRequest {
+				if recorder.Code != http.StatusBadRequest || !slices.Equal(answer.Expected, []string{"previous_session_id"}) {
+					t.Errorf("a claim naming %q answered %d %s; want 400 naming previous_session_id", row.replaced, recorder.Code, recorder.Body.String())
+				}
+				if err == nil && claim.HolderSessionID != "" {
+					t.Errorf("role %s's claim names %q after the refused claim; want none written", handoverRole, claim.HolderSessionID)
+				}
+				return
+			}
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "no message of "+row.replaced+" is handed over") {
+				t.Errorf("a claim naming %q answered %d %s; want 200 with the rule's refusal as its warning", row.replaced, recorder.Code, recorder.Body.String())
+			}
+			if err != nil || claim.HolderSessionID != handoverNew {
+				t.Errorf("role %s's claim names %q (%v); want %s", handoverRole, claim.HolderSessionID, err, handoverNew)
+			}
+		})
+	}
 }
 
 // A handover record's pass copies a message that is no role message to the session that replaced

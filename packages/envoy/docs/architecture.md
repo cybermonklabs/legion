@@ -655,44 +655,63 @@ the claim route writes a handover record, a takeover record whose attempt token 
 `handover-<claimant>` (`bus.HandoverSubject`): one subject for a claimant and the session it
 names, so a claim made again at each registration costs no second record, and a write that finds
 the record is no error.
-A record that did not store answers the claim `503` with `Retry-After: 1`: the claim stands, and
-the client's next claim writes the record. A handover record's passes are a takeover record's,
-with three differences. While the replaced session is `live` they copy nothing and set the record
-back as a pass that finds the previous holder holding the role does: a session that answers reads
-its own messages, and a person's direct messages go to no other session while that person's
-session answers. A pass reads the session's state before it starts and again before each copy,
-from the listener's cache and, where that does not read it live, from the session bucket's leader,
-so a registration that lands while it runs, through any listener, ends it. A handover record's
-hour runs from the last pass that found the replaced session live, or holding the role, where
-that is later than the claim, and such a pass never finishes it: a session that stays live past
-the claim's hour and then stops is handed over then. They copy nothing either, and set the
-record back the same way without moving its hour, while the two sessions' last registrations,
-read from the known-session
-bucket's leader before the pass and again as the last step before each copy
-(`handoverStands`, `handoverStillStands`), do not name one principal: a session that registered
-as another principal since the claim, or while the pass runs, is handed nothing more. And they
-copy more of the replaced
-session's subject: a role message of any role goes to that role's kept lane, whose walk hands it
-to the role's next live holder within the hour (the claimant, for each role it claims), and a
-message whose topic is the replaced session's own agent subject, in either form - a direct
-message to it, or a dead letter - goes to the claimant's own agent subject, with the claimant's
-subject as its topic, the message's event id and sender, and a dedupe key in the minted form,
-under the message id `notifications.agent.<claimant>:handover:<event id>`, so the stream keeps
-one copy of a message for a session however many passes, records and hops make it, and two
-sessions that each replaced the other copy a message to and fro once. A message that names no
-event id is given one on its first copy, drawn from the frame it was first read from
-(`handedOverEventID`), and every later copy keeps it. A direct message has no hour: it is copied
-however long before the claim it was stored, from the replaced session's floor on; with no floor
-known, a pass starts at the first message the stream holds on the replaced session's subject,
-not an hour before the claim as a takeover record's does, so a direct message stored earlier and
-never read is handed over too, along with what the session read in the stream's retention.
-Delivery is at least once,
-as for a takeover: a message the replaced session acknowledged out of order above its floor
-reaches the claimant too. A handover record's stored body names no role and no previous session,
-which its subject names, so a listener of the release before leaves it out as a record no pass
-can act on, rather than run it as a takeover record and move it past direct messages it did not
-copy. An edge listener writes no handover record, as it writes no takeover record, and answers
-such a claim with a warning that says so.
+A record that did not store, and a rule the listener could not read (below), answer the claim
+`503` with `Retry-After: 1` and the code `handover_unrecorded` (`listenerwire.CodeHandoverUnrecorded`):
+the claim stands, and the client's next claim judges and writes the record. A `previous_session_id`
+no session consumer can be named for (one holding `.`, `*`, `>`, `/`, `\` or whitespace) is
+answered `400` before anything is written. A handover record's passes are a takeover record's,
+with five differences.
+
+First, while the replaced session is `live` they copy nothing and set the record back as a pass
+that finds the previous holder holding the role does: a session that answers reads its own
+messages, and a person's direct messages go to no other session while that person's session
+answers. A handover record's life runs from the last pass that found the replaced session live, or
+holding the role, where that is later than the claim, and such a pass never finishes it: a session
+that stays live past the record's life and then stops is handed over then.
+
+Second, they copy nothing either, and set the record back the same way without moving its life,
+while the two sessions' last registrations do not name one principal: a session that registered
+as another principal since the claim, or while the pass runs, is handed nothing more. The two
+rules are one gate (`handoverFence`), judged before the pass and again as the last step before
+each copy: the session's state from the listener's cache and, where that does not read it live,
+from the session bucket's leader (`sessionLiveNow`), and both registrations from the known-session
+bucket's leader (`handoverStands`), each copy held to the principal the pass started under. So a
+registration that lands while a pass runs, through any listener, ends it before its next copy.
+
+Third, they copy more of the replaced session's subject: a role message of any role goes to that
+role's kept lane, whose walk hands it to the role's next live holder within the hour (the
+claimant, for each role it claims), and a message whose topic is the replaced session's own agent
+subject, in either form - a direct message to it, or a dead letter - goes to the claimant's own
+agent subject, with the claimant's subject as its topic, the message's event id and sender, and a
+dedupe key in the minted form, under the message id
+`notifications.agent.<claimant>:handover:<event id>`, so the stream keeps one copy of a message
+for a session however many passes, records and hops make it, and two sessions that each replaced
+the other copy a message to and fro once. A message that names no event id is given one on its
+first copy, drawn from the frame it was first read from (`handedOverEventID`), and every later
+copy keeps it. A direct message has no hour: it is copied however long before the claim it was
+stored, from the replaced session's floor on.
+
+Fourth, with no floor known, a pass starts at the first message the stream holds on the replaced
+session's subject, not an hour before the claim as a takeover record's does, so a direct message
+stored earlier and never read is handed over too, along with what the session read in the
+stream's retention.
+
+Fifth, a handover record lives the stream's retention, 72 hours (`handoverRecordLife`), not the
+one-hour keep window: nothing fences a direct send to a session as the role lane's fence fences a
+forward, and a sender can write to the replaced session long after the claim (a person who answers
+a Dispatch ask the session made, a peer that knows its id). Each message sent to the replaced
+session within that time is handed over; one sent after the record finished stays on the replaced
+session's own subject for the stream's retention, as every message to a session that is not live
+did before handovers. While it lives, each sweep's pass of the record on each listener that runs
+passes reads the role's claim, the replaced session's state, both principals and the replaced
+session's subject, and writes the record again every 15 minutes.
+
+Delivery is at least once, as for a takeover: a message the replaced session acknowledged out of
+order above its floor reaches the claimant too. A handover record's stored body names no role and
+no previous session, which its subject names, so a listener of the release before leaves it out as
+a record no pass can act on, rather than run it as a takeover record and move it past direct
+messages it did not copy. An edge listener writes no handover record, as it writes no takeover
+record, and answers such a claim with a warning that says so.
 
 A claim hands over only between sessions of one principal (`handoverRefusal`). The principal a
 request's credential acts for names the credential's kind and scope beside the person or service
@@ -765,7 +784,10 @@ lets a session answer a delivery attempt of the session it replaced only where t
 names it, which holds both sessions to this rule and follows a chain of replacements of one
 principal (`handoverSuccessors`), and, on a credential that proves the replying session (a broker
 token), only where that credential's principal, in the same form, is the principal the read
-names (`actsForSuccessorPrincipal`). A listener of an earlier build reads a
+names (`actsForSuccessorPrincipal`). The read names that principal only to Dispatch's own verified
+identity (`ENVOY_DISPATCH_PRINCIPAL`), and answers every other caller the same successors with no
+principal, so no session reads which person or service another session registered as; a listener
+whose known-session bucket is not open names no successor, as it hands nothing over. A listener of an earlier build reads a
 known-session record with its principal unknown and writes it back without one, so a record such
 a listener rewrote names no recorded principal until its session's next registration through
 this build, and a claim naming that session is refused until then, whatever its credential.

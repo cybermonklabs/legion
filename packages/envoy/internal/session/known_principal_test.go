@@ -42,11 +42,12 @@ func register(t *testing.T, known *KnownSessions, record KnownSession) error {
 	return known.RecordRegistrationWithin(t.Context(), admission, record)
 }
 
-// A record keeps the principal its session last registered as through every write that carries
-// none - an interest change, a rewrite of unchanged content past the refresh age, a clean stop -
-// and a write that carries another principal replaces it. A registration's own write records the
-// registration's principal, none included, since it is the principal of the credential that
-// session last registered on (RecordRegistrationWithin).
+// A record keeps the principal its session last registered as through every write that is no
+// registration's - an interest change, a rewrite of unchanged content past the refresh age, a clean
+// stop - whatever principal the record handed to it carries: only a registration, fenced on its
+// admission, writes one. A registration's own write records the registration's principal, none
+// included, since it is the principal of the credential that session last registered on
+// (RecordRegistrationWithin).
 func TestKnownSessionsKeepThePrincipalAWriteDoesNotCarry(t *testing.T) {
 	const (
 		sessionID = "ses_principal"
@@ -106,12 +107,20 @@ func TestKnownSessionsKeepThePrincipalAWriteDoesNotCarry(t *testing.T) {
 		requirePrincipal(t, "a clean stop", person)
 	})
 
-	t.Run("a write carrying another principal replaces it, inside the refresh age too", func(t *testing.T) {
+	t.Run("a write that is no registration's keeps it, whatever principal the record carries, inside the refresh age too", func(t *testing.T) {
 		before, _ := known.Get(sessionID)
-		if err := known.RecordWithin(ctx, KnownSession{SessionID: sessionID, Topics: before.Topics, Principal: service}); err != nil {
-			t.Fatalf("record another principal: %v", err)
+		if err := known.RecordWithin(ctx, KnownSession{SessionID: sessionID, Topics: before.Topics, Principal: service, PrincipalRecorded: true}); err != nil {
+			t.Fatalf("record a write carrying another principal: %v", err)
 		}
-		requirePrincipal(t, "a write carrying another principal", service)
+		requirePrincipal(t, "a write that is no registration's carrying another principal", person)
+		clock = clock.Add(KnownSessionRefreshAge + time.Minute)
+		if err := known.RecordWithin(ctx, KnownSession{SessionID: sessionID, Topics: before.Topics, Principal: service, PrincipalRecorded: true}); err != nil {
+			t.Fatalf("record a write carrying another principal past the refresh age: %v", err)
+		}
+		if record, _ := known.Get(sessionID); record.LastSeen != clock.UnixMilli() {
+			t.Fatalf("the write left last_seen at %d, want the clock's %d: it was not written", record.LastSeen, clock.UnixMilli())
+		}
+		requirePrincipal(t, "a write that is no registration's carrying another principal, past the refresh age", person)
 	})
 
 	t.Run("a registration on a credential that proves no principal records none", func(t *testing.T) {

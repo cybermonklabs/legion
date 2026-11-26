@@ -14,6 +14,7 @@ import pkg from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
 import type { ChannelSession } from "./envoy-channel-server"
 import { paneReminderLog } from "./legion-phase-hook"
+import { logRoleClaimWarnings } from "./role-claim-warnings"
 
 /**
  * A Claude Code phase worker's claim on the Legion daemon, made by the MCP server Claude Code runs
@@ -311,7 +312,10 @@ export function startLegionClaim(deps: {
             clientInstanceID: deps.clientInstanceID,
             ...(replaces ? { previousSessionID: replaces } : {}),
           })
-          if (claimed.claimed) break
+          if (claimed.claimed) {
+            logRoleClaimWarnings(deps.log, role, sessionID, claimed.warnings)
+            break
+          }
           if (claimed.holder !== sessionID) {
             throw new Error(`Envoy role ${role} is held by live session ${claimed.holder}`)
           }

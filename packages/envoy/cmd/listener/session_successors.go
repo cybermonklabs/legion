@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -16,24 +17,37 @@ import (
 const sessionSuccessorsPattern = "/v1/sessions/{session}/successors"
 
 // sessionSuccessorsHandler answers GET /v1/sessions/<session_id>/successors: the sessions that
-// replaced that session (handoverSuccessors) as listenerwire.SessionSuccessors, with the principal
-// each of them and that session last registered as, the empty list and no principal for a session
-// no one replaced. A handover record copies the replaced session's unread direct
-// messages to its successor (role_takeover.go, handOverDirectFrame), and each copy keeps the
+// replaced that session (handoverSuccessors) as listenerwire.SessionSuccessors, the empty list for
+// a session no one replaced. A handover record copies the replaced session's unread direct
+// messages to its successor (role_handover.go, handOverDirectFrame), and each copy keeps the
 // message's own delivery, so Dispatch reads this to let the successor answer that delivery
 // (internal/dispatch/api, lookUpRoleHolderReply).
 //
-// The route holds the records to the rule the claim route wrote them under, as each pass does
-// (handoverStands): a session is named only while its last registration and the replaced
-// session's name one principal, so a session that registered as another principal since the
-// claim may no longer answer the replaced session's deliveries. A record stays on the stream, and
-// names its successor here, for as long as the stream keeps it, a finished one included, since
-// the copies it made stay on the successor's subject.
+// The route holds the records to the rule the claim route wrote them under (handoverRefusal): it
+// follows a chain of records only through sessions whose last registration names the principal
+// the replaced session last registered as, each read from the known-session bucket's leader
+// (recordedPrincipal), so a session that registered as another principal since the claim may no
+// longer answer the replaced session's deliveries. A record stays on the stream, and names its
+// successor here, for as long as the stream keeps it, a finished one included, since the copies
+// it made stay on the successor's subject.
+//
+// The answer names that principal (Principal) only to Dispatch's own verified identity
+// (ENVOY_DISPATCH_PRINCIPAL, the one caller whose send may carry a role mark, roleMarkRefusal):
+// Dispatch holds a successor's reply on a broker token to it (actsForSuccessorPrincipal), and no
+// other caller needs it. Every other caller - a session's broker token, the shared token, another
+// identity, an open /v1, and every caller of a listener that names no Dispatch principal - is
+// answered the same successors with no principal, so no session reads which person or service
+// another session registered as. A principal-less answer names a principal no broker token acts
+// for, so Dispatch refuses every broker-token successor reply it reads it for, as it refuses one
+// against a listener that predates the route.
 //
 // The read runs within sendRequestBudget of the request's own context, as the registry route's
 // does, and one that did not answer is the bus-unavailable 503 with Retry-After: 1
-// (writeBusUnavailable). The route reads another session's records by design, so a broker token
-// is not narrowed to its own session here, as the registry route's read is not.
+// (writeBusUnavailable). A listener whose known-session bucket is not open can read no principal
+// any session registered as, and stays so until its grant covers the bucket, so it names no
+// successor, as the claim route refuses every handover there (knownBucketNotOpenRefusal): a
+// retry would read nothing more. The route reads another session's records by design, so a broker
+// token is not narrowed to its own session here, as the registry route's read is not.
 //
 // An edge listener reads the records too: its grant (natsgrant.Edge) keeps the stream's
 // STREAM.INFO, though it publishes no takeover lane and so writes no record of its own; the
@@ -64,8 +78,8 @@ func sessionSuccessorsHandler(d *listenerDeps) http.HandlerFunc {
 			return
 		}
 		// Dispatch holds a successor's reply to this principal (lookUpRoleHolderReply), so it is
-		// named only beside a session it is the principal of.
-		if len(shown) == 0 {
+		// named only beside a session it is the principal of, and only to Dispatch itself.
+		if len(shown) == 0 || d.dispatchPrincipal == "" || verifiedPrincipal(r) != d.dispatchPrincipal {
 			principal = ""
 		}
 		writeJSON(w, http.StatusOK, listenerwire.SessionSuccessors{SessionID: sessionID, Principal: principal, Successors: shown})
@@ -82,11 +96,15 @@ func sessionSuccessorsHandler(d *listenerDeps) http.HandlerFunc {
 // principal, the rule each record was written under (handoverRefusal); one that does not is not
 // named, nor is any session only it leads to. Each session is read once, so a chain that comes
 // back round ends there. A sessionID whose principal nobody recorded, or the bucket holds no
-// record of, has none, and so has every session on a listener with no known-session store. A read
-// that did not answer - one the request's budget ended before the whole chain was read among them
-// - is the error, never a list that names part of the chain.
+// record of, has none, and so has every session on a listener with no known-session store, or
+// whose known-session bucket is not open (session.ErrKnownSessionsUnavailable). A read that did
+// not answer - one the request's budget ended before the whole chain was read among them - is the
+// error, never a list that names part of the chain.
 func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.KnownSessions, sessionID string) (string, []string, error) {
 	principal, recorded, err := recordedPrincipal(ctx, known, sessionID)
+	if errors.Is(err, session.ErrKnownSessionsUnavailable) {
+		return "", []string{}, nil
+	}
 	if err != nil || !recorded {
 		return "", []string{}, err
 	}

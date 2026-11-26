@@ -86,9 +86,34 @@ export interface RoleReassertion {
   readonly regain?: RoleRegainReason;
 }
 
+/**
+ * What a claim of {@link TaskHandle.claimRole} decided. A claim that landed carries the listener's
+ * warnings about it (`SetRoleResult.warnings`), each already logged, for a caller that answers an
+ * agent to repeat; a claim the listener refused carries none.
+ */
+export type RoleClaimOutcome =
+  | { readonly claimed: true; readonly warnings: readonly string[] }
+  | { readonly claimed: false };
+
 /** The warnings this module writes; `logger` from the host satisfies it. */
 export interface RegistrationStateLog {
   readonly warn: (message: string, context?: Record<string, unknown>) => void;
+}
+
+/**
+ * Logs each warning the listener answered a granted claim of `role` for `sessionID` with
+ * (`SetRoleResult.warnings`): what it says about the claim, such as a handover of the replaced
+ * session it did not make, is true of the claim whatever the task that made it does next.
+ */
+function logClaimWarnings(
+  log: RegistrationStateLog,
+  role: string,
+  sessionID: string,
+  warnings: readonly string[]
+): void {
+  for (const warning of warnings) {
+    log.warn("envoy: the listener warned about a role claim", { role, sessionID, warning });
+  }
 }
 
 /** What a queued task's NATS dial may spend: the task's deadline, as a `performance.now()`
@@ -218,7 +243,8 @@ export interface TaskHandle {
    * holder is no longer live. On a hard claim as on a soft one, `previousSessionID` goes to the
    * listener and names the session this claim replaces, whose unread direct and role messages a
    * listener that supports it hands to this session once the claim lands and that session is not
-   * live. Answers whether the claim landed.
+   * live. Answers whether the claim landed, and the listener's warnings about a claim that did,
+   * each of which is logged here with the role and the session.
    *
    * A claim the listener granted after this task's deadline fired is left as a pending hand-back,
    * and one granted after the session moved is adopted under the id the listener names.
@@ -226,7 +252,7 @@ export interface TaskHandle {
   readonly claimRole: (
     role: string,
     options?: { readonly soft?: boolean; readonly previousSessionID?: string }
-  ) => Promise<boolean>;
+  ) => Promise<RoleClaimOutcome>;
   /**
    * Makes sure the listener still resolves this session as `role`'s holder: reads first, and a
    * soft claim goes out only when it does not. The lookup confirms the role only when it names
@@ -591,7 +617,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     const claimRole = async (
       role: string,
       options: { readonly soft?: boolean; readonly previousSessionID?: string } = {}
-    ): Promise<boolean> => {
+    ): Promise<RoleClaimOutcome> => {
       const id = actingFor();
       guard();
       const topic = ROLE_TOPIC_PREFIX + role;
@@ -607,6 +633,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         // names this same process, refused where another process still renews it.
         clientInstanceID,
       });
+      if (result.claimed) logClaimWarnings(deps.log, role, id, result.warnings);
       if (!live()) {
         // The listener may have granted the claim while this task was abandoned. Nothing of it goes
         // in the transcript — the task that replaced this one owns the role from here — but the
@@ -643,7 +670,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         // `desiredRole` want no role until a session event landed, and the line would be written
         // out again on every heartbeat for as long as that other process lived; the next pass
         // claims again instead.
-        if (result.holder === id) return false;
+        if (result.holder === id) return { claimed: false };
         // Only a soft claim is refused. A holder that is this process's own abandoned hold is
         // waited out, since the listener reaps it; any other is the newer holder.
         const waitingOnReap = await holds.observeAbandonedHold(topic, role, result.holder, live);
@@ -664,7 +691,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
               : "envoy: role held by another live session; not reclaimed",
           { role, sessionID: id, holder: result.holder }
         );
-        return false;
+        return { claimed: false };
       }
       // The transcript is the one thing `omp --resume` guarantees, so it is the durable record of
       // the claim: the listener releases a role claim one session TTL after heartbeats stop, and
@@ -673,7 +700,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       await moveHold(topic, id, previousTopic, previousHoldID, () =>
         deps.appendRoleClaimEntry({ role, sessionID: id, clientInstanceID })
       );
-      return true;
+      return { claimed: true, warnings: result.warnings };
     };
 
     const reassertRole = async (role: string, afterOutage: boolean): Promise<RoleReassertion> => {
@@ -730,6 +757,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         );
         return { decided: true };
       }
+      logClaimWarnings(deps.log, role, id, result.warnings);
       deps.log.warn("envoy: role re-asserted after the listener lost the claim", {
         role,
         sessionID: id,

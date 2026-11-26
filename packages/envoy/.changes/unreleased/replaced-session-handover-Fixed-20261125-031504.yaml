@@ -7,16 +7,19 @@ body: |-
     only when the new claim read the old session as the holder; the role claim reaper frees a dead
     holder's claim first, so a fresh session after a released pod got nothing. `POST /v1/roles/set`
     now reads `previous_session_id` on an outright claim as well as a soft one, as the session the
-    claim replaces. Once such a claim lands, the claim route writes one handover record for the
+    claim replaces, and answers `400` before anything is written where no session consumer can be
+    named for that id. Once such a claim lands, the claim route writes one handover record for the
     claimant and that session (`bus.HandoverSubject`, on the takeover lane), and answers `503` with
-    `Retry-After: 1` when it did not store, the claim standing. The record's passes copy nothing
-    while the replaced session is `live`, and a pass that finds it live moves the record's hour on
-    rather than finish it, so a session that stays live past the claim's hour and then stops is
-    handed over then; otherwise, from its acknowledgement floor, or with no floor known from the
-    first message the stream holds on its subject, they copy each message to the session itself to
-    the claimant's own agent subject and each role message of any role, of the last hour, to that
-    role's kept lane, for the role's next live holder. Delivery is at least once: the stream keeps
-    one copy of each message for the claimant, and a copy keeps the message's event id.
+    `Retry-After: 1` and the code `handover_unrecorded` when it did not store, the claim standing.
+    The record's passes copy nothing while the replaced session is `live`, and run for the stream's
+    retention, 72 hours, from the claim or from the last pass that found the replaced session live,
+    not for the one-hour keep window: a message sent to the replaced session after the claim's hour
+    is handed over too, and a session that stays live past that time and then stops is handed over
+    then; otherwise, from its acknowledgement floor, or with no floor known from the first message
+    the stream holds on its subject, they copy each message to the session itself to the claimant's
+    own agent subject and each role message of any role, of the last hour, to that role's kept lane,
+    for the role's next live holder. Delivery is at least once: the stream keeps one copy of each
+    message for the claimant, and a copy keeps the message's event id.
     A claim hands over only between sessions of one principal: the record is written only when the
     claim's credential, the claimant's last registration and the replaced session's last
     registration name one principal, each read from the known-session bucket's leader, and any
@@ -29,15 +32,16 @@ body: |-
     broker's answer does not tell the two apart. A rule the listener could not read (the
     known-session bucket's leader not answering, or the claimant's own registration not yet
     recorded with its principal) is answered `503` with `Retry-After: 1`, the claim standing,
-    rather than refused for good. Each pass, before it starts
-    and before each copy, and the successor read below, hold the two sessions to the rule again, so
-    a session that registers as another principal after the claim, or while a pass runs, is handed
-    nothing more. A known-session record now says whether a
+    rather than refused for good. Each pass, before it starts and before each copy, holds the two
+    sessions to the rule again, and the successor read below follows a record only to a session of
+    the replaced session's principal, so a session that registers as another principal after the
+    claim, or while a pass runs, is handed nothing more. A known-session record now says whether a
     registration of this build recorded its principal (`principal_recorded`): a record an earlier
-    build wrote back reads as one whose principal nobody knows, and is refused, and an interest
-    change or a clean stop keeps the principal the bucket's leader holds, by a compare-and-swap,
-    rather than the one a listener's own copy holds, and writes nothing where the leader does not
-    answer. A registration as another principal than the session's record names is admitted only
+    build wrote back reads as one whose principal nobody knows, and is refused, and every write that
+    is no registration's (an interest change, a clean stop) keeps the principal the bucket's leader
+    holds, whatever principal it carries, by a compare-and-swap, rather than the one a listener's own
+    copy holds, and writes nothing where the leader does not answer. A registration as another
+    principal than the session's record names is admitted only
     once that record names no principal: read at the bucket's leader, it is written again over
     the revision read with no principal recorded and its topics, title, capabilities and
     last_seen kept, before anything of the registration changes, so a stopped session whose
@@ -66,8 +70,10 @@ body: |-
     the delivery names and accept the reply of a session it names, where they refused it `403
     REPLY_FORBIDDEN`; that read names each session that replaced it and each that replaced one of
     those in turn, however long the chain, while each last registered as its principal, names that
-    principal, and answers `503` rather than part of the chain when it cannot read the whole of it in
-    time. A reply on a broker token is accepted only where the token acts for that principal.
+    principal to Dispatch's own verified identity (`ENVOY_DISPATCH_PRINCIPAL`) and to no other
+    caller, names no successor where the listener's known-session bucket is not open, and answers
+    `503` rather than part of the chain when it cannot read the whole of it in time. A reply on a
+    broker token is accepted only where the token acts for that principal.
 time: 2026-11-25T03:15:04Z
 custom:
     Issue: replaced-session-handover

@@ -1089,15 +1089,51 @@ describe("EnvoyClient", () => {
 
     const result = await client.setRole({ sessionID: "ses_sender", role: "controller" });
 
+    // The answer carries no warnings, as no answer of a listener predating the field does: [].
     expect(result).toEqual({
       claimed: true,
       interest: expect.objectContaining({ topics: ["notifications.role.controller"] }),
+      warnings: [],
     });
     // A hard claim sends no `soft` field, so an older listener sees an
     // unchanged request.
     expect(await recorded.requests[0]?.json()).toEqual({
       session_id: "ses_sender",
       role: "controller",
+    });
+  });
+
+  test("a granted claim answers the listener's warnings beside the interest, never inside it", async () => {
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const edge =
+      "this edge listener hands over no messages: the unread messages of ses_old stay on its own subject, and a claim through a shared listener hands them to this session";
+    const recorded = recordFetch([
+      jsonResponse({
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+        warnings: [handover, edge],
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.setRole({
+      sessionID: "ses_new",
+      role: "controller",
+      previousSessionID: "ses_old",
+    });
+
+    expect(result).toEqual({
+      claimed: true,
+      interest: {
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+      },
+      warnings: [handover, edge],
     });
   });
 

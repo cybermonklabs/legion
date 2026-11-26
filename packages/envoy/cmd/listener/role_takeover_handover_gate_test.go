@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -49,6 +50,9 @@ type gateRig struct {
 func newGateRig(t *testing.T) *gateRig {
 	t.Helper()
 	rig := newCopiesRig(t)
+	// The successor read a row makes is Dispatch's (readSuccessors), which the route names the
+	// successors' principal to alone.
+	rig.deps.dispatchPrincipal = testDispatchPrincipal
 	broker := ciphertokentest.NewStubBroker(t)
 	accountFile := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
@@ -475,9 +479,10 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 	})
 }
 
-// The rule binds the two sessions after the claim as well: each pass of the handover record, and
-// the successor read Dispatch's reply makes, read both sessions' last registrations again
-// (handoverStands). A claim of one person's session names that person's other session while it is
+// The rule binds the two sessions after the claim as well: each pass of the handover record reads
+// both sessions' last registrations again (handoverFence, handoverStands), and the successor read
+// Dispatch's reply makes follows a record only to a session of the replaced session's principal
+// (handoverSuccessors). A claim of one person's session names that person's other session while it is
 // still live, so the claim's own pass copies nothing and the record stands; then the replaced
 // session registers again, as another person in the case row and as the same person in the
 // control, and stops. In the case the sweep's pass copies nothing and the successor read names no
@@ -539,7 +544,7 @@ func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testi
 }
 
 // A pass holds each copy to the rule as well, not only its start: a registration as another
-// principal that lands while the pass runs ends it before the next copy (handoverStillStands, read
+// principal that lands while the pass runs ends it before the next copy (handoverFence.judge, read
 // from the bucket's leader as the last step before each copy). The replaced session has two unread
 // messages and stops; the sweep's pass begins, and just before its first copy the claimant
 // registers again, as another person in the case row and as the same person in the control. In
@@ -890,22 +895,22 @@ func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmitted
 }
 
 // A handover record waits for its replaced session for as long as that session stays live: a pass
-// that finds it live sets the record back and moves the record's hour on (HolderSeenAt), and never
+// that finds it live sets the record back and moves the record's life on (HolderSeenAt), and never
 // finishes it, so what the session leaves unread when it stops at last is handed over then. A
 // claim of one person's session names that person's other session while it is live, and the
-// claim's own handover is held (gateClaimDrainHeld); the sweep's pass runs past the record's hour
-// (takeoverRecordLife) while the replaced session stays live; then it stops with an unread direct
+// claim's own handover is held (gateClaimDrainHeld); the sweep's pass runs past the record's life
+// (handoverRecordLife) while the replaced session stays live; then it stops with an unread direct
 // message, and the sweep's pass runs again. In the case the claimant receives that message; it
-// fails where a pass that finds the replaced session live past the record's hour finishes the
-// record. The control is the same with no pass past the hour, which hands the message over either
+// fails where a pass that finds the replaced session live past the record's life finishes the
+// record. The control is the same with no pass past the life, which hands the message over either
 // way.
-func TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsHour(t *testing.T) {
+func TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsLife(t *testing.T) {
 	for _, row := range []struct {
 		name        string
-		pastTheHour bool
+		pastTheLife bool
 	}{
-		{name: "case: the replaced session stays live past the record's hour, then stops", pastTheHour: true},
-		{name: "control: the replaced session stops inside the record's hour"},
+		{name: "case: the replaced session stays live past the record's life, then stops", pastTheLife: true},
+		{name: "control: the replaced session stops inside the record's life"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newGateRig(t)
@@ -925,22 +930,93 @@ func TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsHour(t *tes
 			}
 			claimed := time.Now()
 			t.Cleanup(rig.listenerClock.unpin)
-			if row.pastTheHour {
-				rig.listenerClock.pin(claimed.Add(takeoverRecordLife + time.Minute))
+			if row.pastTheLife {
+				rig.listenerClock.pin(claimed.Add(handoverRecordLife + time.Minute))
 				rig.sweepPass()
 				if _, state := rig.harness.sessions.Lookup(gateReplaced); state != session.Live {
-					t.Fatalf("%s reads %s at the pass past the record's hour; the case needs it live", gateReplaced, state)
+					t.Fatalf("%s reads %s at the pass past the record's life; the case needs it live", gateReplaced, state)
 				}
 			}
 			rig.crash(t, gateReplaced, standIn)
 			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
-			if row.pastTheHour {
-				rig.listenerClock.pin(claimed.Add(takeoverRecordLife + 2*time.Minute))
+			if row.pastTheLife {
+				rig.listenerClock.pin(claimed.Add(handoverRecordLife + 2*time.Minute))
 			}
 			rig.sweepPass()
 			received := rig.watch(t, taker, gateClaimant, gateRole, unread)
 			copiesRequireEach(t, received, gateClaimant, unread)
 			copiesRequireNone(t, received, gateClaimant, read)
+		})
+	}
+}
+
+// A direct message to the replaced session has no fence, as a role forward has: a sender - a
+// person who answers a Dispatch ask the session made, a peer that knows its id - can write to it
+// hours after the claim. So a handover record lives the stream's retention (handoverRecordLife),
+// not the keep window, and a message sent after a pass past the claim's hour still reaches the
+// claimant. The replaced session stops and is claimed, the claim's own handover held
+// (gateClaimDrainHeld), so the sweep's passes are the record's; a pass runs at the row's time,
+// then the message is sent, then a pass runs again. In the case the pass runs past the claim's
+// hour, the record stays open and the claimant receives the message; it fails where a handover
+// record ends with the keep window, as a takeover record does, since that pass would finish it and
+// none would read the message. The control is the same past the record's life: that pass finishes
+// the record, and the message stays on the replaced session's own subject, unread - the end the
+// life states, and the proof that the case's watch sees a record that finished.
+func TestADirectMessageSentAfterTheClaimsHourIsHandedOver(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		after  time.Duration
+		handed bool
+	}{
+		{name: "case: the message is sent after a pass past the claim's hour", after: takeoverRecordLife + 10*time.Minute, handed: true},
+		{name: "control: the message is sent after a pass past the record's life", after: handoverRecordLife + 10*time.Minute},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newGateRig(t)
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{skipClaimHandover: gateClaimDrainHeld})
+			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
+			rig.registerOn(t, rig.personToken(gateReplaced, gatePerson), gateReplaced)
+			read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
+			seqs := copiesSeqs(t, standIn.collect(t, 1, copiesWatchBound), read)
+			awaitAckState(t, rig.consumers, gateReplaced, 0, seqs[read])
+			rig.crash(t, gateReplaced, standIn)
+			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
+
+			taker := startCopiesStandIn(t, rig.url, gateClaimant, answerDone)
+			token := rig.personToken(gateClaimant, gatePerson)
+			rig.registerOn(t, token, gateClaimant)
+			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
+				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
+			}
+			claimed := time.Now()
+			t.Cleanup(rig.listenerClock.unpin)
+			rig.listenerClock.pin(claimed.Add(row.after))
+			rig.sweepPass()
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			records, err := rig.harness.client.TakeoverRecords(ctx, gateRole)
+			if err != nil {
+				t.Fatalf("read role %s's takeover records: %v", gateRole, err)
+			}
+			subject := bus.HandoverSubject(gateRole, gateReplaced, gateClaimant)
+			i := slices.IndexFunc(records, func(stored bus.StoredTakeoverRecord) bool { return stored.Subject == subject })
+			if i < 0 || records[i].Record.Finished == row.handed {
+				t.Fatalf("the handover record %s after the pass %s past the claim = %+v; want it finished %t", subject, row.after, records, !row.handed)
+			}
+
+			unread := rig.sendDirect(t, gateReplaced, "dispatch", "a message to "+gateReplaced+" sent after the pass")
+			rig.listenerClock.pin(claimed.Add(row.after + 5*time.Minute))
+			rig.sweepPass()
+			received := rig.watch(t, taker, gateClaimant, gateRole, wantIf(row.handed, unread)...)
+			copiesRequireNone(t, received, gateClaimant, read)
+			if row.handed {
+				copiesRequireEach(t, received, gateClaimant, unread)
+				return
+			}
+			copiesRequireNone(t, received, gateClaimant, unread)
+			if n := rig.handedOverCopies(t, gateClaimant, unread); n != 0 {
+				t.Errorf("%s's own subject holds %d copies of %s; want none, as the record finished before it was sent", gateClaimant, n, unread)
+			}
 		})
 	}
 }

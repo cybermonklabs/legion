@@ -28,12 +28,28 @@ func writeHandoverRecords(t *testing.T, client *bus.Client, subjects ...string) 
 	}
 }
 
-// readSuccessors is GET /v1/sessions/<session>/successors through handler, decoded, with the
-// answer as it came.
+// testDispatchPrincipal is the identity a test names as Dispatch's (listenerDeps.dispatchPrincipal,
+// ENVOY_DISPATCH_PRINCIPAL) and readSuccessors presents as verified: the one caller the successors
+// route names the successors' principal to.
+const testDispatchPrincipal = "system:serviceaccount:example-ns:example-dispatch"
+
+// readSuccessors is GET /v1/sessions/<session>/successors through handler as Dispatch reads it,
+// on testDispatchPrincipal, decoded, with the answer as it came.
 func readSuccessors(t *testing.T, handler http.Handler, session string) (listenerwire.SessionSuccessors, *httptest.ResponseRecorder) {
 	t.Helper()
+	return readSuccessorsAs(t, handler, session, testDispatchPrincipal)
+}
+
+// readSuccessorsAs is readSuccessors on a request whose identity token proved identity
+// (withVerifiedPrincipal), or on no credential for "".
+func readSuccessorsAs(t *testing.T, handler http.Handler, session, identity string) (listenerwire.SessionSuccessors, *httptest.ResponseRecorder) {
+	t.Helper()
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions/"+session+"/successors", nil))
+	request := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+session+"/successors", nil)
+	if identity != "" {
+		request = request.WithContext(withVerifiedPrincipal(request.Context(), identity))
+	}
+	handler.ServeHTTP(recorder, request)
 	var answer listenerwire.SessionSuccessors
 	if recorder.Code == http.StatusOK {
 		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
@@ -121,7 +137,7 @@ func TestTheSuccessorsRouteFollowsAChainOfOnePrincipal(t *testing.T) {
 		bus.HandoverSubject("plain-role", stranger, beyond),
 	)
 	mux := http.NewServeMux()
-	registerV1Routes(mux, &listenerDeps{client: client, known: known}, "test-machine", logging.New("test"))
+	registerV1Routes(mux, &listenerDeps{client: client, known: known, dispatchPrincipal: testDispatchPrincipal}, "test-machine", logging.New("test"))
 
 	for session, want := range map[string][]string{
 		first: {grandheir, heir, spare},
@@ -174,6 +190,79 @@ func TestTheSuccessorsRouteFollowsAChainOfAnyLength(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The principal the successors last registered as names a person's address or a service, which no
+// session needs to read of another; Dispatch alone holds a successor's reply to it. So the route
+// names it only to Dispatch's own verified identity (listenerDeps.dispatchPrincipal), and answers
+// every other caller the same successors with no principal: a request with no credential, one
+// whose identity token proved another principal, and Dispatch's own identity on a listener that
+// names no Dispatch principal. Each case fails where the route names the principal to any caller;
+// the control is Dispatch's read, which names it.
+func TestTheSuccessorsRouteNamesThePrincipalToDispatchAlone(t *testing.T) {
+	client := setupPublishTestClient(t)
+	known := openKnownSessionsOn(t, client.Conn, time.Now)
+	const replaced, heir = "ses_successors_principal_replaced", "ses_successors_principal_heir"
+	registerAs(t, known, "person:ada@example.com", replaced, heir)
+	writeHandoverRecords(t, client, bus.HandoverSubject("plain-role", replaced, heir))
+	named := http.NewServeMux()
+	registerV1Routes(named, &listenerDeps{client: client, known: known, dispatchPrincipal: testDispatchPrincipal}, "test-machine", logging.New("test"))
+	unnamed := http.NewServeMux()
+	registerV1Routes(unnamed, &listenerDeps{client: client, known: known}, "test-machine", logging.New("test"))
+
+	for _, row := range []struct {
+		name      string
+		mux       http.Handler
+		identity  string
+		principal string
+	}{
+		{"case: a request with no credential", named, "", ""},
+		{"case: an identity token that proved another principal", named, "system:serviceaccount:example-ns:example-worker", ""},
+		{"case: Dispatch's identity on a listener that names no Dispatch principal", unnamed, testDispatchPrincipal, ""},
+		{"control: Dispatch's own identity", named, testDispatchPrincipal, "person:ada@example.com"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			answer, recorder := readSuccessorsAs(t, row.mux, replaced, row.identity)
+			requireStatus(t, recorder, http.StatusOK, "the successors of "+replaced)
+			if !slices.Equal(answer.Successors, []string{heir}) || answer.Principal != row.principal {
+				t.Errorf("the successors of %s = %v for %q; want [%s] for %q", replaced, answer.Successors, answer.Principal, heir, row.principal)
+			}
+		})
+	}
+}
+
+// A listener whose known-session bucket is not open can read no principal any session registered
+// as, and no retry changes that until its grant covers the bucket, so its successors route names no
+// successor, 200 with the empty list, as its claim route refuses every handover: Dispatch then
+// refuses another session's reply 403 at once, as it did before successors, where a 503 would have
+// it answer ENVOY_UNAVAILABLE to every such reply for as long as the bucket stays shut. The case
+// fails where the route answers that read 503; the control is the same read through the store
+// whose bucket is open, which names the successor.
+func TestTheSuccessorsRouteNamesNoneWhileTheKnownSessionBucketIsNotOpen(t *testing.T) {
+	client := setupPublishTestClient(t)
+	known := openKnownSessionsOn(t, client.Conn, time.Now)
+	const replaced, heir = "ses_successors_shut_replaced", "ses_successors_shut_heir"
+	registerAs(t, known, "example-fleet", replaced, heir)
+	writeHandoverRecords(t, client, bus.HandoverSubject("plain-role", replaced, heir))
+	shut := http.NewServeMux()
+	registerV1Routes(shut, &listenerDeps{client: client, known: &session.KnownSessions{}, dispatchPrincipal: testDispatchPrincipal}, "test-machine", logging.New("test"))
+	open := http.NewServeMux()
+	registerV1Routes(open, &listenerDeps{client: client, known: known, dispatchPrincipal: testDispatchPrincipal}, "test-machine", logging.New("test"))
+
+	t.Run("case: the store whose bucket is not open names no successor", func(t *testing.T) {
+		answer, recorder := readSuccessors(t, shut, replaced)
+		requireStatus(t, recorder, http.StatusOK, "the successors of "+replaced+" while the bucket is not open")
+		if !strings.Contains(recorder.Body.String(), `"successors":[]`) || answer.Principal != "" {
+			t.Errorf("the successors of %s = %s; want the empty list and no principal", replaced, recorder.Body.String())
+		}
+	})
+	t.Run("control: the store whose bucket is open names the successor", func(t *testing.T) {
+		answer, recorder := readSuccessors(t, open, replaced)
+		requireStatus(t, recorder, http.StatusOK, "the successors of "+replaced)
+		if !slices.Equal(answer.Successors, []string{heir}) {
+			t.Errorf("the successors of %s = %v; want [%s]", replaced, answer.Successors, heir)
+		}
+	})
 }
 
 // A read of the records the bus does not answer is the bus-unavailable 503 with Retry-After: 1,

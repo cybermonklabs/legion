@@ -3,7 +3,11 @@ body: |-
   When the daemon's registration names the session a Legion pane replaces (`replaces`, daemon API
   contract entry 20261125170509), the pane's role claim names that session as its predecessor
   (`previous_session_id`). The Envoy listener then hands the unread direct and role messages of
-  the replaced session to the pane.
+  the replaced session to the pane. Every role claim the channel server makes (a restore, a
+  heartbeat, the Legion pane's claim, `envoy_role_set`) writes to its stderr, naming the role and
+  the session, each warning the listener answers a claim that landed with, such as that it handed
+  over no message of the replaced session and why. `envoy_role_set` also returns them beside the
+  interest row, as `warnings`.
 time: 2026-11-25T02:45:35Z
 custom:
     Issue: replaced-session-handover

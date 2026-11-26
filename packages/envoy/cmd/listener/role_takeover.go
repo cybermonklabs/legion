@@ -13,26 +13,10 @@
 // route's handover and the kept lane's sweep run the passes (handOverTakenRole). The session relay
 // copies a role message whose role another session holds instead of delivering it
 // (sessionRelays.takeOverFrame). Dispatch marks a send for a role route from its own identity alone
-// (internal/dispatch/envoy, Send), which is what lets a copy find a message Dispatch sent.
-//
-// The handover: a claim that lands and names the session it replaces (previous_session_id, on a
-// soft claim or an outright one) hands that session's unread messages to the claimant, whether or
-// not the replaced session's claim of the role still stands - the role claim reaper frees a dead
-// holder's claim, so a claim made after that reads no holder to take the role from. The claim
-// route writes one handover record for the claimant and the session it names (publishHandover,
-// bus.HandoverSubject) once the claim has landed. Its passes are a takeover record's passes, run
-// where every other record's are, and copy from the replaced session's acknowledgement floor on,
-// for as long as that session is not live: each direct message to it goes to the claimant's own
-// agent subject (handOverDirectFrame), and each role message of any role goes to that role's kept
-// lane, which hands it to the role's next live holder, the claimant for each role it claims too.
-// Delivery is at least once: a message the replaced session acknowledged above its floor is
-// copied as well, and a copy keeps the message's event id. A claim hands over only between
-// sessions of one principal: the claim route writes the record only when the claim's credential,
-// the claimant's last registration and the replaced session's last registration all name one
-// principal (handoverRefusal), and answers any other claim with a warning that no message of that
-// session is handed over; each pass, and the successor read Dispatch makes, holds the two
-// sessions' last registrations to that rule again (handoverStands), so a session that registers
-// as another principal after the claim is handed nothing more.
+// (internal/dispatch/envoy, Send), which is what lets a copy find a message Dispatch sent. A
+// claim that names the session it replaces adds a handover record, whose passes are these passes
+// with the differences runTakeoverPass names; the claim route's side of it, its rule and its
+// direct copies are in role_handover.go.
 
 package main
 
@@ -43,7 +27,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,11 +36,9 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -74,9 +55,11 @@ import (
 // sender is told failed. A record lives that long and not the stream's age, so the passes of the
 // three shared listeners read the previous holders' subjects of the last hour's takeovers alone,
 // not of three days' (TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning). A handover
-// record's hour runs from the last pass that found its replaced session live (runTakeoverPass),
-// so it lives on while that session does; such a pass reads the role's claim and the session's
-// state, and none of its subject.
+// record lives handoverRecordLife instead, the stream's retention, since no fence bounds when a
+// message to the replaced session is sent, counted from the last pass that found its replaced
+// session live where that is later than the claim (runTakeoverPass), so it lives on while that
+// session does; such a pass reads the role's claim and the session's state, and none of its
+// subject.
 const takeoverRecordLife = roleKeepWindow
 
 // takeoverRecordWindow bounds the write of a takeover record before a try of a claim's write. The
@@ -377,266 +360,6 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 	return nil
 }
 
-// errHandoverUnrecorded wraps the failure of the handover record of a claim that landed and named
-// the session it replaces (publishHandover): a full stream, a write that went unanswered within
-// takeoverRecordWindow, a leader election. The claim stands, but nothing would copy the replaced
-// session's messages, so the claim route answers 503 with Retry-After: 1 and the client claims
-// again, which writes the record: the claim it makes again lands, as the claimant already holds
-// the role.
-var errHandoverUnrecorded = errors.New("the claim landed, but the handover record of the session it replaces did not store, so claim again")
-
-// publishHandover writes the handover record of a claim of role that landed for successor and
-// named previous as the session it replaces (bus.HandoverSubject), with the claim's time on the
-// listener's clock, so the record's passes (runTakeoverPass) copy what previous did not read to
-// successor and to the kept lane of each role it is a message of. The record's subject is the same
-// for every such claim, and a write that finds the subject already holds a record is an earlier
-// claim's (or its own first send's), whose passes go on from where they stopped: that is no error,
-// and no second record is written (bus.Client.WriteHandoverRecord), so a session that claims its
-// role again at every registration costs one record. A session id no session consumer can be
-// named for (bus.SessionConsumerName) has no subject to copy from or to, so it gets none, and so
-// does a claim at an edge listener (cfg.edge), whose grant publishes no takeover lane
-// (natsgrant.Edge), as publishTakeover writes none there.
-func publishHandover(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, previous, successor string) error {
-	if cfg.edge != nil {
-		return nil
-	}
-	if _, ok := bus.SessionConsumerName(previous); !ok {
-		return nil
-	}
-	if _, ok := bus.SessionConsumerName(successor); !ok {
-		return nil
-	}
-	if refuse := cfg.takeoverFaults.faults().handoverRecordWrite; refuse != nil {
-		if err := refuse(role, previous, successor); err != nil {
-			return fmt.Errorf("%w: record the handover of %s's messages to %s for role %s: %w", errHandoverUnrecorded, previous, successor, role, err)
-		}
-	}
-	writeCtx, cancel := context.WithTimeout(ctx, takeoverRecordWindow)
-	defer cancel()
-	record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: cfg.now().UnixMilli()}
-	if err := cfg.client.WriteHandoverRecord(writeCtx, bus.HandoverSubject(role, previous, successor), record); err != nil {
-		return fmt.Errorf("%w: record the handover of %s's messages to %s for role %s: %w", errHandoverUnrecorded, previous, successor, role, err)
-	}
-	return nil
-}
-
-// requestPrincipal is the principal r's credential acts for, in the one form that names the kind
-// of credential too (ciphertoken.Caller.Principal): a broker token's, which tells a person's own
-// token from a token an operator's entry gave that person for a project, and from a service; for
-// a request with no broker token, the identity token's subject (verifiedPrincipal,
-// ciphertoken.IdentityPrincipal), a projected service account's or a Google account's; and empty
-// for a credential that proves none, the shared token and a request on an open /v1. The
-// registration route records it as the session's principal (session.KnownSession.Principal), and
-// the claim route holds a handover to it (handoverRefusal).
-func requestPrincipal(r *http.Request) string {
-	if caller, ok := brokerCaller(r); ok {
-		return caller.Principal()
-	}
-	return ciphertoken.IdentityPrincipal(verifiedPrincipal(r))
-}
-
-// errHandoverUnjudged wraps a claim that landed and named the session it replaces when the
-// listener could not read whether the handover is one principal's (handoverRefusal): the
-// known-session bucket's leader did not answer, or the claimant's own registration is not
-// recorded with its principal yet. The claim stands, and the claim route answers 503 with
-// Retry-After: 1, as for a handover record that did not store, so the client claims again and the
-// handover is judged then, rather than refused for good on a read that did not answer. A bucket
-// this listener cannot open is no such read: it stays shut until the listener's grant covers it,
-// so the claim is refused instead (handoverRefusal).
-var errHandoverUnjudged = errors.New("the claim landed, but whether this claim may hand over the messages of the session it replaces could not be read, so claim again")
-
-// handoverReadBound bounds the reads of the two known-session records a handover is judged by
-// (handoverRefusal, handoverStands), each from the bucket's leader: the bound a claim's read of a
-// role's holder takes (roleHolderReadTimeout), inside the claim route's own budget.
-const handoverReadBound = roleHolderReadTimeout
-
-// handoverRefusal is the rule a claim that landed and names replaced as the session it replaces
-// (previous_session_id) is held to before the claim route writes replaced's handover record
-// (publishHandover): it answers why the claim hands nothing over, or "" where it may. The
-// claimant's credential (requestPrincipal), the claimant's last registration and replaced's last
-// registration must all name one principal, none equal to none, each registration read from the
-// known-session bucket's leader (session.KnownSessions.Read), where this listener's copy can be
-// behind a registration another listener took a moment ago. A refused claim stands and writes no
-// handover record, so nothing copies replaced's unread messages to the claimant, and replaced's
-// consumer keeps them for replaced itself.
-//
-// A claim names any session it likes as the one it replaces, and a handover record's passes copy
-// that session's direct messages to the claimant. The broker token a session holds proves the
-// claimant is itself (sessionNotBound), not that it continues the session it names, so without
-// this rule any session could name a stopped session - a person's among them - and read its
-// messages. A Legion claim's fresh session and the session it replaces register on credentials of
-// one principal, so that handover stands. An agent session that names a person's session is
-// refused by design: its credential acts for its service, for another principal, or for that
-// person on a project an operator's entry names, which is another principal than the person's own
-// token (ciphertoken.Caller.Principal). A credential that proves no principal acts for any session
-// on every route already, and may name a session whose last registration proved none either,
-// which is every handover on a listener its clients reach with no credential; it may not name a
-// session that registered as a principal.
-//
-// replaced's record decides a refusal for good: a session the bucket holds no record of (none
-// registered within the retention), one whose record a listener of an earlier build wrote last,
-// which names no principal anybody recorded (session.KnownSession.PrincipalRecorded), a listener
-// with no known-session store at all (known nil, a connection with no JetStream), and a store
-// whose bucket is not open (session.ErrKnownSessionsUnavailable: a listener whose NATS grant does
-// not carry the bucket, whose registrations record no principal) are refused, since nothing says
-// which principal replaced last registered as. What only a later claim can read is the error,
-// wrapping errHandoverUnjudged: a read the leader did not answer, and a claimant whose own
-// registration is not recorded with its principal - a registration whose record did not store,
-// or one an earlier build took - which its next registration writes.
-// Dispatch lets a session answer a delivery attempt of the session it replaced only where a
-// handover record names it and the two still register as one principal (sessionSuccessorsHandler),
-// so that reply rule is held to this one too.
-func handoverRefusal(ctx context.Context, r *http.Request, known *session.KnownSessions, replaced, claimant string) (string, error) {
-	if known == nil {
-		return "this listener keeps no record of the principal any session registered as", nil
-	}
-	readCtx, cancel := context.WithTimeout(ctx, handoverReadBound)
-	defer cancel()
-	previous, found, err := known.Read(readCtx, replaced)
-	switch {
-	case errors.Is(err, session.ErrKnownSessionsUnavailable):
-		return knownBucketNotOpenRefusal, nil
-	case err != nil:
-		return "", fmt.Errorf("%w: %w", errHandoverUnjudged, err)
-	case !found:
-		return fmt.Sprintf("this listener holds no record of the principal %s last registered as", replaced), nil
-	case !previous.PrincipalRecorded:
-		return fmt.Sprintf("%s last registered through a listener of an earlier build, which recorded no principal for it", replaced), nil
-	}
-	own, found, err := known.Read(readCtx, claimant)
-	switch {
-	case errors.Is(err, session.ErrKnownSessionsUnavailable):
-		return knownBucketNotOpenRefusal, nil
-	case err != nil:
-		return "", fmt.Errorf("%w: %w", errHandoverUnjudged, err)
-	case !found || !own.PrincipalRecorded:
-		return "", fmt.Errorf("%w: the registration of %s is not recorded with its principal yet", errHandoverUnjudged, claimant)
-	}
-	principal := requestPrincipal(r)
-	switch {
-	case principal != own.Principal:
-		return fmt.Sprintf("this claim's credential acts for another principal than the one %s last registered as", claimant), nil
-	case principal != previous.Principal:
-		return fmt.Sprintf("this claim's credential acts for another principal than the one %s last registered as", replaced), nil
-	}
-	return "", nil
-}
-
-// knownBucketNotOpenRefusal is why handoverRefusal refuses every claim's handover on a listener
-// whose known-session bucket is not open: it can read no principal a session registered as, and
-// records none for the registrations it takes (subscribeHandler).
-const knownBucketNotOpenRefusal = "this listener's known-session bucket (envoy_known_sessions) is not open, so it can read no principal any session registered as, and records none"
-
-// knownBucketNotOpenWarning is the warning a registration through a listener whose known-session
-// bucket is not open is answered with (subscribeHandler): the registration is admitted, but no
-// principal is recorded for it, and the listener refuses every claim's handover until the bucket
-// opens (knownBucketNotOpenRefusal).
-const knownBucketNotOpenWarning = "this registration's principal is not recorded, since this listener's known-session bucket (envoy_known_sessions) is not open: until it opens, no claim through this listener is handed the unread messages of the session it replaces"
-
-// knownBucketNotOpenWarnings holds back warnKnownBucketNotOpen's line for a minute after each one,
-// counting what it held back: the bucket stays shut until the listener's grant covers it, and
-// every registration and heartbeat meets it meanwhile.
-var knownBucketNotOpenWarnings struct {
-	mu   sync.Mutex
-	last time.Time
-	held int
-}
-
-// warnKnownBucketNotOpen logs a registration of sessionID admitted with no principal recorded
-// because the known-session bucket is not open, at most once a minute for the whole listener,
-// naming the bucket, the session and how many such registrations it held back since its last line.
-func warnKnownBucketNotOpen(logger *logging.Logger, sessionID string) {
-	w := &knownBucketNotOpenWarnings
-	w.mu.Lock()
-	now := time.Now()
-	if !w.last.IsZero() && now.Sub(w.last) < time.Minute {
-		w.held++
-		w.mu.Unlock()
-		return
-	}
-	held := w.held
-	w.last, w.held = now, 0
-	w.mu.Unlock()
-	logger.Warn("listener registered a session with no principal recorded: its known-session bucket is not open, so it hands over no replaced session's messages until the bucket opens",
-		slog.String("bucket", bus.KnownSessionBucket),
-		slog.String("session_id", sessionID),
-		slog.Int("held_back", held))
-}
-
-// handoverRefusedWarning is the warning a claim of role that named replaced as the session it
-// replaces is answered with when handoverRefusal refused it for why: no message of replaced is
-// handed over. A claim that took role from replaced while replaced still held it (took) says
-// which messages still move: the role's own, which replaced had not read, go to the role's
-// holder as they do for every claim that takes a role from another session (publishTakeover),
-// since they were sent to the role and not to replaced.
-func handoverRefusedWarning(role, replaced string, took bool, why string) string {
-	warning := fmt.Sprintf("no message of %s is handed over to this session: %s", replaced, why)
-	if took {
-		warning += fmt.Sprintf("; the messages of role %s that %s had not read go to the role's holder, as they do for every claim that takes a role", role, replaced)
-	}
-	return warning
-}
-
-// handoverStands is handoverRefusal's rule as a pass of previous's handover record to successor,
-// and the successor read, hold it after the claim: whether the two sessions' last registrations
-// name one principal, each read from the known-session bucket's leader, and that principal. A
-// session that registers as another principal once the claim landed - a person who resumes an
-// agent's session, say - is then no longer the same principal's, and nothing more of previous's is
-// copied to successor or answered by it. A session the bucket holds no record of, and one whose
-// principal nobody recorded, stands for no handover, and so does a listener with no known-session
-// store; a read that did not answer is the error, for the caller to try again.
-func handoverStands(ctx context.Context, known *session.KnownSessions, previous, successor string) (string, bool, error) {
-	principal, recorded, err := recordedPrincipal(ctx, known, previous)
-	if err != nil || !recorded {
-		return "", false, err
-	}
-	other, recorded, err := recordedPrincipal(ctx, known, successor)
-	return principal, recorded && other == principal, err
-}
-
-// handoverStillStands is the fence a handover pass holds each copy to once handoverStands read,
-// at the pass's start, that both sessions last registered as principal: each session's record,
-// read again from the known-session bucket's leader as the last step before the copy
-// (recordedPrincipal), still names principal, recorded. A registration of either session as
-// another principal, through any listener, that lands before that read ends the pass before the
-// copy, as a registration that makes the replaced session live does (runTakeoverPass); this
-// listener's own copy of the records is not asked, since it can be behind a registration through
-// another listener. A read that did not answer is the error, which ends the pass for the next one
-// to judge again. What no read can fence is a registration that lands between this read and the
-// copy's publish, a stream write the bucket's write is not ordered with: that one copy reaches the
-// session, which is no more than the session already holds, since a principal that resumes a
-// session reads every message that session was handed before.
-func handoverStillStands(ctx context.Context, known *session.KnownSessions, principal string, sessions ...string) (bool, error) {
-	for _, sessionID := range sessions {
-		held, recorded, err := recordedPrincipal(ctx, known, sessionID)
-		if err != nil {
-			return false, err
-		}
-		if !recorded || held != principal {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// recordedPrincipal is the principal sessionID last registered as, read from the known-session
-// bucket's leader within handoverReadBound, and whether a registration of this build recorded one
-// (session.KnownSession.PrincipalRecorded): nothing recorded for a session the bucket holds no
-// record of, and for a listener with no store (known nil). A read that did not answer is the
-// error.
-func recordedPrincipal(ctx context.Context, known *session.KnownSessions, sessionID string) (string, bool, error) {
-	if known == nil {
-		return "", false, nil
-	}
-	readCtx, cancel := context.WithTimeout(ctx, handoverReadBound)
-	defer cancel()
-	record, found, err := known.Read(readCtx, sessionID)
-	if err != nil {
-		return "", false, fmt.Errorf("read the principal %s last registered as: %w", sessionID, err)
-	}
-	return record.Principal, found && record.PrincipalRecorded, nil
-}
-
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
 // role's guard and the handover's window, it runs the passes of the role's takeover records
 // (passRecords) and then hands its kept lane over, which it does whether or not this listener
@@ -730,12 +453,13 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // changed nothing of it writes it again (runTakeoverPass): one that read nothing new on the
 // previous holder's subject, and one that copies nothing because the record's previous holder
 // holds the role, which writes the time it found that holder (bus.TakeoverRecord.HolderSeenAt).
-// It is well inside the stream's age limit less the record's life, so no record ages out of the
-// stream while a pass may still need it for as long as some listener runs a pass at least every
-// 72 hours less this; and short enough that the hour a record copies from once that holder loses
-// the role starts at most this much and one sweep interval (roleWakeInterval) before the hour
-// before it lost it. So a record nothing moves costs one write each time this has passed, whatever
-// the number of listeners whose sweeps run its passes, and no write in the sweeps between.
+// It is well inside the stream's age limit, so no record that is not finished ages out of the
+// stream for as long as some listener runs a pass of it at least every 72 hours less this, however
+// long the record lives (a handover record's life is the stream's retention); and short enough that
+// the hour a record copies from once that holder loses the role starts at most this much and one
+// sweep interval (roleWakeInterval) before the hour before it lost it. So a record nothing moves
+// costs one write each time this has passed, whatever the number of listeners whose sweeps run its
+// passes, and no write in the sweeps between.
 const takeoverRecordRefresh = 15 * time.Minute
 
 // runTakeoverPass is one pass of the takeover record stored, and returns the record as it stands
@@ -774,31 +498,38 @@ const takeoverRecordRefresh = 15 * time.Minute
 // finished.
 //
 // A handover record (bus.HandoverSubject, the claim of a session that named the one it replaces)
-// is passed the same way, with four differences. It copies nothing while the replaced session is
-// live as well as while the role's claim names it: a session that answers reads its own messages,
-// and a copy would hand a person's or an agent's messages to another session while it still reads
-// them. The pass reads it first (sessionLiveNow), and again the same way before each copy, after
-// the beforeCopy seam: this listener's cache, and the session bucket's leader where the cache does
-// not read it live, so a registration that lands while the pass runs, through this listener or
-// another one, ends it; such a pass sets the record back as one that finds the previous holder
-// holding the role does. Its hour runs from the last pass that found the replaced session live
-// or holding the role (HolderSeenAt) where that is later than the claim, and such a pass never
-// finishes it: a replaced session that stays live past the claim's hour and then stops leaves
-// unread what it was sent before it stopped, which the record still hands over then. It copies
-// nothing either, and sets the record back the same way without moving its hour, while the two
-// sessions' last registrations do not name one principal (handoverStands), the rule the claim
-// route wrote the record under: a session that registered as another principal since is handed
-// nothing more. That is read from the bucket's leader at the start, and again from the leader as
-// the last step before each copy (handoverStillStands), so a registration as another principal
-// that lands while the pass runs ends it too. It copies more of the replaced
-// session's subject (takenFrame): a role message of any role goes to that role's kept lane, for
-// the role's next live holder, a drain of each such lane starting once the pass ends; and a
-// message to the session itself goes to the successor's own agent subject (handOverDirectFrame),
-// however long before the claim it was stored past where the pass starts, since a message to a
-// session has no hour. And where the replaced session's floor is unknown its pass starts at the
-// first message the stream holds on that session's subject, not an hour before the claim: a
-// message to the session stored earlier and never read is handed over too, at the cost of
-// handing over again what the session read in the stream's retention.
+// is passed the same way, with five differences.
+//
+// First, it copies nothing while the replaced session is live, as well as while the role's claim
+// names it: a session that answers reads its own messages, and a copy would hand a person's or an
+// agent's messages to another session while it still reads them. Its hour runs from the last pass
+// that found the replaced session live or holding the role (HolderSeenAt) where that is later than
+// the claim, and such a pass never finishes it: a replaced session that stays live past the
+// record's life and then stops leaves unread what it was sent before it stopped, which the record
+// still hands over then.
+//
+// Second, it copies nothing, and sets the record back the same way without moving its hour, while
+// the two sessions' last registrations do not name one principal, the rule the claim route wrote
+// the record under: a session that registered as another principal since is handed nothing more.
+// Both rules are one gate (handoverFence), judged at the start and again as the last step before
+// each copy, after the beforeCopy seam, each read from the leader the registration lands on, so a
+// registration that lands while the pass runs, through this listener or another one, ends it
+// before its next copy; such a pass sets the record back as the start does (setBack).
+//
+// Third, it copies more of the replaced session's subject (takenFrame): a role message of any role
+// goes to that role's kept lane, for the role's next live holder, a drain of each such lane
+// starting once the pass ends; and a message to the session itself goes to the successor's own
+// agent subject (handOverDirectFrame), however long before the claim it was stored past where the
+// pass starts, since a message to a session has no hour.
+//
+// Fourth, where the replaced session's floor is unknown its pass starts at the first message the
+// stream holds on that session's subject, not an hour before the claim: a message to the session
+// stored earlier and never read is handed over too, at the cost of handing over again what the
+// session read in the stream's retention.
+//
+// Fifth, its life is handoverRecordLife, the stream's retention, and not the keep window: a
+// message sent to the replaced session after the claim's hour is handed over too, since nothing
+// fences a direct send to a session as roles.ForwardFenceAge fences a role forward.
 //
 // A read or a copy that failed ends the pass with the record written at the frame it stopped at,
 // under the same rule; a failed read of where to start ends it with nothing written, and the next
@@ -807,12 +538,11 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 	record := stored.Record
 	successor, handover := bus.TakeoverSuccessor(stored.Subject)
 	started := cfg.now()
-	claimedAt := time.UnixMilli(record.ClaimedAt)
-	lifeFrom := claimedAt
+	life, lifeFrom := takeoverRecordLife, time.UnixMilli(record.ClaimedAt)
 	if handover {
-		lifeFrom = time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt))
+		life, lifeFrom = handoverRecordLife, time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt))
 	}
-	lifeOver := started.Sub(lifeFrom) > takeoverRecordLife
+	lifeOver := started.Sub(lifeFrom) > life
 	written := func(record bus.TakeoverRecord, done bool, err error) (bus.StoredTakeoverRecord, bool, error) {
 		sequence, writeErr := writeTakeoverRecord(ctx, cfg, stored, record)
 		if err := errors.Join(err, writeErr); err != nil {
@@ -826,50 +556,63 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		}
 		return written(record, done, err)
 	}
+	// setBack ends a pass that copies nothing more for verdict, at its start or, for a handover,
+	// before a copy after copied role messages and handed direct ones: the record is finished once
+	// its life has passed, unless it waits for a handover's replaced session; otherwise one that had
+	// found where to start is set back to finding it again, and one that never moved keeps its
+	// state. It is written when that changed it, or once its last write is takeoverRecordRefresh
+	// old, with the time a waiting pass found the holder or the live session (HolderSeenAt); a
+	// handover pass logs what it copied before it stopped, and a refusal it writes.
+	setBack := func(verdict passVerdict, copied, handed int) (bus.StoredTakeoverRecord, bool, error) {
+		writes := true
+		switch {
+		case lifeOver && !(handover && verdict == passWaits):
+			record.Finished = true
+		case record.Next != 0 || record.FloorMissed:
+			record.Next, record.FloorMissed = 0, false
+		default:
+			writes = started.Sub(stored.Written) >= takeoverRecordRefresh
+		}
+		if handover && (copied+handed > 0 || (writes && verdict == passRefused)) {
+			why := "the replaced session is live, so what it has not read stays its own"
+			if verdict == passRefused {
+				why = "the replaced session and the session that replaced it do not last register as one principal, so nothing more of the replaced session's is copied"
+			}
+			cfg.logger.Info("listener handover pass copied nothing more: "+why,
+				slog.String("role", record.Role),
+				slog.String("previous_session_id", record.Previous),
+				slog.String("session_id", successor),
+				slog.Int("copied", copied),
+				slog.Int("handed_over", handed),
+				slog.Bool("finished", record.Finished))
+		}
+		if !writes {
+			return stored, true, nil
+		}
+		if verdict == passWaits {
+			record.HolderSeenAt = started.UnixMilli()
+		}
+		return written(record, true, nil)
+	}
 	holder, err := readRoleClaimHolder(ctx, cfg, record.Role)
 	if err != nil {
 		return stored, false, fmt.Errorf("read role %s's claim: %w", record.Role, err)
 	}
-	back := holder == record.Previous
-	if handover && !back {
-		if back, err = sessionLiveNow(ctx, cfg, record.Previous); err != nil {
-			return stored, false, fmt.Errorf("read %s's registration: %w", record.Previous, err)
-		}
+	var fence *handoverFence
+	if handover {
+		fence = &handoverFence{cfg: cfg, previous: record.Previous, successor: successor}
 	}
-	// waiting is a pass that finds the previous holder holding the role again, or the replaced
-	// session of a handover live: its record is set back to wait for it, and a handover's hour
-	// runs on from this pass.
-	waiting := back
-	// principal is the principal both sessions of a handover record last registered as, read at
-	// the pass's start, which each copy is fenced on (handoverStillStands).
-	var principal string
-	if handover && !back {
-		var stands bool
-		principal, stands, err = handoverStands(ctx, cfg.known, record.Previous, successor)
-		if err != nil {
+	verdict := passCopies
+	switch {
+	case holder == record.Previous:
+		verdict = passWaits
+	case fence != nil:
+		if verdict, err = fence.judge(ctx); err != nil {
 			return stored, false, err
 		}
-		if !stands {
-			cfg.logger.Info("listener handover pass copied nothing: the replaced session and the session that replaced it did not last register as one principal",
-				slog.String("role", record.Role),
-				slog.String("previous_session_id", record.Previous),
-				slog.String("session_id", successor))
-			back = true
-		}
 	}
-	if back {
-		switch {
-		case lifeOver && !(handover && waiting):
-			record.Finished = true
-		case record.Next != 0 || record.FloorMissed:
-			record.Next, record.FloorMissed = 0, false
-		case started.Sub(stored.Written) < takeoverRecordRefresh:
-			return stored, true, nil
-		}
-		if waiting {
-			record.HolderSeenAt = started.UnixMilli()
-		}
-		return written(record, true, nil)
+	if verdict != passCopies {
+		return setBack(verdict, 0, 0)
 	}
 	since := time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt)).Add(-roleKeepWindow)
 	agent := contracts.LegacyAgentSubject(record.Previous)
@@ -913,12 +656,6 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		}
 		return nil
 	}
-	// liveAgain is set by a handover pass that finds the replaced session live again before a
-	// copy, and principalMoved by one that finds either session registered as another principal
-	// than the pass started under: the pass copies nothing more and sets the record back, as one
-	// that finds it so at the start does.
-	liveAgain, principalMoved := false, false
-scan:
 	for range roleKeepScanMax {
 		message, err := cfg.client.NextStoredMessage(ctx, agent, next)
 		if errors.Is(err, nats.ErrMsgNotFound) {
@@ -939,28 +676,16 @@ scan:
 		if err := beforeCopy(message.Sequence); err != nil {
 			return stop(err)
 		}
-		// The pass read the replaced session not live, and both sessions registered as principal,
-		// before it started. Each is read again here, after every step but the copy itself: the
-		// replaced session's state as the start reads it (this listener's cache, and the session
-		// bucket's leader where the cache does not read it live), then both registrations from the
-		// known-session bucket's leader as the last step, so a registration that lands while the
-		// pass runs, through any listener, ends it before the copy.
-		if handover {
-			live, err := sessionLiveNow(ctx, cfg, record.Previous)
-			if err != nil {
-				return stop(fmt.Errorf("read %s's registration: %w", record.Previous, err))
-			}
-			if live {
-				liveAgain = true
-				break scan
-			}
-			stands, err := handoverStillStands(ctx, cfg.known, principal, record.Previous, successor)
+		// A handover's gate is judged again here, after every step but the copy itself, so a
+		// registration that landed since the last judge, through any listener, ends the pass
+		// before the copy.
+		if fence != nil {
+			verdict, err := fence.judge(ctx)
 			if err != nil {
 				return stop(err)
 			}
-			if !stands {
-				principalMoved = true
-				break scan
+			if verdict != passCopies {
+				return setBack(verdict, copied, handed)
 			}
 		}
 		switch kind {
@@ -979,23 +704,6 @@ scan:
 			handed++
 		}
 		next = message.Sequence + 1
-	}
-	if liveAgain || principalMoved {
-		why := "the replaced session is live again, so what it has not read stays its own"
-		if principalMoved {
-			why = "the replaced session or the session that replaced it registered as another principal, so nothing more of the replaced session's is copied"
-		}
-		cfg.logger.Info("listener handover pass stopped: "+why,
-			slog.String("role", record.Role),
-			slog.String("previous_session_id", record.Previous),
-			slog.String("session_id", successor),
-			slog.Int("copied", copied),
-			slog.Int("handed_over", handed))
-		record.Next, record.FloorMissed = 0, false
-		if liveAgain {
-			record.HolderSeenAt = started.UnixMilli()
-		}
-		return written(record, true, nil)
 	}
 	record.Next = next
 	record.Finished = reachedEnd && lifeOver
@@ -1020,25 +728,23 @@ scan:
 	return settle(record, reachedEnd, nil)
 }
 
-// sessionLiveNow reports whether session answers now (sessionIsLive), read as a caller that takes
-// something away from the session on a miss reads it (liveSessionEntry with the stream leader's
-// read): a cached entry that reads live is taken at its word, and one that does not is read again
-// from the session bucket's leader, so a copy that has not applied a registration made a moment
-// ago does not read a live session as gone. A read that did not answer is its error, on which a
-// pass copies nothing.
-func sessionLiveNow(ctx context.Context, cfg listenerDeliveryHandlerConfig, sessionID string) (bool, error) {
-	if cfg.sessions == nil {
-		return false, errors.New("this listener holds no session registry")
-	}
-	_, _, err := liveSessionEntry(ctx, cfg.sessions, sessionID, roleHolderReadTimeout, sessionIsLive, cfg.sessions.RefreshFromLeader)
-	switch {
-	case errors.Is(err, nats.ErrKeyNotFound):
-		return false, nil
-	case err != nil:
-		return false, err
-	}
-	return true, nil
-}
+// passVerdict is what a pass of a takeover record does, read at its start and, for a handover
+// record, again before each copy (handoverFence.judge): copy, or copy nothing more and set the
+// record back (runTakeoverPass's setBack).
+type passVerdict uint8
+
+const (
+	// passCopies: the pass copies on.
+	passCopies passVerdict = iota
+	// passWaits: the role's claim names the record's previous holder again, or a handover's
+	// replaced session is live. That session reads its own messages, so the record waits for it,
+	// and a handover's hour runs on from this pass.
+	passWaits
+	// passRefused: a handover's two sessions do not last register as one principal, or not as the
+	// one the pass's first judge read. The record copies nothing while that holds, and its hour
+	// does not move.
+	passRefused
+)
 
 // takeoverStart is where a record's first pass reads the previous holder's subject from: the
 // sequence after the floor of its session consumer, or after the floor the listener recorded when
@@ -1148,15 +854,6 @@ func takenFrame(data []byte, role, previous string, handover bool) (roleFrame, t
 	return roleFrame{}, takenNone
 }
 
-// messageToSession reports whether frame's envelope names session's own agent subject as its topic,
-// in either form (contracts.TopicForms): the old form (contracts.LegacyAgentSubject), which every
-// direct send and dead letter is stored under, or the new form under a project
-// (contracts.AgentSubject).
-func messageToSession(frame roleFrame, session string) bool {
-	topic, err := fieldText("topic", frame.topic)
-	return err == nil && topic != "" && slices.Contains(contracts.TopicForms(topic), contracts.LegacyAgentSubject(session))
-}
-
 // keepTakenRoleFrame copies item, the frame stored at seq on a session's own subject, to role's
 // kept lane, as its envelope without the forward mark (contracts.RoleForwardDedupePrefix) and with
 // a dedupe key of its own (takenFrameDedupeKey), under takenFrameMsgID. The stream's duplicate
@@ -1177,55 +874,6 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 		return fmt.Errorf("copy role %s's message %s to its kept lane: %w", role, item.EventID, err)
 	}
 	return nil
-}
-
-// handOverDirectFrame copies frame, a message to previous itself stored at seq on previous's own
-// agent subject (takenFrame), to successor's own agent subject, where successor's session consumer
-// delivers it as a message to successor: its envelope with successor's subject as its topic, which
-// the edge's frame rule (edgeFrameVerdict) and the plugins read a message to the session by, and a
-// dedupe key of its own (takenFrameDedupeKey), under handedOverMsgID. Everything else of the
-// envelope is the message's own: its event id, its sender and source session, so a reply goes to
-// whoever sent it. A message that names no event id is given one on its first copy
-// (handedOverEventID), which every later copy of that copy keeps, so it is one message across
-// hops as a message with an event id is. The stream drops a second copy of the message to
-// successor for its whole duplicate window - by a pass that stopped, by another listener's, by the
-// record of a second role successor claimed, or one that came back round two sessions that each
-// replaced the other - and its answer is no error. A clustered stream's refusal of an id still in
-// process under another publish (bus.ErrDuplicateInProcess) is published again until the answer
-// names that publish's copy (publishPastInProcess).
-func handOverDirectFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, previous, successor string, frame roleFrame, seq uint64) error {
-	item := frame.envelope()
-	handed := item
-	handed.Topic = contracts.LegacyAgentSubject(successor)
-	handed.DedupeKey = takenFrameDedupeKey(item.DedupeKey, seq)
-	if handed.EventID == "" {
-		handed.EventID = handedOverEventID(previous, seq)
-	}
-	msgID := handedOverMsgID(successor, handed.EventID)
-	if _, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
-		return cfg.keepPublish(ctx, handed.Topic, handed, msgID)
-	}); err != nil {
-		return fmt.Errorf("hand %s's message %s over to %s: %w", previous, handed.EventID, successor, err)
-	}
-	return nil
-}
-
-// handedOverMsgID is the message id a copy of the message eventID names goes to successor's agent
-// subject under (handOverDirectFrame): successor's subject, `:handover:` and the event id, so the
-// stream keeps one copy of a message for a session however many passes, records and hops make it.
-// Two sessions that each replaced the other copy a message to and fro once each and no more: the
-// copy that comes back is a new frame of the same event, which the id the first copy took drops.
-func handedOverMsgID(successor, eventID string) string {
-	return contracts.LegacyAgentSubject(successor) + ":handover:" + eventID
-}
-
-// handedOverEventID is the event id the first copy of a message that names none takes
-// (handOverDirectFrame): 32 hex digits, an event id's shape (id.New), drawn from the frame the
-// message was first read from, previous's subject and seq, so every pass and listener that copies
-// that frame names it alike, and every later hop keeps it.
-func handedOverEventID(previous string, seq uint64) string {
-	sum := sha256.Sum256([]byte("handover:" + previous + ":" + strconv.FormatUint(seq, 10)))
-	return hex.EncodeToString(sum[:16])
 }
 
 // takeOverFrame judges a frame of session sessionID's consumer before the relay sends it, and

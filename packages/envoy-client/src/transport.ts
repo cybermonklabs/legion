@@ -95,6 +95,18 @@ const StringListWireSchema = z
   .nullish()
   .transform((list) => list ?? []);
 
+/**
+ * A granted role claim's answer (`roleSetResponse` in the listener): the claimant's interest row,
+ * and `warnings`, each a sentence the listener says about the claim that its caller must log and,
+ * where an agent asked for the claim, tell the agent. A role named in the old form gets one that
+ * names the new form to claim; a claim that names the session it replaces (`previous_session_id`)
+ * and hands over none of its messages gets one that says so and why: the rule that holds a
+ * handover to one principal refused it, the listener's known-session bucket is not open, or the
+ * listener is an edge listener, which hands over no messages. The listener omits the field
+ * when there are none, and a listener predating it sends none: both read as [].
+ */
+const RoleSetWireSchema = InterestWireSchema.extend({ warnings: StringListWireSchema });
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -706,8 +718,17 @@ export type SetRoleInput = {
   readonly clientInstanceID?: string;
 };
 
+/**
+ * A claim's result. A granted claim carries the listener's interest row and its `warnings` about
+ * the claim (`RoleSetWireSchema`), [] when it sent none, as an older listener never does; the
+ * warnings are read here alone, never off the interest.
+ */
 export type SetRoleResult =
-  | { readonly claimed: true; readonly interest: Interest }
+  | {
+      readonly claimed: true;
+      readonly interest: Interest;
+      readonly warnings: readonly string[];
+    }
   | { readonly claimed: false; readonly holder: string };
 
 export type ListSessionsInput = {
@@ -1004,7 +1025,9 @@ export type EnvoyClient = {
    * side carries no instance id; any other live holder keeps the role and is reported as
    * `{ claimed: false, holder }`. On any claim, `previousSessionID` also names the session the
    * claim replaces, whose unread direct and role messages a listener that supports it hands to
-   * this session once the claim lands and that session is not live.
+   * this session once the claim lands and that session is not live. A granted claim answers the
+   * listener's warnings about it beside the interest row, such as a handover of that session it
+   * did not make; the caller logs each.
    */
   readonly setRole: (input: SetRoleInput) => Promise<SetRoleResult>;
   readonly getRole: (role: string) => Promise<RoleInfo>;
@@ -1519,10 +1542,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw error;
       }
-      return {
-        claimed: true,
-        interest: InterestWireSchema.parse(answerJson(raw, "POST", "/v1/roles/set")),
-      };
+      const { warnings, ...interest } = RoleSetWireSchema.parse(
+        answerJson(raw, "POST", "/v1/roles/set")
+      );
+      return { claimed: true, interest, warnings };
     },
     getRole: async (role) =>
       RoleWireSchema.parse(

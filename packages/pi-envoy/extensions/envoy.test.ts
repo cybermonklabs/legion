@@ -4248,6 +4248,66 @@ describe("envoy OMP extension", () => {
     ]);
   });
 
+  // A claim can land and still hand over none of the messages of the session it replaces, and the
+  // listener says so in the answer's warnings. The agent that ran `envoy_role_set` reads each in
+  // the tool's result, and the log holds each at warn level with the role and the session.
+  test("envoy_role_set logs each of the listener's warnings about the claim and returns them to the agent", async () => {
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const legacy = "controller is the old form of ACME.controller; claim ACME.controller";
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/roles/set") {
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as { readonly role?: string };
+        return response({
+          session_id: "ses_omp",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: [`notifications.role.${body.role ?? ""}`],
+          warnings: [legacy, handover],
+        });
+      }
+      if (url.pathname === "/v1/interests/subscribe") {
+        return response({
+          session_id: "ses_omp",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: ["notifications.agent.ses_omp"],
+          delivery: consumerDelivery("ses_omp", { streamID: TEST_STREAM_ID }),
+        });
+      }
+      if (url.pathname === "/v1/sessions") return response([]);
+      return response({ session_id: "ses_omp", machine_id: "test", dir: "/tmp", topics: [] });
+    };
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts");
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext());
+    const roleSet = fixture.tools.find((tool) => tool.name === "envoy_role_set");
+    if (roleSet === undefined) throw new Error("envoy_role_set was not registered");
+    const warnings: { readonly message: string; readonly context?: unknown }[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+    });
+    const result = await roleSet.execute("", { role: "controller" }).finally(stopSink);
+    expect(result.content[0]?.text).toBe(
+      `Now holding role: controller\nListener warning: ${legacy}\nListener warning: ${handover}`
+    );
+    expect(result.details).toEqual({ role: "controller", warnings: [legacy, handover] });
+    expect(
+      warnings.filter(({ message }) => message === "envoy: the listener warned about a role claim")
+    ).toEqual([
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "controller", sessionID: "ses_omp", warning: legacy },
+      },
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "controller", sessionID: "ses_omp", warning: handover },
+      },
+    ]);
+  });
+
   // No live session holds the role, so the listener kept the message for one hour and answered
   // 202 with kept_until, the end of that hour. The tool must not read that as a failure, and it
   // tells the sender until when the copy waits and what comes if no session takes it: a message

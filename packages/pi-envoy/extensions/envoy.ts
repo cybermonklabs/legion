@@ -4451,7 +4451,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       if (unsettledPredecessor?.host === host && unsettledPredecessor.role === desired) {
         unsettledPredecessor = undefined;
       }
-      if (claimed && unheard) handle.noteNoticesClosed(desired);
+      if (claimed.claimed && unheard) handle.noteNoticesClosed(desired);
     } catch (error) {
       if (!launched && supersedes !== undefined) {
         unsettledPredecessor = { host, role: desired, previous: supersedes };
@@ -5659,8 +5659,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
                   `This session holds role ${held}, and ${bound.join(", ")} lasts only while it does; envoy_role_set does not move it to ${role}`
                 );
               }
-              await handle.claimRole(role);
-              return { released: moving ? held : undefined };
+              const claimed = await handle.claimRole(role);
+              return {
+                released: moving ? held : undefined,
+                warnings: claimed.claimed ? claimed.warnings : [],
+              };
             },
             (refusal) => {
               claimAdopted = refusal.claimAdopted;
@@ -5670,12 +5673,21 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           // open one: the tool says so rather than report a role it never took, and says which
           // of the two the listener left behind.
           if (moved === undefined) throw sessionLeftDuringClaim(target, role, claimAdopted);
-          const { released } = moved;
-          return toolSuccess(
+          const { released, warnings } = moved;
+          // The listener's warnings about the claim, each logged where the claim landed
+          // (`claimRole`), go to the agent too: a handover of the replaced session it did not make
+          // is something the agent that claimed must know.
+          const held =
             released === undefined
               ? `Now holding role: ${role}`
-              : `Now holding role: ${role} (released role ${released})`,
-            { role, ...(released === undefined ? {} : { released }) }
+              : `Now holding role: ${role} (released role ${released})`;
+          return toolSuccess(
+            [held, ...warnings.map((warning) => `Listener warning: ${warning}`)].join("\n"),
+            {
+              role,
+              ...(released === undefined ? {} : { released }),
+              ...(warnings.length === 0 ? {} : { warnings }),
+            }
           );
         }
         case EnvoyToolOperation.getRole: {

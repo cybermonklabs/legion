@@ -5,7 +5,12 @@ import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
-import { bootLegionClaim, claimRoleAgainOnBusy, type LegionClaimHost } from "./legion-claim-core";
+import {
+  bootLegionClaim,
+  claimRoleAgainOnBusy,
+  claimStandsWithoutHandover,
+  type LegionClaimHost,
+} from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
 /** The contract the build under test speaks, which its client states on every request. */
@@ -353,6 +358,53 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
     { log: () => {}, firstDelayMs: 1 }
   );
   expect(unbounded).toBe(6);
+});
+
+/** The listener's 503 to a role claim with `body`, as envoy-client's `setRole` rejects with it. */
+function claimAnswered503With(body: Record<string, string>): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 503,
+    responseBody: JSON.stringify(body),
+  });
+}
+
+// The one claim 503 that is no claim holding nothing: the claim landed and stands, and only the
+// handover of the session it replaces is not recorded. The listener names it by its code; one of
+// the build before that code sends the same 503 with none, whose text begins as below. Every other
+// claim 503 wrote nothing, and each wait's log line hands the caller the 503 to tell them apart.
+test("a claim 503 whose claim stands is told from one that wrote nothing, and each wait hands its 503 to the log", async () => {
+  const handover = claimAnswered503With({
+    error:
+      "the claim landed, but the handover record of the session it replaces did not store, so claim again",
+    code: "handover_unrecorded",
+  });
+  const previousBuild = claimAnswered503With({
+    error:
+      "the claim landed, but whether this claim may hand over the messages of the session it replaces could not be read, so claim again",
+  });
+  expect(claimStandsWithoutHandover(handover)).toBe(true);
+  expect(claimStandsWithoutHandover(previousBuild)).toBe(true);
+  expect(claimStandsWithoutHandover(claimAnswered503())).toBe(false);
+  // A code names its 503 by itself: any code but the handover's is not this one, whatever the text.
+  expect(
+    claimStandsWithoutHandover(
+      claimAnswered503With({ error: "the claim landed, but ...", code: "another_code" })
+    )
+  ).toBe(false);
+  expect(claimStandsWithoutHandover(new Error("the claim landed, but nothing else"))).toBe(false);
+
+  const handed: unknown[] = [];
+  let tries = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++tries < 2) throw handover;
+    },
+    "controller",
+    { log: (_line, error) => handed.push(error), firstDelayMs: 1 }
+  );
+  expect(handed).toEqual([handover]);
 });
 
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {

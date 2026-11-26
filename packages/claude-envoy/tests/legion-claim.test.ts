@@ -157,6 +157,7 @@ test("registers once the transcript exists, claims the claim token's role soft, 
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },
@@ -233,6 +234,65 @@ test("registers once the transcript exists, claims the claim token's role soft, 
   expect(posted.at(-1)).toEqual({ path: "/legion/v1/claims/ready", body: ready })
   expect(lines).toEqual([
     `re-ran claims/ready after role ${registered["claimToken"]} was reregistered`,
+  ])
+})
+
+// The pane's claim can land and still hand over none of the messages of the session it replaces;
+// the listener says so in the answer's warnings, and the pane's log holds each, naming the role and
+// the session, while the claim goes on as a claim that landed.
+test("a claim that landed logs each of the listener's warnings about it on the pane's log", async () => {
+  const configDir = await tempDir()
+  await mkdir(join(configDir, "projects", "p"), { recursive: true })
+  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
+  const registered = await daemonFixture("register.json")
+  const { posted, fetch } = daemonAnswering((path) =>
+    path.endsWith("/claims/register")
+      ? Response.json(registered)
+      : new Response(null, { status: 204 }),
+  )
+  const handover =
+    "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals"
+  const lines: string[] = []
+  const remembered: string[] = []
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
+    clientInstanceID: INSTANCE,
+    client: {
+      setRole: async (): Promise<SetRoleResult> => ({
+        claimed: true,
+        interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+        warnings: [handover],
+      }),
+    },
+    session: {
+      rememberRole: async (role) => {
+        remembered.push(role)
+      },
+      onRoleRegained: () => undefined,
+    },
+    signal: new AbortController().signal,
+    log: (line) => lines.push(line),
+    stop: () => {
+      throw new Error("a claim that landed stops no pane")
+    },
+    onFirstTurn: firstTurnNow,
+    pollMs: 5,
+  })
+  await claim.claimed
+
+  const role = String(registered["claimToken"])
+  expect(lines).toEqual([
+    `the Envoy listener warned about the claim of role ${role} for session ${SESSION}: ${handover}`,
+  ])
+  expect(remembered).toEqual([role])
+  expect(posted.map(({ path }) => path)).toEqual([
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/ready",
   ])
 })
 
@@ -352,6 +412,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },
@@ -441,6 +502,7 @@ test("the wait asks on its own interval until the live window passes, and the gr
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },
@@ -603,6 +665,7 @@ async function bootOn(env: Record<string, string>): Promise<{
       setRole: async (): Promise<SetRoleResult> => ({
         claimed: true,
         interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+        warnings: [],
       }),
     },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
@@ -689,6 +752,7 @@ async function registeredPane(options: {
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },

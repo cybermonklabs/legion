@@ -487,6 +487,10 @@ On any claim, soft or outright, `previousSessionID` also names the session this 
 sent as `previous_session_id`: once the claim lands, a listener that supports it hands that
 session's unread direct messages and role messages to this session, for as long as that session is
 not live, and a listener from before it ignores the field on an outright claim.
+A granted claim answers `{claimed: true, interest, warnings}`: `warnings` is what the listener
+says about the claim, each a sentence its caller logs, such as a handover of the replaced session
+it did not make and why, and `[]` when it sent none, as every answer of a listener from before
+the field is.
 `unregisterSession({sessionID, clientInstanceID?})` deletes the session's registry entry: with an
 instance id the listener deletes it only when the entry carries the same id or none, so a
 departing client instance never deletes the registration a successor instance made under the
