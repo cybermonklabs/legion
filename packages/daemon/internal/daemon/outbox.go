@@ -90,6 +90,7 @@ type outbox struct {
 	tokens     appauth.Tokens
 	handlers   []intake.Handler
 	project    string
+	deployment stepplan.Deployment
 	// dispatchProject is the Dispatch project whose issues' rows this outbox claims: the database
 	// is shared, and another project's rows are another daemon's.
 	dispatchProject string
