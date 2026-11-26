@@ -13,14 +13,17 @@ import type {
   MessageWithTrees,
   MyReplyRow,
 } from "../../api/types";
+import type { SentDraft } from "../conversation/send-request";
+import { unsentDraftsOf } from "../conversation/unsent-drafts";
+import { composerNameOf } from "../conversation/useKeptDrafts";
 import { NoTooltips } from "../issue-page/NoTooltips";
 import { DASHBOARD_WORDS } from "../issue-page/page-words";
 import { AppProviders } from "../issue-page/slots/stage-fixtures";
-import { agentsQuery } from "../refs/agent-registry";
+import { AgentRegistryPoller, agentsQuery } from "../refs/agent-registry";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import asksOpenBody from "./fixtures/asks-open.json";
 import changesBody from "./fixtures/changes.json";
-import { ThreadItem } from "./ThreadItem";
+import { replySendKey, ThreadItem } from "./ThreadItem";
 
 // A thread item of what waits (dispatch://INFRA-5702/spec#b-r-in-place): it reads its thread's
 // own route, draws the first entry and each write the reader has not read, the reply control the
@@ -80,15 +83,22 @@ function row(kind: MyReplyRow["kind"], threadId: string): MyReplyRow {
   } as unknown as MyReplyRow;
 }
 
-function draw(thread: MyReplyRow) {
+/** Draws `thread`'s item; `kept` is a reply the reader typed in the thread's reply box and never
+ *  sent, which the box kept under the thread's send key. */
+function draw(thread: MyReplyRow, kept?: SentDraft) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The agents list as the shell's poll leaves it in the cache, read a while ago: the names a
-  // thread draws come from it, and nothing on the item reads it again until the reader reaches
-  // the reply control (R8).
+  // The agents list as the shell's poll leaves it in the cache, read a while ago, and the shell's
+  // poller (`app.tsx`), which reads it again as soon as anything drawn asks for live agents: the
+  // names a thread draws come from the cache, and nothing on the item reads it again until the
+  // reader reaches the reply control (R8).
   client.setQueryData(agentsQuery().queryKey, [], { updatedAt: 1 });
+  if (kept !== undefined) {
+    unsentDraftsOf(client).write(composerNameOf(replySendKey(thread.thread_id)), kept);
+  }
   return render(
     <MemoryRouter>
       <AppProviders client={client}>
+        <AgentRegistryPoller />
         <NoTooltips>
           <ThreadItem closed={false} issueKey={KEY} row={thread} viewer={READER} />
         </NoTooltips>
@@ -191,6 +201,37 @@ test("a thread whose root its author deleted draws no reply box, only a kept dra
     // `KeptReplyToDeleted` stands where the box would: it draws a draft kept for the root, and
     // nothing while none is kept.
     expect(screen.queryByRole("textbox", { name: "Reply" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reply the reader kept for a deleted root stands in the box's place, naming the root's author
+// from what the cache holds (`agentNames="cache"`): drawing it sends no agents read (R8), where
+// `AgentName`'s live form would read the cache's stale list again.
+test("a reply kept for a deleted root names its author from the cache and reads no agents", async () => {
+  const author = {
+    id: "dashboard-planner-titled",
+    kind: "session",
+    origin: { session_title: "Planner (dashboard)" },
+  } as const;
+  const root = {
+    ...comment("c-kept", "", BEFORE, author),
+    deleted_at: BEFORE,
+    deleted_by: author,
+  } as CommentWithTrees;
+  spies.push(spyOn(api, "getComment").mockResolvedValue({ comment: root, replies: [] }));
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  spies.push(listAgents);
+  const typed = "Raise it to five.";
+  const view = draw(row("comment", "c-kept"), { body: typed, replacement: "" });
+  try {
+    const kept = await screen.findByRole("status");
+    expect(kept.textContent).toBe(
+      `The comment by Planner (dashboard) that your reply answered was deleted, so it takes no reply. Your reply is kept here:${typed}`
+    );
+    expect(screen.getByRole("button", { name: "Discard my draft" })).toBeTruthy();
+    expect(listAgents).not.toHaveBeenCalled();
   } finally {
     view.unmount();
   }

@@ -113,7 +113,7 @@ function useReachedAgents(): { agents: typeof EMPTY_AGENTS; reach: () => void } 
 }
 
 /** Where a reply's send is held, by the thread it answers. */
-function replySendKey(threadId: string): readonly unknown[] {
+export function replySendKey(threadId: string): readonly unknown[] {
   return ["dashboard-thread-reply", threadId];
 }
 
@@ -152,6 +152,7 @@ function CommentThread({
       {postDeletion(root) !== null ? (
         <KeptReplyToDeleted
           actor={root.author}
+          agentNames="cache"
           mutationKey={replySendKey(root.id)}
           parentKind="comment"
         />
@@ -225,6 +226,7 @@ function MessageThread({
       {postDeletion(root) !== null ? (
         <KeptReplyToDeleted
           actor={root.author}
+          agentNames="cache"
           mutationKey={replySendKey(root.id)}
           parentKind="message"
         />

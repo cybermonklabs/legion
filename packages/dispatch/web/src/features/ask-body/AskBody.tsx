@@ -583,8 +583,10 @@ export function AskBody({
   // the line stands under the words, in the same order from the left, and each of its parts
   // moves to a line of its own before it gives up width: beside the words there the asker's name
   // kept a few letters, and the words a column too narrow for two short links on two lines. Who
-  // asked and when are one part, on a phone and wide: the time never opens a line of its own,
-  // and the asker's name gives up the width the time needs (`askerName` says how).
+  // asked and when are one part, on a phone and wide: the time never opens a line of its own.
+  // Outside `NoTooltips` the time is held whole and the asker's name gives up the width the time
+  // needs (`askerName` says how); inside, the time is a value that breaks anywhere as the name
+  // does, and the part's one flex line keeps the two together.
   const firstLineEnd = (
     <div
       className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
@@ -612,7 +614,7 @@ export function AskBody({
       <span className="flex min-w-0 items-center gap-x-1.5">
         {asker}
         <Dot />
-        <Timestamp at={displayedAsk.created_at} className="shrink-0" />
+        <Timestamp at={displayedAsk.created_at} className={tooltips ? "shrink-0" : undefined} />
       </span>
     </div>
   );

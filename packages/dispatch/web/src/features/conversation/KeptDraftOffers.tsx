@@ -116,11 +116,15 @@ export function DraftOffer({
  */
 export function KeptReplyToDeleted({
   actor,
+  agentNames = "live",
   mutationKey,
   parentKind,
 }: {
   /** The deleted post's author. */
   readonly actor: Actor;
+  /** How the deleted post's author is named (`GoneReply`): `cache` for a host that sends no
+   *  agents read when it draws. */
+  readonly agentNames?: "live" | "cache";
   readonly mutationKey: MutationKey;
   readonly parentKind: ReplyTarget["parentKind"];
 }): ReactNode {
@@ -132,6 +136,29 @@ export function KeptReplyToDeleted({
   const refused = held?.status === "refused" ? held : undefined;
   const draft = refused?.draft.draft ?? typed;
   if (draft === undefined) return null;
+  if (agentNames === "cache") {
+    return (
+      <div className="mt-2">
+        <DraftOffer
+          body={draft.body}
+          drop={{
+            label: "Discard my draft",
+            press: () => {
+              if (refused !== undefined) store.discard(mutationKey);
+              else unsent.write(name, undefined);
+            },
+          }}
+          lead={<GoneReply actor={actor} agentNames="cache" deleted parentKind={parentKind} />}
+          note={
+            refused?.refusal instanceof SendStoppedError
+              ? "Dispatch has not confirmed this reply: it may have been posted, and if it was, it is listed in this thread."
+              : undefined
+          }
+          replacement={draft.replacement}
+        />
+      </div>
+    );
+  }
   return (
     <div className="mt-2">
       <DraftOffer

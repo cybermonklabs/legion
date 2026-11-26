@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
 import { AgentName } from "../refs/AgentName";
+import { CachedAuthor } from "./CachedAuthor";
 import type { ReplyTarget } from "./composer-model";
 import { addressWords } from "./send-request";
 import type { AwayDraft } from "./unsent-drafts";
@@ -37,15 +38,30 @@ export function KeptReply({
  *  (`KeptDrafts.awayTakes`), the words say so (`waits`). */
 export function GoneReply({
   actor,
+  agentNames = "live",
   deleted = false,
   parentKind,
   waits = false,
 }: {
   readonly actor: Actor;
+  /** How the post's author is named: `live`, as everywhere, draws `AgentName`, whose session
+   *  form reads the live agent registry and starts the agents poll; `cache` names the author from
+   *  the registry the cache already holds (`CachedAuthor`) and starts no read, for a host that
+   *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). */
+  readonly agentNames?: "live" | "cache";
   readonly deleted?: boolean;
   readonly parentKind: ReplyTarget["parentKind"];
   readonly waits?: boolean;
 }): ReactNode {
+  if (agentNames === "cache") {
+    return (
+      <>
+        The {parentKind} by <CachedAuthor actor={actor} /> that your reply answered{" "}
+        {deleted ? "was deleted, so it takes no reply" : "is no longer listed"}. Your reply is kept
+        here{waits ? ", to use in this field once it is empty" : ""}:
+      </>
+    );
+  }
   return (
     <>
       The {parentKind} by <AgentName actor={actor} inline /> that your reply answered{" "}
