@@ -304,6 +304,119 @@ func TestAProxyWithNoDPoPKeySendsNothingToADPoPHost(t *testing.T) {
 	}
 }
 
+// TestARequestItsEntryRefusesMintsNoToken: a minted grant's token is minted when the proxy reads
+// the grant's values (requests.Machine's mintedValues, on the first allowed call of the grant on
+// this pod), so a request carrying the placeholder that the entry's rules refuse is refused 403
+// REQUEST_NOT_ALLOWED, saying nothing was sent, before that read: the values are never read, so
+// no token is minted, and the service receives nothing. The rows are a refusal of the allow list -
+// a write under a route it does not name, a GET of the allowed route - and three of the other rules
+// that a command's own request decides: a Host header naming another host, a dot segment back out
+// of the allowed route, and a method override header. That every rule of the decision but the
+// value's is read before the values are is proxyrules.Admit's, which
+// TestAdmitIsTheDecisionBeforeTheValue holds to the whole decision. The allowed write after them
+// reads the values once, so the count is one that can see a read.
+func TestARequestItsEntryRefusesMintsNoToken(t *testing.T) {
+	r, _ := newDPoPRig(t)
+	client := r.client(mintedPlaceholder)
+	for _, c := range []struct {
+		name, method, path string
+		headers            []string
+	}{
+		{"a write under a route the allow list does not name", http.MethodPost, "/api/v1/issues/ACME-1/comments", nil},
+		{"a GET of the allowed route", http.MethodGet, mintedPath, nil},
+		{"a write whose Host header names another host", http.MethodPost, mintedPath, []string{"Host", "other.example.com"}},
+		{"a write whose path holds a dot segment", http.MethodPost, "/api/v1/projects/../issues/ACME-1/comments", nil},
+		{"a write carrying a method override header", http.MethodPost, mintedPath, []string{"X-HTTP-Method-Override", http.MethodDelete}},
+	} {
+		headers := append([]string{"Authorization", "DPoP " + mintedPlaceholder}, c.headers...)
+		answer, body := r.do(client, c.method, "https://"+boundHost+c.path, `{"body":"a comment"}`, headers...)
+		refusedAs(t, c.name, answer, body, codeNotAllowed)
+	}
+	if reads := r.grants.valueReads(mintedGrantID); reads != 0 {
+		t.Fatalf("the grant's values were read %d times for the refused requests; want none, since that read mints the grant's token", reads)
+	}
+	if seen := r.requests(); len(seen) != 0 {
+		t.Fatalf("the service received %d requests, want none", len(seen))
+	}
+	if answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder); answer.StatusCode != http.StatusOK {
+		t.Fatalf("the allowed write = %d %s, want 200", answer.StatusCode, body)
+	}
+	if reads := r.grants.valueReads(mintedGrantID); reads != 1 {
+		t.Fatalf("the grant's values were read %d times after the allowed write; want once", reads)
+	}
+}
+
+// TestAnEndedMintedGrantsValuesAreDropped: the proxy holds each grant's values it has read
+// (valuesFor), and a minted capability's grants come one per use - the approve capability's one
+// per review - so the values of a minted grant whose end has passed are dropped from what this pod
+// holds, by the first read of a new grant's values after that end. The values of a grant that has
+// not ended stay, and the drop reads nothing of the grant that ended.
+func TestAnEndedMintedGrantsValuesAreDropped(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
+	r := newRuledRig(t, dpopRules(), Options{DPoPKey: key, Now: clock.read})
+	// Three grants of the one minted name, each with a placeholder and an end of its own: the
+	// first ends a quarter of an hour in, the other two an hour after it.
+	type mintedGrant struct {
+		id, placeholder string
+		ends            time.Time
+	}
+	grants := []mintedGrant{
+		{"testkind:00000000-0000-4000-8000-000000000011", placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789cd", clock.read().Add(15 * time.Minute)},
+		{"testkind:00000000-0000-4000-8000-000000000012", placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789ef", clock.read().Add(time.Hour)},
+		{"testkind:00000000-0000-4000-8000-000000000013", placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789gh", clock.read().Add(time.Hour)},
+	}
+	for _, g := range grants {
+		connection := mintedConnection()
+		connection.GrantID, connection.Expires = g.id, &g.ends
+		connection.Names = map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{requests.SlotValue: g.placeholder}}}
+		r.grants.setConnection(g.placeholder, connection)
+		r.grants.setValues(g.id, storedValues(mintedName, mintedToken))
+	}
+	write := func(g mintedGrant) {
+		t.Helper()
+		answer, body := r.do(r.client(g.placeholder), http.MethodPost, "https://"+boundHost+mintedPath, `{"verdict":"pass"}`, "Authorization", "DPoP "+g.placeholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("the write of grant %s = %d %s, want 200", g.id, answer.StatusCode, body)
+		}
+	}
+	holds := func(g mintedGrant) bool {
+		r.proxy.valuesMu.Lock()
+		defer r.proxy.valuesMu.Unlock()
+		_, held := r.proxy.values[g.id]
+		return held
+	}
+	first, second, third := grants[0], grants[1], grants[2]
+
+	write(first)
+	if !holds(first) {
+		t.Fatalf("the pod holds no values of grant %s after its write; the row cannot see a drop", first.id)
+	}
+	// Before the first grant's end, a new grant's read leaves the first grant's values held.
+	clock.set(first.ends.Add(-time.Minute))
+	write(second)
+	if !holds(first) || !holds(second) {
+		t.Fatalf("held: first %v, second %v; want both, since neither grant has ended", holds(first), holds(second))
+	}
+	// At its end the broker answers the first grant's placeholder as no live grant, and the next
+	// new grant's read drops the first grant's values and keeps the live ones.
+	clock.set(first.ends)
+	r.grants.refuseConnection(first.placeholder, requests.ErrGrantNotLive)
+	write(third)
+	if holds(first) {
+		t.Errorf("the pod still holds the values of grant %s, which ended at %s, with the clock at %s", first.id, first.ends, clock.read())
+	}
+	if !holds(second) || !holds(third) {
+		t.Errorf("held: second %v, third %v; want both, since neither grant has ended", holds(second), holds(third))
+	}
+	if reads := r.grants.valueReads(first.id); reads != 1 {
+		t.Errorf("the values of grant %s were read %d times; want once, for its write", first.id, reads)
+	}
+}
+
 // TestAProxyLineNamesTheGrant: the line of a minted grant's request names the grant and no
 // enrollment, and a refusal's line names the grant alone as its caller.
 func TestAProxyLineNamesTheGrant(t *testing.T) {
