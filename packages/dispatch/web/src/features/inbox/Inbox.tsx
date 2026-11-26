@@ -1134,7 +1134,7 @@ function InboxBody({
   // write lands (see `SnoozeControl`). A refused or stopped write holds no row, and its reason
   // stays with the ask for every control drawn for it. Under the Blocked on you narrowing
   // (`?section=needs-you`), which lists no snoozed ask, the optimistic moment drops the row at
-  // once, and only the reader's hand keeps it.
+  // once: the hand's own hold keeps no row a press of the reader's is taking away (`leavingNow`).
   const snoozeWrites = useInboxWrites(AskSnoozeContext);
   const snoozing = snoozeWrites.out;
   /** The asks the reader wrote to from this list - a snooze, Assign to me, a hand-on, a bulk
@@ -2115,12 +2115,20 @@ function InboxBody({
   // it falls to the page's body - which is what the bar's Snooze left in WebKit, eight times in
   // eight repeats (builds Job `infra-3135-infra-3135-r29t-snp-vfht5`). So the name stands until
   // the read that places the row.
-  /** Whether a press of the reader's is taking this row off the view: the one answer the bar's
-   *  hand-off is given and the one the hand's own hold reads (`seen`, below). A row named here is
-   *  never kept on the page for the hand in it: the hold that keeps a row under the reader's hand
-   *  would keep this one for the focus the hand-off parked on it, and the write that takes it away
-   *  would never land. */
-  const leavingNow = (id: string): boolean => dismissedHere(id) || snoozedHere.current.has(id);
+  /** Whether a press of the reader's is taking this row off the view: a Dismiss's or a Move to
+   *  Inbox's (`dismissedHere`), and a Snooze's, the bar's or a row's own, from the pick until the
+   *  first read the list adopts after its write (`snoozedHere`). The one answer the bar's hand-off
+   *  is given, the one the hand's own hold reads (`seen`, below), and the one the list's anchor
+   *  reads beside its own other reasons (`ViewportAnchor`'s `leaving`, below): the rows the
+   *  hand-off waits for are the rows the anchor lets go, so once the landing is made, their going
+   *  moves nothing. The anchor names the rows of a commit before that commit's layout effects
+   *  run (`getSnapshotBeforeUpdate`), where the Snooze names below are still the last commit's,
+   *  so a Snooze's write out (`snoozing`, `bulkSnoozing`) names its rows too: the pick's own
+   *  commit is named for it. A row named here is never kept on the page for the hand in it: the
+   *  hold that keeps a row under the reader's hand would keep this one for the focus the hand-off
+   *  parked on it, and the write that takes it away would never land. */
+  const leavingNow = (id: string): boolean =>
+    dismissedHere(id) || snoozing.has(id) || bulkSnoozing.has(id) || snoozedHere.current.has(id);
   // The names the hand-off reads, kept after every commit and before it reads them in that commit
   // (`useLastMarkedPlace`, below).
   //
@@ -2240,9 +2248,9 @@ function InboxBody({
   // marked - is held in the band they saw it in until the Inbox lets go of it once the write
   // lands (`heldRow`), while the list still lists it. A refused or stopped write holds nothing.
   // Under the Blocked on you narrowing, which lists no snoozed ask, the row is dropped at once,
-  // and only the reader's hand holds it. A row whose Assign to me, hand-on, answer, decline,
-  // question back or reply is out is held as the row under the hand is, listed or not, until
-  // that write lands.
+  // and the reader's hand does not hold it (`leavingNow`). A row whose Assign to me, hand-on,
+  // answer, decline, question back or reply is out is held as the row under the hand is, listed
+  // or not, until that write lands.
   // That band is a band of the layout the row was drawn under, so a snooze holds its row only
   // while the list is still drawn under it - the same grouping, and the same view. Under that
   // layout the band a write holds its row in is drawn again though no other row is left in it
@@ -3042,11 +3050,15 @@ function InboxBody({
   //
   // The anchor does not hold the reader's row in place against the rows a press of theirs takes
   // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
-  // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), the rows
-  // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
-  // them, the rows an Assign to me, a hand-on, an answer, a decline, a question back or a reply
-  // lets go of, which then leave the list where the read no longer lists them there, and the rows
-  // of a band the reader's press on its toggle folds shut (`folding`), in the commit that folds it.
+  // are the rows the bar's hand-off waits for (`leavingNow`), a Dismiss's, a Move to Inbox's and a
+  // Snooze's, a row's own or the bar's, for as long as the hand-off waits for them: a snoozed row
+  // the motion hold keeps drawn after its write lands is named until it goes, and its going after
+  // the landing moves no row (the tester's red row of INFRA-3135's round 29, builds Job
+  // `infra-3135-i-h5-g6tnd`, where the anchor named it only while the write was out and scrolled
+  // the list back by its height). Beside them, the rows an Assign to me, a hand-on, an answer, a
+  // decline, a question back or a reply lets go of, which then leave the list where the read no
+  // longer lists them there, and the rows of a band the reader's press on its toggle folds shut
+  // (`folding`), in the commit that folds it.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -3066,12 +3078,7 @@ function InboxBody({
         group="data-inbox-section"
         item={ROW_ATTRIBUTE}
         leaving={(id) =>
-          dismissedHere(id) ||
-          snoozing.has(id) ||
-          bulkSnoozing.has(id) ||
-          askWriteOut(id) ||
-          replying.has(id) ||
-          folding.current?.has(id) === true
+          leavingNow(id) || askWriteOut(id) || replying.has(id) || folding.current?.has(id) === true
         }
         ref={viewport}
         rootRef={listRef}

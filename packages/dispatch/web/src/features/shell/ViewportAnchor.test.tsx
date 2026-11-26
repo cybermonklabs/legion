@@ -14,6 +14,7 @@ import {
 
 import { disarm } from "../../__tests__/armed-press";
 import { nextFrame } from "../../__tests__/frames";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ControlRow } from "../../components/ControlRow";
 import { CONTROL } from "../../components/control-names";
 import { ARM_ON_PRESS } from "../../components/focus-place";
@@ -968,6 +969,45 @@ test("in a named box the kept place moves up with the focused row, and the next 
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
   } finally {
     view.unmount();
+  }
+});
+
+// INFRA-3135, round 31 (the tester's red row of round 29, builds Job infra-3135-i-h5-g6tnd): in
+// the Inbox at 1440x900 the pointer rests on a row below the rows the bar's Snooze took, while the
+// focus stands on the mark of the row marked last, where the bar's hand-off parked it. The commit
+// that takes those rows away lets the rows after them move up, the row under the pointer with
+// them, and scrolls nothing. The anchor kept a place for that row from before, and the resize the
+// commit makes of the list put the row back there, scrolling the whole list back by the rows'
+// height after the hand-off had landed. The place kept for a row the commit did not put back is
+// let go with the rows, so the resize moves nothing.
+test("a resize after the rows a press took away have gone puts back no row under the pointer while the focus stood in another", () => {
+  const sizes = installResizeObserver();
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List leaving={going} rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 100;
+    // The pointer comes to rest on r8, 350 px down the box: the anchor keeps its place.
+    const hovered = document.querySelector<HTMLElement>('[data-row="r8"]');
+    if (hovered === null) throw new Error("r8 missing");
+    fireEvent.pointerOver(hovered, { clientX: 20, clientY: 370 });
+    const before = viewportTop("r8") ?? 0;
+    // The hand-off parks the focus on r3's own control, with no move of the pointer's or scroll.
+    buttonOf("r3").focus();
+
+    view.rerender(
+      <List leaving={going} rows={ids(12).filter((id) => !going(id))} scroller={scrollerRef} />
+    );
+    expect(viewportTop("r8")).toBe(before - 2 * ROW_HEIGHT);
+    expect(scroller.scrollTop).toBe(100);
+    // The list's own box is shorter by the two rows, which the engine reports after the commit.
+    sizes.resize();
+    expect(viewportTop("r8")).toBe(before - 2 * ROW_HEIGHT);
+    expect(scroller.scrollTop).toBe(100);
+  } finally {
+    view.unmount();
+    sizes.restore();
   }
 });
 

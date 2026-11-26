@@ -4389,6 +4389,88 @@ test("a bulk Snooze that lands with the pointer on a row below the marked rows l
   }
 });
 
+// INFRA-3135, round 31 (the architect's rule that the list's anchor and the bar's hand-off read one
+// answer of the rows a press is taking away, after the tester's red row of round 29, builds Job
+// infra-3135-i-h5-g6tnd): the pointer rests on a row and then travels over the list from before
+// the bar's Snooze is picked, from the keyboard, until after it lands, so the motion hold keeps
+// the read from before the pick and the rows it took stay drawn in their band after the write,
+// while the hand-off still waits for them. The rows marked stood above the window, so the hand-off
+// parked the focus on the list's own stop, and the row under the pointer is the one the anchor
+// keeps. Once the pointer rests, the rows go, and the rows after them move up into their place,
+// the one under the pointer with them: the window is not scrolled to hold that row where it stood.
+// The anchor named a snoozed row only while its write was out, and scrolled the window back by
+// the rows' height.
+test("a bulk Snooze that lands while the pointer travels over the list lets the rows it took go once the pointer rests, with no scroll", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landed = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landed.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  // Five rows above the window: the third and the fourth, which the reader marks, among them.
+  const laidOut = layRowsDown(5 * LAID_ROW_PX);
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Question 12?");
+    const [marked, last, , , , , resting] = rowIds().slice(2, 9) as [
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
+    await user.click(markOf(marked));
+    await user.click(markOf(last));
+    await screen.findByText("2 selected");
+    const row = document.querySelector<HTMLElement>(`[data-inbox-row="${resting}"]`);
+    if (row === null) throw new Error(`${resting} row missing`);
+    await user.hover(row);
+    const before = row.getBoundingClientRect().top;
+    /** The pointer travelling on over the list: the motion hold's own pointermove. */
+    const travel = () => fireEvent.pointerMove(row);
+
+    const trigger = screen.getByRole("button", { name: "Snooze selected asks" });
+    act(() => trigger.focus());
+    await user.keyboard("{Enter}");
+    travel();
+    await user.keyboard("tom");
+    travel();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    travel();
+    await act(async () => {
+      landed.resolve();
+      await landed.promise;
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(screen.getByTestId("inbox-list")).toHaveFocus());
+    expect(rowIds()).toContain(last);
+
+    // The pointer rests, and the rows go.
+    await waitFor(() => expect(rowIds()).not.toContain(last));
+    expect(rowIds()).not.toContain(marked);
+    expect(row.getBoundingClientRect().top).toBe(before - 2 * LAID_ROW_PX);
+    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+  } finally {
+    unmount();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 /** How tall `layItemsDown` draws a band's heading. */
 const LAID_HEADING_PX = 40;
 
