@@ -3782,10 +3782,23 @@ func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
 // A release whose launcher read the workspace first takes the pod that read found clean or
 // nothing (record.IssueRelease.PodUID), and whether the runtime still holds that pod is read under
 // its pod lock, before the store is. Where the runtime no longer holds it, the store is read
-// without a commit (store.Store.IssueRelease): a release neither committed nor recorded is
-// cancelled as one overtaken, since the pod in its place is one no read showed clean, and a
-// release committed or recorded acts, since it cannot be cancelled: an earlier attempt was
-// authorized to take that pod, and the teardown finishes the release as above.
+// without a commit (store.Store.IssueRelease), which cancels a release for two causes only,
+// store.ReleaseCauseOvertaken and store.ReleaseCauseUnauthorized (store.ReleaseCausePaused is the
+// workspace check's alone, IssueReleaseCheck), and the daemon changes one answer of it:
+// store.ReleaseActs for a mark that is neither committed nor recorded (!Committed && !PodTaken)
+// becomes a cancel with store.ReleaseCauseOvertaken, since the pod in the old pod's place is one
+// no read showed clean, and a line says so. Every other answer stands, and a cancel keeps the hold
+// that releaseHold gives its cause:
+//
+//   - store.ReleaseOver, a release whose mark no row holds any more, does nothing and records no
+//     hold;
+//   - a cancel for store.ReleaseCauseOvertaken, where the pod was given work after the mark,
+//     records workflow.IdleHoldOvertaken, the hold the changed answer records too;
+//   - a cancel for store.ReleaseCauseUnauthorized, where the run the release was taken against
+//     moved on, the issue left the workflow, its tree lingers or its cleanup is reserved, records
+//     workflow.IdleHoldUnauthorized;
+//   - store.ReleaseActs for a mark that is committed or recorded acts, since an earlier attempt was
+//     authorized to take that pod, and the teardown finishes the release as above.
 //
 // A teardown of the release of a pod no role can use that took nothing records no pod release and
 // logs no release line, which would count one release twice, and logs instead that it found no
@@ -3828,8 +3841,13 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// cancels.
 	//
 	// Where the runtime no longer holds the pod the launcher read (record.IssueRelease.PodUID),
-	// that read commits nothing, since a committed release cannot be cancelled: the comment of
-	// releaseIssue says what each answer does then.
+	// that read commits nothing, since a committed release cannot be cancelled, and the daemon
+	// changes one answer of it only: store.ReleaseActs for a mark that is neither committed nor
+	// recorded (!Committed && !PodTaken) becomes a cancel with store.ReleaseCauseOvertaken.
+	// store.ReleaseOver, a cancel the store decided (store.ReleaseCauseOvertaken or
+	// store.ReleaseCauseUnauthorized, the only causes this read gives) and store.ReleaseActs for a
+	// committed or recorded mark keep their answers, and a cancel keeps the hold releaseHold gives
+	// its cause. The comment of releaseIssue says what each answer does.
 	decision := first
 	authorize := func(ctx context.Context) (bool, error) {
 		gone := payload.PodUID != "" && !r.holdsPod(row.Issue, payload.PodUID)

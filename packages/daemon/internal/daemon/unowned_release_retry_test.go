@@ -28,6 +28,16 @@ func (s *podEndFaults) EndPausePodHold(ctx context.Context, project, issue strin
 	return s.outboxTrees.EndPausePodHold(ctx, project, issue, end, at)
 }
 
+// holdTeardownBack holds the issue's teardown row back an hour, so the outbox's drain leaves it
+// and the test runs each of its attempts itself (teardownDueAgain makes the row due).
+func holdTeardownBack(t *testing.T, rig *idleRig) {
+	t.Helper()
+	if _, err := rig.pool.Exec(context.Background(), `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("hold the teardown back: %v", err)
+	}
+}
+
 // teardownDueAgain makes the issue's teardown row due again, as its backoff leaves it. died
 // leaves the row as a daemon that died in the failed attempt leaves it: with no attempt counted,
 // since only a run's retry counts one (record.QueuedSupervise.Attempts).

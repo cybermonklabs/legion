@@ -143,10 +143,7 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
 	// The teardown is not due yet, so the lane runs the workspace check and the implementer's stop,
 	// and the release stands with the claim recorded.
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		rig.issue.Key); err != nil {
-		t.Fatalf("hold the teardown back: %v", err)
-	}
+	holdTeardownBack(t, rig)
 	rig.drain(t)
 	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
 		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
@@ -207,10 +204,7 @@ func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *t
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		rig.issue.Key); err != nil {
-		t.Fatalf("hold the teardown back: %v", err)
-	}
+	holdTeardownBack(t, rig)
 	rig.drain(t)
 	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
 		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",

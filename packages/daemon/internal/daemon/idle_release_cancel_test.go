@@ -143,10 +143,7 @@ func TestACancelTellsTheWakeOfEachRoleItsReleaseStoppedInTheCancelsWords(t *test
 		refused := &releaseRecordRefused{outboxTrees: rig.st, err: errors.New("the record of the stopped claim did not commit")}
 		rig.runner.trees = refused
 		rig.w.releaseIdlePod(ctx, rig.issue.Key)
-		if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-			rig.issue.Key); err != nil {
-			t.Fatalf("hold the teardown back: %v", err)
-		}
+		holdTeardownBack(t, rig)
 		rig.drain(t)
 		var suspended []string
 		if err := rig.pool.QueryRow(ctx, `select suspended from issue_releases where issue = $1`, rig.issue.Key).Scan(&suspended); err != nil {
@@ -204,10 +201,7 @@ func TestACancelTellsTheWakeOfEachRoleItsReleaseStoppedInTheCancelsWords(t *test
 		ctx := context.Background()
 		rig.releasedArchitect(t)
 		rig.w.releaseIdlePod(ctx, rig.issue.Key)
-		if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-			rig.issue.Key); err != nil {
-			t.Fatalf("hold the teardown back: %v", err)
-		}
+		holdTeardownBack(t, rig)
 		rig.drain(t)
 		if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
 			t.Fatalf("the implementer = %s by %s and the mark stands = %t, want it released under a release still running",
@@ -278,10 +272,7 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		rig.issue.Key); err != nil {
-		t.Fatalf("hold the teardown back: %v", err)
-	}
+	holdTeardownBack(t, rig)
 	rig.drain(t)
 	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
 		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
@@ -346,10 +337,7 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		rig.issue.Key); err != nil {
-		t.Fatalf("hold the teardown back: %v", err)
-	}
+	holdTeardownBack(t, rig)
 	rig.drain(t)
 	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
 		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
@@ -414,10 +402,7 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		rig.issue.Key); err != nil {
-		t.Fatalf("hold the teardown back: %v", err)
-	}
+	holdTeardownBack(t, rig)
 	rig.drain(t)
 	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
 		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",

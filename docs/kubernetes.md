@@ -8809,7 +8809,19 @@ From then on no cause cancels the release.
 From that commit until the teardown finishes, every start of a role of the issue waits for the teardown, a start queued before the teardown row included, such as a worker start whose admission slot comes while the teardown waits for its retry.
 Each later attempt of the teardown row asks the runtime again, until the runtime answers with no error, and then records the release in a record that names the release's mark (`pod_releases.issue_release_id`) and finishes its own steps.
 The release of a pod no claim owns takes only the pod its launcher read clean (`record.IssueRelease.PodUID`), so under the same launch turn the daemon first reads whether the runtime still holds that pod.
-Where it does not, the store is asked without a commit (`IssueRelease`): a release not yet committed is cancelled as one overtaken, and a release already committed goes on, since an earlier attempt was authorized to take that pod.
+Where it does not, the store is asked without a commit (`IssueRelease`), which cancels a release for two causes only, `overtaken` and `unauthorized` (`paused` is the workspace check's alone), and the daemon changes one answer of it:
+an answer that the release acts, for a mark that is neither committed nor recorded as having taken its pod, becomes a cancel with the cause `overtaken`, since the pod in the old pod's place is one no read showed clean.
+That cancel logs `outbox: the pod the release's launcher read is no longer the issue's pod; the teardown takes nothing and the release is cancelled`, which tells it from an `overtaken` cancel that the store decided itself.
+Every other answer stands as the store gave it, with its own hold, recorded in `pod_holds` under the name the cancel's log line gives in its `hold` field:
+
+- a release that is over (a cancel or a finish took its mark) does nothing and records no hold;
+
+- a cancel for `overtaken`, which the store decides where the pod was given work after the mark, records the hold `overtaken`;
+
+- a cancel for `unauthorized`, which the store decides where the run the release was taken against has moved on, the issue has left the workflow, its tree lingers or its cleanup is reserved, records the hold `unauthorized`;
+
+- a release committed or recorded acts, since an earlier attempt was authorized to take that pod.
+
 So no release is committed and then cancelled.
 While a committed release has not finished, the whole workflow of its issue waits, not only its wakes:
 

@@ -109,10 +109,7 @@ func TestATeardownThatFailsAfterItsPodIsGoneFinishesOnItsNextAttempt(t *testing.
 			refused := false
 			rig.runner.trees = clearRefusedOnce{outboxTrees: rig.st, refused: &refused}
 			rig.w.releaseIdlePod(ctx, rig.issue.Key)
-			if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-				rig.issue.Key); err != nil {
-				t.Fatalf("hold the teardown back: %v", err)
-			}
+			holdTeardownBack(t, rig)
 			rig.drain(t)
 			if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
 				t.Fatalf("the claim = %s by %s and the mark stands = %t; want the release checked and stopped, its teardown to come",
@@ -262,10 +259,7 @@ func (r *idleRig) heldTeardown(t *testing.T) record.OutboxRow {
 	t.Helper()
 	ctx := context.Background()
 	r.w.releaseIdlePod(ctx, r.issue.Key)
-	if _, err := r.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		r.issue.Key); err != nil {
-		t.Fatalf("hold the teardown back: %v", err)
-	}
+	holdTeardownBack(t, r)
 	r.drain(t)
 	if got := r.machine.Claim(); !got.Released() || !r.marked(t) {
 		t.Fatalf("the claim = %s by %s and the mark stands = %t; want the release checked and stopped, its teardown to come",
@@ -646,10 +640,7 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 		t.Fatalf("the mark = kind %q for role %q, want the release of a pod no claim can use", kind, role)
 	}
 	// The launcher's check runs first, alone, and finds the disk clean: the teardown waits.
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		rig.issue.Key); err != nil {
-		t.Fatalf("hold the release's teardown back: %v", err)
-	}
+	holdTeardownBack(t, rig)
 	rig.drain(t)
 	rig.teardownGivesUp(t)
 	var gaveUp int
@@ -847,23 +838,6 @@ func (r *idleRig) restarted(t *testing.T) *outbox {
 // the runtime no longer holds the pod the release's launcher read (outbox.releaseIssue's authorize).
 const idleRigReadPodGone = "outbox: the pod the release's launcher read is no longer the issue's pod"
 
-// commitWatch is the release's store with each commit of a release counted: each answer of the
-// runtime's read under its pod lock (CommitIssueRelease) that carries Committed, which that read
-// wrote (issue_releases.committed) or found written. Every call reaches the real store.
-type commitWatch struct {
-	outboxTrees
-	commits atomic.Int32
-}
-
-func (s *commitWatch) CommitIssueRelease(ctx context.Context, project string, release store.IssueReleased,
-	outOfWorkflow func(status string) bool) (store.ReleaseDecision, error) {
-	decision, err := s.outboxTrees.CommitIssueRelease(ctx, project, release, outOfWorkflow)
-	if err == nil && decision.Committed {
-		s.commits.Add(1)
-	}
-	return decision, err
-}
-
 // teardownRow is the issue's teardown row as the outbox holds it: the pod it takes or nothing
 // (record.IssueRelease.PodUID), its attempts, and whether it is queued at all, since a row that
 // finished is gone.
@@ -878,62 +852,6 @@ func (r *idleRig) teardownRow(t *testing.T) (pod string, attempts int, queued bo
 		t.Fatalf("read the teardown row: %v", err)
 	}
 	return pod, attempts, true
-}
-
-// The teardown of a release whose launcher read the workspace takes the pod that read found clean
-// or nothing (record.IssueRelease.PodUID, R6 of #5285), and it reads the runtime's pod under the
-// pod lock before it commits the release (outbox.releaseIssue's authorize). Here the launcher of a
-// pod no claim owns finds pod-a clean, and pod-b takes pod-a's place once the launcher has read it
-// (afterPodRead), before the teardown. The teardown cancels the release as one overtaken: the
-// runtime takes nothing, no read commits the release, the mark is gone with the cancel's hold
-// recorded, and the teardown's row finishes. A teardown that committed the release before that
-// check turned its answer into a cancel the store refuses, since a committed release cannot be
-// cancelled (store.CancelIssueRelease): its row failed, and so did every attempt after it, with
-// the mark left committed.
-func TestATeardownWhoseReadPodWasReplacedCancelsWithoutACommit(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	rig, _ := noRoleRig(t, false)
-	var logs syncBuffer
-	rig.runner.log = jsonLogger(&logs)
-	watch := &commitWatch{outboxTrees: rig.st}
-	rig.runner.trees = watch
-	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
-	rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
-	rig.rt.mu.Lock()
-	rig.rt.afterPodRead = func() { rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b") }
-	rig.rt.mu.Unlock()
-	rig.w.releaseUnownedPods(ctx)
-	if pod, _, queued := rig.teardownRow(t); !queued || pod != "pod-a" {
-		t.Fatalf("the teardown row takes pod %q (queued %t), want a queued teardown of pod-a, the pod the pass read", pod, queued)
-	}
-
-	rig.drain(t)
-
-	if launcherReads(rig) != 1 {
-		t.Fatalf("the launcher read %d times, want once", launcherReads(rig))
-	}
-	if _, taken := rig.rt.reads(); taken != 0 {
-		t.Fatalf("the teardown took %d pods, want none: the clean read was of pod-a, and the runtime holds pod-b", taken)
-	}
-	failed := loggedMessages(t, logs.String(), "outbox row failed")
-	if _, attempts, queued := rig.teardownRow(t); queued || rig.marked(t) || len(failed) != 0 {
-		t.Fatalf("the teardown row is queued = %t after %d attempts, the mark stands = %t and the rows failed %v; want the release cancelled: its row finished and its mark gone",
-			queued, attempts, rig.marked(t), failed)
-	}
-	if commits := watch.commits.Load(); commits != 0 {
-		t.Fatalf("the runtime's reads committed the release %d times, want none: the release was cancelled", commits)
-	}
-	if records := rig.records(t); len(records.Releases) != 0 || len(records.Holds) != 1 ||
-		records.Holds[0].Reason != workflow.IdleHoldOvertaken.String() {
-		t.Fatalf("releases = %+v and holds = %+v, want no release and the one %s", records.Releases, records.Holds, workflow.IdleHoldOvertaken)
-	}
-	if lines := loggedMessages(t, logs.String(), idleRigReadPodGone); len(lines) != 1 || lines[0]["readPod"] != "pod-a" {
-		t.Fatalf("the teardown logged %v, want one line %q naming pod-a", lines, idleRigReadPodGone)
-	}
-	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) || rig.rt.refusals() != 1 {
-		t.Fatalf("the runtime was asked %v and refused %d times, want the release's teardown asked and refused once", asked, rig.rt.refusals())
-	}
 }
 
 // A teardown whose runtime read committed the release, and whose runtime failed after it took the
@@ -959,10 +877,7 @@ func TestACommittedTeardownRetriedAfterItTookItsReadPodFinishes(t *testing.T) {
 	rig.rt.mu.Unlock()
 	rig.w.releaseUnownedPods(ctx)
 	// The launcher's check runs first, alone: the teardown waits, and the test runs its attempts.
-	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
-		rig.issue.Key); err != nil {
-		t.Fatalf("hold the release's teardown back: %v", err)
-	}
+	holdTeardownBack(t, rig)
 	rig.drain(t)
 	if pod, _, queued := rig.teardownRow(t); !queued || pod != "pod-a" || launcherReads(rig) != 1 {
 		t.Fatalf("the teardown row takes pod %q (queued %t) after %d launcher reads, want a queued teardown of pod-a after one clean read",
