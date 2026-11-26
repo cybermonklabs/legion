@@ -12,9 +12,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // reapHelperEnv carries the plan of TestReapingShimHelper, the test binary re-executed to run one
@@ -89,9 +89,7 @@ func TestAReapingShimTakesInItsAgentsOrphansAndKeepsTheAgentsStatus(t *testing.T
 					t.Errorf("without ReapOrphans the orphan's parent is still the shim %d, so the case above shows nothing of the flag's", parent)
 				}
 				if reap {
-					if gone := orphanGone(orphan); gone != "reaped" {
-						t.Errorf("the orphan is %q once it ended, want reaped by the shim while the agent still runs", gone)
-					}
+					awaitOrphanReaped(t, orphan)
 				}
 
 				p.sendLine(t, ending.frame)
@@ -140,16 +138,13 @@ func startReapHelper(t *testing.T, plan reapHelperPlan) *reapHelper {
 	return h
 }
 
-// wait waits for the helper and answers the status its shim.Run returned.
+// wait waits for the helper and answers the status its shim.Run returned. Its one bound is the
+// test binary's deadline (testwait.Receive), as the package's other waits since #5417.
 func (h *reapHelper) wait(t *testing.T) int {
 	t.Helper()
-	select {
-	case <-h.done:
-		if h.waited != nil {
-			t.Fatalf("the helper: %v\n%s", h.waited, h.out)
-		}
-	case <-time.After(waitLimit):
-		t.Fatalf("the helper's shim never ended\n%s", h.out)
+	testwait.Receive(t, "the helper's shim to end", h.done)
+	if h.waited != nil {
+		t.Fatalf("the helper: %v\n%s", h.waited, h.out)
 	}
 	_, rest, ok := strings.Cut(h.out.String(), "reap-helper code=")
 	if !ok {
@@ -179,23 +174,22 @@ func parentOf(pid int) (int, error) {
 	return strconv.Atoi(fields[1])
 }
 
-// orphanGone waits for pid to leave /proc: "reaped" once it has, "zombie" when it is still there,
-// exited and unreaped, at waitLimit, and "running" when it has not ended by then.
-func orphanGone(pid int) string {
-	deadline := time.Now().Add(waitLimit)
-	for {
+// awaitOrphanReaped waits for pid to leave /proc, which it does once the shim, its parent, has
+// reaped it while the agent still runs. A wait that gives up names what /proc read of it last: a
+// zombie is an orphan that exited and that no one reaped.
+func awaitOrphanReaped(t *testing.T, pid int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the orphan %d to be reaped by the shim", pid), func() (string, bool) {
 		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			return "reaped"
+			return "reaped", true
 		case err != nil:
-			return err.Error()
-		case time.Now().After(deadline):
-			if fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:])); len(fields) > 0 && fields[0] == "Z" {
-				return "zombie"
-			}
-			return "running"
+			return err.Error(), false
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		if fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:])); len(fields) > 0 && fields[0] == "Z" {
+			return "a zombie: exited, and not reaped", false
+		}
+		return "running", false
+	})
 }
