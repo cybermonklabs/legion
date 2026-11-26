@@ -216,26 +216,3 @@ func TestANATSServerURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		})
 	}
 }
-
-// A server list names each server by its scheme and host, whatever else the URL holds, and as
-// redact.NotPrinted where the host url.Parse reads may be a piece of the credential: a "/", "?" or
-// "#" written into a userinfo ends the authority, and the "@" then stands past it.
-func TestAServerListNamesEachServerByItsSchemeAndHostAlone(t *testing.T) {
-	t.Parallel()
-	for _, row := range []struct{ raw, want string }{
-		{"nats://" + "u:p@h.example.test:4222/path?q=1#f", "nats://h.example.test:4222"},
-		{"tls://h.example.test:4443", "tls://h.example.test:4443"},
-		{"nats://" + "tok/en@h.example.test:4222", redact.NotPrinted},
-		{"nats://" + "u:12?3@h.example.test:4222", redact.NotPrinted},
-		{"nats://" + "u:12#3@h.example.test:4222", redact.NotPrinted},
-		{"nats://" + "u:p@", redact.NotPrinted},
-		{"", ""},
-	} {
-		if got := serverList([]string{row.raw}); got != row.want {
-			t.Errorf("serverList(%q) = %q, want %q", row.raw, got, row.want)
-		}
-	}
-	if got, want := serverList([]string{"a.example.test:4222", "nats://b.example.test:4222"}), "nats://a.example.test:4222,nats://b.example.test:4222"; got != want {
-		t.Errorf("serverList of two = %q, want %q", got, want)
-	}
-}

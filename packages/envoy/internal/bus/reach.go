@@ -96,7 +96,7 @@ func natsServerName(raw string) string {
 		withScheme = "nats://" + withScheme
 	}
 	parsed, err := url.Parse(withScheme)
-	if err != nil || parsed.Host == "" || strings.Contains(parsed.Path+parsed.RawQuery+parsed.Fragment, "@") {
+	if err != nil || parsed.Host == "" || strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@") {
 		return redact.NotPrinted
 	}
 	return parsed.Scheme + "://" + parsed.Host
