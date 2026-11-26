@@ -2644,23 +2644,46 @@ before it expires; the clients from before do not:
 
 So the clients go first. Release them, and make each machine run the new helper: a release does
 not restart a helper that is running, and `agent-secrets-helper install` restarts one only while it
-has no sessions, or with `--restart-with-sessions`. The new helper's first start keeps the boxes
-the helper before it enrolled under the sign-in that is on the machine then. It cannot keep a box
+has no sessions. `--restart-with-sessions` restarts it anyway, and ends the grants of the sessions
+it holds; install says so when it declines. The new helper's first start keeps the boxes the
+helper before it enrolled under the sign-in that is on the machine then. It cannot keep a box
 enrolled under a sign-in that has since left the machine (the person signed out, or signed in
 again, which makes a new box key): nothing on the machine can trade that sign-in, so this broker
 refuses the box within the hour. Enrol each such box again through the new helper
-(`agent-secrets enroll --helper`), which records it. On a machine, the running helper's release is
-the `version` of its last start line:
+(`agent-secrets enroll --helper`), which records it.
+
+Two checks come before the deploy, and only the first proves the build. The helper tells the
+broker no version, and a helper from before that enrols a session at least once an hour trades
+the sign-in at each enrolment, so its credential stays fresh and the broker's database cannot tell
+it from a current one. That helper is refused at its first quiet hour after the deploy, and a box
+it enrols after the deploy an hour after its enrolment.
+
+**1. Every machine runs the new helper.** This query lists each machine where a sign-in that is not
+revoked was traded in the last seven days (a credential's expiry is an hour after its last trade),
+with its account, its person and its live sessions:
+
+```sql
+select c.host, split_part(split_part(c.subject, '|', 2), '#', 1) as machine_account,
+       c.operator as person, max(c.expires_at) as credential_expires_at, count(e.id) as live_sessions
+from launcher_credentials c
+left join enrollments e on e.launcher_credential_id = c.id and e.kind = 'session'
+  and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
+where c.subject like 'signin:%' and c.revoked_at is null
+  and c.expires_at > now() - interval '7 days'
+group by 1, 2, 3
+order by 1;
+```
+
+On each machine it lists, the running helper's release is the `version` of its last start line.
+Each must be this release. A machine where no sign-in was traded for seven days is not listed:
+check any such machine a person may come back to the same way.
 
 ```sh
 journalctl --user -u agent-secrets-helper.service -g 'agent-secrets-helper listening' -n 1 -o cat
 ```
 
-The helper tells the broker no version, so the broker's database is where to check every machine
-at once. This query lists each live sign-in session whose credential has lapsed, or lapses within
-ten minutes, with the person, the machine and its account. A client of this release keeps more
-than ten minutes of the credential while its trades go through; a row is a session that nothing
-trades for, which this broker refuses at its next renewal:
+**2. No session is at risk now.** This query lists each live sign-in session whose credential is
+revoked, has lapsed, or lapses within five minutes, with the person, the machine and its account:
 
 ```sql
 select e.id as enrollment_id, c.operator as person, c.host,
@@ -2672,20 +2695,26 @@ join launcher_credentials c on c.id = e.launcher_credential_id
 where e.kind = 'session' and e.revoked_at is null
   and enrollment_lease_live(e.lease_expires_at)
   and c.subject like 'signin:%'
-  and (c.revoked_at is not null or c.expires_at < now() + interval '10 minutes')
+  and (c.revoked_at is not null or c.expires_at < now() + interval '5 minutes')
 order by c.expires_at;
 ```
 
-Deploy the broker once the query answers no row, and again no row an hour later. A helper from
-before that enrolled a session within the credential's hour holds a live credential and shows no
-row until that hour has passed with no enrolment; the second run, an hour on, is what catches it.
-A row whose `machine_account` `BROKER_VM_SERVICES` no longer lists, or whose person has left, is a
-session the rule is meant to end. On a machine whose helper is of this release and whose person
-can still be traded, a row is a box enrolled under a sign-in that has left that machine, or one a
-helper from before enrolled after the new helper had started its record (a helper rolled back and
-then upgraded again): enrol it again through the running helper, as above. After the deploy, the
-WARN line above names each enrollment the rule refused; the query's `enrollment_id` finds its
-person and machine.
+The margin: a client of this release trades for the credential once it falls due, fifteen minutes
+before its expiry. The helper asks every five minutes, so while its trades go through it holds at
+least ten minutes of the credential, and the command-line renewer more. So such a client shows
+here only when its trades fail, or when its clock and the database's differ by more than five
+minutes, and the broker refuses a proof from a clock more than 60 seconds off anyway.
+
+Run it twice, an hour apart. Some rows are sessions the rule is meant to end: a person who has
+left or can no longer be traded, an account `BROKER_VM_SERVICES` no longer lists, and a machine
+told of no sign-in client, whose command-line sign-in cannot trade at all. Deploy the broker once
+every row of both runs is one of those. Each other row is a session nothing trades for. On a
+machine whose helper is from before, the first check failed: start the new helper. On a machine
+whose helper is of this release, the row is a box enrolled under a sign-in that has left that
+machine, or one a helper from before enrolled after the new helper had started its record (a
+helper rolled back and then upgraded again): enrol it again through the running helper. After the
+deploy, the WARN line above names each enrollment the rule refused; the second query's
+`enrollment_id` finds its person and machine.
 
 To roll back:
 

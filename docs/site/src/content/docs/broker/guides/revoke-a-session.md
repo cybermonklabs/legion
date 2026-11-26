@@ -213,8 +213,8 @@ in one step, and the approver's Inbox drops them. A session ends in one of five 
   is dropped from `BROKER_VM_SERVICES`. Its next renewal is refused `ENROLLMENT_NOT_LIVE` ("the
   sign-in that enrolled this session has ended"), the broker logs `broker: sign-in session renewal
   refused: its sign-in credential has ended`, and it lapses within `BROKER_LEASE_SECONDS`. So a
-  person who leaves loses a machine's access through their sign-in within the hour with no revoke;
-  revoking the sign-in ends its sessions at once ([end your sign-in on a
+  person who leaves loses a machine's access through their sign-in within the credential's hour and
+  one lease with no revoke; revoking the sign-in ends its sessions at once ([end your sign-in on a
   machine](#end-your-sign-in-on-a-machine)).
 
 ## End a machine's login
