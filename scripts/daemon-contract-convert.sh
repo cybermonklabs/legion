@@ -922,13 +922,13 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
     # Which entries are the branch's own: no check below writes anything, and a convert refuses what
     # any finds. An entry whose text main holds under a number of its own is main's change, which this
     # branch carries from another branch it was stacked on and main took as a squash before the
-    # cutover: the branch has to merge main as it was before the cutover first. An entry an entry file
-    # of main holds is such a change main took after the cutover, after which GitHub retargets the
-    # branch to main: over its merge base with main the branch would convert it again under another
-    # id, as a second entry file of one change. The entries left after those two are named, as they
-    # would be with the others gone; then an entry file of main that declares an entry's constant
-    # holds it too. An entry held so takes no name from the ones after it, so the entries left are
-    # named again, until a naming finds no more held.
+    # cutover: the branch has to merge main as it was before the cutover first. An entry whose text
+    # opens an entry file of main is such a change main took after the cutover, after which GitHub
+    # retargets the branch to main: over its merge base with main the branch would convert it again
+    # under another id, as a second entry file of one change. The entries left are named, and an entry
+    # file of main that declares an entry's constant holds it too: such an entry is main's change, or
+    # the branch's own, whose name another change took. An entry held so takes no name from the ones
+    # after it, so the entries left are named again, until a naming finds no more held.
     on_main = {summary(e): e["number"] for e in numbered(main_version)[2]}
     stale = {e["number"]: on_main[summary(e)] for e in entries if summary(e) in on_main}
     for number, theirs in sorted(stale.items()):
