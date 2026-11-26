@@ -3,13 +3,20 @@ import { useLocation } from "react-router-dom";
 
 import { pageQuietText } from "../../../theme/classes";
 import { usePlainHeadline } from "../../refs/plain-text";
+import { parseIssuePath } from "../../refs/routes";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_WORDS } from "../page-words";
-import { titleReading } from "../tree-drafts";
-import { type FactParts, filled, type LensChip } from "./lens-drafts";
-import { lensPlaceOf } from "./lens-reads";
-import { NodeLink } from "./NodeLink";
+import {
+  type FactParts,
+  filled,
+  isChip,
+  type LensChip,
+  type PlainWords,
+  plainText,
+  wordsReading,
+} from "./lens-drafts";
+import { NodeLink, spacedWords } from "./NodeLink";
 
 /** What a line is marked with (`data-lens-line`): the `LENS_WORDS` key of its label, and for a
  *  line with no label, what it draws. */
@@ -133,11 +140,11 @@ function Words({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
-/** A fact line, drawn as `Words`, as its one `LensFacts` field holds it: its words, or, where the
- *  line names a node the tree read holds, its parts (`FactParts`): each string through the
- *  plain-text projection (`FactString`), and each chip as a link to that node's row
- *  (`NodeLink`), as a line's chips are, named as `store-words.ts` named it (decision 388). Drawn
- *  so, the parts read as their words (`factText`), a reference in a string as its target's name. */
+/** A fact line, drawn as `Words`, as its one `LensFacts` field holds it: its words, or its parts
+ *  (`FactParts`): each part of plain words through the plain-text projection (`FactString`), and
+ *  each chip of a node the tree read holds as a link to that node's row (`NodeLink`), as a line's
+ *  chips are, named as `store-words.ts` named it (decision 388). Drawn so, the parts read as
+ *  their words (`factText`), a reference in them as its target's name. */
 function FactWords({
   tabStops,
   words,
@@ -151,12 +158,12 @@ function FactWords({
         <FactString words={words} />
       ) : (
         words.map((part, at) =>
-          typeof part === "string" ? (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
-            <FactString key={at} words={part} />
-          ) : (
+          isChip(part) ? (
             // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
             <NodeLink chip={part} key={at} tabStops={tabStops} />
+          ) : (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
+            <FactString key={at} words={part} />
           )
         )
       )}
@@ -165,32 +172,27 @@ function FactWords({
 }
 
 /**
- * One stored string of a fact line, drawn through the framework's plain-text projection
+ * One part of plain words of a fact line, drawn through the framework's plain-text projection
  * (`usePlainHeadline`, the reading list's `lens-fact-line`): each reference in it reads as its
  * target's name, by the name the page published for it and else by a read of its own, and never
- * as a raw address (R22). The words are read as one text run (`titleReading`), since the step
- * read them to their plain words already (`storedFacts`), and a role in them by the issue the page
- * is on. The projection trims the words it reads, so the one space a part keeps at either end
- * beside a chip is drawn around them, once for a part that is space alone. Nothing until the
+ * as a raw address (R22). The words are read from their reading where a run of them keeps a mark
+ * (`factLine`), so an address in code reads as written, and else as one text run, and a role in
+ * them by the issue the page is on. The projection trims the words it reads, so the one space a
+ * part keeps at either end beside a chip is drawn around them (`spacedWords`). Nothing until the
  * projection has answered.
  */
-function FactString({ words }: { words: string }): ReactNode {
+function FactString({ words }: { words: PlainWords }): ReactNode {
   const { pathname, search } = useLocation();
-  const issue = lensPlaceOf(pathname, search)?.issueKey;
-  const reading = useMemo(() => titleReading(words), [words]);
+  const reading = useMemo(() => wordsReading(words), [words]);
   const { reads, text } = usePlainHeadline(reading, undefined, {
-    issue,
+    issue: parseIssuePath(pathname, search)?.key,
     surface: "lens-fact-line",
   });
   if (text === undefined) return reads;
-  const before = words.startsWith(" ") ? " " : null;
-  const after = words.endsWith(" ") && text.text !== "" ? " " : null;
   return (
     <>
       {reads}
-      {before}
-      {text.text}
-      {after}
+      {spacedWords(plainText(words), text.text)}
     </>
   );
 }

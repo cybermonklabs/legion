@@ -1,16 +1,16 @@
 import { beforeAll, expect, test } from "bun:test";
 
-import type { DecisionLink, DisplayTree } from "../../../api/types";
+import type { Actor, DecisionLink, DisplayTree } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { inReviewList } from "../decision-review";
-import type { TreeNode } from "../issue-tree";
+import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { stampStates } from "../node-states/node-states";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
 import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
-import { treeNode } from "../tree-read/tree-fixtures";
+import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { changesOf } from "./decisions-entries";
 import {
@@ -43,6 +43,7 @@ import {
 import {
   conversationPath,
   type DecisionsAsk,
+  type DecisionsEntry,
   type DecisionsParts,
   decisionsParts,
   headingCount,
@@ -432,6 +433,112 @@ test("another person's answer, decline and keep stand with what others decided",
 
   expect(idsOf(parts).yours).toEqual(["a-mine"]);
   expect(idsOf(parts).others).toEqual([D("kept-by-bob"), "a-bobs", "declined-by-bob"]);
+});
+
+// INFRA-1196's decision 516: a `decision` block whose `decided_by` names a person is that
+// person's decision, as their answered ask is. It stands with the reader's own decisions where
+// that person is the reader, and with what others decided for every other reader, its row naming
+// that person as who decided it, by the time its words last changed. It never waits for review:
+// the read answers every one of them `waiting_review` and a tie names a statement for two, yet
+// none is in the review list, the one no statement rests on stands at no agents' foot, and a
+// comment another person wrote under one asks no change of it. The agent's decision beside them,
+// whose `decided_by` names a session, waits for review as it always has. The tree is the one the
+// page builds from the same answer (`buildIssueTree`), so its rows name who decided each one.
+test("a decision a person decided is that person's, under others with their name, and never to review", () => {
+  const bob: Actor = { id: "bob", kind: "user" };
+  const inSpec = (position: number) => ({
+    artifact_id: SPEC_DOCUMENT.id,
+    position,
+    slug: SPEC_SLUG,
+  });
+  const tree = treeAnswer(
+    [
+      treeNode("s1", "requirement", KEY, { document: inSpec(0), text: "The page draws s1." }),
+      decision("alices", {
+        decision: { changed_at: "2026-11-12T12:00:00Z", links: [shaped(specRef("s1"))] },
+        document: inSpec(1),
+      }),
+      changeComment("c-bob", "alices", "2026-11-14T09:00:00Z", "Say which pages.", bob),
+      decision("bobs", {
+        decision: { changed_at: "2026-11-13T12:00:00Z", links: [shaped(specRef("s1"))] },
+        document: inSpec(2),
+      }),
+      decision("bobs-untied", {
+        decision: { changed_at: "2026-11-11T12:00:00Z" },
+        document: inSpec(3),
+      }),
+      decision("agents", { decision: { links: [shaped(specRef("s1"))] }, document: inSpec(4) }),
+      treeNode(READER, "person", null, { role: "context", text: READER }),
+      treeNode(bob.id, "person", null, { role: "context", text: bob.id }),
+      treeNode(AGENT.id, "session", null, { role: "context", text: "Architect" }),
+    ],
+    [
+      treeTuple("decided_by", "alices", READER),
+      treeTuple("decided_by", "bobs", bob.id),
+      treeTuple("decided_by", "bobs-untied", bob.id),
+      treeTuple("decided_by", "agents", AGENT.id),
+    ]
+  );
+  const decisions = decisionNodes(tree, { asks: undefined, issue: { key: KEY } });
+  const partsFor = (reader: string) =>
+    decisionsParts({
+      asks: [],
+      changes: changesOf(tree, decisions),
+      decisions,
+      issueKey: KEY,
+      nodeIdOf,
+      reader,
+      root: buildIssueTree({ issue: issueDetails(), tree, viewer: reader }),
+    });
+  // Who decided each entry, when, how it stands and the change it carries, as its row draws them.
+  const rows = (entries: readonly DecisionsEntry[]) =>
+    entries.map((entry) => ({
+      at: entry.at,
+      by: entry.node.author,
+      change: entry.kind === "decision" ? entry.change : undefined,
+      standing: entry.kind === "decision" ? entry.standing : undefined,
+    }));
+  const alices = partsFor(READER);
+  const bobs = partsFor(bob.id);
+
+  expect(decisions.map((one) => [one.block_id, one.waiting_review])).toEqual([
+    ["alices", true],
+    ["bobs", true],
+    ["bobs-untied", true],
+    ["agents", true],
+  ]);
+  expect(idsOf(alices)).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: [D("bobs"), D("bobs-untied")],
+    review: [D("agents")],
+    yours: [D("alices")],
+  });
+  expect(idsOf(bobs)).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: [D("alices")],
+    review: [D("agents")],
+    yours: [D("bobs"), D("bobs-untied")],
+  });
+  // Each row names who decided it, by the time its words last changed; neither the comment under
+  // one nor the read's `waiting_review` gives any of them a Change or a state.
+  const unreviewed = { change: undefined, standing: undefined };
+  expect(rows(alices.others)).toEqual([
+    { at: "2026-11-13T12:00:00Z", by: bob, ...unreviewed },
+    { at: "2026-11-11T12:00:00Z", by: bob, ...unreviewed },
+  ]);
+  expect(rows(bobs.others)).toEqual([
+    { at: "2026-11-12T12:00:00Z", by: READER_ACTOR, ...unreviewed },
+  ]);
+  expect(rows(alices.yours)).toEqual([
+    { at: "2026-11-12T12:00:00Z", by: READER_ACTOR, ...unreviewed },
+  ]);
+  expect(alices.review[0]).toMatchObject({ standing: "waiting_review" });
+  expect(waitingOrder(alices)).toEqual([D("agents")]);
+  expect(waitingOrder(bobs)).toEqual([D("agents")]);
 });
 
 // A Change is a comment a person wrote that the tree read hangs under the

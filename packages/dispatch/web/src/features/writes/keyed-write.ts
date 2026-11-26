@@ -40,6 +40,41 @@ export const KEYED_SEND_ATTEMPT_MS = 15_000;
 export const FIRST_BACKOFF_MS = 1_000;
 export const MAX_BACKOFF_MS = 30_000;
 
+/** How many hours Dispatch keeps a write's key (`IDEMPOTENCY_KEY_TTL_MS`), as a Retry's words say
+ *  it. */
+const KEY_HOURS = IDEMPOTENCY_KEY_TTL_MS / 3_600_000;
+
+/** The words of `sameKeyRetryNote` around what the write does once it lands, which it says
+ *  twice: before the first, between the two, and after the second. */
+export const SAME_KEY_RETRY_WORDS = {
+  after: " twice.",
+  before: "Retry asks again under the same key, so it is ",
+  between: ` at most once if you retry within ${KEY_HOURS} hours of the first try. After that Dispatch no longer knows the key: a Retry is a new write and may be `,
+} as const;
+
+/** The words of `expiredRetryNote` around what the write does once it lands. */
+export const EXPIRED_RETRY_WORDS = {
+  after: " a second time if the first one was.",
+  before: `Its key is ${KEY_HOURS} hours old or more, so Dispatch no longer holds it: a Retry is a new write, which can be `,
+} as const;
+
+/** What a composer's send that ended without Dispatch's verdict says before what its Retry does
+ *  (`SendStoppedError` and the errors that extend it): Dispatch has not confirmed it, or a reload
+ *  ended it before any answer; and what such a send does once it lands. */
+export const STOPPED_SEND_WORDS = {
+  interrupted: "Not sent: this page was closed before Dispatch confirmed it.",
+  made: "delivered",
+  unconfirmed: "Dispatch has not confirmed this message.",
+} as const;
+
+/** The words of `stoppedWriteNote`'s first sentence around what the write is and what it may
+ *  have done. */
+export const STOPPED_WRITE_WORDS = {
+  after: ".",
+  before: "Dispatch has not confirmed ",
+  between: ": it may have been ",
+} as const;
+
 /**
  * What a Retry under a write's own key promises, and where that promise ends: Dispatch keeps a key
  * `IDEMPOTENCY_KEY_TTL_MS` from its first request, so a Retry later than that is a new write to
@@ -47,8 +82,8 @@ export const MAX_BACKOFF_MS = 30_000;
  * (`delivered`, `saved`).
  */
 export function sameKeyRetryNote(made: string): string {
-  const hours = IDEMPOTENCY_KEY_TTL_MS / 3_600_000;
-  return `Retry asks again under the same key, so it is ${made} at most once if you retry within ${hours} hours of the first try. After that Dispatch no longer knows the key: a Retry is a new write and may be ${made} twice.`;
+  const { after, before, between } = SAME_KEY_RETRY_WORDS;
+  return `${before}${made}${between}${made}${after}`;
 }
 
 /**
@@ -60,8 +95,8 @@ export function sameKeyRetryNote(made: string): string {
  * something the code does not.
  */
 export function expiredRetryNote(made: string): string {
-  const hours = IDEMPOTENCY_KEY_TTL_MS / 3_600_000;
-  return `Its key is ${hours} hours old or more, so Dispatch no longer holds it: a Retry is a new write, which can be ${made} a second time if the first one was.`;
+  const { after, before } = EXPIRED_RETRY_WORDS;
+  return `${before}${made}${after}`;
 }
 
 /**
@@ -107,7 +142,7 @@ export function keySpent(carried: WriteMethod | null, key: string, now: number):
  *  (`sameKeyRetryNote`). */
 export class SendStoppedError extends Error {
   constructor(
-    message = `Dispatch has not confirmed this message. ${sameKeyRetryNote("delivered")}`
+    message = `${STOPPED_SEND_WORDS.unconfirmed} ${sameKeyRetryNote(STOPPED_SEND_WORDS.made)}`
   ) {
     super(message);
     this.name = "SendStoppedError";
@@ -120,9 +155,7 @@ export class SendStoppedError extends Error {
  *  Discard. */
 export class SendInterruptedError extends SendStoppedError {
   constructor() {
-    super(
-      `Not sent: this page was closed before Dispatch confirmed it. ${sameKeyRetryNote("delivered")}`
-    );
+    super(`${STOPPED_SEND_WORDS.interrupted} ${sameKeyRetryNote(STOPPED_SEND_WORDS.made)}`);
     this.name = "SendInterruptedError";
   }
 }
@@ -134,7 +167,7 @@ export class SendInterruptedError extends SendStoppedError {
  *  (`retriesUnderItsKey`). */
 export class SendExpiredError extends SendStoppedError {
   constructor() {
-    super(`Dispatch has not confirmed this message. ${expiredRetryNote("delivered")}`);
+    super(`${STOPPED_SEND_WORDS.unconfirmed} ${expiredRetryNote(STOPPED_SEND_WORDS.made)}`);
     this.name = "SendExpiredError";
   }
 }
@@ -239,7 +272,8 @@ export type StoppedControl =
  * these instead.
  */
 export function stoppedWriteNote(what: string, made: string, control: StoppedControl): string {
-  const unconfirmed = `Dispatch has not confirmed ${what}: it may have been ${made}.`;
+  const { after, before, between } = STOPPED_WRITE_WORDS;
+  const unconfirmed = `${before}${what}${between}${made}${after}`;
   if ("anew" in control) {
     return `${unconfirmed} ${control.anew}`;
   }

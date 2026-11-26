@@ -30,7 +30,7 @@ import { DocumentStage, DocumentStages } from "../document-stage";
 import type { OutlineRequest } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import { artifactsBySlug } from "../issue-artifacts";
-import { type TreeNode, targetNaming } from "../issue-tree";
+import { buildIssueTree, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
@@ -51,8 +51,9 @@ import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { EditorBox } from "../StagedDocument";
 import { ViewStage } from "../slots/stage";
-import { AppProviders } from "../slots/stage-fixtures";
+import { AppProviders, inDocument } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
+import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
   subscribeTreeFreshness,
@@ -87,12 +88,12 @@ import {
   statement,
   treeAnswer,
 } from "./decisions-fixtures";
-import type { DecisionsAsk } from "./decisions-parts";
+import { DECISIONS_PART_ORDER, type DecisionsAsk } from "./decisions-parts";
 
 /**
  * What the Decisions filter's body draws, read as a reader reads it (dispatch://INFRA-1196 R2,
  * R9, R22, R35). Which entry stands in which part is the model's, read in
- * `decisions-parts.test.ts`; these rows read the drawing: the four parts under their headings,
+ * `decisions-parts.test.ts`; these rows read the drawing: the parts under their headings,
  * the words each state reads, Keep and Change on the review list alone, the person's answer
  * paragraph by paragraph as the store holds it, and where the focus goes. How a row is laid out
  * is the browser's to say, which no DOM of a unit test lays out, so the browser suite's c-row,
@@ -2040,7 +2041,8 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
 // decision that leaves the review list by no act of the reader on this list - a Change sent
 // from another page, a read that says another person kept it, even after a Keep of the
 // reader's that Dispatch refused, or that it was replaced - keeps the focus where it now
-// stands: under Your decisions, or in the foot, which unfolds for it.
+// stands: under Your decisions for the reader's own Change, under Decided by others for
+// another person's Keep (decision 502), or in the foot, which unfolds for it.
 test("a decision that leaves the review list by no act of the reader keeps the focus", async () => {
   const whole = wholeIssue();
   // The address names the decision, and a Change on it arrives in the tree read.
@@ -2072,7 +2074,10 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   await act(async () => rowOf(kept, D("second")).focus());
   await act(async () => kept.client.setQueryData(viewKey(KEY, "decisions"), keptByBob));
   await waitFor(() => expect(rowsOfPart(kept, "review")).toEqual([D("first")]));
-  expect(rowsOfPart(kept, "yours")).toContain(D("second"));
+  expect(
+    rowsOfPart(kept, "others"),
+    "the decision bob kept does not stand under Decided by others"
+  ).toContain(D("second"));
   expect(
     words(rowOf(kept, D("second")).querySelector("[data-node-margin] [data-node-state]"))
   ).toBe(`${NODE_STATE_WORDS.decision.kept} bob`);
@@ -2128,7 +2133,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
 
 // R6, the class of the review list's case above (the tester's round 2): an entry that moves to
 // another part of the list by no act of the reader keeps the focus where it now stands. Another
-// person answers the open question the reader is on, which moves it under Your decisions; the
+// person answers the open question the reader is on, which moves it under Decided by others; the
 // decisions view, read again, ties the foot's decision the reader is on to a statement, which
 // moves it to the review list. Each row is drawn again in its new part, and the focus is on it
 // there, not on the page.
@@ -2154,7 +2159,12 @@ test("an entry that moves to another part by no act of the reader keeps the focu
         : child
     ),
   });
-  await waitFor(() => expect(rowsOfPart(answered, "yours")).toContain("q-open"));
+  await waitFor(() =>
+    expect(
+      rowsOfPart(answered, "others"),
+      "the question bob answered does not stand under Decided by others"
+    ).toContain("q-open")
+  );
   expect(rowsOfPart(answered, "open_questions")).toEqual([]);
   await waitFor(() => expect(focusedRow(answered)).toBe("q-open"));
   answered.unmount();
@@ -2383,6 +2393,63 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   // The agent's write-up of the answer is drawn nowhere in the filter.
   expect(view.container.querySelector(`[data-node-id="${READING.id}"]`)).toBeNull();
   expect(view.queryByText("The reader wants the rail kept.")).toBeNull();
+});
+
+// INFRA-1196's decision 513: an agent's decision whose `from_ask` names a question a person
+// answered restates the person's answer, which is the question's own entry, so the view draws no
+// entry for it in any part, and no part's count holds it. The test is the tie, not the place: a
+// decision the read stands under the same question that names no `from_ask` is an agent's
+// decision, which waits for the reader's review since its `shaped` tie names a statement. The
+// tree is the one the page builds from the read (`buildIssueTree`), and the read answers a
+// person's decision on the question, as it does on every ask a person answered.
+test("a decision that restates a person's answer is no entry, and one under that question with no from_ask tie waits for review", () => {
+  const made = [
+    personDecision("a-answered", { text: "Does the built page work for you?" }),
+    treeNode("restates", "decision", "a-answered", {
+      ...inDocument(SPEC_DOCUMENT, 1),
+      decision: { asks: ["a-answered"], changed_at: "2026-11-12T12:00:00Z", waiting_review: true },
+      text: "Keep the rail, as the person answered.",
+    }),
+    treeNode("untied", "decision", "a-answered", {
+      ...inDocument(SPEC_DOCUMENT, 2),
+      decision: {
+        changed_at: "2026-11-12T12:00:00Z",
+        links: [shaped(specRef("s1"))],
+        waiting_review: true,
+      },
+      text: "Draw the rail 56 px wide.",
+    }),
+  ];
+  const tree = treeAnswer(
+    [
+      treeNode("s1", "requirement", KEY, {
+        ...inDocument(SPEC_DOCUMENT),
+        text: "The page draws s1.",
+      }),
+      ...made,
+    ],
+    [treeTuple("shaped", "untied", "s1")]
+  );
+  const view = renderBody({
+    children: [...buildIssueTree({ issue: issueDetails(), tree }).children],
+    made,
+  });
+
+  expect(
+    Object.fromEntries(DECISIONS_PART_ORDER.map((part) => [part, rowsOfPart(view, part)]))
+  ).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: ["a-answered"],
+    review: [D("untied")],
+    yours: [],
+  });
+  expect(
+    view.container.querySelector(`[data-node-id="${D("restates")}"]`),
+    "the view drew the decision that restates the person's answer"
+  ).toBeNull();
+  expect(view.queryByText("Keep the rail, as the person answered.")).toBeNull();
 });
 
 // R2: a declined ask reads as a question the person declined, never as an answer: its state
@@ -3514,9 +3581,10 @@ test("a Change its author edited draws its words, then · edited, and one nobody
   expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
 
-// R2: the view draws four parts. What another person answered is no part of its own: it stands
-// under Your decisions with the reader's own, newest first, and its answer names that person.
-test("another person's answer stands under Your decisions with their name", () => {
+// R2, decision 502: what another person answered stands in a part of its own, under "Decided by
+// others", after the reader's own decisions, and its answer names that person. Where the reader
+// made every decision, the list draws no such part, and the view is R2's four parts.
+test("another person's answer stands under Decided by others with their name", () => {
   const view = renderBody({
     children: [
       answeredAsk("a-mine", { at: "2026-11-14T09:00:00Z", text: "Mine." }),
@@ -3527,9 +3595,46 @@ test("another person's answer stands under Your decisions with their name", () =
       }),
     ],
   });
-  expect(rowsOfPart(view, "yours")).toEqual(["a-mine", "a-bobs"]);
-  expect(words(rowOf(view, "a-bobs").querySelector("[data-answer-author]"))).toBe("bob");
-  expect(view.container.querySelector('[data-decisions-part="others"]')).toBeNull();
+  expect(
+    rowsOfPart(view, "yours"),
+    "Your decisions holds another person's answer, or not the reader's own"
+  ).toEqual(["a-mine"]);
+  expect(
+    rowsOfPart(view, "others"),
+    "another person's answer does not stand under Decided by others"
+  ).toEqual(["a-bobs"]);
+  expect(
+    [...view.container.querySelectorAll("[data-decisions-part]")].map((part) =>
+      part.getAttribute("data-decisions-part")
+    ),
+    "Decided by others does not stand after the reader's own decisions"
+  ).toEqual(["yours", "others"]);
+  const others = view.container.querySelector('[data-decisions-part="others"]');
+  expect(
+    words(others?.querySelector(`[data-decisions-heading] [${PAGE_CHROME_ATTRIBUTE}]`)),
+    "the others part's heading does not read Decided by others"
+  ).toBe(DECISIONS_WORDS.parts.others);
+  expect(
+    words(others?.querySelector("[data-decisions-count]")),
+    "the others part does not count its one entry"
+  ).toBe("1");
+  expect(
+    words(rowOf(view, "a-bobs").querySelector("[data-answer-author]")),
+    "another person's answer does not name bob"
+  ).toBe("bob");
+  view.unmount();
+
+  const own = renderBody({
+    children: [answeredAsk("a-mine", { at: "2026-11-14T09:00:00Z", text: "Mine." })],
+  });
+  expect(
+    rowsOfPart(own, "yours"),
+    "the reader's own answer does not stand under Your decisions"
+  ).toEqual(["a-mine"]);
+  expect(
+    own.container.querySelector('[data-decisions-part="others"]'),
+    "a list where the reader made every decision draws an others part"
+  ).toBeNull();
 });
 
 // The tester's F16: a key with nowhere to go says so at the row it was pressed on, and the

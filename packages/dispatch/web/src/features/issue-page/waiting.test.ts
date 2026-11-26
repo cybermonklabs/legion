@@ -13,7 +13,13 @@ import { decisionNodes } from "./decision-nodes/decision-nodes";
 import { buildIssueTree, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
-import { commentNode, type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import {
+  commentNode,
+  type TreeNodeExtra,
+  treeAnswer,
+  treeNode,
+  treeTuple,
+} from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
 
@@ -421,6 +427,31 @@ test("waitingOnReader counts a waiting decision node", () => {
   });
   expect(waits(tree, coverage)).toEqual([1, ["spec#b-waits"]]);
   expect(waitingOnReader(quiet, "alice", isCoverageStatement, undefined).decisions).toBe(0);
+});
+
+// INFRA-1196's decision 516: a decision whose `decided_by` names a person is that person's
+// decision, which never waits for review. Though the read answers it waiting and its tie names a
+// statement the coverage read holds, the count does not count it and the tree marks it waiting on
+// nobody, while the agent's decision beside it, whose `decided_by` names a session, waits in the
+// count as in the tree.
+test("a decision a person decided is not counted, whatever its waiting_review says", () => {
+  const tree = treeAnswer(
+    [
+      treeNode(KEY, "issue", null),
+      statement,
+      decisionNode("alices", ["r1"]),
+      decisionNode("agents", ["r1"]),
+      treeNode("alice", "person", null, { role: "context", text: "alice" }),
+      treeNode("planner", "session", null, { role: "context", text: "planner" }),
+    ],
+    [treeTuple("decided_by", "alices", "alice"), treeTuple("decided_by", "agents", "planner")]
+  );
+
+  expect(decisionsOf(tree).map((one) => [one.block_id, one.waiting_review])).toEqual([
+    ["alices", true],
+    ["agents", true],
+  ]);
+  expect(waits(tree, coverage)).toEqual([1, ["spec#b-agents"]]);
 });
 
 // R2: an overtaken decision stays where its kind puts it and counts in no count of what waits.

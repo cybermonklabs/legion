@@ -564,6 +564,38 @@ test("a statement's and an early warning's words read a constraint they cite by 
   ]);
 });
 
+// A node's name that holds another `dispatch://` reference - a constraint's words that cite a
+// statement - keeps that reference out of the name's link, a run of its own that the row's
+// renderer names, since it names no reference inside a link's words; the rest of the name links
+// the node's row, and the row's words read as before.
+test("a name keeps another reference it holds out of its link", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const cited = `dispatch://constraint/${constraint}`;
+  const other = "dispatch://CORE-1/spec#b-r2";
+  const { root } = drawn(
+    answer([
+      block("r1", "requirement", KEY, SPEC, 0, {
+        text: `Answer as ${cited}.`,
+        text_tree: reading(`Answer as ${cited}.`),
+      }),
+      bare(constraint, "constraint", KEY, {
+        attributes: { standard: `Retention as ${other} sets it` },
+      }),
+    ])
+  );
+  const statement = rowOf(root, blockNodeId("spec", "r1"));
+  const link = { attrs: { href: cited, title: rowPath(constraint) }, type: "link" };
+
+  expect(lineWordsRaw(statement)).toBe(`Answer as Retention as ${other} sets it.`);
+  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+    { text: "Answer as ", type: "text" },
+    { marks: [link], text: "Retention as ", type: "text" },
+    { text: other, type: "text" },
+    { marks: [link], text: " sets it", type: "text" },
+    { text: ".", type: "text" },
+  ]);
+});
+
 // A risk's fact lines that name a node the answer holds are their parts: the text, and a chip for
 // each name, which holds the node's address, the words the line names it by and its read id, so
 // the line links its row. An early warning's bare address of a constraint is named by the
@@ -1449,10 +1481,11 @@ test("a chip whose far end no page read so far holds names its kind and links it
 });
 
 // A risk's row draws its heading, its early warning and its prevention, each read to
-// plain words, and a chip for each check its `prevented_by` names, named by that check's whole
-// text in the tree - both its blocks, past the 32 characters part G cuts a chip at, with no cut -
-// not by the first block its row draws a line from, and linked to its row; a risk no check
-// prevents has none.
+// plain words, a line whose words hold code as their reading, which its line draws them from so
+// it reads the code as written, and a chip for each check its `prevented_by` names, named by that
+// check's whole text in the tree - both its blocks, past the 32 characters part G cuts a chip
+// at, with no cut - not by the first block its row draws a line from, and linked to its row; a
+// risk no check prevents has none.
 test("a check's chip takes its words whole from its node", () => {
   const whole = "C1. The index builds concurrently. Then it is checked.";
   const { root } = drawn(
@@ -1496,7 +1529,21 @@ test("a check's chip takes its words whole from its node", () => {
   expect(factsOf(rowOf(root, "risk-b"))).toEqual({
     ...NO_FACTS,
     earlyWarning: "Writes queue.",
-    prevention: "Build the index CONCURRENTLY.",
+    prevention: [
+      {
+        content: [
+          {
+            content: [
+              { text: "Build the index ", type: "text" },
+              { marks: [{ type: "inlineCode" }], text: "CONCURRENTLY", type: "text" },
+              { text: ".", type: "text" },
+            ],
+            type: "paragraph",
+          },
+        ],
+        type: "doc",
+      },
+    ],
     preventedBy: [
       {
         address: checkRow.reference ?? "",
@@ -1507,6 +1554,7 @@ test("a check's chip takes its words whole from its node", () => {
       },
     ],
   });
+  expect(lineText(factsOf(rowOf(root, "risk-b")).prevention)).toBe("Build the index CONCURRENTLY.");
   expect(lineWordsRaw(checkRow), "the check's row draws its first block as its line").toBe(
     "C1. The index builds concurrently."
   );

@@ -33,7 +33,12 @@ import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorBlock, type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import {
+  anchorBlock,
+  type DecisionNode,
+  decidedByPerson,
+  decisionsOfAnswer,
+} from "./decision-nodes/decision-nodes";
 import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -172,16 +177,22 @@ export function DecisionActions({
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   // The decisions of the outline read are read once per answer for every node of the page
-  // (`decisionsOfAnswer`), with no asks: they only make an answered question a person's
-  // decision, and these controls are drawn only on a decision waiting for review, which is an
-  // agent's, so the decision its address finds is the same without them.
+  // (`decisionsOfAnswer`), with no asks: the read answers a person's decision on every ask a
+  // person answered, which is what says a question is a person's decision and an agent's
+  // decision restates it (`restatesAnswer`), and these controls are drawn only on a decision
+  // waiting for review, which is an agent's, so the decision its address finds is the same
+  // without them. A decision a person decided is never one, whatever the read's
+  // `waiting_review` says (`decidedByPerson`, INFRA-1196's decision 516): the person's own
+  // decision is not an agent's to keep or change, so neither control is drawn on it.
   const tree = useOutlineAnswer(issueKey);
   const decision =
     tree === undefined || nodeReference === undefined
       ? undefined
       : decisionsOfAnswer(tree, issueKey).get(nodeReference);
   const documentId = decision?.document;
-  if (decision === undefined || documentId === undefined || isClosed) return null;
+  if (decision === undefined || documentId === undefined || isClosed || decidedByPerson(decision)) {
+    return null;
+  }
   return (
     <DecisionControls
       decision={decision}
@@ -443,6 +454,8 @@ function ChangeComposer({
         {...authorText}
       >
         {quoteReads}
+        {/* Until the engine answers, the first paragraph's words as written: the reading
+            list's `decision-change-quote`. */}
         {quoted?.text ?? decision.heading}
       </blockquote>
       <MentionField

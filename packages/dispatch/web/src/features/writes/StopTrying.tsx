@@ -4,7 +4,11 @@ import { RefusableButton } from "../../components/RefusableButton";
 
 /** Why Stop trying takes no press once pressed: what a screen reader reads beside it, and its
  *  title where the surface raises tooltips. */
-const STOPPING_REASON = "The attempt already sent is still out.";
+export const STOPPING_REASON = "The attempt already sent is still out.";
+
+/** The control's words: before the reader stops the write, and once they have. */
+export const STOP_TRYING_LABEL = "Stop trying";
+export const STOPPING_LABEL = "Stopping…";
 
 /** Stop trying, for a late write - a composer's send, a broadcast, or any other write. Once the
  *  reader has stopped it, and while its last attempt is still out (`stopping`), it reads Stopping…
@@ -23,13 +27,13 @@ export function StopTrying({
     // the same and takes no press (`RefusableButton`).
     return (
       <RefusableButton look="secondary-compact" refusal={STOPPING_REASON}>
-        Stopping…
+        {STOPPING_LABEL}
       </RefusableButton>
     );
   }
   return (
     <RefusableButton look="secondary-compact" onPress={onStop} refusal={null}>
-      Stop trying
+      {STOP_TRYING_LABEL}
     </RefusableButton>
   );
 }

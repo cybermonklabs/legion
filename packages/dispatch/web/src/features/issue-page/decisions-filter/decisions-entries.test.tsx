@@ -210,14 +210,12 @@ async function seamOf(quote: string) {
   return { change, parts };
 }
 
-// The seam gives the view's four parts from the reads the page's tree already made and the
-// decisions view the page holds. Bob's answers stand under the reader's decisions, newest first
-// among the reader's own. Two answers of one moment stand in the order their nodes first stand
-// in the tree, read depth first: Bob's is under the statement at the tree's top and the reader's
-// is the issue's last ask, so Bob's stands first, which neither the reader's entries first nor a
-// walk level by level gives. The tree read hangs the reader's Change under the second decision,
-// so the second leaves the review list for her decisions and the first still waits.
-test("the seam gives four parts from today's reads and makes no request", async () => {
+// The seam gives the view the model's parts from the reads the page's tree already made and the
+// decisions view the page holds. Bob's answers stand in a part of their own, what others decided,
+// newest first, and not among the reader's decisions (decision 502). The tree read hangs the
+// reader's Change under the second decision, so the second leaves the review list for her
+// decisions and the first still waits.
+test("the seam gives the model's parts from today's reads and makes no request", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
   const getIssueTree = spyOn(api, "getIssueTree");
   const listIssueAskThreads = spyOn(api, "listIssueAskThreads");
@@ -227,15 +225,8 @@ test("the seam gives four parts from today's reads and makes no request", async 
   try {
     const { change, parts } = await seamOf("A phone draws it over the body.");
     const ids = idsOf(parts);
-    expect(ids.yours).toEqual([
-      D("asked"),
-      "a-late",
-      "a-bob",
-      "a-early",
-      "a-tie-bob",
-      "a-tie-mine",
-    ]);
-    expect(ids.others).toEqual([]);
+    expect(ids.yours).toEqual([D("asked"), "a-late", "a-early", "a-tie-mine"]);
+    expect(ids.others).toEqual(["a-bob", "a-tie-bob"]);
     expect(ids.open_questions).toEqual(["q-open"]);
     expect(ids.review).toEqual([D("review")]);
     expect(ids.agents).toEqual([D("minor")]);

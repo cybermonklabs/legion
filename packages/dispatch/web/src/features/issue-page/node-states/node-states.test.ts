@@ -7,6 +7,7 @@ import { createElement, type ReactNode, useMemo } from "react";
 import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { renderWithQueries } from "../../../__tests__/query-provider";
 import { api, type WriteRequest } from "../../../api/client";
 import {
   artifactBlocksQuery,
@@ -1700,9 +1701,11 @@ const PREMORTEM = "dispatch://lens/0c6f1d2e-2222-4a6b-9c1d-5e2f3a4b5c62";
 const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
-/** `chip` drawn by `NodeLink` on this issue's route, so a chip with an id is a link. */
+/** `chip` drawn by `NodeLink` on this issue's route, so a chip with an id is a link. It is drawn
+ *  under a query client whose failed read is not retried: a chip's words are drawn through the
+ *  plain-text projection, which reads through react-query. */
 function drawChip(chip: LensChip) {
-  return render(
+  return renderWithQueries(
     createElement(
       MemoryRouter,
       { initialEntries: [`/issues/${KEY}`] },

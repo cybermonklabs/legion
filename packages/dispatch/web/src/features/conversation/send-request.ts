@@ -273,24 +273,45 @@ export function artifactOwnerOf(owner: ComposerOwner): ArtifactOwner {
   }
 }
 
+/** The words `ownerWords` and `addressWords` name where a message goes in: the prepositions an
+ *  issue or another document is said with, and the words of a direct message, of another
+ *  document and of a reply. */
+export const ADDRESS_WORDS = {
+  direct: "as a direct message",
+  document: "another document",
+  prepositions: ["for", "to"],
+  reply: "as a reply",
+} as const;
+
+/** A preposition of `ADDRESS_WORDS`. */
+type AddressPreposition = (typeof ADDRESS_WORDS.prepositions)[number];
+
 /** What a message is for, named by the owner its files go to (`artifactOwnerOf`), in the
  *  composer's words: as a direct message, or `preposition` its issue or another document - `for
  *  CORE-1` where a draft was written or a file pasted, `to CORE-1` where a send went. The
  *  composer's words of a pasted file and of a draft's address are these alike. */
-export function ownerWords(owner: ArtifactOwner, preposition: "for" | "to"): string {
+export function ownerWords(owner: ArtifactOwner, preposition: AddressPreposition): string {
   if ("issue" in owner) return `${preposition} ${owner.issue}`;
-  if ("session" in owner) return "as a direct message";
-  return `${preposition} another document`;
+  if ("session" in owner) return ADDRESS_WORDS.direct;
+  return `${preposition} ${ADDRESS_WORDS.document}`;
 }
 
 /** Where `address` sends a message, in the composer's words: as a reply, or where its owner is
  *  (`ownerWords`). */
 export function addressWords(
   { owner, replyTo }: CarriedAddress,
-  preposition: "for" | "to"
+  preposition: AddressPreposition
 ): string {
-  return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : "as a reply";
+  return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : ADDRESS_WORDS.reply;
 }
+
+/** The words of `movedSendNote`: what the stopped write is, before its address; what it may have
+ *  done there; and what a send from here does. */
+export const MOVED_SEND_WORDS = {
+  anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
+  made: "delivered there",
+  what: "this message, sent ",
+} as const;
 
 /**
  * What a send the reader stopped says once they have moved its draft to another address with the
@@ -301,8 +322,9 @@ export function addressWords(
  * offers for its words (`stoppedOfferOf` in `useKeptDrafts`).
  */
 export function movedSendNote(stopped: CarriedAddress): string {
-  return stoppedWriteNote(`this message, sent ${addressWords(stopped, "to")}`, "delivered there", {
-    anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
+  const { anew, made, what } = MOVED_SEND_WORDS;
+  return stoppedWriteNote(`${what}${addressWords(stopped, "to")}`, made, {
+    anew,
   });
 }
 

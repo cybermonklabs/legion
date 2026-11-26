@@ -24,11 +24,14 @@ import {
   askNodeId,
   askOfNode,
   type DecisionNode,
+  decidedByPerson,
   decisionNodes,
   isSpecBlock,
   issueAsks,
   type Lookup,
   nodeReference,
+  restatedAsks,
+  restatesAnswer,
   tieReference,
   tieTargetReference,
   tuplesByFrom,
@@ -365,6 +368,20 @@ export function treeDraftsFrom(
   for (const [draft, node] of made) {
     if (draft.parents.length === 0) draft.parents = drafting.placeOf(node);
   }
+  // Each decision that restates a person's answer, which no draft stands for (`firstDraft`), is
+  // named on the row of each question it restates, which an address naming it lands on
+  // (`issue-address.ts`' `pathToTarget`). A gone one is no node of the tree to name.
+  for (const node of walk) {
+    if (node.state === "gone") continue;
+    for (const ask of restatedAsks(node, lookup)) {
+      const question = drafts.get(idOfNode(ask));
+      if (question === undefined) continue;
+      question.restatedBy = [
+        ...(question.restatedBy ?? []),
+        { id: idOfNode(node), readId: node.id },
+      ];
+    }
+  }
   addDocumentChips(drafts, reads, drafting);
   for (const mark of treeDraftMarks) {
     for (const [draft, node] of made) mark(draft, node, answer, drafting);
@@ -384,13 +401,17 @@ function pushInto<Value>(groups: Map<string, Value[]>, key: string, value: Value
  *  nothing of how one it answers all the same - another issue's check whose `serves` still
  *  stands, a context node - is drawn, so it is kept as a node of a kind no step drafts is, whole
  *  in the answer and drawn by no row, what the read hangs under it standing under its nearest
- *  drawn ancestor (`placeOf`). */
+ *  drawn ancestor (`placeOf`). A decision that restates a person's answer (`decision-nodes.ts`'
+ *  `restatesAnswer`, INFRA-1196's decision 513) makes none either, and is kept so: the person's
+ *  decision is the question they answered, whose row draws their own words, and what the read
+ *  hangs under the decision - a reading of it, a comment on it - stands under the question the
+ *  read stands it under, its nearest drawn ancestor. */
 function firstDraft(
   node: TreeAnswerNode,
   answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (node.state === "gone") return undefined;
+  if (node.state === "gone" || restatesAnswer(node, context)) return undefined;
   for (const step of treeDraftSteps) {
     const draft = step(node, answer, context);
     if (draft !== undefined) return draft;
@@ -702,10 +723,11 @@ function draftResult(
  * `shaped` tuples as chips, each stale where its link to that node is. Its time is its words'
  * last change (`changed_at`), as the page dates every decision. Its author is who decided it:
  * the person or the session its `decided_by` tuple names, which the read answers as context
- * (`deciderOf`), since the node's `decision` names no decider; none where the read answers no
- * such tuple. A person's Change the read hangs under it says it waits on its agent
- * (`decisionNodeChanges`), and names who asked for it: the first author of the newest Change
- * (`changedBy`), whose name the row draws after "Changed by".
+ * (`deciderOf`, a session by the title its node in the answer says it stamped), since the node's
+ * `decision` names no decider; none where the read answers no such tuple. A person's Change the
+ * read hangs under it says it waits on its agent (`decisionNodeChanges`), and names who asked
+ * for it: the first author of the newest Change (`changedBy`), whose name the row draws after
+ * "Changed by".
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
@@ -716,6 +738,12 @@ function draftResult(
  * that carries no `decision`, or that no document holds, is no decision of `decisionNodes` - the
  * one has no review state, the other no address and no document a Keep could be written against
  * - so it waits on nobody, and is unsure only where the read says so.
+ *
+ * A decision whose `decided_by` names a person is that person's decision (`decision-nodes.ts`'
+ * `decidedByPerson`, INFRA-1196's decision 516), so its author is that person, and it is not an
+ * agent's to keep or change: it waits for no review, whatever the read's `waiting_review` says, a
+ * comment under it asks no change of it, and the one state it stands in is replaced, where it
+ * was.
  */
 function draftDecision(
   node: TreeAnswerNode,
@@ -727,7 +755,7 @@ function draftDecision(
   const decision: Partial<Decision> = node.decision ?? {};
   if (typeof decision.changed_at === "string") draft.at = decision.changed_at;
   const decidedBy = context.tuplesFrom(node.id).find((tuple) => tuple.kind === "decided_by");
-  const decider = deciderOf(decidedBy?.to ?? null);
+  const decider = deciderOf(decidedBy?.to ?? null, context.nodeOf);
   if (decider !== undefined) draft.author = decider;
   const links = decision.links ?? [];
   const stale = new Set(
@@ -739,18 +767,20 @@ function draftDecision(
     ...chip,
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
-  const change = context.changes.get(draft.id);
+  const decided = context.decisions.get(node);
+  const person = decidedByPerson({ decidedBy: decider });
+  const change = person ? undefined : context.changes.get(draft.id);
   const changed = change !== undefined;
-  draft.state = reviewState(decision, changed);
+  draft.state = reviewState(person ? { replaced: decision.replaced } : decision, changed);
   const changer = change?.author?.[0];
   if (draft.state === "change_requested" && changer !== undefined) draft.changedBy = changer;
-  if (decision.kept != null && decision.waiting_review !== true) {
+  if (!person && decision.kept != null && decision.waiting_review !== true) {
     draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
   }
   draft.replaced = decision.replaced === true;
-  const decided = context.decisions.get(node);
   if (decided?.unsure ?? decision.unsure === true) draft.unsure = true;
   draft.waiting =
+    !person &&
     decided !== undefined &&
     context.viewer !== undefined &&
     inReviewList(decided, context.isCoverageStatement, changed);

@@ -39,7 +39,13 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { ANSWER_LINES, CONTROL_LABELS, NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import {
+  ANSWER_LINES,
+  COMPOSER_ANSWER_WORDS,
+  CONTROL_LABELS,
+  NODE_TYPE_NAMES,
+  type NodeType,
+} from "./page-words";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
 import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
@@ -52,7 +58,7 @@ const KINDS: readonly OutlineKind[] = [
     kind: "comment",
     label: (
       <>
-        <span aria-hidden="true">“</span>
+        <span aria-hidden="true">{CONTROL_LABELS.composer_comment_mark}</span>
         <span {...pageChrome}>{CONTROL_LABELS.composer_comment}</span>
       </>
     ),
@@ -61,7 +67,7 @@ const KINDS: readonly OutlineKind[] = [
     kind: "ask",
     label: (
       <>
-        <span aria-hidden="true">?</span>
+        <span aria-hidden="true">{CONTROL_LABELS.composer_question_mark}</span>
         <span {...pageChrome}>{CONTROL_LABELS.composer_question}</span>
       </>
     ),
@@ -406,7 +412,9 @@ function WriteLine({
     anchor,
     cancelReply: CONTROL_LABELS.write_on_issue,
     deletedReplyWay: ANSWER_LINES.deleted_reply_way,
+    discardDraft: CONTROL_LABELS.discard_draft,
     end,
+    endMark: CONTROL_LABELS.target_end_mark,
     kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
     kinds: writesKinds ? KINDS : [],
     placeholder: placeholderOf(aim?.placeholder ?? "issue", place.phone),
@@ -419,8 +427,10 @@ function WriteLine({
         ? undefined
         : {
             drawn: (kept) => targets.statements.some((one) => sameStatement(one, kept)),
+            drop: CONTROL_LABELS.discard_my_draft,
             gone: ANSWER_LINES.kept_statement_gone,
             goneWaits: ANSWER_LINES.kept_statement_gone_waits,
+            take: CONTROL_LABELS.use_it_here,
           },
     target:
       aim === undefined ? undefined : (
@@ -428,6 +438,7 @@ function WriteLine({
       ),
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
+    words: COMPOSER_ANSWER_WORDS.composer,
   };
   return (
     <MentionComposer
@@ -513,7 +524,9 @@ function EditLine({
   const look: OutlineLook = {
     cancelReply: CONTROL_LABELS.write_on_issue,
     deletedReplyWay: ANSWER_LINES.deleted_reply_way,
+    discardDraft: CONTROL_LABELS.discard_draft,
     end: back,
+    endMark: CONTROL_LABELS.target_end_mark,
     kinds: [],
     placeholder: placeholderOf("edit", place.phone),
     retry: CONTROL_LABELS.retry,
@@ -522,6 +535,7 @@ function EditLine({
     target: <TargetNamed author={author} doing={CONTROL_LABELS.editing} kind="comment" />,
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
+    words: COMPOSER_ANSWER_WORDS.composer,
   };
   return (
     <MentionComposer
@@ -632,7 +646,11 @@ function CriterionForm({
       {/* Held while the write is out: the node it names is the criterion's parent, fixed once
           the send is out. */}
       <fieldset className="flex min-w-0 flex-col gap-[3px] border-0 p-0" disabled={line.pending}>
-        <OutlineTargetLine clearLabel={CONTROL_LABELS.write_on_issue} onClear={back}>
+        <OutlineTargetLine
+          clearLabel={CONTROL_LABELS.write_on_issue}
+          mark={CONTROL_LABELS.target_end_mark}
+          onClear={back}
+        >
           <TargetNamed
             author={target.author}
             doing={CONTROL_LABELS.criterion_target}
@@ -708,7 +726,7 @@ function TargetNamed({
           <b className="font-semibold text-page-ink">
             <AgentName actor={author} author inline />
           </b>{" "}
-          <span aria-hidden="true">·</span>{" "}
+          <span aria-hidden="true">{CONTROL_LABELS.target_separator}</span>{" "}
         </>
       )}
       <span {...pageChrome}>{NODE_TYPE_NAMES[kind]}</span>

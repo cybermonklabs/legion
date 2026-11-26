@@ -340,6 +340,11 @@ export interface TreeNode {
   /** Whether the decision this node holds was replaced, which folds its branch to one line
    *  (R1). */
   readonly replaced: boolean;
+  /** The decisions that restate this question's answer (`decision-nodes.ts`' `restatesAnswer`,
+   *  INFRA-1196's decision 513), which the tree draws no row for (`tree-read/tree-nodes.ts`'
+   *  `firstDraft`): an address that names one lands on this question (`issue-address.ts`'
+   *  `pathToTarget`, root R20: no citation of a node dangles). Absent on every other node. */
+  readonly restatedBy?: readonly RestatingDecision[];
   /** The record `text` is, where it is one: an ask, a comment, a message, or the document a
    *  decision is a block of. A body drawn from `tree` links what the text cites against it, as
    *  every other surface drawing the same text does (`MarkdownBody`'s `source`). */
@@ -383,6 +388,14 @@ export interface TreeNode {
    *  not resolved. The header's count of what waits puts the focus on the first of them (R13,
    *  `waiting.ts`). */
   readonly waiting: boolean;
+}
+
+/** A decision that restates a person's answer (`TreeNode.restatedBy`), by the id the tree would
+ *  draw it by (`tree-read/tree-nodes.ts`' `treeIdOfNode`), which a block's address names, and the
+ *  tree read's own id, which `?node=` names. */
+export interface RestatingDecision {
+  readonly id: string;
+  readonly readId: string;
 }
 
 /** The view answers the page holds, by filter (`TreeNode.views`): the Decisions filter's is the
@@ -966,6 +979,7 @@ export function assemble(
       ...(draft.readId === undefined ? {} : { readId: draft.readId }),
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
+      ...(draft.restatedBy === undefined ? {} : { restatedBy: draft.restatedBy }),
       ...(draft.source === undefined ? {} : { source: draft.source }),
       ...(draft.state === undefined ? {} : { state: draft.state }),
       ...(draft.statement === undefined ? {} : { statement: draft.statement }),

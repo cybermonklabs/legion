@@ -8,9 +8,25 @@
  *   the page draws it only after an act of the reader. `page-words.ts` exports it again.
  * - Put a new key for a table of this file in this file, from any pull request.
  * - Import nothing from `page-words.ts`, not even a type. Import only the type `PartWords` from
- *   `./page-words-parts`, and values from `./page-structure`. A value import from
- *   `page-words.ts` or `./page-words-parts` makes an import cycle.
+ *   `./page-words-parts`, values from `./page-structure`, and the shared words the box at the
+ *   foot of the outline draws, from the modules that write them for every composer, none of
+ *   which imports `page-words.ts` or a part's file. A value import from `page-words.ts` or
+ *   `./page-words-parts` makes an import cycle.
  */
+import { UPLOAD_FAILED_TEXT } from "../artifacts/ArtifactUpload";
+import { MODE_LABELS, NO_DELIVERY_WORDS, TITLES_JOINER } from "../conversation/delivery";
+import { CHANGED_EDIT_LEAD, OFFER_LABELS } from "../conversation/KeptDraftOffers";
+import { GONE_REPLY_WORDS, KEPT_REPLY_WORDS } from "../conversation/KeptReply";
+import { COMPOSER_WORDS, DISCARD_DRAFT_LABEL } from "../conversation/MentionComposer";
+import { ADDRESS_WORDS, DELIVERY_COMMANDS, MOVED_SEND_WORDS } from "../conversation/send-request";
+import { WRITTEN_ELSEWHERE_WORDS } from "../conversation/useKeptDrafts";
+import {
+  EXPIRED_RETRY_WORDS,
+  SAME_KEY_RETRY_WORDS,
+  STOPPED_SEND_WORDS,
+  STOPPED_WRITE_WORDS,
+} from "../writes/keyed-write";
+import { STOP_TRYING_LABEL, STOPPING_LABEL, STOPPING_REASON } from "../writes/StopTrying";
 import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
 
@@ -85,12 +101,49 @@ export const ADDRESS_FALLBACK_WORDS = freeze({
  */
 export const CURRENT_POINT = "location" as const;
 
+/**
+ * What the box at the foot of the outline says in answer to the reader's act in the words of the
+ * composer it is (`MentionComposer`) and of the parts that composer draws, each taken from the
+ * module that writes it for every composer, so the box and every other composer say the same
+ * words. The box hands the composer's own to it (`OutlineLook.words`, from `composer` here); the
+ * parts draw theirs: a reply kept for another row (`kept_reply`), one whose post the outline no
+ * longer draws (`gone_reply`), an edit that waits beside a newer comment (`changed_edit`), a
+ * refusal held for another address than the box shows (`elsewhere`, `address`), what a send to the
+ * sessions a draft names would do (`no_delivery`, `titles_joiner`, `commands`), a send the reader
+ * stopped (`stopped_send`, `same_key_retry`, `expired_retry`, `moved_send`, `stopped_write`,
+ * `stopping_reason`), and an upload that failed (`upload_failed`). A sentence that names a
+ * session, an author, an address or what a write may have done is cut around that name, as
+ * `BLOCKED_BY_REFUSALS` of `page-words.ts` cuts its sentences around a key, and a sentence that
+ * differs by the kind of post or by one or many is keyed by it.
+ */
+export const COMPOSER_ANSWER_WORDS = freeze({
+  address: { prepositions: ADDRESS_WORDS.prepositions, reply: ADDRESS_WORDS.reply },
+  changed_edit: CHANGED_EDIT_LEAD,
+  commands: DELIVERY_COMMANDS,
+  composer: COMPOSER_WORDS,
+  elsewhere: WRITTEN_ELSEWHERE_WORDS,
+  expired_retry: EXPIRED_RETRY_WORDS,
+  gone_reply: GONE_REPLY_WORDS,
+  kept_reply: KEPT_REPLY_WORDS,
+  moved_send: MOVED_SEND_WORDS,
+  no_delivery: NO_DELIVERY_WORDS,
+  same_key_retry: SAME_KEY_RETRY_WORDS,
+  stopped_send: STOPPED_SEND_WORDS,
+  stopped_write: STOPPED_WRITE_WORDS,
+  stopping_reason: STOPPING_REASON,
+  titles_joiner: TITLES_JOINER,
+  upload_failed: UPLOAD_FAILED_TEXT,
+} as const);
+
 export default {
   add: {
     ANSWER_LINES: {
       /** What Send says while the send is out, on the write line of the box at the foot of the
        *  outline, beside the busy words of `ANSWER_LINES` in `page-words.ts`. */
       sending: "Sending…",
+      /** What Stop trying says once the reader has pressed it, while the attempt already sent is
+       *  still out (`StopTrying`). */
+      stopping: STOPPING_LABEL,
       /** What the write line says while a file pasted or dropped into its draft uploads: on its
        *  Send, and on the status line under the field. */
       uploading: "Uploading file…",
@@ -131,6 +184,17 @@ export default {
        *  header's second row (`IssueTitleRow.tsx`), which draws no words of its own and has the
        *  title as its description. */
       edit_title: "Edit title",
+      /** The marks drawn before the words of the box's two kinds, on their chips. */
+      composer_comment_mark: "“",
+      composer_question_mark: "?",
+      /** The control beside a refusal that drops the draft it handed back, and the presses of a
+       *  draft drawn beside the box's line: its own reply or statement's draft drops or takes it,
+       *  and an edit that waits beside a newer comment does. The words of every composer. */
+      discard_draft: DISCARD_DRAFT_LABEL,
+      discard_my_draft: OFFER_LABELS.dropDraft,
+      discard_my_edit: OFFER_LABELS.dropEdit,
+      use_it_here: OFFER_LABELS.takeHere,
+      use_my_edit: OFFER_LABELS.takeEdit,
       /** What the box at the foot of the outline says while it is empty and writes a comment or
        *  a question on the issue itself: where the words go, as the reply's and the statement's
        *  placeholders say where theirs go. */
@@ -146,8 +210,19 @@ export default {
       /** The same in the shorter words the box says at 760 px and below, which fit its line
        *  whole. */
       statement_placeholder_phone: "Comment on the statement…",
+      /** The delivery modes by the names a notice of the box says them in, as every composer
+       *  does. */
+      mode_aside: MODE_LABELS.aside,
+      mode_btw: MODE_LABELS.btw,
+      mode_send: MODE_LABELS.steer,
+      /** What a late send's control says, as every composer's does (`StopTrying`). */
+      stop_trying: STOP_TRYING_LABEL,
+      /** The mark the target line's control draws, which `write_on_issue` names, and the mark
+       *  between the target's author and its kind. */
+      target_end_mark: "×",
+      target_separator: "·",
     },
   },
   unasked: [],
-  answers: [ADDRESS_FALLBACK_WORDS],
+  answers: [ADDRESS_FALLBACK_WORDS, COMPOSER_ANSWER_WORDS],
 } as const satisfies PartWords;
