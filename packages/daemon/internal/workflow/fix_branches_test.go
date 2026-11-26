@@ -221,14 +221,16 @@ func (r *fixRig) parks() {
 	}
 }
 
-// The branches beside a fix go once no step can need them. A way 2 after the fix's own completion
-// with commits of its own deletes that fix's branches; a way 2 with no commit (a step's report the
-// fix got), a way 3 and a way 1 delete none, and neither does a fix whose claim failed, at a way 2
-// with a report or a way 3 without one, whose worker-died notice reaches the owner. A stop deletes
-// none, and tells the owner by a task-stopped notice of the fix with no StoppedBy. Where no step of
-// the task can run again, every branch of the task's fixes goes, once: the release of an end hold
-// into the retro, a move into the retro that nothing holds, a leave, a new generation, and a version
-// that removes the stopped task. A task with no fix deletes nothing at any end.
+// The branches beside a fix go once no step can need them, never at the way after the fix: a way 2
+// with commits of the fix's own, a way 2 with no commit (a step's report the fix got), a way 3 and a
+// way 1 delete none, since a step beside the fix may have pushed after the fix's end push, and the
+// step a way 2 runs again takes its commits from its kept branch; nor does a fix whose claim failed,
+// at a way 2 with a report or a way 3 without one, whose worker-died notice reaches the owner. A
+// stop deletes none, and tells the owner by a task-stopped notice of the fix with no StoppedBy.
+// Where no step of the task can run again, every branch of the task's fixes goes, once: the
+// release of an end hold into the retro, a move into the retro that nothing holds, a leave, a new
+// generation, and a version that removes the stopped task. A task with no fix deletes nothing at
+// any end.
 //
 // The controls, kept: with noEndBesideDelete the release into the retro deletes nothing; with
 // besideDeleteAsBefore the failed claim's way 2 and the stop each delete the fix's branches; and
@@ -236,11 +238,11 @@ func (r *fixRig) parks() {
 func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 	fix1 := []string{"1 a fix 1"}
 	task := []string{"1 a fix 0"}
-	t.Run("a new-commit way 2 deletes the fix's branches", func(t *testing.T) {
+	t.Run("a new-commit way 2 deletes none", func(t *testing.T) {
 		r := fixAtTheEnd(t, returnEngine())
 		r.fixEnds(headTwo)
 		r.assertWayTaken(wayAfterFix)
-		assertStrings(t, "the deletions", r.deletions(), fix1)
+		assertStrings(t, "the deletions", r.deletions(), nil)
 	})
 	t.Run("a no-commit way 2 with a report deletes none", func(t *testing.T) {
 		r := fixAfterReview(t, returnEngine(), TriggerReviewRejected, false, fixHead)
@@ -306,7 +308,7 @@ func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 		r.allCIPasses(headTwo)
 		r.move(TriggerReviewApproved, "", reviewReport("approved"))
 		r.assertRetroStarted()
-		assertStrings(t, "the deletions", r.deletions(), append(append([]string{}, fix1...), task...))
+		assertStrings(t, "the deletions", r.deletions(), task)
 	})
 	t.Run("a leave deletes the task's branches", func(t *testing.T) {
 		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
@@ -461,5 +463,42 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 		engine.openBesidePendingWay = true
 		r := pending(t, engine)
 		assertStrings(t, "the fixes while fix 1's way is pending", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
+	})
+}
+
+// A way 2 keeps the branches beside its fix, and the step it runs again takes its commits from its
+// own. Fix 1 runs beside the running tester, which is bound to B1; fix 1 ends with commits of its own
+// at Y while the tester runs, so its way waits; the tester then pushes c2 to B1, at P, after the
+// fix's end push. The tester's pass takes way 2: no deletion is queued, and the tester's start that
+// the way runs again holds fix 1, its kept branch B1 and the pushed head P (startFacts.Kept,
+// Branch, Pushed), from which its task tells it to take c2. The control, kept: with the seam
+// besideDeleteAsBefore the way 2 queues the deletion of fix 1's branches.
+func TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn(t *testing.T) {
+	const pushed = "4444444444444444444444444444444444444444"
+	pendingWay2 := func(t *testing.T, engine *Engine) *fixRig {
+		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.fixEnds(headTwo)
+		if fix := r.latestFix(); fix.State != record.FixEnded || fix.Way != 0 {
+			t.Fatalf("fix 1 after its end beside the running tester = %+v, want ended with its way pending", fix)
+		}
+		r.recordsPush(claim.RoleTester, pushed)
+		r.move(TriggerTesterPassed, "", record.PhaseRow{})
+		r.assertWayTaken(wayAfterFix)
+		return r
+	}
+	t.Run("the way keeps B1 and the rerun tester holds it", func(t *testing.T) {
+		r := pendingWay2(t, returnEngine())
+		assertStrings(t, "the deletions", r.deletions(), nil)
+		facts := r.startFactsIn(phase.Testing)
+		if !facts.Kept || facts.Fix != 1 || facts.Branch != besideFix1(t, claim.RoleTester) || facts.Pushed != pushed {
+			t.Fatalf("the rerun tester's start facts = %+v, want fix 1's kept branch %s at %s", facts, besideFix1(t, claim.RoleTester), pushed)
+		}
+	})
+	t.Run("the control: besideDeleteAsBefore deletes fix 1's branches at the way", func(t *testing.T) {
+		engine := returnEngine()
+		engine.besideDeleteAsBefore = true
+		assertStrings(t, "the deletions", pendingWay2(t, engine).deletions(), []string{"1 a fix 1"})
 	})
 }

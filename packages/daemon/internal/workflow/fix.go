@@ -582,8 +582,12 @@ type startFacts struct {
 	Own                                        bool
 	Check, Head, CICase, Job, Page, ReadFailed string
 	Branch, Pushed, FixDir                     string
-	MergeHead, MergeBase                       string
-	Failed                                     []string
+	// Kept is a start of a step that a way 2 runs again after fix Fix ended, whose branch beside
+	// that fix (Branch) the daemon holds a push of (Pushed): the way keeps that branch, and the step
+	// takes its commits from it.
+	Kept                 bool
+	MergeHead, MergeBase string
+	Failed               []string
 	// Cases is the ci_case of each check of Failed that a fix holds.
 	Cases map[string]string
 }
