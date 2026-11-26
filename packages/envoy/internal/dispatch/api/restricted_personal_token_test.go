@@ -195,7 +195,8 @@ func (r restrictedMintRig) everyRow(t *testing.T) map[string]string {
 // (gateRouteScopes, routeScopes) and actingPerson's hold of person behind it. In the same run
 // alice, ACC's owner and a full member, makes the same writes with her own token holding person
 // and approve: dave is named and carol taken off, each 200 moving ACC's list and the events, and
-// her token's link reaches its handler, 403 BROWSER_SESSION_REQUIRED (no token makes a link),
+// her token's link reaches its handler, 403 BROWSER_SESSION_REQUIRED (her token, minted naming no
+// project, lists none, and only a personal token of the owner's that lists ACC makes its link),
 // which her browser makes, 201 storing it. So each refusal of erin's is a scope check's, not the
 // rig's.
 //

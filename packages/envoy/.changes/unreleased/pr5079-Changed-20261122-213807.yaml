@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  The GitHub proxy (`/api/github/rest/...`) resolves its caller as every API route does, so a
+  full member's personal token or broker-issued token that holds `person` reads it as their
+  browser does, and an agent reads a pull request's, an issue's or a commit's GitHub state with
+  nobody at a browser. It still reads as the GitHub App installation, GET only, in the same four
+  shapes, with workflow runs trimmed to three fields, and it holds every caller to the gate the
+  App-installation route applies (`GET /api/v1/github/app-installation/{owner}/{repo}`), read with
+  the caller's own credential, so a token's project list decides which private projects' repositories
+  it reads. A credential without `person` is 403 `OAUTH_SCOPE_REQUIRED` (the shared agent token, a
+  service account's token, a broker token an operator's entry scoped to one project, a broker token
+  that names no person), a read-only token 403 `READ_ONLY_TOKEN`, and a restricted member's token of
+  any kind 403 `RESTRICTED_MEMBER`, whatever scopes it was given, each before GitHub is asked
+  anything, so an outside person's agents read nothing through the proxy; a person's cookie, a
+  restricted member's included, is answered as before.
+time: 2026-11-22T21:38:07Z
+custom:
+    Issue: pr5079

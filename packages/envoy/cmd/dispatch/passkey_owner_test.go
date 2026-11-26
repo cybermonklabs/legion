@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -807,5 +808,105 @@ func TestASignInCeremonyAllowsOneFinish(t *testing.T) {
 	wantCode(t, "the person's own answer to the ceremony a failed finish took", call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/finish", device.assert(t, begun.Body.Bytes()), ceremonyCookie(begun)), http.StatusBadRequest, "CEREMONY_EXPIRED")
 	if signedIn := r.signIn(t, r.handler, device); signedIn.Code != http.StatusOK {
 		t.Fatalf("a new sign-in answered %d %s, want 200", signedIn.Code, signedIn.Body.String())
+	}
+}
+
+// TestTheOwnersPersonalTokenThatListsTheProjectMakesItsLink (R5): the owner's personal token that
+// holds approve and lists the project makes the project's link, as the owner's browser does, so an
+// agent holding that token invites a person with nobody at a browser. Every other token is refused
+// before any link is made, each by the condition it fails: alice's token holding person alone is
+// 403 OAUTH_SCOPE_REQUIRED naming approve, at the route's scope gate; alice's tokens holding approve
+// that list OTHER alone, or no project, are 403 BROWSER_SESSION_REQUIRED; alice's broker-issued
+// token, which holds person alone, is 403 OAUTH_SCOPE_REQUIRED naming approve; and the token of
+// dana, a full member who does not own PRIV, holding approve and listing PRIV, is 403
+// PROJECT_OWNER_REQUIRED. Then alice's token listing PRIV makes the link, recorded as alice's for
+// PRIV, and the outsider enrolls with it. The same token's link for an address no list names is
+// 409 PERSON_NOT_LISTED, the list's own refusal, which a token reaches now, and its Reset of the
+// outsider is 403 BROWSER_SESSION_REQUIRED with the passkey kept: the Reset stays the browser's.
+//
+// Controls, one per condition, each failing its row: the link's scopes person alone
+// (routeScopes), and the token holding person alone makes a link; the token's list not read
+// (personalTokenListsProject skipping its list), and the token listing OTHER alone makes one; the
+// owner not read (inOwnerWrite's owner check answering every caller as the owner), and dana's
+// token makes one; the Reset letting in the token the link lets in (resetProjectAccessPerson
+// passing personalTokenListsProject), and the token resets the outsider. Here the scope gate
+// refuses every broker-issued token before the link's own test of a personal token reads it, so
+// that test's row is api's TestOnlyAPersonalTokenThatListsTheProjectIsLetInToMakeItsLink.
+func TestTheOwnersPersonalTokenThatListsTheProjectMakesItsLink(t *testing.T) {
+	ctx := context.Background()
+	r := newPasskeyRig(t, nil)
+	broker := newFakeBroker(t)
+	handler, _ := r.brokerRouter(t, broker)
+	if _, err := r.database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, owner) values ('OTHER', 'Other', $1, $1)`, privOwner); err != nil {
+		t.Fatalf("seed OTHER: %v", err)
+	}
+	const dana = "dana@example.com"
+	danaCookie := sessionCookieOf(t, "dana's Google sign-in", codeFlowSignIn(t, handler, r.pool, map[string]any{"sub": "google-dana", "email": dana, "email_verified": true, "hd": "example.com"}))
+	both := []string{model.ScopePerson, model.ScopeApprove}
+	// mint is who's personal token, minted at their browser, holding scopes and listing projects,
+	// or the list a mint names none for, which is none for a browser's caller.
+	mint := func(who string, cookie *http.Cookie, scopes, projects []string) string {
+		t.Helper()
+		body := map[string]any{"name": who + "'s agent", "scopes": scopes}
+		if projects != nil {
+			body["projects"] = projects
+		}
+		minted := call(handler, canonicalOrigin, http.MethodPost, "/api/v1/me/agent-tokens", body, cookie)
+		var token struct {
+			Token string `json:"token"`
+		}
+		if minted.Code != http.StatusCreated || json.Unmarshal(minted.Body.Bytes(), &token) != nil || token.Token == "" {
+			t.Fatalf("%s mints a token holding %v and listing %v: %d %s, want 201 with its token", who, scopes, projects, minted.Code, minted.Body.String())
+		}
+		return token.Token
+	}
+	personOnly := mint(privOwner, r.alice, []string{model.ScopePerson}, []string{"PRIV"})
+	otherOnly := mint(privOwner, r.alice, both, []string{"OTHER"})
+	listsNone := mint(privOwner, r.alice, both, nil)
+	owners := mint(privOwner, r.alice, both, []string{"PRIV"})
+	danas := mint(dana, danaCookie, both, []string{"PRIV"})
+	machine := ciphertokentest.NewCaller(t)
+	const brokerToken = "token-of-alices-machine"
+	broker.holds(&fakeCredential{id: "login-alice", person: privOwner, subject: "google-alice", tokens: []string{brokerToken}}, machine)
+
+	linkPath := func(email string) string {
+		return "/api/v1/projects/PRIV/access/people/" + url.PathEscape(email) + "/invitations"
+	}
+	// approveRefused requires response to be the scope gate's refusal naming approve.
+	approveRefused := func(what string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		wantCode(t, what, response, http.StatusForbidden, "OAUTH_SCOPE_REQUIRED")
+		if challenge := response.Header().Get("WWW-Authenticate"); !strings.Contains(challenge, `scope="approve"`) {
+			t.Fatalf("%s challenges %q, want the approve scope named", what, challenge)
+		}
+	}
+	approveRefused("alice's token holding person alone", bearerRequest(handler, http.MethodPost, linkPath(outsiderEmail), "", personOnly))
+	wantCode(t, "alice's token listing OTHER alone", bearerRequest(handler, http.MethodPost, linkPath(outsiderEmail), "", otherOnly), http.StatusForbidden, "BROWSER_SESSION_REQUIRED")
+	wantCode(t, "alice's token listing no project", bearerRequest(handler, http.MethodPost, linkPath(outsiderEmail), "", listsNone), http.StatusForbidden, "BROWSER_SESSION_REQUIRED")
+	approveRefused("alice's broker-issued token", brokerTokenRequest(t, handler, machine, http.MethodPost, linkPath(outsiderEmail), "", brokerToken))
+	wantCode(t, "dana's token listing PRIV, which alice owns", bearerRequest(handler, http.MethodPost, linkPath(outsiderEmail), "", danas), http.StatusForbidden, "PROJECT_OWNER_REQUIRED")
+	links := func() int {
+		t.Helper()
+		var n int
+		if err := r.database.Pool.QueryRow(ctx, `select count(*) from outside_invitations where email = $1`, outsiderEmail).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := links(); n != 0 {
+		t.Fatalf("the refused tokens left %d link(s) for the outsider, want none", n)
+	}
+
+	token := linkToken(t, "alice's token listing PRIV, for the outsider", bearerRequest(handler, http.MethodPost, linkPath(outsiderEmail), "", owners))
+	var madeBy, project string
+	if err := r.database.Pool.QueryRow(ctx, `select made_by, project_key from outside_invitations where email = $1`, outsiderEmail).Scan(&madeBy, &project); err != nil || madeBy != privOwner || project != "PRIV" {
+		t.Fatalf("the token's link records made_by %q for %q (%v), want %s for PRIV", madeBy, project, err, privOwner)
+	}
+	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), token, outsiderEmail)
+
+	wantCode(t, "alice's token listing PRIV, for an address no list names", bearerRequest(handler, http.MethodPost, linkPath(strangerEmail), "", owners), http.StatusConflict, "PERSON_NOT_LISTED")
+	wantCode(t, "alice's token listing PRIV, resetting the outsider", bearerRequest(handler, http.MethodPost, "/api/v1/projects/PRIV/access/people/"+url.PathEscape(outsiderEmail)+"/reset", "", owners), http.StatusForbidden, "BROWSER_SESSION_REQUIRED")
+	if n := r.passkeysOf(t, outsiderEmail); n != 1 {
+		t.Fatalf("after the token's refused Reset %s holds %d passkey(s), want the one enrolled", outsiderEmail, n)
 	}
 }

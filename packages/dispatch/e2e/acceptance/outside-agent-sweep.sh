@@ -18,10 +18,12 @@
 # sweep as SWEEP_FULL_TOKEN. Fills mode writes the full member's half of the GitHub proxy rows (a
 # `can_fail` line for each read that can fail) with the full member's browser session where it is
 # given (OUTSIDE_FULL_COOKIE_FILE, as SWEEP_FULL_COOKIE), and with that token where it is not. A
-# build of Dispatch whose proxy reads a browser's person alone refuses the token (401 NO_IDENTITY,
-# 403 OAUTH_SCOPE_REQUIRED): its fills then hold no `can_fail` line, the proxy control, made with
-# the same credential, reads UNKNOWN naming that refusal, and so the sweep row reads UNKNOWN, never
-# PASS.
+# build of Dispatch before cybermonklabs/legion#5079 reads the proxy as a browser's person alone
+# and refuses every token 401 NO_IDENTITY; a build from it on refuses a token 403 that holds no
+# person scope (OAUTH_SCOPE_REQUIRED), is read-only (READ_ONLY_TOKEN) or is a restricted member's
+# (RESTRICTED_MEMBER). Either way the fills hold no `can_fail` line, the proxy control, made with
+# the same credential, reads UNKNOWN naming the refusal and its cause, and so the sweep row reads
+# UNKNOWN, never PASS.
 #
 # The contract this file reads is #4608's at ca10a682ba, fills version 4: `routes`, the SHA-256 of
 # the routes.txt the fills were made from, `deployment`, of the member's own projects' keys and
@@ -97,7 +99,7 @@ sweep_writer_stop() {
 # made with (the browser session where it is given, else the token), and must get 200 with a list
 # of workflow runs. Without either, the sweep row reads UNKNOWN.
 sweep_proxy_control() {
-  local proxy_sha=0123456789abcdef0123456789abcdef01234567 proxy_repo='' can_fail blind='' name value each status answer as
+  local proxy_sha=0123456789abcdef0123456789abcdef01234567 proxy_repo='' can_fail blind='' name value each status answer as code refused
   local proxy_reads='GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}
 GET /api/github/rest/repos/{owner}/{repo}/issues/{number}
 GET /api/github/rest/repos/{owner}/{repo}/commits/{sha}/check-runs
@@ -131,9 +133,14 @@ GET /api/v1/github/app-installation/{owner}/{repo}'
         status=$(browser GET "/api/github/rest/repos/$proxy_repo/actions/runs?head_sha=$proxy_sha" "$work/proxy-control.json")
       fi
       answer=$(tr -d ' \n' <"$work/proxy-control.json" 2>/dev/null)
+      code=$(json_field code "$answer")
+      refused="the full member's token read of $proxy_repo through the proxy was refused $status $code"
       case $as:$status:$answer in
         *:200:*'"workflow_runs":'*) proxy_control="the full member's $as read $proxy_repo's workflow runs through the proxy: 200" ;;
-        token:401:* | token:403:*) proxy_control_problem="the full member's token read of $proxy_repo through the proxy was refused $status $(json_field code "$answer"): this build of Dispatch reads the proxy as a browser's person alone" ;;
+        token:401:*) proxy_control_problem="$refused: a build of Dispatch before cybermonklabs/legion#5079 reads the proxy as a browser's person alone" ;;
+        token:403:*'"code":"OAUTH_SCOPE_REQUIRED"'*) proxy_control_problem="$refused: the full member's token holds no person scope" ;;
+        token:403:*'"code":"READ_ONLY_TOKEN"'*) proxy_control_problem="$refused: the full member's token is read-only" ;;
+        token:403:*'"code":"RESTRICTED_MEMBER"'*) proxy_control_problem="$refused: the full member's token is a restricted member's" ;;
         *) proxy_control_problem="the full member's $as read of $proxy_repo through the proxy answered $status: ${answer:0:200}" ;;
       esac
       ;;

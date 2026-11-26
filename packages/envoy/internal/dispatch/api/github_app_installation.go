@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -92,9 +94,9 @@ var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause(
 // repositoriesHidden answers, for each of repositories (owner/name), whether reader may not see it:
 // whether it fails refs.RepositoryClause, read in one statement and keyed by the name as given. A
 // reader that sees every object (seesEveryObject) sees every repository, and nothing is read for
-// it (R9); nothing is read for no repository either. The App-installation route, and delivery's
-// pull requests that name no issue and its runs that ship none (deliveryPopulation.cutTo), hold a
-// repository to it, as the GitHub proxy does (routes' repositoryHidden).
+// it (R9); nothing is read for no repository either. The App-installation route, the GitHub proxy
+// (githubGate), and delivery's pull requests that name no issue and its runs that ship none
+// (deliveryPopulation.cutTo), hold a repository to it.
 func (s *server) repositoriesHidden(ctx context.Context, reader model.Actor, repositories []string) (map[string]bool, error) {
 	hidden := make(map[string]bool, len(repositories))
 	if len(repositories) == 0 || seesEveryObject(reader) {
@@ -117,6 +119,84 @@ func (s *server) repositoriesHidden(ctx context.Context, reader model.Actor, rep
 		return nil, fmt.Errorf("read whether the caller sees %d repositories: %w", len(repositories), err)
 	}
 	return hidden, nil
+}
+
+// RepositoryGate is the GitHub proxy's gate for the caller Background.GitHubGate resolved
+// (githubGate): for one repository, owner/name as the proxy's path spells it, whether the caller
+// may not see it and whether a read of it is held to it (githubapi.Gate's Hidden and Held). An
+// error is the proxy's 500.
+type RepositoryGate func(repository string) (hidden, held bool, err error)
+
+// githubGate is the GitHub proxy's caller check (Background.GitHubGate), which routes'
+// apiGithubRest asks before the proxy reads anything (githubapi.ProxyREST), and the gate it then
+// holds each read to. The caller is the request's own credential, resolved as every row of the
+// table resolves one (optionalActor): a person's cookie or trusted header, a personal token, or a
+// token the secrets broker issued. A caller that does not resolve is refused as every gate refuses
+// one (writeAuthenticationError), and a read-only token is 403 READ_ONLY_TOKEN, as every row the
+// read list does not name answers it (refuseReadOnlyToken).
+//
+// Then the caller's viewer is resolved (access.Resolve, its credential's list applied), and a token
+// of a restricted member, of any kind, is 403 RESTRICTED_MEMBER, whatever scopes its row or the
+// broker names. A restricted member's tokens hold no scope (R16): their browser's mint gives none,
+// and personalTokenActor and brokerTokenActor drop any a token was given before that rule. The
+// refusal comes before the scope check, so it says why such a token reads nothing rather than
+// which scope it lacks. The test is the one every write of the API reads for a restricted member
+// (model.Viewer.Restricted, withinProjectScope, refuseRepoOfRestrictedMember), so an outside
+// person's agents read nothing through the proxy (R9's exception). A restricted member's browser
+// session is held to the repository rule, as before (R2): it reads a repository an issue of a
+// project whose list names them resolves to, and every other one answers as one the App is not
+// installed on.
+//
+// Last, a credential that does not hold the person scope is 403 OAUTH_SCOPE_REQUIRED naming it, as
+// gateRouteScopes answers: the deployment's shared token, a service account's, a token an
+// operator's entry mapped to one project and a machine's that names no person hold none. Each
+// refusal comes before the method and the path are read, and GitHub is asked nothing.
+//
+// The gate is the App-installation route's (repositoriesHidden) for that viewer: hidden is whether
+// it fails refs.RepositoryClause, and held is its private flag, the one the clause's R9 arm reads.
+// The viewer is resolved without the listener refresh readerFor makes first, since the clause reads
+// no session's content. A server with no store has no viewer to resolve: every repository is hidden
+// and every read held, as the closed viewer reads.
+func (s *server) githubGate(w http.ResponseWriter, r *http.Request) (RepositoryGate, bool) {
+	actor, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return nil, false
+	}
+	if actor.Credential != nil && actor.Credential.ReadOnly {
+		writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, s.readOnlyRefusal)
+		return nil, false
+	}
+	stored := s.deps.Store != nil && s.deps.Store.Pool != nil
+	var viewer model.Viewer
+	if stored {
+		if viewer, err = access.Resolve(r.Context(), s.deps.Store.Pool, actor); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("resolve what the GitHub proxy's caller sees: %w", err))
+			return nil, false
+		}
+		if viewer.Restricted && !human {
+			writeError(w, codeRestrictedMember, http.StatusForbidden,
+				"a restricted member's token reads nothing through the GitHub proxy, whatever scopes it holds")
+			return nil, false
+		}
+	}
+	if !actor.Credential.Holds(model.ScopePerson) {
+		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
+			"this request's credential does not hold the %s scope, which the GitHub proxy requires", model.ScopePerson))
+		return nil, false
+	}
+	if !stored {
+		return func(string) (bool, bool, error) { return true, true, nil }, true
+	}
+	reader := actor.Reader()
+	reader.Viewer = &viewer
+	return func(repository string) (bool, bool, error) {
+		hidden, err := s.repositoriesHidden(r.Context(), reader, []string{repository})
+		if err != nil {
+			return false, false, err
+		}
+		return hidden[repository], viewer.AnyPrivate, nil
+	}, true
 }
 
 // githubRepoPath reads the {owner}/{repo} path of the App's installation read as parseSourceRepo

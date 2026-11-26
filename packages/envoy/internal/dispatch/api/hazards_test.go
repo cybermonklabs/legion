@@ -70,15 +70,16 @@ func TestATokenIsNeverReadAsABrowser(t *testing.T) {
 // with its credential, never an actor a write recorded: optionalActor's (resolveReader's, the
 // token mint's and GET /auth/whoami's event head's, all through readerFor; personEventHead resolves
 // the request with its Authorization header removed, so the head is the signed-in person's that
-// router.login read from the cookie); model.BrowserActor's in the document service and the GitHub
-// proxy, a cookie's; and a live socket's caller as its upgrade resolved it, credential kept
-// (liveSocket.caller, and the subscription stream's Caller, which answers it).
+// router.login read from the cookie; and the GitHub proxy's gate, githubGate, which resolves it
+// without readerFor's listener refresh); model.BrowserActor's in the document service, a cookie's;
+// and a live socket's caller as its upgrade resolved it, credential kept (liveSocket.caller, and
+// the subscription stream's Caller, which answers it).
 // A new call is added here only once its actor is shown to come from the request's credential.
 var resolveCallers = map[string][]string{
-	"api.readerFor":           {"Caller", "caller", "optionalActor"},
-	"docs.ServeHTTP":          {"BrowserActor"},
-	"docs.readableRooms":      {"BrowserActor"},
-	"routes.repositoryHidden": {"BrowserActor"},
+	"api.githubGate":     {"optionalActor"},
+	"api.readerFor":      {"Caller", "caller", "optionalActor"},
+	"docs.ServeHTTP":     {"BrowserActor"},
+	"docs.readableRooms": {"BrowserActor"},
 }
 
 // TestEveryResolveTakesTheResolvedCredential reads every non-test Go file of the module

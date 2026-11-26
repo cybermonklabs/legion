@@ -84,8 +84,9 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/messages/{id}/deliveries",
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept",
 	"POST /api/v1/priorities",
-	// The owner's link and Reset for a person from outside: each is the owner's browser's alone,
-	// and the link's answer holds a credential, so no tool performs either.
+	// The owner's link and Reset for a person from outside: each acts as the project's owner, whom
+	// the proposing loop never stands in for, and the link's answer holds a credential, so no tool
+	// performs either.
 	"POST /api/v1/projects/{key}/access/people/{email}/invitations",
 	"POST /api/v1/projects/{key}/access/people/{email}/reset",
 	"POST /api/v1/projects/{key}/architecture-source/sync",

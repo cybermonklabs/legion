@@ -568,3 +568,35 @@ func TestTheOwnersAccessReadAnswersOneSnapshot(t *testing.T) {
 			after.Passkeys, after.OpenInvitations)
 	}
 }
+
+// TestOnlyAPersonalTokenThatListsTheProjectIsLetInToMakeItsLink (R5): the link's own test of a
+// token (personalTokenListsProject), which runs beside the route's scope gate. A personal token
+// whose list names the project is let in; one that lists another project alone, or none, is not,
+// and nor is a broker-issued token, which names no token of its own, whatever it lists and
+// whatever scopes it held. No broker token holds approve (brokerTokenActor), so through the routes
+// the gate refuses one before this test reads it (cmd/dispatch's
+// TestTheOwnersPersonalTokenThatListsTheProjectMakesItsLink): this row holds the link to a
+// personal token should a broker token ever hold approve. A browser is let in by atBrowserAs,
+// never here.
+//
+// Control: let in any credential that lists the project (personalTokenListsProject not reading
+// TokenID), and the broker-issued token's row is let in and fails.
+func TestOnlyAPersonalTokenThatListsTheProjectIsLetInToMakeItsLink(t *testing.T) {
+	both := []string{model.ScopePerson, model.ScopeApprove}
+	for _, row := range []struct {
+		name       string
+		credential *model.Credential
+		letIn      bool
+	}{
+		{"a personal token listing PRIV among others", &model.Credential{Scopes: both, TokenID: "token-1", Projects: []string{"OTHER", "PRIV"}}, true},
+		{"a personal token listing OTHER alone", &model.Credential{Scopes: both, TokenID: "token-1", Projects: []string{"OTHER"}}, false},
+		{"a personal token listing no project", &model.Credential{Scopes: both, TokenID: "token-1"}, false},
+		{"a broker-issued token listing PRIV, holding approve", &model.Credential{Scopes: both, Session: "session-1", Projects: []string{"PRIV"}}, false},
+		{"a browser's cookie", model.BrowserActor("alice@example.com").Credential, false},
+		{"no credential", nil, false},
+	} {
+		if got := personalTokenListsProject(row.credential, "PRIV"); got != row.letIn {
+			t.Errorf("%s: let in %t, want %t", row.name, got, row.letIn)
+		}
+	}
+}

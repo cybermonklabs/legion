@@ -1020,9 +1020,11 @@ a file in the
 conversation of a session that worked in the project alone), and `SWEEP_FULL_COOKIE`, the full
 member's session cookie, which makes the GitHub proxy reads alone. Without it the proxy reads are
 `SWEEP_FULL_TOKEN`'s, which a build from cybermonklabs/legion#5079 on reads; a build before it reads
-the proxy as the browser's person alone and refuses the token (401, or 403 `OAUTH_SCOPE_REQUIRED`),
-and each proxy read is then `UNKNOWN`, naming the build and `SWEEP_FULL_COOKIE`, never `PASS` or
-`FAIL`, while every other row still runs. The direct messages and the agent view are made as
+the proxy as the browser's person alone and refuses the token 401 `NO_IDENTITY`, and a build from it
+on refuses 403 a token that holds no `person` scope (`OAUTH_SCOPE_REQUIRED`), a read-only one
+(`READ_ONLY_TOKEN`) and a restricted member's (`RESTRICTED_MEMBER`). Each proxy read is then
+`UNKNOWN`, naming the refusal's cause and what to give instead, never `PASS` or `FAIL`, while every
+other row still runs. The direct messages and the agent view are made as
 `SWEEP_FULL_TOKEN` too, which needs the `person` scope (a full member's personal token). It needs
 bash 3.2 or later, curl
 7.55 or later, jq 1.6 or later, and bun with this checkout's dependencies installed

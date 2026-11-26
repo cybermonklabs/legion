@@ -837,7 +837,7 @@ type queryer interface {
 // started the relay, or at once under the test hooks.
 func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeBrokerDebts, EventHead: s.personEventHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeBrokerDebts, EventHead: s.personEventHead, EventHorizon: s.horizon, GitHubGate: s.githubGate}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -869,6 +869,13 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// GitHubGate is the GitHub proxy's caller check and repository gate (githubGate): it resolves
+	// the request's own credential, writes the refusal of a read-only token, a restricted
+	// member's token and one that holds no person scope, and otherwise answers the gate the proxy
+	// holds each read to, the one the App-installation route applies (repositoriesHidden). routes'
+	// apiGithubRest asks it before githubapi.ProxyREST reads anything: githubapi imports this
+	// package, so the proxy is served there and its gate comes from here.
+	GitHubGate func(w http.ResponseWriter, r *http.Request) (RepositoryGate, bool)
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past

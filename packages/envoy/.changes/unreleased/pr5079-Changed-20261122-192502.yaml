@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  The owner's single-use link for a person from outside
+  (`POST /api/v1/projects/{key}/access/people/{email}/invitations`) is made by the owner's browser
+  session or, now, by a personal token of the owner's that holds `approve` and lists the project,
+  so an agent holding such a token invites a person with nobody at a browser. Every other token is
+  refused: a personal token that does not list the project is 403 `BROWSER_SESSION_REQUIRED`, and
+  the list check (409 `PERSON_NOT_LISTED`), the one-owner rule, the Workspace-address rule
+  and the full-member rule apply to the token as to the browser. The link and the owner's Reset
+  (`POST .../reset`) now need `approve` at the route's scope gate, as their descriptions already
+  said, so a token holding `person` alone, every broker-issued token among them, is 403
+  `OAUTH_SCOPE_REQUIRED` naming `approve` on both; the Reset stays the browser's alone, 403
+  `BROWSER_SESSION_REQUIRED` for a token that holds both scopes.
+time: 2026-11-22T19:25:02Z
+custom:
+    Issue: pr5079

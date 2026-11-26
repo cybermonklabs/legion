@@ -1151,9 +1151,10 @@ export class DispatchApiClient {
   /** Makes a person from outside the link that enrolls their passkey: `{url, made_at, expires_at}`,
    *  the outside origin's `/enroll#<token>`, when Dispatch made it and the moment 24 hours on when
    *  it stops, and it ends any earlier unused link of theirs for the project. The owner's alone,
-   *  from a browser session (`403 BROWSER_SESSION_REQUIRED` for a token). The answer holds the
-   *  token, so Dispatch keeps none of it under the write's key: a repeat is `409 KEY_COMMITTED`, a
-   *  link made whose answer is gone, and a new press makes a new link. */
+   *  from a browser session or a personal token of theirs that lists the project
+   *  (`403 BROWSER_SESSION_REQUIRED` for any other token). The answer holds the token, so Dispatch
+   *  keeps none of it under the write's key: a repeat is `409 KEY_COMMITTED`, a link made whose
+   *  answer is gone, and a new press makes a new link. */
   createProjectInvitation(project: string, email: string, bounds: WriteBounds) {
     return this.post(
       "/api/v1/projects/{key}/access/people/{email}/invitations",

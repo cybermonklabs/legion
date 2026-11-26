@@ -527,7 +527,7 @@ type invitationAnswer struct {
 // The refusals of the owner's link and Reset (createInvitation, resetProjectAccessPerson).
 var (
 	errPasskeySignInOff     = errors.New("this deployment signs nobody in with a passkey (DISPATCH_SIGNIN_PASSKEY is unset)")
-	errBrowserSessionNeeded = errors.New("only the owner's browser session makes a link or resets a person: no token does")
+	errBrowserSessionNeeded = errors.New("only the owner's browser session resets a person, and only it or a personal token of the owner's that holds approve and lists the project makes a link: no other credential does")
 	errPersonNotListed      = errors.New("the project's access list does not name this email directly: name the person on the list first")
 	errWorkspaceAddress     = errors.New("an address on a domain of the company's Workspace signs in with Google, never with a link")
 	errFullMember           = errors.New("a full member signs in with Google, never with a link")
@@ -538,13 +538,15 @@ var (
 
 // passkeyOwnerRefusal refuses an owner's passkey route (a link, a Reset) for its caller by, once
 // the owner's check passed: 409 PASSKEY_SIGNIN_OFF where passkey sign-in is off, and 403
-// BROWSER_SESSION_REQUIRED for a caller that is not a browser's session cookie (a personal token, a
-// broker token or the shared token never makes a link); nil otherwise.
-func (s *server) passkeyOwnerRefusal(by model.Actor) error {
+// BROWSER_SESSION_REQUIRED for a caller that is not a browser's session cookie, unless tokenLetIn
+// says the route takes the caller's token; nil otherwise. The link takes the owner's personal token
+// that lists the project (personalTokenListsProject); the Reset takes no token, so a personal
+// token, a broker token or the shared token never resets a person.
+func (s *server) passkeyOwnerRefusal(by model.Actor, tokenLetIn bool) error {
 	if s.deps.Passkeys == nil {
 		return errPasskeySignInOff
 	}
-	if !atBrowserAs(by) {
+	if !atBrowserAs(by) && !tokenLetIn {
 		return errBrowserSessionNeeded
 	}
 	return nil
@@ -555,6 +557,21 @@ func (s *server) passkeyOwnerRefusal(by model.Actor) error {
 // broker token each name the agent that acted (model.Actor.Act), and a browser names none.
 func atBrowserAs(actor model.Actor) bool {
 	return actor.Act == nil
+}
+
+// personalTokenListsProject reports whether credential, the request's own (resolvedCredential),
+// is a personal token whose own list names project key: a token a person minted, which names
+// itself (model.Credential.TokenID; a broker-issued token never does), listing key among the
+// projects its person chose for it (model.Credential.Projects, agent_tokens.projects). Such a
+// token of the project's owner makes the project's link where it passed the route's scope gate,
+// which holds it to approve (routeScopes), and the owner's check (inOwnerWrite). It adds one power
+// to what a token holding approve already has over its person's projects - name and take off
+// anyone, give the project away, approve a machine login, mint another token - a passkey for a
+// person the list names, and only on the projects its person listed for it. The token test is the
+// route's own, beside the gate's: no broker token holds approve (brokerTokenActor), and one that
+// did would still make no link.
+func personalTokenListsProject(credential *model.Credential, key string) bool {
+	return credential != nil && credential.TokenID != "" && slices.Contains(credential.Projects, key)
 }
 
 // namedPerson answers email's stored form when project key's list names it directly, read in tx
@@ -584,7 +601,8 @@ func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, err
 }
 
 // createInvitation is POST /api/v1/projects/{key}/access/people/{email}/invitations: the project's
-// owner, in a browser session (passkeyOwnerCall), makes a single-use link for a person its list
+// owner, in a browser session or with a personal token of theirs that lists the project
+// (passkeyOwnerRefusal, personalTokenListsProject), makes a single-use link for a person its list
 // names directly, at an address on no domain of the company's Workspace and of no full member
 // (namedPerson), whom no project of another owner names directly (store.ListedByAnotherOwner,
 // 409 LISTED_BY_ANOTHER_OWNER: a passkey reads every project that names its person, so one owner
@@ -597,7 +615,7 @@ func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, err
 func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	var answer invitationAnswer
 	if !s.inOwnerWrite(w, r, "", "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) ([]model.Event, error) {
-		if err := s.passkeyOwnerRefusal(by); err != nil {
+		if err := s.passkeyOwnerRefusal(by, personalTokenListsProject(resolvedCredential(ctx), key)); err != nil {
 			return nil, err
 		}
 		login, err := namedPerson(ctx, tx, key, r.PathValue("email"))
@@ -650,7 +668,7 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 // writes do.
 func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	s.ownerWrite(w, r, "", model.CanonicalLogin(r.PathValue("email")), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
-		if err := s.passkeyOwnerRefusal(by); err != nil {
+		if err := s.passkeyOwnerRefusal(by, false); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
 		login, err := namedPerson(ctx, tx, key, r.PathValue("email"))
@@ -684,11 +702,12 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 
 // withOwnersPasskeys adds to answer, read in q, the owner's passkey fields (model.ProjectAccess's
 // Passkeys, Invitable, ListedByAnotherOwner and OpenInvitations) when passkey sign-in is on and the
-// caller is the project's owner in a browser session, the one caller who may make a link; every
-// other answer carries none. Each passkey names who made the link that enrolled it and, where
-// viewer sees it, that link's project: a project of another owner the reader does not see is left
-// out, as every read leaves it out. A person a project of another owner names directly is listed
-// as such and is not invitable, as the link route refuses them (409 LISTED_BY_ANOTHER_OWNER).
+// caller is the project's owner in a browser session, the one caller who reads them on the Access
+// tab; every other answer carries none, the owner's personal token that makes the link included.
+// Each passkey names who made the link that enrolled it and, where viewer sees it, that link's
+// project: a project of another owner the reader does not see is left out, as every read leaves it
+// out. A person a project of another owner names directly is listed as such and is not invitable,
+// as the link route refuses them (409 LISTED_BY_ANOTHER_OWNER).
 func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, answer model.ProjectAccess, caller model.Actor, viewer *model.Viewer) (model.ProjectAccess, error) {
 	if s.deps.Passkeys == nil || answer.Owner != caller.ID || !atBrowserAs(caller) {
 		return answer, nil

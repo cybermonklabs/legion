@@ -10767,7 +10767,7 @@
     },
     "/api/v1/projects/{key}/access/people/{email}/invitations": {
       "post": {
-        "description": "Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, made_at, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, made_at now, and expires_at 24 hours after now, both on the database's clock; made_at is the key the link is listed by in the owner's access answer (open_invitations) while it can still enroll someone. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes.",
+        "description": "Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, made_at, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, made_at now, and expires_at 24 hours after now, both on the database's clock; made_at is the key the link is listed by in the owner's access answer (open_invitations) while it can still enroll someone. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session or with a personal token of theirs that lists the project (403 PROJECT_OWNER_REQUIRED; a token that does not list it is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes.",
         "operationId": "postApiV1ProjectsByKeyAccessPeopleByEmailInvitations",
         "parameters": [
           {
@@ -10819,14 +10819,15 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }
     },
     "/api/v1/projects/{key}/access/people/{email}/reset": {
       "post": {
-        "description": "Reset a person the project's access list names directly, in one transaction: record that Dispatch owes the secrets broker the revocation of the machine logins they approved, delete their unused links of every project, give their address a new passkey account, which revokes their personal tokens and owes the broker the revocation of the old account, and end their sign-in and delete their passkeys, so they sign in again only with a new link and nothing the old account made or approved acts again; they stay on the list. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER, read again under the address's lock; a Reset that finds a restricted member on the list only once it holds the project's lock is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or a removal of theirs is in progress, and changes nothing; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. Answers the project's access. Needs the person and approve scopes.",
+        "description": "Reset a person the project's access list names directly, in one transaction: record that Dispatch owes the secrets broker the revocation of the machine logins they approved, delete their unused links of every project, give their address a new passkey account, which revokes their personal tokens and owes the broker the revocation of the old account, and end their sign-in and delete their passkeys, so they sign in again only with a new link and nothing the old account made or approved acts again; they stay on the list. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; a token holding the person and approve scopes is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER, read again under the address's lock; a Reset that finds a restricted member on the list only once it holds the project's lock is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or a removal of theirs is in progress, and changes nothing; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. Answers the project's access. Needs the person and approve scopes.",
         "operationId": "postApiV1ProjectsByKeyAccessPeopleByEmailReset",
         "parameters": [
           {
@@ -10878,7 +10879,8 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }

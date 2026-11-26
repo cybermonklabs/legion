@@ -48,9 +48,10 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
    *  ids of both. */
   const writeLine = String.raw`write \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ [0-9a-f-]{36} [0-9a-f-]{36}`;
 
-  /** A run of fills mode, and the file it was to write. Its proxy reads as the real one does, a
-   *  browser's person alone, so its reads can fail only with the full member's cookie, which the
-   *  run is given unless `withoutCookie`; `full` plants answers for the full member's requests.
+  /** A run of fills mode, and the file it was to write. Its proxy reads a browser's person alone,
+   *  as a build before cybermonklabs/legion#5079 does, unless `tokenProxy`, so its reads can fail
+   *  only with the full member's cookie, which the run is given unless `withoutCookie`; `full`
+   *  plants answers for the full member's requests.
    *  Its live socket is served, for the agent view's full half, which the full
    *  member's token reads. `omit` leaves kinds out of its lookup; `createdAt` is when its fake's
    *  OWN was created. */

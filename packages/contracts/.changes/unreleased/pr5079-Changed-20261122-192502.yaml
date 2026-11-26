@@ -1,0 +1,5 @@
+kind: Changed
+body: '`schemas/dispatch-openapi.json` lists `approve` beside `person` in the `x-oauth-scopes` of `POST /api/v1/projects/{key}/access/people/{email}/invitations` and `POST /api/v1/projects/{key}/access/people/{email}/reset`, and both operations'' descriptions, there and in `src/dispatch-api.generated.ts`, say who may call them: the link the owner''s browser or a personal token of the owner''s that lists the project, and the Reset the owner''s browser alone.'
+time: 2026-11-22T19:25:02.000000000Z
+custom:
+    Issue: pr5079

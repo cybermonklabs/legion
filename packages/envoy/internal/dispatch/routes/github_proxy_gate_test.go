@@ -2,21 +2,30 @@ package routes
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // gateRead is the GitHub proxy's read the no-database test makes: one pull request of acme/web.
@@ -282,4 +291,323 @@ func (g *gateGitHub) requests() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]string(nil), g.every...)
+}
+
+// proxyOrigin is the origin the credential rig's requests are sent to, and the one its broker
+// tokens' proofs name.
+const proxyOrigin = "http://dispatch.test"
+
+// proxyHeadSHA is the full commit sha the check-runs and workflow-runs reads name.
+const proxyHeadSHA = "0123456789abcdef0123456789abcdef01234567"
+
+// proxyShapes are the four reads the proxy forwards (githubapi's readable), each after
+// repos/<repository>/.
+var proxyShapes = []string{"pulls/1", "issues/1", "commits/" + proxyHeadSHA + "/check-runs", "actions/runs?head_sha=" + proxyHeadSHA}
+
+// sharedProxyToken is the deployment's shared agent token in the credential rig.
+const sharedProxyToken = "agent-token"
+
+// credential is one way a request proves its caller, put on the request before it is sent.
+type credential func(t *testing.T, request *http.Request)
+
+// cookieOf is login at the browser, as the identity header names a person.
+func cookieOf(login string) credential {
+	return func(_ *testing.T, request *http.Request) { request.Header.Set("X-Dispatch-User", login) }
+}
+
+// bearer is token sent as a bearer: a personal token, the shared agent token or a service
+// account's.
+func bearer(token string) credential {
+	return func(_ *testing.T, request *http.Request) { request.Header.Set("Authorization", "Bearer "+token) }
+}
+
+// podVerifier is the service-account token check of a deployment that runs pods: it verifies
+// every JWT-shaped bearer as one pod's projected token.
+type podVerifier struct{}
+
+func (podVerifier) Verify(context.Context, string) (oidc.Claims, error) {
+	return oidc.Claims{Subject: "system:serviceaccount:legion:worker"}, nil
+}
+
+// credentialRig is the proxy gate's seed (seedProxyGate) behind a router that resolves every
+// credential a deployment takes: a person at the browser (the identity header), a personal token,
+// the shared agent token, a pod's service-account token, and a token the secrets broker issued,
+// which a stub broker answers. Its sign-in rule admits a restricted member from outside
+// workspace.example while a project names them, so a token of bob's is judged by what it holds,
+// never refused for whose it is.
+type credentialRig struct {
+	handler  http.Handler
+	database *store.Store
+	fake     *gateGitHub
+	broker   *ciphertokentest.StubBroker
+	caller   *ciphertokentest.Caller
+	made     int
+}
+
+func newCredentialRig(t *testing.T) *credentialRig {
+	t.Helper()
+	database := seedProxyGate(t)
+	fake := &gateGitHub{installed: proxiedRepositories}
+	broker := ciphertokentest.NewStubBroker(t)
+	account := filepath.Join(t.TempDir(), "account-token")
+	if err := os.WriteFile(account, []byte("dispatch-account"), 0o600); err != nil {
+		t.Fatalf("write the account token: %v", err)
+	}
+	verifier, err := ciphertoken.New(ciphertoken.Options{
+		BrokerURL: broker.Server.URL, Account: ciphertoken.NewAccountToken(account), Origins: []string{proxyOrigin},
+		Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress, ServesReadOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("build the broker token verifier: %v", err)
+	}
+	_, pem := githubapptest.Key(t)
+	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
+		SigningKey: testSigningKey,
+		People:     people,
+		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store:      database,
+		SignInRule: identity.OutsideRule{
+			DomainRule: identity.DomainRule{Domain: "workspace.example"},
+			People: identity.ListerFunc(func(ctx context.Context, email string) (bool, error) {
+				return access.Listed(ctx, database.Pool, email)
+			}),
+		},
+		AgentTokens:   sharedAgentTokens(t, sharedProxyToken),
+		OIDC:          podVerifier{},
+		BrokerTokens:  verifier,
+		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
+		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
+		Lifetime:      t.Context(),
+	}))
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
+	return &credentialRig{handler: handler, database: database, fake: fake, broker: broker, caller: ciphertokentest.NewCaller(t)}
+}
+
+// personalToken stores a dsp_ token of owner holding scopes and listing projects, and answers it
+// as a bearer.
+func (rig *credentialRig) personalToken(t *testing.T, owner string, scopes, projects []string) credential {
+	t.Helper()
+	rig.made++
+	plaintext := "dsp_proxy" + strconv.Itoa(rig.made)
+	hash := sha256.Sum256([]byte(plaintext))
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects) values ($1, $2, $3, 'dsp_prox', $4, $5)`,
+		owner, plaintext, hash[:], append([]string{}, scopes...), append([]string{}, projects...)); err != nil {
+		t.Fatalf("store a personal token of %s: %v", owner, err)
+	}
+	return bearer(plaintext)
+}
+
+// brokerToken is a token the stub broker answers as answer, bound to the rig's caller's key, sent
+// under the DPoP scheme with a fresh proof for each request.
+func (rig *credentialRig) brokerToken(answer ciphertoken.Introspection) credential {
+	rig.made++
+	token := "broker-token-" + strconv.Itoa(rig.made)
+	answer.Active, answer.ClientID, answer.Thumbprint = true, ciphertoken.ExchangeClientID, rig.caller.JKT()
+	answer.Session = fmt.Sprintf("ses_%012x", rig.made)
+	answer.ExpiresAt = time.Now().Add(time.Hour).Unix()
+	rig.broker.Says(token, answer)
+	return func(t *testing.T, request *http.Request) {
+		signed := rig.caller.Signed(t, request.Method, request.URL.String(), token)
+		request.Header.Set("Authorization", signed.Header.Get("Authorization"))
+		request.Header.Set("DPoP", signed.Header.Get("DPoP"))
+	}
+}
+
+// personScoped is the broker's answer for a token acting as person, the one a person's sign-in
+// and their machine login trade for.
+func personScoped(person string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{Person: person, ProjectScope: ciphertoken.ProjectScopePerson, Scope: "dispatch.write"}
+}
+
+// proxyRead is one answer of the proxy, or of the App-installation route, to one credential: its
+// status, error code and WWW-Authenticate challenge, its body with the repository's own name
+// written as <repo>, and how many requests GitHub was sent while it was answered.
+type proxyRead struct {
+	status          int
+	code, challenge string
+	body            string
+	asked           int
+}
+
+// read answers GET path, a read of repository, for who.
+func (rig *credentialRig) read(t *testing.T, who credential, path, repository string) proxyRead {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, proxyOrigin+path, nil)
+	who(t, request)
+	before := len(rig.fake.requests())
+	response := httptest.NewRecorder()
+	rig.handler.ServeHTTP(response, request)
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+	return proxyRead{
+		status: response.Code, code: refusal.Code, challenge: response.Header().Get("WWW-Authenticate"),
+		body:  strings.ReplaceAll(strings.TrimSpace(response.Body.String()), repository, "<repo>"),
+		asked: len(rig.fake.requests()) - before,
+	}
+}
+
+// proxyPath is the proxy's path for shape of repository.
+func proxyPath(repository, shape string) string {
+	return "/api/github/rest/repos/" + repository + "/" + shape
+}
+
+// TestTheGitHubProxyReadsForACredentialThatHoldsThePersonScope: the proxy resolves the request's
+// own credential as every API route does (api.Background's GitHubGate) and reads GitHub for one
+// that holds the person scope, under the gate the App-installation route applies to any
+// credential. alice, a full member, reads acme/pub, which PUB-1 names, in each of the proxy's four
+// shapes, from GitHub, at her browser, with her personal token holding person and with her broker
+// token acting as her; acme/priv, which only PRIV's issues name, answers each of the three what
+// acme/uninstalled answers, GitHub asked nothing, and the App-installation route answers the same
+// credential that the App is installed on acme/pub and not on acme/priv. A token is held to its
+// own list: carol's token listing PRIV reads acme/priv, and her token listing nothing reads it as
+// not installed, though carol at her browser sees PRIV.
+//
+// Every other credential is refused before GitHub is asked anything, reading acme/pub, which alice
+// reads: no credential 401 NO_IDENTITY; 403 OAUTH_SCOPE_REQUIRED naming person for alice's token
+// holding no scope, the shared agent token, a pod's service-account token and a token an operator's
+// entry mapped to PUB; 403 RESTRICTED_MEMBER for bob's personal token holding no scope and listing
+// PRIV and for his broker token acting as him listing PRIV, the shapes R16 gives a restricted
+// member's tokens; and 403 READ_ONLY_TOKEN for a read-only token.
+//
+// bob, a restricted member PRIV's list names, in two subtests. At his browser he is held to the
+// repository rule (R2): he reads acme/priv, which PRIV's issues name, from GitHub, and acme/pub, of
+// a project his list does not name, answers what acme/uninstalled answers, GitHub asked nothing. A
+// token he mints at his browser holds no scope and lists PRIV alone (201, R16), and a token of his
+// stored holding person and approve and listing PRIV, as a mint before that rule gave one, acts
+// with none (personalTokenActor). Each is 403 RESTRICTED_MEMBER on acme/priv, GitHub asked
+// nothing: a restricted member's token reads nothing through the proxy, whatever scopes it was
+// given (R9's exception, R16).
+//
+// Six controls, each run on its own: drop the gate's scope check, and the shared token reads
+// acme/pub; hand the proxy a gate that hides nothing, and alice's token reads acme/priv; read the
+// cookie alone, as the proxy did before, and alice's tokens are 401 NO_IDENTITY; refuse a
+// restricted member at the browser too, and bob's browser is 403 on acme/priv; admit a restricted
+// member's token, or check the scope before the member, and each of bob's tokens is 403
+// OAUTH_SCOPE_REQUIRED, the scope check's answer; give a restricted member's mint the caller's own
+// scopes again (tokenScopes), and bob's mint holds person and approve.
+func TestTheGitHubProxyReadsForACredentialThatHoldsThePersonScope(t *testing.T) {
+	rig := newCredentialRig(t)
+	const alice, bob, carol = "alice@example.com", "bob@example.com", "carol@example.com"
+	readers := []struct {
+		name string
+		who  credential
+	}{
+		{"alice at her browser", cookieOf(alice)},
+		{"alice's personal token holding person", rig.personalToken(t, alice, []string{"person"}, nil)},
+		{"alice's broker token acting as her", rig.brokerToken(personScoped(alice))},
+	}
+	for _, reader := range readers {
+		uninstalled := rig.read(t, reader.who, proxyPath(uninstalledRepository, "pulls/1"), uninstalledRepository)
+		if uninstalled.status != http.StatusServiceUnavailable || uninstalled.code != "GITHUB_TOKEN_UNAVAILABLE" {
+			t.Fatalf("%s reads %s, which the App is not installed on, as %+v: the comparison proves nothing", reader.name, uninstalledRepository, uninstalled)
+		}
+		for _, shape := range proxyShapes {
+			want := `{"repository":"<repo>"}`
+			if strings.HasPrefix(shape, "actions/runs") {
+				want = `{"total_count":0,"workflow_runs":null}`
+			}
+			if got := rig.read(t, reader.who, proxyPath("acme/pub", shape), "acme/pub"); got.status != http.StatusOK || got.body != want || got.asked == 0 {
+				t.Errorf("%s reads acme/pub's %s as %+v, want 200 %s read from GitHub", reader.name, shape, got, want)
+			}
+		}
+		if got := rig.read(t, reader.who, proxyPath("acme/priv", "pulls/1"), "acme/priv"); got.status != uninstalled.status || got.body != uninstalled.body || got.asked != 0 {
+			t.Errorf("%s reads acme/priv, which only PRIV's issues name, as %+v, want what %s answers, %d %s, with GitHub asked nothing",
+				reader.name, got, uninstalledRepository, uninstalled.status, uninstalled.body)
+		}
+		for _, installation := range []struct{ repository, want string }{
+			{"acme/pub", `{"installed":true}`}, {"acme/priv", `{"installed":false}`},
+		} {
+			if got := rig.read(t, reader.who, "/api/v1/github/app-installation/"+installation.repository, installation.repository); got.status != http.StatusOK || got.body != installation.want {
+				t.Errorf("%s asks the App-installation route about %s and is answered %+v, want 200 %s", reader.name, installation.repository, got, installation.want)
+			}
+		}
+	}
+
+	if got := rig.read(t, rig.personalToken(t, carol, []string{"person"}, []string{"PRIV"}), proxyPath("acme/priv", "pulls/1"), "acme/priv"); got.status != http.StatusOK || got.asked == 0 {
+		t.Errorf("carol's token listing PRIV reads acme/priv as %+v, want GitHub's 200", got)
+	}
+	if got := rig.read(t, rig.personalToken(t, carol, []string{"person"}, nil), proxyPath("acme/priv", "pulls/1"), "acme/priv"); got.code != "GITHUB_TOKEN_UNAVAILABLE" || got.asked != 0 {
+		t.Errorf("carol's token listing nothing reads acme/priv as %+v, want it not installed, GitHub asked nothing: a token's list decides which private projects it reads", got)
+	}
+
+	const scopeChallenge = `Bearer error="insufficient_scope", scope="person"`
+	for _, refused := range []struct {
+		name      string
+		who       credential
+		status    int
+		code      string
+		challenge string
+	}{
+		{"no credential", func(*testing.T, *http.Request) {}, http.StatusUnauthorized, "NO_IDENTITY", ""},
+		{"alice's personal token holding no scope", rig.personalToken(t, alice, nil, nil), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
+		{"the deployment's shared agent token", bearer(sharedProxyToken), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
+		{"a pod's service-account token", bearer("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJwb2QifQ.signature"), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
+		{"a token an operator's entry mapped to PUB", rig.brokerToken(ciphertoken.Introspection{
+			Person: alice, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"PUB"}, Scope: "dispatch.write",
+		}), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
+		{"a read-only token", rig.brokerToken(ciphertoken.Introspection{
+			Service: "example-reader", ProjectScope: ciphertoken.ProjectScopeNone, Scope: ciphertoken.ScopeRead,
+		}), http.StatusForbidden, "READ_ONLY_TOKEN", ""},
+		{"bob's personal token holding no scope and listing PRIV", rig.personalToken(t, bob, nil, []string{"PRIV"}), http.StatusForbidden, "RESTRICTED_MEMBER", ""},
+		{"bob's broker token acting as him listing PRIV", rig.brokerToken(ciphertoken.Introspection{
+			Person: bob, ProjectScope: ciphertoken.ProjectScopePerson, Projects: []string{"PRIV"}, Scope: "dispatch.write",
+		}), http.StatusForbidden, "RESTRICTED_MEMBER", ""},
+	} {
+		got := rig.read(t, refused.who, proxyPath("acme/pub", "pulls/1"), "acme/pub")
+		if got.status != refused.status || got.code != refused.code || got.challenge != refused.challenge || got.asked != 0 {
+			t.Errorf("%s reads acme/pub as %+v, want %d %s (challenge %q) with GitHub asked nothing", refused.name, got, refused.status, refused.code, refused.challenge)
+		}
+	}
+
+	t.Run("restricted member at the browser reads under the repository rule", func(t *testing.T) {
+		uninstalled := rig.read(t, cookieOf(bob), proxyPath(uninstalledRepository, "pulls/1"), uninstalledRepository)
+		if uninstalled.status != http.StatusServiceUnavailable || uninstalled.code != "GITHUB_TOKEN_UNAVAILABLE" {
+			t.Fatalf("bob at his browser reads %s, which the App is not installed on, as %+v: the comparison proves nothing", uninstalledRepository, uninstalled)
+		}
+		if got := rig.read(t, cookieOf(bob), proxyPath("acme/priv", "pulls/1"), "acme/priv"); got.status != http.StatusOK || got.body != `{"repository":"<repo>"}` || got.asked == 0 {
+			t.Errorf("bob at his browser reads acme/priv, which PRIV's issues name and PRIV's list names him on, as %+v, want 200 from GitHub", got)
+		}
+		if got := rig.read(t, cookieOf(bob), proxyPath("acme/pub", "pulls/1"), "acme/pub"); got.status != uninstalled.status || got.body != uninstalled.body || got.asked != 0 {
+			t.Errorf("bob at his browser reads acme/pub, of a project no list names him on, as %+v, want what %s answers, %d %s, with GitHub asked nothing",
+				got, uninstalledRepository, uninstalled.status, uninstalled.body)
+		}
+	})
+
+	t.Run("restricted member token minted at the browser is refused", func(t *testing.T) {
+		mint := httptest.NewRequest(http.MethodPost, proxyOrigin+"/api/v1/me/agent-tokens", strings.NewReader(`{"name":"bob's agent","projects":["PRIV"]}`))
+		mint.Header.Set("Content-Type", "application/json")
+		mint.Header.Set("X-Dispatch-User", bob)
+		minted := httptest.NewRecorder()
+		rig.handler.ServeHTTP(minted, mint)
+		var token struct {
+			Token    string   `json:"token"`
+			Scopes   []string `json:"scopes"`
+			Projects []string `json:"projects"`
+		}
+		if err := json.Unmarshal(minted.Body.Bytes(), &token); err != nil || minted.Code != http.StatusCreated || token.Token == "" ||
+			token.Scopes == nil || len(token.Scopes) != 0 || !slices.Equal(token.Projects, []string{"PRIV"}) {
+			t.Fatalf("bob's mint at his browser answered %d %s, want 201 and a token holding no scope ([]) and listing [PRIV], R16's mint",
+				minted.Code, minted.Body.String())
+		}
+		for _, held := range []struct {
+			name string
+			who  credential
+		}{
+			{"bob's personal token minted at his browser", bearer(token.Token)},
+			{"bob's personal token stored holding person and approve and listing PRIV", rig.personalToken(t, bob, []string{"person", "approve"}, []string{"PRIV"})},
+		} {
+			got := rig.read(t, held.who, proxyPath("acme/priv", "pulls/1"), "acme/priv")
+			if got.status != http.StatusForbidden || got.code != "RESTRICTED_MEMBER" || got.challenge != "" || got.asked != 0 {
+				t.Errorf("%s reads acme/priv as %+v, want 403 RESTRICTED_MEMBER with GitHub asked nothing", held.name, got)
+			}
+		}
+	})
 }

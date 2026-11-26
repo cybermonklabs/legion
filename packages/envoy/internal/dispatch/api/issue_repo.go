@@ -77,8 +77,8 @@ func refuseRepoOfRestrictedMember(w http.ResponseWriter, who model.Actor, raw js
 const codeRepositoryNotAvailable = "REPOSITORY_NOT_AVAILABLE"
 
 // repositoryHiddenFromWriterQuery is refs.RepositoryHidden over the repository bound at $1 for the
-// writer bound at $2: the GitHub proxy's gate (routes' repositoryVisibleQuery), negated. No
-// placeholder differs between writes, so the text is built once.
+// writer bound at $2: the GitHub proxy's gate (githubGate, repositoriesHiddenQuery's
+// refs.RepositoryClause), negated. No placeholder differs between writes, so the text is built once.
 var repositoryHiddenFromWriterQuery = `select ` + refs.RepositoryHidden("$1::text", "$2")
 
 // refuseRepoHidden refuses a write by who that makes repo, canonical, an issue's own repository or

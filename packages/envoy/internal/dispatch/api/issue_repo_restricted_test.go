@@ -99,8 +99,8 @@ func issueWritesSnapshot(t *testing.T, database *store.Store) string {
 	return snapshot
 }
 
-// proxyShows answers whether the GitHub proxy shows login repository: its own read
-// (routes' repositoryVisibleQuery, refs.RepositoryClause) for the viewer it resolves a cookie to
+// proxyShows answers whether the GitHub proxy shows login's cookie repository: refs.RepositoryClause,
+// the rule its gate reads (githubGate, repositoriesHidden), for the viewer a cookie resolves to
 // (access.Resolve of model.BrowserActor).
 func proxyShows(t *testing.T, database *store.Store, login, repository string) bool {
 	t.Helper()

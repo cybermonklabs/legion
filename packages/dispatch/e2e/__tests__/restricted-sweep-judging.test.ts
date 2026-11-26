@@ -462,6 +462,42 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     rowLimit("short")
   );
 
+  // A build from #5079 on reads the token and refuses it 403 where it holds no person scope or is
+  // a restricted member's: each proxy read is UNKNOWN naming that cause and what to give instead,
+  // never a build before #5079, a FAIL or a PASS.
+  test(
+    "with the full member's token alone, a proxy that refuses it 403 leaves each read UNKNOWN, naming the token's cause, not the build",
+    async () => {
+      const instead =
+        "give SWEEP_FULL_TOKEN a full member's personal token that holds the person scope, or SWEEP_FULL_COOKIE";
+      const runs = await Promise.all(
+        (
+          [
+            ["none", "403 OAUTH_SCOPE_REQUIRED", "the token holds no person scope"],
+            ["restricted", "403 RESTRICTED_MEMBER", "the token is a restricted member's"],
+          ] as const
+        ).map(async ([tokenScope, refusal, cause]) => ({
+          refusal,
+          cause,
+          run: await sweep([], { ...served, env: {}, tokenScope, rows: ["/api/v1/whoami"] }),
+        }))
+      );
+      for (const { refusal, cause, run } of runs) {
+        const { code, stdout } = run;
+        expect(failures(stdout)).toEqual([]);
+        for (const shape of proxyReads()) {
+          expect(stdout).toContain(
+            `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, as a repository the App is not installed on, but the proxy refused the full member's token (${refusal}): ${cause}; ${instead}\n`
+          );
+        }
+        expect(stdout).not.toContain("a build before cybermonklabs/legion#5079");
+        expect(stdout).not.toContain("PASS");
+        expect(code).toBe(2);
+      }
+    },
+    rowLimit({ atOnce: ["short", "short"] })
+  );
+
   // A proxy read counts as one that can fail only where the full member's read of the project's
   // repository was answered and one nobody holds was answered as the proxy answers a repository
   // the App is not installed on. An outage of either read, or a rate limit, which the proxy

@@ -546,9 +546,12 @@ reads to limit passkey sign-ins per client address: behind Google's load balance
 `35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64`
 ([Google's firewall rules](https://cloud.google.com/load-balancing/docs/firewall-rules)). A
 project's owner puts the person's email on the project's access list, then makes an
-invitation link for them on the project's **Access** tab and hands it over however they like. The
-link works once, within 24 hours, for that person only, and making a new one ends the old one. With
-it the person enrolls a passkey on their own device, and from then on signs in with that passkey.
+invitation link for them on the project's **Access** tab and hands it over however they like. An
+agent can make the link too, with an agent token the owner made that holds `approve` and lists the
+project, so inviting someone needs nobody at a browser; no other token makes one, and **Reset**
+(below) is the Access tab's alone. The link works once, within 24 hours, for that person only, and
+making a new one ends the old one. With it the person enrolls a passkey on their own device, and
+from then on signs in with that passkey.
 The owner sees on the Access tab when each passkey was enrolled and who made the link it came
 through, so a link someone else used first shows up there. One owner binds a person from outside:
 a passkey signs its person in to every project whose list names them, so an owner makes a link
