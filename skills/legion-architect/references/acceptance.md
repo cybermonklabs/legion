@@ -69,7 +69,7 @@ The steps after your acceptance in the task run, then retro, then the merger mer
 A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
 When the merger reports:
 
-- the issue moved back with `request_backward_move`: its reason says why the fix is a change to the change's own logic that no merge of the base resolves; you start nothing;
+- the issue moved back with `request_backward_move`: you start nothing;
 
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
