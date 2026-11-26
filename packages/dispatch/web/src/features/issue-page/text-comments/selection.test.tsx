@@ -437,6 +437,37 @@ test("sending, 201: the composer closes and the new thread stands beside its nod
   }
 });
 
+test("sending, 201: the focus the new thread took is the reader's again after a press on the node's words, and the re-read does not take it back", async () => {
+  const user = userEvent.setup();
+  const reads: SeededReads = { threads: [] };
+  const { client, row, view } = await drawn(reads);
+  const created = { ...ON_STATEMENT.comment, id: "new-thread" };
+  stubs.push(spyOn(api, "createComment").mockResolvedValue(created));
+  try {
+    const composer = await openComposer(view, row, user);
+    reads.threads = [{ ...ON_STATEMENT, comment: created }];
+    await send(composer, user);
+    const root = await waitFor(() => {
+      const card = view
+        .getByRole("region", { name: COLUMN })
+        .querySelector<HTMLElement>('[data-margin-item="new-thread"]');
+      expect(card?.contains(document.activeElement), "the thread took no focus").toBe(true);
+      return card as HTMLElement;
+    });
+    // A press on the node's words, where the reader starts to select the next words: the press
+    // moves the focus out of the thread, and a drag cannot start while a script moves it back.
+    await user.click(row);
+    await readAgain(client);
+    expect(
+      root.contains(document.activeElement),
+      "the thread took the focus back from a press on the node's words"
+    ).toBe(false);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
 test("sending, 400 INVALID_ANCHOR or 404 TARGET_NOT_FOUND: the draft stays and one sentence says the words are no longer in the text", async () => {
   for (const refusal of [
     new ApiError(400, { code: "INVALID_ANCHOR", error: "no such quote" }),

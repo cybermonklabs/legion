@@ -137,7 +137,7 @@ function tell(store: ComposerStore): void {
 function holdComposer(
   store: ComposerStore,
   held: ComposerStore["held"],
-  landed: ComposerStore["landed"] = store.landed
+  landed: ComposerStore["landed"]
 ): void {
   const left = store.held?.request.mark;
   store.held = held;
@@ -178,7 +178,9 @@ export function useTextComposer(): TextComposer {
   return useMemo(
     () => ({
       close: () => {
-        if (store.held !== undefined && store.held.key === key) holdComposer(store, undefined);
+        if (store.held !== undefined && store.held.key === key) {
+          holdComposer(store, undefined, store.landed);
+        }
       },
       land: (outcome: TextComposerOutcome) => {
         if (key === undefined) return;
