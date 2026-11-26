@@ -43,10 +43,11 @@ import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
+import { chipName } from "./first-line";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { presetNodePath } from "./issue-address";
-import { chipName, isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
+import { isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
@@ -70,7 +71,7 @@ import {
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
 import { ROW_TIMING, RowText, rowTiming, useOutOfTabOrder } from "./RowText";
-import { titleReading } from "./tree-drafts";
+import { titleReading } from "./statement-rules";
 import { indentOf } from "./tree-fold";
 
 /**

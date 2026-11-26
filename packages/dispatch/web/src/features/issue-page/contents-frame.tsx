@@ -1,8 +1,8 @@
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../api/issue-cache";
-import type { IssueDetails } from "../../api/types";
 import {
   focusVisibleRing,
   pageHairBorder,
@@ -15,10 +15,10 @@ import {
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";
-import { IssueThreeThings } from "./IssueThreeThings";
-import { presetOf } from "./issue-address";
-import { useOwnedIssueTree } from "./issue-tree-owner";
+import { briefCounts, IssueThreeThings } from "./IssueThreeThings";
+import { issueAddress, presetOf } from "./issue-address";
 import { useIssueNames } from "./one-line";
+import { useOutlineReads } from "./outline-reads";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS, type Preset } from "./page-words";
 import type { SlotProps } from "./slot-props";
@@ -162,14 +162,14 @@ export function OutlineSheet({
 }
 
 /**
- * The issue's three sentences above the view's first row below 1024 px, where no Contents pane
- * stands to hold them (R13, root R8): `IssueThreeThings`, in the page's column as the Spec view
- * draws its first group (`look="spec"`), in Conversation, Verification, Plan, Decisions and
- * Graph. The stage draws it above the slot it chooses (`slots/stage.tsx`). Spec draws the
- * sentences as its own first group, so this draws none while the stage draws the Spec view
- * (`view`); where it draws the outline in that view's place, the sentences stand here. From
- * 1024 px up the pane holds them, and in a view that draws no Contents list (`drawsContents`)
- * nothing does.
+ * The issue's three sentences and the two rows under them above the view's first row below
+ * 1024 px, where no Contents pane stands to hold them (R13, root R8): `IssueThreeThings`, in the
+ * page's column as the Spec view draws its first group (`look="spec"`), in Conversation,
+ * Verification, Plan, Decisions and Graph. The stage draws it above the slot it chooses
+ * (`slots/stage.tsx`). Spec draws the sentences as its own first group, so this draws none while
+ * the stage draws the Spec view (`view`); where it draws the outline in that view's place, the
+ * sentences stand here. From 1024 px up the pane holds them, and in a view that draws no Contents
+ * list (`drawsContents`) nothing does.
  */
 export function ThreeThingsAbove({
   view,
@@ -181,19 +181,32 @@ export function ThreeThingsAbove({
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const preset = presetOf(props.route);
   if (paned || !drawsContents(preset) || (preset === "spec" && view)) return null;
-  return <ThreeThingsOf issue={props.issue} />;
+  return <ThreeThingsOf {...props} />;
 }
 
-/** The three sentences as the Contents slot reads them (`slots/contents.tsx`): the spec's summary
- *  node of the tree the page holds, its owner's where one stands above (`useOwnedIssueTree`),
- *  said only once the spec's blocks are held, each reference it cites by the page's name for it.
- *  Its reads are the page's own, so it sends none. */
-function ThreeThingsOf({ issue }: { issue: IssueDetails }): ReactNode {
-  const spec = primarySpec(issue);
-  const specSlug = spec?.slug ?? "";
-  const { blocksOf, root } = useOwnedIssueTree(issue);
-  const specHeld = spec !== undefined && blocksOf("spec").data !== undefined;
+/** The three sentences and the two rows under them as the Contents slot reads them
+ *  (`slots/contents.tsx`): the spec's summary node of the tree the page holds, each reference it
+ *  cites by the page's name for it, and the rows' counts over that tree and the words filter the
+ *  view row counts its signals over (`briefCounts`). Its reads are the page's own, so it sends
+ *  none. */
+function ThreeThingsOf({ issue, route }: SlotProps): ReactNode {
+  const { hash, search } = useLocation();
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  const { filter } = issueAddress(route, search, hash, specSlug);
+  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
-  const { nameOf } = useIssueNames(issue, root);
-  return <IssueThreeThings look="spec" nameOf={nameOf} specHeld={specHeld} summary={summary} />;
+  const counts = useMemo(
+    () => briefCounts({ namesHeld, readsHeld, root }, filter),
+    [filter, namesHeld, readsHeld, root]
+  );
+  const lineNames = useIssueNames(issue.key);
+  return (
+    <IssueThreeThings
+      counts={counts}
+      issueKey={issue.key}
+      lineNames={lineNames}
+      look="spec"
+      summary={summary}
+    />
+  );
 }

@@ -633,7 +633,7 @@ test("row 11: another view in the rows' place or the page leaving ends the slice
   const drawnBefore = drawing.counts.size;
   timed.unmount();
   expect(
-    cleared.mock.calls.map((call) => call[0]),
+    cleared.mock.calls.map((call): unknown => call[0]),
     "the page left with its slice's timer standing"
   ).toContain(asked[0]);
   act(() => jest.runOnlyPendingTimers());

@@ -35,11 +35,7 @@ import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { settingsBesideTokenFiles, tokenFilesSet } from "../dispatch-config";
 import { messageFor } from "../errors";
-
-/** The exit codes of every `dispatch` command: done, refused, and a usage error. */
-const OK = 0;
-const REFUSED = 1;
-const USAGE = 2;
+import { OK, REFUSED, USAGE } from "./exit-codes";
 
 /** `dispatch login --help`. */
 const LOGIN_HELP = [

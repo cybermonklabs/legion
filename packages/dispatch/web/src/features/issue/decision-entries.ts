@@ -11,11 +11,18 @@ import { type TextSource, textSourceOf } from "../refs/text-references";
  * This module is pure: it holds no React and makes no request.
  */
 
-/** Whether an entry of the Decisions read is a decision: an agent's, or an ask a person answered.
- *  An open ask is a question, and a declined one decided nothing, so neither is a decision a view
- *  draws beside the nodes its `shaped` tuples reach. */
+/** Whether an entry of the Decisions read is a decision: a `decision` block, whoever decided it,
+ *  or an ask a person answered. An open ask is a question, and a declined one decided nothing, so
+ *  neither is a decision a view draws beside the nodes its `shaped` tuples reach. */
 export function isDecisionEntry(entry: Pick<DecisionEntry, "answer_state" | "kind">): boolean {
   return entry.kind === "agent" || entry.answer_state === "answered";
+}
+
+/** Whether a person made the decision `entry` is: an ask they answered (an entry of kind
+ *  `person`), or a `decision` block whose `decided_by` names a person, since a block's `kind` is
+ *  the node's shape, `agent` whoever decided it. */
+export function isPersonDecision(entry: Pick<DecisionEntry, "decided_by" | "kind">): boolean {
+  return entry.kind === "person" || entry.decided_by?.kind === "person";
 }
 
 /**

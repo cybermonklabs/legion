@@ -36,10 +36,11 @@ import {
 import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { ChildIssueTag } from "../IssueChildren";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
-import { chipName, heldBy, type NodeChip, type NodeFact, type TreeNode } from "../issue-tree";
+import { heldBy, type NodeChip, type NodeFact, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { lineOrKindWord, useNodeLine } from "../node-line";
 import type { FailedRead, OutlineReads } from "../outline-reads";

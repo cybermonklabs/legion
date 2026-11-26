@@ -9,7 +9,7 @@ import { seedWholeIssue } from "./issue-layout-seed";
 import { contentsPane, gotoIssue, outlineControl, outlineSheet, phase } from "./issue-page";
 import { DESKTOP, nodeRows, PHONE } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
-import { contentsEntries } from "./issue-page-j";
+import { drawnContentsEntries } from "./issue-page-j";
 import { FILTERS, loadViews, PAGE_VIEWS, ROW_MS } from "./issue-page-t-rows";
 import {
   decisionsViewGate,
@@ -38,7 +38,7 @@ function threeThings(scope: Page | Locator): Locator {
 /** The ids of the entries a Contents list draws, sorted: two lists hold the same entries where
  *  they hold the same ids, whichever outline read each takes its order from. */
 async function entriesOf(scope: Locator): Promise<string[]> {
-  const ids = await contentsEntries(scope).evaluateAll((all) =>
+  const ids = await drawnContentsEntries(scope).evaluateAll((all) =>
     all.map((entry) => entry.getAttribute("data-contents-entry") ?? "")
   );
   return ids.sort();

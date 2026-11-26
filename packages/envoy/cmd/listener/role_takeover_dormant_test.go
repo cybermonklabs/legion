@@ -68,7 +68,7 @@ func TestATakeoverRecordThatWaitedWhileItsHolderKeptTheRoleCopiesNoOlderHour(t *
 			if err := rig.harness.client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {
 				t.Fatalf("delete %s's consumer: %v", a, err)
 			}
-			waitFor(t, 10*time.Second, a+"'s consumer gone", func() bool {
+			waitFor(t, a+"'s consumer gone", func() bool {
 				_, err := rig.harness.client.JS().ConsumerInfo(bus.Stream, consumer)
 				return err != nil
 			})

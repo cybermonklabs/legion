@@ -20,25 +20,37 @@ import (
 
 // supersede is what a reconnect hook does to lose the connection its run is on: it stops srv, and
 // returns once conn, the run's connection, has left CONNECTED and ctx, the run's context, has ended
-// with it, with the context's error. Either that is not done within 10 s returns an error of its
-// own, which no run reads as superseded.
+// with it, with the context's error. Either that is not done by the test binary's deadline less
+// runLostSpare returns an error of its own, which no run reads as superseded.
 func supersede(ctx context.Context, t *testing.T, srv *testnats.Server, conn *nats.Conn) error {
 	srv.Stop(t)
-	return awaitRunLost(ctx, conn)
+	return awaitRunLost(ctx, t, conn)
 }
 
-// awaitRunLost waits, within 10 s each, for conn to leave CONNECTED and then for ctx, the context
-// of a run on conn, to end, and returns ctx's error; a wait that runs out returns an error of its
-// own.
-func awaitRunLost(ctx context.Context, conn *nats.Conn) error {
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return !conn.IsConnected() }) {
-		return errors.New("the run's connection still read CONNECTED 10s after it was cut")
+// runLostSpare is what awaitRunLost leaves of the test binary's deadline: more than the margin
+// testwait's own waits leave, so a hook's wait gives up, and hands its error to the test, before
+// the test's wait for that error does.
+const runLostSpare = 45 * time.Second
+
+// awaitRunLost waits for conn to leave CONNECTED and then for ctx, the context of a run on conn,
+// to end, and returns ctx's error. It runs on a hook's goroutine, so it fails nothing itself: its
+// one bound is the test binary's deadline less runLostSpare (testwait.Left), and a wait that
+// reaches it returns an error of its own.
+func awaitRunLost(ctx context.Context, t *testing.T, conn *nats.Conn) error {
+	bound, err := testwait.Left(t, runLostSpare)
+	if err != nil {
+		return err
+	}
+	expired := time.NewTimer(bound)
+	defer expired.Stop()
+	if !testwait.Holds(bound, 10*time.Millisecond, func() bool { return !conn.IsConnected() }) {
+		return errors.New("the run's connection still read CONNECTED " + runLostSpare.String() + " before the test binary's deadline")
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(10 * time.Second):
-		return errors.New("the run's context had not ended 10s after its connection left CONNECTED")
+	case <-expired.C:
+		return errors.New("the run's context had not ended " + runLostSpare.String() + " before the test binary's deadline, though its connection had left CONNECTED")
 	}
 }
 
@@ -358,19 +370,14 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 			return err
 		}
 		proxy.cutClients()
-		err := awaitRunLost(ctx, conn)
+		err := awaitRunLost(ctx, t, conn)
 		cut <- err
 		return err
 	})
 
 	proxy.admit()
-	select {
-	case err := <-cut:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("the first connection's run was not superseded by the cut: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the first connection's run of the hooks did not reach the cut within 30s")
+	if err := testwait.Receive(t, "the first connection's run of the hooks to reach the cut", cut); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the first connection's run was not superseded by the cut: %v", err)
 	}
 	if !testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
 		return calls.Load() >= 2 && !client.hooksDue() && client.SubOK()

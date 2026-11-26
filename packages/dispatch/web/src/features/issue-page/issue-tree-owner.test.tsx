@@ -9,15 +9,16 @@ import type { IssueDetails } from "../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { parseIssuePath } from "../refs/routes";
 import { IssueContentsPane } from "./contents-frame";
-import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
+import { issueDetails, KEY, SPEC_DOCUMENT } from "./decisions-filter/decisions-fixtures";
 import { presetPath } from "./issue-address";
 import { IssueTreeOwnerProvider, useOwnedIssueTree } from "./issue-tree-owner";
 import { TWO_THREADS } from "./outline-fixtures";
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
-import { AppProviders, commentNodes, stubReads, treeOf } from "./slots/stage-fixtures";
+import { AppProviders, commentNodes, inDocument, stubReads, treeOf } from "./slots/stage-fixtures";
 import { ViewRowSlot } from "./slots/view-row";
+import { treeNode } from "./tree-read/tree-fixtures";
 import * as issueTreeHook from "./useIssueTree";
 
 /**
@@ -73,14 +74,21 @@ function newClient(): QueryClient {
 let stubs: { mockRestore(): void }[] = [];
 let restoreViewport: () => void = () => {};
 // Every read the slots reach, answered (`stubReads`): the comments with the issue's two threads,
-// and the tree read with them, each view's read (`?view=`) with an empty view. Drawn at 1440 px
-// (`DESKTOP_WIDTH`), where the Contents pane stands beside the stage and the view row draws each
-// view's control.
+// and the tree read with them and two statements of the spec, each view's read (`?view=`) with an
+// empty view. Drawn at 1440 px (`DESKTOP_WIDTH`), where the Contents pane stands beside the stage
+// and the view row draws each view's control.
 beforeEach(() => {
   stubs = stubReads();
   spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) =>
-    query.view === undefined ? treeOf(commentNodes(TWO_THREADS)) : treeOf([])
+    query.view === undefined
+      ? treeOf([
+          ...commentNodes(TWO_THREADS),
+          ...["r1", "r2"].map((id, position) =>
+            treeNode(id, "requirement", KEY, inDocument(SPEC_DOCUMENT, position))
+          ),
+        ])
+      : treeOf([])
   );
   restoreViewport = stubViewport(DESKTOP_WIDTH);
 });
@@ -134,14 +142,14 @@ function drawSlots(client: QueryClient, owned: boolean): RenderResult {
 }
 
 /** Waits for each of the three readers to have drawn from the tree once no read is out: the view
- *  row's count of the reader's two threads, the Contents list's entry of each thread's head and
+ *  row's count of the spec's two statements, the Contents list's entry of each thread's head and
  *  the outline's row of it. */
 async function drawnFromTheTree(view: RenderResult, client: QueryClient): Promise<void> {
   await waitFor(() => {
     expect(client.isFetching(), "a read the slots sent is still out").toBe(0);
     expect(
-      view.container.querySelector('[data-preset-count="conversation"]')?.textContent,
-      "the view row drew no count of the reader's threads"
+      view.container.querySelector('[data-preset-count="spec"]')?.textContent,
+      "the view row drew no count of the spec's statements"
     ).toBe("2");
     for (const head of ["head-a", "head-b"]) {
       expect(

@@ -826,10 +826,11 @@ async function specRows(): Promise<void> {
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeAnswer([]));
+  const published = publishedTree(tree);
   const view = render(
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <Publisher published={publishedTree(tree)} />
+        <Publisher published={published} />
         <MemoryRouter>
           <KeymapProvider>
             <MarginProvider>
@@ -839,10 +840,15 @@ async function specRows(): Promise<void> {
                   <SpecTreeReads issue={issue} />
                   <SpecFilterBody
                     context={new Set()}
+                    counts={undefined}
                     emptyLine={EMPTY_STATE_LINES.spec}
                     holdsEscape={false}
                     issue={issue}
+                    namesLine={NO_FAILED_READS}
+                    onEditing={() => {}}
+                    published={published}
                     reader={READER}
+                    readsSettled
                     root={tree}
                     view={presetView(tree, "spec", "", new Set(["comment-1"])).root}
                   />

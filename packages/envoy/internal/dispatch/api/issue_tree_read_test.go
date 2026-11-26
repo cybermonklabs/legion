@@ -948,8 +948,8 @@ func TestTheVerificationViewAnswersEveryRequirementOfTheIssue(t *testing.T) {
 
 // decisionsViewSpec is the spec of the decisions view's issue key: two requirements; an ask that
 // shaped r1, which bob answers; an ask that shaped r2, which nobody answers; a decision that shaped
-// r1, with a reading under it, which alice keeps; and a decision that shaped nothing, which waits
-// for review.
+// r1, with a reading under it, which alice keeps; and a decision that shaped nothing, which nobody
+// keeps.
 func decisionsViewSpec(key string) string {
 	pointer := func(block string) string { return "dispatch://" + key + "/spec#b-" + block }
 	return ":::requirement{#r1}\nThe list orders the asks by urgency.\n:::\n\n" +
@@ -1059,18 +1059,19 @@ func decisionsQueryVersions(t *testing.T, database *store.Store, key string) (st
 
 // TestTheDecisionsViewAnswersTheDecisionsQuery: an issue born converted and one that has not
 // converted each hold decisionsViewSpec, with its ask a1 answered by a person and then closed by
-// the agent's reading g2, a2 open, its decision d1, which holds the reading g1, kept by alice, d2
+// the agent's reading g2, a2 open, its decision d1, which holds the reading g1, kept by alice, d2,
+// which alice's create wrote and so waits for nobody's review (R4), the agent's own decision d3
 // waiting for review, and a constraint r1's constrained_by names. Each one's ?view=decisions
 // answers every entry of the decisions read as the query's, keyed and shaped as that read answers
 // it (requireDecisionsViewAsRead), the open question with its options, the kept decision with its
-// keeper, the waiting one waiting, the reading under its decision and the reading under the
-// answered ask's node, and no node of its query but an ask, a decision or a reading of a decision
-// or of an answered ask. Its ?view=spec answers, as context, d1 and the answered a1, each with its
-// shaped tuple to r1, and the constraint with r1's constrained_by, and neither the open a2, which
-// shaped r2, nor d2, which shaped nothing. A version the decisions query node does not have is 404
-// QUERY_VERSION_NOT_FOUND on both issues; on the converted issue, version 1, the create's, answers
-// the view as it stood at the revision its row records, without g2, or 404
-// QUERY_VERSION_NOT_RECORDED where its row records none (R8).
+// keeper, alice's d2 waiting for nobody, the agent's d3 waiting, the reading under its decision and
+// the reading under the answered ask's node, and no node of its query but an ask, a decision or a
+// reading of a decision or of an answered ask. Its ?view=spec answers, as context, d1 and the
+// answered a1, each with its shaped tuple to r1, and the constraint with r1's constrained_by, and
+// neither the open a2, which shaped r2, nor d2 or d3, which shaped nothing. A version the decisions
+// query node does not have is 404 QUERY_VERSION_NOT_FOUND on both issues; on the converted issue,
+// version 1, the create's, answers the view as it stood at the revision its row records, without
+// g2, or 404 QUERY_VERSION_NOT_RECORDED where its row records none (R8).
 func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -1094,9 +1095,11 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 		answered, open := blockAskID(t, handler, issue.Key, "a1"), blockAskID(t, handler, issue.Key, "a2")
 		answerDecisionBlock(t, handler, answered, "bob", []string{"Urgency"}, "Urgency, then age.", nil)
 		// The agent's reading g2 closes the person's answered a1: an agent's reading inserted into
-		// a person's decision is taken (R32).
+		// a person's decision is taken (R32). The same upload writes d3, the agent's own decision,
+		// which waits for review; d2, which alice's create wrote, is hers and waits for nobody's.
 		agentUploadAs(t, handler, issue.Key, "spec.md",
-			withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "g2", "The agent reads the answer as urgency before age."), nil)
+			withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "g2", "The agent reads the answer as urgency before age.")+
+				"\n:::decision{#d3}\nWe page the list.\n:::\n", nil)
 		settleIssue(t, documents, issue.Key)
 		kept := requireEntry(t, readEntries(t, handler, issue.Key), "the decision d1", refs.BlockNodeKind+":"+spec.address("d1"))
 		keepBlock(t, handler, spec.id, "d1", kept.TextSHA256)
@@ -1146,8 +1149,11 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 			t.Errorf("%s: ?view=decisions answers the kept decision d1 (held %t) as %s, want it kept by alice, with when, and not waiting",
 				what, held, entryJSON(t, node.Decision))
 		}
-		if node, held := nodes[decisionNode("d2")]; !held || node.Decision == nil || node.Decision.Kept != nil || !node.Decision.WaitingReview {
-			t.Errorf("%s: ?view=decisions answers the decision d2 (held %t) as %s, want it waiting for review", what, held, entryJSON(t, node.Decision))
+		if node, held := nodes[decisionNode("d2")]; !held || node.Decision == nil || node.Decision.Kept != nil || node.Decision.WaitingReview {
+			t.Errorf("%s: ?view=decisions answers alice's decision d2 (held %t) as %s, want it unkept and waiting for nobody's review", what, held, entryJSON(t, node.Decision))
+		}
+		if node, held := nodes[decisionNode("d3")]; !held || node.Decision == nil || node.Decision.Kept != nil || !node.Decision.WaitingReview {
+			t.Errorf("%s: ?view=decisions answers the agent's decision d3 (held %t) as %s, want it waiting for review", what, held, entryJSON(t, node.Decision))
 		}
 		if held := view.nodesNamed(refs.BlockNodeKind, spec.address("g1")); len(held) != 1 || held[0].Supertag != refs.ReadingSupertag {
 			t.Errorf("%s: ?view=decisions answers the reading g1 as %s, want it once, a reading", what, entryJSON(t, held))
@@ -1187,7 +1193,7 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 				what, entryJSON(t, held), specView.holdsTuple(graphstore.TupleConstrainedBy, requirement, constrained))
 		}
 		for _, node := range specView.Nodes {
-			if node.Kind == graphstore.KindAsk && node.ID != answered || node.ID == spec.address("d2") {
+			if node.Kind == graphstore.KindAsk && node.ID != answered || node.ID == spec.address("d2") || node.ID == spec.address("d3") {
 				t.Errorf("%s: ?view=spec answers %s:%s, which is no answered ask and no decision that shaped one of its nodes", what, node.Kind, node.ID)
 			}
 		}

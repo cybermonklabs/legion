@@ -19,7 +19,6 @@ import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
-import { deletedLineText } from "../refs/post-marks";
 import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
@@ -32,10 +31,11 @@ import { CONTROL_LABELS } from "./page-words";
 import {
   knownIssueKeys,
   linkRowReferences,
+  rowReferenceNames,
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
-import { titleReading } from "./tree-drafts";
+import { titleReading } from "./statement-rules";
 
 /** The Element Timing identifier (`elementtiming`) every row of the issue page gives the element
  *  that paints the start of its first line, by which the load rows read when the row was first
@@ -275,22 +275,18 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
   const { names: named, reads } = useReferenceNames(addresses, issue);
   // A post the page read as deleted is named by its deleted line, the actor named by the page's
   // rule for an author, in place of the published name, which names the actor as no registry
-  // knows it.
-  const names = useMemo(() => {
-    const byReference = new Map<string, string>();
-    for (const one of found) {
-      const deletion = deletions.get(one.reference);
-      const name =
-        deletion !== undefined
-          ? deletedLineText(deletion, { label: author })
-          : (lines.get(one.reference) ??
-            (documentWord(one.route, issue) === undefined
-              ? named.get(one.reference)?.name
-              : undefined));
-      if (name !== undefined) byReference.set(one.reference, name);
-    }
-    return byReference;
-  }, [author, deletions, found, issue, lines, named]);
+  // knows it (`rowReferenceNames`).
+  const names = useMemo(
+    () =>
+      rowReferenceNames(
+        found,
+        { deleted: deletions, lines },
+        (reference) => named.get(reference)?.name,
+        issue,
+        author
+      ),
+    [author, deletions, found, issue, lines, named]
+  );
   const deleted = useMemo(
     () => new Set(found.map((one) => one.reference).filter((one) => deletions.has(one))),
     [deletions, found]
@@ -409,6 +405,18 @@ const SERVER_ROOT = /^\/(?:api|v1|auth|ws|healthz|assets)(?:\/|$)/u;
 /** What takes the focus in a drawn text: every control a reading can hold. */
 export const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";
 
+/** The class `mermaid-diagrams.ts`'s `drawBlock` gives a drawn diagram's preview, which scrolls
+ *  sideways when the diagram is wider than the words (`styles.css`). */
+const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
+
+/** Every element in drawn words that can scroll its own content: the ones `styles.css` gives an
+ *  `overflow-x: auto` - a code block's `pre` and a table (in a node's words, a document's reading,
+ *  an ask block's footer), and a drawn diagram's preview (`DIAGRAM_PREVIEW`) - and one whose own
+ *  `style` sets its overflow. A row's words hold hundreds of elements, and a style read for each
+ *  of them cost seconds of a large issue's load, so `useOutOfTabOrder` reads the style only of
+ *  these. */
+const SCROLLABLE = `pre, table, .${DIAGRAM_PREVIEW}, [style*="overflow"]`;
+
 /** Whether `element`'s overflow lets it scroll its own content, on either axis. Chromium makes
  *  such an element a tab stop of its own once its content runs past its box, while no control
  *  inside it is in the tab order: a wide code block's `pre`, a table's scrolling wrapper. */
@@ -416,17 +424,6 @@ function scrolls(element: Element): boolean {
   const { overflowX, overflowY } = getComputedStyle(element);
   return [overflowX, overflowY].some((overflow) => overflow === "auto" || overflow === "scroll");
 }
-
-/** The class `mermaid-diagrams.ts`'s `drawBlock` gives a drawn diagram's preview, which scrolls
- *  sideways when the diagram is wider than the words (`styles.css`). */
-const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
-
-/** The elements of a drawn text whose overflow can let them scroll: the blocks `styles.css` and
- *  the prose rules give `overflow-x: auto` (a code block's `pre`, a table, a drawn diagram's
- *  preview) and any element whose own class or style sets an overflow. `scrolls` reads the
- *  computed style of these alone, not of every element of the text. */
-const SCROLLER_CANDIDATES =
-  'pre, table, .dispatch-mermaid-preview, [class*="overflow-"], [style*="overflow"]';
 
 /** The mark a scroller carries while `useOutOfTabOrder` keeps its tab stop, so that a tree's keys
  *  can tell a kept scroller from the row's other controls. Its reader is part I's tree keys,
@@ -503,9 +500,7 @@ export function useOutOfTabOrder(
     const untab = (): void => {
       // Every style and every size is read before any tab index is written, so the reads cost
       // one style pass and one layout.
-      const scrollers = [...element.querySelectorAll<HTMLElement>(SCROLLER_CANDIDATES)].filter(
-        scrolls
-      );
+      const scrollers = [...element.querySelectorAll<HTMLElement>(SCROLLABLE)].filter(scrolls);
       const kept = new Map<HTMLElement, string>(
         keepScrollers
           ? scrollers
