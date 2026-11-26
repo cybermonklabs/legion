@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -26,21 +27,64 @@ import (
 // cuts are the last in the order below.
 const stackBound = 64 << 10
 
-// stacksPrinted is whether a give-up of this test binary has printed the goroutine stacks.
+// stacksPrinted is whether this test binary has printed the goroutine stacks of the moment its
+// deadline was used up: a give-up of a wait that waited until the margin, the first give-up of a
+// wait begun past it, or a watched bound at the deadline (watch.go). The stacks a watch read at a
+// span's end do not count: they are of an earlier moment.
 var stacksPrinted atomic.Bool
 
-// stacksFor is the text a give-up in t prints after its failure: the goroutine
-// stacks (goroutineStacks), or the one line that says why there are none. A wait that waited
-// until the margin prints them. A wait that began past the margin is the side effect of what used
-// the deadline up, as every wait after the margin is, so it asks for them once: it prints them
-// only when no give-up of this binary has, so the first give-up always carries the stacks and later
-// ones repeat no dump. Such a later give-up gets none of its own test's stacks, which the first
-// give-up, another test's, did not print; what its test was doing is the first give-up's effect.
-func stacksFor(t testing.TB, once bool) string {
-	if once && !stacksPrinted.CompareAndSwap(false, true) {
-		return "testwait: " + t.Name() + ": no goroutine stacks for this give-up: an earlier give-up of this test binary printed them\n"
+// cause is the first give-up of this test binary whose wait waited until its end at the deadline,
+// rather than beginning past the margin: its test, and what its wait waited for. That wait used
+// the deadline up, and every later wait begun past the margin fails because of it.
+var cause struct {
+	sync.Mutex
+	test, what string
+}
+
+// noteCause records a give-up in the test named test, of a wait for what that waited until its
+// end at the deadline, as the cause, unless an earlier one is recorded. what is kept on one line,
+// as the give-up line writes it (oneLine).
+func noteCause(test, what string) {
+	cause.Lock()
+	defer cause.Unlock()
+	if cause.test == "" {
+		cause.test, cause.what = test, oneLine.Replace(what)
+	}
+}
+
+// collateral is the line a give-up in the test named name prints when its wait began past the
+// margin: that the give-up is collateral, a failure of no fault of the wait's own, and which give-up
+// used the deadline up (cause), so a reader of a log with many such failures finds the one that
+// is real.
+func collateral(name string) string {
+	cause.Lock()
+	test, what := cause.test, cause.what
+	cause.Unlock()
+	const opening = "testwait: %s: this give-up is collateral: the wait began after the margin before the test binary's deadline had passed, so it did not wait; "
+	if test == "" {
+		return fmt.Sprintf(opening+"no earlier wait of testwait gave up at the deadline, so the deadline was used up by a test that waits without testwait, or the -timeout is no longer than the margin\n", name)
+	}
+	return fmt.Sprintf(opening+"the wait that used the deadline up gave up earlier: %s, waiting for %s, whose goroutine stacks are printed with that test's failure\n", name, test, what)
+}
+
+// stacksFor is the text a give-up in t, of a wait for what, prints after its failure. A wait that
+// waited until the margin prints the goroutine stacks (goroutineStacks) and is recorded as the
+// cause, when it is the first. A wait that began past the margin (spent) did not wait, so its
+// failure is false: it prints the collateral line, and the stacks only when the binary has printed
+// none of the moment its deadline was used up (stacksPrinted), so that moment's stacks are printed
+// once. Such a later give-up gets none of its own test's stacks, which the earlier dump, of another
+// test's give-up, did not print; what its test was doing is that give-up's effect.
+func stacksFor(t testing.TB, what string, spent bool) string {
+	if spent {
+		line := collateral(t.Name())
+		if !stacksPrinted.CompareAndSwap(false, true) {
+			return line
+		}
+		markPrinted(t)
+		return line + goroutineStacks(t.Name(), traces())
 	}
 	stacksPrinted.Store(true)
+	noteCause(t.Name(), what)
 	markPrinted(t)
 	return goroutineStacks(t.Name(), traces())
 }

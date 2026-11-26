@@ -69,8 +69,10 @@ func TestAGiveUpPrintsTheStacksAndWhatItsReadingHolds(t *testing.T) {
 			t.Errorf("%s: no frame %s in:\n%s", frame.why, frame.function, frame.in)
 		}
 	}
-	if !strings.Contains(stdout.String(), "testwait: "+name+"eventually: no goroutine stacks for this give-up: an earlier give-up of this test binary printed them") {
-		t.Error("the child's wait begun past the margin did not say why it printed no stacks")
+	collateral := "testwait: " + name + "eventually: this give-up is collateral: the wait began after the margin before the test binary's deadline had passed, so it did not wait; " +
+		"the wait that used the deadline up gave up earlier: " + name + "until, waiting for the fact that never comes, whose goroutine stacks are printed with that test's failure"
+	if !strings.Contains(stdout.String(), collateral+"\n") {
+		t.Errorf("the child's wait begun past the margin did not say it is collateral and name the give-up that used the deadline up:\n%s", collateral)
 	}
 }
 

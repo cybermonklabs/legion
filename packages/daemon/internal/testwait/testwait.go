@@ -21,8 +21,8 @@
 // included, the test's output carries the goroutine stacks as the wait gave up, the dump Go's alarm
 // would print had the wait not given up before it: the waiting goroutine's, then those its test
 // started, bounded (goroutineStacks). A wait with a failure text of its own that takes its bound
-// from Bounded, Remaining or Context gets the same stacks, read just before that bound ends and
-// printed when its test fails (watchBound).
+// from Bounded, Remaining or Context gets the same stacks, read at that bound's end and printed
+// when its test fails (watchBound).
 //
 // The cost of no cap: a wait whose fact never comes holds its test binary until 30 s before the
 // deadline (in CI's race step, -timeout 30m, about 29.5 minutes), and every later wait of
@@ -31,8 +31,10 @@
 // first give-up line in time order is the cause" before its reading, so the first give-up line in
 // time order names the wait that never held, and the later ones are its side effects. A wait in a
 // cleanup after its test's wait gave up is one of those, so the cleanups keep the margin to run in;
-// under a -timeout of 30 s or less every such wait is. Such a wait prints the goroutine stacks only
-// when no earlier give-up of the binary has (stacksFor).
+// under a -timeout of 30 s or less every such wait is. After its failure such a wait prints a line
+// that says it is collateral and names the give-up that used the deadline up, its test and what it
+// waited for; it prints the goroutine stacks after that line only when no earlier give-up of the
+// binary has (stacksFor).
 package testwait
 
 import (
@@ -200,7 +202,7 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	if ok {
 		return value
 	}
-	stacks := stacksFor(t, bounded && !start.Before(deadline.Add(-marginOf(timeout))))
+	stacks := stacksFor(t, what, bounded && !start.Before(deadline.Add(-marginOf(timeout))))
 	text := oneLine.Replace(fmt.Sprintf(
 		"testwait: %s: gave up waiting for %s after %s at %s, %s before the test binary's deadline %s (-test.timeout %s)",
 		t.Name(), what, ended.Sub(start).Round(time.Millisecond), ended.UTC().Format(time.RFC3339Nano), marginOf(timeout),
@@ -398,7 +400,7 @@ func announce(name, what string, spent bool, reading func() string) string {
 // anything else is written.
 func gaveUp(t testing.TB, what string, spent bool, reading func() string) {
 	t.Helper()
-	stacks := stacksFor(t, spent)
+	stacks := stacksFor(t, what, spent)
 	t.Errorf("%s", announce(t.Name(), what, spent, reading))
 	printStacks(t, stacks)
 	t.FailNow()

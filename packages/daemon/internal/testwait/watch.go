@@ -54,15 +54,17 @@ const failedPoll = time.Millisecond
 var watches sync.Map
 
 // watch is one test's: a timer for each deadline moment its bounds end at and one for its latest
-// span, the bounds it watches, the latest reading and when it was read, how many readings it took
-// and the end of the last span it finished asking about (which this package's own tests read),
-// whether a give-up of the test printed stacks itself, and whether the test ended.
+// span, the bounds it watches, the latest reading, the bound it is of and when it was read, how
+// many readings it took and the end of the last span it finished asking about (which this
+// package's own tests read), whether a give-up of the test printed stacks itself, and whether the
+// test ended.
 type watch struct {
 	mu      sync.Mutex
 	timers  map[time.Time]*time.Timer
 	span    *time.Timer
 	ends    []bound
 	stacks  string
+	readOf  bound
 	readAt  time.Time
 	reads   int
 	checked time.Time
@@ -165,6 +167,7 @@ func (w *watch) read(name string, waiter int, b bound, when string) {
 		when += " (the goroutine that took the bound had returned, so the first stack is the watch's own)"
 	}
 	w.readAt = time.Now()
+	w.readOf = b
 	w.reads++
 	w.stacks = dumpStacks(name, "read at "+clockOf(w.readAt)+", "+when, dump)
 }
@@ -203,11 +206,21 @@ func (w *watch) end(t testing.TB) {
 	}
 	w.mu.Lock()
 	w.ended = true
-	stacks, readAt, printed := w.stacks, w.readAt, w.printed
+	stacks, readOf, readAt, printed := w.stacks, w.readOf, w.readAt, w.printed
 	w.mu.Unlock()
 	watches.CompareAndDelete(t, w)
 	if failed && stacks != "" && !printed {
-		stacksPrinted.Store(true)
+		// A reading at a deadline bound is of the moment the binary's deadline was used up: the
+		// collateral give-ups after it name this test (stacksFor), unless its own bound had ended
+		// before its wait took it, in which case the test is one of them.
+		if !readOf.span {
+			if readOf.spentTaken {
+				stacks = collateral(t.Name()) + stacks
+			} else {
+				noteCause(t.Name(), "a wait of its own until the end of "+readOf.String())
+			}
+			stacksPrinted.Store(true)
+		}
 		now := time.Now()
 		printStacks(t, stacks+fmt.Sprintf("testwait: %s: the test ended failed at %s, %s after those stacks were read\n",
 			t.Name(), clockOf(now), now.Sub(readAt).Round(time.Millisecond)))

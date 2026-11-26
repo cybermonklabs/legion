@@ -147,21 +147,41 @@ func TestTheStacksStopAtTheirBound(t *testing.T) {
 	}
 }
 
-// The first give-up of a binary prints the stacks, a wait begun past the margin among them; a later
-// wait begun past the margin prints one line saying why it prints none, and a later wait that
-// waited until the margin prints them again.
-func TestAGiveUpBegunPastTheMarginPrintsTheStacksOnlyWhenNoneHave(t *testing.T) {
+// A give-up of a wait begun past the margin says it is collateral. With no earlier give-up of a wait
+// that waited until the margin, its line says that none is known, and the first such give-up
+// prints the stacks after it while a later one prints the line alone. A give-up of a wait that
+// waited until the margin prints the stacks and becomes the cause: every later collateral line
+// names its test and what it waited for, on one line.
+func TestAGiveUpBegunPastTheMarginIsCollateralAndNamesTheCause(t *testing.T) {
 	was := stacksPrinted.Load()
-	t.Cleanup(func() { stacksPrinted.Store(was) })
+	cause.Lock()
+	wasCause := cause.test + "\x00" + cause.what
+	cause.test, cause.what = "", ""
+	cause.Unlock()
+	t.Cleanup(func() {
+		stacksPrinted.Store(was)
+		cause.Lock()
+		cause.test, cause.what, _ = strings.Cut(wasCause, "\x00")
+		cause.Unlock()
+	})
 	header := "testwait: " + t.Name() + ": the goroutine stacks as the wait gave up: "
+	opening := "testwait: " + t.Name() + ": this give-up is collateral: the wait began after the margin before the test binary's deadline had passed, so it did not wait; "
+	unknown := opening + "no earlier wait of testwait gave up at the deadline, so the deadline was used up by a test that waits without testwait, or the -timeout is no longer than the margin\n"
 	stacksPrinted.Store(false)
-	if got := stacksFor(t, true); !strings.HasPrefix(got, header) {
-		t.Errorf("the binary's first give-up, begun past the margin, printed %.200q, want the stacks", got)
+	if got := stacksFor(t, "a first spent wait", true); !strings.HasPrefix(got, unknown+header) {
+		t.Errorf("the binary's first give-up, begun past the margin, printed %.300q, want the line that names no cause, then the stacks", got)
 	}
-	if got, want := stacksFor(t, true), "testwait: "+t.Name()+": no goroutine stacks for this give-up: an earlier give-up of this test binary printed them\n"; got != want {
-		t.Errorf("a later give-up begun past the margin printed %.200q, want %q", got, want)
+	if got := stacksFor(t, "a later spent wait", true); got != unknown {
+		t.Errorf("a later give-up begun past the margin printed %.300q, want %q", got, unknown)
 	}
-	if got := stacksFor(t, false); !strings.HasPrefix(got, header) {
-		t.Errorf("a later give-up that waited until the margin printed %.200q, want the stacks", got)
+	if got := stacksFor(t, "the fact that never\ncame", false); !strings.HasPrefix(got, header) {
+		t.Errorf("a give-up that waited until the margin printed %.300q, want the stacks", got)
+	}
+	named := opening + "the wait that used the deadline up gave up earlier: " + t.Name() + ", waiting for the fact that never\\ncame, whose goroutine stacks are printed with that test's failure\n"
+	if got := stacksFor(t, "a spent wait after it", true); got != named {
+		t.Errorf("a give-up begun past the margin after it printed %.300q, want %q", got, named)
+	}
+	if got := stacksFor(t, "a second wait that waited", false); !strings.HasPrefix(got, header) || stacksFor(t, "another spent wait", true) != named {
+		t.Error("a second give-up that waited until the margin took the place of the first as the cause, or printed no stacks")
 	}
 }

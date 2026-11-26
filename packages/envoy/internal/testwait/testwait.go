@@ -25,10 +25,12 @@
 // written as \n. The reading prints as %+v would, but a pointer in it prints what it points to
 // (describe). After the failure the test's output carries the goroutine stacks as the wait gave
 // up, the dump Go's alarm would print had the wait not given up before it: the waiting goroutine's,
-// then those its test started, bounded (goroutineStacks); a wait that began past the margin prints
-// them only when no earlier give-up of the binary has (stacksFor). A wait with a failure text of its
-// own that takes its bound from Bounded, Remaining, Left or Context gets the same stacks, read just
-// before that bound ends and printed when its test fails (watchBound).
+// then those its test started, bounded (goroutineStacks). A wait that began past the margin did not
+// wait, so its failure is collateral: it prints a line that says so and names the give-up that used
+// the deadline up, its test and what it waited for, and the stacks only when no earlier give-up of
+// the binary has printed them (stacksFor). A wait with a failure text of its own that takes its
+// bound from Bounded, Remaining, Left or Context gets the same stacks, read at that bound's end and
+// printed when its test fails (watchBound).
 package testwait
 
 import (
@@ -225,7 +227,7 @@ var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 // reading, or nil for a wait that has none; spent says the wait began past the margin.
 func gaveUp(t *testing.T, what string, spent bool, reading func() string) {
 	t.Helper()
-	stacks := stacksFor(t, spent)
+	stacks := stacksFor(t, what, spent)
 	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, margin)
 	if reading != nil {
 		text += "; last read: " + reading()

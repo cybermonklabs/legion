@@ -43,7 +43,7 @@ func Remaining(t *testing.T) time.Duration {
 	}
 	left := time.Until(deadline)
 	if left <= giveUpMargin {
-		stacks := stacksFor(t, true)
+		stacks := stacksFor(t, "the span testwait.Remaining gives", true)
 		t.Errorf("testwait.Remaining: the test binary's deadline %s is %s away, less than the %s margin a wait leaves its test to fail in and run its cleanups",
 			deadline.Format(time.RFC3339Nano), left.Round(time.Millisecond), giveUpMargin)
 		printStacks(t, stacks)
