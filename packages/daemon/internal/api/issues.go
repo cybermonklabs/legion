@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
@@ -73,7 +75,9 @@ func queuedOf(result intake.Result) []QueuedStatusWrite {
 // root whose architect claim failed it starts that claim again in its session, as on any issue in
 // work it is the issue's own todo (R20). An issue the daemon does not record is recorded, where its
 // todo makes it one the daemon takes, from Dispatch's answer to the write (the outbox, through
-// ApplyOwnStatusWrite).
+// ApplyOwnStatusWrite). An issue of another Dispatch project is refused before anything is read or
+// queued (ISSUE_OF_ANOTHER_PROJECT): only that project's daemon writes its status, as the outbox
+// and the consumer each keep to the daemon's own project (ownDispatchIssue).
 func (s *server) issueStatus(w http.ResponseWriter, r *http.Request) {
 	var req IssueStatusRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"status", req.Status}) {
@@ -102,6 +106,12 @@ func (s *server) issueStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if !grant.Controller {
 		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", "issue status requires a controller grant")
+		return
+	}
+	if !s.ownDispatchIssue(req.Issue) {
+		s.writeFailure(w, r, http.StatusUnprocessableEntity, "ISSUE_OF_ANOTHER_PROJECT", fmt.Sprintf(
+			"%s is an issue of project %s, not of this daemon's project %s; only that project's daemon writes its status",
+			req.Issue, claim.KeyProject(req.Issue), s.dispatchProject))
 		return
 	}
 	if s.dispatch == nil {

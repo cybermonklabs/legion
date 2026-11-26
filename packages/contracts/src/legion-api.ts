@@ -2531,8 +2531,10 @@ export const LEGION_PARENT_ARGUMENTS = ["include"] as const;
  * the move would leave in work under it (`CHILDREN_ARGUMENT_REQUIRED`, naming each); `parent`
  * goes with a `todo` and is required where the todo would put the issue in work under a parent
  * that is not (`PARENT_ARGUMENT_REQUIRED`, naming each issue above it not in work up to the first
- * that is). The daemon refuses a `children` with a `todo` (`INVALID_CHILDREN`) and a `parent` with
- * a `backlog` or `icebox` (`INVALID_PARENT`). It answers `LegionStatusCallResponse`. */
+ * that is). The daemon refuses a `children` with a `todo` (`INVALID_CHILDREN`), a `parent` with
+ * a `backlog` or `icebox` (`INVALID_PARENT`), and an issue of another Dispatch project, whose own
+ * daemon alone writes its status (`ISSUE_OF_ANOTHER_PROJECT`, 422, naming its project). It answers
+ * `LegionStatusCallResponse`. */
 export const LegionIssueStatusRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
