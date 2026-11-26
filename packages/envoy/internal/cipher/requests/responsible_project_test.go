@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -344,12 +345,12 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 // Dispatch again.
 func TestTheJudgesRefusalReadsNothingOfDispatch(t *testing.T) {
 	t.Parallel()
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(900))}}}
+	rules := bound(rule("SHARED_KEY", "example"))
 	const why = "the model judge refused this request: SHARED_KEY is withheld from this session. This request will not be granted. Tell whoever gave you this work."
 	held := func(t *testing.T, reason string) (*Machine, Request) {
 		t.Helper()
 		m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
-		m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+		policytest.JudgeTags(t, fixtureStore(m), m.Policy, "SHARED_KEY", 900, "")
 		m.Judge = func(PendingRequest) {}
 		req := pendingJudgeable(t, m, enr, key, reason, 600, "SHARED_KEY")
 		if _, ok := judgeHold(t, m, req.ID); !ok {

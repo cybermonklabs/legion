@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/requests/judge_alone_test.go
 // Who decides a request is a setting of its keys: nobody for a key granted at once, the model
-// judge for a key the airlock rules give a judge entry, and a person for any other key and every
+// judge for a key whose judge tag gives the judge seconds of it, and a person for any other key and every
 // administrator's. A request the judge decides is held for it (requests.judge_until): it is on no
 // list, no person may decide it, and the judge writes its verdict only while the hold lasts.
 // Anything the judge cannot decide goes to the key's person, once.
@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -141,7 +140,7 @@ func handOver(t *testing.T, m *Machine, recordID string) {
 // writes the request. A request whose every key that needs a decision is a judge key is held for
 // the judge and handed to it, naming those keys as the ones it decides — a key the session gets
 // at once beside them needs no decision and is no key the judge decides; a request with any key
-// a person decides — one with no judge entry, an administrator's — is that person's from the
+// a person decides — one with no judge tag, an administrator's — is that person's from the
 // start and never handed to the judge; and on a broker that runs no judge, a judge key's request
 // is the person's too. No reason cites anything in any row.
 func TestWhoDecidesIsTheKeysSetting(t *testing.T) {
@@ -157,16 +156,15 @@ func TestWhoDecidesIsTheKeysSetting(t *testing.T) {
 		{name: "a judge key", names: []string{"DEEL_API_KEY"}, held: true, decided: []string{"DEEL_API_KEY"}, viewer: fixtureOperator},
 		{name: "two judge keys", names: []string{"DEEL_API_KEY", "DEEL_OTHER_KEY"}, held: true, decided: []string{"DEEL_API_KEY", "DEEL_OTHER_KEY"}, viewer: fixtureOperator},
 		{name: "a judge key beside an agent-tier key its session gets at once", names: []string{"DEEL_API_KEY", "AGENT_KEY"}, held: true, decided: []string{"DEEL_API_KEY"}, viewer: fixtureOperator},
-		{name: "a key with no judge entry", names: []string{"UNJUDGED_KEY"}, viewer: fixtureOperator},
-		{name: "a judge key beside a key with no judge entry", names: []string{"DEEL_API_KEY", "UNJUDGED_KEY"}, viewer: fixtureOperator},
-		{name: "an administrator's key with a judge entry", names: []string{adminSecretName}, viewer: fixtureOperator},
+		{name: "a key with no judge tag", names: []string{"UNJUDGED_KEY"}, viewer: fixtureOperator},
+		{name: "a judge key beside a key with no judge tag", names: []string{"DEEL_API_KEY", "UNJUDGED_KEY"}, viewer: fixtureOperator},
+		{name: "an administrator's key with a judge tag", names: []string{adminSecretName}, viewer: fixtureOperator},
 		{name: "a judge key on a broker that runs no judge", names: []string{"DEEL_API_KEY"}, noJudge: true, viewer: fixtureOperator},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			m.Airlock.Secrets = append(m.Airlock.Secrets, proxyrules.SecretRule{Name: "DEEL_OTHER_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: "grant for the release job"})
 			retag(t, m, policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "unjudged-v1"), adminSecret(),
-				policytest.Secret("DEEL_OTHER_KEY", fixtureOperator, policy.TierHuman, "other-v1"),
+				policytest.Judged(policytest.Secret("DEEL_OTHER_KEY", fixtureOperator, policy.TierHuman, "other-v1"), 900, "grant for the release job"),
 				policytest.Secret("AGENT_KEY", fixtureOperator, policy.TierAgent, "agent-v1"))
 			var handed []PendingRequest
 			m.Judge = func(p PendingRequest) { handed = append(handed, p) }
@@ -216,14 +214,14 @@ func TestTheJudgesGrantBesideAKeyGrantedAtOnceReleasesBoth(t *testing.T) {
 	}
 }
 
-// TestAJudgeKeysLifetimeIsItsJudgeSeconds: a key with a judge entry grants at most the entry's
+// TestAJudgeKeysLifetimeIsItsJudgeSeconds: a key with a judge tag grants at most the tag's
 // seconds. A request that names no lifetime gets them, and one that asks for longer is refused
 // when it is written, as a max-grant tag refuses one, naming the --ttl that would do; nothing is
 // written for it and the judge is never asked.
 func TestAJudgeKeysLifetimeIsItsJudgeSeconds(t *testing.T) {
 	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
-	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(300))}}}
+	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 300, "")
 	handed := 0
 	m.Judge = func(PendingRequest) { handed++ }
 
@@ -247,7 +245,7 @@ func TestAJudgeKeysLifetimeIsItsJudgeSeconds(t *testing.T) {
 // holds gets is the shortest judge seconds of the keys it decides, read before the max-grant tags.
 // A human-tier judge key whose max-grant is shorter than the fifteen-minute default, asked with no
 // lifetime, gets its judge seconds rather than the max-grant's refusal; and a key the session gets
-// at once beside it, whose own rules entry gives the judge fewer seconds, neither bounds the
+// at once beside it, whose own judge tag gives the judge fewer seconds, neither bounds the
 // request nor is named in a refusal, since the judge decides nothing of it.
 func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
 	t.Parallel()
@@ -265,8 +263,7 @@ func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
 	}
 	t.Run("a max-grant shorter than the default", func(t *testing.T) {
 		m, enr, key := newJudgeFixture(t)
-		m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(300))}}}
-		capped := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
+		capped := policytest.Judged(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"), 300, "")
 		capped.Tags[policy.TagMaxGrant] = "10m"
 		retag(t, m, capped)
 		req, err := m.Create(t.Context(), enr, unsigned(t, m, key, "DEEL_API_KEY"), "")
@@ -276,11 +273,8 @@ func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
 	})
 	t.Run("a key got at once with fewer judge seconds", func(t *testing.T) {
 		m, enr, key := newJudgeFixture(t)
-		m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-			{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(600))},
-			{Name: "AGENT_KEY", Hosts: []string{"agent.example"}, Judge: new(uint32(60))},
-		}}
-		retag(t, m, policytest.Secret("AGENT_KEY", fixtureOperator, policy.TierAgent, "agent-v1"))
+		policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 600, "")
+		retag(t, m, policytest.Judged(policytest.Secret("AGENT_KEY", fixtureOperator, policy.TierAgent, "agent-v1"), 60, ""))
 		req, err := m.Create(t.Context(), enr, unsigned(t, m, key, "DEEL_API_KEY", "AGENT_KEY"), "")
 		if err != nil || !req.JudgeDeciding || req.LifetimeSeconds == nil || *req.LifetimeSeconds != 600 {
 			t.Fatalf("a request naming no lifetime for a judge key (600) beside a key got at once (60) = %+v, %v; want it held for the judge, for 600 seconds", req, err)
@@ -297,7 +291,7 @@ func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
 
 // TestJudgeSecondsBoundOnlyARequestTheJudgeHolds: a key's judge seconds are the judge's bound,
 // so they hold a request only when the judge decides it. A judge key beside a key with no judge
-// entry is its person's request whole, and so is a judge key on a broker that runs no judge: each
+// tag is its person's request whole, and so is a judge key on a broker that runs no judge: each
 // may ask for longer than the judge seconds, is written pending for its person with the lifetime
 // it asked for, and is never handed to the judge.
 func TestJudgeSecondsBoundOnlyARequestTheJudgeHolds(t *testing.T) {
@@ -307,12 +301,12 @@ func TestJudgeSecondsBoundOnlyARequestTheJudgeHolds(t *testing.T) {
 		names   []string
 		noJudge bool
 	}{
-		{name: "a judge key beside a key with no judge entry", names: []string{"DEEL_API_KEY", "UNJUDGED_KEY"}},
+		{name: "a judge key beside a key with no judge tag", names: []string{"DEEL_API_KEY", "UNJUDGED_KEY"}},
 		{name: "a judge key on a broker that runs no judge", names: []string{"DEEL_API_KEY"}, noJudge: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(300))}}}
+			policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 300, "")
 			retag(t, m, policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "unjudged-v1"))
 			handed := 0
 			m.Judge = func(PendingRequest) { handed++ }
@@ -432,7 +426,7 @@ func TestTheJudgeRefusesARequestItHolds(t *testing.T) {
 }
 
 // TestTheJudgeDeniesNothingAPersonDecides: a refusal from the judge is for a request it holds and
-// for no other. A key with no judge entry, and a judge key on a broker that ran no judge, are a
+// for no other. A key with no judge tag, and a judge key on a broker that ran no judge, are a
 // person's to decide; the judge's verdict on them is never their end.
 func TestTheJudgeDeniesNothingAPersonDecides(t *testing.T) {
 	t.Parallel()
@@ -441,7 +435,7 @@ func TestTheJudgeDeniesNothingAPersonDecides(t *testing.T) {
 		secret  string
 		noJudge bool
 	}{
-		{"a key with no judge entry", "UNJUDGED_KEY", false},
+		{"a key with no judge tag", "UNJUDGED_KEY", false},
 		{"a judge key on a broker that ran no judge", "DEEL_API_KEY", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {

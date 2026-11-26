@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // Unreachable's table: every shape the audit found, plus the boundary cases (an authorization or
@@ -108,14 +109,10 @@ func TestWithLastErrorNamesAPermissionViolationOnceTheConnectionIsClosed(t *test
 // package owes the boot gate; the retry loop that rides it out lives in bootprobe and is tested
 // there (bootprobe.TestRunWithoutABoundWaitsOutEveryTransientFailure).
 func TestConnectAgainstAClosedPortReturnsAnErrorUnreachableAccepts(t *testing.T) {
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
-	}
-	addr := reserved.Addr().String()
-	reserved.Close() // nothing answers here.
+	// A port the test holds and nothing listens on: nothing answers here.
+	addr := testport.Refused(t)
 
-	_, err = natsauth.Connect([]string{"nats://" + addr}, "", t.Name(), nats.Timeout(500*time.Millisecond))
+	_, err := natsauth.Connect([]string{"nats://" + addr}, "", t.Name(), nats.Timeout(500*time.Millisecond))
 	if err == nil {
 		t.Fatal("Connect against a closed port must fail")
 	}

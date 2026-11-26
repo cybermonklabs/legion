@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // slowAccess answers each question takes later, or gives up when its context ends first, as a
@@ -176,10 +176,9 @@ const teamJudgeReason = "TEAM-7: rotate the deploy key"
 // the judge holds takes its approval.
 func judgeHeldTeamRequest(t *testing.T) (m *Machine, enrollmentID string, req Request) {
 	t.Helper()
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_HUMAN", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
+	rules := bound(rule("TEAM_HUMAN", "example"))
 	m, enrollmentID, key, _ := newProjectFixture(t, rules, publicTeam)
-	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
-	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+	retag(t, m, policytest.Judged(taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"), 900, ""))
 	m.Judge = func(PendingRequest) {}
 	return m, enrollmentID, pendingJudgeable(t, m, enrollmentID, key, teamJudgeReason, 600, "TEAM_HUMAN")
 }

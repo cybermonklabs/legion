@@ -51,7 +51,7 @@ const restrictedGuest = "guest@outside.example"
 // member, her grant list holds the first grant, and she dismisses the request and ends that grant.
 func TestTheApproverRoutesGiveARestrictedMemberNothing(t *testing.T) {
 	t.Parallel()
-	ts, access := hiddenServer(t, sharedKeyJudged)
+	ts, access := hiddenServer(t, sharedKeyJudged(t))
 	// The judge's grant asks Dispatch afresh whether a reader naming no person sees PRIV, which
 	// only a public PRIV allows (requests.Machine.ApplyJudgeDecision).
 	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{

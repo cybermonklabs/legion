@@ -7,8 +7,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // TestTheAirlockRefusesAConnectionOfALostProject: a proxy connection with the placeholder of a
@@ -17,7 +15,7 @@ import (
 // ended for good.
 func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
 	t.Parallel()
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("TEAM_TOKEN", "example")), publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
@@ -44,7 +42,7 @@ func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
 // bound; once the session's person leaves TEAM's list, the next AirlockValues ends the grant.
 func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
 	t.Parallel()
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, privateTeam(fixtureOperator))
+	m, enr, key, _ := newProjectFixture(t, bound(rule("TEAM_TOKEN", "example")), privateTeam(fixtureOperator))
 	nameProjects(t, m, enr, teamProject)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
@@ -76,7 +74,7 @@ func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
 // ask is the session's person's member kind (restrictedOperator).
 func TestTheAirlockOfAnUntaggedGrantKeepsItsValues(t *testing.T) {
 	t.Parallel()
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("AUTO_TOKEN", "example")), publicTeam)
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {

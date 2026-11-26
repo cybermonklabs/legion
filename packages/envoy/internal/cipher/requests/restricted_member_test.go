@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -623,7 +622,7 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 		} {
 			t.Run(change.name+", "+pod.name, func(t *testing.T) {
 				ctx := t.Context()
-				m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AWS_KEY", "aws")}})
+				m, _, _, _ := newPlaceholderFixture(t, bound(rule("AWS_KEY", "aws")))
 				retag(t, m,
 					policytest.Secret("AWS_KEY", policy.OwnerShared, policy.TierAgent, `{"acc`+`ess_key_id":"AKI`+`AONE","sec`+`ret_acc`+`ess_key":"real-secret"}`),
 					policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"),

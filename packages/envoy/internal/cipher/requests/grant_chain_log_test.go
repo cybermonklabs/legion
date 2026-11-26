@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -151,7 +150,7 @@ func TestReusingAGrantWhoseChainFailsIsLoggedAndAsksAfresh(t *testing.T) {
 func TestTheAirlocksReadOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
 	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("DEEL_API_KEY", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("DEEL_API_KEY", "example")))
 	stale, grantID := approvedGrant(t, m, anotherBroker, enr, key, fixtureOperator, "DEEL_API_KEY")
 
 	values, version, err := m.AirlockValues(t.Context(), grantID)
@@ -171,7 +170,7 @@ func TestTheAirlocksReadOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
 func TestAGrantOfThisBrokerLogsNoFailedChain(t *testing.T) {
 	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("DEEL_API_KEY", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("DEEL_API_KEY", "example")))
 	own, grantID := approvedGrant(t, m, testAudience, enr, key, fixtureOperator, "DEEL_API_KEY")
 
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})

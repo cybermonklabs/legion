@@ -4,8 +4,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // accessSlot is one slot the proxy encodes an exchange into, in the shape proxy's
@@ -25,7 +23,7 @@ var accessSlot = SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString([]
 // the slot, and nothing of it reads the secret's type.
 func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
 	t.Parallel()
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
@@ -90,7 +88,7 @@ func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
 // request, and a grant revoked in the middle of that is no grant to write a row for.
 func TestAnAccessPlaceholderOfAGrantThatIsGoneIsRefused(t *testing.T) {
 	t.Parallel()
-	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, _, _, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	if _, err := m.AirlockAccessPlaceholder(t.Context(), "00000000-0000-0000-0000-000000000000", "AUTO_TOKEN", accessSlot); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockAccessPlaceholder for no grant = %v; want ErrGrantNotLive", err)
 	}

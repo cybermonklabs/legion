@@ -32,9 +32,9 @@ func TestADecisionWhoseCommitGotNoAnswerSaysSo(t *testing.T) {
 	if got := readDecided(t, m, *req.RecordID); got.state != "pending" || got.events != 0 {
 		t.Fatalf("the request after the lost COMMIT = %+v; want it untouched and pending", got)
 	}
-	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": err.Error()})
-	if err != nil || wrote != JudgedWritten {
-		t.Fatalf("LogJudged(applied unknown) after a COMMIT that did not apply = %q, %v; want %q, resolved to false", wrote, err, JudgedWritten)
+	res, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": err.Error()})
+	if err != nil || res.Write != JudgedWritten {
+		t.Fatalf("LogJudged(applied unknown) after a COMMIT that did not apply = %q, %v; want %q, resolved to false", res.Write, err, JudgedWritten)
 	}
 	if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 || judged[0].applied != "false" {
 		t.Errorf("request.judged rows = %+v; want one, applied false", judged)

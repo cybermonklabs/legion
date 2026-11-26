@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -55,7 +56,7 @@ func TestMainRefusesToStartInAClusterWithoutItsRanges(t *testing.T) {
 			out := runRefusedBroker(t, binary, append(airlockEnv(t),
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+				"BROKER_PROFILES_FILE="+profilesFile(t, deelKindFile),
 				"KUBERNETES_SERVICE_HOST="+row.host,
 				"BROKER_AIRLOCK_CLUSTER_RANGES="+row.ranges,
 			)...)
@@ -77,7 +78,7 @@ func TestMainRefusesToStartInAClusterWithoutItsRanges(t *testing.T) {
 // is dialled. The address inside the range is a documentation address no service answers: a
 // proxy that did not refuse it would dial it and answer nothing within the deadline.
 //
-// The control is the same password's CONNECT to the host the grant's entry binds, which the proxy
+// The control is the same password's CONNECT to the host the grant's kind binds, which the proxy
 // takes over: it answers 200, and inside that tunnel a TLS handshake for the host, trusting the
 // broker's airlock authority and nothing else, completes. Only the proxy's own decrypting
 // takeover holds a certificate of that authority, so the control fails for a proxy that tunnels
@@ -92,7 +93,9 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		loginAccount = "system:serviceaccount:example-system:example-service-login"
 		podAccount   = "system:serviceaccount:example:example-worker"
 		secretName   = "AIRLOCK_TOKEN"
-		// boundHost is the name the entry binds, as the reread row's is: a rules host is a host
+		// boundKind is the kind the secret's proxy tag names, which binds boundHost.
+		boundKind = "airlock"
+		// boundHost is the name the kind binds, as the reread row's is: a rules host is a host
 		// name, since a client sends no TLS server name for an address. BROKER_AIRLOCK_TEST_RESOLVE
 		// reads it as boundAddress, RFC 5737's TEST-NET-1, so the proxy's address check needs no
 		// resolver, and a CONNECT to it is taken over without a dial: a proxy that dialled it
@@ -108,7 +111,7 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	writeWhole(t, fakeSecretsFile, `{"secrets": [
 		{"name": "`+testSecretsPrefix+`airlock-token", "kms_key_id": "`+testSecretsKMSKeyARN+`",
-		 "tags": {"owner": "`+service+`", "tier": "agent"}, "value": "the-real-airlock-token"}
+		 "tags": {"owner": "`+service+`", "tier": "agent", "`+policy.TagProxy+`": "`+boundKind+`"}, "value": "the-real-airlock-token"}
 	]}`)
 	// The airlock's settings are airlockEnv's, so a setting added there reaches this broker too;
 	// the control below reads the authority it trusts from the same list.
@@ -124,7 +127,7 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		"BROKER_SERVICE_LOGINS="+service+"="+loginAccount,
 		"BROKER_SERVICES="+service+"="+podAccount,
 		"BROKER_PROFILES_FILE="+profilesFile(t,
-			`{"profiles": [{"name": "`+secretName+`", "proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"]}}]}`),
+			`{"kinds": [{"name": "`+boundKind+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"], "ways": ["swap"]}], "profiles": []}`),
 		"BROKER_AIRLOCK_TEST_RESOLVE="+boundHost+"="+boundAddress,
 		"KUBERNETES_SERVICE_HOST="+clusterServiceHost,
 		"BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20, 198.51.100.0/24",
@@ -182,7 +185,7 @@ func TestMainOutsideAClusterStartsWithoutTheRanges(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+		"BROKER_PROFILES_FILE="+profilesFile(t, deelKindFile),
 		"KUBERNETES_SERVICE_HOST=",
 		"BROKER_AIRLOCK_CLUSTER_RANGES=",
 	)})

@@ -109,20 +109,22 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 // peer's reread of a source drops that source's profiles from the proxy's cache too, and a reread
 // of a profile drops its source and its sibling profiles, which are served from the one stored
 // value the reread read (policy.Current.RereadNames). Dropping the reread name alone left the
-// source's old value in every request of a profile of another name until its grant ended.
+// source's old value in every request of a profile of another name until its grant ended. The
+// source is behind a kind (policytest.Proxied), so its profiles are behind it too, as the names the
+// proxy holds values of are.
 func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
 	t.Parallel()
-	local := secrets.NewLocal(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"))
+	local := secrets.NewLocal(policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
 	loader := policytest.Loader(local)
-	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(
-		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
-		`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": {"hosts": ["second.example.com"]}}`,
+	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(
+		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN"}`,
+		`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN"}`,
 	))
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	local.Put(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v2"))
+	local.Put(policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v2"), "example"))
 	want := []string{"STORED_TOKEN", "STORED_TOKEN_READ", "STORED_TOKEN_SECOND"}
 	for _, name := range []string{"STORED_TOKEN", "STORED_TOKEN_READ"} {
 		var dropped []string
@@ -142,7 +144,8 @@ func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
 // the live policy held drops nothing, and the proxy goes on spending the token it holds, rather
 // than minting again for every held grant of every profile at one public call. A reread that
 // moved it drops every profile of it. A stored value has no version the policy tracks, so its
-// reread is the only signal of a new value, and drops every name served from it each time.
+// reread is the only signal of a new value, and drops every name served from it each time. The
+// stored value is behind a kind (policytest.Proxied), as the names the proxy holds values of are.
 //
 // The named revert: peerReread drops current.RereadNames(name) whatever the version did; the two
 // rows of an unmoved github-app source then drop its names and this test fails.
@@ -150,12 +153,12 @@ func TestAPeersRereadDropsAMintedSourcesNamesOnlyWhenItMovedTheValueVersion(t *t
 	t.Parallel()
 	local := secrets.NewLocal(
 		policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
-		policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"))
+		policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
 	loader := policytest.Loader(local)
-	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(
+	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(
 		policytest.AppProfile("APP_KEY"),
 		`{"name": "APP_READ", "source": "APP_KEY", "github": {"accounts": ["acme"], "permissions": {"contents": "read", "metadata": "read"}}}`,
-		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
+		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN"}`,
 	))
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
