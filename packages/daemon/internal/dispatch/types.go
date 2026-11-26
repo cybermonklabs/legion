@@ -222,6 +222,10 @@ type IssueSummary struct {
 	// Priority is the issue's own priority as Dispatch serves it: 0 for P0 to 3 for P3, nil for
 	// none. The workflow record keeps it as record.Priority (intake's ListedIssue).
 	Priority *int
+	// Resolved is the priority Dispatch resolves the issue to and the issue it comes from
+	// (`resolved_priority` and `priority_from`, J1 of dispatch://INFRA-5793), nil where the read
+	// carries no `resolved_priority` at all, as a Dispatch release before INFRA-5793 serves none.
+	Resolved *ResolvedPriority
 	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
 	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
 	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
@@ -252,7 +256,7 @@ func (s IssueSummary) Issue() Issue {
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Labels: s.Labels, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Resolved: s.Resolved, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 
@@ -277,6 +281,8 @@ type Issue struct {
 	LastSeq                int64
 	// Priority is IssueSummary.Priority.
 	Priority *int
+	// Resolved is IssueSummary.Resolved.
+	Resolved *ResolvedPriority
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
 	// BlockedBy is IssueSummary.BlockedBy.
@@ -284,6 +290,14 @@ type Issue struct {
 	// Claim is the issue's claim Dispatch shows, nil for none; ClaimUnread is IssueSummary's.
 	Claim       *Claim
 	ClaimUnread bool
+}
+
+// ResolvedPriority is a resolved priority as a Dispatch read serves it: Priority its level, 0 for P0
+// to 3 for P3 and nil for a present null, which is no priority; From the key of the issue it comes
+// from, empty where it is the issue's own or none.
+type ResolvedPriority struct {
+	Priority *int
+	From     string
 }
 
 // Claim is the actor Dispatch records as an issue's holder: a session or a person.

@@ -203,6 +203,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
 		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042", Priority: record.P1,
+		Resolved:    record.Resolved{Priority: record.P0, From: "OTHER-1", Known: true},
 		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Step, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
@@ -281,6 +282,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
 		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it"},
+		SessionRun: supervise.SessionRun{Ends: 1, Endings: []string{"its process died after the controller was ready: gone: OOMKilled"},
+			TurnFinished: true},
 		EndedWork: supervise.EndedWork{At: projectedAt.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
 		SessionLost: supervise.SessionLossGone,
@@ -393,6 +396,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"ancestry": issue.Ancestry,
 			// The record's P1 as the wire spells a Dispatch priority: its number, 0 for P0.
 			"priority": 1,
+			// The priority Dispatch resolves it to and the issue it comes from, beside its own.
+			"resolvedPriority": 0,
+			"priorityFrom":     "OTHER-1",
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,

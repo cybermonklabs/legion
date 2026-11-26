@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Runtime is the `runtime` block: its name, under kubernetes the settled `runtime.kubernetes` block
@@ -93,6 +94,12 @@ type Config struct {
 	StateDir      string
 	Runtime       Runtime
 	AdmissionCap  int
+	// AdmissionP0Bound is `admission_p0_bound`: how many P0 issues may hold a slot at once outside
+	// the cap (R10 of dispatch://INFRA-3199), a whole number from 1 to 2147483647 (the most the
+	// store's integer column holds), or nil where the file gives none, which is no bound. It is the
+	// bound the daemon boots with; the controller or the operator sets another while the daemon
+	// runs, which stands until it is cleared (store.EffectiveP0Bound).
+	AdmissionP0Bound *int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -272,6 +279,19 @@ type Config struct {
 	// ControllerLaunch is who launches the project's controller (`controller`): the operator unless
 	// the file says the daemon does.
 	ControllerLaunch ControllerLaunch
+	// ControllerTurnBound is `controller_turn_bound_minutes`: how long a turn of the daemon's own
+	// controller (`controller: daemon`) may stay open before its keeper ends that launch, whether
+	// or not steps still arrive in the turn, and counts the end against the session
+	// (internal/daemon's controllerKeeper, dispatch://INFRA-2045 R2). Ninety minutes by default,
+	// above every turn of a measured week of INFRA's controller but one (defaultControllerTurnBound);
+	// 0 turns the rule off.
+	ControllerTurnBound time.Duration
+	// ControllerSessionMaxAge is `controller_session_max_age_hours`: how old the session of the
+	// daemon's own controller may grow, read from its id (a UUIDv7), before a relaunch the daemon
+	// makes of it starts a fresh session in its place (supervise.Deps.ControllerSessionMaxAge,
+	// dispatch://INFRA-2045 R3); the daemon stops no live controller for it. Seventy-two hours by
+	// default (defaultControllerSessionMaxAge); 0 turns the rule off.
+	ControllerSessionMaxAge time.Duration
 	// Capabilities is the `capabilities` block; the zero value with none.
 	Capabilities Capabilities
 	// Roles is `roles`: the roles the deployment defines of its own, in the file's order, each
@@ -387,6 +407,17 @@ const (
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
 
+	// defaultControllerTurnBound is `controller_turn_bound_minutes`'s default
+	// (Config.ControllerTurnBound): of 3,037 turns INFRA's controller ran from 2026-11-18 to
+	// 2026-11-24, 99.9% ended in 70 minutes and one ran longer than 90, so a lower bound would end
+	// working turns (dispatch://INFRA-2045 R2).
+	defaultControllerTurnBound = 90 * time.Minute
+	// defaultControllerSessionMaxAge is `controller_session_max_age_hours`'s default
+	// (Config.ControllerSessionMaxAge): the youngest of the four measured controller sessions that
+	// failed at a resume was 4.6 days old, and 72 hours is below it by 38 hours
+	// (dispatch://INFRA-2045 R3).
+	defaultControllerSessionMaxAge = 72 * time.Hour
+
 	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
 	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
 	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
@@ -443,6 +474,7 @@ type fileConfig struct {
 	PostgresDSN      *string
 	StateDir         *string
 	AdmissionCap     *int
+	AdmissionP0Bound *int
 	Kubernetes       *Kubernetes
 	Tmux             *Tmux
 	DaemonURL        *string
@@ -481,6 +513,11 @@ type fileConfig struct {
 	// first and carries the operator's number for the second.
 	WorkerSilence    *time.Duration
 	WorkerBackground *time.Duration
+	// ControllerTurnBound is `controller_turn_bound_minutes` and ControllerSessionMaxAge
+	// `controller_session_max_age_hours`, each read with 0 as the rule off (readMinutesOrOff,
+	// readHoursOrOff); nil for a file that names neither, which leaves the default standing.
+	ControllerTurnBound     *time.Duration
+	ControllerSessionMaxAge *time.Duration
 	// PodUpdateMaxOpenRounds is `pod_update_max_open_rounds` and PodUpdateRoundsPerMinute
 	// `pod_update_rounds_per_minute`; each stays nil when the file leaves its key out, which is
 	// how resolve tells an absent key from a number and leaves Config's own pointer nil.
@@ -1018,6 +1055,34 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// readMinutesOrOff is readMinutes for a key whose 0 turns its rule off
+// (`controller_turn_bound_minutes`), and readHoursOrOff readHours for one in hours
+// (`controller_session_max_age_hours`): 0 reads as a zero duration, which the rule reads as off,
+// and every other value is read as readUnit reads it, so a negative value, one too small to hold a
+// nanosecond and one past the timer bound are still refused, each refusal saying that 0 is the
+// rule off.
+func readMinutesOrOff(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnitOrOff(value, key, time.Minute, maxTimerMinutes)
+}
+
+func readHoursOrOff(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnitOrOff(value, key, time.Hour, maxTimerSeconds/3600)
+}
+
+// readUnitOrOff is the body readMinutesOrOff and readHoursOrOff share (readUnit's, with 0 taken).
+func readUnitOrOff(value *yaml.Node, key string, unit time.Duration, most int) (*time.Duration, error) {
+	var read float64
+	if (value.Tag == "!!int" || value.Tag == "!!float") && value.Decode(&read) == nil && read == 0 {
+		off := time.Duration(0)
+		return &off, nil
+	}
+	duration, err := readUnit(value, key, unit, most)
+	if err != nil {
+		return nil, fmt.Errorf("%w, or 0 to turn the rule off", err)
+	}
+	return duration, nil
+}
+
 // readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
 // least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
 // writes with no value at all. A share below the floor asks for a pause no deployment needs -
@@ -1119,7 +1184,11 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
 		ReviewRoundCap:       DefaultReviewRoundCap,
-		Warnings:             file.Warnings,
+		// The two controller replacement bounds take their defaults here and the file's number,
+		// 0 among them, below.
+		ControllerTurnBound:     defaultControllerTurnBound,
+		ControllerSessionMaxAge: defaultControllerSessionMaxAge,
+		Warnings:                file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
@@ -1201,6 +1270,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if cfg.AdmissionCap < 1 {
 		return Config{}, errors.New("admission_cap must be a positive integer")
 	}
+	if file.AdmissionP0Bound != nil {
+		if !store.ValidP0Bound(*file.AdmissionP0Bound) {
+			return Config{}, fmt.Errorf("admission_p0_bound must be %s, or left out for no bound", store.P0BoundRange)
+		}
+		cfg.AdmissionP0Bound = new(*file.AdmissionP0Bound)
+	}
 
 	if file.WorkerWakesPerMinute != nil {
 		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
@@ -1209,6 +1284,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
+	}
+	if file.ControllerTurnBound != nil {
+		cfg.ControllerTurnBound = *file.ControllerTurnBound
+	}
+	if file.ControllerSessionMaxAge != nil {
+		cfg.ControllerSessionMaxAge = *file.ControllerSessionMaxAge
 	}
 
 	if file.GitHubGraphQLShare != nil {

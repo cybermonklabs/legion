@@ -528,6 +528,85 @@ func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string
 	legion.NewSampler(database.Pool).Pass(t.Context())
 }
 
+// TestTheLegionBoardHeaderGivesTheDaemonsP0Holders: the header gives the daemon's own number of P0
+// holders beside the slots in use and the cap, so a reader who sees more slots in use than the cap
+// sees why (dispatch://INFRA-5636's C4). Each row's state goes through the sampler's read and
+// record, as a daemon's does, and the header is read from the route's JSON answer rather than the
+// Go struct: the key is never left out, and where the newest recorded admission block gives no
+// number (a daemon before the P0 start sends none) or no read recorded a block, its value is null,
+// never 0.
+func TestTheLegionBoardHeaderGivesTheDaemonsP0Holders(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// state is the document the daemon serves the sampler's one pass; "" is no read at all.
+		state string
+		// p0Holders, slotsInUse and slotCap are the header's values as the answer's JSON writes
+		// them.
+		p0Holders, slotsInUse, slotCap string
+	}{
+		{
+			name: "two P0 holders and more slots in use than the cap",
+			state: `{"admission":{"cap":2,"p0Holders":2,"active":["ACME-1","ACME-2","ACME-3","ACME-4"]},"issues":{
+				"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}},
+				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}},
+				"ACME-3":{"key":"ACME-3","phase":"testing","slot":{"index":2}},
+				"ACME-4":{"key":"ACME-4","phase":"reviewing","slot":{"index":3}}}}`,
+			p0Holders: "2", slotsInUse: "4", slotCap: "2",
+		},
+		{
+			name: "no P0 holder",
+			state: `{"admission":{"cap":2,"p0Holders":0,"active":["ACME-1","ACME-2"]},"issues":{
+				"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}},
+				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}}}}`,
+			p0Holders: "0", slotsInUse: "2", slotCap: "2",
+		},
+		{
+			name: "a block that gives no number",
+			state: `{"admission":{"cap":2,"active":["ACME-1","ACME-2"]},"issues":{
+				"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}},
+				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}}}}`,
+			p0Holders: "null", slotsInUse: "2", slotCap: "2",
+		},
+		{name: "no read recorded", p0Holders: "null", slotsInUse: "0", slotCap: "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler, database := newTestHandlerWithStore(t)
+			seedLegionProjects(t, handler, "ACME")
+			daemon := newFakeLegionDaemon(t, handler, "ACME")
+			if tc.state != "" {
+				daemon.pass(t, database, tc.state)
+			}
+
+			response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/ACME/legion/board", nil, "alice")
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET the board of ACME: status=%d body=%s", response.Code, response.Body.String())
+			}
+			var answer struct {
+				Header map[string]json.RawMessage `json:"header"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+				t.Fatalf("decode the board's answer %s: %v", response.Body.String(), err)
+			}
+			// slot_cap is the control: a read the sampler failed to record leaves it null too, and
+			// a null number of P0 holders beside it would then prove nothing.
+			for _, field := range []struct{ key, want string }{
+				{"p0_holders", tc.p0Holders}, {"slots_in_use", tc.slotsInUse}, {"slot_cap", tc.slotCap},
+			} {
+				got, carried := answer.Header[field.key]
+				if !carried {
+					t.Errorf("the header carries no %s, want %s: the key is in every answer", field.key, field.want)
+					continue
+				}
+				if string(got) != field.want {
+					t.Errorf("the header's %s = %s, want %s; the answer %s", field.key, got, field.want, response.Body.String())
+				}
+			}
+		})
+	}
+}
+
 // TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries: the board's cards are the newest
 // good read's, and an issue the daemon stopped carrying is still a Legion issue for both readers'
 // tree walk (dispatch://INFRA-1077's spec, "The top issue of a tree": the daemon reports an issue
