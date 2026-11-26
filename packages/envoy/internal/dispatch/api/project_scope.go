@@ -230,15 +230,12 @@ func (s *server) projectOfArtifact(ctx context.Context, q queryer, r *http.Reque
 	`, r.PathValue("id")))
 }
 
-// projectOfAsk resolves an ask through the join askSnoozeEvent already makes: an ask hangs from
-// an issue or from a document, and takes that owner's project.
+// projectOfAsk resolves an ask's owner project and visibility through askedOfPersonJoins. An ask
+// belongs to an issue or a document, and takes that owner's project.
 func (s *server) projectOfAsk(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, ar.project_key, ''), coalesce(p.visibility = 'private', false)
-		from asks a
-		left join issues i on i.key = a.issue_key
-		left join artifacts ar on ar.id = a.artifact_id
-		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
+		from asks a`+askedOfPersonJoins+`
 		where a.id = $1
 	`, r.PathValue("id")))
 }
@@ -250,8 +247,7 @@ func (s *server) projectOfComment(ctx context.Context, q queryer, r *http.Reques
 		select coalesce(i.project_key, ar.project_key, ''), coalesce(p.visibility = 'private', false)
 		from comments c
 		left join issues i on i.key = c.issue_key
-		left join artifacts ar on ar.id = c.artifact_id
-		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
+		left join artifacts ar on ar.id = c.artifact_id`+ownerProjectJoin+`
 		where c.id = $1
 	`, r.PathValue("id")))
 }
