@@ -52,8 +52,9 @@ import { asUser } from "./users";
  * its 150 (`e2e/__tests__/pull-request-lane.test.ts`), and the stubbed layer cannot take these
  * rows, because each writes to the server — a `PATCH` of a message, a `DELETE` of a comment —
  * and then reads the page that write produced, which is the shape a recording answers with the
- * state it recorded before the write (`AGENTS.md`, "The stubbed layer"). The spec is run on the
- * pull request itself by the role driving the issue, which is what `chk-pages` asks for.
+ * state it recorded before the write (`packages/dispatch/README.md`, "The stubbed layer"). The
+ * spec is run on the pull request itself by the role driving the issue, which is what `chk-pages`
+ * asks for.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host
  * or project.

@@ -298,7 +298,7 @@ test("only a decision that changed a statement waits for review @phone", async (
   test.setTimeout(150_000);
   // The `iphone` project is the phone half of the pair, so it reads 390 px alone and leaves the
   // outline at the desktop's width to `chromium`: a fixed width every project reads would only
-  // repeat that run (`AGENTS.md`, phone acceptance).
+  // repeat that run (`packages/dispatch/README.md`'s "Projects").
   const phone = test.info().project.name === "iphone";
   const sizes = phone ? [PHONE] : [DESKTOP, PHONE];
   await phase(browser, seedReviewList, async (page, seeded) => {

@@ -31,8 +31,8 @@ import (
 //	    "claim", "created_at", "updated_at", "id", "issue_key", "artifact_id", "name"))))'
 //
 // The captures came from a real Dispatch, and their project key was then replaced with the
-// neutral ACME in every string, as AGENTS.md asks, so each issue keeps its number and every other
-// byte of each event is as the filter left it.
+// neutral ACME in every string, as .github/scripts/check-private-names.sh requires, so each issue
+// keeps its number and every other byte of each event is as the filter left it.
 const dispatchEventsDir = "testdata/dispatch-events"
 
 // The sessions that wrote the captured events: the architect of ACME-3021's parent, the two
