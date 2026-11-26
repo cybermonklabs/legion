@@ -18,7 +18,7 @@
  *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
  *       [--reading-models <file>] [--again <case id>]... [--confirm-flagged] (both confirm only)
  *       [--control-informative] (control only)
- *       [--allow-runners <digest>[,<digest>...]] [--store-only <file>] (report only)
+ *       [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--merged] (report only)
  *       [--route-id <arm>=<uuid>]... (screen, confirm and control only)
  *   bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <file> --out <dir> --old <dir>
  *       --new <dir> --cases <file> [--cache-dir <dir>] [--scratch <dir>]
@@ -207,7 +207,14 @@
  *   run any of whose confirms `confirm --confirm-flagged` made, or whose control `control
  *   --control-informative` made, gives the case results as any run does, and the verdict line
  *   `case result only; no skill verdict stands (<option>)`, naming each option that made one
- *   (`caseResultOnly`), never a skill verdict. With `--store-only <file>` (attribute.ts's
+ *   (`caseResultOnly`), and no skill verdict, but for `--merged`: it says the results are a
+ *   merged set of all the skill's cases (each case's newest run; report does not check it), and
+ *   a set whose only such stages are confirms `--confirm-flagged` made then gets the registered
+ *   rule's verdict line where that rule reaches a loss or "no loss detected", ending with how
+ *   many confirms, a case's earlier confirms too, the option made (`; 1 confirm made by
+ *   --confirm-flagged`; `verdictLine`). Where the rule reaches no skill verdict, and in a set
+ *   whose control `--control-informative` made, the line stays `caseResultOnly`'s. The other
+ *   commands refuse `--merged` (exit 2). With `--store-only <file>` (attribute.ts's
  *   `<cut id>/store-only/<skill>.json` of the skill), it prints, beside the reading sessions by
  *   model and whatever the verdict, the skill's counted sessions and how many of them only the
  *   transcript store holds, by host, which were never case sources; when a skill gets no verdict
@@ -1123,7 +1130,8 @@ export const SENDS = "each run its own session id; a round's arms interleaved in
  *  records its own. `confirmFlagged` is true in a confirm that `behaviour
  *  confirm --confirm-flagged` ran, in any of its rounds, and absent otherwise; `controlInformative`
  *  is true in a control that `behaviour control --control-informative` ran, in any of its rounds,
- *  and absent otherwise: report gives no skill verdict over either (`caseResultOnly`).
+ *  and absent otherwise: report gives no skill verdict over either (`caseResultOnly`), but for a
+ *  merged set's confirms with `--merged` (`verdictLine`).
  *  `continued` is set on a stage `behaviour continue-mixed` wrote from a saved one: the saved
  *  `--out` it came from (`from`, as an absolute path), how many rounds the saved stage held
  *  (`savedRounds`), so a run of a later round that names no ContinueMixedRun is a fresh run made
@@ -1415,7 +1423,8 @@ const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } 
  *  file (undefined without it). `allowRunners` are the runners `--allow-runners` names, whose
  *  saved stages a stage command takes as this runner's, and whose results report reports with
  *  others' (none without it). `storeOnly` is the skill's counted and store-only sessions that
- *  `--store-only` names (report only; undefined without it). */
+ *  `--store-only` names (report only; undefined without it). `merged` is whether `--merged` is
+ *  given: the results are a merged set of all the skill's cases (report only; `verdictLine`). */
 interface Behaviour {
   readonly io: CliIo;
   readonly command: string;
@@ -1426,6 +1435,7 @@ interface Behaviour {
   readonly readingModels: { readonly file: string; readonly count: ModelCount } | undefined;
   readonly allowRunners: readonly string[];
   readonly storeOnly: StoreOnly | undefined;
+  readonly merged: boolean;
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
@@ -2444,9 +2454,11 @@ function againRefusal(
  *  `confirmScore`); and one more of each case `--again` names, where `againRefusal` allows it.
  *  None runs while the skill can get no verdict (`noVerdict`), unless `--confirm-flagged` is given:
  *  then the same confirms run all the same, of flagged cases only, so a case run again alone can be
- *  confirmed, and report gives no skill verdict over them (`caseResultOnly`). A flagged
- *  case's saved last confirm of another runner refuses the command before any model call
- *  (`checkRunners`); earlier confirms are pooled by `confirmScore`'s rule. */
+ *  confirmed, and report gives no skill verdict over them (`caseResultOnly`) but where
+ *  `--merged` says the results are a merged set of all the skill's cases and the registered rule
+ *  reaches one (`verdictLine`). A flagged case's saved last confirm of another runner refuses the
+ *  command before any model call (`checkRunners`); earlier confirms are pooled by
+ *  `confirmScore`'s rule. */
 async function confirmCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) =>
     s.cases.filter((each) => each.flagged).map((each) => each.caseId)
@@ -2899,59 +2911,99 @@ function listingWords(
   return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
 }
 
-/** The verdict line of a run some of whose stages an option made that runs a stage whatever the
- *  skill can get, or undefined when none did: a confirm `behaviour confirm --confirm-flagged`
- *  made (a case's earlier confirms too), which ran whatever the skill's informative count and
- *  controls, and a control `behaviour control --control-informative` made, which ran though the
- *  skill has fewer than MIN_INFORMATIVE_CASES informative cases. Such stages give case results
- *  only; the line names each option that made one of `results`. */
-function caseResultOnly(results: ReadonlyMap<string, CaseResult>): string | undefined {
+/** The case-result-only causes of a run some of whose stages an option made that runs a stage
+ *  whatever the skill can get, or undefined when none did: `flaggedConfirms`, the confirms
+ *  `behaviour confirm --confirm-flagged` made (StageResult's `confirmFlagged`; a case's earlier
+ *  confirms too), which ran whatever the skill's informative count and controls, and
+ *  `informativeControl`, whether a control `behaviour control --control-informative` made
+ *  (`controlInformative`) is among them, which ran though the skill has fewer than
+ *  MIN_INFORMATIVE_CASES informative cases. Such stages give case results only: `line`, the
+ *  verdict line, names each option that made one of `results`. */
+function caseResultOnly(results: ReadonlyMap<string, CaseResult>):
+  | {
+      readonly line: string;
+      readonly flaggedConfirms: number;
+      readonly informativeControl: boolean;
+    }
+  | undefined {
   const all = [...results.values()];
+  const flaggedConfirms = all.reduce(
+    (made, result) =>
+      made + confirmStages(result).filter((stage) => stage.confirmFlagged === true).length,
+    0
+  );
+  const informativeControl = all.some(
+    (result) => result.stages.control?.controlInformative === true
+  );
   const options = [
-    ...(all.some((result) => confirmStages(result).some((stage) => stage.confirmFlagged === true))
-      ? ["--confirm-flagged"]
-      : []),
-    ...(all.some((result) => result.stages.control?.controlInformative === true)
-      ? ["--control-informative"]
-      : []),
+    ...(flaggedConfirms > 0 ? ["--confirm-flagged"] : []),
+    ...(informativeControl ? ["--control-informative"] : []),
   ];
   return options.length === 0
     ? undefined
-    : `case result only; no skill verdict stands (${options.join(", ")})`;
+    : {
+        line: `case result only; no skill verdict stands (${options.join(", ")})`,
+        flaggedConfirms,
+        informativeControl,
+      };
 }
 
-/** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
- *  ends with the reading sessions it speaks for (`speaksFor`), and a verdict or its reason with
- *  how many screened cases' listings could not be measured, took names from their recorded
- *  listing, and rest on the assumption that their session had Dispatch (`listingWords`). A run
- *  any of whose confirms, earlier ones too, records `confirmFlagged`, or whose control records
- *  `controlInformative`, gets `caseResultOnly`'s line and no verdict. With `--reading-models`, a
- *  skill too few of whose reading sessions are on served models (`servedScreeningRefusal`) gets
- *  none. With `--store-only`, the reason of a skill with fewer than MIN_INFORMATIVE_CASES
- *  informative cases ends with how many of its counted sessions only the transcript store holds,
- *  so were never case sources (`storeOnlyWords`). */
+/** The skill's verdict as one line: the registered rule's (`ruleLine`), but for a run any of
+ *  whose confirms, earlier ones too, records `confirmFlagged`, or whose control records
+ *  `controlInformative`, which gets `caseResultOnly`'s line and no verdict. With `--merged`, the
+ *  results are a merged set of all the skill's cases (each case's newest run, merged into one
+ *  set), where a confirm `--confirm-flagged` made is the confirm stage the rule counts: so a set
+ *  whose only such stages are those confirms, where the rule reaches a skill verdict over them
+ *  (a loss or "no loss detected"), gets the rule's own line ending with how many confirms of the
+ *  set, a case's earlier confirms too, the option made (`; 1 confirm made by
+ *  --confirm-flagged`); where the rule reaches none, or a control records `controlInformative`,
+ *  it keeps `caseResultOnly`'s line. */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string {
   const byOption = caseResultOnly(results);
-  if (byOption !== undefined) return byOption;
+  if (byOption === undefined) return ruleLine(b, results, score).line;
+  if (!b.merged || byOption.informativeControl) return byOption.line;
+  const rule = ruleLine(b, results, score);
+  return rule.verdict
+    ? `${rule.line}; ${counted(byOption.flaggedConfirms, "confirm")} made by --confirm-flagged`
+    : byOption.line;
+}
+
+/** The registered rule's line of the skill (score.ts), and whether it is a skill verdict, a loss
+ *  or "no loss detected" (`verdict`), or else what the rule waits for or why it reaches none: a
+ *  verdict ends with the reading sessions it speaks for (`speaksFor`), and a verdict or its reason
+ *  with how many screened cases' listings could not be measured, took names from their recorded
+ *  listing, and rest on the assumption that their session had Dispatch (`listingWords`). With
+ *  `--reading-models`, a skill too few of whose reading sessions are on served models
+ *  (`servedScreeningRefusal`) gets none. With `--store-only`, the reason of a skill with fewer
+ *  than MIN_INFORMATIVE_CASES informative cases ends with how many of its counted sessions only
+ *  the transcript store holds, so were never case sources (`storeOnlyWords`). */
+function ruleLine(
+  b: Behaviour,
+  results: ReadonlyMap<string, CaseResult>,
+  score: SkillScore
+): { readonly line: string; readonly verdict: boolean } {
+  const none = (line: string) => ({ line, verdict: false });
   const refusal =
     b.readingModels === undefined ? undefined : servedScreeningRefusal(b.readingModels.count);
-  if (refusal !== undefined) return `none: ${refusal.reason}`;
+  if (refusal !== undefined) return none(`none: ${refusal.reason}`);
   const unfinished = screenUnfinished(b, results, score);
-  if (unfinished !== undefined) return `not yet: ${unfinished} (behaviour screen)`;
+  if (unfinished !== undefined) return none(`not yet: ${unfinished} (behaviour screen)`);
   const outcome = score.outcome;
   if (outcome === undefined) {
     const third = score.cases.flatMap((each) =>
       each.confirm?.state === "running" && each.confirm.third ? [each.caseId] : []
     );
-    return score.control?.state === "running"
-      ? "not yet: the control runs are not all made (behaviour control)"
-      : third.length > 0
-        ? `not yet: two confirms on one runner disagree in ${third.join(", ")}, so a third confirm of each is due (behaviour confirm)`
-        : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)";
+    return none(
+      score.control?.state === "running"
+        ? "not yet: the control runs are not all made (behaviour control)"
+        : third.length > 0
+          ? `not yet: two confirms on one runner disagree in ${third.join(", ")}, so a third confirm of each is due (behaviour confirm)`
+          : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)"
+    );
   }
   const listing = listingWords(b, results, score);
   if (outcome.verdict === null) {
@@ -2959,12 +3011,15 @@ function verdictLine(
       b.storeOnly !== undefined && score.informative < MIN_INFORMATIVE_CASES
         ? storeOnlyWords(b.storeOnly)
         : "";
-    return `none: ${outcome.reason}${storeOnly}${listing}`;
+    return none(`none: ${outcome.reason}${storeOnly}${listing}`);
   }
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss and its false-loss control is no loss`;
   if (outcome.verdict === "keeps") {
-    return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}${listing}`;
+    return {
+      line: `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}${listing}`,
+      verdict: true,
+    };
   }
   const losses = (pooled: boolean) =>
     score.cases.flatMap((each) =>
@@ -2988,7 +3043,10 @@ function verdictLine(
           `in ${pooled.join(", ")}, over ${POOLED_CONFIRMS} pooled confirms, at least ${LOSS_GAP * POOLED_CONFIRMS} fewer of ${FRESH_RUNS * POOLED_CONFIRMS}`,
         ]),
   ];
-  return `loss: ${where.join("; ")}, and ${control}${speaksFor(b, score)}${listing}`;
+  return {
+    line: `loss: ${where.join("; ")}, and ${control}${speaksFor(b, score)}${listing}`,
+    verdict: true,
+  };
 }
 
 /** Each stage `result` ran, its earlier confirms among them, with its kind. */
@@ -4885,10 +4943,11 @@ const BEHAVIOUR_USAGE = [
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
   "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
   "  [--again <case id>]... (confirm only: one more confirm of that flagged case)",
-  "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
+  "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only, but for --merged)",
   `  [--control-informative] (control only: run the control case's control even where the skill has fewer than ${MIN_INFORMATIVE_CASES} informative cases; report then gives case results only)`,
   "  [--allow-runners <digest>[,<digest>...]] (take saved stages of these runners as this runner's; report: report results of these runners together)",
   "  [--store-only <file>] (report only: the skill's <cut id>/store-only/<skill>.json, written by attribute)",
+  "  [--merged] (report only: the results are a merged set of all the skill's cases, each case's newest run; where its only case-result-only stages are confirms --confirm-flagged made, a loss or no-loss-detected verdict the registered rule reaches stands, its line ending with how many confirms --confirm-flagged made)",
   "  [--route-id <arm>=<uuid>]... (screen, confirm, control: a diagnostic: every run of that arm, in every round, goes with that routing id in place of its round's)",
   "  report needs only --config, --out, --old and --cases; its --request-log is the log it sets the spend against, <out>/requests.jsonl by default",
   `  audit-mixed needs only --config, --out, --old, --new and --cases, and reads --cache-dir and --scratch; it makes no model call and writes <out>/${AUDIT_FILE}`,
@@ -4990,6 +5049,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "control-informative": { type: "boolean" },
       "allow-runners": { type: "string" },
       "store-only": { type: "string" },
+      merged: { type: "boolean" },
       "route-id": { type: "string", multiple: true },
       from: { type: "string" },
       probe: { type: "string" },
@@ -5015,6 +5075,11 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   if (storeOnlyFile !== undefined && command !== "report") {
     throw new Refused(
       `--store-only goes with behaviour report only: no stage command reads it. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  if (values.merged !== undefined && command !== "report") {
+    throw new Refused(
+      `--merged goes with behaviour report only: it says how report scores the results it reads. ${BEHAVIOUR_USAGE}`
     );
   }
   const continuing = command === "continue-mixed";
@@ -5069,6 +5134,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         : { file: readingModels, count: readReadingModels(readingModels) },
     allowRunners,
     storeOnly: storeOnlyFile === undefined ? undefined : readStoreOnly(storeOnlyFile),
+    merged: values.merged === true,
   };
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   if (report) {

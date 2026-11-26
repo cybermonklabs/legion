@@ -66,9 +66,10 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
   [--reading-models <file>] [--again <case id>]... [--confirm-flagged] [--control-informative] \
-  [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--route-id <arm>=<uuid>]...
+  [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--merged] \
+  [--route-id <arm>=<uuid>]...
                                  (--again, --confirm-flagged: confirm only; --control-informative:
-                                  control only; --store-only: report only;
+                                  control only; --store-only, --merged: report only;
                                   --route-id: screen, confirm and control only)
 bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <skill-cuts.json> --out <dir> \
   --old <dir> --new <dir> --cases <case file> [--cache-dir <dir>] [--scratch <dir>]
@@ -146,7 +147,23 @@ skill's cases (`cases.ts`), one JSON object per line.
   flag. Each confirm it runs records it in the case's results (`confirmFlagged`), so `report`
   needs no option to know it: the report of such a run gives the case results as any report does,
   and as its verdict line `verdict: case result only; no skill verdict stands (--confirm-flagged)`,
-  never a skill verdict. The other commands refuse the option (exit 2).
+  never a skill verdict, unless `report` is given `--merged`. The other commands refuse the option
+  (exit 2).
+  `report --merged` says the results directory is a merged set of all the skill's cases (the
+  re-score merges each case's newest run into one set; `report` does not check it). There a
+  confirm made with `--confirm-flagged` is the confirm stage the registered rule counts, so its
+  marker does not hold back the verdict (the runner's architect, 2026-11-26T19:50Z). A
+  merged set whose only case-result-only stages are such confirms is scored by the registered
+  rule, unchanged, as if no confirm carried the marker: at least 6 informative cases, the
+  planted-loss control a loss and the false-loss control no loss, a loss resting on the confirmed
+  losses it names, and "no loss detected" only with every flagged case confirmed. Where that rule
+  reaches a loss or "no loss detected", the verdict line is the rule's own line, with
+  `; 1 confirm made by --confirm-flagged` (`2 confirms`, ...) at its end, after the listing
+  words: the count of every confirm of the set's cases that records `confirmFlagged`, earlier
+  confirms too. Where the rule reaches no skill verdict (fewer than 6 informative cases, a
+  control that failed, a stage not finished, or a refusal), and in a set with a control made by
+  `--control-informative`, the line stays `case result only; no skill verdict stands (...)`.
+  Without `--merged`, the report is as above. The other commands refuse `--merged` (exit 2).
 - `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
   each line of the case's file that is the case's line, trimmed, or without each line that is
   `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
@@ -169,7 +186,8 @@ skill's cases (`cases.ts`), one JSON object per line.
   (`controlInformative`), so `report` needs no option to know it: the report of such a run gives
   the control case's line as any report does, and as its verdict line
   `verdict: case result only; no skill verdict stands (--control-informative)`, never a skill
-  verdict; a run with a confirm made by `--confirm-flagged` too names both,
+  verdict, with or without `report --merged`; a run with a confirm made by `--confirm-flagged`
+  too names both,
   `(--confirm-flagged, --control-informative)`. The other commands refuse the option (exit 2).
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
@@ -234,7 +252,9 @@ skill's cases (`cases.ts`), one JSON object per line.
   case the control case took the place of; the skill's verdict and its reason (`keeps` prints as
   "no loss detected by the registered rule"; a run with a confirm made by `--confirm-flagged` or a
   control made by `--control-informative` gets the verdict line under `confirm` or `control` above
-  in its place), ending with how many of the skill's
+  in its place, and with `--merged` a merged set's confirms made by `--confirm-flagged` get the
+  registered rule's verdict where it reaches one, as under `confirm` above), ending with how many
+  of the skill's
   screened cases have a listing that could not be measured (no listing measure, or one that says
   so); the drops per judge control and the drops counted as `model-not-served`, as
   `unreadable-directory`, as `legion-tool-undefined`, as `listing-misses`, as `listing-adds`, as
@@ -287,6 +307,9 @@ skill's cases (`cases.ts`), one JSON object per line.
   A file that is not JSON or not of that shape is refused (exit 2), naming the file.
   `screen`, `confirm` and `control` refuse `--store-only` (exit 2).
   Without `--store-only`, the report says nothing of the transcript store.
+  With `--merged` (the results directory is a merged set of all the skill's cases), a set whose only case-result-only stages are confirms made by `--confirm-flagged` gets the registered rule's verdict line where that rule reaches a loss or "no loss detected", ending, after the listing words, with `; N confirm(s) made by --confirm-flagged` (`1 confirm`, `2 confirms`), N counting every confirm of the set's cases, earlier confirms too, that records `confirmFlagged`; where the rule reaches no skill verdict, and in a set with a control made by `--control-informative`, the line stays `case result only; no skill verdict stands (...)` (under `confirm` above).
+  `screen`, `confirm`, `control`, `audit-mixed` and `continue-mixed` refuse `--merged` (exit 2).
+  Without `--merged`, a set with a confirm made by `--confirm-flagged` always gets the `case result only` line.
 - `audit-mixed` (no model call, no capture, no network, no key): the mixed-reply rule below,
   applied to the judged reply of each saved run of each stage, earlier confirms included (the
   run's `reply` less its answered rounds' read calls, the first N blocks for N the reads its

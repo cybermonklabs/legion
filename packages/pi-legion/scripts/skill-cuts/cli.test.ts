@@ -2681,6 +2681,122 @@ describe("behaviour: confirm --confirm-flagged", () => {
   }, 60_000);
 });
 
+// The runner's architect's rule on `report --merged` (2026-11-26T19:50Z): in a merged set of all
+// the skill's cases a confirm made by `--confirm-flagged` is the confirm stage the registered rule
+// counts, so its marker does not hold back a verdict the rule reaches; a set the rule gives no
+// verdict, and one with a control made by `--control-informative`, keep the case-result-only line.
+describe("behaviour report --merged", () => {
+  const FIVE = ["c01", "c02", "c03", "c04", "c05"];
+  /** The screen of a case that is not informative: no skill passes as many runs as the old text. */
+  const NOT_INFORMATIVE = { old: SCREEN_RUNS, new: SCREEN_RUNS, none: SCREEN_RUNS };
+  const CASE_RESULT_ONLY = "verdict: case result only; no skill verdict stands (--confirm-flagged)";
+  const CONTROL_ONLY = "verdict: case result only; no skill verdict stands (--control-informative)";
+  const BOTH =
+    "verdict: case result only; no skill verdict stands (--confirm-flagged, --control-informative)";
+  const CONTROL =
+    "the planted-loss control (case c01) is a loss and its false-loss control is no loss";
+
+  /** A merged set of six cases: c01 to c05 informative and not flagged, c01 the control case
+   *  whose two controls hold, and c06 informative and flagged, its screen returned. */
+  const mergedSet = (name: string) => {
+    const s = scenario(
+      name,
+      LOSS_SKILL(),
+      [...FIVE, "c06"].map((id) => ({ id }))
+    );
+    plantSix(s, FIVE, "c01");
+    return { s, screen: plantedStage(s, "c06", "screen", FLAGGED) };
+  };
+  /** A finished confirm of c06 of `s`, its old and new arms passing `passes`, made by
+   *  `--confirm-flagged`. */
+  const flaggedConfirm = (s: Scenario, passes: Record<string, number>) => ({
+    ...plantedStage(s, "c06", "confirm", passes),
+    confirmFlagged: true,
+  });
+  /** The verdict lines of the report of `s` with `extra`, refused nothing. */
+  const verdicts = async (s: Scenario, ...extra: string[]) => {
+    const ran = await cli([...report(s), ...extra]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    return ran.stdout.split("\n").filter((line) => line.startsWith("verdict: "));
+  };
+
+  // Catches: a merged set whose confirm marker still holds back the registered rule's verdict; a
+  // line that does not say the verdict rests on such confirms, or counts only the latest of them;
+  // and a report without the option that changed.
+  test("a merged set of 6 informative cases with a passing control gets the registered rule's loss, or its no loss detected, naming how many confirms --confirm-flagged made, earlier ones too; without --merged, the case-result-only line", async () => {
+    const { s, screen } = mergedSet("merged-verdict");
+    const loss = flaggedConfirm(s, { old: FRESH_RUNS, new: 0 });
+    plantResult(s, "c06", { stages: { screen, confirm: loss } });
+    expect(await verdicts(s)).toEqual([CASE_RESULT_ONLY]);
+    expect(await verdicts(s, "--merged")).toEqual([
+      `verdict: loss: in c06 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and ${CONTROL}${unmeasured(6, 6)}; 1 confirm made by --confirm-flagged`,
+    ]);
+
+    // Two confirms of c06 that agree it is no loss, each made by --confirm-flagged.
+    const kept = flaggedConfirm(s, { old: FRESH_RUNS, new: FRESH_RUNS });
+    plantResult(s, "c06", { earlierConfirms: [kept], stages: { screen, confirm: kept } });
+    expect(await verdicts(s)).toEqual([CASE_RESULT_ONLY]);
+    expect(await verdicts(s, "--merged")).toEqual([
+      `verdict: no loss detected by the registered rule: no confirmed case is a loss (1 flagged of 6 informative), and ${CONTROL}${unmeasured(6, 6)}; 2 confirms made by --confirm-flagged`,
+    ]);
+  }, 60_000);
+
+  // Catches: --merged giving a skill verdict, or another line, where the registered rule
+  // reaches none.
+  test("a merged set with fewer than 6 informative cases keeps the case-result-only line, with and without --merged", async () => {
+    const { s, screen } = mergedSet("merged-too-few");
+    plantResult(s, "c05", {
+      stages: { screen: plantedStage(s, "c05", "screen", NOT_INFORMATIVE) },
+    });
+    plantResult(s, "c06", {
+      stages: { screen, confirm: flaggedConfirm(s, { old: FRESH_RUNS, new: 0 }) },
+    });
+    expect(await verdicts(s)).toEqual([CASE_RESULT_ONLY]);
+    expect(await verdicts(s, "--merged")).toEqual([CASE_RESULT_ONLY]);
+  }, 60_000);
+
+  // Catches: --merged taking a control made by --control-informative, which ran though the skill
+  // had too few informative cases, as the control the registered rule needs.
+  test("a merged set whose control was made by --control-informative keeps the case-result-only line with --merged", async () => {
+    const { s, screen } = mergedSet("merged-control-informative");
+    const control = plantedStage(s, "c01", "control", {
+      old: FRESH_RUNS,
+      minus: 0,
+      twin: FRESH_RUNS,
+    });
+    plantResult(s, "c01", {
+      stages: {
+        screen: plantedStage(s, "c01", "screen", KEPT),
+        control: { ...control, controlInformative: true },
+      },
+    });
+    plantResult(s, "c06", {
+      stages: { screen, confirm: flaggedConfirm(s, { old: FRESH_RUNS, new: 0 }) },
+    });
+    expect(await verdicts(s, "--merged")).toEqual([BOTH]);
+
+    const plain = plantedStage(s, "c06", "confirm", { old: FRESH_RUNS, new: 0 });
+    plantResult(s, "c06", { stages: { screen, confirm: plain } });
+    expect(await verdicts(s, "--merged")).toEqual([CONTROL_ONLY]);
+  }, 60_000);
+
+  // Catches: an option another command takes and ignores.
+  test("is refused (exit 2) by every command but report, before any model call", async () => {
+    const { s, screen } = mergedSet("merged-refused");
+    plantResult(s, "c06", { stages: { screen } });
+    const from = recorder.requests.length;
+    for (const command of ["screen", "confirm", "control", "audit-mixed", "continue-mixed"]) {
+      const ran = await cli(behaviour(command, s, "--merged"));
+      expect({ command, code: ran.code }).toEqual({ command, code: 2 });
+      expect(ran.stderr).toContain(
+        "--merged goes with behaviour report only: it says how report scores the results it reads."
+      );
+    }
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(result(s.out, "c06").stages.confirm).toBeUndefined();
+  }, 60_000);
+});
+
 // The runner's architect's order on `control --control-informative` (2026-11-26T12:51Z): it runs
 // the planted-loss control of the skill's control case though the skill has fewer than 6
 // informative cases, so the judge's call of a loss in one case has its control; it overrides that
