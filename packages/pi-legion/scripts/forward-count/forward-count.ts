@@ -1113,8 +1113,11 @@ async function lineOf(input: {
   const pull = pullRequestOf(events, at);
   const head = await headOf(dispatch, github, record, pull, at);
 
+  // With `--reasons none` the program reads no reason at all, so the return rests on no claim
+  // about any cause and resolves `pending`, whatever the readings say: that is what the first
+  // control of `v-forward-count` asks of this run.
   let reason: string | null = null;
-  let reasonRead = args.reasons === "none" ? true : false;
+  let reasonRead = false;
   if (args.reasons === "all") {
     try {
       reason = await reasonOf(dispatch, row.issue, record, at);
@@ -1124,7 +1127,6 @@ async function lineOf(input: {
       reasonRead = false;
     }
   }
-  if (args.reasons === "none") reason = null;
 
   let checks: CheckRead[] | null = null;
   if (head !== null) {
