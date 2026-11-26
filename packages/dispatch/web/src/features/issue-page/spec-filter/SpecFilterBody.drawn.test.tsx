@@ -2141,7 +2141,7 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
   return () => {
@@ -2275,7 +2275,7 @@ test("a press on a decision's cell or away from it changes what the body draws o
 // a key moves the focus to is scrolled down below the heads, by the rule's 8 px.
 test("a statement or a cell a key moves the focus to is scrolled down from under the column heads", async () => {
   const user = userEvent.setup();
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
