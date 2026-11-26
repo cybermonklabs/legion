@@ -909,8 +909,11 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 // (ran.cut), so the check's row is unanswered rather than a hanging command's
 // (TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered). The cancel lands
 // once the command runs, never on one not yet started. The command runs until that cancel's stop or
-// the row's cleanup ends it, never on a timer of its own.
+// the row's cleanup ends it, never on a timer of its own, and the stop must end it within
+// stopBound of the call: main's command, `exec sleep 30`, exited on its own 30 s after it started,
+// which failed a stop that came later.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
+	const stopBound = 30 * time.Second
 	started := filepath.Join(t.TempDir(), "started")
 	held := filepath.Join(t.TempDir(), "held")
 	t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
@@ -927,7 +930,17 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 		}
 	}()
 
-	r := img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done`, "sh", started, held, strconv.Itoa(os.Getpid()))
+	done := make(chan ran, 1)
+	go func() {
+		done <- img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"; while [ ! -e "$2" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done`, "sh", started, held, strconv.Itoa(os.Getpid()))
+	}()
+	var r ran
+	bound := testwait.Bounded(t, stopBound, time.Second)
+	select {
+	case r = <-done:
+	case <-time.After(bound):
+		t.Fatalf("the run had not returned %s after it was called: the caller's stop did not end its command", bound)
+	}
 
 	if r.err == nil || r.err.Error() != "signal: terminated" {
 		t.Errorf("run = exit %d, error %v; want the error \"signal: terminated\": the caller's context ended the command inside its minute, which is no timeout and leaves no exit", r.exit, r.err)
