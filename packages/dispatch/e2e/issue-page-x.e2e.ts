@@ -899,9 +899,10 @@ async function expectOvertakenMarks(page: Page, read: ProposedPage): Promise<voi
  * carrying "Overtaken" and no gap, open with its lens under it; every folded branch's count
  * counts it; no row reads "1 overtaken"; `j` and `k` reach and leave its row; its fold control
  * folds it with its lens and opens it again; the overtaken decision and the chip naming statement
- * 8 carry the mark; and statement 8 stays open with its lens after a reload.
+ * 8 carry the mark; and statement 8 stays open with its lens after a reload. Answers the
+ * criterion gate it read, which the Spec control's count reads too (`expectProposedViews`).
  */
-async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<void> {
+async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<Gate> {
   const { plain, seeded, traffic } = read;
   const { ids } = seeded;
   // The load draws the outline once its tree read answers, after the page itself: wait for the
@@ -943,6 +944,7 @@ async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<void
     [ids.lens],
     "statement 8 does not stay open with its lens after a reload"
   );
+  return criteria;
 }
 
 /** Each Graph reading of row 1, made only where the page draws a Graph control: check 2, the first
@@ -1043,9 +1045,10 @@ async function expectOvertakenDecisionAddress(page: Page, read: ProposedPage): P
  * it out; plan task 1 carries "Proposed" under Plan, which draws plan task 2 as a row after every
  * step, and the steps draw the line naming statement 7 on plan task 7's row in its compact form;
  * statement 7 carries "Proposed" and statement 8 "Overtaken", with no gap, under Spec, whose
- * control counts every statement. No view draws a raw value of the tree read.
+ * control counts every statement and, where the page draws one (`criteria`), the criterion under
+ * the overtaken question. No view draws a raw value of the tree read.
  */
-async function expectProposedViews(page: Page, read: ProposedPage): Promise<void> {
+async function expectProposedViews(page: Page, read: ProposedPage, criteria: Gate): Promise<void> {
   const { key, reads, seeded, treeId } = read;
   const { ids } = seeded;
   const statements = statementsOf(seeded);
@@ -1201,12 +1204,15 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     rowGaps(statement8),
     "statement 8, which is overtaken, draws a gap under Spec"
   ).toHaveCount(0);
+  // Where the page draws criteria (part Y, INFRA-4066), the Spec control counts the criterion the
+  // seed wrote under the overtaken question as well as every statement (INFRA-1196's decision
+  // 535).
   await expect
     .poll(() => filterCount(page, "spec"), {
       message:
-        "the Spec control does not count every statement, statement 8 and the one under the overtaken question included",
+        "the Spec control does not count every statement, statement 8 and the one under the overtaken question included, and the criterion under that question where the page draws one",
     })
-    .toBe(statements);
+    .toBe(statements + (criteria.met ? 1 : 0));
   await expectNoRawValue(page, "under Spec");
   await expectNoOvertakenCount(page, "under Spec");
 }
@@ -1318,10 +1324,10 @@ test("a proposed node is marked and settled on the page, and an overtaken one is
     await expectOvertakenOpen(page, read);
     await expectProposedMarks(page, read);
     await expectDetails(page, read);
-    await expectOvertakenRows(page, read);
+    const criteria = await expectOvertakenRows(page, read);
     await expectProposedInGraph(page, read);
     await expectOvertakenDecisionAddress(page, read);
-    await expectProposedViews(page, read);
+    await expectProposedViews(page, read, criteria);
     await expectSettled(page, read);
   });
 });
