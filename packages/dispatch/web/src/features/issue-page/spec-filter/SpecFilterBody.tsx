@@ -79,7 +79,7 @@ import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
-import { NodeThreads } from "../text-comments/NodeThreads";
+import { NodeThreads, useSheetFocusOnScreen } from "../text-comments/NodeThreads";
 import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
@@ -941,6 +941,9 @@ function useOnScreenUnderHeads(
     grown.observe(element);
     return () => grown.disconnect();
   }, [focused, item]);
+  // The focus in the item's sheet of threads stands on screen after the placing above, which puts
+  // a statement taller than the screen at its top (`useSheetFocusOnScreen`).
+  useSheetFocusOnScreen(item, focused, pressed);
   return () => {
     placeByRule();
     pressed.current = true;

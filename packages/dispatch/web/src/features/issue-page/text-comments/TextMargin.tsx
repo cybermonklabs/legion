@@ -32,6 +32,7 @@ import { authorText } from "../page-structure";
 import { MARGIN_WORDS } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { useFollowing } from "../slots/following";
+import { abortOnReaderAct } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import { highlightThreadWords, type ThreadWords } from "./highlights";
 import { ITEM_KINDS } from "./on-text";
@@ -626,11 +627,17 @@ function Column({
     named === undefined ? undefined : placed.find(({ thread }) => threadHolds(thread, named));
   const [landing, setLanding] = useState<Landing>();
   const landed = useRef<string | undefined>(undefined);
+  // The reader's acts since the landing began (`READER_ACTS`): the first ends it, so a landing
+  // that still waits for its card to be placed takes no focus from where the reader put it.
+  const landingActs = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => landingActs.current?.abort(), []);
   useEffect(() => {
     if (named === undefined || namedThread === undefined || landing?.following === following) {
       return;
     }
     closeDetails();
+    landingActs.current?.abort();
+    landingActs.current = abortOnReaderAct();
     setLanding({ following, id: named });
   }, [closeDetails, following, landing?.following, named, namedThread]);
   const currentReply =
@@ -754,12 +761,27 @@ function Column({
     };
   }, [onFocusBox]);
 
-  // The item the address names takes the focus once Details is closed and its card is drawn: the
-  // card itself for the thread's root, else its reply's row, which the card marks as the one the
-  // address names (`currentReplyId`). After the effects of the stage, which come first on the
-  // page, so the stage's own opening focus (`ViewStage`) does not take it back.
+  // The item the address names takes the focus once Details is closed and its card stands placed:
+  // the card itself for the thread's root, else its reply's row, which the card marks as the one
+  // the address names (`currentReplyId`). A card is drawn as soon as the view's read holds its
+  // thread, and until the stage draws its node's row - a read or the page of children that holds
+  // it still out - its box is hidden (`measure`), and a hidden element takes no focus. So the
+  // landing waits for the box: the row's arrival changes the rows' order and the box's wanted top,
+  // which draws the column again, and the landing looks again then. It is done once the item holds
+  // the focus, and ends at the reader's first act (`landingActs`) or as the address moves on.
+  // After the effects of the stage, which come first on the page, so the stage's own opening focus
+  // (`ViewStage`) does not take it back, and the outline's landing on the node's row
+  // (`landOnRow`), asked as that row was drawn, finds the focus moved by a script and leaves it.
   useEffect(() => {
-    if (landing === undefined || landed.current === landing.following || detailsOpen) return;
+    if (
+      landing === undefined ||
+      landing.following !== following ||
+      landed.current === landing.following ||
+      detailsOpen ||
+      landingActs.current?.signal.aborted === true
+    ) {
+      return;
+    }
     const thread = placed.find(({ thread: one }) => threadHolds(one, landing.id))?.thread.thread;
     if (thread === undefined) return;
     const card = cardIn(region.current, thread.key);
@@ -773,8 +795,9 @@ function Column({
         ? card
         : (lens ?? card?.querySelector<HTMLElement>('li[data-reply][aria-current="true"]'));
     if (target === null || target === undefined) return;
-    landed.current = landing.following;
+    if (target.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)?.hidden !== false) return;
     takeFocus(target, "center");
+    if (target.contains(document.activeElement)) landed.current = landing.following;
   });
 
   // The root of the thread a send of this part wrote takes the focus once the re-read draws its

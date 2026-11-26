@@ -371,6 +371,55 @@ test("an address of R8 names a thread on text: the item takes the focus, the pag
   }
 });
 
+// R8: the column draws a thread's card as soon as the view's read holds the thread, and hides its
+// box until the stage draws the row of the thread's node: a read, or the page of children that
+// holds it, may still be out (the browser suite's thread on a statement's 55th child). A hidden
+// element takes no focus, and the landing that gave it the focus then ended there, so the item
+// never took it. The landing waits for the row, and lands once the stage draws it.
+test("an address of R8 names a thread whose node's row the stage has not drawn yet: the item takes the focus once the row is drawn, and not before", async () => {
+  const { client, view } = await drawn({ threads: [ON_STATEMENT] }, "conversation");
+  try {
+    const column = await columnDrawn(view, "no column is drawn");
+    const row = rowOf(view, STATEMENT_NODE);
+    if (row === null) throw new Error("the stage draws no row of the statement");
+    // The column and the outline find a node's row by its `data-node-id`, so while the row carries
+    // none the stage draws no row of the statement for them. The focus is on no row, so the
+    // outline lands on none until it draws the tree again.
+    await act(async () => {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement) focused.blur();
+      row.removeAttribute("data-node-id");
+    });
+    await act(async () =>
+      view.held.navigate?.(`${presetPath(KEY, "conversation")}?comment=${ON_STATEMENT.comment.id}`)
+    );
+    const card = column.querySelector<HTMLElement>(
+      `[data-margin-item="${CSS.escape(ON_STATEMENT.comment.id)}"]`
+    );
+    expect(card, "the column draws no card of the thread").not.toBeNull();
+    expect(
+      card?.closest<HTMLElement>("[data-text-thread-node]")?.hidden,
+      "the thread's box stands while the stage draws no row of its node"
+    ).toBe(true);
+    expect(
+      column.contains(document.activeElement),
+      "the item took the focus while its box stood hidden"
+    ).toBe(false);
+    // The stage draws the row: a change of its children, as a read or a page that lands makes.
+    row.setAttribute("data-node-id", STATEMENT_NODE);
+    row.parentElement?.insertBefore(row, row.nextSibling);
+    await waitFor(() =>
+      expect(
+        card?.contains(document.activeElement),
+        "the item does not take the focus once the stage draws its node's row"
+      ).toBe(true)
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
 // R2: a thread stands level with the first line of its quoted words in the node's row, or level with
 // the row's first line where the row does not draw those words. A view that cuts a node's words
 // (`CutWords`) clips what stands past the cut, which is in the text and in no line the reader sees.

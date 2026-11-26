@@ -3,6 +3,7 @@ import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef } fr
 import type { IssueDetails } from "../../../api/types";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY } from "../contents-frame";
+import { bringOnScreen } from "../identity-block";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { authorText } from "../page-structure";
@@ -83,6 +84,48 @@ export function NodeThreads({
   return (
     <NarrowSheet node={node} tabStops={tabStops} {...(parent === undefined ? {} : { parent })} />
   );
+}
+
+/**
+ * Keeps what holds the focus in a row's sheet on screen while the row has the focus (R3, R5): the
+ * field the composer opens with, the root of the thread its send wrote, a thread's control. A
+ * view places its focused row by the page's rule (`NodeRow.tsx`'s `useRowOnScreen`) as the row
+ * takes the focus and again each time the row grows, and the rule puts a row taller than the
+ * screen at its top. The sheet stands after the node's whole text, so in a statement taller than
+ * the screen the rule put the composer that grew the row, and then the thread its send wrote, out
+ * of the window: at 390 px the field stood 3664 px down a long statement. So, after the rule has
+ * placed the row, the element that holds the focus in the row's sheet is brought on screen by
+ * the page's rule for a focused target (`bringOnScreen`: clear of the band at the top and of the
+ * box at the foot), which leaves it where it already stands whole on screen.
+ *
+ * `item` and `focused` are what the view places by the rule (its row, or what it shows of one),
+ * the row being the nearest element that names a node (`data-node-id`), and `pressed` holds
+ * while a press inside the row is held, which the rule leaves the page alone for too. A row site
+ * calls this after its own placing: each placing's `ResizeObserver` is told in the order it was
+ * made, and this one is made in the same commit as the rule's, after it, so in each frame where
+ * the row grows it acts last.
+ */
+export function useSheetFocusOnScreen(
+  item: RefObject<HTMLElement | null>,
+  focused: boolean,
+  pressed: { readonly current: boolean }
+): void {
+  useLayoutEffect(() => {
+    const element = item.current;
+    if (!focused || element === null) return;
+    const row = element.closest("[data-node-id]");
+    const place = () => {
+      const active = document.activeElement;
+      if (pressed.current || !(active instanceof HTMLElement)) return;
+      if (active.closest(`[${TEXT_THREADS_ATTRIBUTE}]`)?.closest("[data-node-id]") !== row) return;
+      bringOnScreen(active);
+    };
+    place();
+    if (typeof ResizeObserver === "undefined") return;
+    const grown = new ResizeObserver(place);
+    grown.observe(element);
+    return () => grown.disconnect();
+  }, [focused, item, pressed]);
 }
 
 /** The sheet below 1024 px, once the page's read of the issue the router is at holds it
