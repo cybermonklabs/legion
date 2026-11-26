@@ -612,10 +612,7 @@ func (u goingUndoer) send(ctx context.Context, key goingCallKey, send goingUndoS
 	}
 	outcome := goingRefusalOf(response, answer).outcome()
 	if slices.Contains(send.changed, outcome.Code) {
-		message := outcome.Message
-		if send.changedMessage != "" {
-			message = send.changedMessage
-		}
+		message := cmp.Or(send.changedMessage, outcome.Message)
 		return u.s.recordUndo(ctx, landing, goingRefusedLine(line, goingChanged([]string{message}, nil)), false)
 	}
 	return goingRefusedLine(line, outcome)

@@ -58,19 +58,20 @@ const retryWords = 90
 // rewriteCallTime bounds the rewrite, the one model call after a reply held back as long, given
 // rewritePrompt, the person's words, the held reply and longTold alone, within what is left of the
 // run's working time, as the architect ruled: past it the held reply ends the turn whole
-// (missedRewrite). A variable, so a test shortens it.
+// (missedRewrite). At 84294a61 the rewrite, at rewriteEffort and with that short input, ran past
+// it in 4 of 6 held replies of the real model, and the 2 that ended took 19.5 s and 18.4 s, with
+// about 1,240 reasoning tokens each. A variable, so a test shortens it.
 var rewriteCallTime = 20 * time.Second
 
-// The rewrite's effort and its reserve: the lowest reasoning effort the chat model's calls ask
-// for, Fast's and the guard's check's (Levels, noPlanEffort), and the reasoning tokens the pacer
-// reserves for a call at that effort beside its output tokens and the tokens of its short prompt,
-// Fast's (Level.ReasoningTokens), as the check reserves its own (noPlanReasoningTokens). Low is
-// the lowest the chat model takes: Azure's grok-4.7 refuses a call that asks for no reasoning
-// (effort off, sent as "none") with HTTP 400, which the preview at c0fc22e7 measured in 8 of 8
-// rewrites.
+// The rewrite's effort and its reserve are the guard's check's (noPlanEffort,
+// noPlanReasoningTokens): the lowest reasoning effort the chat model's calls ask for, Fast's too
+// (Levels), and the reasoning tokens the pacer reserves for a call at that effort beside its output
+// tokens and the tokens of its short prompt, Fast's too (Level.ReasoningTokens). Low is the lowest
+// the chat model takes: Azure's grok-4.7 refuses a call that asks for no reasoning (effort off,
+// sent as "none") with HTTP 400, which the preview at c0fc22e7 measured in 8 of 8 rewrites.
 const (
-	rewriteEffort          = "low"
-	rewriteReasoningTokens = 353
+	rewriteEffort          = noPlanEffort
+	rewriteReasoningTokens = noPlanReasoningTokens
 )
 
 // longSaid starts the note of a reply held back as long (saveLong): what a later turn of the
@@ -181,7 +182,9 @@ func (w *worker) rewrite(request *agentloop.Request, held modelBody) int {
 	}
 	request.Model.Effort = rewriteEffort
 	request.Bounds.Calls, request.Bounds.Time = 1, min(request.Bounds.Time, rewriteCallTime)
-	return going.PromptChars(request.System, request.Input, nil)/charsPerToken + w.level.OutputTokens + rewriteReasoningTokens
+	level := w.level
+	level.ReasoningTokens = rewriteReasoningTokens
+	return level.estimate(going.PromptChars(request.System, request.Input, nil))
 }
 
 // endRewrite ends the run's turn with prose, the reply of the rewrite of held, the reply held

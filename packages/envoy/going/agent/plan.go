@@ -152,7 +152,8 @@ func (w *worker) review() stepOutcome {
 // the run gives them, and each row of plan with its tool, its arguments and its item's value now.
 func reviewText(words string, plan *agentwire.PlanAnswer) string {
 	var text strings.Builder
-	fmt.Fprintf(&text, "The person asks now:\n%s\n\nThe changes of plan %d, by number, %s:\n", words, plan.Plan, storedDataNote)
+	text.WriteString(askedNow(words))
+	fmt.Fprintf(&text, "\nThe changes of plan %d, by number, %s:\n", plan.Plan, storedDataNote)
 	for _, row := range plan.Rows {
 		fmt.Fprintf(&text, "- %d: %s %s", row.Row, row.Tool, row.Arguments)
 		if row.Item != "" {

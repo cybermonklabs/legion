@@ -216,16 +216,8 @@ func standardRun(words string) *agentwire.ClaimedRun {
 func messageChars(request *agenttest.Request) int {
 	chars := 0
 	for _, message := range request.Messages() {
-		switch content := message["content"].(type) {
-		case string:
-			chars += len(content)
-		case []any:
-			for _, part := range content {
-				if part, ok := part.(map[string]any); ok {
-					text, _ := part["text"].(string)
-					chars += len(text)
-				}
-			}
+		for _, part := range messageParts(message) {
+			chars += len(part)
 		}
 	}
 	return chars

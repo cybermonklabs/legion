@@ -82,11 +82,8 @@ const (
 	// each link drawn as its item's chip, an issue's its key, its status and its title. Like the
 	// line call, it records nothing, so its step and call are 0. The agent makes it for a reply in
 	// prose that would end the run's turn done, and holds the bound of the words (going/agent's
-	// wordsBound): a reply the bar draws in that many words or more gets its rewrite, one model
-	// call, offered no tool, at low effort, within 20 s, given a short system message of the
-	// answer's rules, the person's words, the held reply and the count the person sees alone, whose
-	// reply ends the turn only where it links nothing the held reply does not, and the held reply
-	// whole otherwise (going/agent's rewrite and endRewrite).
+	// wordsBound): a reply the bar draws in that many words or more gets its rewrite (going/agent's
+	// rewrite).
 	KindWords = "words"
 )
 

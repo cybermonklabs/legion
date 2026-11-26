@@ -149,8 +149,9 @@ func lastWhole(history []agentwire.SavedStep) []agentwire.SavedStep {
 const nowLayout = "2006-01-02 15:04 UTC"
 
 // askedNow is how the model is given the person's words of the run: this line, then the words
-// and the end of their line, as every step gives them (conversation) and the rewrite of a reply
-// held back as long too (rewrite), and as a fake chat model reads a run's words (agenttest.Asked).
+// and the end of their line, as every step gives them (conversation), the rewrite of a reply held
+// back as long (rewrite) and Auto-review's call (reviewText) too, and as a fake chat model reads a
+// run's words (agenttest.Asked).
 func askedNow(words string) string {
 	return "The person asks now:\n" + words + "\n"
 }
