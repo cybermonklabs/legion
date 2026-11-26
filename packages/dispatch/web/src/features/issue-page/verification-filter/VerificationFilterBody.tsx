@@ -803,7 +803,7 @@ const TABLE_IN_COLUMN = [
   "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:overflow-visible",
   "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:rounded-none",
   "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:border-0",
-  "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:bg-transparent",
+  "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:bg-[color:unset]",
   "in-data-[text-margin]:[&~[data-verification-table]>[data-verification-head]]:@max-[656px]:hidden",
   // Each row a card: 1 px round it with 8 px corners, and a statement's left edge 4 px.
   "in-data-[text-margin]:[&~[data-verification-table]>[data-node-row]]:@max-[656px]:rounded-[8px]",
