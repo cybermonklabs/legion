@@ -12,6 +12,7 @@ import { buildIssuePath } from "../web/src/features/refs/routes";
 import { withIssuePage } from "./issue-page-option";
 import { editNoticesSent } from "./issue-page-t-rows";
 import {
+  LARGEST_SHAPE,
   type LargestShapeSeed,
   seedLargestShape,
   seedLargestShapeWaiting,
@@ -182,6 +183,10 @@ export interface LoadAct {
   /** The view an act after the load is made in, where it is not Conversation: it follows the
    *  press on that view (`afterLoadOrder`). */
   readonly on?: Preset;
+  /** The paging control an act after the load presses first, which the page draws only where
+   *  the rows it holds or its tree read have a next page: Row 5 makes the act only where the page
+   *  draws it once the load has ended, and fails naming it where it does not. */
+  readonly paging?: string;
   /** The first moment the act can be made during the load: a press on a control at the first
    *  drawing of the view row, and a fold, an unfold, `j`, `k` and `Enter` at the first drawing of
    *  the rows. */
@@ -311,6 +316,7 @@ function enterOn(name: string, on: Preset, paging: string | null): LoadAct {
     kind: "edit",
     name,
     on,
+    ...(paging === null ? {} : { paging }),
     steps: [...(paging === null ? [] : [pager(paging)]), row, { ...ENTER, name }],
     when: "rows",
   };
@@ -573,6 +579,24 @@ export function holdBound(reading: BoundReading): void {
 export function printReading(line: string): void {
   console.log(line);
   base.info().annotations.push({ description: line, type: "reading" });
+}
+
+/** Prints, for each load whose act under `index` showed no result, what its event landed on, so a
+ *  press that reached another control than the one it was made at is named in the row's output:
+ *  `<prefix>.unshown load <n> of 5: the <event> landed on <element>`. */
+export function printUnshown(
+  prefix: string,
+  loads: readonly { readonly index: number; readonly record: LoadRecord }[]
+): void {
+  for (const [at, load] of loads.entries()) {
+    const act = load.record.acts[load.index];
+    if (act === undefined || act.result !== null) continue;
+    const event =
+      act.event === null
+        ? "no event came"
+        : `the ${act.event.type} landed on ${act.event.target ?? "an element not named"}`;
+    printReading(`${prefix}.unshown load ${at + 1} of ${LOADS}: ${event}, and no result showed`);
+  }
 }
 
 /** Holds an act's five readings to R2 under `prefix`, as `actBounds` reads them: the time to its
@@ -884,16 +908,23 @@ function askRowSelector(block: string): string {
   return `[data-issue-body] [data-node-row][data-node-type="ask"][data-node-id$="#b-${block.replace(/["\\]/g, "\\$&")}"]`;
 }
 
-/** The first answered question of the issue's spec (`spec`, its document's id), in the asks
- *  read's order: an ask written in the spec as a block and answered. Null where the issue holds
- *  none. */
+/** The block ids of the seed's questions in its spec: the 11 `:::ask` blocks `seedLargestShape`
+ *  writes (`questionsOps` of `e2e/issue-page-t-scale.ts`, whose `questionBlockId(n)` names block
+ *  `q<n>`), each of which it answers once it is an ask (`awaitQuestions`, `answerAsk`). */
+const QUESTION_BLOCKS: ReadonlySet<string> = new Set(
+  Array.from({ length: LARGEST_SHAPE.questions }, (_, at) => `q${at + 1}`)
+);
+
+/** The first answered question of the seed's spec in the asks read's order: an ask whose block
+ *  is one of the spec's questions (`QUESTION_BLOCKS`) and which is answered. Null where the issue
+ *  holds none. */
 export function answeredQuestion(
   key: string,
-  spec: string,
-  asks: readonly Pick<IssueAskRow, "artifact_id" | "block_id" | "id" | "state">[]
+  asks: readonly Pick<IssueAskRow, "block_id" | "id" | "state">[]
 ): AnsweredQuestion | null {
   for (const ask of asks) {
-    if (ask.artifact_id !== spec || ask.block_id === null || ask.state !== "answered") continue;
+    if (ask.block_id === null || !QUESTION_BLOCKS.has(ask.block_id)) continue;
+    if (ask.state !== "answered") continue;
     const question = askRowSelector(ask.block_id);
     return {
       address: buildIssuePath({ id: ask.id, key, kind: "ask" }),

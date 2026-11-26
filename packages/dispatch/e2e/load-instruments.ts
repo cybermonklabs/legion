@@ -148,8 +148,14 @@ export interface BoxEntry {
 
 /** One step of an act the page was armed for (`armStep`), by the index it was armed under. */
 export interface ActRecord {
-  /** The first trusted `pointerdown` or `keydown` after the arming; null while none came. */
-  readonly event: { readonly timeStamp: number; readonly type: string } | null;
+  /** The first trusted `pointerdown` or `keydown` after the arming, with what it landed on in
+   *  words (`target`: the control, link, menu item or row the element it reached is in), which a
+   *  record taken before the init script named it lacks; null while none came. */
+  readonly event: {
+    readonly target?: string;
+    readonly timeStamp: number;
+    readonly type: string;
+  } | null;
   /** The first frame after the event in which the control reads as current and the view's place
    *  shows that it loads, or the result shows (an act that is no view press: its result's). */
   readonly loading: number | null;
@@ -805,7 +811,7 @@ export function instrumentPage(config: PageConfig): void {
     readonly renderTime: number;
   }
   interface OpenAct {
-    event: { readonly timeStamp: number; readonly type: string } | null;
+    event: { readonly target: string; readonly timeStamp: number; readonly type: string } | null;
     loading: number | null;
     readonly measured: boolean;
     readonly name: string;
@@ -1186,9 +1192,27 @@ export function instrumentPage(config: PageConfig): void {
       document.querySelector(result.busy) !== null
     );
   };
+  // What an event landed on, in words: the control, link or menu item the element it reached is
+  // in, else the row, else that element itself, by its kind and its name or its words.
+  const landedOn = (reached: EventTarget | null): string => {
+    const element = reached as Element | null;
+    if (element === null || typeof element.closest !== "function") return "nothing named";
+    const holder =
+      element.closest('button, a, label, [role="menuitemradio"], [role="menuitem"]') ??
+      element.closest(config.viewRows) ??
+      element;
+    // The script reads the DOM in the page itself: the name is the element's own as the page
+    // drew it when the event reached it, and no Playwright probe of a state still to come.
+    const named = holder.getAttribute("aria-label") ?? words(holder).slice(0, 48);
+    return `${String(holder.tagName).toLowerCase()} "${named}"`;
+  };
   const input = (happened: Event) => {
     if (!happened.isTrusted || armed === null || armed.act.event !== null) return;
-    armed.act.event = { timeStamp: happened.timeStamp, type: happened.type };
+    armed.act.event = {
+      target: landedOn(happened.target),
+      timeStamp: happened.timeStamp,
+      type: happened.type,
+    };
     const row = document.activeElement?.closest(config.viewRows) ?? null;
     armed.focused = row === null ? null : { label: rowLabel(row), row };
     armed.before = new WeakSet(document.querySelectorAll(config.viewRows));

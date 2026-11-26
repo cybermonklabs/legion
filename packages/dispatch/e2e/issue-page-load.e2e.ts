@@ -36,6 +36,7 @@ import {
   outlineRowSelector,
   outlineRows,
   printReading,
+  printUnshown,
   test,
 } from "./issue-page-load";
 import { WAITING_QUESTION } from "./issue-page-t-scale";
@@ -306,6 +307,10 @@ for (const name of ACT_NAMES) {
       rate,
       loads.map((load) => actReading(load.record, load.last))
     );
+    printUnshown(
+      prefix,
+      loads.map((load) => ({ index: load.last, record: load.record }))
+    );
     holdTasks(
       prefix,
       rate,
@@ -332,6 +337,27 @@ test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
       const measured: number[] = [];
       let next = 0;
       for (const act of acts) {
+        if (act.paging !== undefined) {
+          await settle();
+          // Read once the load has ended, when the page has drawn every page its reads hold: the
+          // paging control is drawn then, or the rows and the read hold no next page.
+          const pages = await page.evaluate(
+            (selector) => document.querySelector(selector) !== null,
+            act.paging
+          );
+          if (!pages) {
+            expect
+              .soft(
+                pages,
+                `${act.name} was not made: once the load had ended the page drew no ` +
+                  `${act.paging}, which it draws only where its rows or its tree read hold a ` +
+                  "next page"
+              )
+              .toBe(true);
+            measured.push(-1);
+            continue;
+          }
+        }
         const made = await makeSteps(page, next, act.steps, "now", settle);
         measured.push(made.last);
         next = (await makeSteps(page, made.next, act.after, "now")).next;
@@ -341,10 +367,18 @@ test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
     }
   );
   for (const [at, act] of acts.entries()) {
+    const prefix = `after-load.${boundWord(act.name)}`;
     holdAct(
-      `after-load.${boundWord(act.name)}`,
+      prefix,
       rate,
       loads.map((load) => actReading(load.record, load.measured[at] ?? -1))
+    );
+    printUnshown(
+      prefix,
+      loads.flatMap((load) => {
+        const index = load.measured[at] ?? -1;
+        return index === -1 ? [] : [{ index, record: load.record }];
+      })
     );
   }
   holdTasks(
@@ -546,11 +580,7 @@ test("a load draws the named row in the viewport at once and keeps it there", as
   // answer - the person's decision (root R4, decision 534) - both stand in the viewport: the case
   // part N's implementer measured on N's base (Job `e2e-rows-wbfwg`), where the asks read answered
   // first, and the page drew the question whole and folded it about a second later.
-  const question = answeredQuestion(
-    seeded.key,
-    seeded.specArtifactId,
-    await listIssueAsks(seeded.key)
-  );
+  const question = answeredQuestion(seeded.key, await listIssueAsks(seeded.key));
   if (question === null) {
     printReading(`named-row.answered-question rate=${rate} none`);
     expect

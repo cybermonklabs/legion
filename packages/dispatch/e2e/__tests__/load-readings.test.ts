@@ -701,32 +701,39 @@ interface StandInElement {
   hasAttribute(name: string): boolean;
   readonly isConnected: true;
   readonly isContentEditable: boolean;
-  querySelector(): null;
+  querySelector(selector: string): StandInElement | null;
   querySelectorAll(): StandInElement[];
   scrollIntoView(): void;
+  readonly tagName: string;
   readonly textContent: string;
 }
 
-/** An element named `name`, drawn at `box`: its attributes, its words, whether it is an
- *  editable, the elements inside it (which every selector of `querySelectorAll` finds, and which
- *  it contains), the one `closest` finds around it for a selector (`around`, which may answer the
- *  same whatever the selector), and what scrolling it into view does to the page. */
+/** An element named `name`, drawn at `box`: its kind (`tag`, a `DIV` unless given), its
+ *  attributes, its words, whether it is an editable, the elements inside it (which every selector
+ *  of `querySelectorAll` finds, and which it contains), the one `querySelector` finds in it for a
+ *  selector (`find`, none unless given), the one `closest` finds around it for a selector
+ *  (`around`, which may answer the same whatever the selector), and what scrolling it into view
+ *  does to the page. */
 function standInElement(
   name: string,
   box: () => StandInBox,
   {
     attributes = {},
     editable = false,
+    find = () => null,
     inside = () => [],
     around = () => null,
     onScroll = () => {},
+    tag = "DIV",
     words = "",
   }: {
     readonly attributes?: Record<string, string>;
     readonly editable?: boolean;
+    readonly find?: (selector: string) => StandInElement | null;
     readonly inside?: () => StandInElement[];
     readonly around?: (selector: string) => StandInElement | null;
     readonly onScroll?: () => void;
+    readonly tag?: string;
     readonly words?: string;
   } = {}
 ): StandInElement {
@@ -744,9 +751,10 @@ function standInElement(
     isConnected: true,
     isContentEditable: editable,
     name,
-    querySelector: () => null,
+    querySelector: find,
     querySelectorAll: inside,
     scrollIntoView: onScroll,
+    tagName: tag,
     textContent: words,
   };
   return drawn;
@@ -802,8 +810,9 @@ function standInBrowser(world: {
   const playwright = {
     keyboard: {
       press: async (key: string) => {
+        const target = world.active?.() ?? null;
         for (const listener of listeners.get("keydown") ?? []) {
-          listener({ isTrusted: true, timeStamp: performance.now(), type: "keydown" });
+          listener({ isTrusted: true, target, timeStamp: performance.now(), type: "keydown" });
         }
         world.key?.(key);
       },
@@ -813,7 +822,12 @@ function standInBrowser(world: {
         const hit = elementFromPoint(x, y);
         pressed.push(hit?.name ?? "nothing");
         for (const listener of listeners.get("pointerdown") ?? []) {
-          listener({ isTrusted: true, timeStamp: performance.now(), type: "pointerdown" });
+          listener({
+            isTrusted: true,
+            target: hit,
+            timeStamp: performance.now(),
+            type: "pointerdown",
+          });
         }
         world.press(hit);
       },
@@ -1021,13 +1035,12 @@ test("Row 2 names the last row Conversation draws by its own address, a child is
   expect(() => namedRow("LAY-1", [foreign])).toThrow(/no address names any of the 1 rows/);
 });
 
-test("Row 2's third load names the first answered question written in the spec, by its own address, with its row and its answer", () => {
-  const spec = "artifact-spec";
+test("Row 2's third load names the first answered question of the seed's spec by its block, whatever document the asks read names, by its own address, with its row and its answer", () => {
   const ask = (
     id: string,
     block: string | null,
     state: string,
-    artifact: string | null = spec
+    artifact: string | null = null
   ) => ({
     artifact_id: artifact,
     block_id: block,
@@ -1035,22 +1048,26 @@ test("Row 2's third load names the first answered question written in the spec, 
     state,
   });
   const asks = [
-    // An ask of no block, an ask of another document and an open question are none of them.
-    ask("ask-post", null, "answered", null),
-    ask("ask-plan", "q9", "answered", "artifact-plan"),
-    ask("ask-open", "q1", "open"),
-    ask("ask-q2", "q2", "answered"),
-    ask("ask-q3", "q3", "answered"),
+    // An answered ask of no block, an answered ask of a block that is none of the spec's
+    // questions, questions resolved or open, and a block past the seed's 11 are none of them.
+    ask("ask-post", null, "answered"),
+    ask("ask-statement", "r3", "answered", "artifact-spec"),
+    ask("ask-q1", "q1", "resolved"),
+    ask("ask-q2", "q2", "open"),
+    ask("ask-q12", "q12", "answered"),
+    // The seed's question, which the asks read names by no document.
+    ask("ask-q4", "q4", "answered"),
+    ask("ask-q5", "q5", "answered", "artifact-spec"),
   ];
-  const row = '[data-issue-body] [data-node-row][data-node-type="ask"][data-node-id$="#b-q2"]';
-  expect(answeredQuestion("LAY-1", spec, asks)).toEqual({
-    address: "/issues/LAY-1/asks/ask-q2",
+  const row = '[data-issue-body] [data-node-row][data-node-type="ask"][data-node-id$="#b-q4"]';
+  expect(answeredQuestion("LAY-1", asks)).toEqual({
+    address: "/issues/LAY-1/asks/ask-q4",
     answer: `${row} [data-node-answer]`,
-    named: "question ask-q2 (block q2)",
+    named: "question ask-q4 (block q4)",
     question: row,
   });
   // A seed with no answered question in its spec gives none, and the row fails saying so.
-  expect(answeredQuestion("LAY-1", spec, asks.slice(0, 3))).toBeNull();
+  expect(answeredQuestion("LAY-1", asks.slice(0, 5))).toBeNull();
 });
 
 test("a load that names an answered question records its row and its answer, and a change of the place or the size of either is a move", async () => {
@@ -1221,6 +1238,62 @@ test("the frame whose callback first counts the typeface's face loaded, and the 
   // With the face counted loaded from frame 1 on and no event near frame 4, a widening there is a
   // move like any other.
   expect((await swapLoad({ done: 9, loaded: 1, relayout: 4 })).moved).toEqual([4, 8]);
+});
+
+// CI run 45883270814 at badfd0b3, `chromium-load`: the presses on Plan, Decisions and Graph during
+// the load read no result in any load. Each is made at its control's centre as the first drawing
+// of the view row drew it, and the typeface's swap then widens every text control of the row and
+// slides the later ones right (CI run 45850876213: Plan from 41x33 at (559, 97) to 43x33 at
+// (600, 97), Verification's count label from 144x33 at (413, 97) to 162x33 at (436, 97)), so a
+// press the page takes once the row is laid out again lands on the count label of the view before
+// it. The stand-in page is that row at 1440 px.
+test("a press made at its control's first-drawn centre that the page takes after the control has moved names what it landed on, and reads no result", async () => {
+  const plan = LOAD_ACTS[1440].find((act) => act.name === "a press on Plan");
+  const step = plan?.steps[0];
+  if (step?.input.kind !== "press" || step.input.target.kind !== "control") {
+    throw new Error("the acts at 1440 px hold no press on Plan's own control");
+  }
+  let swapped = false;
+  const name = standInElement("Plan's name", () => boxAt(571, 104, 26, 20), { words: "Plan" });
+  const button: StandInElement = standInElement(
+    "Plan's control",
+    () => (swapped ? boxAt(600, 97, 43, 33) : boxAt(559, 97, 41, 33)),
+    {
+      around: (selector) => (selector.startsWith("button") ? button : null),
+      find: (selector) => (selector === "[data-preset-name]" ? name : null),
+      tag: "BUTTON",
+      words: "Plan",
+    }
+  );
+  const label: StandInElement = standInElement(
+    "Verification's count label",
+    () => (swapped ? boxAt(436, 97, 162, 33) : boxAt(413, 97, 144, 33)),
+    {
+      around: (selector) => (selector.startsWith("button") ? label : null),
+      tag: "LABEL",
+      words: "49",
+    }
+  );
+  const browser = standInBrowser({
+    drawn: () => [button, label],
+    height: 900,
+    press: () => {},
+    selected: { [step.input.target.selector]: () => [button] },
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    const point = await armStep(browser.page, 0, step, "now");
+    expect(point).toEqual({ x: 579.5, y: 113.5 });
+    // The swap lays the row out again before the page takes the press.
+    swapped = true;
+    await makeInput(browser.page, step, point);
+    await browser.page.waitForFunction(
+      (at) => (window.__loadInstruments?.record().frames.length ?? 0) >= at,
+      instruments.record().frames.length + 5
+    );
+    expect(browser.pressed).toEqual(["Verification's count label"]);
+    expect(instruments.shown(0)).toBe(false);
+    expect(instruments.record().acts[0]?.event?.target).toBe('label "49"');
+  });
 });
 
 /** A row of a stand-in outline drawn by block `block` of the spec, with the box its editor is
