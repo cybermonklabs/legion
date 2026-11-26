@@ -228,13 +228,13 @@ func TestARemovalMakesTwoPassesOverADirectoryWhoseNamesKeepAppearing(t *testing.
 // A name made in a directory after the removal's read found none and before its rmdir appeared
 // while the removal ran, as a writer's name does: the rmdir's ENOTEMPTY sends the removal back to
 // read the directory again, within volumeRemovalPasses, rather than answering it as a failure of
-// the directory's own (removeDir). The case above meets that window only when its writer falls
-// behind; here the window is the removal's own (beforeRemoveDir), before each rmdir of the entry,
-// so nothing is raced. A name made before the first rmdir alone is read, removed, and the entry
-// goes; a name made before every rmdir spends the passes, and the removal answers errStillFilling
-// of the entry after volumeRemovalPasses+1 rmdirs; and an ENOTEMPTY that the next read finds no
-// name for, which beforeRemoveDir answers in the rmdir's place as a name no read lists, is the
-// entry's own and is answered as it is.
+// the directory's own (empty). TestARemovalOfADirectoryStillBeingWrittenInEnds meets that window
+// only when its writer falls behind; here the window is the removal's own (beforeRemoveDir),
+// before each rmdir of the entry, so nothing is raced. A name made before the first rmdir alone is
+// read, removed, and the entry goes; a name made before every rmdir spends the passes, and the
+// removal answers errStillFilling of the entry after volumeRemovalPasses+1 rmdirs; and an
+// ENOTEMPTY that the next read finds no name for, which beforeRemoveDir answers in the rmdir's
+// place as a name no read lists, uses up no pass and is answered as it is.
 func TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain(t *testing.T) {
 	// Not parallel: it writes the package variable beforeRemoveDir, which parallel tests read.
 	for _, tc := range []struct {
@@ -242,9 +242,10 @@ func TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain(t *testing.T) {
 		// refill is the window before the entry's rmdir number rmdir.
 		refill     func(t *testing.T, entry string, rmdir int) error
 		wantRmdirs int
-		want       func(error) bool
-		wantText   string
-		gone       bool
+		// wantIs is what the removal's answer is (errors.Is), nil for none; wantText is its whole
+		// text, "" for none.
+		wantIs   error
+		wantText string
 	}{
 		{
 			name: "a name made before the first rmdir alone",
@@ -255,9 +256,6 @@ func TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain(t *testing.T) {
 				return nil
 			},
 			wantRmdirs: 2,
-			want:       func(err error) bool { return err == nil },
-			wantText:   "nil, the entry removed once the name made before its first rmdir was",
-			gone:       true,
 		},
 		{
 			name: "a name made before every rmdir",
@@ -266,20 +264,15 @@ func TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain(t *testing.T) {
 				return nil
 			},
 			wantRmdirs: volumeRemovalPasses + 1,
-			want: func(err error) bool {
-				return errors.Is(err, errStillFilling) && strings.Contains(err.Error(), strconv.Quote("entry")+":")
-			},
-			wantText: fmt.Sprintf("%v of %q", errStillFilling, "entry"),
+			wantIs:     errStillFilling,
+			wantText:   quotedPathText("getdents", "entry", "", errStillFilling),
 		},
 		{
 			name:       "an ENOTEMPTY no read finds a name for",
 			refill:     func(*testing.T, string, int) error { return syscall.ENOTEMPTY },
 			wantRmdirs: 1,
-			want: func(err error) bool {
-				return errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, errStillFilling) &&
-					strings.Contains(err.Error(), strconv.Quote("entry")+":")
-			},
-			wantText: fmt.Sprintf("unlinkat %q: %v", "entry", syscall.ENOTEMPTY),
+			wantIs:     syscall.ENOTEMPTY,
+			wantText:   quotedPathText("unlinkat", "entry", "", syscall.ENOTEMPTY),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -303,14 +296,18 @@ func TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain(t *testing.T) {
 
 			removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
 
-			if !tc.want(removal) {
-				t.Errorf("the removal answered %v, want %s", removal, tc.wantText)
+			text := ""
+			if removal != nil {
+				text = removal.Error()
+			}
+			if (removal == nil) != (tc.wantIs == nil) || tc.wantIs != nil && !errors.Is(removal, tc.wantIs) || text != tc.wantText {
+				t.Errorf("the removal answered %q (%v), want %q (%v)", text, removal, tc.wantText, tc.wantIs)
 			}
 			if rmdirs != tc.wantRmdirs {
 				t.Errorf("the removal made %d rmdirs of the entry, want %d", rmdirs, tc.wantRmdirs)
 			}
-			if _, err := os.Lstat(entry); errors.Is(err, os.ErrNotExist) != tc.gone {
-				t.Errorf("after the removal the entry's lstat answered %v, want it gone: %t", err, tc.gone)
+			if _, err := os.Lstat(entry); errors.Is(err, os.ErrNotExist) != (tc.wantIs == nil) {
+				t.Errorf("after the removal the entry's lstat answered %v, want it gone: %t", err, tc.wantIs == nil)
 			}
 		})
 	}
@@ -340,15 +337,7 @@ func TestARemovalOfANameItCannotRemoveAnswersThatNamesErrorBeforeAnyRmdir(t *tes
 		t.Fatal(err)
 	}
 	defer held.Close()
-	locked := filepath.Join(dir, "entry", "locked")
-	mkdirFixture(t, locked)
-	if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	lockedDirHolding(t, filepath.Join(dir, "entry", "locked"), "kept")
 	var rmdirs []string
 	beforeRemoveDir = func(name string) error {
 		rmdirs = append(rmdirs, name)
@@ -367,6 +356,21 @@ func TestARemovalOfANameItCannotRemoveAnswersThatNamesErrorBeforeAnyRmdir(t *tes
 	if len(rmdirs) != 0 {
 		t.Errorf("the removal reached the rmdir of %v, want none: the pass that removed nothing ends it in empty", rmdirs)
 	}
+}
+
+// lockedDirHolding makes dir, where it is not there yet, with the empty file name in it, and makes
+// dir 0500 until the test ends: a name whose unlink fails with EACCES on every pass, for anyone but
+// root, which each case that holds it skips.
+func lockedDirHolding(t *testing.T, dir, name string) {
+	t.Helper()
+	mkdirFixture(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 }
 
 // A directory still being written in that also holds a name whose removal fails for a reason of
@@ -389,15 +393,7 @@ func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T)
 	}
 	defer held.Close()
 	filling := filepath.Join(dir, "entry", "filling")
-	locked := filepath.Join(filling, "locked")
-	mkdirFixture(t, locked)
-	if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	lockedDirHolding(t, filepath.Join(filling, "locked"), "kept")
 
 	removal := removeWhileFilling(t, held, filling)
 	if !errors.Is(removal, syscall.EACCES) {
@@ -439,13 +435,7 @@ func TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling(t *testing.T
 			entry := filepath.Join(dir, "entry")
 			locked := filepath.Join(entry, "locked")
 			filling := stageListedPair(t, entry, locked, order.fillingFirst)
-			if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(locked, 0o500); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+			lockedDirHolding(t, locked, "kept")
 			if listed := listedNames(t, entry); (listed[0] == filepath.Base(filling)) != order.fillingFirst {
 				t.Fatalf("%s lists %q, which is not the order %q stages", entry, listed, order.name)
 			}
@@ -739,15 +729,7 @@ func TestARemovalErrorQuotesTheNamesARoleChose(t *testing.T) {
 	}
 	t.Run("a name below the entry", func(t *testing.T) {
 		dir := t.TempDir()
-		locked := filepath.Join(dir, "entry", "locked")
-		mkdirFixture(t, locked)
-		if err := os.WriteFile(filepath.Join(locked, forged), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(locked, 0o500); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+		lockedDirHolding(t, filepath.Join(dir, "entry", "locked"), forged)
 		answer(t, dir, "entry", strconv.Quote("entry/.../"+forged)+" (depth 2): ")
 	})
 	t.Run("the entry itself", func(t *testing.T) {
