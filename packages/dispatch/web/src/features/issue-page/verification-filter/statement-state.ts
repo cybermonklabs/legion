@@ -29,15 +29,13 @@ import { nodesInOrder } from "../tree-keys";
  * - **Covered.** How many of the issue's statements carry a check. It is covered and never proven
  *   or met: a statement that has a check is not a statement that is true (R17, R22). It is the
  *   coverage read's count (`issueCovered`), which answers every statement of the issue's spec,
- *   less the rows `countedCoverage` leaves out: each the read marks proposed or closed, and each
- *   whose statement the page reads as out of the counts among the statements the view has
- *   loaded. It is not a count of the statements the view draws: the view read answers its nodes
- *   a page at a time, and the server ends a page at a bound of bytes as well as of nodes, so the
- *   statements on its first page move with every node written before the cut - a check an issue
- *   under this one adds under the first statement pushes the last one onto the next page. While
- *   a document of the issue is still being indexed (`coverageNotes`), the coverage read's counts
- *   may not hold what serves a statement yet, so the summary draws that document's line in place
- *   of any count.
+ *   less the rows `countedCoverage` leaves out. It is not a count of the statements the view
+ *   draws: the view read answers its nodes a page at a time, and the server ends a page at a
+ *   bound of bytes as well as of nodes, so the statements on its first page move with every node
+ *   written before the cut - a check an issue under this one adds under the first statement
+ *   pushes the last one onto the next page. While a document of the issue is still being indexed
+ *   (`coverageNotes`), the coverage read's counts may not hold what serves a statement yet, so
+ *   the summary draws that document's line in place of any count.
  *
  * How one check stands is `tree-drafts.ts`'s `checkStanding`, the page's one reading of it:
  * each of its results read against the commit the server names for that check, the basis it
@@ -192,12 +190,10 @@ export type IssueCovered =
  * The issue's covered count, from the coverage read it is given
  * (`GET /api/v1/issues/{key}/coverage`): every `requirement` block of the issue's spec is one of
  * its rows (`requirements`), and one is covered where a check of the issue or of an issue under
- * it serves it (`checks`). The summary gives it that read less each row no count reads
- * (`countedCoverage`): each the read marks proposed or closed, and each whose statement the page
- * reads as out of the counts among the statements the view has loaded, so the count can move as
- * the view loads more of them. While a document of the issue is still being indexed
- * (`coverageNotes`), the coverage read's counts may not hold what serves a statement yet, so this
- * answers those lines in place of any count.
+ * it serves it (`checks`). The summary gives it that read less the rows `countedCoverage` leaves
+ * out, so the count can move as the view loads more statements. While a document of the issue is
+ * still being indexed (`coverageNotes`), the coverage read's counts may not hold what serves a
+ * statement yet, so this answers those lines in place of any count.
  */
 export function issueCovered(coverage: IssueCoverage | undefined): IssueCovered {
   const notes = coverageNotes(coverage);

@@ -53,16 +53,11 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * on nobody (`draftDecision`). Who decided it is the answer's `decided_by` tuple, so the
  * decisions read with no asks say it too.
  *
- * An overtaken decision or question, a node the read answers `overtaken`, counts in no
- * count of what waits (R2), as the outline marks it waiting on nobody (`draftDecision`,
- * `draftAsk`): neither a decision whose node is, nor an open ask whose node is, each ask found by
- * the one rule the outline finds an ask node's row by (`askOfNode`), in the read the decisions
- * are counted from.
- *
- * Nor does anything under one in that read (the decisions view read where the page holds it,
- * else Conversation's read): a later node took its place, and the tree draws none of them in the
- * waiting tone. A node is under another where the read's `parent` chain reaches it, so an open
- * ask or a decision there is not counted. A proposed one still is: no node took its place yet. A
+ * Nothing at or under an overtaken node of the read the decisions are counted from (the
+ * decisions view read where the page holds it, else Conversation's read) waits on anybody: a
+ * later node took its place, and the tree draws none of them in the waiting tone. A node is
+ * under another where the read's `parent` chain reaches it, so an open ask or a decision there
+ * is not counted. A proposed one still is: no node took its place yet. A
  * question written as a block of a document is overtaken where its ask's node is, and never by a
  * state its block's node holds (`ownStatesOf`), as the tree draws it: the tree draws the block
  * and its ask as one row, which takes the ask's state, so where the ask's node is overtaken the
@@ -124,7 +119,10 @@ export function waitingOnReader(
   let counted = decisions ?? tree;
   // Each open ask and node of that read at or under an overtaken node taken out, the decisions
   // among those nodes with them, and the count made of what is left.
-  const { askIds: closedAsks, readIds: closed } = closedReadIds(counted, { asks: asksRead, issue });
+  const { askIds: closedAsks, readIds: closed } = closedReadIds(
+    viewer === undefined ? undefined : counted,
+    { asks: asksRead, issue }
+  );
   if (counted !== undefined && closed.size > 0) {
     issue = {
       ...issue,

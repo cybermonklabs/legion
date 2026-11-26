@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 
 import type { Artifact, CheckBlock, IssueCoverage, IssueDetails } from "../../../api/types";
+import { specRef } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
+import { coverageRead } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { treeRows } from "../tree-fold";
-import { nodesInOrder } from "../tree-keys";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
@@ -1135,20 +1136,9 @@ function coverageRow(
     coverage: checks === 0 ? "gap" : "unproven",
     gaps: [],
     plan_tasks: 0,
-    ref: `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-${blockId}`,
+    ref: specRef(blockId),
     text: `Statement ${blockId}.`,
     ...extra,
-  };
-}
-
-/** The coverage read of the issue, with `rows` as its rows. */
-function coverageWith(...rows: readonly CoverageRow[]): IssueCoverage {
-  return {
-    gaps: [],
-    has_plan: false,
-    issue: ISSUE_KEY,
-    requirements: [...rows],
-    spec_artifact_id: "artifact-spec",
   };
 }
 
@@ -1160,12 +1150,9 @@ function coverageWith(...rows: readonly CoverageRow[]): IssueCoverage {
 // it is neither covered nor one of the statements that count is out of.
 test("the covered count leaves out a statement under an overtaken question whose coverage row is not closed", () => {
   const passed = passing("c-one");
-  const underQuestion = passing("c-two");
   const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
   const asked = {
-    ...statementNode("r2", "A later question took this one's place.", [
-      { ...checkNode(underQuestion), closed: true as const },
-    ]),
+    ...statementNode("r2", "A later question took this one's place."),
     closed: true as const,
   };
   const question = node({
@@ -1175,16 +1162,11 @@ test("the covered count leaves out a statement under an overtaken question whose
     ...OVERTAKEN,
   });
   const view = verificationView([first, question]);
-  const coverage = coverageWith(coverageRow("r1", 1), coverageRow("r2", 1));
+  const coverage = {
+    ...coverageRead([]),
+    requirements: [coverageRow("r1", 1), coverageRow("r2", 1)],
+  };
 
-  expect(
-    nodesInOrder(view).flatMap((one) =>
-      one.type === "requirement" ? [[one.id, one.closed === true]] : []
-    )
-  ).toEqual([
-    [first.id, false],
-    [asked.id, true],
-  ]);
   expect(issueCovered(coverage)).toEqual({ covered: 2, kind: "count", total: 2 });
   expect(issueCovered(countedCoverage(coverage, view))).toEqual({
     covered: 1,
@@ -1207,8 +1189,7 @@ test("the covered count leaves out a row the coverage read marks proposed or clo
     coverageRow("r2", 1, { coverage: "proposed", state: "proposed" }),
     coverageRow("r3", 1, { coverage: "closed" }),
   ]) {
-    const coverage = coverageWith(coverageRow("r1", 1), marked);
-    expect(nodesInOrder(view).some((one) => one.reference === marked.ref)).toBe(false);
+    const coverage = { ...coverageRead([]), requirements: [coverageRow("r1", 1), marked] };
     expect(issueCovered(coverage)).toEqual({ covered: 2, kind: "count", total: 2 });
     expect(issueCovered(countedCoverage(coverage, view))).toEqual({
       covered: 1,

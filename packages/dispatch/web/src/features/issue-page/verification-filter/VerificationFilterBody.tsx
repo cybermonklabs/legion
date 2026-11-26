@@ -161,14 +161,12 @@ export function queryTyped(query: string): boolean {
  *   (`NODE_STATE_WORDS.check`), drawn with the shape its token carries (`NodeGlyph`), so no
  *   state is told from another by colour alone.
  * - **Covered, never proven.** The summary counts the issue's statements that carry a check as
- *   covered, out of every statement of the issue, both from the coverage read, less each row no
- *   count reads (`countedCoverage`): each the read marks proposed or closed, and each whose
- *   statement the page reads as out of the counts among the statements the view has loaded.
- *   While a document of the issue is still being indexed, it draws that document's line in place
- *   of any count. No count, legend or heading of this body reads proven
- *   or met for it, because a statement that has a check is not a statement that is true. Every
- *   other count the summary and the chips draw is of the statements and checks the view has
- *   loaded, and carries "+" while the view read holds nodes no page read yet holds (R15,
+ *   covered, out of every statement of the issue, both from the coverage read, less the rows
+ *   `countedCoverage` leaves out. While a document of the issue is still being indexed, it draws
+ *   that document's line in place of any count. No count, legend or heading of this body reads
+ *   proven or met for it, because a statement that has a check is not a statement that is true.
+ *   Every other count the summary and the chips draw is of the statements and checks the view
+ *   has loaded, and carries "+" while the view read holds nodes no page read yet holds (R15,
  *   `TreeNode.moreToRead`).
  * - **Every value inside its card.** Each cell is a column of its own that may be zero wide
  *   and breaks inside a word where it has nothing else to break on, and a check's attributes
@@ -206,10 +204,8 @@ export function VerificationFilterBody({
   /** The coverage read (`GET /api/v1/issues/{key}/coverage`, the slot's `coverage`): every
    *  statement of the issue's spec, with how many checks serve it, and any line saying a
    *  document of the issue is still being indexed. The summary's covered line is read from it
-   *  (`issueCovered`), less each row no count reads (`countedCoverage`): each the read marks
-   *  proposed or closed, and each whose statement the page reads as out of the counts among the
-   *  statements the view has loaded. That read is one of the three the body waits on (`reads`),
-   *  so the summary is drawn only once it holds an answer. */
+   *  (`issueCovered`), less the rows `countedCoverage` leaves out. That read is one of the three
+   *  the body waits on (`reads`), so the summary is drawn only once it holds an answer. */
   coverage: IssueCoverage | undefined;
   /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
    *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
@@ -961,10 +957,9 @@ function Summary({
   reading,
 }: {
   counts: Readonly<Record<StatementState, number>>;
-  /** How the issue's covered count stands (`issueCovered`): from the coverage read, less each row
-   *  no count reads (`countedCoverage`), each the read marks proposed or closed and each whose
-   *  statement the page reads as out of the counts among the statements the view has loaded; or
-   *  each line saying a document of the issue is still being indexed in place of any count. */
+  /** How the issue's covered count stands (`issueCovered`): from the coverage read, less the rows
+   *  `countedCoverage` leaves out; or each line saying a document of the issue is still being
+   *  indexed in place of any count. */
   covered: IssueCovered;
   /** Whether the view read holds nodes no page read yet holds: each count of the loaded
    *  statements and checks then carries "+" (R15). */
