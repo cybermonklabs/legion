@@ -34,7 +34,7 @@ const testProxyPool = "projects/example-project/locations/us-west1/caPools/proxy
 
 // localProxyEnv is what a broker with a proxy is started with on the local stack, less the
 // authority: the database at databaseURL, a port of its own, a fake secret store, which makes it
-// a local run, and a profiles file binding one host.
+// a local run, and a profiles file declaring one bound kind.
 func localProxyEnv(t *testing.T, databaseURL string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
@@ -46,7 +46,7 @@ func localProxyEnv(t *testing.T, databaseURL string) []string {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
-		"BROKER_PROFILES_FILE=" + profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+		"BROKER_PROFILES_FILE=" + profilesFile(t, `{"kinds": [{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}], "profiles": []}`),
 		"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
 		"KUBERNETES_SERVICE_HOST=",
@@ -224,14 +224,15 @@ func TestMainRefusesAProxyChainItCannotStartOn(t *testing.T) {
 }
 
 // TestEveryProxyBlocksHostIsBound: the hosts every intermediate must permit exactly are those of
-// every proxy block, a dpop block's included (its host is a private destination the proxy signs a
-// leaf for too), each once, in the profiles file's order.
+// every kind and inline dpop binding, each once, in the profiles file's order.
 func TestEveryProxyBlocksHostIsBound(t *testing.T) {
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.com", "*.deel.com"}},
-		{Name: "WORKER_TOKEN", Hosts: []string{"dispatch.internal.example"}, Kind: proxyrules.KindDPoP},
-		{Name: "OTHER_KEY", Hosts: []string{"api.deel.com"}},
-	}}
+	rules := proxyrules.Rules{
+		Kinds: []proxyrules.Kind{
+			{Name: "deel", Hosts: []string{"api.deel.com", "*.deel.com"}},
+			{Name: "other", Hosts: []string{"api.deel.com"}},
+		},
+		Names: []proxyrules.Binding{{Name: "WORKER_TOKEN", Inline: &proxyrules.Kind{Name: "dpop", Hosts: []string{"dispatch.internal.example"}}}},
+	}
 	want := []string{"api.deel.com", "*.deel.com", "dispatch.internal.example"}
 	if got := boundHosts(rules); !slices.Equal(got, want) {
 		t.Errorf("boundHosts = %v; want %v", got, want)

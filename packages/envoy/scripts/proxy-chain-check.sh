@@ -502,7 +502,7 @@ check_k27() {
 
 	# Step 6: add a host, apply the stand-in's policy first, roll, call the new host.
 	local wider="$WORK_DIR/profiles-with-t.json"
-	jq '(.profiles[] | select(.name == "AIRLOCK_DEMO_TOKEN") | .proxy.hosts) += ["t.airlock.test"]' "$AIRLOCK_PROFILES_FILE" >"$wider"
+	jq '(.kinds[] | select(.name == "stest") | .hosts) += ["t.airlock.test"]' "$AIRLOCK_PROFILES_FILE" >"$wider"
 	# The order matters: a broker rolled onto the wider file before the policy names the new host
 	# is refused its intermediate and is not ready.
 	start_extra_broker early BROKER_PROFILES_FILE="$wider"

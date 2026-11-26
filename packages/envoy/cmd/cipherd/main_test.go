@@ -383,7 +383,7 @@ func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, nil, nil)
 	minted, err := m.Minters[policy.TypeAnthropicFederation](t.Context(), secrets.MintRequest{
 		Name: secret, Source: secret, Type: policy.TypeAnthropicFederation, HumanTier: true, Value: storedVal,
 	})
