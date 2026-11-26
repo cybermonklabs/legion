@@ -16,6 +16,8 @@
 #        program's state, the signing key) is a finding in the report;
 #   (o)  the broker's one binding on the operator's account is allowed only when --broker-account
 #        names it, and a minter of the broker's own account is a finding;
+#   (dd) the broker holding a second role on the operator's account (roles/iam.serviceAccountKeyAdmin
+#        beside roles/iam.serviceAccountTokenCreator) is a finding naming that role;
 #   (q)  a Policy Analyzer answer longer than a pipe holds (3000 people beside the Workload Identity
 #        member) still finds its witness, and exits 0;
 #   (t)  grade-ci holding roles/container.admin on a GKE fleet member's project (example-grade)
@@ -159,6 +161,19 @@ if row o; then
   # passed with the broker allowed in any role (the o-broker control, 2026-11-21).
   want_text " on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $project_res" "the broker minting through another binding"
   passed "(o) the broker's allowance is its one binding on the operator's account, by name: the same role on the project is a finding"
+fi
+
+# --- (dd) The broker's allowance is one role on the operator's account,
+# roles/iam.serviceAccountTokenCreator. A second role of the broker there is a finding. With the
+# allowance taken as any role of the broker, every other row passed (Tester5685, #5685). ---
+if row dd; then
+  base_world
+  iam "$gsa_res" roles/iam.serviceAccountKeyAdmin "serviceAccount:$broker"
+  run
+  want_status 1 "the broker holding roles/iam.serviceAccountKeyAdmin on the operator's account too"
+  want_text "FINDING serviceAccount:$broker: " "the broker holding a second role on the operator's account"
+  want_text " on $gsa_res through roles/iam.serviceAccountKeyAdmin, granted at $gsa_res" "the broker holding a second role on the operator's account"
+  passed "(dd) the broker holding a second role on the operator's account, beside its roles/iam.serviceAccountTokenCreator, is a finding naming that role"
 fi
 
 # --- (q) A long answer. Past the 64 KiB a pipe holds, `cut | grep -q` fails under pipefail with

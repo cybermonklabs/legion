@@ -29,9 +29,10 @@
 #     Secret Manager's NotFound and PermissionDenied are printed.
 #
 # Each row resets the world (so each plant is removed after its row), plants one thing, and holds
-# the run to its exit and to the line naming what it planted; a row of a list of rights plants each
-# right on a principal of its own in one world instead, and holds its one run to each principal's
-# line (plant_rights, plant_permissions and want_planted). The rows are in eight files of
+# the run to its exit and to the line naming what it planted. A row of a list of rights instead
+# plants the whole list in one world: each right on a ServiceAccount of its own (plant_rights), or
+# each permission through a role of its own on one member (plant_permissions), and holds one run a
+# world to each right's line (want_planted); row bf is two worlds. The rows are in eight files of
 # operator-token-minters/, by concern, each sourced below after the world and its helpers, and
 # each listing its rows in its header:
 #
@@ -45,8 +46,9 @@
 #     accounts, the hold writers, IAM impersonation and IAM writers, and a fleet member's project;
 #   - test-rows-pool.sh: the pool's other clusters: the project's other clusters, the pool
 #     project's own clusters, and the fleet's members;
-#   - test-rows-admission.sh: admission power outside the admission objects: a webhook's backend,
-#     a policy engine's resources, and an admission policy's parameter objects;
+#   - test-rows-admission.sh: admission power: the rights on the admission objects, and outside
+#     them a webhook's backend, a policy engine's resources, and an admission policy's parameter
+#     objects;
 #   - test-rows-become.sh: who can become a principal with a finding through a right a live role
 #     limits by name;
 #   - test-rows-fence.sh: the broker's pod fence, which credits what it refuses only when the
@@ -533,11 +535,16 @@ want_step_unknown() {
   ! has_prefix "PASS live: $1: " || fail "$3: the step $1 passed"
 }
 want_rbac_unknown() { want_step_unknown "RBAC on operator-cluster" "$1" "$2"; }
-# --- A list of rights, each on a principal of its own, in one world. A row of such a list plants
-# every right of it in one world, each on a principal that holds nothing else, and judges them all
-# by one run of the check: a run per right cost about 140 runs of the check a harness run. A right
-# the check does not ask leaves its principal's line out, and a finding misread onto another
-# planted principal shows on that principal. ---
+# --- A list of rights in one world. A row of such a list plants every right of it in one world,
+# each right on a ServiceAccount of its own (plant_rights), or each permission through a role of
+# its own on one member (plant_permissions), and judges the world by one run of the check
+# (want_planted): a run per right cost about 140 runs of the check a harness run. A right the check
+# does not ask leaves its line out. The ServiceAccount rows also check each account's other
+# findings (planted_problems); the permission rows check each role's line alone. What a finding
+# belongs to is read from its own line, never from a cluster's label or a subject's form: the
+# principal is the text before the line's first ": ", and a right's verb and resource are its first
+# two words. A line wanted whole is built from what the caller passes (SUFFIX, MEMBER, ATTACHED), so
+# a change to how the check names a cluster or a member changes those arguments alone. ---
 OWN_FINDINGS=()
 # plant_rights CLUSTER NAMESPACE SUFFIX ENTRY...: each ENTRY, `verb|group|resource|subresource|the
 # binding's namespace|the resource name=the right the run names` (an empty namespace is

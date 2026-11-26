@@ -324,8 +324,10 @@ case "${args[*]}" in
     # The built-in cluster-admin binding (unless the world drops it), the bootstrap RoleBinding
     # kube-system/system::extension-apiserver-authentication-reader, and one binding of each grant,
     # naming its subject: a RoleBinding when the grant names a namespace, to the grant's Role when
-    # it has role_kind Role. A world marked no-rolebindings answers the ClusterRoleBindings alone,
-    # as an answer whose RoleBinding half came back empty would (row cu).
+    # it has role_kind Role. A grant marked unlisted has no binding here, as an authorizer other than
+    # RBAC (a webhook) would allow it, though the reviews still allow it (row dc). A world marked
+    # no-rolebindings answers the ClusterRoleBindings alone, as an answer whose RoleBinding half came
+    # back empty would (row cu).
     shaped_answer bindings
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
     jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" --arg rolebindings "$([ -e "$dir/no-rolebindings" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
@@ -338,7 +340,7 @@ case "${args[*]}" in
                      labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
           roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "extension-apiserver-authentication-reader"},
           subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "User", name: "system:kube-scheduler"}]}]
-      + [to_entries[] | .key as $i | .value as $g | {
+      + [to_entries[] | .key as $i | .value as $g | select($g.unlisted != true) | {
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: (if $g.namespace == null then "ClusterRoleBinding" else "RoleBinding" end),
           metadata: ({name: "planted-\($i)"} + (if $g.namespace == null then {} else {namespace: $g.namespace} end)),

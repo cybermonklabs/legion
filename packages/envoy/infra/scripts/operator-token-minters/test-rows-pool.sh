@@ -31,12 +31,15 @@
 #        clusterroles, create, patch and update clusterrolebindings cluster-wide; bind and escalate
 #        roles and create, patch and update rolebindings in envoy-operator; create and get
 #        nodes/proxy), given on another cluster of the pool to a ServiceAccount that holds nothing
-#        else, is a finding naming it, and nothing else is (one world, one ServiceAccount a right);
+#        else, is a finding naming it; no finding of that ServiceAccount names another planted
+#        account's right or a right of another verb or resource, and no other principal has a
+#        finding (one world, one ServiceAccount a right);
 #   (as) on a GKE fleet member in another project, impersonate groups, create clusterrolebindings,
 #        bind clusterroles, create or get nodes/proxy, or create pods in kube-system (where
 #        namespace-controller may create namespaces), each given to a ServiceAccount that holds
-#        nothing else, is a finding naming it, and no other right is a finding of that ServiceAccount
-#        (one world, one ServiceAccount a right);
+#        nothing else, is a finding naming it, and no finding of that ServiceAccount names another
+#        planted account's right or a right of another verb or resource (one world, one
+#        ServiceAccount a right);
 #   (az) with --pool-project example-pool, that project's own cluster holding the namespace
 #        envoy-operator exits 1 naming it, and a pool project whose clusters cannot be listed reads
 #        UNKNOWN;
@@ -330,7 +333,7 @@ if row an; then
   plant_rights other-cluster ci " on cluster $project/us-east1/other-cluster" "${escalation_rights[@]}"
   run
   want_planted "each escalation right on other-cluster given to a ServiceAccount of its own" only
-  passed "(an) each of the ${#escalation_rights[@]} escalation rights, given on another cluster of the pool to a ServiceAccount that holds nothing else, is a finding naming it, and nothing else is"
+  passed "(an) each of the ${#escalation_rights[@]} escalation rights, given on another cluster of the pool to a ServiceAccount that holds nothing else, is a finding naming it; no finding of that ServiceAccount names another planted account's right or a right of another verb or resource, and no other principal has a finding"
 fi
 
 # --- (as) The escalation rights, nodes/proxy and the system namespaces on a GKE fleet member in
@@ -351,7 +354,7 @@ if row as; then
   plant_rights grade-cluster apps " on cluster example-grade/us-east1/grade-cluster" "${member_rights[@]}"
   run
   want_planted "each right on the fleet member grade given to a ServiceAccount of its own" own
-  passed "(as) each of the ${#member_rights[@]} escalation and system-namespace rights, given on a GKE fleet member in another project to a ServiceAccount that holds nothing else, is a finding naming it, and no other right is"
+  passed "(as) each of the ${#member_rights[@]} escalation and system-namespace rights, given on a GKE fleet member in another project to a ServiceAccount that holds nothing else, is a finding naming it, and no finding of that ServiceAccount names another planted account's right or a right of another verb or resource"
 fi
 
 # --- (az) The pool project's own clusters, with --pool-project naming another project. ---
