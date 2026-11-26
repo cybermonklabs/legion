@@ -761,11 +761,11 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     the rule the promotion itself reads per kind) and the promotion starts it under the cap
 //     and the P0 bound (capLets, the cap's half the promotion reads too, under the pass's own
 //     rule — facts — with the slots its holders lend, covers, over the holders counted as the
-//     promotion counts them, record.SlotRule.AddHolder): it takes a row the holders the cap
-//     counts hold fewer than the cap of, it takes none at all, as a queued root in accepting,
-//     retro or merging takes none and opens its tree whatever the cap says, or it starts outside
-//     the cap under a rule that starts a P0 there (record.SlotRule.StartsOutsideCap) while the
-//     P0 bound the pass admits under lets it in. The
+//     promotion counts them, record.SlotHolders): it takes a row the holders the cap counts
+//     (record.SlotRule.CapCounted) hold fewer than the cap of, it takes none at all, as a queued
+//     root in accepting, retro or merging takes none and opens its tree whatever the cap says, or
+//     it starts outside the cap under a rule that starts a P0 there
+//     (record.SlotRule.StartsOutsideCap) while the P0 bound the pass admits under lets it in. The
 //     promotion this same pass runs after the measure starts that entry's work. A slot comes
 //     free without a worker
 //     where a started issue gives its row back to wait on another issue (releaseSlotsForWaits),
@@ -797,7 +797,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, s
 		if _, holdsSlot := holds.holders[issue.Key]; !holdsSlot {
 			continue
 		}
-		rule.AddHolder(&held, issue)
+		held.Add(issue)
 		if holds.waitsByDesign(issue) {
 			continue
 		}

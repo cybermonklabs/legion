@@ -180,6 +180,16 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// ProxyReady reports whether the proxy's certificate authority can sign a bound host's leaf
+	// (proxy.Authority.Ready): nil while it holds a certificate whose life is not over. While it
+	// errs GET /healthz answers 503 NO_INTERMEDIATE with its reason, so a readiness probe keeps
+	// traffic away from a pod whose every bound handshake would fail, and a rolling update keeps
+	// the old pods until a new one has its intermediate. This process goes on serving every other
+	// route, but that holds only inside it: Kubernetes takes a pod that fails its readiness probe
+	// out of every Service that selects it, and the edge's GET /healthz answers from these same
+	// Deps, so an unready pod serves no route to anyone. Nil is a broker with no proxy, and every
+	// rig that wires none.
+	ProxyReady func() error
 	// NATSHold is the NATS writer hold's routes, /v1/nats-hold and the three under it, which
 	// the operator alone calls (NATSHold). Every Deps mounts them; the zero NATSHold refuses
 	// every caller 403 not_operator, as a broker whose BROKER_NATS_SERVICES lists no operator
@@ -985,9 +995,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // (handlers_introspect.go).
 type stateResponse = wire.StateResponse
 
-// healthResponse is GET /healthz's answer while the broker is not draining and can reach
-// Postgres. Neither refusal has a type of its own: both are the ordinary broker error object
-// writeError writes, so this stays the route's one named response type.
+// healthResponse is GET /healthz's answer while the broker is not draining, its proxy holds an
+// intermediate and it can reach Postgres. No refusal has a type of its own: each is the ordinary
+// broker error object writeError writes, so this stays the route's one named response type.
 type healthResponse struct {
 	// "ok".
 	Status string `json:"status"`
@@ -1003,6 +1013,14 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Draining != nil && s.deps.Draining() {
 		writeError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "the broker is shutting down and is no longer taking new traffic")
 		return
+	}
+	// Then a proxy with nothing to sign a bound host's leaf with (Deps.ProxyReady), before the
+	// ping: such a pod would fail every bound handshake whatever its database says.
+	if s.deps.ProxyReady != nil {
+		if err := s.deps.ProxyReady(); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "NO_INTERMEDIATE", err.Error())
+			return
+		}
 	}
 	if err := s.deps.pingDatabase(r.Context()); err != nil {
 		if s.pingLogsItself {

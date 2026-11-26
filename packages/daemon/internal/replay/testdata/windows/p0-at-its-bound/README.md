@@ -5,8 +5,9 @@ Cap 1 is full from 09:05 UTC, with ACME-1 holding the regular slot. The P0 bound
 ACME-4 waits below P0 from 09:20. ACME-3 (P0) takes first place at 09:30 despite its worse board rank. The pass refuses ACME-3 at bound 1 and releases neither holder. It logs `admission holds a P0 issue at the P0 bound` with the issue (ACME-3), the P0 holders (1, ACME-2), the bound (1), the other holders (1, ACME-1) and the cap (1), the line cybermonklabs/legion#5488 writes, and the record holds that line at 09:30.
 
 R10 is the start of a P0 issue outside the cap under the P0 bound.
-`p0-at-once` runs it now, and `main` runs it once cybermonklabs/legion#5488 merges; until then `main` starts no P0 issue outside the cap, and its run waits on the skip list (`pending_test.go`, ruling D16).
-So the values below are those of `p0-at-once` now, and of `main` after that merge; the window's change of the bound at 09:07 makes a pass of its own, which starts nothing, since no P0 issue waits then.
+`main` runs it, since cybermonklabs/legion#5488.
+So the values below are those of `main`; the window's change of the bound at 09:07 makes a pass of its own, which starts nothing, since no P0 issue waits then.
+`expect.json` held them under `p0-at-once` too, the candidate that ran R10 before that change, until the repository kept that rule no more: since that change it was `main` in every choice but its name.
 
 Both waiters outrank ACME-1 and rank behind ACME-2, with or without the priority band. The priority-taken reading is therefore the same even though the two orders disagree on which waiter comes first.
 
@@ -20,7 +21,7 @@ The run names assumptions 1 (always), 8 (ACME-3 and ACME-4 are handed to Legion 
 
 The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
 So at 09:00, the window's start, the run under each rule that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
-Each run limits all six signals (`limits`), and run.json echoes them; neither rule here admits by signals, so the limits decide nothing.
+The run limits all six signals (`limits`), and run.json echoes them; `main` admits by no signal, so the limits decide nothing.
 
 - `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
 - `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.

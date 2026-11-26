@@ -40,10 +40,12 @@ const (
 	// its review (NeedsSlot, admit's releaseSlots).
 	TakenPastReview SlotTakenReason = "past_review"
 	// TakenLinkWait is the release for a wait of a started issue that waits on an unfinished
-	// Dispatch blocked_by link (admit's releaseSlotsForWaits).
+	// Dispatch blocked_by link (admit's releaseSlotsForWaits, and a cover that gives the waiter's
+	// slot to the issue it waits on, admit's coverReason).
 	TakenLinkWait SlotTakenReason = "link_wait"
 	// TakenChildrenWait is the release for a wait of a started parent that waits on its open
-	// Dispatch children (admit's releaseSlotsForWaits).
+	// Dispatch children (admit's releaseSlotsForWaits, and a cover that gives the parent's slot to
+	// one of those children, admit's coverReason).
 	TakenChildrenWait SlotTakenReason = "children_wait"
 	// TakenOutOfWork is the release of an issue out of the workflow: done, a Dispatch status the
 	// workflow does not run, or a tree that no longer runs (NeedsSlot, admit's releaseSlots).

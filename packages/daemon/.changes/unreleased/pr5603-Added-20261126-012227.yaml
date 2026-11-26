@@ -26,8 +26,9 @@ body: |-
   for each repository and target branch that serves the project's pull requests, to find the pull
   requests whose timeline it reads, and a failed boot read records `read_error` on `signal_inputs`,
   so the queue reads absent with its reason rather than as an empty queue. A migration adds
-  `queue_events`, `signal_inputs.read_error` and the `queue_timeline_read` outbox kind; its header
-  carries the way back.
+  `queue_events` and `signal_inputs.read_error`, and its header carries the way back; a second
+  migration, above every list of the outbox's kind check, adds the `queue_timeline_read` outbox
+  kind, and the first one's way back deletes that kind's rows.
 
   The daemon also keeps what the approvals signal of admission by signals needs: each ask of the
   project's issues with the person it was handed to (`asked_of`) and whose turn it is, each issue's

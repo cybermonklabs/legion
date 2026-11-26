@@ -81,9 +81,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The caller's credential and the one project it names ride with the actor the create
-	// records, which carries neither (model.Actor.Recorded): the credential for the p0 check
-	// below, the project for the project checks.
+	// The caller's credential rides with the actor the create records, which carries none
+	// (model.Actor.Recorded), for the p0 check below. The one project the credential names rides
+	// with the writer too (callerProject), for the project checks, as the PATCH reads it.
 	caller, err := s.requestWriter(r, input.Actor)
 	if err != nil {
 		s.writeAuthenticationError(w, err)

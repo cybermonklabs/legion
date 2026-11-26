@@ -1,8 +1,8 @@
 {
   "rules": {
-    "main": {
+    "before-p0": {
       "source": "replay",
-      "rule": "main",
+      "rule": "before-p0",
       "branch": "main",
       "seed": 1,
       "slowdown": 1,
@@ -55,10 +55,10 @@
     }
   },
   "refused": {
-    "p0-at-once": "ACMEAUX-1"
+    "main": "ACMEAUX-1"
   },
   "checks": {
-    "main": {
+    "before-p0": {
       "run": {
         "limits": {
           "idle": 0.5,

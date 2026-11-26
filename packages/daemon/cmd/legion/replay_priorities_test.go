@@ -10,15 +10,16 @@ import (
 // ACMEAUX-1, an ancestor on which the priority Dispatch resolves for ACME-2 rests.
 var ancestorMissingWindow = filepath.Join("..", "..", "internal", "replay", "testdata", "windows", "p0-inherited-ancestor-missing")
 
-// `legion replay run` under a rule with the new P0 start refuses a window that lacks the history of
-// an ancestor a priority rests on, naming the ancestor, before it opens any database (spec R10:
-// report the missing input and make no comparison that depends on it).
+// `legion replay run` under a rule with the new P0 start, main since cybermonklabs/legion#5488,
+// refuses a window that lacks the history of an ancestor a priority rests on, naming the ancestor,
+// before it opens any database (spec R10: report the missing input and make no comparison that
+// depends on it).
 func TestReplayRunRefusesANewP0RuleOnAWindowThatLacksAnAncestor(t *testing.T) {
 	t.Parallel()
-	code, stdout, stderr := legionRun(t, "replay", "run", "--window", ancestorMissingWindow, "--rule", "p0-at-once", "--pg-dsn", "postgres://unused",
+	code, stdout, stderr := legionRun(t, "replay", "run", "--window", ancestorMissingWindow, "--rule", "main", "--pg-dsn", "postgres://unused",
 		"--out", t.TempDir())
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "ACMEAUX-1") || !strings.Contains(stderr, "ACME-2") {
-		t.Errorf("legion replay run under p0-at-once = %d, stdout %q, stderr %q; want 1 and a refusal naming ACMEAUX-1 above ACME-2", code, stdout, stderr)
+		t.Errorf("legion replay run under main = %d, stdout %q, stderr %q; want 1 and a refusal naming ACMEAUX-1 above ACME-2", code, stdout, stderr)
 	}
 }
 

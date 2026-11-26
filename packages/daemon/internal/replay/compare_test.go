@@ -699,12 +699,12 @@ func TestTheUrgentWaitsAreJudged(t *testing.T) {
 }
 
 // Only a rule that keeps the owner's direction can be named best (spec R7), even where another is
-// better than main on every measure on every branch: cover, before-p0 and p0-at-once, each better on
-// each measure a seed gives — 4 more issues finished, 10 fewer hours waiting only for a slot, 0.1 less
-// priority taken (s 0.01), 30 fewer hours of other delays and every wait of P0 work an hour shorter
-// (s 0.1), each interval's near end past its error — are measured beside it (Outside), and signals,
-// as good, is named. The rule value decides, not its name: signals with the line's priority order
-// off is not named.
+// better than main on every measure on every branch: cover, which starts a P0 issue outside the
+// cap as main does, and before-p0, each better on each measure a seed gives — 4 more issues
+// finished, 10 fewer hours waiting only for a slot, 0.1 less priority taken (s 0.01), 30 fewer
+// hours of other delays and every wait of P0 work an hour shorter (s 0.1), each interval's near
+// end past its error — are measured beside it (Outside), and signals, as good, is named. The rule
+// value decides, not its name: signals with the line's priority order off is not named.
 func TestARuleOutsideTheOwnersDirectionIsNeverNamed(t *testing.T) {
 	t.Parallel()
 	better := atSeeds(judgedMain, fiveOffsets, func(c *Costs, offset float64) {
@@ -719,14 +719,14 @@ func TestARuleOutsideTheOwnersDirectionIsNeverNamed(t *testing.T) {
 		c.UrgentWaits["P0"] = wait
 	})
 	main := atSeeds(judgedMain, fiveOffsets, nil)
-	names := []string{"cover", "before-p0", "p0-at-once", "signals"}
+	names := []string{"cover", "before-p0", "signals"}
 	costs := map[string]SeedCosts{}
 	for _, name := range names {
 		costs[name] = better
 	}
 	d := decideAmong(t, names, decisionBranches(allPass, main, costs))
-	if !slices.Equal(d.Best, []string{"signals"}) || !slices.Equal(d.Outside, []string{"cover", "before-p0", "p0-at-once"}) {
-		t.Errorf("the decision names %v best and %v outside the owner's direction, want [signals] and [cover before-p0 p0-at-once]", d.Best, d.Outside)
+	if !slices.Equal(d.Best, []string{"signals"}) || !slices.Equal(d.Outside, []string{"cover", "before-p0"}) {
+		t.Errorf("the decision names %v best and %v outside the owner's direction, want [signals] and [cover before-p0]", d.Best, d.Outside)
 	}
 	for _, measure := range []string{"done", "waitOnlyForSlot.hours", "priorityTakenBanded", "otherDelays.hours", "urgentWaits[P0].firstSlot.medianHours",
 		"urgentWaits[P0].firstSlot.p90Hours", "urgentWaits[P0].done.medianHours", "urgentWaits[P0].done.p90Hours"} {
@@ -2305,9 +2305,10 @@ func priorityWorkWindow(t *testing.T) Window {
 //	    (0.375) and 45 (0.75), none cut; the done: 142.5 (2.375) and 165 (2.75), none cut.
 //
 // ACME-5, at P2, and ACME-6, with no priority, count in neither. The runs are made up, one seed of
-// the main branch under each of two rules: under main the P0 work waits 5 hours to its first slot
-// and to its done, both cut for two of its three issues, and no P1 issue counts, so its median and
-// percentile read none; under p0-at-once the waits are the record's.
+// the main branch under each of two rules: under before-p0, which starts no P0 issue outside the
+// cap, the P0 work waits 5 hours to its first slot and to its done, both cut for two of its three
+// issues, and no P1 issue counts, so its median and percentile read none; under main the waits are
+// the record's.
 func TestTheComparisonGivesTheWaitOfUrgentWorkOfEachRecordAndRule(t *testing.T) {
 	t.Parallel()
 	card, err := Score(priorityWorkWindow(t))
@@ -2327,15 +2328,15 @@ func TestTheComparisonGivesTheWaitOfUrgentWorkOfEachRecordAndRule(t *testing.T) 
 		t.Fatalf("the record's scorecard gives the urgent waits %+v, want %+v", card.UrgentWaits, recorded)
 	}
 	replayed := map[string]map[string]UrgentWait{
-		record.MainRule.Name: {"P0": {Issues: 3, FirstSlot: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 2}, Done: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 2}}},
-		"p0-at-once":         recorded,
+		"before-p0":          {"P0": {Issues: 3, FirstSlot: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 2}, Done: WaitMinutes{MedianMinutes: 300, P90Minutes: 300, Cut: 2}}},
+		record.MainRule.Name: recorded,
 	}
 	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)
 	for i := range windows {
 		windows[i].Scorecard.UrgentWaits = card.UrgentWaits
 	}
 	dir := t.TempDir()
-	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name), replayedRule(t, "p0-at-once")},
+	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name), replayedRule(t, "before-p0")},
 		runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 1},
 		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
 			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
@@ -2354,11 +2355,11 @@ func TestTheComparisonGivesTheWaitOfUrgentWorkOfEachRecordAndRule(t *testing.T) 
 		"| P0 to first slot, cut waits | 1 |", "| P0 to done, median | 2.9167 |", "| P0 to done, 90th percentile | 5 |", "| P0 to done, cut waits | 1 |",
 		"| P1 issues | 2 |", "| P1 to first slot, median | 0.375 |", "| P1 to first slot, 90th percentile | 0.75 |", "| P1 to first slot, cut waits | 0 |",
 		"| P1 to done, median | 2.375 |", "| P1 to done, 90th percentile | 2.75 |", "| P1 to done, cut waits | 0 |"}
-	ruleRows := []string{"| P0 issues | 3 | 3 |", "| P0 to first slot, median | 5 | 0.9167 |", "| P0 to first slot, 90th percentile | 5 | 5 |",
-		"| P0 to first slot, cut waits | 2 | 1 |", "| P0 to done, median | 5 | 2.9167 |", "| P0 to done, 90th percentile | 5 | 5 |",
-		"| P0 to done, cut waits | 2 | 1 |", "| P1 issues | 0 | 2 |", "| P1 to first slot, median | none | 0.375 |",
-		"| P1 to first slot, 90th percentile | none | 0.75 |", "| P1 to first slot, cut waits | 0 | 0 |", "| P1 to done, median | none | 2.375 |",
-		"| P1 to done, 90th percentile | none | 2.75 |", "| P1 to done, cut waits | 0 | 0 |"}
+	ruleRows := []string{"| P0 issues | 3 | 3 |", "| P0 to first slot, median | 0.9167 | 5 |", "| P0 to first slot, 90th percentile | 5 | 5 |",
+		"| P0 to first slot, cut waits | 1 | 2 |", "| P0 to done, median | 2.9167 | 5 |", "| P0 to done, 90th percentile | 5 | 5 |",
+		"| P0 to done, cut waits | 1 | 2 |", "| P1 issues | 2 | 0 |", "| P1 to first slot, median | 0.375 | none |",
+		"| P1 to first slot, 90th percentile | 0.75 | none |", "| P1 to first slot, cut waits | 0 | 0 |", "| P1 to done, median | 2.375 | none |",
+		"| P1 to done, 90th percentile | 2.75 | none |", "| P1 to done, cut waits | 0 | 0 |"}
 	for _, w := range windows {
 		scorecard := section(t, document, "## The scorecard of each window, read from its record", "### "+w.Name+"\n", "\n### ")
 		assertComparisonRows(t, scorecard, w.Name+"'s record", recordRows)

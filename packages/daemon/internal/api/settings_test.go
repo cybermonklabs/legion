@@ -57,6 +57,7 @@ var settingsEmitted = map[string]string{
 	"Config.StateDir":                                "state_dir",
 	"Config.Runtime":                                 "runtime",
 	"Config.AdmissionCap":                            "admission_cap",
+	"Config.AdmissionP0Bound":                        "admission_p0_bound",
 	"Config.DaemonURL":                               "daemon_url",
 	"Config.WorkerStreamPort":                        "worker_stream_port",
 	"Config.OmpInvocation":                           "omp_invocation",
@@ -94,6 +95,8 @@ var settingsEmitted = map[string]string{
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
 	"Config.ControllerLaunch":                        "controller",
+	"Config.ControllerTurnBound":                     "controller_turn_bound_minutes",
+	"Config.ControllerSessionMaxAge":                 "controller_session_max_age_hours",
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
@@ -228,7 +231,8 @@ var settingsExcluded = map[string]string{
 	"PodConfig.Env":                      "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
 	"PodConfig.Volumes":                  "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
 	"PodConfig.VolumeMounts":             "runtime.kubernetes.pod: Kubernetes API types",
-	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
+	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which the issue pods run as, and the controller's pod and a cache's pod where their own keys name none, and which each such pod reads from its own spec",
+	"PodConfig.ControllerServiceAccount": "runtime.kubernetes.pod: the operator's ServiceAccount the controller's pod runs as in place of service_account, which that pod reads from its own spec",
 	"Kubernetes.PluginsFromBinary":       "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                    "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos":    "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
@@ -248,6 +252,10 @@ var settingsExcluded = map[string]string{
 	"SignalProvider.TokenModels":         "not shown yet: a key of Project.Provider",
 	"SignalProvider.OwnRefusal":          "not shown yet: a key of Project.Provider",
 	"SignalProvider.ProviderRefusal":     "not shown yet: a key of Project.Provider",
+
+	// The cache's bucket and the account holding its grant, which no pod but a cache pod reads.
+	"RepositoryCacheConfig.Bucket":         "runtime.kubernetes.repository_cache.bucket: the deployment's own Cloud Storage bucket, named by a route that authenticates nobody (GET /legion/v1/state); the cache pods alone read it, from their own environment, and an issue pod reaches its packs through the addresses its cache signs",
+	"RepositoryCacheConfig.ServiceAccount": "runtime.kubernetes.repository_cache.service_account: the ServiceAccount the cache pods alone run as, the one holding the bucket's grant, which each cache pod reads from its own spec",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -340,7 +348,7 @@ var settingsFixturePlanted = []string{
 // settingsForbiddenKeys are the legion.yaml keys that never appear in `settings`, at any depth.
 var settingsForbiddenKeys = []string{
 	"postgres_dsn", "private_key", "private_key_command", "private_key_secret", "token_command",
-	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account",
+	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account", "controller_service_account",
 	// A hook's own words, which the settings leave out whichever key the file writes them in.
 	"prompt",
 }
@@ -370,7 +378,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// (a) The top level: every key of the table, omp_invocation apart, which the loader refuses
 	// under runtime kubernetes.
 	wantTop := []string{
-		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "daemon_url",
+		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "admission_p0_bound", "daemon_url",
 		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions", "private_name_rules_file",
 		"worker_boot_timeout_seconds", "worker_rpc_timeout_seconds", "worker_stop_timeout_seconds",
 		"tree_stop_timeout_seconds", "slow_command_timeout_seconds", "probe_interval_seconds",
@@ -381,7 +389,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"pod_update_grace_minutes", "stalled_tree_notice_hours", "worker_silence_minutes",
 		"worker_background_hours",
 		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
-		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"controller", "controller_turn_bound_minutes", "controller_session_max_age_hours",
+		"capabilities", "worker_backends", "role_config_files", "repository_renames",
 		"hooks",
 	}
 	top := keysOf(t, encoded)

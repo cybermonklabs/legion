@@ -1,6 +1,6 @@
 -- 20261126020201_queue_events.up.sql — the merge-queue timeline events of each project's pull
--- requests, kept for the queue signal of admission by signals, the queue's boot read status on
--- signal_inputs, and the outbox kind that reads a pull request's timeline after a queue move.
+-- requests, kept for the queue signal of admission by signals, and the queue's boot read status on
+-- signal_inputs.
 --
 -- The queue signal (signals.QueueAt) reads the waits of a project's pull requests in GitHub's
 -- merge queue from GitHub's own timeline events (added_to_merge_queue, removed_from_merge_queue
@@ -19,19 +19,17 @@
 --     succeeded (or the input needs none), and non-empty with the failure's reason while the boot
 --     read of the input failed, so a failed boot read of the merge queue reads absent with its
 --     reason rather than as an empty queue.
---   - outbox_kind_check widens to include queue_timeline_read, the outbox row that reads a pull
---     request's timeline from GitHub outside the fact lock after an enqueued, dequeued or merged
---     notification and applies intake.QueueTimeline. The check is one list, so this file names
---     every kind: the list of 20261122154643, pending_basis_seed and reparent_seed among them,
---     with queue_timeline_read added. Its version stands above 20261122154643, so this list is the
---     last word on a fresh database and on one that branch migrated, and a list that left out
---     either seed would refuse every pending-basis and re-parent read.
+--
+-- The outbox kind that reads a pull request's timeline after a queue move, queue_timeline_read,
+-- is admitted by 20261126190955_outbox_kinds_with_the_queue_timeline_read, whose version stands
+-- above every list of the kind check. This migration writes no list, so its way back and its roll
+-- forward leave the kind check as it stands.
 --
 -- Every time is written from GitHub's timeline or the daemon's clock, never by a column default.
 --
--- The migration adds one table, adds one defaulted column to signal_inputs and widens
--- outbox_kind_check, changing nothing an earlier release reads. An earlier release neither reads
--- queue_events nor runs queue_timeline_read rows.
+-- The migration adds one table and adds one defaulted column to signal_inputs, changing nothing
+-- an earlier release reads. An earlier release neither reads queue_events nor runs
+-- queue_timeline_read rows.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
@@ -63,13 +61,3 @@ create index queue_events_by_pull on queue_events (project, repo, pull_request, 
 create index queue_events_by_time on queue_events (project, at);
 
 alter table signal_inputs add column read_error text not null default '';
-
-alter table outbox drop constraint if exists outbox_kind_check;
-alter table outbox add constraint outbox_kind_check check (kind in (
-  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
-  'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
-  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
-  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'queue_timeline_read'));

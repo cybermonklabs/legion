@@ -317,12 +317,16 @@ type heldSlot struct {
 
 // waitAt begins, carries or ends key's wait on other issues at at: an issue in flight that stands
 // before its review, or waits in awaiting_children, waits while a blocker its links name is not
-// done (unfinishedLinks) or a Dispatch child it waits for is open (openChildren); the wait ends at
-// the first settle where nothing is left, read against the newest view.
+// done (unfinishedLinks) or a Dispatch child it waits for is open (openChildren), and a started
+// parent whose wait on its open children stands in its phase (waitsInItsPhase) waits while such a
+// child is open; the wait ends at the first settle where nothing is left, read against the newest
+// view.
 func (s *snapshots) waitAt(at time.Time, key string, issue record.Issue, inWorkflow, inFlight bool, dispatch *shadow) {
 	var links, children []string
 	if inWorkflow && inFlight && waitsBeforeReview(issue) {
 		links, _ = unfinishedLinks(key, dispatch)
+	}
+	if inWorkflow && inFlight && (waitsBeforeReview(issue) || waitsInItsPhase(issue, s.view.Facts.Rule)) {
 		children = s.openChildren(key, issue, dispatch)
 	}
 	wait := s.waits[key]
@@ -345,18 +349,20 @@ func (s *snapshots) waitAt(at time.Time, key string, issue record.Issue, inWorkf
 // openChildren is the open Dispatch children key waits for: the newest pass's children-first
 // judgement of its first phase (record.LineFacts.ChildWaits) or, for a parent whose phases have
 // started, the pass's judgement of the children that hold its next start
-// (record.LineFacts.StartedParentWaits, under which a rule whose wait stops the phase moves it into
-// awaiting_children); and, where the first judgement leaves out an issue whose wait on its children
-// stood at the last settle because the root of its tree lingers or the pass's records hold no root
-// of it (record.SlotRule.ChildrenFirstCandidates), the children the replay's copy of Dispatch
-// shows under it, each open by the daemon's own reading (record.ChildOpen) with the daemon's
-// record of it (recordOf). That is the trace's reading of the wait (traceBuilder.childrenAt),
-// which no linger of a root ends: the wait goes on until its children close or move out, as the
-// line timeline reads it from the record.
+// (record.LineFacts.StartedParentWaits), read where the parent waits on them: in
+// awaiting_children, which a rule whose wait stops the phase moves it into, or in the phase it
+// stands in under a rule whose cover takes that wait (waitsInItsPhase); and, where the first
+// judgement leaves out an issue whose wait on its children stood at the last settle because the
+// root of its tree lingers or the pass's records hold no root of it
+// (record.SlotRule.ChildrenFirstCandidates), the children the replay's copy of Dispatch shows under
+// it, each open by the daemon's own reading (record.ChildOpen) with the daemon's record of it
+// (recordOf). That is the trace's reading of the wait (traceBuilder.childrenAt), which no linger of
+// a root ends: the wait goes on until its children close or move out, as the line timeline reads it
+// from the record.
 func (s *snapshots) openChildren(key string, issue record.Issue, dispatch *shadow) []string {
 	var open []string
 	judged, ok := s.view.Facts.ChildWaits[key]
-	if !ok && issue.Phase == phase.AwaitingChildren {
+	if !ok && (issue.Phase == phase.AwaitingChildren || waitsInItsPhase(issue, s.view.Facts.Rule)) {
 		judged, ok = s.view.Facts.StartedParentWaits[key]
 	}
 	if ok {
@@ -431,17 +437,28 @@ func waitsBeforeReview(issue record.Issue) bool {
 	return measuredPhase(record.StandsAt(issue))
 }
 
+// waitsInItsPhase says whether issue, a started parent, waits on its open children in the phase it
+// stands in under rule: a rule whose cover takes that wait where the parent stands
+// (coverTakesStartedParents), and a phase whose start an open child holds (record.OpenChildHolds,
+// read where it stands), accepting among them, where the measures count no other wait of it.
+func waitsInItsPhase(issue record.Issue, rule record.SlotRule) bool {
+	return coverTakesStartedParents(rule) && record.OpenChildHolds(record.StandsAt(issue))
+}
+
 // waitEnd is what ended key's wait, which stood on wait's blockers and children at the settle
-// before: an issue that moved past its review moved on; a wait on blockers ended with a link taken
-// off where one of them is no longer linked (unfinishedLinks), and with a blocker done where each
-// is linked still; a wait on children ended by the first of them, as the replay's copy of Dispatch
-// shows it now: a child closed done or icebox is done, one under another parent moved out, and a
-// child still open under the issue holds it no longer because its tree's gate closed.
+// before: an issue that moved past its review moved on, unless it waits on its children in its
+// phase (waitsInItsPhase) and the wait stood on children; a wait on blockers ended, before the
+// review, with a link taken off where one of them is no longer linked (unfinishedLinks), and with a
+// blocker done where each is linked still; a wait on children ended by the first of them, as the
+// replay's copy of Dispatch shows it now: a child closed done or icebox is done, one under another
+// parent moved out, and a child still open under the issue holds it no longer because its tree's
+// gate closed, which holds no started parent that waits in its phase.
 func waitEnd(key string, issue record.Issue, wait *standingWait, v *admit.PassView, dispatch *shadow) WaitEnd {
-	if !waitsBeforeReview(issue) {
+	before, inPhase := waitsBeforeReview(issue), waitsInItsPhase(issue, v.Facts.Rule)
+	if !before && (!inPhase || len(wait.children) == 0) {
 		return WaitMovedOn
 	}
-	if len(wait.links) > 0 {
+	if before && len(wait.links) > 0 {
 		_, linked := unfinishedLinks(key, dispatch)
 		for _, blocker := range wait.links {
 			if !slices.Contains(linked, blocker) {
@@ -459,7 +476,7 @@ func waitEnd(key string, issue record.Issue, wait *standingWait, v *admit.PassVi
 			return WaitChildDone
 		case shown.parent() != key:
 			return WaitChildMovedOut
-		case !v.Facts.Gates[issue.Tree].Open():
+		case !inPhase && !v.Facts.Gates[issue.Tree].Open():
 			return WaitGateClosed
 		}
 	}

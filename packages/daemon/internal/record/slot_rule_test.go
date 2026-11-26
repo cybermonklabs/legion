@@ -17,7 +17,7 @@ var fortyHex = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // candidates of the comparison.
 var keptRuleNames = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "legion-v22.14.1", "keep-past-review", "blockers-first",
 	"returned-by-rank", "cover", "wait-grace", "wait-grace-1h", "returned-by-first-slot", "rework-first", "rework-first-keep", "arrival-order",
-	"before-p0", "p0-at-once", "idle-return-1h", "p0-idle", "signals", "signals-backoff"}
+	"before-p0", "idle-return-1h", "signals", "signals-backoff"}
 
 // Every rule the repository keeps names the commit of cybermonklabs/legion its choices come from,
 // so a reader of a replay's result can read the code that made them (record.SlotRule.Commit): the
@@ -72,27 +72,26 @@ func TestEveryRuleNamesItsCommit(t *testing.T) {
 	})
 }
 
-// The daemon admits as it did until R10 reaches it in cybermonklabs/legion#5488: the rule it is
-// built with (MainRule), the rules the recorded windows' daemons ran and before-p0 start no issue
-// outside the cap (P0AboveCap off), so a P0 issue below them waits for a slot of the cap as any
-// issue does, and the candidates that a replay runs R10 under, p0-at-once, p0-idle, signals and
-// signals-backoff, start one there. Every other rule the repository keeps is the daemon's own with
-// another choice changed, so it starts none either.
-func TestTheDaemonAndTheRecordedRulesStartNoP0OutsideTheCap(t *testing.T) {
+// The daemon starts a P0 issue outside the cap since R10 reached it in cybermonklabs/legion#5488:
+// the rule it is built with (MainRule), and the zero rule that names none, start one there, and so
+// does every rule the repository keeps that is the daemon's own with another choice changed. The
+// rules the recorded windows' daemons ran and before-p0 start none (StartsNow off), so a P0 issue
+// under them waits for a slot of the cap as any issue does.
+func TestTheDaemonStartsAP0OutsideTheCapAndTheRecordedRulesDoNot(t *testing.T) {
 	urgent := Issue{Key: "ACME-1", Priority: P0}
-	if MainRule.P0AboveCap || MainRule.StartsOutsideCap(urgent) || (SlotRule{}).StartsOutsideCap(urgent) {
-		t.Errorf("the daemon's own rule starts a P0 issue outside the cap (P0AboveCap %t), and it starts none until cybermonklabs/legion#5488 merges",
-			MainRule.P0AboveCap)
+	if !MainRule.StartsNow || !MainRule.StartsOutsideCap(urgent) || !(SlotRule{}).StartsOutsideCap(urgent) {
+		t.Errorf("the daemon's own rule starts no P0 issue outside the cap (StartsNow %t), and it starts one since cybermonklabs/legion#5488",
+			MainRule.StartsNow)
 	}
-	for _, name := range []string{"main", "legion-v19.57.3", "legion-v20.42.5", "legion-v22.14.1", "before-p0"} {
-		if rule, kept := SlotRuleNamed(name); !kept || rule.P0AboveCap || rule.StartsOutsideCap(urgent) {
-			t.Errorf("the rule %q (kept: %t) starts a P0 issue outside the cap, and it must start none", name, kept)
+	off := map[string]bool{"legion-v19.57.3": true, "legion-v20.42.5": true, "legion-v22.14.1": true, "before-p0": true}
+	for name := range off {
+		if _, kept := SlotRuleNamed(name); !kept {
+			t.Errorf("the repository keeps no rule named %q", name)
 		}
 	}
-	on := map[string]bool{"p0-at-once": true, "p0-idle": true, "signals": true, "signals-backoff": true}
 	for _, rule := range SlotRules() {
-		if got := rule.StartsOutsideCap(urgent); got != on[rule.Name] || rule.P0AboveCap != on[rule.Name] {
-			t.Errorf("the rule %q starts a P0 issue outside the cap: %t (P0AboveCap %t), want %t", rule.Name, got, rule.P0AboveCap, on[rule.Name])
+		if got := rule.StartsOutsideCap(urgent); got == off[rule.Name] || rule.StartsNow == off[rule.Name] {
+			t.Errorf("the rule %q starts a P0 issue outside the cap: %t (StartsNow %t), want %t", rule.Name, got, rule.StartsNow, !off[rule.Name])
 		}
 	}
 }

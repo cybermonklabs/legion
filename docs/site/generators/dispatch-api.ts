@@ -27,7 +27,7 @@ const SCOPES = {
   person:
     "this credential acts as its person. A browser sign-in holds it, so does a personal token unless its owner took it away, and so does a token the secrets broker issued that acts for its person.",
   approve:
-    "beside `person`, this credential may do what settles work or controls a credential: a document review, keeping a decision, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant, machine-login or sign-in revoke, and minting, changing or revoking a personal token. A browser sign-in holds it, and so does a personal token its owner gave it; no token the secrets broker issued holds it, and no credential holds `approve` without `person`.",
+    "beside `person`, this credential may do what settles work or controls a credential: a document review, keeping a decision, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant, machine-login or sign-in revoke, and minting, changing or revoking a personal token. A browser sign-in holds it, and so does a personal token its owner gave it; of the tokens the secrets broker issues, only the approve-only token holds it, which no machine holds and which calls only the approve list's routes; and no credential holds `approve` without `person`.",
   p0: "opens no route. A priority of 0 on `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` needs it when the write makes the issue's own priority 0. Keeping P0, lowering it, clearing it and priorities 1 to 3 need no scope. A browser sign-in holds `p0`. A personal token holds it only where its maker gave it, and may hold it alone: no mint gives it by default. No broker token, shared token or service-account token holds `p0`.",
 } satisfies Record<DispatchScope, string>;
 

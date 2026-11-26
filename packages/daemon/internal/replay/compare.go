@@ -900,12 +900,23 @@ type comparison struct {
 
 // readComparison checks that r holds a whole comparison — two windows, each part of each under the
 // same rules, main and each window's own among them, every part with the same branches and factors
-// — and gathers it.
+// — and gathers it. main, which a comparison needs on each window, reads the priority Dispatch
+// resolves, so it makes no run of a window that lacks the history of an ancestor such a priority
+// rests on (resolvedPriorities.refuseMissing): such a window is a gap of its collection, not a
+// result, and the comparison refuses it, naming the ancestors its record names
+// (windowRecord.MissingAncestors).
 func (r Runs) readComparison() (comparison, error) {
 	c := comparison{runs: r, commits: map[string]string{}}
 	c.windows = slices.SortedFunc(maps.Values(r.windows), windowOrder)
 	if len(c.windows) != 2 || c.windows[0].Order == c.windows[1].Order {
 		return comparison{}, fmt.Errorf("replay: a comparison reads two windows, one before the change of the rule and one after it; the runs hold %d", len(c.windows))
+	}
+	for _, w := range c.windows {
+		if len(w.MissingAncestors) > 0 {
+			return comparison{}, fmt.Errorf("replay: a comparison needs a run of %[1]s on each window, and %[1]s makes no run of the window %[2]s, "+
+				"which lacks the history of the Dispatch ancestors %[3]s, on which the priority %[1]s reads rests; collect %[2]s again with the "+
+				"history of those ancestors (spec R7, R10)", record.MainRule.Name, w.Name, strings.Join(w.MissingAncestors, ", "))
+		}
 	}
 	ruled := map[string]map[string]bool{}
 	for key, part := range r.parts {
@@ -1701,10 +1712,9 @@ func coded[S ~string](names []S) []string {
 
 // writeScorecards writes each window's scorecard, read from its record, with the issues done by
 // anyone beside Legion's done (Scorecard.DoneByAnyone) and the wait of its urgent work
-// (urgentRows), whose cut waits run to the end of the window's record. A window that lacks the
-// history of an ancestor a resolved priority rests on gives neither priority taken in today's
-// line's order nor the wait of urgent work, and names the missing input in their place
-// (windowRecord.writeMissing).
+// (urgentRows), whose cut waits run to the end of the window's record. Every window of a comparison
+// holds the history of each ancestor a resolved priority rests on, since main, which a comparison
+// needs, makes no run of one that lacks it (readComparison), so each gives every measure.
 func (c comparison) writeScorecards(p *printer) {
 	p.line("## The scorecard of each window, read from its record")
 	p.line("")
@@ -1714,21 +1724,14 @@ func (c comparison) writeScorecards(p *printer) {
 		p.line("")
 		p.line("### %s", w.Name)
 		p.line("")
-		w.writeMissing(p)
 		p.line("| measure | value |")
 		p.line("| --- | --- |")
 		for _, m := range MeasuresOf(w.Scorecard) {
-			if !w.gives(m.Name) {
-				continue
-			}
 			p.line("| %s | %s |", m.Name, formatNumber(m.Value))
 		}
 		p.line("| doneByAnyone | %d |", w.Scorecard.DoneByAnyone)
 		p.line("| issues with a first slot | %d |", len(w.Scorecard.FirstSlot))
 		for _, row := range urgentRows() {
-			if !w.gives(urgentMeasure) {
-				break
-			}
 			p.line("| %s | %s |", row.name, row.cell([]Scorecard{w.Scorecard}))
 		}
 	}
@@ -1847,12 +1850,8 @@ func (c comparison) writeMatrix(p *printer, decision Decision) {
 			p.line("")
 			p.line("### %s, `%s` (%s; seeds: %d)", w.Name, at.Label(), verdict, seeds)
 			p.line("")
-			w.writeMissing(p)
 			p.line("%s", tableHead("measure", coded(c.rules)))
 			for _, name := range names {
-				if !w.gives(name) {
-					continue
-				}
 				row := "| " + name + " |"
 				for _, column := range values[name] {
 					mean, low, high := spread(column)
@@ -1861,9 +1860,6 @@ func (c comparison) writeMatrix(p *printer, decision Decision) {
 				p.line("%s", row)
 			}
 			for _, urgent := range urgentRows() {
-				if !w.gives(urgentMeasure) {
-					break
-				}
 				row := "| " + urgent.name + " |"
 				for _, rule := range c.rules {
 					row += " " + urgent.cell(snapshotCards(c.runs.parts[partKey{window: w.Name, rule: rule}].runs[at.Label()])) + " |"
@@ -1892,9 +1888,6 @@ func (c comparison) writeMatrix(p *printer, decision Decision) {
 			}
 			p.line("%s", tableHead("judged against `main`", slices.Concat([]string{"error"}, coded(rules))))
 			for k, m := range costMeasures {
-				if !w.gives(m.name) {
-					continue
-				}
 				row := "| " + m.name + " | " + errorText(decision.Errors, m.name) + " |"
 				for _, rule := range rules {
 					cell := "no run"
@@ -2081,12 +2074,8 @@ func (c comparison) writeGaps(p *printer) {
 		p.line("")
 		p.line("### %s", w.Name)
 		p.line("")
-		w.writeMissing(p)
 		p.line("%s", tableHead("measure", coded(c.rules)))
 		for _, name := range measureNames(cards...) {
-			if !w.gives(name) {
-				continue
-			}
 			row := "| " + name + " |"
 			for _, rule := range c.rules {
 				gap := widest[rule][name]

@@ -240,9 +240,9 @@ func TestUrgentWorkWaits(t *testing.T) {
 
 // The record of the fixture window urgent-work-waits gives the wait of urgent work its README works
 // out by hand, which its expect.json holds under main: the record gives ACME-2 its slot at 09:30,
-// as a replay under a rule that starts a P0 issue above the cap does, and every wait is cut at
-// 10:15, the end of the window's run-out, not at 10:00. The window's replay under main waits for
-// that start (pendingUntilBuilt); the record reads the waits by the same code (Measure).
+// as a replay under a rule that starts a P0 issue outside the cap does, and every wait is cut at
+// 10:15, the end of the window's run-out, not at 10:00. The window's replay under main makes that
+// start since cybermonklabs/legion#5488; the record reads the waits by the same code (Measure).
 func TestTheRecordOfUrgentWorkWaitsGivesItsHandWorkedWaits(t *testing.T) {
 	t.Parallel()
 	window, expect := readFixture(t, "urgent-work-waits")
@@ -752,6 +752,56 @@ func validationGap(measure string, recorded float64) float64 {
 		gap = gapThirty
 	}
 	return gap.Allowed(recorded)
+}
+
+// coveredChildWindow is a window from 09:00 to 13:00 under a cap of two in which a started parent
+// waits on a child filed under it while it implements. ACME-1, a root, is promoted at 09:05, plans
+// from 09:20 and implements from 09:50, its one turn running to the move to testing at 10:40. At
+// 10:00 a person files ACME-2 under it, todo, which starts at once and works 10 minutes in each
+// phase to its merge at 11:10.
+func coveredChildWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.capped(2)
+	b.boot(clock(9, 0))
+	promotedRoot(b, clock(9, 5), "ACME-1", "a0")
+	b.rootDesigned(clock(9, 20), "ACME-1")
+	b.segmentEnds(clock(9, 50), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.file(clock(10, 0), "ACME-2", filing{Title: "Name the export's columns", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a1"})
+	b.childStarts(clock(10, 0), "ACME-2")
+	b.through("ACME-2", phase.Planning, moveAt(10, 10, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(10, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 40, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 50, phase.Retro, workflow.TriggerSignOff),
+		moveAt(11, 0, phase.Merging, workflow.TriggerRetroCompleted))
+	b.turnEnds(clock(11, 10), "ACME-2", claim.RoleMerger)
+	b.moved(clock(11, 10), "ACME-2", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.leaves(clock(11, 10), "ACME-2", record.DoneStatus)
+	b.segmentEnds(clock(10, 40), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	return b.build()
+}
+
+// Under cover a started parent that waits on its open child keeps its phase, and the child starts
+// on the parent's slot (record.SlotRule.StartedParents, blockers.CoverWaits). That wait is a wait
+// on another issue, which the measures count by what ended it (spec R4; `replay.md`, "The
+// measures", waits), as they count the same parent's wait in awaiting_children under main. The test
+// replays coveredChildWindow under both rules, each with its two timelines held to agree
+// (timelinesAgree). Under cover ACME-2, filed under ACME-1 at 10:00 while ACME-1 implements, starts
+// on ACME-1's slot and holds it for ACME-1 to its done at 11:10; ACME-1 implements on to 10:40 and
+// moves to testing, whose start waits for the cover's end. Under main ACME-1 moves into
+// awaiting_children at 10:00, gives its slot back, and comes back to implementing at ACME-2's done.
+// Under each rule both timelines count one wait of child_done, the 70 minutes from 10:00 to 11:10,
+// and the snapshot timeline counts ACME-1 those 70 minutes in reading (b), covered under cover and
+// in awaiting_children with no slot under main, and none in reading (a).
+func TestAParentsWaitOnItsOpenChildCountsUnderCover(t *testing.T) {
+	t.Parallel()
+	dsn := replayDSN(t)
+	for _, rule := range []record.SlotRule{replayedRule(t, "cover"), record.MainRule} {
+		t.Run(rule.Name, func(t *testing.T) {
+			t.Parallel()
+			result := timelinesAgree(t, dsn, coveredChildWindow(t), rule)
+			assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitChildDone: {Count: 1, Hours: 7.0 / 6}})
+			assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 7.0 / 6}})
+		})
+	}
 }
 
 // gateHoursWindow is a window from 09:00 to 12:00 in a deployment that gates the spec. ACME-1, a

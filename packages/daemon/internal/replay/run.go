@@ -414,7 +414,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	}
 	// A rule with the new P0 start reads the priority Dispatch resolves: the replay's copy of
 	// Dispatch shows it in place of each issue's own (shadow.priorities), and so does its start state.
-	if d.rule.P0AboveCap {
+	if d.rule.OrMain().StartsNow {
 		d.shadow.priorities = &in.priorities
 	}
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, in.merges, recordedLoops(script), map[string]time.Time{}
