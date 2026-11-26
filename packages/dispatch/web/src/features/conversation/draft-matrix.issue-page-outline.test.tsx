@@ -328,7 +328,7 @@ async function writerFocused(): Promise<void> {
 /** The field of the line that edits the reader's comment. */
 function editField(): HTMLTextAreaElement {
   return within(composerBox()).getByRole<HTMLTextAreaElement>("textbox", {
-    name: CONTROL_LABELS.edit_comment,
+    name: CONTROL_LABELS.composer_edit,
   });
 }
 

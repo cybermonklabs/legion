@@ -1,5 +1,4 @@
 import { spyOn } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -20,6 +19,7 @@ import type { Actor, CommentWithTrees, IssueAskRow } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { KEY_HOURS } from "../writes/write-words";
 import { useCurrentPoint } from "./current-point";
 import { IssueComposer } from "./IssueComposer";
 import { IssueTree } from "./IssueTree";
@@ -495,10 +495,6 @@ export function keptReplyLine(
   const { after, before } = COMPOSER_ANSWER_WORDS.kept_reply[kind];
   return `${before}${author}${after}`;
 }
-
-/** How many hours Dispatch keeps a write's key, which the box's sentences of what a Retry does
- *  name between their two parts (`COMPOSER_ANSWER_WORDS.stopped`). */
-export const KEY_HOURS = String(IDEMPOTENCY_KEY_TTL_MS / 3_600_000);
 
 /** What the box says of a send the reader stopped before Dispatch confirmed it. */
 export const STOPPED_IN_BOX = `${COMPOSER_ANSWER_WORDS.stopped.unconfirmed.before}${KEY_HOURS}${COMPOSER_ANSWER_WORDS.stopped.unconfirmed.after}`;
