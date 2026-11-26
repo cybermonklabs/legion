@@ -9,7 +9,8 @@ import { defaults } from "./stage4b-reservations";
 // Stage 4b's capacity reads (lib/stage4b-room.jq): the reservation an issue pod carries under the
 // run's overrides and defaults, the room for the run's pods on the nodes its scheduling admits, and
 // whether one of those nodes can hold two of them, each run on fixtures shaped as kubectl prints a
-// node list and a pod list.
+// node list and a pod list; and preflight's judgement of the room read (stage4b-sandbox-tree.sh
+// preflight_room), run as the script defines it.
 const lib = join(import.meta.dir);
 const include = 'include "stage4b-room";';
 const GiB = 1073741824;
@@ -295,7 +296,7 @@ describe("run_room", () => {
   const counted = (got: { free_nodes: { node: string; fits: number }[] }) =>
     got.free_nodes.map((n) => [n.node, n.fits]);
 
-  test("with no selector, no tolerations and a RuntimeClass of no scheduling, counts every Ready, schedulable, undisrupted node with no NoSchedule or NoExecute taint, and bounds nothing", () => {
+  test("with no selector, no tolerations and a RuntimeClass of no scheduling, counts every Ready, schedulable, undisrupted node with no NoSchedule or NoExecute taint, and decides nothing", () => {
     const got = room({});
     expect(got.pod).toEqual(defaultPod);
     expect(got.scheduling).toEqual({ selector: {}, tolerations: [] });
@@ -306,7 +307,9 @@ describe("run_room", () => {
     ]);
     expect(got.free_nodes[0].free.cpu).toBeCloseTo(1.92);
     expect(got.free_nodes[1].free).toEqual({ cpu: 5.91, memory: 52 * GiB });
-    expect(got.room).toBeNull();
+    // It reads the nodes and decides nothing of the run: no room count, since the cluster may add
+    // nodes (preflight_room).
+    expect(Object.keys(got).sort()).toEqual(["free_nodes", "pod", "scheduling"]);
   });
 
   test("with a selector, counts only the nodes that carry each of its labels at its value", () => {
@@ -316,15 +319,19 @@ describe("run_room", () => {
     ]);
     const got = room(general);
     expect(counted(got)).toEqual([["small", 0]]);
-    expect(got.room).toBeNull();
   });
 
-  test("with a selector that matches no node, keeps none and has room 0, so the gate blocks", () => {
+  test("with a selector that matches no node, keeps none, and admission refuses nothing", () => {
     const got = room({ "kubernetes.io/arch": "s390x" });
     expect(got.free_nodes).toEqual([]);
-    expect(got.room).toBe(0);
+    expect(got.scheduling).toEqual({
+      selector: { "kubernetes.io/arch": "s390x" },
+      tolerations: [],
+    });
     // The one node it selects carries a taint the run does not tolerate.
-    expect(room({ "example.com/dedicated-node": "yes" }).room).toBe(0);
+    const untolerated = room({ "example.com/dedicated-node": "yes" });
+    expect(untolerated.free_nodes).toEqual([]);
+    expect(untolerated.scheduling.conflicts).toBeUndefined();
   });
 
   test("counts a tainted node the run's tolerations admit, by key and value, Exists, and an empty effect", () => {
@@ -373,10 +380,9 @@ describe("run_room", () => {
       tolerations: [],
     });
     expect(counted(got)).toEqual([["small", 0]]);
-    expect(got.room).toBeNull();
   });
 
-  test("where both name a label at different values, admission refuses the run's pods, so it counts no node, has room 0 and names the conflict", () => {
+  test("where both name a label at different values, admission refuses the run's pods, so it counts no node and names the conflict", () => {
     // The run's selector alone selects the builds-class node.
     expect(counted(room({ "example.com/class": "builds" }))).toEqual([["large", 2]]);
     const conflict =
@@ -388,7 +394,6 @@ describe("run_room", () => {
     );
     expect(refused.scheduling).toEqual({ conflicts: [conflict] });
     expect(refused.free_nodes).toEqual([]);
-    expect(refused.room).toBe(0);
     // A label both name at the same value is no conflict: only the one at different values is named.
     const mixed = room(
       { ...amd64, "example.com/class": "builds" },
@@ -396,7 +401,7 @@ describe("run_room", () => {
       gvisor({ nodeSelector: general })
     );
     expect(mixed.scheduling).toEqual({ conflicts: [conflict] });
-    expect(mixed.room).toBe(0);
+    expect(mixed.free_nodes).toEqual([]);
   });
 
   test("counts a tainted node the RuntimeClass's tolerations admit, beside the run's own", () => {
@@ -412,6 +417,72 @@ describe("run_room", () => {
     // count, and without it none of them does.
     expect(counted(room({}, [], sandboxed))).toEqual([["sandbox", 3]]);
     expect(counted(room({})).map(([name]) => name)).not.toContain("sandbox");
+  });
+
+  // preflight is preflight_room, as the script defines it, judging ROOM, the read run_pod_room
+  // prints, for a run whose node_selector is SELECTOR, with the script's own blocked and note.
+  const preflight = (room: object, selector: object) => {
+    const fn = scriptFunctions(stage4b);
+    const run = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `room=$ROOM
+run_node_selector=$SELECTOR
+run_tolerations='[]'
+run_pods_at_once=4
+tree1_children=2
+check=preflight
+${fn("blocked")}
+${fn("note")}
+${fn("preflight_room")}
+preflight_room
+echo "pod_reservation=$pod_reservation admitted_scheduling=$admitted_scheduling"`,
+      ],
+      { env: { ...process.env, ROOM: JSON.stringify(room), SELECTOR: JSON.stringify(selector) } }
+    );
+    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() };
+  };
+  const noNodeNow =
+    "   [operator] no Ready, schedulable node the run's pods may use stands now, and the cluster may add one, so the run goes on: a wait whose pods a NodePool's limits starve ends BLOCKED there\n";
+
+  test("preflight notes the nodes the run's pods may use and runs on", () => {
+    const got = preflight(room(amd64), amd64);
+    expect(got.err).toBe("");
+    expect(got.code).toBe(0);
+    expect(got.out).toContain(
+      `   [operator] the 2 nodes the run's pods may use (the run's node_selector {"kubernetes.io/arch":"amd64"} and tolerations [], admitted under RuntimeClass gvisor as {"selector":{"kubernetes.io/arch":"amd64"},"tolerations":[]}), against the run's pods (2 CPU, 8 GiB each, an issue pod under this run's reservations; the free nodes bound nothing): [{"node":"small","fits":0,`
+    );
+    expect(got.out).not.toContain(noNodeNow);
+    expect(got.out).not.toContain("CHECK preflight: BLOCKED");
+    expect(got.out).toEndWith(
+      'pod_reservation=2 CPU, 8 GiB admitted_scheduling={"selector":{"kubernetes.io/arch":"amd64"},"tolerations":[]}\n'
+    );
+  });
+
+  test("preflight notes a cluster with no node the run's pods may use now and runs on, since the cluster may add one", () => {
+    // A cluster whose matching nodes are at zero: none is Ready now.
+    const selector = { "kubernetes.io/arch": "s390x" };
+    const got = preflight(room(selector), selector);
+    expect(got.err).toBe("");
+    expect(got.code).toBe(0);
+    expect(got.out).toContain("   [operator] the 0 nodes the run's pods may use");
+    expect(got.out).toContain(noNodeNow);
+    expect(got.out).not.toContain("CHECK preflight: BLOCKED");
+  });
+
+  test("preflight blocks a run whose pods admission refuses, naming the conflict, since no node the cluster has or adds takes one", () => {
+    const selector = { "example.com/class": "builds" };
+    const got = preflight(
+      room(selector, [], gvisor({ nodeSelector: { "example.com/class": "general" } })),
+      selector
+    );
+    expect(got.err).toBe("");
+    expect(got.code).toBe(1);
+    expect(got.out).toContain(
+      `CHECK preflight: BLOCKED: capacity: RuntimeClass gvisor's admission refuses every pod of the run, since its node selector names a label the run's node_selector {"example.com/class":"builds"} names at another value (runtimeClass.scheduling.nodeSelector[example.com/class] = general; pod.spec.nodeSelector[example.com/class] = builds), so no node the cluster has or adds can place the 4 pods of 2 CPU, 8 GiB the run needs at once: tree 1's root, its 2 children and tree 2's root\n`
+    );
+    expect(got.out).not.toContain("pod_reservation=");
   });
 });
 

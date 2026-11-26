@@ -290,7 +290,8 @@ tree1_children=2
 # gathering: the four slot holders of issue-independence, and, at children-first-acceptance, tree
 # 1 with its pod and no slot beside tree 3 and children 3 and 4, which is four pods against three
 # slots. The run launches no controller pod: its controller starts from
-# the operator shell (controller). preflight refuses, BLOCKED, a run no node can take (run_pod_room).
+# the operator shell (controller). preflight refuses, BLOCKED, a run whose pods admission refuses
+# (preflight_room), and runs on a cluster with no node for them now, which may add nodes.
 run_pods_at_once=$admission_cap
 # The run's reservations: the cpu and memory every container of an issue pod carries as both its
 # request and its limit, and the ephemeral storage it carries as a limit over a smaller request
@@ -504,16 +505,15 @@ rk() { timeout --foreground 300 kubectl --kubeconfig "$runtime_kubeconfig" --con
 # run_pod_room prints, as JSON, the room for the run's pods on the nodes they may use
 # (lib/stage4b-room.jq run_room): the pod's reservation (cores, bytes); the scheduling the pods
 # carry once admitted, the run's (run_node_selector, run_tolerations) with RuntimeClass gvisor's
-# scheduling, which admission adds to every pod that runs under it (admitted_scheduling); each node
-# of the cluster that scheduling admits that is Ready, schedulable, not tainted
-# karpenter.sh/disrupted and not being deleted, with what its allocatable has free beside every
-# non-terminal pod's effective request there, of every namespace, and how many of the run's pods
-# fit in it; the room, 0 when no node is admitted, else null, which bounds nothing: no one
-# NodePool's limits bound the run's pods, and the cluster may add nodes; and `two_pods`, whether
-# one of those nodes' allocatable holds two of the run's pods (two_pods_per_node), {fit: true|null,
-# reason}, null when none does, since a node the cluster adds may. The reads go through files in
-# the run's work directory: a cluster's pods can exceed the argument list a --argjson would put
-# them in.
+# scheduling, which admission adds to every pod that runs under it (admitted_scheduling), or the
+# conflicts for which admission refuses them; each node of the cluster that scheduling admits
+# that is Ready, schedulable, not tainted karpenter.sh/disrupted and not being deleted, with what
+# its allocatable has free beside every non-terminal pod's effective request there, of every
+# namespace, and how many of the run's pods fit in it, which bounds nothing: no one NodePool's
+# limits bound the run's pods, and the cluster may add nodes; and `two_pods`, whether one of those
+# nodes' allocatable holds two of the run's pods (two_pods_per_node), {fit: true|null, reason},
+# null when none does, since a node the cluster adds may. The reads go through files in the run's
+# work directory: a cluster's pods can exceed the argument list a --argjson would put them in.
 # expected_issue_pod_reservation reads the cpu and memory reservation the run passes to the
 # capacity checks. A malformed run_resources must stop preflight before the room read.
 expected_issue_pod_reservation() {
@@ -542,6 +542,25 @@ run_pod_room() {
     | admitted_scheduling($selector; $tolerations; $runtime_class[0]) as $scheduling
     | run_room($scheduling; $nodes[0]; $pods[0]; $pod)
     | .two_pods = two_pods_per_node($scheduling; $nodes[0]; $pod)'
+}
+
+# preflight_room judges preflight's room read (room, run_pod_room's JSON) and notes it: the nodes
+# the run's pods may use, each with what it has free against the run's pods. Where RuntimeClass
+# gvisor's admission refuses the run's pods (admitted_scheduling's conflicts), no node the cluster
+# has or adds can place one, and the run ends BLOCKED naming each conflict. Otherwise the run goes
+# on whatever the read found, a read that keeps no node included, which it notes: no one
+# NodePool's limits bound the run's pods and the cluster may add nodes, so the read cannot say the
+# pods will not be placed, and a pod-placement wait that a NodePool's limits starve ends BLOCKED
+# there (limit_pending_blocked). It sets pod_reservation and admitted_scheduling, which later
+# checks read.
+preflight_room() {
+  pod_reservation=$(jq -r '"\(.pod.cpu) CPU, \(.pod.memory / 1073741824) GiB"' <<<"$room")
+  admitted_scheduling=$(jq -c .scheduling <<<"$room")
+  note "[operator] the $(jq -r '.free_nodes | length' <<<"$room") nodes the run's pods may use (the run's node_selector $run_node_selector and tolerations $run_tolerations, admitted under RuntimeClass gvisor as $admitted_scheduling), against the run's pods ($pod_reservation each, an issue pod under this run's reservations; the free nodes bound nothing): $(jq -c '[.free_nodes[] | {node, fits, free: {cpu: .free.cpu, memoryGiB: (.free.memory / 1073741824 * 100 | floor / 100)}}]' <<<"$room")"
+  jq -e '.scheduling.conflicts == null' <<<"$room" >/dev/null ||
+    blocked "capacity: RuntimeClass gvisor's admission refuses every pod of the run, since its node selector names a label the run's node_selector $run_node_selector names at another value ($(jq -r '.scheduling.conflicts | join(" // ")' <<<"$room")), so no node the cluster has or adds can place the $run_pods_at_once pods of $pod_reservation the run needs at once: tree 1's root, its $tree1_children children and tree 2's root"
+  jq -e '.free_nodes != []' <<<"$room" >/dev/null ||
+    note "[operator] no Ready, schedulable node the run's pods may use stands now, and the cluster may add one, so the run goes on: a wait whose pods a NodePool's limits starve ends BLOCKED there"
 }
 
 # limit_pending SELECTOR prints each pod of the run matching SELECTOR (label pairs added to the
@@ -3416,14 +3435,11 @@ note "[operator] CRD sandboxes.agents.x-k8s.io installed"
 # 2's root), each holding the issue pod reservation, on the nodes the scheduling they carry once
 # admitted lets them onto: the run's, with RuntimeClass gvisor's; whatever already runs on those
 # nodes, of any namespace, counts against it. No one NodePool's limits bound those pods and the
-# cluster may add nodes, so the read blocks the run only when no node admits its pods at all.
+# cluster may add nodes, so the read blocks the run only where admission refuses its pods, and a
+# cluster with no node for them now is noted and runs (preflight_room).
 preflight_issue_pod_reservation
 room=$(run_pod_room) || blocked "the operator context could not read the cluster's nodes, its pods or RuntimeClass gvisor"
-pod_reservation=$(jq -r '"\(.pod.cpu) CPU, \(.pod.memory / 1073741824) GiB"' <<<"$room")
-admitted_scheduling=$(jq -c .scheduling <<<"$room")
-note "[operator] the $(jq -r '.free_nodes | length' <<<"$room") nodes the run's pods may use (the run's node_selector $run_node_selector and tolerations $run_tolerations, admitted under RuntimeClass gvisor as $admitted_scheduling), against the run's pods ($pod_reservation each, an issue pod under this run's reservations; room null bounds nothing): $(jq -c '{room, free_nodes: [.free_nodes[] | {node, fits, free: {cpu: .free.cpu, memoryGiB: (.free.memory / 1073741824 * 100 | floor / 100)}}]}' <<<"$room")"
-jq -e '.room == null' <<<"$room" >/dev/null ||
-  blocked "capacity: the run's node_selector $run_node_selector and tolerations $run_tolerations, admitted under RuntimeClass gvisor as $admitted_scheduling, admit no Ready, schedulable node, so no node can place the $run_pods_at_once pods of $pod_reservation the run needs at once: tree 1's root, its $tree1_children children and tree 2's root"
+preflight_room
 # Whether two of the run's pods can share a node, read from the allocatable of the nodes they may
 # use: the read says they may, or decides nothing, never that they cannot, so issue-independence
 # asserts no node count.

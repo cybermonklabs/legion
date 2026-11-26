@@ -86,16 +86,16 @@ def run_node($scheduling):
   | select(all(.spec.taints[]? | select(.effect == "NoSchedule" or .effect == "NoExecute"); tolerated($scheduling.tolerations)));
 
 # run_room($scheduling; $nodes; $pods; $pod) is the room for pods of reservation POD on the nodes
-# the run's pods may use, from the SCHEDULING they carry once admitted (admitted_scheduling,
+# the run's pods may use now, from the SCHEDULING they carry once admitted (admitted_scheduling,
 # run_node), every node of the cluster NODES (a node list) and every pod of the cluster PODS (a pod
 # list across namespaces): `pod`, the reservation; `scheduling`, the admitted selector and
 # tolerations it read the nodes by, or the conflicts for which admission refuses the run's pods;
-# `free_nodes`, each node run_node kept, with what its allocatable has free beside every
-# non-terminal pod placed on it and how many such pods fit there; and `room`, 0 when it kept no
-# node, else null. Null bounds nothing: no one NodePool's limits bound the run's pods and the
-# cluster may add nodes, so the read reports the free nodes and decides nothing, while 0 says no
-# node of the cluster can take the run's pods at all, the conflicts in `scheduling` saying why
-# where admission refuses them.
+# and `free_nodes`, each node run_node kept, with what its allocatable has free beside every
+# non-terminal pod placed on it and how many such pods fit there. It bounds nothing: no one
+# NodePool's limits bound the run's pods and the cluster may add nodes, so a read that keeps no
+# node, as of a cluster whose matching nodes are at zero, says nothing of whether the run's pods
+# can be placed. Only the conflicts do, since no node the cluster has or adds takes a pod that
+# admission refuses (stage4b-sandbox-tree.sh preflight_room).
 def run_room($scheduling; $nodes; $pods; $pod):
   ([$pods.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed") | select(.spec.nodeName != null)]) as $placed
   | [$nodes.items[] | run_node($scheduling)
@@ -105,8 +105,7 @@ def run_room($scheduling; $nodes; $pods; $pod):
          free: {cpu: ((.status.allocatable.cpu | quantity) - ([$requests[].cpu] | add // 0)),
                 memory: ((.status.allocatable.memory | quantity) - ([$requests[].memory] | add // 0))}}
       | .fits = fits(.free; $pod)] as $free_nodes
-  | {pod: $pod, scheduling: $scheduling, free_nodes: $free_nodes,
-     room: (if ($free_nodes | length) == 0 then 0 else null end)};
+  | {pod: $pod, scheduling: $scheduling, free_nodes: $free_nodes};
 
 # two_pods_per_node($scheduling; $nodes; $pod) is whether two pods of reservation POD can share one
 # of the nodes of NODES the run's pods may use under the SCHEDULING they carry once admitted
