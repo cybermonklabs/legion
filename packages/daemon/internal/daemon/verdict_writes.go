@@ -34,12 +34,13 @@ var verdictNoAnswer = "verdict: GitHub has given no answer to the read of a head
 	" of the writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there, until GitHub answers"
 
 // noAnswerSweeps is how many of the writers' sweeps in a row may find GitHub giving no answer to
-// the read of one head's change before the head is decided failure, as for a change GitHub answers
-// cannot be read (boundUnanswered), and the writer warns (verdictNoAnswer, whose text is built from
+// the read of one head's change before the head is decided failure, with a summary that says GitHub
+// gave no answer (boundUnanswered), and the writer warns (verdictNoAnswer, whose text is built from
 // this number; troubleshooting.md, concepts.md and the changelog name it too): 3 sweeps, 10 minutes
-// apart (verdictSweepInterval), are 30 minutes, longer than the short outages of GitHub that end by
-// themselves, and well inside the merge queue's 180-minute timeout, so the queue removes a group
-// whose head GitHub never answers for, and the owner hears of it, before the group times out.
+// apart (verdictSweepInterval), reach the bound 20 minutes after the first of them, which counts.
+// That is longer than the short outages of GitHub that end by themselves, and well inside the merge
+// queue's 180-minute timeout, so the queue removes a group whose head GitHub never answers for, and
+// the owner hears of it, before the group times out.
 const noAnswerSweeps = 3
 
 // verdictWriter is the state of the daemon's writer of the required check legion-verdict (spec
@@ -94,7 +95,8 @@ type verdictWriter struct {
 // request no Legion issue owns). A merge group's write (queueMergeGroupWrite) names the group's
 // commit as group, which it writes on, and no head: it decides the pull request at the head that
 // stands when the write is made (writeMergeGroup). overForeign is writeDecided's: the writers'
-// sweep's ask to put failure over another writer's run or status where no verdict stands. alone is
+// sweep's ask to put the head's conclusion over another writer's run or status, failure where no
+// verdict stands and, while no decision stands, the conclusion undecidedOver gives. alone is
 // the sweep's word that its list of open pull requests shows no other at head, so the write reads
 // GitHub for none (atHead).
 type verdictTarget struct {
@@ -526,9 +528,10 @@ func (w *workflowRuntime) boundUnanswered(target verdictTarget, decided verdictD
 }
 
 // unreadAfterNoAnswer is decided, a head the writers' sweeps found undecided noAnswerSweeps times
-// in a row, as one whose change the daemon cannot read: failure for that reason
-// (verdict.ChangeUnread), which the run's title and summary name.
+// in a row, as one whose change has no reader yet: failure for that reason
+// (verdict.ChangeUnanswered), whose run keeps the no-reader title and whose summary says GitHub gave
+// no answer, which the next answered read decides again (verdictOutput).
 func unreadAfterNoAnswer(decided verdictDecision) verdictDecision {
-	decided.conclusion, decided.reason, decided.noReader = verdict.Failure, verdict.ChangeUnread, nil
+	decided.conclusion, decided.reason, decided.noReader = verdict.Failure, verdict.ChangeUnanswered, nil
 	return decided
 }

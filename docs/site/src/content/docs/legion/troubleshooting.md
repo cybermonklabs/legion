@@ -1610,12 +1610,13 @@ These arrive as messages on the Dispatch issue:
   whose testing step passed there, has a claim that records a session and made none of that
   commit. A commit's makers are the sessions its `Omp-Session` lines name, read against the
   sessions the daemon records for each claim, and a claim that records no session reads no commit.
-  Where the daemon cannot read every commit of the change from GitHub's compare of the base and
-  the head, no commit has a reader, and the run's summary says so: GitHub answered a `404` or a
-  `422`, or gave no answer on 3 sweeps in a row (the next entry). A task whose plan has no testing
-  step and no review step ends here too. No push or move back cures it: the merger merges nothing,
-  sends nothing back and tells the task's owner once for that head, naming each commit with no
-  reader, and the owner asks a person, who can merge that head by a
+  Where GitHub answers that the daemon cannot read every commit of the change (a `404` or a `422`
+  to its compare of the base and the head), no commit has a reader, and the run's summary says so.
+  Where GitHub gave no answer on 3 sweeps in a row, the run has this title too, with a summary of
+  its own that says GitHub gave no answer (the next entry). A task whose plan has no testing step
+  and no review step ends here too. No push or move back cures it: the merger merges nothing, sends
+  nothing back and tells the task's owner once for that head, naming each commit with no reader,
+  and the owner asks a person, who can merge that head by a
   break-glass merge: a GitHub owner turns the ruleset's rule off for that one merge and on again
   right after it.
   The run is the daemon's own check run on the head, and its summary names each commit with no
@@ -1631,11 +1632,14 @@ These arrive as messages on the Dispatch issue:
   read with no answer decides nothing: the daemon writes no run of its own on the head, the run it
   wrote before stands, a merge group of the head's pull request gets no run either, and the writers'
   sweep still writes over another writer's run or status of the App there. The bound is 3 sweeps in
-  a row, 30 minutes: on the third the head is `failure`, with the title `legion-verdict: failure (a
-  commit with no reader)` and a summary that says the daemon could not read every commit of the
-  change, the merge group gets `failure` too, and this WARN names the repository, the head, the count
-  (`sweeps`) and the last error, once. Any answer of GitHub's decides the head again and starts the
-  count over. Read `error`: a `401` or `403` means the App's installation cannot read the repository,
+  a row, 20 minutes from the first of them: on the third the head is `failure`, with the title
+  `legion-verdict: failure (a commit with no reader)` and the summary `… but GitHub gave no answer to
+  the daemon's read of the change's commits on 3 of the writers' sweeps in a row, so no commit has a
+  reader yet. This is no answer about the change, not an answer that it cannot be read: the next
+  read GitHub answers decides this head again.`; the merge group gets `failure` too, and this WARN
+  names the repository, the head, the count (`sweeps`) and the last error, once. Any answer of
+  GitHub's decides the head again and starts the count over. Read `error`: a `401` or `403` means
+  the App's installation cannot read the repository,
   and a 5xx or a rate limit is GitHub's own trouble, which ends by itself.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's

@@ -244,11 +244,12 @@ func undecidedOver(recorded verdictWritesAt, runs []listedCheckRun) verdict.Conc
 
 // The output of a legion-verdict run that concludes failure on a Legion head where each check reads
 // yes and every testing and review step passed, because a commit of the change has no reader
-// (verdict.NoReader) or the daemon could not read the change's commits (verdict.ChangeUnread): one
-// title for both, and the opening of each summary, which for a commit with no reader then names
-// each such commit, one to a line ("- <sha>"). The merger reads them on the head it would merge and
-// tells the owner once for that head (spec R4), so their words are the merger's prompt's to quote:
-// change them with prompts/roles/merger.md.
+// (verdict.NoReader), GitHub answered that the daemon cannot read the change's commits
+// (verdict.ChangeUnread), or GitHub gave no answer to that read on the bound's sweeps in a row
+// (verdict.ChangeUnanswered): one title for all three, and the opening of each summary, which for a
+// commit with no reader then names each such commit, one to a line ("- <sha>"). The merger reads
+// them on the head it would merge and tells the owner once for that head (spec R4), so their words
+// are the merger's prompt's to quote: change them with prompts/roles/merger.md.
 const (
 	noReaderTitle   = verdict.CheckName + ": failure (a commit with no reader)"
 	noReaderOpening = "Each check reads yes and every testing and review step of the task's plan passed at this head, and no agent of the task read these commits of the change. An agent reads a commit when it approved this head as a review step, or passed here as a testing step, its claim records a session, and no session of its claim made the commit, as the commit's Omp-Session lines name its makers:"
@@ -259,10 +260,17 @@ const (
 	summaryBound = 60000
 )
 
+// unansweredSummary is the summary of a run at the bound of sweeps GitHub gave no answer on
+// (verdict.ChangeUnanswered), which names the bound from noAnswerSweeps. It says the head waits on
+// GitHub's next answer, so it reads as no definite answer that the commits cannot be read.
+var unansweredSummary = "Each check reads yes and every testing and review step of the task's plan passed at this head, but GitHub gave no answer to the daemon's read of the change's commits on " +
+	strconv.Itoa(noAnswerSweeps) + " of the writers' sweeps in a row, so no commit has a reader yet. This is no answer about the change, not an answer that it cannot be read: the next read GitHub answers decides this head again."
+
 // verdictOutput is the title and summary a check run of legion-verdict shows when it concludes
 // conclusion on a head of kind, decided being what the writer decided there: a failure for a commit
-// with no reader names each such commit, a failure for commits the daemon could not read says so,
-// and every other conclusion names the head's kind alone.
+// with no reader names each such commit, a failure for commits GitHub answered the daemon cannot
+// read says so, a failure at the bound of sweeps with no answer says that, and every other
+// conclusion names the head's kind alone.
 func verdictOutput(decided verdictDecision, conclusion verdict.Conclusion) map[string]string {
 	if conclusion == decided.conclusion {
 		switch decided.reason {
@@ -270,6 +278,8 @@ func verdictOutput(decided verdictDecision, conclusion verdict.Conclusion) map[s
 			return map[string]string{"title": noReaderTitle, "summary": noReaderSummary(decided.noReader)}
 		case verdict.ChangeUnread:
 			return map[string]string{"title": noReaderTitle, "summary": unreadOpening}
+		case verdict.ChangeUnanswered:
+			return map[string]string{"title": noReaderTitle, "summary": unansweredSummary}
 		}
 	}
 	return map[string]string{

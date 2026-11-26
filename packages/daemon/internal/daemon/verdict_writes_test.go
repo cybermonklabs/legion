@@ -1826,6 +1826,9 @@ const (
 	wantNoReaderTitle   = "legion-verdict: failure (a commit with no reader)"
 	wantNoReaderOpening = "Each check reads yes and every testing and review step of the task's plan passed at this head, and no agent of the task read these commits of the change"
 	wantUnreadOpening   = "Each check reads yes and every testing and review step of the task's plan passed at this head, but the daemon could not read every commit of the change"
+	// wantUnansweredOpening is the opening at the bound of sweeps GitHub gave no answer on, which is
+	// no answer that the change cannot be read.
+	wantUnansweredOpening = "Each check reads yes and every testing and review step of the task's plan passed at this head, but GitHub gave no answer to the daemon's read of the change's commits on 3 of the writers' sweeps in a row, so no commit has a reader yet. This is no answer about the change, not an answer that it cannot be read: the next read GitHub answers decides this head again."
 )
 
 // noReader fails the test unless the one legion-verdict run on head concludes failure with the
@@ -2270,7 +2273,7 @@ func TestLegionVerdictNoAnswerOnTheBoundsSweepsInARowIsFailure(t *testing.T) {
 	rig.nothingWrittenOn(t, "group-86")
 	rig.swept(t)
 	at("failure", fmt.Sprintf("after %d sweeps with no answer", noAnswerSweeps))
-	rig.noReader(t, "code", wantUnreadOpening)
+	rig.noReader(t, "code", wantUnansweredOpening)
 	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
 	grouped()
 	groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
@@ -2611,7 +2614,7 @@ func TestLegionVerdictTheNoAnswerCountIsOnePerHeadPerSweep(t *testing.T) {
 	warned(0, "a person's request for changes and approval")
 	rig.swept(t)
 	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
-	rig.noReader(t, "code", wantUnreadOpening)
+	rig.noReader(t, "code", wantUnansweredOpening)
 }
 
 // Any read of a head's change that GitHub answers starts the head's count of sweeps with no answer
@@ -2776,7 +2779,7 @@ func TestLegionVerdictANewReasonOfAFailureIsWrittenOverItsRun(t *testing.T) {
 		}
 		rig.nothingWrittenOn(t, "code")
 		rig.swept(t)
-		rig.noReader(t, "code", wantUnreadOpening)
+		rig.noReader(t, "code", wantUnansweredOpening)
 		answered(t, rig)
 	})
 }

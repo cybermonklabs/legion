@@ -432,10 +432,11 @@ var errChangeRefused = errors.New("GitHub's answer holds no reading of the chang
 //     minted) is no decision yet (verdict.Inputs.Unanswered, verdict.Undecided): the writer writes
 //     no run of its own, leaves its earlier run as it stands, and the next write or sweep reads
 //     again; a 401, or a 403 that is no rate limit, is read so too. No answer is bounded: once
-//     noAnswerSweeps of the writers' sweeps in a row found no answer at the head, the change counts
-//     as unread there too, and the head concludes failure as for a definite answer, until GitHub
-//     answers (boundUnanswered). One outage is not yet a change that cannot be read; a compare that
-//     never answers is.
+//     noAnswerSweeps of the writers' sweeps in a row found no answer at the head, no commit has a
+//     reader there yet, and the head concludes failure until GitHub answers (boundUnanswered), with
+//     the no-reader title and a summary that says GitHub gave no answer, not that the commits
+//     cannot be read (verdict.ChangeUnanswered). One outage is not yet a head that cannot merge; a
+//     compare that never answers is.
 //
 // Merging the two at once would turn a success that stands into failure, and start the merger's
 // notice to the owner, on an outage of GitHub's rather than on an answer about the change.
