@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { type RenderResult, waitFor } from "@testing-library/react";
+import { act, type RenderResult, waitFor } from "@testing-library/react";
 
 import { quietConsoleError } from "../../../__tests__/act-warnings";
 import { api } from "../../../api/client";
@@ -8,7 +8,7 @@ import { KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { readComment } from "../outline-fixtures";
 import { inDocument, treeOf } from "../slots/stage-fixtures";
 import { commentNode, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
-import type { TreeAnswerNode } from "../tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import {
   answerSeededReads,
   columnOf,
@@ -17,7 +17,9 @@ import {
   newClient,
   ON_PLAN_TASK,
   ON_STATEMENT,
+  PLAN_TASK,
   REPLY_ON_STATEMENT,
+  RESULT,
   rowOf,
   SERVES,
   STATEMENT,
@@ -104,6 +106,140 @@ test("a comment address on text opens Conversation where it draws the node, else
     expect(rowOf(planTask, ON_PLAN_TASK.node), "Graph draws the plan task").not.toBeNull();
   } finally {
     planTask.finish();
+    client.clear();
+  }
+});
+
+/** Answers the tree read by its query, as the server does (`api/queries.ts`), over the reads
+ *  `answerSeededReads` answers: Conversation's read, which names the kinds it reads
+ *  (`CONVERSATION_KINDS`), holds no plan task and no result, nor the comment on the plan task's
+ *  words; Graph's read, which names neither kinds nor a view, answers `graph` of the page's
+ *  cursor; and a view's read answers as those reads answer it. Answers the cursor each Graph read
+ *  asked for, undefined for its first page, in the order the page asked for them. */
+function answerTreeByKind(
+  graph: (cursor: string | undefined) => TreeAnswer | Promise<TreeAnswer>
+): (string | undefined)[] {
+  const conversation = treeOf(
+    seededNodes([ON_STATEMENT], { without: [PLAN_TASK, RESULT] }),
+    SERVES.filter((tuple) => tuple.from.id !== PLAN_TASK)
+  );
+  const tree = spyOn(api, "getIssueTree");
+  const seeded = tree.getMockImplementation();
+  if (seeded === undefined) throw new Error("the seeded reads answer no tree read");
+  const graphReads: (string | undefined)[] = [];
+  stubs.push(tree);
+  tree.mockImplementation(async (key, query = {}, init) => {
+    if (query.kind !== undefined) return conversation;
+    if (query.view !== undefined) return seeded(key, query, init);
+    graphReads.push(query.cursor);
+    return graph(query.cursor);
+  });
+  return graphReads;
+}
+
+// R8, decision 452: Conversation's read holds no plan task and no comment on one, so it places the
+// plan task's comment in no view, and the page reads Graph's read, which holds both: the address
+// opens Graph at the comment. Until Graph's read answers, the address stays as it was, while every
+// other read of the page answers, and Graph draws from the read the address sent.
+test("a comment on a plan task that Conversation's read does not hold opens Graph, which holds it", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_PLAN_TASK] });
+  const graph = Promise.withResolvers<TreeAnswer>();
+  const graphReads = answerTreeByKind(() => graph.promise);
+  const client = newClient();
+  const task = ON_PLAN_TASK.comment.id;
+  const view = drawPage(client, "conversation", { after: `?comment=${task}` });
+  try {
+    await waitFor(() =>
+      expect(graphReads, "the page never asked for Graph's read").toHaveLength(1)
+    );
+    await waitFor(() => expect(client.isFetching(), "a read besides Graph's is out").toBe(1));
+    expect(addressOf(view), "the address moved while Graph's read was out").toBe(
+      `/issues/${KEY}?comment=${task}`
+    );
+    await act(async () => graph.resolve(treeOf(seededNodes([ON_STATEMENT, ON_PLAN_TASK]), SERVES)));
+    await focusInThread(view, task, "the plan task's comment");
+    expect(addressOf(view), "the address moved to Graph, at the comment").toBe(
+      `/issues/${KEY}/graph?node=${task}`
+    );
+    expect(rowOf(view, ON_PLAN_TASK.node), "Graph draws the plan task").not.toBeNull();
+    expect(graphReads, "Graph sent a read of its own").toHaveLength(1);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+// R8, decision 456: where Graph's read holds no node of the comment's words either - the plan task
+// is gone - no view draws the thread, and the address opens the issue's own address with no line,
+// once Graph's read, asked once, has answered.
+test("a comment on a plan task that Conversation's read does not hold, where Graph's read holds no host either, opens the issue's own address with no line, and Graph's read was asked once", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_PLAN_TASK], without: [PLAN_TASK] });
+  const graphReads = answerTreeByKind(() =>
+    treeOf(
+      seededNodes([ON_STATEMENT], { without: [PLAN_TASK] }),
+      SERVES.filter((tuple) => tuple.from.id !== PLAN_TASK)
+    )
+  );
+  const client = newClient();
+  const view = drawPage(client, "conversation", { after: `?comment=${ON_PLAN_TASK.comment.id}` });
+  try {
+    await waitFor(() =>
+      expect(addressOf(view), "the address kept the comment").toBe(`/issues/${KEY}`)
+    );
+    await waitFor(() =>
+      expect(rowOf(view, ON_STATEMENT.node), "the outline is not drawn").not.toBeNull()
+    );
+    await waitFor(() => expect(client.isFetching(), "a read of the page is out").toBe(0));
+    expect(
+      view.queryByRole("heading", { name: /not found/i }),
+      "a line says the comment is gone"
+    ).toBeNull();
+    expect(view.queryByText(/^Back to /), "a line leads back to the issue").toBeNull();
+    expect(graphReads, "Graph's read was not asked once").toHaveLength(1);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+// R8 and part T's R15: Graph's first page holds no plan task; its next page, which the page reads
+// for the address since Conversation's address reads no page of Graph's itself, brings the plan
+// task and its comment, and the address opens Graph at the comment.
+test("a comment on a plan task that only the next page of Graph's read holds opens Graph", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_PLAN_TASK] });
+  const nodes = seededNodes([ON_STATEMENT, ON_PLAN_TASK]);
+  // The plan task and the comment on its words, which Graph's next page holds.
+  const onTask = nodes.filter(
+    (node) => node.block_id === PLAN_TASK || node.id === ON_PLAN_TASK.comment.id
+  );
+  const graphReads = answerTreeByKind((cursor) =>
+    cursor === undefined
+      ? treeAnswer(
+          [treeNode(KEY, "issue", null), ...nodes.filter((node) => !onTask.includes(node))],
+          SERVES.filter((tuple) => tuple.from.id !== PLAN_TASK),
+          { cursor: "graph-2" }
+        )
+      : treeAnswer(
+          onTask,
+          SERVES.filter((tuple) => tuple.from.id === PLAN_TASK),
+          { cursor: null }
+        )
+  );
+  const client = newClient();
+  const task = ON_PLAN_TASK.comment.id;
+  const view = drawPage(client, "conversation", { after: `?comment=${task}` });
+  try {
+    await focusInThread(view, task, "the comment on the plan task of Graph's next page");
+    expect(addressOf(view), "the address moved to Graph, at the comment").toBe(
+      `/issues/${KEY}/graph?node=${task}`
+    );
+    expect(rowOf(view, ON_PLAN_TASK.node), "Graph draws the plan task").not.toBeNull();
+    expect(graphReads, "the pages of Graph's read the page asked for").toEqual([
+      undefined,
+      "graph-2",
+    ]);
+  } finally {
+    view.finish();
     client.clear();
   }
 });

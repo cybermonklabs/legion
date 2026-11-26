@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { parseIssuePath } from "../../refs/routes";
@@ -9,10 +9,10 @@ import type { Preset } from "../page-words";
 import { filterOfUndrawn } from "../presets";
 import { pathTo } from "../tree-fold";
 import { nextTreeCursor } from "../tree-read/tree-nodes";
-import { outlineOf, outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
+import { outlineOf, outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
 import { type OnTextReads, onTextOf } from "./on-text";
 import { threadHolds } from "./text-threads";
-import { useStageIssue, useThreadReads, viewThreadsOf } from "./useTextThreads";
+import { useStageIssue, useThreadReads, type ViewThreads, viewThreadsOf } from "./useTextThreads";
 
 /**
  * Where an address that names an item of a thread on text opens (R8): `/comments/<id>`,
@@ -23,12 +23,16 @@ import { useStageIssue, useThreadReads, viewThreadsOf } from "./useTextThreads";
  * beside it and the focus on the item (`TextMargin.tsx`).
  *
  * The order is decision 452's: Conversation where it draws the thread's node, else Graph, which
- * draws every node of its read. Where no view draws it - the thread stands in no margin - the
- * address opens the issue's own address with no line (decision 456), and in Threads once that
- * view is on the base (G8). The pages of the tree read, which a node on a later page waits on, are
- * read by the outline (`slots/body.tsx`'s `useReadUntilHeld`), as for any address that names a
- * node no loaded page holds, and this waits for them: a node found on a page that loads draws as
- * the first page's does (T's R15).
+ * draws every node of its read. Conversation's read holds no plan task, result or constraint
+ * (`CONVERSATION_KINDS`), nor the thread of a comment on one, so where Conversation's read places
+ * the item in no view, Graph's read decides (`useGraphHolds`): Graph where its threads hold the
+ * item. Where no view draws it - the thread stands in no margin - the address opens the issue's
+ * own address with no line (decision 456), and in Threads once that view is on the base (G8). The
+ * pages of the tree read, which a node on a later page waits on, are read by the outline
+ * (`slots/body.tsx`'s `useReadUntilHeld`), as for any address that names a node no loaded page
+ * holds, and this waits for them: a node found on a page that loads draws as the first page's
+ * does (T's R15). Graph's pages, which the outline does not read on Conversation's address, this
+ * reads itself.
  */
 
 /** What an address that names an item of a thread opens. */
@@ -38,8 +42,18 @@ export type ThreadTarget =
   | { readonly kind: "here"; readonly reveal: readonly TreeNode[] }
   /** Conversation draws no row of the node (a plan task with no step, a result): Graph does. */
   | { readonly kind: "graph" }
-  /** No view draws the node: the issue's own address, with no line. */
+  /** The view's read places the node in no view: the issue's own address, with no line, where
+   *  Graph's read places it in none either (`useGraphHolds`). */
   | { readonly kind: "none" };
+
+/** The target of an address whose thread Graph's read holds and Conversation's does not. */
+const IN_GRAPH: ThreadTarget = { kind: "graph" };
+
+/** The chain an address lands on while Graph's read, which decides it, is out: none. The outline
+ *  lands on no row meanwhile, and the page's landing of an item the tree holds no node of
+ *  (`useAddressFallback`), which reads it only where no chain is given, reads nothing: it would
+ *  open the document a comment anchored in a block stands beside, before Graph's read answered. */
+const NO_ROW: readonly TreeNode[] = [];
 
 /** What the target is decided from: the outline read the address's view draws (Conversation's,
  *  or Graph's in Graph), the page's reads, the tree built from them, and the view. */
@@ -61,6 +75,15 @@ function itemKindOf(
   return supertag === "comment" || supertag === "message" ? supertag : undefined;
 }
 
+/** The tree id of the node the thread that holds the item `id` stands by in `view`, or undefined
+ *  where no thread of the view holds it. */
+function threadHostOf(view: ViewThreads, id: string): string | undefined {
+  for (const [host, { threads }] of view.threads) {
+    if (threads.some((thread) => threadHolds(thread, id))) return host;
+  }
+  return undefined;
+}
+
 /**
  * Where the address that names `id` opens, or undefined where `id` names no item of a thread on
  * text, or the reads do not yet say (the page of comments or of the tree that would hold it is
@@ -69,8 +92,8 @@ function itemKindOf(
 function threadTargetOf(id: string, input: ThreadTargetInput): ThreadTarget | undefined {
   const { answer, preset, reads, root } = input;
   const view = viewThreadsOf(answer, reads);
-  for (const [host, { threads }] of view.threads) {
-    if (!threads.some((thread) => threadHolds(thread, id))) continue;
+  const host = threadHostOf(view, id);
+  if (host !== undefined) {
     const chain = pathTo(root, host);
     const node = chain?.at(-1);
     if (chain === undefined || node === undefined) return { kind: "none" };
@@ -90,6 +113,52 @@ function threadTargetOf(id: string, input: ThreadTargetInput): ThreadTarget | un
   if (supertag === undefined || onTextOf({ id, supertag }, view.onText) === null) return undefined;
   if (reads.comments === undefined || reads.messages === undefined) return undefined;
   return nextTreeCursor(answer) === undefined ? { kind: "none" } : undefined;
+}
+
+/**
+ * Whether Graph's read of issue `key` holds a thread with the item `id` (R8, decision 452), which
+ * Conversation's address asks where Conversation's read, every page of it loaded, places the item
+ * in no view (`threadTargetOf`'s `none`): true where it does; false where it does not and no page
+ * of it is left to read, or where the read or a next page of it was refused; undefined while
+ * either is out, and where `id` is undefined. The read is Graph's own (`outlineQuery`, under the
+ * tree's key), so Graph, where the address goes on to it, draws it from the cache: where the cache
+ * holds no answer or refusal of it, this sends it, once, and it sends nothing where `id` is
+ * undefined, as on a load (R9). Where its answer holds no such thread and names a next page, the
+ * next pages are read one at a time until one brings the thread or none is left
+ * (`readNextTreePage`, as `useReadUntilHeld` reads an outline's), and a page refused stops the
+ * reading there.
+ */
+function useGraphHolds(
+  key: string,
+  id: string | undefined,
+  reads: IssueTreeReads | undefined
+): boolean | undefined {
+  const queryClient = useQueryClient();
+  const asks = id !== undefined && reads !== undefined;
+  const graph = useQuery({
+    ...outlineQuery(key, "graph"),
+    enabled: (query) => asks && query.state.status === "pending",
+  });
+  const answer = graph.data;
+  const holds = useMemo(
+    () =>
+      id !== undefined &&
+      reads !== undefined &&
+      answer !== undefined &&
+      threadHostOf(viewThreadsOf(answer, reads), id) !== undefined,
+    [answer, id, reads]
+  );
+  const cursor = asks && !holds && answer !== undefined ? nextTreeCursor(answer) : undefined;
+  // The cursor whose page was refused, past which nothing is read for the address.
+  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
+  const reading = cursor !== undefined && cursor !== refusedAt;
+  useEffect(() => {
+    if (!reading || cursor === undefined) return;
+    readNextTreePage(queryClient, key, "graph").catch(() => setRefusedAt(cursor));
+  }, [cursor, key, queryClient, reading]);
+  if (!asks) return undefined;
+  if (holds) return true;
+  return graph.status === "pending" || reading ? undefined : false;
 }
 
 /** The address a thread target other than `here` opens, from the address it was named by: Graph's
@@ -125,8 +194,11 @@ function redirectOf(
  * every other address, which resolves as before. Where Conversation draws no row of the thread's
  * node it opens Graph at the item, and where no view draws it the issue's own address without the
  * item, as `threadTargetOf` says; both replace the address, so Back leaves the page the reader
- * came from, and neither is drawn a line for. Reads nothing: it watches the reads the page holds,
- * and only while the issue is in the cache.
+ * came from, and neither is drawn a line for. On Conversation's address, where Conversation's read
+ * places the item in no view, Graph's read decides (`useGraphHolds`): Graph where it holds the
+ * thread, else the issue's own address; while it is out the address stays, and the outline lands
+ * on no row (`NO_ROW`). It sends that read alone, and only for such an address: it watches every
+ * other read the page holds, and only while the issue is in the cache.
  */
 export function useThreadReveal(
   root: TreeNode,
@@ -156,14 +228,19 @@ export function useThreadReveal(
         : threadTargetOf(id, { answer, preset, reads, root }),
     [answer, id, outline, preset, reads, root]
   );
+  // Conversation's read places the item in no view: Graph's read says whether Graph draws it.
+  const asksGraph = preset === "conversation" && found?.kind === "none";
+  const graphHolds = useGraphHolds(key, asksGraph ? id : undefined, reads);
+  const decided = !asksGraph || graphHolds === false ? found : graphHolds ? IN_GRAPH : undefined;
   const view =
     preset === "graph" ? "graph" : preset === "conversation" ? "conversation" : undefined;
   const to =
-    id === undefined || found === undefined || found.kind === "here" || view === undefined
+    id === undefined || decided === undefined || decided.kind === "here" || view === undefined
       ? undefined
-      : redirectOf(found, id, { hash, key, pathname, search }, view);
+      : redirectOf(decided, id, { hash, key, pathname, search }, view);
   useEffect(() => {
     if (to !== undefined) navigate(to, { replace: true });
   }, [navigate, to]);
-  return found?.kind === "here" ? found.reveal : undefined;
+  if (decided?.kind === "here") return decided.reveal;
+  return asksGraph && graphHolds === undefined ? NO_ROW : undefined;
 }
