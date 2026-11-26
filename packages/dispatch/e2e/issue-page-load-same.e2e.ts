@@ -68,22 +68,30 @@ import {
  *   The head of `e2e/tools/issue-page-load-record.ts` holds the same rule, and its test
  *   `e2e/__tests__/issue-page-load-record.test.ts` each part of it.
  * - `a row drawn late is reached by j, k, an address, the Contents pane and z`, in `chromium`
- *   alone, makes each act in a load of Conversation with the processor slowed by 4, at the first
- *   drawing of the rows, and asserts first that the row the act must reach was not in the
- *   document then, so it fails on a page that draws every row at once: (1) `j`, from there to
- *   the last row, then `k` back to the first, each press onto the next of the visible rows the
- *   load draws once it has ended (which `c-same-page` holds to the base's order); (2) the
- *   address of the last row, followed as a link of the page follows one (the history takes it
- *   and the router hears it), leaves that row in the viewport under the header with the focus;
- *   (3) a press on its entry in the Contents pane does the same; (4) a fold of a row drawn at
- *   once and of the last row that holds rows, drawn late, then `z`, opens both, and the page
- *   draws every row a load with no fold draws. An address and an entry name a node and land on
- *   its own row, so (2) takes the last row whose node no other row draws and an address names
- *   (a block's or an item's), and (3) the last such row the Contents pane lists, since it lists
- *   asks and the threads the reader began.
+ *   alone. It first loads Conversation at the processor's own rate and reads, once the load has
+ *   ended, the rows it draws before any control of the paging rule is pressed: the row each act
+ *   must reach is one of them. Then each act has a load of its own with the processor slowed by
+ *   4, made at the first drawing of the rows, and that load asserts first, before the act, that
+ *   the row the act must reach is not in the document yet; so on a page that draws every row at
+ *   once, as the base does, the row fails there, on its first act's load, with that assertion's
+ *   message. The acts: (1) `j`, from there to the last row, then `k` back to the first, each
+ *   press onto the next of the visible rows the load draws once it has ended (which `c-same-page`
+ *   holds to the base's order), and no press past the last row, which would press the paging
+ *   rule's control; (2) the address of the last row, followed as a link of the page follows one
+ *   (the history takes it and the router hears it), leaves that row in the viewport under the
+ *   header with the focus; (3) a press on its entry in the Contents pane does the same; (4) a
+ *   fold of a row drawn at once and of the last row that holds rows, drawn late, then `z`, opens
+ *   both, and the page draws every row a load with no fold draws. An address and an entry name a
+ *   node and land on its own row, so (2) takes the last row whose node no other row draws and an
+ *   address names (a block's or an item's), and (3) the last such row the Contents pane lists,
+ *   since it lists asks and the threads the reader began. Every wait after the lateness check is
+ *   bounded and fails naming what it waited for: a first drawing (`DRAWN_MS`), each press of a
+ *   key (`STEP_MS`) and all of them (`WALK_MS`), each landing and each press of a control
+ *   (`LANDED_MS`), and a load's end (`waitForLoadEnd`'s own bound); the row's limit is above
+ *   their sum.
  * - The same row's filter by words, a row of its own, owed until part N puts its filter in the
- *   view row: the last row's first words typed into it at the first drawing of the rows draw
- *   that row once the load has ended.
+ *   view row: the last row's first words, typed into it at the first drawing of the rows, draw
+ *   that row within `LANDED_MS`.
  */
 
 // The rows share the worker's seed and are read in the order written: `default` runs them in one
@@ -110,18 +118,27 @@ const RECORD_MS = 1_200_000;
 /** How long a row of one view's comparison may take. */
 const SAME_PAGE_MS = 300_000;
 
-/** How long the late row may take: four slowed loads, and `j` and `k` pressed for each row. */
-const LATE_ROW_MS = 900_000;
+/** How long a slowed load may take to draw its first row of Conversation's outline: many times
+ *  R1's 2.5 s for the first screen. */
+const DRAWN_MS = 60_000;
 
-/** How long a key may take to move the focus before it is taken to have moved it nowhere. */
+/** How long one press of `j` or `k` may take to move the focus before it is taken to have moved
+ *  it nowhere. */
 const STEP_MS = 15_000;
 
-/** How long a row may take to be drawn: the first of a slowed load, or one drawn late. */
-const DRAWN_MS = 120_000;
+/** How long the presses of `j`, or of `k`, may take together in one load: one press for each of
+ *  Conversation's rows, about a hundred on the seed, each well under R2's 200 ms at its bound. */
+const WALK_MS = 180_000;
 
-/** More presses of `j` than Conversation draws rows, so a press that keeps moving the focus
- *  forever fails the row rather than its time limit. */
-const MOST_STEPS = 2_000;
+/** How long an act may take to leave its row in the viewport with the focus, to unfold the rows
+ *  `z` must unfold, and a control a step presses may take to be drawn. */
+const LANDED_MS = 30_000;
+
+/** How long the late row may take: more than the sum of its waits' bounds (the first load's end,
+ *  each load's first drawing, the two walks, each landing, each press and the last load's end,
+ *  about 18 minutes in all), so a wait that runs out fails with its own message before the row's
+ *  limit does. */
+const LATE_ROW_MS = 1_500_000;
 
 /** How many differences of one clause a row's failure shows. */
 const SHOWN = 20;
@@ -144,11 +161,9 @@ const WORDS_FILTER = '[data-filter-row] input[type="search"]';
 /** The late row's title, which its owed clause's row begins with. */
 const LATE_ROW_TITLE = "a row drawn late is reached by j, k, an address, the Contents pane and z";
 
-/** What the page held at the first drawing of the rows: the outline's rows, by their keys and
- *  their nodes, those of them open, and the Contents pane's entries. */
+/** What the page held at the first drawing of the rows: the keys of the outline's rows, and of
+ *  those of them open. */
 interface FirstDrawing {
-  readonly entries: readonly string[];
-  readonly ids: readonly string[];
   readonly keys: readonly string[];
   readonly open: readonly string[];
 }
@@ -261,30 +276,23 @@ for (const view of LOAD_VIEWS) {
  *  first frame whose document holds a row of Conversation's outline, read in that frame's
  *  callback, before anything after it is drawn. */
 async function watchFirstDrawing(context: BrowserContext): Promise<void> {
-  await context.addInitScript(
-    ({ entries, rows }) => {
-      if (window.top !== window) return;
-      const look = () => {
-        const drawn = [...document.querySelectorAll(rows)];
-        if (drawn.length === 0) {
-          requestAnimationFrame(look);
-          return;
-        }
-        window.__firstDrawing = {
-          entries: [...document.querySelectorAll(entries)].map(
-            (entry) => entry.getAttribute("data-contents-entry") ?? ""
-          ),
-          ids: drawn.map((row) => row.getAttribute("data-node-id") ?? ""),
-          keys: drawn.map((row) => row.getAttribute("data-row-key") ?? ""),
-          open: drawn
-            .filter((row) => row.getAttribute("aria-expanded") === "true")
-            .map((row) => row.getAttribute("data-row-key") ?? ""),
-        };
+  await context.addInitScript((rows) => {
+    if (window.top !== window) return;
+    const look = () => {
+      const drawn = [...document.querySelectorAll(rows)];
+      if (drawn.length === 0) {
+        requestAnimationFrame(look);
+        return;
+      }
+      window.__firstDrawing = {
+        keys: drawn.map((row) => row.getAttribute("data-row-key") ?? ""),
+        open: drawn
+          .filter((row) => row.getAttribute("aria-expanded") === "true")
+          .map((row) => row.getAttribute("data-row-key") ?? ""),
       };
-      requestAnimationFrame(look);
-    },
-    { entries: CONTENTS_ENTRY, rows: OUTLINE_ROWS }
-  );
+    };
+    requestAnimationFrame(look);
+  }, OUTLINE_ROWS);
 }
 
 /** A load of `address` for the late row: what it holds at the first drawing of the rows is kept
@@ -293,12 +301,25 @@ function lateLoad(address: string): LoadOptions {
   return { address, boxes: "none", prepare: watchFirstDrawing };
 }
 
+/** Runs `wait`, one of Playwright's waits given `ms` as its timeout, and fails naming what it
+ *  waited for where that timeout runs out. */
+async function within<T>(ms: number, what: string, wait: () => Promise<T>): Promise<T> {
+  try {
+    return await wait();
+  } catch (error) {
+    if (!(error instanceof errors.TimeoutError)) throw error;
+    throw new Error(`waited ${ms} ms for ${what}, and it did not come`);
+  }
+}
+
 /** What the page held at the first drawing of the rows, once it has come. */
 async function firstDrawing(page: Page): Promise<FirstDrawing> {
-  const drawing = await page.waitForFunction(() => window.__firstDrawing ?? null, undefined, {
-    polling: "raf",
-    timeout: DRAWN_MS,
-  });
+  const drawing = await within(DRAWN_MS, "the first drawing of a row of Conversation", () =>
+    page.waitForFunction(() => window.__firstDrawing ?? null, undefined, {
+      polling: "raf",
+      timeout: DRAWN_MS,
+    })
+  );
   const first = await drawing.jsonValue();
   if (first === null) throw new Error("the page drew no row of Conversation's outline");
   return first;
@@ -337,15 +358,31 @@ function focusedRow(page: Page): Promise<string | null> {
   );
 }
 
-/** Presses `key` up to `most` times, each once the press before it has moved the focus to
- *  another row, and answers the row each press moved it to; it stops at a press that moves it
- *  nowhere within `STEP_MS`. */
-async function walk(page: Page, key: "j" | "k", most: number): Promise<string[]> {
-  const reached: string[] = [];
+/**
+ * Presses `key` once for each row of `order` after the one that holds the focus (each row of it
+ * where the focus is on none of them), each press once the one before it has put the focus on
+ * its row, and answers where the presses first left the rows they must reach, or null where each
+ * reached its row. It presses no key past the last row of `order`, so `j` never presses the
+ * control of the paging rule after it. Each press may take `STEP_MS` to move the focus and all of
+ * them `WALK_MS`, so a page whose keys move the focus slowly or nowhere fails here, by its
+ * message, and not at the row's limit.
+ */
+async function walk(page: Page, key: "j" | "k", order: readonly string[]): Promise<string | null> {
+  const deadline = Date.now() + WALK_MS;
   let from = await focusedRow(page);
-  while (reached.length < most) {
+  const expected = order.slice(order.indexOf(from ?? "") + 1);
+  for (const [at, want] of expected.entries()) {
+    const on = from ?? "no row";
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      return (
+        `${key}, pressed ${at} times in ${WALK_MS} ms, had put the focus on ${on}, and had not ` +
+        `yet reached the ${expected.length - at} rows after it, ${want} the first`
+      );
+    }
     await page.keyboard.press(key);
-    let moved: string | null;
+    const wait = Math.min(STEP_MS, left);
+    let moved: string | null = null;
     try {
       const handle = await page.waitForFunction(
         ({ rows, start }) => {
@@ -353,37 +390,21 @@ async function walk(page: Page, key: "j" | "k", most: number): Promise<string[]>
           return now !== null && now !== start ? now : null;
         },
         { rows: OUTLINE_ROWS, start: from },
-        { polling: "raf", timeout: STEP_MS }
+        { polling: "raf", timeout: wait }
       );
       moved = await handle.jsonValue();
     } catch (error) {
       if (!(error instanceof errors.TimeoutError)) throw error;
-      moved = null;
     }
-    if (moved === null) break;
-    reached.push(moved);
+    if (moved === null) {
+      return `${key}, pressed ${at + 1} times, left the focus on ${on} for ${wait} ms, where it must move to ${want}`;
+    }
+    if (moved !== want) {
+      return `${key}, pressed ${at + 1} times, put the focus on ${moved}, where ${want} follows ${on}`;
+    }
     from = moved;
   }
-  return reached;
-}
-
-/** Where the presses of `key` first left the rows they must visit, in order, or null where they
- *  visited each, and no other. */
-function walkMismatch(
-  key: string,
-  reached: readonly string[],
-  expected: readonly string[]
-): string | null {
-  const at = expected.findIndex((row, index) => reached[index] !== row);
-  if (at === -1) {
-    return reached.length > expected.length
-      ? `${key} went on past the last row it must reach, to ${reached[expected.length]}`
-      : null;
-  }
-  const from = at === 0 ? "the row it started on" : expected[at - 1];
-  return reached[at] === undefined
-    ? `${key}, pressed ${at + 1} times, left the focus on ${from}, where ${expected[at]} follows it`
-    : `${key}, pressed ${at + 1} times, put the focus on ${reached[at]}, where ${expected[at]} follows ${from}`;
+  return null;
 }
 
 /** The last row whose node no other row draws, of those `also` keeps: an address and the Contents
@@ -391,7 +412,7 @@ function walkMismatch(
 function lastDrawnOnce(
   rows: readonly OutlineRow[],
   what: string,
-  also: (row: OutlineRow) => boolean = () => true
+  also: (row: OutlineRow) => boolean
 ): OutlineRow {
   const drawn = new Map<string, number>();
   for (const row of rows) drawn.set(row.id, (drawn.get(row.id) ?? 0) + 1);
@@ -400,11 +421,12 @@ function lastDrawnOnce(
   return found;
 }
 
-/** Fails the row where the row an act must reach was in the document at the first drawing of the
- *  rows: then the act reached no row drawn late. */
-function expectDrawnLate(drawnThen: boolean, row: OutlineRow, act: string): void {
+/** Fails the row, before any act of the load is made, where the row the act must reach was in
+ *  the document at the first drawing of the rows: then the act would reach no row drawn late
+ *  (`c-late-row`: "A row that was already drawn fails the row"). */
+function expectDrawnLate(first: FirstDrawing, row: OutlineRow, act: string): void {
   expect(
-    drawnThen,
+    first.keys.includes(row.key),
     `the row ${act} must reach, ${row.key}, was in the document at the first drawing of the ` +
       "rows, so this row reads no row drawn late: the page drew it at once"
   ).toBe(false);
@@ -418,8 +440,8 @@ interface Landing {
   readonly top: number | null;
 }
 
-/** Which row of the outline holds the focus once a landing is over, where it stands, and where
- *  the header's foot is. */
+/** Which row of the outline holds the focus now, where it stands, and where the header's foot
+ *  is. */
 function landing(page: Page): Promise<Landing> {
   return page.evaluate(
     ({ header, rows }) => {
@@ -445,17 +467,33 @@ function landing(page: Page): Promise<Landing> {
   );
 }
 
-/** Holds `landed` to the row `row`: it has the focus and stands in the viewport under the
- *  header. */
-function expectLanded(landed: Landing, row: OutlineRow, act: string): void {
-  expect
-    .soft(
-      landed.focused === row.id && landed.top !== null && landed.top >= landed.foot - 1,
-      `${act} leaves the focus on ${landed.focused ?? "no row"}, ` +
-        `${landed.top === null ? "outside the viewport" : `at ${landed.top} px`}, where the row ` +
-        `${row.key} must have it in the viewport under the header's foot at ${landed.foot} px`
+/** What a landing on a row reads as once it has landed. */
+const LANDED = "in the viewport under the header, with the focus";
+
+/** Holds `act` to leaving the row `row` in the viewport under the header with the focus within
+ *  `LANDED_MS`, softly, naming where the focus was when that time ran out. */
+async function expectLanded(page: Page, row: OutlineRow, act: string): Promise<void> {
+  await expect.soft
+    .poll(
+      async () => {
+        // Read inside `expect.poll`, which reads it again until the row has landed or
+        // `LANDED_MS` has passed, so no one instant's answer decides the row.
+        const landed = await landing(page);
+        if (landed.focused === row.id && landed.top !== null && landed.top >= landed.foot - 1) {
+          return LANDED;
+        }
+        return (
+          `the focus on ${landed.focused ?? "no row"}, ` +
+          `${landed.top === null ? "outside the viewport" : `at ${landed.top} px`}, the header's ` +
+          `foot at ${landed.foot} px`
+        );
+      },
+      {
+        message: `${act} leaves the row ${row.key} ${LANDED} within ${LANDED_MS} ms`,
+        timeout: LANDED_MS,
+      }
     )
-    .toBe(true);
+    .toBe(LANDED);
 }
 
 /** Moves the page to `address` as one of its own links does: the history takes the address and
@@ -475,51 +513,55 @@ function rowSelector(key: string): string {
 /** Folds the row `key` by a press on its fold control. */
 async function fold(page: Page, key: string): Promise<void> {
   const row = page.locator(rowSelector(key));
-  await row.locator(FOLD_CONTROL).first().click();
+  await within(LANDED_MS, `the fold control of ${key} to press`, () =>
+    row.locator(FOLD_CONTROL).first().click({ timeout: LANDED_MS })
+  );
   await expect(row, `a press on the fold control of ${key} did not fold it`).toHaveAttribute(
     "aria-expanded",
-    "false"
+    "false",
+    { timeout: LANDED_MS }
   );
 }
 
-// SLOW(>=2s): four loads at the processor slowed by 4, each act made at the first drawing of the
-// rows and each load waited out, with j and k pressed once for each row of Conversation.
+// SLOW(>=2s): a load to read the rows Conversation draws, then up to four loads at the processor
+// slowed by 4, each act made at the first drawing of the rows, j and k pressed for each row.
 test(LATE_ROW_TITLE, async ({ browser, loadSeeds }) => {
   test.setTimeout(LATE_ROW_MS);
   const seeded = await loadSeeds.shape();
   const address = presetPath(seeded.key, "conversation");
-
-  // (1) `j`, from the first drawing of the rows, to the last row, and `k` back to the first.
-  const walked = await oneLoad(
+  // The rows the page draws once the load has ended, before any control of the paging rule is
+  // pressed, read first at the processor's own rate: each act's load then asks at its first
+  // drawing whether the row the act must reach is in the document yet, before it makes the act.
+  const rows = await oneLoad(
     browser,
-    LATE_ROW_RATE,
-    lateLoad(address),
+    UNSLOWED,
+    { address, boxes: "none" },
     async ({ page, requests }) => {
-      const first = await firstDrawing(page);
-      const start = await focusedRow(page);
-      const forward = await walk(page, "j", MOST_STEPS);
       await waitForLoadEnd(page, requests);
-      const rows = await outlineRows(page);
-      const visible = rows.filter((row) => row.visible).map((row) => row.key);
-      const last = visible.indexOf((await focusedRow(page)) ?? "");
-      const back = await walk(page, "k", Math.max(last, 0));
-      return { back, first, forward, last, rows, start, visible };
+      return await outlineRows(page);
     }
   );
-  const lastRow = walked.rows.at(-1);
-  if (lastRow === undefined) throw new Error("Conversation drew no row once its load had ended");
-  expectDrawnLate(walked.first.keys.includes(lastRow.key), lastRow, "j");
-  const from = walked.start === null ? -1 : walked.visible.indexOf(walked.start);
+  const last = rows.at(-1);
+  if (last === undefined) throw new Error("Conversation drew no row once its load had ended");
+  const visible = rows.filter((row) => row.visible).map((row) => row.key);
+
+  // (1) `j`, from the first drawing of the rows, to the last row, and `k` back to the first.
+  const walked = await oneLoad(browser, LATE_ROW_RATE, lateLoad(address), async ({ page }) => {
+    expectDrawnLate(await firstDrawing(page), last, "j");
+    const forward = await walk(page, "j", visible);
+    const back = await walk(page, "k", [...visible].reverse());
+    return { back, forward };
+  });
   expect
     .soft(
-      walkMismatch("j", walked.forward, walked.visible.slice(from + 1)),
+      walked.forward,
       "j, pressed once for each row from the first drawing of the rows, puts the focus on each " +
         "visible row in the order the page draws them once its load has ended, to the last"
     )
     .toBeNull();
   expect
     .soft(
-      walkMismatch("k", walked.back, walked.visible.slice(0, Math.max(walked.last, 0)).reverse()),
+      walked.back,
       "k, pressed once for each row from the last, puts the focus on each visible row back to the first"
     )
     .toBeNull();
@@ -527,49 +569,32 @@ test(LATE_ROW_TITLE, async ({ browser, loadSeeds }) => {
   // (2) An address that names the last row, followed at the first drawing of the rows. An
   // address names a block or an item (`rowAddress`), so the row is the last of those.
   const named = lastDrawnOnce(
-    walked.rows,
+    rows,
     "whose node no other row draws and an address names",
     (row) => row.id.includes("#b-") || ["ask", "comment", "message"].includes(row.type)
   );
   const namedAddress = rowAddress(seeded.key, named);
   if (namedAddress === undefined) throw new Error(`no address names the row ${named.key}`);
-  const addressed = await oneLoad(
-    browser,
-    LATE_ROW_RATE,
-    lateLoad(address),
-    async ({ page, requests }) => {
-      const first = await firstDrawing(page);
-      await followAddress(page, namedAddress);
-      await waitForLoadEnd(page, requests);
-      return { first, landed: await landing(page) };
-    }
-  );
-  expectDrawnLate(addressed.first.ids.includes(named.id), named, "an address");
-  expectLanded(addressed.landed, named, "the address that names it");
+  await oneLoad(browser, LATE_ROW_RATE, lateLoad(address), async ({ page }) => {
+    expectDrawnLate(await firstDrawing(page), named, "an address");
+    await followAddress(page, namedAddress);
+    await expectLanded(page, named, "the address that names it");
+  });
 
   // (3) A press on the last row's entry in the Contents pane, at the first drawing of the rows.
-  const listed = lastDrawnOnce(walked.rows, "that the Contents pane lists", (row) => row.entry);
-  const pressed = await oneLoad(
-    browser,
-    LATE_ROW_RATE,
-    lateLoad(address),
-    async ({ page, requests }) => {
-      const first = await firstDrawing(page);
-      await page
-        .locator(
-          `${CONTENTS_ENTRY}[data-contents-entry="${quotedValue(listed.id)}"] [data-contents-line]`
-        )
-        .click();
-      await waitForLoadEnd(page, requests);
-      return { first, landed: await landing(page) };
-    }
-  );
-  expectDrawnLate(pressed.first.ids.includes(listed.id), listed, "the Contents pane");
-  expectLanded(pressed.landed, listed, "a press on its entry in the Contents pane");
+  const listed = lastDrawnOnce(rows, "that the Contents pane lists", (row) => row.entry);
+  const entry = `${CONTENTS_ENTRY}[data-contents-entry="${quotedValue(listed.id)}"] [data-contents-line]`;
+  await oneLoad(browser, LATE_ROW_RATE, lateLoad(address), async ({ page }) => {
+    expectDrawnLate(await firstDrawing(page), listed, "the Contents pane");
+    await within(LANDED_MS, `the Contents pane's entry of ${listed.key} to press`, () =>
+      page.locator(entry).click({ timeout: LANDED_MS })
+    );
+    await expectLanded(page, listed, "a press on its entry in the Contents pane");
+  });
 
   // (4) `z`, after the reader folded a row drawn at once and the last row that holds rows, which
   // is drawn late.
-  const late = walked.rows.filter((row) => row.expanded !== null).at(-1);
+  const late = rows.filter((row) => row.expanded !== null).at(-1);
   if (late === undefined) throw new Error("Conversation draws no row that holds rows to fold");
   const unfolded = await oneLoad(
     browser,
@@ -577,38 +602,46 @@ test(LATE_ROW_TITLE, async ({ browser, loadSeeds }) => {
     lateLoad(address),
     async ({ page, requests }) => {
       const first = await firstDrawing(page);
+      expectDrawnLate(first, late, "z");
       const early = first.open.find((key) => key !== late.key && !late.key.startsWith(`${key}>`));
       if (early === undefined) {
         throw new Error("no row open at the first drawing of the rows holds rows to fold");
       }
       await fold(page, early);
-      await page.locator(rowSelector(late.key)).waitFor({ state: "attached", timeout: DRAWN_MS });
+      await within(DRAWN_MS, `the row ${late.key}, which the load draws late`, () =>
+        page.locator(rowSelector(late.key)).waitFor({ state: "attached", timeout: DRAWN_MS })
+      );
       await fold(page, late.key);
       await page.keyboard.press("z");
+      await expect.soft
+        .poll(
+          async () => {
+            const now = await outlineRows(page);
+            return [early, late.key].map(
+              (key) => now.find((row) => row.key === key)?.expanded ?? "no row"
+            );
+          },
+          {
+            message:
+              `z unfolds, within ${LANDED_MS} ms, the rows the reader folded: ${early}, drawn at ` +
+              `once, and ${late.key}, drawn late`,
+            timeout: LANDED_MS,
+          }
+        )
+        .toEqual(["true", "true"]);
       await waitForLoadEnd(page, requests);
-      return { early, first, rows: await outlineRows(page) };
+      return (await outlineRows(page)).filter((row) => row.visible).map((row) => row.key);
     }
   );
-  expectDrawnLate(unfolded.first.keys.includes(late.key), late, "z");
-  const expandedOf = (key: string) =>
-    unfolded.rows.find((row) => row.key === key)?.expanded ?? "no row";
+  const differs = visible.findIndex((key, index) => unfolded[index] !== key);
   expect
     .soft(
-      [expandedOf(unfolded.early), expandedOf(late.key)],
-      `z leaves a row the reader folded folded: ${unfolded.early}, drawn at once, and ` +
-        `${late.key}, drawn late`
-    )
-    .toEqual(["true", "true"]);
-  const shown = unfolded.rows.filter((row) => row.visible).map((row) => row.key);
-  const differs = walked.visible.findIndex((key, index) => shown[index] !== key);
-  expect
-    .soft(
-      differs === -1 && shown.length === walked.visible.length,
+      differs === -1 && unfolded.length === visible.length,
       "after z the page draws every row a load with no fold draws, each visible, in its order: " +
         (differs === -1
-          ? `it draws ${shown.length} visible rows, where that load draws ${walked.visible.length}`
-          : `visible row ${differs + 1} is ${shown[differs] ?? "missing"}, where that load draws ` +
-            `${walked.visible[differs]}`)
+          ? `it draws ${unfolded.length} visible rows, where that load draws ${visible.length}`
+          : `visible row ${differs + 1} is ${unfolded[differs] ?? "missing"}, where that load ` +
+            `draws ${visible[differs]}`)
     )
     .toBe(true);
 });
@@ -625,7 +658,10 @@ test(`${LATE_ROW_TITLE}, and by the filter by words @owed`, async ({ browser, lo
     { address, boxes: "none" },
     async ({ page, requests }) => {
       await waitForLoadEnd(page, requests);
-      return { filters: await page.locator(WORDS_FILTER).count(), rows: await outlineRows(page) };
+      // The load has ended, so the view row is drawn whole, and holds part N's filter by words
+      // where this head has it.
+      const filters = await page.locator(WORDS_FILTER).count();
+      return { filters, rows: await outlineRows(page) };
     }
   );
   owedUnless({
@@ -640,24 +676,21 @@ test(`${LATE_ROW_TITLE}, and by the filter by words @owed`, async ({ browser, lo
     (row) => row.words !== ""
   );
   const words = target.words.split(" ").slice(0, FILTER_WORDS).join(" ");
-  const filtered = await oneLoad(
-    browser,
-    LATE_ROW_RATE,
-    lateLoad(address),
-    async ({ page, requests }) => {
-      const first = await firstDrawing(page);
-      await page.locator(WORDS_FILTER).first().fill(words);
-      await waitForLoadEnd(page, requests);
-      const shown = (await outlineRows(page)).some((row) => row.id === target.id && row.visible);
-      return { first, shown };
-    }
-  );
-  expectDrawnLate(filtered.first.ids.includes(target.id), target, "the filter by words");
-  expect
-    .soft(
-      filtered.shown,
-      `the filter by words ${JSON.stringify(words)} draws no visible row of ${target.key}, whose ` +
-        "words hold them"
-    )
-    .toBe(true);
+  await oneLoad(browser, LATE_ROW_RATE, lateLoad(address), async ({ page }) => {
+    expectDrawnLate(await firstDrawing(page), target, "the filter by words");
+    await within(LANDED_MS, "the filter by words to type into", () =>
+      page.locator(WORDS_FILTER).first().fill(words, { timeout: LANDED_MS })
+    );
+    await expect.soft
+      .poll(
+        async () => (await outlineRows(page)).some((row) => row.id === target.id && row.visible),
+        {
+          message:
+            `the filter by words ${JSON.stringify(words)} draws, within ${LANDED_MS} ms, the row ` +
+            `${target.key}, whose words hold them`,
+          timeout: LANDED_MS,
+        }
+      )
+      .toBe(true);
+  });
 });

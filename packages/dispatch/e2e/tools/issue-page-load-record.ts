@@ -1031,6 +1031,8 @@ function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
     return null;
   };
   const nameOf = (element: Element): string => {
+    // A read of the DOM inside one evaluation, once the load has ended and the page is still:
+    // the element's own attribute, which names its label where it has one.
     const labelledBy = (element.getAttribute("aria-labelledby") ?? "").trim();
     if (labelledBy !== "") {
       return words(
@@ -1040,6 +1042,7 @@ function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
           .join(" ")
       );
     }
+    // The same still page's attribute, read in the order the accessible name takes its sources.
     const label = element.getAttribute("aria-label");
     if (label !== null) return words(label);
     return words(element.textContent) || words(element.getAttribute("title"));
@@ -1075,6 +1078,7 @@ function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
       if (holder === null || said === "" || !own(holder)) continue;
       if (!seen(holder, row)) hidden.push(said);
     }
+    // The row's own level on the still page, read in the evaluation that reads the row.
     const level = row.getAttribute("aria-level");
     return {
       child: row.getAttribute("data-child-entry"),
@@ -1119,6 +1123,7 @@ function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
         if (!(row.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
         after = index;
       }
+      // The control's own level on the still page, read in the evaluation that reads the rows.
       const level = control.getAttribute("aria-level");
       return {
         after,
@@ -1160,14 +1165,17 @@ async function keysList(page: Page): Promise<KeysEntry[]> {
  * since opening it moves the focus. Fails where the rows change while they are read.
  */
 export async function readView(page: Page, width: RecordWidth): Promise<PageView> {
-  const read = () => page.evaluate(readRows, { paging: PAGING_CONTROLS, rows: PAGE_ROWS });
-  const before = await read();
+  const query: RowsQuery = { paging: PAGING_CONTROLS, rows: PAGE_ROWS };
+  // Read once the load has ended, and read again below: a page that changed between the two
+  // readings fails here rather than being recorded half drawn.
+  const before = await page.evaluate(readRows, query);
   const rows = page.locator(PAGE_ROWS);
   const trees: string[] = [];
   for (let index = 0; index < before.rows.length; index += 1) {
     trees.push(await rows.nth(index).ariaSnapshot());
   }
-  const after = await read();
+  // The second reading, which must equal the first for the page to be still enough to record.
+  const after = await page.evaluate(readRows, query);
   if (JSON.stringify(after) !== JSON.stringify(before)) {
     throw new Error(
       "the page changed while its rows were read, after its load had ended: no record of it " +
