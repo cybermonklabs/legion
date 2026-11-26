@@ -565,8 +565,8 @@ marked with tags or annotations:
   person approves every release, only someone the secret names may ask, and the grant is short
   enough to review while it is live; one that is not is refused `admin-tier`,
   `admin-requesters` or `max-grant-required`. A person approves every release of one even where
-  a deployment runs a model judge: the judge refuses an administrator's secret, so a profile's
-  `proxy` block that gives the judge seconds of that name cannot undo the tag
+  a deployment runs a model judge: the judge refuses an administrator's secret, so a `judge`
+  tag on that secret cannot undo the `admin` tag
   ([The model judge](#the-model-judge)). Set it with
   `agent-secrets secret create|retag --admin true`.
 - **`max-grant`** is optional, except on an `admin` secret and on a `google-service-account` or
@@ -579,6 +579,22 @@ marked with tags or annotations:
   secrets all carry it gets a grant that lasts until its session ends instead of that default. Any other
   value is refused `default-grant-malformed`. Set it with `agent-secrets secret create|retag
   --default-grant session`.
+- **`judge`** is optional. It makes the secret one [the model judge](#the-model-judge) decides:
+  whole seconds from 1 to 900, written in digits alone, the longest grant of it the judge may
+  approve and the lifetime a request for it that names none gets. Any other value — `1800`, `0`,
+  `15m`, a sign — is refused `judge-out-of-range`, so the secret goes to nobody rather than to a
+  judge with no bound. A profile is decided as its source is, by the source's tag. The tag is in
+  the policy version, so adding, lowering or removing it makes the broker check each live grant
+  the judge made of the secret again at its next release. A profile of the secret that is behind
+  a kind carries the seconds in its fingerprint, where its `proxy` block once held them, so a
+  change of the tag ends that profile's grants, as an edit of its entry does. Set it with
+  `agent-secrets secret create|retag --judge 900`, and remove it with `--judge none`.
+- **`guidance`** is optional: the owner's instruction to the model judge, saying when to grant a
+  request for the secret. The judge shows it whole to its model, so a value longer than 2000
+  characters is refused `guidance-too-long`. It decides nothing a live grant may do, so it is in
+  no policy version and writing it ends no grant. Guidance is no secret: `GET /v1/settings`
+  answers it to anyone. Set it with `agent-secrets secret create|retag --guidance '<text>'`, and
+  remove it with `--guidance none`.
 - **`dispatch-project`** is optional. It names the one Dispatch project the secret belongs to, by
   its key as Dispatch writes it (`PRIV`: an upper-case letter, then one to nine upper-case
   letters or digits). A secret of a private project goes only to a session or pod whose
@@ -792,8 +808,10 @@ is how a deployment moves a name from a key the broker held to the minted tokens
 and then retires the key; any other value, and no tag, leaves the profile refused),
 `profile-block-mismatch` (a `github` or `google` block that
 does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (looser than the
-source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored
-value, `google-login` or `azure-login` source), or a tag rule its own tags over its source's break,
+source in tier, `requesters` or `maxGrant`), `profile-source-not-proxied` (a stored-token,
+`google-login`, `azure-login` or `anthropic-federation` source with no `proxy` tag and no `proxy`
+string, refused with its source), one of the airlock's refusals ([The airlock](#the-airlock)), or
+a tag rule its own tags over its source's break,
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
@@ -802,16 +820,18 @@ The profile `DISPATCH_RESULTS_TOKEN`, a name and a proxy block of kind `dpop` an
 nothing else, is served by a CI run's result grant and has no stored secret as its source: the
 policy serves it as nothing, as every dpop profile, with or without a stored secret of its name
 (`profile-minted`, no refusal), and a stored secret of its name is never released, as a value or
-as a placeholder: a session's release of it is answered `403 MINTED_ONLY`. The profiles file is
-refused when that profile has no proxy block, or when a
-profile of kind `dpop` sets a `source`, `tier`, `requesters`, `maxGrant`, `github` or `google`.
+as a placeholder: a session's release of an earlier grant is answered `403 GRANT_NOT_LIVE`, and
+a new request for it `400 UNKNOWN_SECRET`. The release's own check of a dpop binding also refuses
+a stored secret's release, `403 MINTED_ONLY`, behind that policy rule. The profiles file is
+refused when that profile has no proxy block, or when a profile of kind `dpop` sets a `source`,
+`tier`, `requesters`, `maxGrant`, `github`, `google` or `allow` of its own.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
 group is `profile-looser`, since the group's members change and the person's entry would not. A
 profile of a secret a group owns is the group's ([A group's secret](#a-groups-secret)). An
-`anthropic-federation` source takes a profile with no `proxy` block, as a `github-app` or a
-`google-service-account` source does, and its type's rules hold the profile's own tags: human
+`anthropic-federation` source's profile is behind the source's `proxy` tag, as a `github-app` or a
+`google-service-account` source's is, and its type's rules hold the profile's own tags: human
 tier, a `maxGrant` of an hour at most, and `requesters` that name the owner once.
 A withhold covers every profile of the withheld name's source, and the source's own name, in both directions, on every live or dormant enrollment of the session: once a session's operator has withheld a source or any profile of it, the session asks for each of them as for a human-tier secret, and every grant it got one of them on without asking ends with the revoked one.
 So a revoke of a read profile's grant withholds its write sibling too.
@@ -883,7 +903,7 @@ its grants stay live; a secret with no tag is served as before. A broker with no
 A secret tagged `project-channels` is limited by the projects the credential names, whatever
 project the secret itself belongs to. A credential that names a private project, whether or not
 its person can still see it, gets the secret only behind the airlock, and is denied it
-`project-channels-need-airlock` where no profile with a proxy block serves the secret. The proxy then carries only
+`project-channels-need-airlock` where it is not behind a kind of the airlock. The proxy then carries only
 `POST /api/chat.postMessage` with `channel`, `thread_ts` and `text`, to a channel id that the owner
 of every private project the credential names has listed in Dispatch, and refuses every other call
 `CHANNEL_NOT_ALLOWED` without calling Slack. The credential has no channel at all when an owner
@@ -1169,10 +1189,11 @@ The broker evaluates every name
   bounds (ten seconds for the whole check, five for one mint) or its caller goes away, when the
   enrollment has used its checks (five at once, one more every twelve seconds), and when it
   cannot read the requester or has no minter for the profile's type.
-  A profile with a `proxy` block is behind the airlock ([The airlock](#the-airlock)): its release
-  hands the command a placeholder, and the proxy mints the profile's token itself, for the grant's
-  target and with the same cut, keeps it until five minutes before it expires, and puts it in
-  place of the placeholder only in the requests the block allows.
+  A profile whose source's `proxy` tag names a kind is behind the airlock
+  ([The airlock](#the-airlock)): its release hands the command a placeholder, and the proxy mints
+  the profile's token itself, for the grant's target and with the same cut, keeps it until five
+  minutes before it expires, and puts it in place of the placeholder only in the requests its kind
+  and its own `allow` allow.
   A `github-installations` value holds installation tokens that a minter outside the broker
   minted before any request and stores again every few minutes, so the broker holds no App key
   for them: `{"shapeVersion": 1, "installations": {"<account login>": {"installation_id": 42,
@@ -1266,7 +1287,7 @@ The broker evaluates every name
   same setting binds the secret to its account, with the same refusals, and the same `requesters`
   rule holds, but the type is human tier alone (`type-human-tier`), so no session gets a grant of
   it without asking, and a person approves every release of it: the model judge decides none,
-  whatever seconds a profile's `proxy` block gives the name ([The model judge](#the-model-judge)).
+  whatever seconds its `judge` tag gives the judge ([The model judge](#the-model-judge)).
   The federation rule's `token_lifetime_seconds` must be 3600 or less, since a grant of the secret
   lasts an hour at most; the broker refuses a longer token, naming that setting. The minted value
   expires at the token's own end, which the airlock's proxy reads to mint again five minutes before
@@ -1570,20 +1591,115 @@ nothing. To end every session's automatic access to a secret, change its tags
 ## The airlock
 
 A deployment can keep a secret's value from its sessions altogether. The broker reads a profiles
-file when it starts (`BROKER_PROFILES_FILE`, a `profiles.json`), and each profile's `proxy` block
-is one entry of the airlock's rules, under that profile's name: it names the hosts that
-profile's value may reach, the request headers that may carry it
-(`authorization`, unless the entry names others) and, where the entry gives them, the methods and
-path prefixes it may travel on
-(`packages/envoy/internal/cipher/proxyrules`). An entry may also give a `judge` of so many seconds:
-the longest grant of that secret the model judge may approve, at most 900, and with it a
-`guidance`, the instruction the judge decides the key on, which is no part of the entry's
-fingerprint, so writing or changing it ends no grant ([The model judge](#the-model-judge)). Every
-entry names at least one host: an entry with no `hosts` would hold the value back and carry it
-nowhere, so the broker refuses to start with a file that holds one, and
-`envoy-broker profiles check` refuses that file too. Those hosts carry no port, so an entry binds
-a name on port 443 alone, and another port of that name is another service the proxy tunnels
-unread.
+file when it starts (`BROKER_PROFILES_FILE`, a `profiles.json`) whose `kinds` list declares the
+airlock's kinds (`packages/envoy/internal/cipher/proxyrules`, `Kind`). A kind says where a
+credential of it may go and how it goes in, for every secret of the kind:
+
+```json
+{"kinds": [
+  {"name": "anthropic", "hosts": ["api.anthropic.com"], "headers": ["Authorization"],
+   "variables": ["ANTHROPIC_ADMIN_TOKEN"], "ways": ["mint"], "max_grant": "1h",
+   "allow": [{"method": "GET", "pathPrefix": "/v1/organizations/"},
+             {"method": "POST", "pathPrefix": "/v1/organizations/"},
+             {"method": "DELETE", "pathPrefix": "/v1/organizations/"}]}
+],
+ "profiles": [ ... ]}
+```
+
+- `name`: one lowercase word, `a` to `z`, the service's word where it has one.
+- `hosts` (at least one): the hosts a credential of the kind may reach, each on port 443.
+- `headers`: the request headers that may carry it, `authorization` when the kind names none.
+- `allow` (optional): rows of a method and a `pathPrefix`. A prefix holds a path that equals it or
+  continues it at a `/`, so `/storage-limit` holds `/storage-limit/7` and not
+  `/storage-limitX`. With no `allow`, any method and path on the kind's hosts; an empty list
+  allows nothing. A kind's row names no host.
+- `ways` (at least one): how a credential of the kind goes into a call: `swap` (a stored value
+  swapped in), `mint` (a token the broker mints and swaps in), `sign` (an AWS key pair, signed
+  with again), `exchange` (an Entra identity, exchanged at Microsoft's token endpoint) or `dpop`.
+- `variables`: the client variables each placeholder of the kind is to go into. The broker reads
+  and checks the list (each a shell name) and `envoy-broker profiles check` prints it, but no
+  release applies it yet: a command still reads a placeholder in the variable named as its secret,
+  for example `ANTHROPIC_ADMIN_HDO`, and a later change puts it in the kind's variables too.
+- `max_grant`: a Go duration that caps the `max-grant` tag of each secret of the kind.
+- `placeholder_prefix`: the prefix each placeholder of the kind opens with, in place of
+  `agent-secrets-placeholder-`, for a client that checks a key's shape before it sends it.
+
+A stored secret is behind a kind when its `proxy` tag names that kind. Its `type` tag picks the
+way it takes, and the kind's `ways` must hold it: no type takes `swap`, or `sign` for an AWS key
+pair under a kind that lists `sign` and not `swap`; `github-app`, `github-installations`,
+`google-login`, `google-service-account` and `anthropic-federation` take `mint`; `azure-login`
+takes `exchange`. A profile is behind its source's kind. Each policy load refuses the secret, by
+its name, when its `proxy` tag names no kind of the file (`proxy-kind-unknown`), when its way is
+not one of the kind's (`proxy-way-not-in-kind`), and, for a kind with a `max_grant`, when it sets
+no `max-grant` or one longer than that (`proxy-max-grant-above-kind`). Tags change at run time,
+so the rules the proxy decides from are rebuilt at each policy load.
+
+A profile may narrow its one source further with an `allow` of its own: the proxy forwards a
+request only when the kind's `allow` and the profile's `allow` both allow it, so a profile narrows
+its kind and never widens it. A profile's row may name a `host`, which must be one of its kind's
+hosts, and then allows the request on that host alone. Each policy load refuses a profile row that
+no row of its kind covers (same method, no host or the same host, and a prefix that the kind's
+prefix holds at a `/`: `profile-allow-outside-kind`) and a row whose host the kind does not bind
+(`profile-allow-host`). The narrowing must also be in the store: a profile with an `allow` whose
+source does not carry the tag `proxy-narrowed=true` is refused (`profile-allow-not-narrowed`), and
+a secret tagged `proxy-narrowed=true` is served through exactly one profile, which has an `allow`.
+With no profile, with a profile that has no `allow`, or with more than one profile that names it,
+the secret and each of those profiles are refused (`proxy-narrowed-profiles`), and a
+`proxy-narrowed` tag of any value but `true` refuses the secret (`proxy-narrowed-malformed`). So
+a reviewed change of the file alone cannot take a narrowing away. A profile whose source is a
+stored token, a `google-login`, an `azure-login` or an `anthropic-federation` secret with no `proxy`
+tag is refused with its source (`profile-source-not-proxied`): without the refusal the source
+would be released to an approved command as its value, and the profile's `allow` would never be
+read.
+
+Two forms of a profile's `proxy` key survive while secrets move to kinds, and each goes when what
+it stands in for is in place. A profile may name a kind as the string value of its `proxy` key,
+`"proxy": "github"`, and is then served behind that kind as if its source carried the tag; a
+string that names another kind than the source's tag is refused (`proxy-kind-conflict`), and one
+that names the same kind is served with one warning line at each full load. The string goes once
+every source it is written for carries its `proxy` tag. And a `proxy` object of kind `dpop` alone
+(below) is kept until a `dispatch` kind with the `dpop` way serves the broker's minted Dispatch
+tokens. Every other `proxy` object is refused, naming `kinds`.
+
+Who decides a request for a value is no part of a kind: that is the secret's own `judge` and
+`guidance` tags ([The model judge](#the-model-judge)), and a profiles file that still sets `judge`
+or `guidance` is refused, naming the tag that took its place. Every kind names at least one host:
+a kind with no `hosts` would hold every value of it back and carry it nowhere, so the broker
+refuses to start with a file that holds one, and `envoy-broker profiles check` refuses that file
+too. Those hosts carry no port, so a kind binds a name on port 443 alone, and another port of that
+name is another service the proxy tunnels unread.
+
+The kinds a deployment declares are its own. These are the kinds the airlock's design names, each
+with what narrows it and how its credential goes in:
+
+| Kind | Its credential | How it goes in | Hosts | Headers | Longest grant |
+| --- | --- | --- | --- | --- | --- |
+| `github` | a GitHub App, or a stored token | mints an installation token; a stored token is swapped as it is | `api.github.com`, `github.com`, `uploads.github.com` | `Authorization`, also inside `Basic` | 12 hours |
+| `slack` | a bot token | swaps it in | `slack.com` | `Authorization` | 12 hours |
+| `aws` | a stored key pair | signs again (Signature Version 4) | `sts.amazonaws.com`, STS's regional hosts, and each other AWS host a consumer calls | the signature | 12 hours |
+| `gcp` | a person's login or a service account | mints an access token | `*.googleapis.com`, `*.pkg.dev` | `Authorization` | 24 hours for a login, 1 hour for a service account |
+| `gws` | a person's Workspace login | mints an access token | `*.googleapis.com` | `Authorization` | 24 hours |
+| `azure` | an Entra identity | exchanges at Microsoft's token endpoint, then swaps the access token in | `login.microsoftonline.com`, `management.azure.com` | `Authorization` | 1 hour |
+| `tailscale` | an API key, or an OAuth client | swaps an API key in | `api.tailscale.com` | `Authorization` | 12 hours |
+| `datadog` | an API key, an application key or an access token | swaps it in | `api.us3.datadoghq.com` | `DD-API-KEY`, `DD-APPLICATION-KEY`, `Authorization` | 12 hours |
+| `openrouter`, `typesafe`, `deepgram` | an API key | swaps it in | `openrouter.ai`, `api.typesafe.ai`, `api.deepgram.com` | `Authorization` | 12 hours |
+| `tinker` | an API key | swaps it in; its placeholder opens with `tml-` | `tinker.thinkingmachines.dev`, `inference.thinkingmachines.dev` | `X-API-Key`, `Authorization` | 12 hours |
+| `elevenlabs` | an API key | swaps it in | `api.elevenlabs.io` | `xi-api-key` | 12 hours |
+| `anthropic` | an Anthropic organization's token by workload identity federation (`anthropic-federation`) | mints the token at Anthropic's token exchange and swaps it in; the kind's `allow` is `GET`, `POST` and `DELETE` under `/v1/organizations/` | `api.anthropic.com` | `Authorization` | 1 hour |
+| `evals` | a ClickHouse login's password | swaps it in, at a private destination | `transcript-store.<tailnet>.ts.net` | `X-ClickHouse-Key` | 12 hours |
+| `dispatch` | a CI run's results token, or a person's approve token, which the broker mints and holds | swaps it in with a DPoP proof, at a private destination | `dispatch.<tailnet>.ts.net` | `Authorization` | 15 minutes |
+
+An `anthropic-federation` secret is minted as its type says ([Requests and grants](#requests-and-grants)):
+the broker reads the Google identity token of the account `BROKER_SERVICE_ACCOUNT_SECRETS` binds to
+the secret, for the audience `https://api.anthropic.com`, trades it at
+`POST https://api.anthropic.com/v1/oauth/token` for a token that opens with `sk-ant-oat01-`, and
+refuses a token whose `expires_in` is more than an hour. The kind's `allow` bounds every secret of
+it, one with no profile included, so a token of the kind reaches Anthropic's Admin API alone and
+never its token exchange or its Messages API, on the same host. A client that names
+`api.anthropic.com` in its `NO_PROXY` reaches the proxy all the same under a grant of an
+`anthropic` secret: `agent-secrets` drops that entry from the child's `NO_PROXY` and changes no
+variable outside the child.
+
 A host is written in one form, the one every request for it is compared in: a DNS host name of
 letters, digits and hyphens between single dots, with no label longer than 63 characters,
 starting or ending with a hyphen, or holding `--` as its third and fourth characters other than
@@ -1614,22 +1730,51 @@ What a host in another spelling would do if it were served depends on the spelli
 - The rest — white space, a scheme, a port, brackets, an empty or overlong label, a number for a
   last label — is no name a client sends, or one clients read differently.
 
-A secret an entry binds to at least one host is **behind the airlock**,
-and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
-`values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
-authority to trust that proxy by, a proxy password, and, for each name, a placeholder, the
-placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
-`agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
+A secret behind a kind is **behind the airlock**, and the broker never releases its value to
+anyone: a read of a grant of it leaves the name out of `values` and answers an `airlock` object
+instead, which carries the proxy's URL, the certificate authority to trust that proxy by, a proxy
+password, and, for each name, a placeholder, the placeholder of each slot of the value, and the
+hosts its kind binds. A placeholder is the kind's `placeholder_prefix`, else
+`agent-secrets-placeholder-`, and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
-brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream
-'<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]` says whether a broker would serve a file,
-and what that file adds and removes against the one in force. Given the broker's values of
-`BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`, it also holds each dpop block
-to those destinations and each destination's address to the rule the broker holds it to at start;
-without `--cluster-ranges` it says which address it did not judge against the ranges.
+brokers; `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>]
+[--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]` says whether a broker
+would serve a file, and what that file adds and removes against the one in force: the kinds,
+hosts, headers, variables, ways, `max_grant` and `allow` rows of the kinds and of the profiles.
+Given the broker's values of `BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`,
+it also holds each dpop block to those destinations and each destination's address to the rule the
+broker holds it to at start; without `--cluster-ranges` it says which address it did not judge
+against the ranges.
+With `--against` it also lists, under `widens`, each served name whose `allow` the change widens,
+and each host it adds to a name.
+With `--secrets-json` (the list `gcloud secrets list --format='json(name,annotations)'` prints for
+the agent secrets) it reads each secret's `proxy` and `proxy-narrowed` tags and refuses what the
+policy load would refuse, in the load's words (`profile "<NAME>": <reason>: <detail>`): a secret
+whose `proxy` tag names no kind of the file, a way or `max-grant` its kind does not take, a
+profile's row outside its kind; and it exits 1 when a name behind the proxy under the old file is
+behind none under the new one (`<n> name(s) leaving the proxy: ...`). Without it, a profile with
+no `proxy` string in a file that declares a kind takes its kind from its source's tag, which the
+file does not hold, so the check writes an `UNKNOWN:` line for it; and with `--against`, a secret
+behind a kind by its own tag is no name the check can see, so it compares each kind both files
+declare instead (`widens kind "<kind>": <row>`, `hosts kind "<kind>": <host> added`) and counts
+each such kind as not read. A run that refuses nothing it read but left something unread exits 3,
+never 0. Exit 1 says the broker would refuse the file; 3 says the check could not read all it
+needed, so a job with no access to the store can tell the two apart by the number.
 
-A proxy block may be of kind `dpop`: a capability the broker mints for a grant of its own and
-holds, from no stored secret. Such a profile is a name and its proxy block alone. Its grant is
+A command that works as `agent-secrets NAME -- command` works unchanged while its grant lives when
+`NAME` is behind the airlock, except in these named cases: Bun's `node:https`; the AWS uploads and
+URLs the `aws` kind refuses (a chunk-signed upload and a presigned URL); a private address literal
+from Node, wget or Python's urllib; other names under a suffix a bound host is under; the App token
+request `POST /app/installations/{id}/access_tokens` and every other call to `/app` or under `/app/`
+that is not a `GET` or `HEAD`; a call to `/repos/{owner}/{repo}/installation`,
+`/orgs/{org}/installation` or `/users/{username}/installation`, which GitHub answers only for the
+App's JSON Web Token and which the proxy sends with an installation token; a client that signs an
+App's JSON Web Token itself; a request that needs the values of two secrets at once; and a GraphQL
+write to another account's repository.
+
+The one `proxy` object a profile may still hold is of kind `dpop`: a capability the broker mints
+for a grant of its own and holds, from no stored secret. Such a profile is a name and its proxy
+block alone. Its grant is
 answered a placeholder that opens with `agent-secrets-placeholder-`, the kind's word and a hyphen;
 on the block's host the proxy takes a request only with that placeholder as its one
 `Authorization` header, `DPoP <placeholder>`, swaps in a token it mints for the grant bound to its
@@ -1650,27 +1795,28 @@ What the command gets is the placeholder and the way to spend it. `agent-secrets
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
 the system roots where it named none, plus the proxy's own certificate) and a wgetrc naming it,
-and sets `NO_PROXY` so the entry's bound hosts reach the proxy while loopback and the private
+and sets `NO_PROXY` so the grant's bound hosts reach the proxy while loopback and the private
 ranges stay direct. The command calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
-the entry names, inside the connection it carries to the bound host, and an answer of the proxy's
+its kind names, inside the connection it carries to the bound host, and an answer of the proxy's
 own that quotes what a service sent — the `502` for a status line it could not read, a failed
 Azure exchange's refusal — writes each run the transport quotes as
 `"[service bytes not shown]"`, and the same answers for a certificate that names other hosts write
 a fixed phrase in place of the names, so a service that sent the value back there does not hand it
 on.
 
-The proxy reads the grant behind the password on every connection, and the entry decides each
-request (`packages/envoy/internal/cipher/proxy`). A host no entry of that grant binds is
-tunnelled unread, to a public address alone. A bound host is read with a certificate of the
-proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+The proxy reads the grant behind the password on every connection, and the name's kind and
+profile decide each request (`packages/envoy/internal/cipher/proxy`). A host that no kind of the
+grant's names binds is tunnelled unread, to a public address alone. A bound host is read with a
+certificate of the proxy's own authority, and the request must name that same host in its TLS
+name and in its `Host` header; then the kind's hosts and headers, and the kind's and the profile's
+methods and paths, decide whether the swap happens. That
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
 else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
 host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
 (`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
-How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
+How a stream becomes the request the kind decides is tested, not proved: the Lean model of the
 decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that
 refused it, such as `host not bound` or `not allowed by rule`, and ending with its answer id. The
 broker logs one line for each call to a bound host, never with a value. A call it carried, or
@@ -1689,19 +1835,62 @@ resolved to, the class of the failure and the reason. The host and the port are 
 own text, cut to 256 bytes, the host lowercased and the port read as its number, and a refusal's
 path and correlation id are too; none of that is redaction, so every line the proxy writes has
 each placeholder — `agent-secrets-placeholder-`, in any case, and at most the 32 letters and
-digits after it, up to where another placeholder starts — replaced by `[placeholder]`. A path that
-holds a `.` or `..` segment is refused outright
-(`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
-such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does
-not bound. On an entry that lists methods and paths, a request carrying
-`X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` is refused the same way
-(`request carries a method override header`), because a service that honours one of those
-acts on the method the header names and not on the one the entry allowed.
-Each profile's own fingerprint, its whole entry but the guidance, is part of what a grant was
-decided under, so an edit to one profile's entry ends that profile's grants and no others. The
-fingerprint a grant is held to is its approval's, the entry the approval was given under, and
-every release compares it: a grant approved after an entry's edit ends when the file rolls back
-to the entry the request was made under. The proxy keeps the values it read for a grant until
+digits after it, up to where another placeholder starts, or a kind's own `placeholder_prefix` and
+the 32 letters and digits after it, where the character before it is no ASCII letter or digit —
+replaced by `[placeholder]`.
+
+A path that holds a `.` or `..` segment is refused on every bound host (`path has a dot
+segment`), whatever the kind allows, because a reader that resolves such a path first — which is
+what RFC 3986 says it means — reads it as a path the prefix does not bound. Where the kind or the
+profile has an `allow`, the proxy refuses more before it reads the allow rows, each a path a
+service may read otherwise than the prefix test does: an empty segment, `//` (`path has an empty
+segment`); `%2F` in any case in the path as sent (`path has an encoded slash`), which a service
+may decode into a `/` the prefix never saw; `\`, or `%5C` in any case (`path has a backslash`),
+which some servers read as `/`; a segment whose text before its first `;` is `.` or `..`, with
+the `;` sent as it is or as `%3B` and the dots as they are or as `%2E` (`path has a parameter on
+a dot segment`), since Tomcat, Jetty and Spring take a `;` parameter off a segment before they
+resolve it, so `/v1/..;/admin` reads to them as `/admin`; and a path that, decoded once, still
+holds `%2F`, `%2E`, `%5C` or `%25` in any case (`path has a double-encoded character`). A `%` can
+reach the once-decoded path only from a `%25` in the path as sent, so this reads every spelling a
+server that decodes twice would turn into `/`, `.` or `\` (`%252F`, `%25%32%46` and
+`%25%32%45%25%32%45` among them), and the `%25` catches a server that decodes three times or
+more. Then come the kind's rows (`not allowed by rule`) and the profile's (`not allowed by the
+profile's rule`). After them, still only where one of the two has an `allow`, a request that
+carries `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` is refused (`request
+carries a method override header`), and so is one whose query holds a parameter named `_method`,
+with any value or none (`request carries a method override parameter`), because a service that
+honours one acts on the method it names and not on the one the allow read. The proxy reads the
+query as the frameworks that honour that parameter do (Express, Symfony and Laravel among them),
+and refuses wherever one of them would read `_method`, or more. It splits the query into
+parameters on `&` and on `;`, since a PHP service may be set to split on `;` too. It decodes each
+name's percent-escapes, with `+` as a space, and cuts the name at its first NUL byte, as PHP and
+Symfony do, so `_method%00x` is `_method`. It takes off leading spaces, reads `.`, a space and `[`
+as `_`, and folds ASCII case. PHP reads `.` and a space as `_` too, but drops a name that starts
+with `[`, so reading `[` as `_` refuses a name such as `[method` that PHP would not read at all:
+it refuses more, never less. So `_meth%6Fd`, `%5Fmethod`, `.method`, `+_method` and `_method%00x`
+each count as `_method`, and a name with a `%` that starts no valid escape is refused for the
+same reason, since what a service makes of it is not known. Two forms of `_method` are not
+refused. A `_method` field of a form body: the decision never reads the body, which the proxy
+streams to the service unread, and Rails, Laravel and Symfony honour that field too, so a kind
+whose service does must not count on its `allow` to bound the method of a form post. And
+`_method[]`: PHP makes `$_GET['_method']` an array of it, which Symfony's method override
+ignores, and Express's `methodOverride('_method')` reads no key `_method[]`. A kind with no
+`allow` bounds no path or method, so none of these refusals applies to it, and its clients' paths
+pass as they are: `gcloud storage` sends the `/` of an object's name as `%2F`, and an S3 key may
+hold `//`.
+
+A name's fingerprint is part of what a grant of it was decided under. For a name behind a kind it
+holds the kind and that kind's `allow`, and the secret's `proxy-narrowed` tag; for a profile it
+also holds the profile's whole entry, its own `allow` included, and its source's `judge` seconds.
+So an edit of one profile's entry ends that profile's grants and no others, a retag of a secret's
+`proxy` or `proxy-narrowed` tag ends the grants of its names, and an edit of a kind's `allow`
+ends the grants of every name behind that kind. A kind that loses a host or a header ends those
+grants too; a kind that only gains a host or a header ends none. The judge seconds sit where a
+profile's `proxy` block wrote a `judge` before it became the source's tag, so moving the judge
+from the file to the tag, with the same seconds, ends none. The fingerprint a grant is held to is
+its approval's, the entry and the kind the approval was given under, and every release compares
+it: a grant approved after an edit ends when the file rolls back to what the request was made
+under. The proxy keeps the values it read for a grant until
 the policy moves, a minted value nears its expiry, or a reread finds a new value of the stored
 secret it is served from: a reread of a source, or of any profile of it, rereads the one stored
 value they are all served from, so the proxy reads each of their grants' values again and a
@@ -1724,7 +1913,7 @@ What the airlock does not stop is as much of the design as what it does:
   at that moment, such as a WebSocket the proxy joined to a bound host, a gRPC call whose answers
   stream or a long poll, is ended with the grant within 15 seconds rather than running to the
   idle limit. A call whose service has not answered yet gets the `407` itself. A tunnel to a host
-  no entry binds carries no value, so the idle limit is the whole of what bounds one.
+  no kind of the grant binds carries no value, so the idle limit is the whole of what bounds one.
 
 - A `407` is the grant's own answer. A read of the grant that failed — the broker's store did
   not answer — is `503` with a fixed sentence that names nothing of that failure, and the call
@@ -1740,7 +1929,7 @@ What the airlock does not stop is as much of the design as what it does:
   beside `BROKER_PROFILES_FILE`: a Service range can be public address space, as GKE's
   default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
   (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
-  broker whose profiles file gives any profile a proxy block refuses to start without that
+  broker whose profiles file declares a kind or a `dpop` block refuses to start without that
   setting, or when no range in it holds that address. A command that needs such a call sets its
   own `NO_PROXY` entry for that name.
   The one exception is `BROKER_PROXY_PRIVATE_UPSTREAM` (`<host>=<url>` entries, one per bound
@@ -1780,12 +1969,16 @@ project hides from the person the call names, `404 NOT_FOUND`, as for an id no r
 `503 PROJECT_ACCESS_UNAVAILABLE` where Dispatch does not answer. Those routes read no record for a
 caller the broker has not authenticated: one with no ServiceAccount token, or one it does not
 accept, is refused alike for every record id, so it learns nothing of which records exist.
-An approval is bound to the profiles its page printed too: the page's forms carry the fingerprint
-of each profile it printed, and an approval is refused `403 PROFILE_CHANGED`, deciding nothing,
-when a profile it names has another fingerprint by then, as a profiles roll between the page and
-the click leaves it. Opened again, the page prints the profile as the broker now serves it, and
-its approval grants that. A person Dispatch calls a restricted member, who decides no secret
-request, is refused as one before that check, so their approval says nothing of a profile.
+The page prints, for each profile a request asks for, its source and the hosts its kind lets its
+credential reach, and for each stored secret it asks for by its own name behind a kind, that
+name, its kind, the kind's hosts and the requests the kind allows. An approval is bound to what
+its page printed too: the page's forms carry the fingerprint of each profile, and of each such
+secret, it printed, and an approval is refused `403 PROFILE_CHANGED`, deciding nothing, when one
+it names has another fingerprint by then, as a profiles roll, a retag or an edit of the kind's
+`allow` between the page and the click leaves it. Opened again, the page prints the name as the
+broker now serves it, and its approval grants that. A person Dispatch calls a restricted member,
+who decides no secret request, is refused as one before that check, so their approval says nothing
+of a profile.
 
 A broker that signs nobody in, `BROKER_SIGNIN=off`
 ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no
@@ -1884,22 +2077,20 @@ list Dispatch's own account and nothing else.
 ### The model judge
 
 A deployment may configure a **model judge** (`packages/envoy/internal/cipher/judge`). Who decides
-a request is a setting of its keys, in each profile's `proxy` block in the profiles file
-(`BROKER_PROFILES_FILE`):
+a request is a setting of its keys, in each secret's own tags:
 
 - **Nobody**: an agent-tier key is granted at once to the sessions its tags allow, as before.
-- **The judge**: a key whose profile's `proxy` block has a `judge` value, the longest lifetime in
-  seconds the judge may grant, no `admin` tag, and no `anthropic-federation` type. The block may
-  also carry `guidance`: the key owner's instruction saying when the judge should grant it. The
-  block names at least one host, as every proxy block does, so the value of a key the judge
-  decides stays behind the airlock.
+- **The judge**: a key with a `judge` tag, the longest lifetime in seconds the judge may grant,
+  no `admin` tag, and no `anthropic-federation` type. It may also carry a `guidance` tag: the key
+  owner's instruction saying when the judge should grant it. A profile is decided by its source's
+  tags. Set both with `agent-secrets secret retag <NAME> --judge 900 --guidance '<text>'`.
 - **A person**: every other key, and every administrator's key and Anthropic federation key
-  whatever the profiles file says, since either can release an organization administrator's
+  whatever its `judge` tag says, since either can release an organization administrator's
   credential. The person decides on the broker page, as before.
 
 The judge decides a request when every key in it that needs a decision is a judge key. A request
 with any key a person decides is that person's whole. The broker reads the answer when it writes
-the request and keeps it with the request, so a restarted broker, or one with other rules, decides
+the request and keeps it with the request, so a restarted broker, or one with other tags, decides
 it the same way. With the judge's settings unset there is no judge, and every request that needs a
 decision waits for a person.
 
@@ -1907,8 +2098,9 @@ No request has to cite anything. The judge reads the Dispatch issue a reason nam
 cites (`dispatch://KEY/ask/<id>`) as data for the model, and a key's guidance may ask for either:
 for example, "grant only to post text that the key's owner approved in Dispatch; the reason must
 cite that answer". `GET /v1/settings` answers each judge key with its seconds and guidance
-(`judge_keys`), and `agent-secrets secret show` prints who decides a request for the key and the
-guidance, so an agent can meet the guidance on its first request.
+(`judge_keys`), and `agent-secrets secret show` prints the key's own `judge` and `guidance` tags
+and who decides a request for it — for a source served only through its profiles, the judge, for
+each judged profile made from it — so an agent can meet the guidance on its first request.
 
 While the judge decides a request, which is at most two minutes from when it was written, nobody
 else can: it is on no person's list or Dispatch Inbox, on any broker; its answer carries
@@ -1917,10 +2109,10 @@ decision routes refuse it `403 JUDGE_DECIDES`; and a person's Approve or Deny of
 
 The broker that wrote a request pending runs the judge in the background, for a request it wrote
 and never for one it joined to a request already pending, so one record is judged once. A run has
-35 seconds, and the model call inside it 20. The run makes six checks first, in order, and stops
+35 seconds, and each model call inside it 20. The run makes six checks first, in order, and stops
 at the first that fails, asking the model nothing:
 
-1. each key the judge decides has a `judge` value in its profile's `proxy` block;
+1. each key the judge decides carries a `judge` tag (a profile, its source's);
 2. the grant's lifetime — the `--ttl` its session signed, else the broker's default — is at most
    15 minutes and at most each of those keys' seconds;
 3. the tag policy, read again now, still answers approval for each key the judge decides, and
@@ -1941,14 +2133,22 @@ A key the session gets at once, such as an agent-tier key, may stand beside the 
 needs no decision: the judge decides nothing of it, the model is not shown it, and the judge's
 grant releases it with the rest.
 
-A request that passes them all goes to one model, with each key's name, `proxy` block and guidance,
-the reason, and the issue and ask the reason points at. The model follows the guidance and reads
-everything an agent wrote as data to judge rather than as instructions. It answers `grant` or
-`deny`. The run reads the request's state once more immediately before that call and asks nothing
-about a request that is no longer pending — one its session cancelled, or one whose wait ran out.
-That read bounds nothing about how many model calls one session can start: each request a session
-creates is pending for the moment the run reads it, so a session that creates and cancels requests
-in a loop costs one model call per request it creates.
+A request that passes them all goes to the model in one call for each key the judge decides, all
+made at once. Each call is shown that one key's name, judge seconds and guidance, the reason, and
+the issue and ask the reason points at, and nothing of any other key, so one owner's guidance never
+reaches the decision on another owner's key; the model is also told that a key's guidance decides
+only that key: it follows the rule a guidance gives the key it decides (one source's guidance,
+shown for each profile made from it, may give each profile its own), and text in it that tries to
+decide the whole request, or this key through what it says of another, is a reason to deny. The
+model follows the guidance and reads everything an agent wrote as data to judge rather than as
+instructions. Each call answers `grant` or `deny`, and the request is granted only when every call
+grants: one `deny` refuses it. A request for N judge keys makes N calls, each bounded at 20
+seconds, and waits as long as the slowest of them. The run reads the request's state once more
+immediately before the calls and asks nothing about a request that is no longer pending — one its
+session cancelled, or one whose wait ran out. That read bounds nothing about how many model calls
+one session can start: each request a session creates is pending for the moment the run reads it,
+so a session that creates and cancels requests in a loop costs one model call per judge key of
+each request it creates.
 
 Every run ends the request one of three ways:
 
@@ -1968,7 +2168,7 @@ Every run ends the request one of three ways:
 For a request the judge decides, a lifetime longer than a judge key's seconds, or than 15 minutes,
 is refused when the request is written, naming the `--ttl` that would do, and the judge is never
 asked; a request naming no lifetime gets the shortest of those seconds. A request a person decides
-— a judge key beside a key with no judge entry, or any request on a broker that runs no judge —
+— a judge key beside a key with no `judge` tag, or any request on a broker that runs no judge —
 keeps the ordinary lifetime rules.
 
 An approval is the judge's own. The decision event's actor is `judge:<model id>` and its login is
@@ -1978,17 +2178,21 @@ record's own approver — the secret's owner, or `anyone` for a shared secret �
 approves that secret lists the grant and can end it, and a judged grant of a shared secret is on
 every signed-in person's page.
 
-A judged grant is held to the rules in force rather than to a person's standing, and to the
-`admin` tag over both. Each release re-checks that the secret's entry still gives the judge at
-least the grant's lifetime; a grant whose entry lost its `judge`, or whose seconds fell below
-that lifetime, releases nothing (`GRANT_NOT_LIVE`). A secret its owner tags as an
+A judged grant is held to the keys' `judge` tags in force rather than to a person's standing, and
+to the `admin` tag over both. Each release re-checks that the secret's `judge` tag still gives the
+judge at least the grant's lifetime; a grant whose secret lost its `judge` tag, or whose seconds
+fell below that lifetime, is refused and ended for good at that release, and putting the tag back
+does not bring it back, as a lowered `max-grant` does not. A grant the new seconds still cover goes
+on releasing, unless the secret is served as a profile behind a kind: that profile's
+fingerprint holds the seconds, so any change of them ends its grants, refused as its profile
+having changed, "its entry in the profiles file, or the judge tag of its source key". A secret its owner tags as an
 administrator's after the judge decided it ends that grant for good, at the release and at the
 next request that would reuse it: a person approves every release of one, so no judged grant
 goes on releasing it, and taking the tag off again does not bring the grant back: the session
 asks afresh, as a new request, which its person decides while the tag stands. The chain check
 ([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
-agent secrets alone, each one a key the rules still give the judge seconds of, and a lifetime
-within each one's seconds, so a forged record, and one a rules change left behind, release
+agent secrets alone, each one a key whose `judge` tag still gives the judge seconds of it, and a
+lifetime within each one's seconds, so a forged record, and one a retag left behind, release
 nothing either. What the reason says is the judge's to read against the guidance, and no part of
 that check.
 
@@ -2069,8 +2273,14 @@ revoke of a grant already revoked, naming under `withheld` the secrets it withhe
 session, and under `withheld_on` the other enrollments it wrote them on),
 `request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person
 and the runs a check stopped included: each check and its result, the model, whether the model was
-asked, the verdict, the reason, the token counts, that it priced nothing, and the raw answer where
-it did not parse) and
+asked, the `verdict` — what became of the request: `granted`, `refused`, `handed to the person`,
+`not pending` for one already decided, cancelled or expired, or `unknown` where an approval's
+answer was lost — the reason, the `calls` (one for each judge key the model was asked about, with
+the key and what its call did: `granted`, `denied`, or `failed` with its error, a failure being no
+deny, and the raw answer of a call whose answer did not parse), the token counts, that it priced
+nothing, and, for a request handed to its person because a call failed, the raw answer of the
+first call that failed, which is empty when that call sent no answer at all, a time-out among
+them, even where a later call's answer did not parse; a refused request carries none there) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the

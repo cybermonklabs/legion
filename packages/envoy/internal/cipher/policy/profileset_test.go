@@ -33,17 +33,19 @@ const (
 )
 
 // readProfile is GITHUB_READ, the profile every test file holds beside the profile it is about:
-// reads of acme through appSourceName, as a bare token behind the proxy. It passes against its
-// source, so a file whose other profile fails still serves it.
+// reads of acme through appSourceName, as a bare token behind the proxy, under the github kind its
+// proxy string names. It passes against its source, so a file whose other profile fails still
+// serves it.
 const readProfile = `{"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP",
   "github": {"accounts": ["acme"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"},
-  "proxy": {"hosts": ["api.github.com"]}}`
+  "proxy": "github"}`
 
 // acmeRead is a github block that fits every github-app source here: reads on acme.
 const acmeRead = `"github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}`
 
-// apiProxy is a proxy block that every source accepts.
-const apiProxy = `"proxy": {"hosts": ["api.example.com"]}`
+// apiProxy is a proxy string naming the test kind every source's type takes a way of
+// (policytest.Kinds' example).
+const apiProxy = `"proxy": "example"`
 
 // appSource is appSourceName holding a value the decoder reads.
 func appSource() secrets.LocalSecret {
@@ -86,11 +88,11 @@ func everySource() []secrets.LocalSecret {
 }
 
 // profiled is the live policy of a store holding stored, under the profiles file holding
-// profiles, with daemonService registered.
+// profiles and the test kinds (policytest.KindsFile), with daemonService registered.
 func profiled(t *testing.T, stored []secrets.LocalSecret, profiles ...string) (*policy.Current, *secrets.Local) {
 	t.Helper()
 	store := secrets.NewLocal(stored...)
-	return policytest.ProfiledCurrent(t, store, policytest.ProfilesFile(profiles...), daemonService), store
+	return policytest.ProfiledCurrent(t, store, policytest.KindsFile(profiles...), daemonService), store
 }
 
 // profileKey is the key a profile's refusal has in Set.Refused.
@@ -131,7 +133,7 @@ func TestAPassingProfileIsServedByItsName(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := base.Secrets[appSourceName]
-	profiles := policytest.Profiles(t, policytest.ProfilesFile(readProfile), daemonService)
+	profiles := policytest.Profiles(t, policytest.KindsFile(readProfile), daemonService)
 	set := cur.Get()
 	got := servedProfile(t, set, "GITHUB_READ")
 	if got.Source != source.Source || got.Owner != appOwner || got.Tier != policy.TierAgent || got.Type() != policy.TypeGitHubApp {
@@ -176,14 +178,15 @@ func TestAFailedProfileIsRefusedAloneAndTheOthersServe(t *testing.T) {
 		{"agent tier on a human source", `{"name": "HUMAN_READ", "source": "HUMAN_APP", "tier": "agent", ` + acmeRead + `}`, policy.ReasonProfileLooser},
 		{"a requester its source does not list", `{"name": "LISTED_READ", "source": "LISTED_APP", "requesters": ["bob@example.com"], ` + acmeRead + `}`, policy.ReasonProfileLooser},
 		{"a maxGrant above its source's", `{"name": "LISTED_LONG", "source": "LISTED_APP", "maxGrant": "2h", ` + acmeRead + `}`, policy.ReasonProfileLooser},
-		{"no proxy block on a stored value", `{"name": "PLAIN_KEY"}`, policy.ReasonProfileNeedsProxy},
-		{"no proxy block on a google-login source", `{"name": "LOGIN_READ", "source": "LOGIN_KEY"}`, policy.ReasonProfileNeedsProxy},
-		{"no proxy block on an azure-login source", `{"name": "AZURE_READ", "source": "AZURE_KEY"}`, policy.ReasonProfileNeedsProxy},
+		{"no proxy on a stored value", `{"name": "PLAIN_KEY"}`, policy.ReasonProfileSourceNotProxied},
+		{"no proxy on a google-login source", `{"name": "LOGIN_READ", "source": "LOGIN_KEY"}`, policy.ReasonProfileSourceNotProxied},
+		{"no proxy on an azure-login source", `{"name": "AZURE_READ", "source": "AZURE_KEY"}`, policy.ReasonProfileSourceNotProxied},
+		{"an allow of its own and no proxy", `{"name": "ALLOWED_READ", "source": "LEGION_IMPLEMENT_APP", ` + acmeRead + `, "allow": []}`, policy.ReasonProfileSourceNotProxied},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			cur, _ := profiled(t, everySource(), readProfile, row.profile)
 			set := cur.Get()
-			name := policytest.Profiles(t, policytest.ProfilesFile(row.profile), daemonService).Names()[0]
+			name := policytest.Profiles(t, policytest.KindsFile(row.profile), daemonService).Names()[0]
 			if refusal := refusedProfile(t, set, name, row.reason); refusal.Detail == "" {
 				t.Errorf("%s's refusal names no detail: %+v", name, refusal)
 			}
@@ -268,14 +271,18 @@ func TestAProfileLooserThanItsSourceIsRefused(t *testing.T) {
 
 // TestAFailedProfilesNameReleasesNoStoredValue: a profile that holds a stored secret's own name and
 // fails leaves that name released by nobody, rather than as the stored value: a request for it is
-// refused, with the profile's reason.
+// refused, with the profile's reason. A stored value whose profile is behind no kind is refused by
+// its own id too, so the store's refusals say the secret is served by no name.
 func TestAFailedProfilesNameReleasesNoStoredValue(t *testing.T) {
 	cur, _ := profiled(t, everySource(), readProfile, `{"name": "PLAIN_KEY"}`)
 	set := cur.Get()
-	refusedProfile(t, set, "PLAIN_KEY", policy.ReasonProfileNeedsProxy)
+	refusedProfile(t, set, "PLAIN_KEY", policy.ReasonProfileSourceNotProxied)
 	_, err := set.Evaluate("PLAIN_KEY", policy.Requester{Operator: appOwner})
-	if !errors.Is(err, policy.ErrProfileRefused) || !errors.Is(err, policy.ErrUnknownSecret) || !strings.Contains(err.Error(), policy.ReasonProfileNeedsProxy) {
-		t.Fatalf("Evaluate(PLAIN_KEY) = %v; want ErrProfileRefused, a name the policy does not serve, naming %s", err, policy.ReasonProfileNeedsProxy)
+	if !errors.Is(err, policy.ErrProfileRefused) || !errors.Is(err, policy.ErrUnknownSecret) || !strings.Contains(err.Error(), policy.ReasonProfileSourceNotProxied) {
+		t.Fatalf("Evaluate(PLAIN_KEY) = %v; want ErrProfileRefused, a name the policy does not serve, naming %s", err, policy.ReasonProfileSourceNotProxied)
+	}
+	if refusal := set.Refused[policytest.ID("PLAIN_KEY")]; refusal.Reason != policy.ReasonProfileSourceNotProxied || refusal.Owner != appOwner {
+		t.Errorf("the stored PLAIN_KEY's refusal = %+v; want %s with its owner", refusal, policy.ReasonProfileSourceNotProxied)
 	}
 }
 
@@ -393,24 +400,34 @@ func TestAWithholdDecidesBySource(t *testing.T) {
 }
 
 // TestAnEditedProfileEndsItsGrants: a change of one permission of a profile's entry moves the
-// policy version and the profile's digest, which a release compares its grant against; an edit of
-// its guidance alone, which tells the judge how to decide requests to come, moves neither.
+// policy version and the profile's digest, which a release compares its grant against; a guidance
+// tag written on its source, which tells the judge how to decide requests to come, moves neither.
 func TestAnEditedProfileEndsItsGrants(t *testing.T) {
-	stored := everySource()
-	served := func(profile string) (version, digest string) {
+	served := func(stored []secrets.LocalSecret, profile string) (version, digest string) {
 		t.Helper()
 		cur, _ := profiled(t, stored, profile)
 		set := cur.Get()
 		return set.Version, servedProfile(t, set, "GITHUB_READ").ProfileDigest
 	}
-	version, digest := served(readProfile)
-	editedVersion, editedDigest := served(strings.Replace(readProfile, `"contents": "read"`, `"contents": "write"`, 1))
+	version, digest := served(everySource(), readProfile)
+	editedVersion, editedDigest := served(everySource(), strings.Replace(readProfile, `"contents": "read"`, `"contents": "write"`, 1))
 	if editedVersion == version || editedDigest == digest {
 		t.Errorf("an edited permission left the version %t and the digest %t where they were; want both moved", editedVersion == version, editedDigest == digest)
 	}
-	guidedVersion, guidedDigest := served(strings.Replace(readProfile, `"hosts": ["api.github.com"]`, `"hosts": ["api.github.com"], "guidance": "Reads of acme's repositories."`, 1))
+	guided := everySource()
+	tagged := 0
+	for _, s := range guided {
+		if s.Name == policytest.ID("LEGION_IMPLEMENT_APP") {
+			s.Tags[policy.TagGuidance] = "Reads of acme's repositories."
+			tagged++
+		}
+	}
+	if tagged != 1 {
+		t.Fatalf("tagged %d secrets named LEGION_IMPLEMENT_APP, want the one source GITHUB_READ is made from", tagged)
+	}
+	guidedVersion, guidedDigest := served(guided, readProfile)
 	if guidedVersion != version || guidedDigest != digest {
-		t.Errorf("a guidance edit moved the version (%t) or the digest (%t); want neither moved", guidedVersion != version, guidedDigest != digest)
+		t.Errorf("a guidance tag on the source moved the version (%t) or the digest (%t); want neither moved", guidedVersion != version, guidedDigest != digest)
 	}
 }
 
@@ -474,7 +491,7 @@ func TestASourceIsServedOnlyThroughItsProfiles(t *testing.T) {
 func TestAProfileOfTheSourcesOwnNameServesThatName(t *testing.T) {
 	own := `{"name": "LEGION_IMPLEMENT_APP", ` + acmeRead + `}`
 	cur, _ := profiled(t, everySource(), readProfile, own)
-	profiles := policytest.Profiles(t, policytest.ProfilesFile(readProfile, own), daemonService)
+	profiles := policytest.Profiles(t, policytest.KindsFile(readProfile, own), daemonService)
 	set := cur.Get()
 	got := servedProfile(t, set, appSourceName)
 	if got.GitHubOwners != "acme" || got.ProfileDigest != profiles.Digest(appSourceName) || got.Type() != policy.TypeGitHubApp {
@@ -565,7 +582,7 @@ func TestRereadingAProfileNameRereadsItsSource(t *testing.T) {
 	described := &describedIDs{SecretsManagerAPI: store}
 	loader := policytest.Loader(store, daemonService)
 	loader.Store = policytest.StoreThrough(store, described)
-	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(readProfile), daemonService)
+	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(readProfile), daemonService)
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +612,7 @@ func TestRereadingAProfileNameRereadsItsSource(t *testing.T) {
 // beside a refusal line for each refused profile; no later publish writes it again.
 func TestTheFirstPublishWritesTheProfilesLine(t *testing.T) {
 	logged := policytest.CaptureLog(t)
-	file := policytest.ProfilesFile(readProfile, `{"name": "GHOST_READ", "source": "NO_SUCH_APP", `+acmeRead+`, `+apiProxy+`}`)
+	file := policytest.KindsFile(readProfile, `{"name": "GHOST_READ", "source": "NO_SUCH_APP", `+acmeRead+`, `+apiProxy+`}`)
 	store := secrets.NewLocal(everySource()...)
 	cur := policytest.ProfiledCurrent(t, store, file, daemonService)
 	sum := sha256.Sum256([]byte(file))
@@ -691,9 +708,9 @@ func TestARereadNamesEveryNameServedFromTheValueItReads(t *testing.T) {
 	store := secrets.NewLocal(appSource(),
 		policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"),
 		policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1"))
-	cur := policytest.ProfiledCurrent(t, store, policytest.ProfilesFile(
+	cur := policytest.ProfiledCurrent(t, store, policytest.KindsFile(
 		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", `+apiProxy+`}`,
-		`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": {"hosts": ["second.example.com"]}}`,
+		`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": "github"}`,
 		`{"name": "`+appSourceName+`", `+acmeRead+`}`,
 		readProfile,
 	), daemonService)
@@ -744,9 +761,9 @@ func TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion(t *te
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			store := secrets.NewLocal(appSource(), policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"))
-			cur := policytest.ProfiledCurrent(t, store, policytest.ProfilesFile(
+			cur := policytest.ProfiledCurrent(t, store, policytest.KindsFile(
 				`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", `+apiProxy+`}`,
-				`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": {"hosts": ["second.example.com"]}}`,
+				`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": "github"}`,
 				`{"name": "`+appSourceName+`", `+acmeRead+`}`,
 				readProfile,
 			), daemonService)

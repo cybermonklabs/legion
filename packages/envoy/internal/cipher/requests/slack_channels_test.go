@@ -23,7 +23,7 @@ const slackToken = "SLACK_TOKEN"
 // PRIV_KEY and slackToken both behind the airlock and Dispatch answering rows.
 func slackFixture(t *testing.T, rows map[string]projectaccesstest.Row) (*Machine, string, *projectaccesstest.Server, func(names ...string) (map[string]AirlockSecret, int)) {
 	t.Helper()
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, ""), rule("PRIV_KEY", "")}}
+	rules := bound(rule(slackToken, "slack"), rule("PRIV_KEY", "example"))
 	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
 	dispatch := answerFrom(t, m, rows)
 	// release grants names to the session and reads them as the proxy does, answering the values
@@ -192,8 +192,7 @@ func TestAJobPodsSlackTokenIsLimitedByItsList(t *testing.T) {
 // project is granted and released exactly as the merge base released it: no refusal, no limit and
 // no ten-minute bound, though every pod's entry names a project.
 func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *testing.T) {
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
-	m, _, _, _ := newProjectFixture(t, rules, publicTeam)
+	m, _, _, _ := newProjectFixture(t, bound(rule(slackToken, "slack")), publicTeam)
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)

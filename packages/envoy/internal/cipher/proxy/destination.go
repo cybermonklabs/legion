@@ -28,8 +28,8 @@ import (
 // PrivateUpstream is one bound host and the URL its requests are sent to in place of the host's own
 // address: in production Dispatch's public host and its address inside the cluster
 // (BROKER_PROXY_PRIVATE_UPSTREAM). The broker's start holds every destination's host to be the
-// host of a rules entry of kind dpop, exactly, with an allow list and no other kind's entry on it,
-// and every dpop entry's host to be a destination's (config.ProxyMintedRules), and the URL to a
+// host of a dpop block's inline binding, exactly, with an allow list, and no kind's host, and every
+// dpop block's host to be a destination's (config.ProxyMintedRules), and the URL to a
 // scheme and a host with no user, path or query.
 type PrivateUpstream struct {
 	// Host is the bound host, in lower case with no port, as a CONNECT's host is compared.

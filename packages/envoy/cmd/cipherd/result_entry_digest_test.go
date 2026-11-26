@@ -194,7 +194,7 @@ func TestABrokerOfAnotherResultsEntryServesNoGrant(t *testing.T) {
 	// Control: D, of A's own profile and destination, serves A's grant, and its token is counted.
 	d := e.start(t)
 	answer, body := g.write(t, g.client(t, d))
-	stored(t, "A's run's write through D", answer, body)
+	assertResultStored(t, "A's run's write through D", answer, body)
 	if received := len(e.dispatch.service.Requests()); received != 1 {
 		t.Errorf("Dispatch's stand-in received %d write(s); want D's one", received)
 	}

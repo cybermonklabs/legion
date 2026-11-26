@@ -638,20 +638,36 @@ describe("renderInbound dispatch events", () => {
       })
     );
 
+    type Card = {
+      envoy: { to?: string; dispatch: { owner?: string; payload: { target?: string } } };
+    };
     const intended = decode(
       renderInbound(raw, reader, `notifications.agent.${reader}`).content
-    ) as { envoy: { to?: string; dispatch: { payload: { target: string } } } };
+    ) as Card;
     const other = decode(
       renderInbound(raw, otherSession, `notifications.agent.${reader}`).content
-    ) as { envoy: { to?: string; dispatch: { payload: { target: string } } } };
+    ) as Card;
+    // The same frame, read by this session on a topic that is not its inbox, prints no `to:`.
+    const elsewhere = decode(
+      renderInbound(
+        JSON.stringify({ ...JSON.parse(raw), topic: `notifications.agent.${otherSession}` }),
+        reader,
+        `notifications.agent.${otherSession}`
+      ).content
+    ) as Card;
 
+    // `to:` names this session, so neither a `target` naming it nor an owner the message has not
+    // repeats it.
     expect(intended.envoy.to).toBe("you (01a01111-2222-7333-4444-555555555555)");
-    expect(intended.envoy.dispatch.payload.target).toBe(
-      "you (session:01a01111-2222-7333-4444-555555555555)"
-    );
+    expect(intended.envoy.dispatch.payload.target).toBeUndefined();
+    expect(intended.envoy.dispatch.owner).toBeUndefined();
     expect(other.envoy.to).toBeUndefined();
     expect(other.envoy.dispatch.payload.target).toBe(
       "session:01a01111-2222-7333-4444-555555555555"
+    );
+    expect(elsewhere.envoy.to).toBeUndefined();
+    expect(elsewhere.envoy.dispatch.payload.target).toBe(
+      "you (session:01a01111-2222-7333-4444-555555555555)"
     );
   });
 
@@ -1835,21 +1851,24 @@ describe("renderInbound dispatch events", () => {
       }
     });
 
-    // A payload no schema reads keeps every field of its author; a schema that reads a comment's
-    // author keeps only its kind and id.
-    test("an author that says more than the actor stays", () => {
-      const payloadOf = (author: object) =>
-        (
-          decode(
-            renderInbound(dispatchEvent("widget.noted", { id: "widget-1", author }), reader).content
-          ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
-        ).envoy.dispatch.payload;
+    // A payload no schema reads keeps every field of its author, or of an actor it names (as a
+    // review event does); a schema that reads a comment's author keeps only its kind and id.
+    test("an author or actor that says more than the card's actor stays", () => {
+      for (const field of ["author", "actor"]) {
+        const payloadOf = (who: object) =>
+          (
+            decode(
+              renderInbound(dispatchEvent("widget.noted", { id: "widget-1", [field]: who }), reader)
+                .content
+            ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
+          ).envoy.dispatch.payload;
 
-      expect(payloadOf(actor)["author"]).toBeUndefined();
-      const proven = { ...actor, proven: true };
-      expect(payloadOf(proven)["author"]).toEqual(proven);
-      const acting = { ...actor, act: { kind: "delegated", by: "session:01a07777" } };
-      expect(payloadOf(acting)["author"]).toEqual(acting);
+        expect(payloadOf(actor)[field]).toBeUndefined();
+        const proven = { ...actor, proven: true };
+        expect(payloadOf(proven)[field]).toEqual(proven);
+        const acting = { ...actor, act: { kind: "delegated", by: "session:01a07777" } };
+        expect(payloadOf(acting)[field]).toEqual(acting);
+      }
     });
 
     test("an object left with nothing goes at any depth, and a list keeps its items' places", () => {
