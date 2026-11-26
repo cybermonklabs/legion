@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -87,6 +88,7 @@ func newRetroOutboxRig(t *testing.T, issues []record.Issue, handlers ...intake.H
 	sup := newSupervisor(ctx, st, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		RootHears:      (&workflowRuntime{pool: pool, records: records}).rootHears,
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
@@ -846,5 +848,65 @@ func TestARetroTaskFollowsTheRunningTurnOfTheSparedAgent(t *testing.T) {
 	takeHeldTask(ctx, t, machine, implementer)
 	if got := machine.Claim(); got.ServingRetro() != 1 || got.Pending == nil || got.Pending.ID != p.ID {
 		t.Fatalf("the implementer's next turn serves retro run %d on %+v, want run 1 on the retro's task %s", got.ServingRetro(), got.Pending, p.ID)
+	}
+}
+
+// A retro wake of a closed, lingering tree's root architect names no run and holds no decisions,
+// so supervise's asksRoot must not hold it behind Deps.RootHears while the tree lingers
+// (INFRA-5602's R2): once the outbox resumes the architect's suspended claim and its process comes
+// up ready, the wake task is sent to that process and its delivery names generation 0.
+func TestARetroWakeOfTheRootArchitectOfALingeringTreeIsSentNotHeld(t *testing.T) {
+	t.Parallel()
+	root := checkRoot()
+	r := newRetroOutboxRig(t, []record.Issue{root})
+	machine, token := r.claimOf(root, claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByDaemon)
+	r.openRetroAfterClose(root, mustClaimToken(t, root.Key, claim.RoleImplementer))
+	conn, ok := r.sup.deps.Conns.Conn(token)
+	if !ok {
+		t.Fatalf("no fake connection registered for %s", token)
+	}
+	fakeConn := conn.(*fake.Conn)
+
+	wakeTask := "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue of your tree is open."
+	row := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
+		Generation: root.Generation, WakeKind: pods.WakeRoleMessage, RetroWake: true, Task: wakeTask}, time.Now())
+	row.ID = 79
+
+	if err := r.runner.execute(r.ctx, row); err != nil {
+		t.Fatalf("the retro wake of %s's architect = %v, want the architect resumed", root.Key, err)
+	}
+	if got := machine.Claim(); got.LastStartRow != 79 || got.State == supervise.StateSuspended {
+		t.Fatalf("the architect after the retro wake = %s with last start %d, want resumed by row 79", got.State, got.LastStartRow)
+	}
+	relaunchedInItsSession(t, r.rt, token)
+
+	// Bring the resumed process up through hello, register and ready, then wait for any in-flight
+	// send goroutine to settle. A delivery held by asksRoot starts no send at all.
+	machine.Wait()
+	launch := machine.Claim().Generation
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: token, Generation: launch},
+		supervise.RequestRegister{Claim: token, Generation: launch, Session: retroAgentSession, SessionFile: retroAgentSessionFile,
+			CapabilityHash: []byte("capability-of-" + retroAgentSession)},
+		supervise.RequestReady{Claim: token, Generation: launch, Session: retroAgentSession},
+	} {
+		if err := machine.Handle(r.ctx, ev); err != nil {
+			t.Fatalf("handle %T for %s: %v", ev, token, err)
+		}
+	}
+	machine.Wait()
+
+	p := machine.Claim().Pending
+	if p == nil || p.ID != "outbox:79" || p.Phase != "" || p.Task != wakeTask {
+		t.Fatalf("the architect's pending delivery = %+v, want outbox:79 with no phase carrying the wake task", p)
+	}
+	if p.Generation != 0 {
+		t.Errorf("the retro wake delivery names generation %d, want 0 (a task of no run)", p.Generation)
+	}
+	if prompts := fakeConn.Prompts(); len(prompts) != 1 || prompts[0].DeliveryID != "outbox:79" || prompts[0].Message != wakeTask {
+		t.Errorf("the resumed architect's process received prompts %+v, want the one wake task outbox:79 sent rather than held", prompts)
+	}
+	if p.DeliveredAt.IsZero() {
+		t.Errorf("the retro wake delivery %s has zero DeliveredAt, want it sent to the resumed architect", p.ID)
 	}
 }

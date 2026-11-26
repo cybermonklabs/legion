@@ -2723,13 +2723,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// its backoff until that turn has ended. A task of news alone the worker has not taken
 		// gives way to a start of an entry, whose own task carries that same news (supervise's
 		// Machine.supersedes), so the start that StartedBy is told of below reads it too.
+		// A retro wake of a closed, lingering tree's root architect (record.SuperviseRequest.RetroWake)
+		// names no run and holds no decisions: its delivery passes generation 0 (a task of no run)
+		// so supervise's asksRoot does not hold it behind Deps.RootHears while the tree lingers.
 		var task *supervise.RequestDeliver
 		if payload.Task != "" || payload.News {
 			kept, err := keptJSON(payload.Kept)
 			if err != nil {
 				return err
 			}
-			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
+			generation := payload.Generation
+			if payload.RetroWake {
+				generation = 0
+			}
+			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt}, RetroRun: supervise.RetroRun(payload.RetroRun),
 				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}

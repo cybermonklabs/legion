@@ -105,6 +105,10 @@ const (
 	retroPendingClause = "another open child of the same parent carries is pending and goes to no one"
 )
 
+// retroArchitectWakeOpening is the opening of the daemon's wake task to a closed tree's root
+// architect (workflow's retroArchitectWakeTask).
+const retroArchitectWakeOpening = "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue of your tree is open"
+
 // retroStepFailure is what a step's assertion ends the step with: the assertion that did not hold.
 type retroStepFailure struct{ at string }
 
@@ -605,8 +609,8 @@ func (r *retroLive) todoEndsRetro() {
 // agent. T's architect, suspended by the close, is resumed in its kept session when the retro agent
 // publishes one finding to its role topic through the real Envoy listener, which keeps the message
 // for the role no live session holds and reports the wake. The driver stands in for the resumed
-// session: it registers with the listener as the holder of T's architect's role and reads the kept
-// finding delivered to it. T's retro completes.
+// session: it registers with the listener as the holder of T's architect's role, reads the kept
+// finding delivered to it and receives the daemon's one retro wake task. T's retro completes.
 func (r *retroLive) rootClosed() {
 	t := r.tree
 	token := r.root.token
@@ -645,7 +649,12 @@ func (r *retroLive) rootClosed() {
 	resumed = r.register(t, t, claim.RoleArchitect)
 	envoy := r.joinEnvoy(resumed)
 	r.until("the kept finding delivered to the resumed architect's session", retroWait, func() bool { return envoy.got(finding) == 1 })
-	r.note("read back: the daemon resumed %s from its kept session file %s on the listener's wake; the session took the role and was delivered the finding once; the daemon's own tasks to it so far: %d", token, file, len(resumed.promptsFrom(0)))
+	wake := resumed.next()
+	if prompts := resumed.promptsFrom(0); len(prompts) != 1 || !strings.Contains(wake.Message, retroArchitectWakeOpening) {
+		r.fail("the resumed architect %s got %d tasks (first %q), want one retro wake task holding %q",
+			token, len(prompts), wake.Message, retroArchitectWakeOpening)
+	}
+	r.note("read back: the daemon resumed %s from its kept session file %s on the listener's wake; the session took the role, was delivered the finding once and received the daemon's retro wake task once", token, file)
 	r.root = resumed
 	r.completesRetro(t, agent, mark, 5)
 }
