@@ -120,8 +120,8 @@ failure is not a flake, and `run rerun --failed` is for a flake. What this round
    has never seen, and it names the PR. Faster than reading the failing test, and it works when
    the failing test is one you wrote and cannot see anything wrong with.
 2. **Reproduce on a scratch merge, never a rebase.** `jj new <head> main@origin` gives a working
-   copy that is exactly what CI ran, with the branch and its bookmark untouched (there is no rebase
-   without a merge conflict, and GitHub said MERGEABLE). Run the failing file there;
+   copy that is exactly what CI ran, with the branch and its bookmark untouched (Sami's rule:
+   rebase only when GitHub says CONFLICTING, and it said MERGEABLE). Run the failing file there;
    apply the candidate fix there; watch it go green. Then `jj new <head>` and make the real commit
    on the branch. The scratch merge stays behind as an empty, described change — `jj abandon` is
    off limits in a shared workspace — so describe it as scratch when you create it.

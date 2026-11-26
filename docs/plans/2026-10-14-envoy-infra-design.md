@@ -15,7 +15,7 @@ organization's deployment then needs only configuration, not new code.
 
 ## Decisions
 
-Decided on 2026-10-13 and 2026-10-14:
+Sami, 2026-10-13 and 2026-10-14:
 
 - The components are written in Go and ship as an executable Pulumi plugin, so a consumer in any
   Pulumi language needs only the Pulumi CLI.
@@ -28,7 +28,7 @@ Decided on 2026-10-13 and 2026-10-14:
 - The GCP hub has no webhook ingress in the first version. Webhooks get their own design later.
 - Dispatch is out of scope here. It gets its own design.
 - The existing deployments move onto the components first, or in parallel with the GCP work, each
-  with a preview that shows no diff. The components are generalized from what
+  with a preview that shows no diff (Sami, 2026-10-14). The components are generalized from what
   those deployments already run.
 
 ## What the module contains

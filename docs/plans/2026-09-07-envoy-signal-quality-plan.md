@@ -1,5 +1,5 @@
 # Envoy Signal Quality Implementation Plan
-> **Superseded during implementation:** mid-flight the plan changed to remove `pr.<n>.check`/`pr.<n>.ci`,
+> **Superseded during implementation:** the owner ruled mid-flight to remove `pr.<n>.check`/`pr.<n>.ci`,
 > not add `pr.<n>.merged`/`.closed`/`workflow.….branch.…`, and to publish one settled `pr.<n>.checks` event;
 > the shipped surface is documented in `packages/envoy/AGENTS.md` and `skills/envoy/SKILL.md`.
 
@@ -297,7 +297,7 @@ Out of scope here: channel/user display names, permalinks, reaction aggregates (
 - Modify: `skills/envoy/SKILL.md` (sole owner)
 - Modify: `skills/dispatch/SKILL.md` only where it names Envoy topics or tools
 
-**Interfaces:** consumes the topic set and rendered shape produced by Tasks 2, 3, 5, 6: under `pr.<n>.>` exactly `pr.<n>` (lifecycle; `closed` carries `merged`, `merge_commit_sha`, `merged_by`, `head_sha`), `pr.<n>.comment`, `pr.<n>.review`, `pr.<n>.mention`, `pr.<n>.checks` (one event per settled head; re-fires with `superseded_settlement`); `workflow.<file>.<action>` only for runs with no associated PR; rendered block fields `to/from/at/id/by/urgency/expects_reply/re/supersedes/reply_with/reply_role/summary/message/note`; tools `envoy_send` (returns `event_id` + `recipient`; args `in_reply_to`, `supersedes`, `urgency`, `expects_reply`, `expires_at`), `envoy_publish` (role → `holder` or error), `envoy_role_get`, `envoy_inbox` (Pi only), subscribe `warnings`.
+**Interfaces:** consumes the topic set and rendered shape produced by Tasks 2, 3, 5, 6 (see the owner decisions in the ledger): under `pr.<n>.>` exactly `pr.<n>` (lifecycle; `closed` carries `merged`, `merge_commit_sha`, `merged_by`, `head_sha`), `pr.<n>.comment`, `pr.<n>.review`, `pr.<n>.mention`, `pr.<n>.checks` (one event per settled head; re-fires with `superseded_settlement`); `workflow.<file>.<action>` only for runs with no associated PR; rendered block fields `to/from/at/id/by/urgency/expects_reply/re/supersedes/reply_with/reply_role/summary/message/note`; tools `envoy_send` (returns `event_id` + `recipient`; args `in_reply_to`, `supersedes`, `urgency`, `expects_reply`, `expires_at`), `envoy_publish` (role → `holder` or error), `envoy_role_get`, `envoy_inbox` (Pi only), subscribe `warnings`.
 
 **Behaviour — the skill teaches defaults, not menus:**
 - Opening section "The one subscription you need for a PR": `notifications.github.<owner>.<repo>.pr.<n>.>` and what arrives on it, in order, for a typical push (synchronize → comments/reviews → one `checks`). State plainly that `pr.<n>.check`, `pr.<n>.ci`, `pr.<n>.merged`, `pr.<n>.closed` no longer exist and why.

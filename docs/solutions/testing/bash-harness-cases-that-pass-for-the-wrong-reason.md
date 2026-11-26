@@ -1,4 +1,4 @@
-> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554) The rig this entry describes no longer exists; keep the learning, not the procedure.
+> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." The rig this entry describes no longer exists; keep the learning, not the procedure.
 
 ---
 title: "Bash harness cases that pass for the wrong reason: isolate one guard per case, assert the success-only side effect is absent, and give a group-kill fixture a second process"

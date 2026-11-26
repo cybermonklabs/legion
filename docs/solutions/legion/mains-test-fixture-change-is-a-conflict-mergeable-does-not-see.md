@@ -24,7 +24,7 @@ related_issues:
 applies_when:
   - A pull request's CI goes red at a head whose own code was green in an earlier run, and GitHub still reports MERGEABLE
   - main merged a change to a shared test helper or fixture (a signature, a removed helper) between your branch's green run and its next push
-  - You are deciding whether the rule against unnecessary rebases applies
+  - You are deciding whether Sami's no-rebase rule applies
 ---
 
 # `main` changed the test fixture your new tests call
@@ -59,8 +59,7 @@ have `sleeps` to call. Tell the two apart by the same three checks with the firs
 
 ## The decision: the rebase is necessary and costs nothing the rule protects
 
-The rule against unnecessary rebases (there is no rebase without a merge conflict)
-exists because the CI queue is slow: an unnecessary rebase spends a run.
+Sami's rule (2026-09-11) exists because the CI queue is slow: an unnecessary rebase spends a run.
 When the merge ref does not compile, three facts make the rebase the cheaper path, and the
 architect recorded the exception on those grounds:
 

@@ -27,7 +27,7 @@ symptoms:
   - "a green negative control that pins the very behaviour production later showed to be the defect"
   - "a re-send test times out at 5 s and the next test in the file fails on a stale console spy"
 applies_when:
-  - A smoke rig, scratch daemon, throwaway broker, or scratch tmux server is forbidden for the issue
+  - Sami's standing order (2026-09-13) forbids a smoke rig, scratch daemon, throwaway broker, or scratch tmux server for the issue
   - The change spans two deployable parts (daemon and listener/plugin) that may land in either order
   - A test asserts timer-driven retry/backoff behaviour on an injected clock
   - A design rule the suite pins is reversed by a later spec version
@@ -37,10 +37,9 @@ applies_when:
 
 ## Context
 
-LEGION-107's acceptance line 6 originally named a smoke-rig run. Sami had the smoke rig shut down
-("Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions
-twice now", 2026-09-13, relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), and the spec
-was rewritten so line 6 is an integration test:
+LEGION-107's acceptance line 6 originally named a smoke-rig run. Sami withdrew every rig for the
+issue ("Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive
+actions twice now", 2026-09-13), and the spec was rewritten so line 6 is an integration test:
 with the fake runtime, fake worker client, and injected clock, a stream of `delivery_failed`
 exceptions for one message against an alive architect produces at most three re-publishes, each
 carrying the original `dedupe_key`, then the cap line; **a receiver in the test that drops copies by
@@ -169,9 +168,8 @@ A `publishRole` fake shows what the daemon sends and what a correct receiver doe
 cannot show that the real listener stamps the body's `dedupe_key` onto the envelope, or that the
 installed plugin's dedupe actually drops the copy — those are LEGION-108's Go tests and
 LEGION-109's plugin tests, and, end to end, LEGION-101's production hour (`envoy_inbox` on three
-busy architects, no payload twice). Say so in the PR's E2E line, cite Sami's 2026-09-13 shutdown
-of the smoke rig (https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), and name where the remaining
-proof lives; do not describe the unit suite as production-like.
+busy architects, no payload twice). Say so in the PR's E2E line, cite the standing order, and name
+where the remaining proof lives; do not describe the unit suite as production-like.
 
 ## Related
 

@@ -25,7 +25,7 @@ related_issues:
 applies_when:
   - Your branch changes anything under packages/contracts or packages/envoy-client
   - The `claude-envoy` job fails "Check the committed bundle is fresh" with `dist/ is stale (envoy-channel.js, session-hook.js)` while GitHub reports MERGEABLE
-  - You are deciding whether a rebase here is an unnecessary one
+  - You are deciding whether Sami's no-unnecessary-rebase rule (2026-09-11) applies
   - You are reviewing or fingerprinting a pull request that carries a `chore(claude-envoy)` dist commit
 symptoms:
   - "dist/ is stale (envoy-channel.js, session-hook.js); run `bun run build` on Bun 1.3.14 and commit the result"
@@ -61,7 +61,7 @@ whether the bundles stay committed; until then, this is the procedure.
 
 ## Why it is a necessary rebase, not a forbidden one
 
-An unnecessary rebase is not done: it spends a run of a CI queue that is long and slow.
+Sami's rule (2026-09-11) forbids rebasing to pick up `main` or refresh CI because the queue is slow.
 Here the branch predates #1103, so it has neither `scripts/build.ts` nor a `dist/` to rebuild: no
 commit on the old base can produce the bundles the merge ref is checked against. The fix commit
 can only be built from a tree that carries `main`'s plugin sources, and it costs one CI run either

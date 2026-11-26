@@ -114,7 +114,7 @@ shared IP rate-limits the latter within minutes, and a `null` body looks like "n
 
 ## MERGEABLE is not "compatible": a red merge commit whose failing lines live only on main is a conflict in effect
 
-An unnecessary rebase is not done: it spends a run of a CI queue that is long and slow.
+Sami's rule (2026-09-11) is "no unnecessary rebases (i.e. unless there are merge conflicts)".
 LEGION-42 (#1021) met a case GitHub's mergeability check cannot see. The branch **tightened a
 contract**: `loadGitHubApps` began refusing a `legion.yaml` without both GitHub Apps. Between
 the reviewer's read and the corrective push, `main` took #1016, which added `config.test.ts` and

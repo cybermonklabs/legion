@@ -62,9 +62,8 @@ habit for any other untracked content.
 
 ## 2. `main` moved twice; a merge commit each time, and the conflict was the same bullet list
 
-The rule against unnecessary rebases (there is no rebase without a merge conflict)
-does not apply to a genuine conflict, but a merge commit (`jj new <branch head> main@origin`,
-resolve, describe) is still the better resolution:
+Sami's rule against rebasing to refresh CI does not apply to a genuine conflict, but a merge
+commit (`jj new <branch head> main@origin`, resolve, describe) is still the better resolution:
 the reviewed commits keep their SHAs, the reviewer's approval and the tester's evidence stay
 pinned to real commits, and the PR's diff against main is unchanged. Both times the only conflict
 was `packages/daemon/src/daemon/AGENTS.md`'s `## Operational invariants` list — this PR appended a

@@ -1,4 +1,4 @@
-> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554) The rig this entry describes no longer exists; keep the learning, not the procedure.
+> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." The rig this entry describes no longer exists; keep the learning, not the procedure.
 
 ---
 title: "Smoke rig: a mode without an event feed blocks its checkpoints and never guesses; the OMP pin has one home and the rig verifies it the way the daemon does"
@@ -97,8 +97,10 @@ Rules:
   `mise where` and never installs; preflight does exactly that, so the two cannot disagree and a
   missing install fails before NATS and the listener are up rather than after.
 - **A default that only exists under one operator's `$HOME` is a local workaround, not a fix.**
-  If the real fix (a tagged release) is not available yet, the spec should say so and the rig
-  should fail closed naming the remedy — never fall back.
+  Sami's direction, relayed by the Legion PO: "A rig that falls back to a file under one
+  operator's ~/.local/state cannot run on any other box and should not ship." If the real fix
+  (a tagged release) is not available yet, the spec should say so and the rig should fail
+  closed naming the remedy — never fall back.
 - **Remedy text must describe an action that actually changes the outcome.** "Bump the pin"
   was true of the system and false of the function. Write the remedy from the code path that
   prints it.
