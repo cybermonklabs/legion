@@ -982,6 +982,25 @@ function TargetedMessageTurn({
   );
 }
 
+/**
+ * The issue's Conversation. Its groups, in this order (the layout rule of
+ * `packages/dispatch/AGENTS.md`, dispatch://INFRA-5200):
+ *
+ * 1. Composer: the docked `MentionComposer`. From `sm` up it sticks to the top of the column;
+ *    below `sm` it is fixed at the foot of the screen, in the foot's page layer
+ *    (`hooks/useFootInset.ts`), and grows upward with a refusal's row rather than sideways.
+ * 2. Filter: All / Open / Closed, one segmented control at the right of its own row. Its three
+ *    buttons stay together at every width; they never split across lines.
+ * 3. Floating jump action: `Jump to latest`, one fixed button, a float of the foot's top layer.
+ *    It is drawn only while the reader is away from the newest card and that card's head is off
+ *    the screen, so it never covers the card it points at; at a narrow width it stands at the
+ *    right edge of the content column, above the composer and the status corner.
+ * 4. Turn list: the cards, newest first, one per line at every width; each card lays out its own
+ *    groups, and a long word wraps inside its card.
+ * 5. Phone thread: below the phone breakpoint, an opened thread is a full-screen view over the
+ *    list with its own composer at the foot; the list stays mounted under it, inert, and Back
+ *    returns to it as it was.
+ */
 export function ConversationTab({
   issueArtifacts,
   focusItemId,
@@ -1222,9 +1241,13 @@ export function ConversationTab({
   const failed = asks.isError || comments.isError || messages.isError || handoffs.isError;
   const newestShown = loading || failed ? undefined : shown.at(0);
   const latestItemSeq = newestShown === undefined ? undefined : Date.parse(newestShown.at);
+  // The marker drawn at the head of the list below, held in state so the hook watches the node
+  // the list has now: the list is unmounted while the reads are out or failed.
+  const [listHead, setListHead] = useState<HTMLElement | null>(null);
   const follow = useFollowLatest({
     enabled: visible,
     latestItemSeq,
+    listHead,
     onFirstPlacement,
     ownSendCount,
   });
@@ -1234,13 +1257,16 @@ export function ConversationTab({
   const agents = agentsCurrent ? listedAgents : undefined;
   const scrolledToFocus = useRef<string | undefined>(undefined);
   // `Jump to latest` is a float of the foot's top layer (`hooks/useFootInset.ts` lists the foot's
-  // layers and the elements in each) while it shows, which is only once the reads have loaded.
+  // layers and the elements in each) while it shows, which is only once the reads have loaded and
+  // while the newest card's head is off the screen: a reader who sees the card the pill carries
+  // them to has nothing to jump to, and the pill would cover that card (dispatch://INFRA-5200).
   const jumpShown =
     !loading &&
     !failed &&
     visible &&
     phoneThread === undefined &&
     !follow.atTop &&
+    !follow.newestHeadOnScreen &&
     shown.length > 0;
   const jumpRef = useRef<HTMLButtonElement>(null);
   useFootInset(jumpRef, jumpShown, "top");
@@ -1433,11 +1459,16 @@ export function ConversationTab({
           stays on the screen, however a refusal's row grows a composer, and never lower than its
           floor (`--foot-floor`, which its classes set per breakpoint). The list scrolls behind the
           pill as it scrolls behind any floating control, so a card crossing that foot band passes
-          under it: while the card is there the pill covers its Accept and Reject, as it covers its
-          Reply and Pin. That cover lasts no longer than the passage - scrolling the card on clears
-          it, and so does the pill's own tap, which jumps to the latest and takes the pill off the
-          screen. A thread opened full-screen covers the Conversation the pill acts on, and its
-          own composer sits at the foot, so the pill waits for Back. */}
+          under it: while the card is there the pill covers its Reply and Pin. That cover lasts no
+          longer than the passage - scrolling the card on clears it, and so does the pill's own
+          tap, which jumps to the latest and takes the pill off the screen. The newest card is
+          never one of them: the pill is gone while that card's head is on screen
+          (`newestHeadOnScreen`), because a reader who can see the card the pill carries them to
+          has nothing to jump to, and a pill over it would cover the one card whose Accept and
+          Reject the reader is looking at - which today's issue header, tall at a phone's width,
+          puts in the band at the top of the page (dispatch://INFRA-5200). A thread opened
+          full-screen covers the Conversation the pill acts on, and its own composer sits at the
+          foot, so the pill waits for Back. */}
       {jumpShown ? (
         <button
           className={`fixed right-6 bottom-[max(var(--foot-floor),calc(var(--foot-status-inset,0px)_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg [--foot-floor:5rem] sm:[--foot-floor:9rem] xl:[--foot-floor:6rem] ${primaryButtonBg} ${primaryButtonHoverBg}`}
@@ -1449,6 +1480,13 @@ export function ConversationTab({
           Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
         </button>
       ) : null}
+      {/* The head of the list, where the newest card starts: an IntersectionObserver on this
+          marker tells the pill above whether that card's head is on screen, and costs no layout
+          read while the reader scrolls (`use-follow-latest.ts`). One pixel tall, because a box
+          of no height at the edge of the screen is a case the observers disagree on; `-mb-[13px]`
+          takes back that pixel and the column's 12 px gap, so the list starts where it did and no
+          card moves for it. */}
+      <div aria-hidden="true" className="-mb-[13px] h-px" ref={setListHead} />
       <ol
         aria-hidden={phoneThread === undefined ? undefined : true}
         aria-label="Conversation turns"

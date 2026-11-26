@@ -1,6 +1,7 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
+
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { useFollowLatest } from "./use-follow-latest";
 
@@ -68,13 +69,24 @@ function Harness({
   onFirstPlacement?: () => void;
   ownSendCount: number;
 }): ReactNode {
-  useFollowLatest({ enabled, latestItemSeq: itemSeqs.at(0), onFirstPlacement, ownSendCount });
+  // The marker the Conversation draws at the head of its list, which the hook watches with an
+  // IntersectionObserver; happy-dom reports no intersection, so these rows read the placement
+  // and the follow state alone.
+  const [listHead, setListHead] = useState<HTMLElement | null>(null);
+  useFollowLatest({
+    enabled,
+    latestItemSeq: itemSeqs.at(0),
+    listHead,
+    onFirstPlacement,
+    ownSendCount,
+  });
   return (
     <div>
       <form
         aria-label="Comment composer"
         style={composerAtFoot ? { bottom: 64, position: "fixed" } : undefined}
       />
+      <div ref={setListHead} />
       {itemSeqs.map((seq) => (
         <div data-turn={`message:${seq}`} key={seq} />
       ))}

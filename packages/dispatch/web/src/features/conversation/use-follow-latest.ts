@@ -9,6 +9,7 @@ const NEWEST_TURN_SELECTOR = "[data-turn]";
 export function useFollowLatest({
   enabled,
   latestItemSeq,
+  listHead,
   onFirstPlacement,
   ownSendCount,
 }: {
@@ -18,6 +19,10 @@ export function useFollowLatest({
    *  and needs nothing else about the list. It spends its one first placement on the first
    *  defined value, so a caller must not pass one before the card renders. */
   latestItemSeq: number | undefined;
+  /** The marker the caller draws at the head of its list, where the newest card starts, or
+   *  `null` while no list is drawn. An IntersectionObserver on it says whether that head is on
+   *  screen, which costs no layout read on the scroll path. */
+  listHead: HTMLElement | null;
   /** Called once, in the layout effect that spends the first placement, right after the reader
    *  is placed at the newest card - so before any parent layout effect of that commit. It tells
    *  the caller the reader has just been placed for the first time: a scroll position recorded
@@ -28,9 +33,15 @@ export function useFollowLatest({
 }): {
   atTop: boolean;
   jumpToLatest: () => void;
+  /** The newest card's head is on screen, so the reader already sees where a jump would take
+   *  them: nothing is left for `Jump to latest` to offer, and the pill drawn over the card it
+   *  points at would cover that card's own controls (dispatch://INFRA-5200). The head, not the
+   *  whole card, because a card taller than the screen is still the card the reader is at. */
+  newestHeadOnScreen: boolean;
   pinnedToTop: () => boolean;
 } {
   const [atTop, setAtTop] = useState(true);
+  const [newestHeadOnScreen, setNewestHeadOnScreen] = useState(false);
   const atTopRef = useRef(true);
   const previousItemSeq = useRef<number | undefined>(undefined);
   const previousSends = useRef(ownSendCount);
@@ -71,7 +82,6 @@ export function useFollowLatest({
     }
     followScrollY.current = window.scrollY;
   }, []);
-
   useEffect(() => {
     const onScroll = () => {
       const nextAtTop = followsLatest();
@@ -82,6 +92,25 @@ export function useFollowLatest({
     onScroll();
     return () => window.removeEventListener("scroll", onScroll);
   }, [followsLatest]);
+
+  // Whether the newest card's head is on screen is read from the marker the caller draws at it,
+  // through an IntersectionObserver: the browser reports a crossing of the viewport's edge off
+  // the scroll path, so a scroll costs no layout read (`ConversationTab.test.tsx` holds a scroll
+  // to none). A resize, a card arriving and a late format all move the marker, and the observer
+  // reports each of them as the scroll does.
+  useEffect(() => {
+    // Nothing is watched while the caller is not live: a hidden tab draws no pill.
+    if (listHead === null || !enabled) {
+      setNewestHeadOnScreen(false);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      const last = entries.at(-1);
+      if (last !== undefined) setNewestHeadOnScreen(last.isIntersecting);
+    });
+    observer.observe(listHead);
+    return () => observer.disconnect();
+  }, [enabled, listHead]);
 
   // The mutation's `onSuccess` bumps `ownSendCount` and invalidates the events query in the same
   // tick, but the event feed (api/event-feed.ts) can independently invalidate the same query
@@ -141,6 +170,7 @@ export function useFollowLatest({
   return {
     atTop,
     jumpToLatest,
+    newestHeadOnScreen,
     pinnedToTop: followsLatest,
   };
 }
