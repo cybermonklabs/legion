@@ -19,7 +19,8 @@ import "time"
 // never 0, while a part built for a day with no rows is a zero part and reads as zero counts (and
 // nil shares). Value-returning cell folds (FoldLeadTime, FoldTiming, FoldTimeToRestore) return a
 // zero-count struct with nil quantile and rate pointers when no sample or result is present, and
-// FoldChangeFailureRate returns zero counts and zero rates in this slice (no failure source).
+// FoldChangeFailureRate returns zero failure counts and rates in this slice (no failure source),
+// with its totals still counted.
 
 // DayPart is one series' part of one UTC day: what one eval_days row holds except its key's
 // project, eval and repository and its bookkeeping (listed, built_by, updated_at), so a fold
@@ -107,12 +108,15 @@ func SamplesPart(day time.Time, series string, samples []float64, counts map[str
 	if part.Samples == nil {
 		part.Samples = []float64{}
 	}
-	sum := 0.0
-	for _, value := range samples {
+	sum, largest := 0.0, 0.0
+	for i, value := range samples {
 		sum += value
-		if part.Max == nil || value > *part.Max {
-			part.Max = new(value)
+		if i == 0 || value > largest {
+			largest = value
 		}
+	}
+	if len(samples) > 0 {
+		part.Max = &largest
 	}
 	part.Sum = &sum
 	return part

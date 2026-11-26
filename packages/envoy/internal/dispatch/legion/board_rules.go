@@ -1,14 +1,12 @@
 package legion
 
-// board_rules.go holds the column table a Legion card stands in, and the decode of the project's
-// admission block. Two readers place an issue by phase: the board route, which draws its cards in
+// board_rules.go holds the column table a Legion card stands in. Two readers place an issue by
+// phase: the board route, which draws its cards in
 // the columns (internal/dispatch/api/legion_board.go), and the metrics, which key each issue's
 // hours by the same columns (internal/dispatch/legion/metrics). A table stated in the route alone
 // is a table the metrics state a second time, and one table stated twice is a card and a metric
 // that disagree about the same issue. The labels the view draws are not here: they belong to the
 // view, and the route holds them beside the order it draws the columns in.
-
-import "encoding/json"
 
 // The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
 // link holds; Design the issues whose phase is still `admitted` that are on a card at all — the
@@ -54,16 +52,4 @@ var PhaseColumns = map[string]string{
 	PhaseAwaitingChildren: ColumnAwaitingChildren,
 	PhaseAwaitingPerson:   ColumnAwaiting,
 	PhaseHeld:             ColumnHeld,
-}
-
-// ParseAdmission is the admission block the project's `admission` observation records
-// (FieldAdmission, under AdmissionKey). The second answer is whether the value was read: it is
-// false for a value of another shape, because the daemon owns the wire shape and a reader of one
-// names what it expects rather than trusting it. The metrics read the block through it.
-func ParseAdmission(value []byte) (*Admission, bool) {
-	var admission Admission
-	if err := json.Unmarshal(value, &admission); err != nil {
-		return nil, false
-	}
-	return &admission, true
 }

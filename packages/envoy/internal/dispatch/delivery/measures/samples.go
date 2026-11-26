@@ -129,10 +129,7 @@ func MergedSamples(parts []DayPart, series string) SortedSamples {
 	case ascending:
 		return SortedSamples{lists: lists, n: n}
 	}
-	merged := make([]float64, 0, n)
-	for _, list := range lists {
-		merged = append(merged, list...)
-	}
+	merged := slices.Concat(lists...)
 	slices.Sort(merged)
 	return SortedSamples{merged: merged, n: n}
 }

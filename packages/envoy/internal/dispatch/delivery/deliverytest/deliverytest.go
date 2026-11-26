@@ -711,12 +711,11 @@ func (s *seeding) numberRuns() {
 		for j := range seeded.jobs {
 			seeded.jobs[j].Repo, seeded.jobs[j].RunID = repo, id
 		}
-		jobs := slices.Clone(seeded.jobs)
-		slices.SortStableFunc(jobs, func(a, b delivery.DeliveryRunJob) int {
+		slices.SortStableFunc(seeded.jobs, func(a, b delivery.DeliveryRunJob) int {
 			return cmp.Or(a.StartedAt.Compare(*b.StartedAt), strings.Compare(a.Name, b.Name))
 		})
 		s.fixture.Runs = append(s.fixture.Runs, seeded.run)
-		s.fixture.Jobs[id] = jobs
+		s.fixture.Jobs[id] = seeded.jobs
 	}
 }
 

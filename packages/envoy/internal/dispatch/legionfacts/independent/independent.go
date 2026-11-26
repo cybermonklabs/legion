@@ -13,9 +13,8 @@
 // out from the requirement's words. Where this reading and the computation disagree, one of them
 // is wrong and the check has found it.
 //
-// It takes the scope and the window as arguments and answers both beside every count it reports
-// (Report), because a check whose two sides read different scopes proves nothing. cmd prints
-// that report as JSON, which is what a tester re-runs.
+// It takes the scope and the window as arguments and answers both beside the facts it reads
+// (Reading), because a check whose two sides read different scopes proves nothing.
 package independent
 
 import (
@@ -32,13 +31,13 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// Scope is what one reading covers: the project whose issues it reads. Every count it reports
-// names it, so two sides of a comparison cannot read two scopes and read as one.
+// Scope is what one reading covers: the project whose issues it reads. Every reading names it, so
+// two sides of a comparison cannot read two scopes and read as one.
 type Scope struct {
 	Project string
 }
 
-// String is the scope in one word, which is what a report prints and a check compares.
+// String is the scope in one word, which is what a check prints and compares.
 func (s Scope) String() string { return s.Project }
 
 // Window is the stretch of time one reading measures over: To is the moment of the computation,
@@ -53,7 +52,7 @@ type Window struct {
 	To   time.Time
 }
 
-// String is the window as a reader of a report compares it: two moments, each in UTC, and
+// String is the window as a check compares it: two moments, each in UTC, and
 // `beginning` for a From that names no moment.
 func (w Window) String() string {
 	from := "beginning"
@@ -68,14 +67,14 @@ type Facts struct {
 	// PhaseHours is the hours by phase, by the board's column id, with a column the issue spent
 	// no time in left out. An issue whose work took no measured time holds none at all, and
 	// keeps its entry: a result means Legion worked the issue.
-	PhaseHours map[string]float64 `json:"phase_hours"`
+	PhaseHours map[string]float64
 	// WorkHours is the work time those hours are shared out of, in hours.
-	WorkHours float64 `json:"work_hours"`
+	WorkHours float64
 	// ReviewRounds is how many times the issue entered reviewing.
-	ReviewRounds int `json:"review_rounds"`
+	ReviewRounds int
 	// Root is whether the issue is the root of its own tree, and Tree is the tree it is in.
-	Root bool   `json:"root"`
-	Tree string `json:"tree"`
+	Root bool
+	Tree string
 }
 
 // ZeroHours is whether the issue's hours are all zero: no work time and no phase holding any of
@@ -123,37 +122,4 @@ func Read(ctx context.Context, db Querier, scope Scope, window Window) (Reading,
 		issues[key] = measured.factsOf(key)
 	}
 	return Reading{Scope: scope, Window: window, Issues: issues}, nil
-}
-
-// Report is the reading as a reader compares it: the scope, the window, the counts, and one
-// entry per issue with each fact. The scope and the window stand beside the counts, so a report
-// read on its own says what it covered.
-type Report struct {
-	Scope      string           `json:"scope"`
-	WindowFrom string           `json:"window_from"`
-	WindowTo   string           `json:"window_to"`
-	Issues     int              `json:"issues"`
-	ZeroHours  int              `json:"zero_hour_issues"`
-	Facts      map[string]Facts `json:"facts"`
-}
-
-// Report is the report of this reading.
-func (r Reading) Report() Report {
-	from := ""
-	if !r.Window.From.IsZero() {
-		from = r.Window.From.UTC().Format(time.RFC3339)
-	}
-	report := Report{
-		Scope:      r.Scope.String(),
-		WindowFrom: from,
-		WindowTo:   r.Window.To.UTC().Format(time.RFC3339),
-		Issues:     len(r.Issues),
-		Facts:      r.Issues,
-	}
-	for _, facts := range r.Issues {
-		if facts.ZeroHours() {
-			report.ZeroHours++
-		}
-	}
-	return report
 }

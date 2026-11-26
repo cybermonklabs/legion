@@ -95,6 +95,18 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	}
 
 	s := directServer(deps)
+	allByRun := map[int64][]delivery.DeliveryRunJob{}
+	loadJobs := func(run delivery.DeliveryRun) []delivery.DeliveryRunJob {
+		if jobs, ok := allByRun[run.RunID]; ok {
+			return jobs
+		}
+		jobs, err := delivery.ListRunJobs(ctx, pool, run.Repo, run.RunID)
+		if err != nil {
+			t.Fatalf("ListRunJobs %d: %v", run.RunID, err)
+		}
+		allByRun[run.RunID] = jobs
+		return jobs
+	}
 	for _, days := range []int{84, 28, 7} {
 		from, to := fixture.To.AddDate(0, 0, -days), fixture.To
 		pop, err := s.readDeliveryPopulation(ctx, fixture.Settings, from, to, url.Values{}, true)
@@ -104,18 +116,6 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 		every := pop
 		every.jobsByRun = make(map[int64][]delivery.DeliveryRunJob, len(pop.applyRuns))
 		every.windowJobs = make(map[int64][]delivery.DeliveryRunJob, len(pop.windowRuns))
-		allByRun := make(map[int64][]delivery.DeliveryRunJob, len(pop.applyRuns))
-		loadJobs := func(run delivery.DeliveryRun) []delivery.DeliveryRunJob {
-			if jobs, ok := allByRun[run.RunID]; ok {
-				return jobs
-			}
-			jobs, err := delivery.ListRunJobs(ctx, pool, run.Repo, run.RunID)
-			if err != nil {
-				t.Fatalf("%d days: ListRunJobs %d: %v", days, run.RunID, err)
-			}
-			allByRun[run.RunID] = jobs
-			return jobs
-		}
 		read, held := 0, 0
 		for _, run := range pop.applyRuns {
 			jobs := loadJobs(run)

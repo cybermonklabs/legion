@@ -526,9 +526,9 @@ type logMark struct {
 // rolePhase is the phase each role's first event on the issue starts, until the issue is first
 // sent back (phaseSteps). The merger's first event starts merging: retro is the implementer's,
 // and the event log tells it from merging by the `retro` status the workflow writes as retro
-// starts (statusPhase; the base's rule since 8beac41a07).
+// starts (statusPhase; the base's rule since 8beac41a07). The architect is not here: its design
+// phase may open at the issue's first slot instead (logMarks).
 var rolePhase = map[string]string{
-	"architect":   phaseDesign,
 	"planner":     phasePlanning,
 	"implementer": phaseImplementing,
 	"tester":      phaseTesting,
@@ -580,7 +580,7 @@ func (r *reading) logMarks(key string) []logMark {
 	held := r.population.issues[key]
 	var marks []logMark
 	for role, at := range held.firstRoleEvent {
-		if phase, works := rolePhase[role]; works && role != "architect" {
+		if phase, works := rolePhase[role]; works {
 			marks = append(marks, logMark{at: at, source: fromRole, phase: phase})
 		}
 	}

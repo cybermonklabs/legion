@@ -79,29 +79,19 @@ func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 	return rows, nil
 }
 
-// ApplyRows is MergedRows' apply runs and their jobs, read from a moment on (readApplyRows).
-type ApplyRows struct {
-	Runs []DeliveryRun
-	Jobs map[int64][]DeliveryRunJob
-}
-
 // readApplyRows reads the apply runs and their production jobs (the jobs a deploy is judged by)
 // of a window from from, MergedRows.ApplyRuns and ApplyJobs as readMergedRows reads them, with
 // createdBefore as readMergedRows takes it.
-func readApplyRows(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, createdBefore *time.Time) (ApplyRows, error) {
+func readApplyRows(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, createdBefore *time.Time) (RunsWithJobs, error) {
 	runs, err := listRuns(ctx, q, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
 	if err != nil {
-		return ApplyRows{}, err
+		return RunsWithJobs{}, err
 	}
-	runIDs := make([]int64, len(runs))
-	for i, run := range runs {
-		runIDs[i] = run.RunID
-	}
-	jobs, err := ListRunJobsForRuns(ctx, q, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
+	jobs, err := ListRunJobsForRuns(ctx, q, settings.DeployRepo, runIDsOf(runs), settings.Production().JudgedJobNames())
 	if err != nil {
-		return ApplyRows{}, err
+		return RunsWithJobs{}, err
 	}
-	return ApplyRows{Runs: runs, Jobs: jobs}, nil
+	return RunsWithJobs{Runs: runs, Jobs: jobs}, nil
 }
 
 // ReadWindowRows is a delivery route's read of [from, to): MergedRows, with failedJobs each apply
@@ -155,10 +145,7 @@ func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySett
 		return err
 	}}
 	if failedJobs {
-		applyIDs := make([]int64, len(listed.apply))
-		for i, run := range listed.apply {
-			applyIDs[i] = run.RunID
-		}
+		applyIDs := runIDsOf(listed.apply)
 		reads = append(reads, func(ctx context.Context) (err error) {
 			failed, err = listRunJobsFailedForRuns(ctx, pool, settings.DeployRepo, applyIDs, names)
 			return err

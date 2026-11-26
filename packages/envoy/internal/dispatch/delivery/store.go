@@ -620,10 +620,11 @@ func scanRun(row pgx.Row, extra ...any) (DeliveryRun, error) {
 	var run DeliveryRun
 	var kind string
 	var conclusion *string
-	dest := []any{
+	dest := make([]any, 0, 13+len(extra))
+	dest = append(dest,
 		&run.Repo, &run.RunID, &kind, &run.PRNumber, &run.HeadSHA, &run.HeadCommitAt,
 		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event,
-	}
+	)
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryRun{}, err
 	}
@@ -1242,6 +1243,15 @@ func collectRuns(rows pgx.Rows) ([]DeliveryRun, error) {
 	return runs, rows.Err()
 }
 
+// runIDsOf is the ids of runs, in order.
+func runIDsOf(runs []DeliveryRun) []int64 {
+	ids := make([]int64, len(runs))
+	for i, run := range runs {
+		ids[i] = run.RunID
+	}
+	return ids
+}
+
 // RunsWithJobs is a list of runs and the jobs read of each, keyed by run id.
 type RunsWithJobs struct {
 	Runs []DeliveryRun
@@ -1273,11 +1283,7 @@ func runsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind Del
 	if err != nil {
 		return RunsWithJobs{}, err
 	}
-	runIDs := make([]int64, len(runs))
-	for i, run := range runs {
-		runIDs[i] = run.RunID
-	}
-	byRun, err := jobs(runIDs)
+	byRun, err := jobs(runIDsOf(runs))
 	if err != nil {
 		return RunsWithJobs{}, err
 	}

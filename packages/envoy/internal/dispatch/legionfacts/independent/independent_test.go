@@ -56,17 +56,13 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		t.Fatalf("read the project independently: %v", err)
 	}
 
-	// The two sides actually report the same scope and the same window, or the comparison below
-	// compares two different questions. Compare reading's own reported Scope/Window (and Report)
-	// rather than the local inputs passed to Read.
-	report := reading.Report()
-	if reading.Scope.String() != computedScope || report.Scope != computedScope {
-		t.Fatalf("the reading reported scope %s (report %q) and the computation scope %s",
-			reading.Scope, report.Scope, computedScope)
+	// The two sides report the same scope and the same window, or the comparison below compares
+	// two different questions.
+	if reading.Scope.String() != computedScope {
+		t.Fatalf("the reading reported scope %s and the computation scope %s", reading.Scope, computedScope)
 	}
-	if reading.Window.String() != computedWindow.String() || report.WindowFrom != "" || report.WindowTo != computedWindow.To.UTC().Format(time.RFC3339) {
-		t.Fatalf("the reading reported window %s (report %q..%q) and the computation window %s",
-			reading.Window, report.WindowFrom, report.WindowTo, computedWindow)
+	if reading.Window.String() != computedWindow.String() {
+		t.Fatalf("the reading reported window %s and the computation window %s", reading.Window, computedWindow)
 	}
 
 	compared, zeroHours, awaitingChildren, differences := 0, 0, 0, 0
@@ -134,8 +130,9 @@ func TestIndependentReadAsOfSnapshotAndTitleTieBreak(t *testing.T) {
 	}
 
 	exec("seed project", `insert into projects (key, name, default_assignee) values ('SNAP', 'Snapshot', 'alice')`)
-	// SNAP-1 opened before To and closed after it. SNAP-2 was created after To. SNAP-3 was
-	// created before To and handed on only after it.
+	// SNAP-1 opened before To and closed after it. SNAP-2 was created after To, and a Legion role
+	// wrote on it before To, so only its own creation keeps it out as of To. SNAP-3 was created
+	// before To and handed on only after it.
 	exec("seed issues", `
 		insert into issues (key, project_key, number, title, status, rank, created_by, created_at, closed_at) values
 			('SNAP-1', 'SNAP', 1, 'Open at to', 'done', '00000001', '{"kind":"system","id":"test"}', $1, $2),
@@ -156,10 +153,10 @@ func TestIndependentReadAsOfSnapshotAndTitleTieBreak(t *testing.T) {
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		values ('SNAP-1', 3, 'comment.created', '{"kind":"session","id":"ses-tie","origin":{"session_title":"Renamed after to"}}', '{}', false, $1)
 	`, to.Add(time.Hour))
-	exec("seed the event of the issue created after to", `
+	exec("seed the role event before to of the issue created after to", `
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		values ('SNAP-2', 1, 'comment.created', '{"kind":"session","id":"ses-snap2","origin":{"session_title":"Legion implementer · SNAP-2"}}', '{}', false, $1)
-	`, to.Add(time.Hour))
+	`, to.Add(-time.Hour))
 	exec("seed the handoff after to", `
 		insert into handoffs (issue_key, phase, version, body, author, created_at)
 		values ('SNAP-3', 'implement', 1, '{}', '{"kind":"session","id":"ses-snap3"}', $1)
@@ -177,9 +174,12 @@ func TestIndependentReadAsOfSnapshotAndTitleTieBreak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("independent.Read as of %s: %v", to.Format(time.RFC3339), err)
 	}
-	for _, key := range []string{"SNAP-2", "SNAP-3"} {
-		if _, seen := reading.Issues[key]; seen {
-			t.Errorf("%s has facts as of %s though no Legion work of it had been recorded by then", key, to.Format(time.RFC3339))
+	for _, absent := range []struct{ key, why string }{
+		{"SNAP-2", "it was created after then"},
+		{"SNAP-3", "no Legion work of it had been recorded by then"},
+	} {
+		if _, seen := reading.Issues[absent.key]; seen {
+			t.Errorf("%s has facts as of %s though %s", absent.key, to.Format(time.RFC3339), absent.why)
 		}
 	}
 	got, ok := reading.Issues["SNAP-1"]

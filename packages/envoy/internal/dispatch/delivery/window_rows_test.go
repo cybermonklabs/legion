@@ -92,12 +92,8 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 				if cut < len(wantMerged.ApplyRuns) {
 					bounded++
 				}
-				every, err := listEveryRunJobForRuns(ctx, pool, waitingRepo, runIDsOf(merged.ApplyRuns))
-				if err != nil {
-					t.Fatalf("%s: listEveryRunJobForRuns: %v", label, err)
-				}
 				for _, run := range merged.ApplyRuns {
-					want := slices.DeleteFunc(every[run.RunID], func(job DeliveryRunJob) bool {
+					want := slices.DeleteFunc(slices.Clone(truth.jobs[run.RunID]), func(job DeliveryRunJob) bool {
 						failed := job.Conclusion != nil && *job.Conclusion == DeliveryJobConclusionFailure
 						return !slices.Contains(judged, job.Name) && !(failedJobs && failed)
 					})
@@ -302,6 +298,18 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 			t.Fatalf("%s scans delivery_runs whole:\n%s", read.name, plan)
 		}
 		scans := explaintest.IndexScans(t, plan)
+		for _, scan := range scans {
+			if scan.Relation == "delivery_runs" && scan.Cond == "" {
+				t.Fatalf("%s reads delivery_runs through %s with no index condition:\n%s", read.name, scan, plan)
+			}
+		}
+		for _, bitmap := range explaintest.BitmapHeapScans(t, plan, "delivery_runs") {
+			for _, index := range bitmap.BitmapIndexScans {
+				if index.IndexCond == "" {
+					t.Fatalf("%s reads delivery_runs through a bitmap of %s with no index condition:\n%s", read.name, index, plan)
+				}
+			}
+		}
 		for index, bounds := range read.indexes {
 			found := slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
 				if scan.Relation != "delivery_runs" || scan.Index != index || !strings.Contains(scan.Cond, read.start) {
@@ -497,15 +505,6 @@ func seedWindowHistory(t *testing.T, ctx context.Context, pool *store.Pool, rand
 			t.Fatalf("seed run %d's jobs: %v", run.RunID, err)
 		}
 	}
-}
-
-// runIDsOf is the ids of runs, in order.
-func runIDsOf(runs []DeliveryRun) []int64 {
-	ids := make([]int64, len(runs))
-	for i, run := range runs {
-		ids[i] = run.RunID
-	}
-	return ids
 }
 
 // shippedIDs is ShippedBy's answer by pull request id, each deploy's in order.

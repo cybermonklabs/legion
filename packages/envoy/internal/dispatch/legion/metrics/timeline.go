@@ -271,7 +271,11 @@ func layOutOfWorkflow(timeline []PhaseSpan, out []Span) []PhaseSpan {
 // neither.
 func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 	end := p.issueEnd(issue)
-	var timeline []PhaseSpan
+	var (
+		timeline  []PhaseSpan
+		slots     []Span
+		readSlots bool
+	)
 	for stretch := range p.phaseStretches(issue) {
 		if stretch.Span.Duration() == 0 {
 			continue
@@ -280,7 +284,11 @@ func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 			timeline = append(timeline, stretch)
 			continue
 		}
-		held := intersect([]Span{stretch.Span}, p.slotSpans(issue, end))
+		if !readSlots {
+			slots = p.slotSpans(issue, end)
+			readSlots = true
+		}
+		held := intersect([]Span{stretch.Span}, slots)
 		for _, holding := range held {
 			timeline = append(timeline, PhaseSpan{Phase: phaseDesign, Span: holding})
 		}

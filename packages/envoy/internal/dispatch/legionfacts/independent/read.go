@@ -33,7 +33,6 @@ type handoff struct {
 type issue struct {
 	key    string
 	parent string
-	opened time.Time
 	closed *time.Time
 
 	// firstRoleEvent is the first event each Legion role wrote on this issue, by role: an event
@@ -126,12 +125,12 @@ func readPopulation(ctx context.Context, db Querier, scope Scope, window Window)
 	return held, nil
 }
 
-// readIssues reads every issue of the project created by window.To: its parent link, when it was
-// created, and when it closed if it had closed by window.To (an issue closed after window.To stands
-// open as of window.To).
+// readIssues reads every issue of the project created by window.To: its parent link, and when it
+// closed if it had closed by window.To (an issue closed after window.To stands open as of
+// window.To).
 func (p *population) readIssues(ctx context.Context, db Querier) error {
 	rows, err := db.Query(ctx, `
-		select key, coalesce(parent_key, ''), created_at,
+		select key, coalesce(parent_key, ''),
 			case when closed_at is not null and closed_at <= $2 then closed_at else null end
 		from issues
 		where project_key = $1 and created_at <= $2
@@ -143,7 +142,7 @@ func (p *population) readIssues(ctx context.Context, db Querier) error {
 	defer rows.Close()
 	for rows.Next() {
 		one := &issue{firstRoleEvent: map[string]time.Time{}, observed: map[string][]mark{}}
-		if err := rows.Scan(&one.key, &one.parent, &one.opened, &one.closed); err != nil {
+		if err := rows.Scan(&one.key, &one.parent, &one.closed); err != nil {
 			return fmt.Errorf("scan an issue of %s: %w", p.scope.Project, err)
 		}
 		p.issues[one.key] = one
