@@ -3675,7 +3675,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		warnings = append(warnings, d.registry.LegacyTopicWarnings(body.SessionID, stored)...)
 		if delivery.relayed() {
 			// The mark tells it which of its runs restarted after this registration: those
-			// need no restart for its epoch (sessionRelays.apply).
+			// need no restart for its epoch (sessionRelays.apply); and which pause the
+			// registration ends at once: one on a frame sent before it (relayRun.waitPause),
+			// whatever the epoch.
 			d.consumers.relay.registered(body.SessionID, registered.epochChanged, delivery.heard)
 		}
 		// The registration is this process's heartbeat, so it is where the claims it holds

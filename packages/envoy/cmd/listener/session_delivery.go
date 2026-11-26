@@ -162,8 +162,9 @@ func (o sessionDeliveryOutcome) relayed() bool {
 type sessionRelay interface {
 	// registered reports a registration of sessionID that recorded consumer delivery on its entry,
 	// or, at the edge, a role claim refresh that wrote the session's record (api.go's roleSetHandler).
-	// Either resumes a paused relay run and starts an ended one; a claim passes epochChanged false
-	// and heard 0.
+	// Either starts an ended relay run, and restarts at once one waiting to retry or paused on a
+	// frame sent before heard: the registration's mark (sessionDelivery.mark), or the one a claim
+	// takes once it recorded the session's admission (resumeHeld). A claim passes epochChanged false.
 	// epochChanged is set when the entry it replaced did not hold consumer delivery with the same
 	// epoch: the plugin connected anew, so the relay restarts the session's consumer at its ack
 	// floor before it relays again, unless the relay's run restarted the consumer after heard,
@@ -328,9 +329,10 @@ func (d *sessionDelivery) admitHeld(r *http.Request, sessionID string) {
 	}
 }
 
-// resumeHeld, at the edge, resumes sessionID's relay as a registration does: a resume starts this
-// replica's relay run for the session if it had ended for want of an admission, which the entry's
-// change (a relayCheck) does not. It is for the claim refresh that just recorded the session's
+// resumeHeld, at the edge, resumes sessionID's relay as a registration does, with a mark of its own
+// (mark): a resume starts this replica's relay run for the session if it had ended for want of an
+// admission, which the entry's change (a relayCheck) does not, and ends a pause on a frame sent
+// before the claim. It is for the claim refresh that just recorded the session's
 // admission (admitHeld). It does nothing for a request no edge listener admitted (heldProjects),
 // which every listener but an edge one is: on a hub a run ends for want of a consumer or a grant
 // (restartFailed), which a claim cannot cure, and a session the claim moves here has no run, which
@@ -341,7 +343,7 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 		return
 	}
 	if _, held := heldProjects(r); held {
-		d.relay.registered(sessionID, false, 0)
+		d.relay.registered(sessionID, false, d.mark())
 	}
 }
 
@@ -687,12 +689,15 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	return registeredConsumer{filter: filter, start: start, revision: revision}, registeredTargetBuilt
 }
 
-// mark returns the next of the marks that order registrations against the relay's restarts: a
-// registration takes one once its topics are stored and its consumer created or updated, and a
-// relay restart takes one, under the session's lock, before it reads the session's topics and
-// consumer. A restart whose mark is above a registration's read everything that registration
-// wrote, after the plugin subscribed the connection the registration names, so every frame it
-// sent reaches that connection.
+// mark returns the next of the marks that order registrations against the relay's restarts and
+// frames: a registration takes one once its topics are stored and its consumer created or updated,
+// at the edge a role claim refresh takes one once it recorded the session's admission (resumeHeld),
+// a relay restart takes one, under the session's lock, before it reads the session's topics and
+// consumer, and a relay frame takes one before it is published (relayFrame.sentMark). A restart
+// whose mark is above a registration's read everything that registration wrote, after the plugin
+// subscribed the connection the registration names, so every frame it sent reaches that
+// connection; and a frame whose mark is above a registration's went out after the plugin subscribed
+// it, so the registration does not end a pause on that frame (relayRun.waitPause).
 func (m *sessionDelivery) mark() uint64 { return m.marks.Add(1) }
 
 // drain drains the session-consumer connection, so the acks the relays sent reach the server,
