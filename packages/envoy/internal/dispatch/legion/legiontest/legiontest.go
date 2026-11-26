@@ -87,8 +87,8 @@ const person = `{"kind":"user","id":"alice"}`
 // issues' values, and the open child's root waits on it through those hours in either phase
 // (metrics' childWorkingPhases). They shape the history a check of the eval registry's Legion
 // measures reads (dispatch://INFRA-2916, k6 and k17), which needs a window before the project's
-// first observation and one after it, finished issues that sat parked, merged pull requests and
-// filings of every class.
+// first observation and one after it, finished issues that waited in `backlog` or `icebox`,
+// merged pull requests and filings of every class.
 type Spec struct {
 	Project string
 	Trees   int
@@ -111,13 +111,14 @@ type Spec struct {
 	// IssueOffset is how many of the project's issue numbers another history took already: the
 	// issues are numbered from IssueOffset+1, so this history can be written beside that one.
 	IssueOffset int
-	// Parked has a finished child of every tree sit parked partway through its work, each park
-	// both a Dispatch status and what the daemon observes: in an even tree the implemented child
-	// sits in `icebox` for the two hours between its implementer's handoff and its tester, put
-	// there by a person, and in an odd tree the reviewed child is parked in `backlog` for three
-	// hours of its implementing by its tree's architect, as the daemon's parkChild moves a child.
-	// The sampler records phase `held` over each park, and the phase it returns to after it.
-	Parked bool
+	// InBacklogOrIcebox has a finished child of every tree wait in `icebox` or `backlog` partway
+	// through its work, each wait both a Dispatch status and what the daemon observes: in an even
+	// tree the implemented child sits in `icebox` for the two hours between its implementer's
+	// handoff and its tester, put there by a person, and in an odd tree its tree's architect moves
+	// the reviewed child to `backlog` for three hours of its implementing, as the daemon's
+	// parkChild moves a child. The sampler records phase `held` over each wait, and the phase the
+	// child returns to after it.
+	InBacklogOrIcebox bool
 	// Merged gives each issue the merger closes (each root and its implemented and reviewed
 	// children) a merged pull request naming it, merged an hour before its close, so the facts
 	// read its merge (metrics' Issue.MergedAt) and store it.
@@ -312,8 +313,8 @@ type phaseMark struct {
 // implemented, tested and sent back once, so its facts hold two review rounds. The second is
 // reviewed and merged, and a person answered an ask of it, so its hours land on waiting for a
 // person as well as on its phases. The third never closed, so its hours run to the moment of the
-// computation, it sat parked for six of them, and it waited two of them in `awaiting_children`
-// before its testing started. The fourth recorded its one handoff at the moment it closed, so its
+// computation, it waited six of them in `backlog` and two of them in `awaiting_children` before
+// its testing started. The fourth recorded its one handoff at the moment it closed, so its
 // work took no measured time and its facts hold an entry with no phase hours. The fifth is a
 // follow-up a person filed and no Legion role worked, so it gets no facts entry at all.
 func (s *seeding) tree(index int) {
@@ -373,9 +374,9 @@ func (s *seeding) tree(index int) {
 	s.handOver(implemented, SessionActor("architect", root), at(3))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
-	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
-	// handoff to its tester, a person's park.
-	icebox := s.spec.Parked && index%2 == 0
+	// Under Spec.InBacklogOrIcebox an even tree's implemented child waits in `icebox` from its
+	// implementer's handoff to its tester, put there by a person.
+	icebox := s.spec.InBacklogOrIcebox && index%2 == 0
 	if icebox {
 		s.event(implemented, "issue.updated", person, `{"status":"icebox"}`, at(12))
 		s.event(implemented, "issue.updated", person, `{"status":"in_progress"}`, at(14))
@@ -407,9 +408,10 @@ func (s *seeding) tree(index int) {
 	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
 	s.handOver(reviewed, SessionActor("architect", root), at(6))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
-	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
-	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
-	backlog := s.spec.Parked && index%2 == 1
+	// Under Spec.InBacklogOrIcebox its tree's architect moves an odd tree's reviewed child to
+	// `backlog` for three hours of its implementing, as the daemon's parkChild moves a child, and
+	// puts it back.
+	backlog := s.spec.InBacklogOrIcebox && index%2 == 1
 	if backlog {
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"backlog"}`, at(16))
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"in_progress"}`, at(19))
@@ -440,8 +442,8 @@ func (s *seeding) tree(index int) {
 	s.waiting(reviewed, "ask", at(28), at(31))
 
 	// The child nobody closed. Its work time runs to the moment of the computation, and the six
-	// hours it sat parked are off it. Its implementing ends two hours before its testing starts:
-	// it waits those two hours in `awaiting_children`, the phase a parent stands in while a
+	// hours it waited in `backlog` are off it. Its implementing ends two hours before its testing
+	// starts: it waits those two hours in `awaiting_children`, the phase a parent stands in while a
 	// Dispatch child of it is open (dispatch://INFRA-3320), which holds the start of its testing
 	// until the return. The history writes no child of it: the facts read the phase's hours, on the
 	// no-role bar and under the board's Waiting on children column, and no rule of them reads the

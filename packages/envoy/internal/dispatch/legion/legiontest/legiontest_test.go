@@ -137,7 +137,7 @@ func TestEveryFinishedIssueOfATreeTheSamplerNeverSawHasWorkTime(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	spec := Spec{Project: "UNSEEN", Trees: 4, Unobserved: 2, Parked: true, Now: now}
+	spec := Spec{Project: "UNSEEN", Trees: 4, Unobserved: 2, InBacklogOrIcebox: true, Now: now}
 	fixture := Seed(t, database.Pool, spec)
 
 	rows, _, err := legionfacts.ComputeProject(ctx, database.Pool, fixture.Project, now)

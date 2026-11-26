@@ -25,7 +25,7 @@ func TestTheKeywordFillReadsEveryEventOfTheSeededHistory(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Trees: 4, Now: now, Unobserved: 2, Queued: true,
-		Parked: true, Merged: true, Filings: true})
+		InBacklogOrIcebox: true, Merged: true, Filings: true})
 
 	if err := textversions.FillToHorizon(t.Context(), database, events.NewHorizon(database.Pool)); err != nil {
 		t.Fatalf("the keyword fill refused the seeded history: %v", err)
