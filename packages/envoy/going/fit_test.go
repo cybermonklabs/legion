@@ -90,7 +90,7 @@ func TestTheCaseSetCoversTheCatalogue(t *testing.T) {
 	}
 }
 
-// c12's control: a model choosing at random among the catalogue's actions and none scores at
+// c14's control: a model choosing at random among the catalogue's actions and none scores at
 // chance, one in the number of choices.
 func TestARandomModelScoresAtChance(t *testing.T) {
 	catalogue, err := api.BuildGoingCatalogue()

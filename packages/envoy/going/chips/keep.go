@@ -7,22 +7,25 @@ import (
 )
 
 // KeepLinkWords is answer, an answer's markdown, written so that no words the model gave a link to
-// an item are hidden behind the item's chip, which the bar draws in place of them (Words). The
-// prompt tells the model to write every fact outside the link, and the eval measured that it does
-// not always: "[Implementer of OPS-4](dispatch://OPS-4) is unresponsive" reached the person as the
-// chip of OPS-4 and "is unresponsive", the session's name lost, and the words of a link to a
-// comment as the comment's own head, cut at 60 characters (c13 at 9ae5605b, status-02, status-05,
-// status-06 and status-13).
+// an item are hidden behind the issue's chip, which the bar draws in place of them at the answer's
+// first link to an issue (Words). The prompt tells the model to write every fact outside the link,
+// and the eval measured that it does not always: "[Implementer of OPS-4](dispatch://OPS-4) is
+// unresponsive" reached the person as the chip of OPS-4 and "is unresponsive", the session's name
+// lost; and the eval's judge, which read every link to an item as the item's words, read the words
+// of a link to a comment as the comment's own head, cut at 60 characters (c13 at 9ae5605b,
+// status-02, status-05, status-06 and status-13).
 //
 // So a link whose words say more than its chip draws (says) is written as those words, as text,
 // then a space and, in parentheses, the link with the item's short form as its words (Short, an
 // issue's key) and its address and title as written: "Implementer of OPS-4
-// ([OPS-4](dispatch://OPS-4)) is unresponsive", which the bar draws as the words and then the
-// chip. The words stand before the chip since they are the sentence's own, which the chip, in
-// parentheses, names the item of. The link's words are the short form because the bar draws them
-// where it draws no chip - a link to an issue that already has its chip in the answer, and an item
-// the person may not read - and the short form names the item and nothing more; and a link whose
-// words are its short form keeps them, so KeepLinkWords of what it wrote is what it wrote.
+// ([OPS-4](dispatch://OPS-4)) is unresponsive", which the bar draws as the words and then, where
+// it is the answer's first link to the issue, the issue's chip. The words stand before the link
+// since they are the sentence's own, which the link, in parentheses, names the item of. The link's
+// words are the short form because the bar draws them where it draws no chip - a later link to an
+// issue that already has its chip in the answer, a link to another item, such as a comment's
+// ("OPS-4 comment"), and an item the person may not read - and the short form names the item and
+// nothing more; and a link whose words are its short form keeps them, so KeepLinkWords of what it
+// wrote is what it wrote.
 //
 // Every other link stays as written: one whose words the chip draws, an autolink, whose words are
 // its address, and a link the bar draws as no item - a time (dispatch-time:), a web address, a

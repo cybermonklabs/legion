@@ -16,9 +16,11 @@ import (
 
 // TestTheRecordReadsBack reads each entry the bake-off wrote back through DecisionRecord, by its
 // model's name, as the file holds it, and holds the chosen entry to R13: one model is chosen, it
-// was measured on at least 80 cases and 20 chart-worthy ones, it reaches 90% on the cases that
-// name their action and 70% on the rest at a p95 under 500 ms, and a model a tie-break named
-// names who broke the tie and why.
+// was measured on at least 80 cases and 20 chart-worthy ones, it "chooses the right action on at
+// least 95% of the 117 cases of packages/envoy/going/bakeoff/cases.json, and 95% of its answers
+// end in under 500 ms" (R13's floors, JevRightFloor and JevP95Ceiling: the right action on 95% of
+// its answers to those cases, all together, and a p95 under 500 ms), and a model a tie-break
+// named names who broke the tie and why.
 func TestTheRecordReadsBack(t *testing.T) {
 	raw, err := os.ReadFile("decision_models.json")
 	if err != nil {
@@ -49,9 +51,9 @@ func TestTheRecordReadsBack(t *testing.T) {
 		case record.Cases < going.LeastCases || record.ChartWorthyCases < going.LeastChartCases:
 			t.Errorf("the chosen %s was measured on %d cases, %d chart-worthy; R13 needs %d and %d",
 				record.Model, record.Cases, record.ChartWorthyCases, going.LeastCases, going.LeastChartCases)
-		case record.NamedAccuracy < going.NamedFloor || record.OtherAccuracy < going.OtherFloor || record.P95MS >= going.P95CeilingMS:
-			t.Errorf("the chosen %s reaches %.3f named, %.3f on the rest at p95 %.0f ms; R13 needs %v, %v and under %v",
-				record.Model, record.NamedAccuracy, record.OtherAccuracy, record.P95MS, going.NamedFloor, going.OtherFloor, going.P95CeilingMS)
+		case float64(record.Right())/float64(record.Cases*record.Repeats) < going.JevRightFloor || record.P95MS >= float64(going.JevP95Ceiling.Milliseconds()):
+			t.Errorf("the chosen %s chooses the right action on %d of its %d answers at p95 %.0f ms; R13 needs %v of them and under %v",
+				record.Model, record.Right(), record.Cases*record.Repeats, record.P95MS, going.JevRightFloor, going.JevP95Ceiling)
 		case record.ChosenBy == going.ChosenByTieBreak && (strings.TrimSpace(record.Chooser) == "" || strings.TrimSpace(record.ChosenReason) == ""):
 			t.Errorf("the chosen %s was named by a tie-break that names chooser %q and reason %q, want both", record.Model, record.Chooser, record.ChosenReason)
 		}
@@ -172,27 +174,27 @@ func TestTheRuleRanksByRightChoices(t *testing.T) {
 	}{
 		{
 			name:    "the most right choices over every repeat, though another led one repeat with a lower p95",
-			records: []going.Record{lowP95(candidate("model-b", 102, 100)), candidate("model-a", 100, 103)},
+			records: []going.Record{lowP95(candidate("model-b", 114, 112)), candidate("model-a", 112, 115)},
 			outcome: going.Named, model: "model-a", by: going.ChosenByRightChoices, level: []string{"model-a"},
-			ranked: []going.Candidate{{Model: "model-a", Right: 203}, {Model: "model-b", Right: 202}},
+			ranked: []going.Candidate{{Model: "model-a", Right: 227}, {Model: "model-b", Right: 226}},
 		},
 		{
 			name:    "level: a lower p95 names none",
-			records: []going.Record{lowP95(candidate("model-a", 202)), candidate("model-b", 202)},
+			records: []going.Record{lowP95(candidate("model-a", 114)), candidate("model-b", 114)},
 			outcome: going.FullTie, level: []string{"model-a", "model-b"},
-			ranked: []going.Candidate{{Model: "model-a", Right: 202}, {Model: "model-b", Right: 202}},
+			ranked: []going.Candidate{{Model: "model-a", Right: 114}, {Model: "model-b", Right: 114}},
 		},
 		{
 			name:    "three, two level at the most: none, and the third ranks last",
-			records: []going.Record{candidate("model-a", 201), lowP95(candidate("model-b", 202)), candidate("model-c", 202)},
+			records: []going.Record{candidate("model-a", 113), lowP95(candidate("model-b", 114)), candidate("model-c", 114)},
 			outcome: going.FullTie, level: []string{"model-b", "model-c"},
-			ranked: []going.Candidate{{Model: "model-b", Right: 202}, {Model: "model-c", Right: 202}, {Model: "model-a", Right: 201}},
+			ranked: []going.Candidate{{Model: "model-b", Right: 114}, {Model: "model-c", Right: 114}, {Model: "model-a", Right: 113}},
 		},
 		{
 			name:    "the one candidate",
-			records: []going.Record{candidate("model-a", 90)},
+			records: []going.Record{candidate("model-a", 115)},
 			outcome: going.Named, model: "model-a", by: going.ChosenByRightChoices, level: []string{"model-a"},
-			ranked: []going.Candidate{{Model: "model-a", Right: 90}},
+			ranked: []going.Candidate{{Model: "model-a", Right: 115}},
 		},
 		{
 			name:    "no record",
@@ -210,19 +212,24 @@ func TestTheRuleRanksByRightChoices(t *testing.T) {
 	}
 }
 
-// Only a model that meets R13's three floors is a candidate: one that misses any of them is never
-// ranked or named, however many right choices it made.
+// Only a model that meets R13's two floors is a candidate: one that misses either of them is never
+// ranked or named, however many right choices it made. The floor of right choices is of R13's
+// cases all together: a model under 90% on the cases that name their action is a candidate where
+// it is right on 95% of them all.
 func TestOnlyAModelThatMeetsTheFloorsIsACandidate(t *testing.T) {
 	for name, miss := range map[string]func(*going.Record){
-		"named under 90%":    func(r *going.Record) { r.NamedAccuracy = 0.899 },
-		"rest under 70%":     func(r *going.Record) { r.OtherAccuracy = 0.699 },
-		"p95 at the ceiling": func(r *going.Record) { r.P95MS = going.P95CeilingMS },
+		// Asked twice, right on 222 of its 234 answers: more right choices than model-weak's 112
+		// of 117, and under 95% of its answers.
+		"right under 95%": func(r *going.Record) {
+			r.Repeats, r.RepeatRights = 2, append(r.RepeatRights, going.RepeatRight{Other: 105, Total: 105})
+		},
+		"p95 at the ceiling": func(r *going.Record) { r.P95MS = float64(going.JevP95Ceiling.Milliseconds()) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			strong := candidate("model-strong", 117)
 			miss(&strong)
-			got := going.Choose([]going.Record{strong, candidate("model-weak", 100)})
-			if got.Outcome != going.Named || got.Model != "model-weak" || got.By != going.ChosenByRightChoices || !slices.Equal(got.Ranked, []going.Candidate{{Model: "model-weak", Right: 100}}) {
+			got := going.Choose([]going.Record{strong, candidate("model-weak", 112)})
+			if got.Outcome != going.Named || got.Model != "model-weak" || got.By != going.ChosenByRightChoices || !slices.Equal(got.Ranked, []going.Candidate{{Model: "model-weak", Right: 112}}) {
 				t.Errorf("Choose comes to %q naming %q by %q, ranked %v; want model-weak, the one model meeting the floors and the one ranked", got.Outcome, got.Model, got.By, got.Ranked)
 			}
 			if got := going.Choose([]going.Record{strong}); got.Outcome != going.NoCandidate || got.Model != "" || len(got.Level) != 0 || len(got.Ranked) != 0 {
@@ -230,12 +237,19 @@ func TestOnlyAModelThatMeetsTheFloorsIsACandidate(t *testing.T) {
 			}
 		})
 	}
+	// 40 of the 45 cases that name their action and all 72 of the rest: 112 of 117.
+	split := going.Record{Model: "model-split", Cases: 117, NamedCases: 45, OtherCases: 72, NamedAccuracy: 40.0 / 45, OtherAccuracy: 1, P95MS: 150,
+		Repeats: 1, RepeatRights: []going.RepeatRight{{Named: 40, Other: 72, Total: 112}}}
+	if !split.MeetsFloors() {
+		t.Errorf("a model right on %d of %d cases, %.3f of those that name their action, is no candidate; want one, R13's floor being of its cases all together",
+			split.Right(), split.Cases, split.NamedAccuracy)
+	}
 }
 
 // The architect names a model only where the rule names none: one of the models level on right
 // choices, naming who broke the tie, with a reason.
 func TestATieBreakIsTakenOnlyOnAFullTie(t *testing.T) {
-	tie := going.Choose([]going.Record{candidate("model-a", 101), candidate("model-b", 101)})
+	tie := going.Choose([]going.Record{candidate("model-a", 113), candidate("model-b", 113)})
 	if tie.Outcome != going.FullTie {
 		t.Fatalf("a run level on right choices comes to %q, want a full tie", tie.Outcome)
 	}
@@ -246,7 +260,7 @@ func TestATieBreakIsTakenOnlyOnAFullTie(t *testing.T) {
 	}
 	for name, refused := range map[string]func() (going.Choice, error){
 		"a run the right choices decide": func() (going.Choice, error) {
-			return going.Choose([]going.Record{candidate("model-a", 102), candidate("model-b", 101)}).Break("model-b", "architect of DEMO-1", "a reason")
+			return going.Choose([]going.Record{candidate("model-a", 114), candidate("model-b", 113)}).Break("model-b", "architect of DEMO-1", "a reason")
 		},
 		"a model outside the tie": func() (going.Choice, error) { return tie.Break("model-c", "architect of DEMO-1", "a reason") },
 		"an empty chooser":        func() (going.Choice, error) { return tie.Break("model-a", "", "a reason") },
@@ -272,7 +286,7 @@ func TestABreakRefusalSaysWhatTheRuleCameTo(t *testing.T) {
 		says    string
 		notSays string
 	}{
-		{"a run the rule decides", going.Choose([]going.Record{candidate("model-a", 102), candidate("model-b", 101)}), "R13's rule names model-a", "floors, so"},
+		{"a run the rule decides", going.Choose([]going.Record{candidate("model-a", 114), candidate("model-b", 113)}), "R13's rule names model-a", "floors, so"},
 		{"no model meeting the floors", going.Choose(nil), "no model meets R13's floors", "R13's rule names"},
 		{"an outcome Break does not know", going.Choice{Outcome: "made_up"}, `"made_up"`, "floors"},
 	} {
@@ -298,10 +312,10 @@ func TestARecordTheRuleDidNotNameFails(t *testing.T) {
 		return records
 	}
 	decided := func() []going.Record {
-		return []going.Record{candidate("model-a", 103), candidate("model-b", 101)}
+		return []going.Record{candidate("model-a", 115), candidate("model-b", 113)}
 	}
 	level := func() []going.Record {
-		return []going.Record{candidate("model-a", 101), candidate("model-b", 101)}
+		return []going.Record{candidate("model-a", 113), candidate("model-b", 113)}
 	}
 	const architect = "architect of DEMO-1"
 	for _, tc := range []struct {
@@ -417,8 +431,8 @@ func ruleFault(records []going.Record) error {
 	return nil
 }
 
-// candidate is a record of a model that meets R13's floors, measured on 117 cases, with its right
-// choices in each repeat.
+// candidate is a record of a model measured on 117 cases, with its right choices in each repeat:
+// at least 112 in each, 95% of its answers, make it meet R13's floors.
 func candidate(model string, rights ...int) going.Record {
 	r := going.Record{Model: model, Cases: 117, NamedAccuracy: 0.95, OtherAccuracy: 0.9, P95MS: 150, Repeats: len(rights)}
 	for _, right := range rights {

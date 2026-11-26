@@ -14,17 +14,18 @@ import (
 	"github.com/sjawhar/envoy/going/agentwire"
 )
 
-// TestAnAnswerIsStoredWithTheWordsOfItsLinks: the bar draws each link of an answer to an item as
-// the item's chip in place of the link's words, and the eval's answers lost what they wrote as
-// those words (c13 at 9ae5605b): a session's name written as the words of a link to its issue, and
-// a comment's words past the head the bar cuts its text to. The server stores the reply frame of
-// an answer with such words written beside the link, which then reads as the item's short form,
-// and every other field of the frame as the agent sent it. Words the chip draws - the issue's key,
-// its title, a run of the comment's head - stay a link, as do a time and a web address; and a
-// reply frame of tool calls, whose text the bar writes as plain words over its calls, is stored
-// as it came. Each item is read as the run's person may see it: a comment reserved for another
-// author is one the server reads nothing of, so the words of a link to it stay beside it, though
-// they are the comment's own.
+// TestAnAnswerIsStoredWithTheWordsOfItsLinks: the bar draws the first link of an answer to an
+// issue as the issue's chip in place of the link's words, and the eval's judge read every link to
+// an item as the item's words, so the eval's answers lost what they wrote as those words (c13 at
+// 9ae5605b): a session's name written as the words of a link to its issue, and a comment's words
+// past the head the judge read in their place. The server stores the reply frame of an answer with
+// such words written beside the link, which then reads as the item's short form, and every other
+// field of the frame as the agent sent it. Words the chip draws - the issue's key, its title, a
+// run of the comment's head - stay a link, as do a time and a web address; and a reply frame of
+// tool calls, whose text the bar writes as plain words over its calls, is stored as it came. Each
+// item is read as the run's person may see it: a comment reserved for another author is one the
+// server reads nothing of, so the words of a link to it stay beside it, though they are the
+// comment's own.
 func TestAnAnswerIsStoredWithTheWordsOfItsLinks(t *testing.T) {
 	t.Parallel()
 	rig := newGoingAgentRig(t, nil)

@@ -14,20 +14,22 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 //go:embed decision_models.json
 var decisionModelsJSON []byte
 
-// R13's floors and its least case counts: a model is a candidate only where it reaches NamedFloor
-// on the cases that name their action and OtherFloor on the rest at a p95 under P95CeilingMS
-// (MeetsFloors), measured on at least LeastCases cases of which at least LeastChartCases are
-// chart-worthy. The floors admit a model and rank nothing: a p95 well under the ceiling counts
-// for no more than one just under it.
+// R13's floors for Jev: "Jev chooses the right action on at least 95% of the 117 cases of
+// packages/envoy/going/bakeoff/cases.json, and 95% of its answers end in under 500 ms." So a model
+// is a candidate only where it chooses the right action on at least JevRightFloor of the cases
+// R13 names, all together, pooled over every repeat (RightShare), and its p95 is under
+// JevP95Ceiling (MeetsFloors). The floors admit a model and rank nothing: a p95 well under the
+// ceiling counts for no more than one just under it. A run that measures fewer than LeastCases of
+// R13's cases, or fewer than LeastChartCases chart-worthy ones, is void (cmd/going-bakeoff).
 const (
-	NamedFloor      = 0.90
-	OtherFloor      = 0.70
-	P95CeilingMS    = 500.0 // milliseconds, exclusive
+	JevRightFloor   = 0.95
+	JevP95Ceiling   = 500 * time.Millisecond // exclusive
 	LeastCases      = 80
 	LeastChartCases = 20
 )
@@ -189,11 +191,23 @@ func (r *Record) Right() int {
 	return right
 }
 
-// MeetsFloors is whether the model is a candidate of R13's rule: it reaches NamedFloor on the
-// cases that name their action and OtherFloor on the rest at a p95 under P95CeilingMS. Its
-// action fit is no floor, and a candidate without one is ranked as any other (Choose).
+// RightShare is the share of the model's answers to the cases R13 names, one for each case in
+// each repeat, that chose the right action, a call that gave no answer among them: Right of
+// Cases times Repeats, and 0 for a record of no answer.
+func (r *Record) RightShare() float64 {
+	answers := r.Cases * r.Repeats
+	if answers == 0 {
+		return 0
+	}
+	return float64(r.Right()) / float64(answers)
+}
+
+// MeetsFloors is whether the model is a candidate of R13's rule: it chooses the right action on
+// at least JevRightFloor of the cases R13 names, all together (RightShare), and its p95 is under
+// JevP95Ceiling. Its accuracies on the cases that name their action and on the rest, each apart,
+// and its action fit are no floor, and a candidate without one is ranked as any other (Choose).
 func (r *Record) MeetsFloors() bool {
-	return r.NamedAccuracy >= NamedFloor && r.OtherAccuracy >= OtherFloor && r.P95MS < P95CeilingMS
+	return r.RightShare() >= JevRightFloor && r.P95MS < float64(JevP95Ceiling)/float64(time.Millisecond)
 }
 
 // PairedAgainst is the model's paired test against the named model, and whether it holds one.
@@ -253,7 +267,7 @@ type Choice struct {
 }
 
 // Choose is R13's choice rule over one run's records, and what it came to (Outcome) with the
-// right choices it ranked the candidates by (Ranked). Every model that meets R13's three floors
+// right choices it ranked the candidates by (Ranked). Every model that meets R13's two floors
 // is a candidate (MeetsFloors), ranked by its right choices pooled over every repeat. Where one
 // candidate ranks first, it is named (ChosenByRightChoices). Where several rank first, level on
 // right choices, the run is a full tie and the rule names none: the architect names one of Level

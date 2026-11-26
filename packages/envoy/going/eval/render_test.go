@@ -10,9 +10,10 @@ import (
 // written as the bar draws it. A link to a done issue, by its reference or by its dashboard path,
 // is its chip: its key, "Done" and its title. A link to a key the store does not hold is the bare
 // key, and one to a document it does not hold the bare reference. A link to a document or a file
-// is its name, one to a spec the issue's title, one to an ask the head of its question, and one to
-// a comment the head of its text with its reference in short form. A link the bar draws as no
-// item, a picture, and a link in code stay as written.
+// whose words are its address is its name, one to a spec the issue's title, one to an ask the head
+// of its question, and one to a comment the head of its text with its reference in short form; a
+// link to any of them with words of its own is those words, as the bar draws it. A link the bar
+// draws as no item, a picture, and a link in code stay as written.
 func TestAnAnswerIsRenderedAsTheBarDrawsItsLinks(t *testing.T) {
 	seed, err := LoadSeed(Files)
 	if err != nil {
@@ -31,18 +32,24 @@ func TestAnAnswerIsRenderedAsTheBarDrawsItsLinks(t *testing.T) {
 		},
 		{
 			"an unknown key and an unknown document",
-			"Filed as [DEMO-404, done](dispatch://DEMO-404); the log is [the log](/issues/DEMO-16/artifacts/no-such-log).",
+			"Filed as [DEMO-404, done](dispatch://DEMO-404); the log is [/issues/DEMO-16/artifacts/no-such-log](/issues/DEMO-16/artifacts/no-such-log).",
 			"Filed as [DEMO-404]; the log is [DEMO-16/artifact/no-such-log].",
 		},
 		{
 			"a document, a file and a spec",
-			"Read [the handbook](/projects/OPS/documents/oncall-handbook), [the error](dispatch://DEMO-23/artifact/upload-error-txt) and [its spec](dispatch://DEMO-3/spec).",
+			"Read [/projects/OPS/documents/oncall-handbook](/projects/OPS/documents/oncall-handbook), <dispatch://DEMO-23/artifact/upload-error-txt> and <dispatch://DEMO-3/spec>.",
 			"Read [On-call handbook], [upload-error.txt] and [Back-links in issue specs].",
 		},
 		{
 			"an ask and a comment",
-			"[the ask](/issues/DEMO-3/asks/" + ItemID("ask", "a01") + ") and [the note](dispatch://DEMO-16/comment/" + ItemID("comment", "relates-DEMO-16-DEMO-22") + ")",
+			"[/issues/DEMO-3/asks/" + ItemID("ask", "a01") + "](/issues/DEMO-3/asks/" + ItemID("ask", "a01") + ") and <dispatch://DEMO-16/comment/" + ItemID("comment", "relates-DEMO-16-DEMO-22") + ">",
 			"[Should the back-link come first in the spec, above the…] and [Related to DEMO-22.]",
+		},
+		{
+			"links to other items with words of their own",
+			"Read [the handbook](/projects/OPS/documents/oncall-handbook), [the error](dispatch://DEMO-23/artifact/upload-error-txt), [its spec](dispatch://DEMO-3/spec), " +
+				"[the ask](/issues/DEMO-3/asks/" + ItemID("ask", "a01") + ") and [the note](dispatch://DEMO-16/comment/" + ItemID("comment", "relates-DEMO-16-DEMO-22") + ").",
+			"Read the handbook, the error, its spec, the ask and the note.",
 		},
 		{
 			"links the bar draws as no item",
@@ -114,10 +121,12 @@ func TestATimeLinkIsRenderedWithTheDateItsHoverShows(t *testing.T) {
 // TestATimeLinkWhoseWordsAreAKeyIsRenderedAsTheChipAndTheDate: the agent writes when an issue
 // last moved as a time link whose words are the issue's key, [DEMO-12](dispatch-time:...), and
 // the bar draws those words as the issue's chip, its key, status and title, with the time on hover
-// (the web's timeLinkIssue in MarkdownBody's timeLinkAnchors). The judge reads the chip's words, as
-// it reads a link to the issue, and then the date: the bare key for an issue the store does not
-// hold, and the chip alone for an address that names no instant. Words around the key with spaces
-// are the key; words that are more than a key, or a key the web reads as none, stay words.
+// (the web's timeLinkIssue in MarkdownBody's timeLinkAnchors), where it is the answer's first link
+// to the issue. The judge reads the chip's words, as it reads a link to the issue, and then the
+// date: the bare key for an issue the store does not hold, and the chip alone for an address that
+// names no instant. A later link to an issue that has its chip is its words and then the date, as
+// the bar draws it. Words around the key with spaces are the key; words that are more than a key,
+// or a key the web reads as none, stay words.
 func TestATimeLinkWhoseWordsAreAKeyIsRenderedAsTheChipAndTheDate(t *testing.T) {
 	seed, err := LoadSeed(Files)
 	if err != nil {
@@ -145,6 +154,11 @@ func TestATimeLinkWhoseWordsAreAKeyIsRenderedAsTheChipAndTheDate(t *testing.T) {
 			"[DEMO-12 · In progress · Export: CSV and PDF] (10 Oct 2026, 09:00 UTC) and [DEMO-11 · Done · Board: card titles cut off at two lines] (15 Nov 2026, 08:59:01 UTC) moved, *DEMO-12 moved* (10 Oct 2026, 09:00 UTC) not.",
 		},
 		{
+			"a key of an issue that has its chip",
+			"[DEMO-12](dispatch://DEMO-12) moved [DEMO-12](dispatch-time:2026-10-10T09:00:00Z).",
+			"[DEMO-12 · In progress · Export: CSV and PDF] moved DEMO-12 (10 Oct 2026, 09:00 UTC).",
+		},
+		{
 			"words that are not a key alone",
 			"[DEMO-12 moved](dispatch-time:2026-10-10T09:00:00Z), [demo-12](dispatch-time:2026-10-10T09:00:00Z), [DEMO-12/plan](dispatch-time:2026-10-10T09:00:00Z) and [OPS](dispatch-time:2026-10-10T09:00:00Z).",
 			"DEMO-12 moved (10 Oct 2026, 09:00 UTC), demo-12 (10 Oct 2026, 09:00 UTC), DEMO-12/plan (10 Oct 2026, 09:00 UTC) and OPS (10 Oct 2026, 09:00 UTC).",
@@ -159,10 +173,13 @@ func TestATimeLinkWhoseWordsAreAKeyIsRenderedAsTheChipAndTheDate(t *testing.T) {
 }
 
 // TestAnAnswerWhoseLinksKeepTheirWordsRendersThem: the server stores an answer with the words of
-// each link that say more than its chip draws written beside the chip (chips.KeepLinkWords), so
+// each link that say more than its chip draws written beside the link (chips.KeepLinkWords), so
 // the judge reads them where it read the chip alone (c13 at 9ae5605b): a session's name written
 // as the words of a link to its issue, a comment's words past the head the bar cuts its text to,
-// and words a message's head does not hold. A link whose words are the item's key stays a chip.
+// and words a message's head does not hold. The link beside them has the item's short form as its
+// words, which the bar draws as the issue's chip at the answer's first link to the issue, and as
+// those words at a link to a comment or a message; a link whose words are the item's key stays a
+// link, which the bar draws as the key where its issue has its chip already.
 func TestAnAnswerWhoseLinksKeepTheirWordsRendersThem(t *testing.T) {
 	seed, err := LoadSeed(Files)
 	if err != nil {
@@ -171,10 +188,9 @@ func TestAnAnswerWhoseLinksKeepTheirWordsRendersThem(t *testing.T) {
 	answer := "[Reviewer of DEMO-22](dispatch://DEMO-22) is reviewing [DEMO-22](dispatch://DEMO-22); " +
 		"[chen@example.com wants to split this epic into CSV export and PDF export](dispatch://DEMO-12/comment/" + ItemID("comment", "c01") + "), " +
 		"and [the planner waits on the ask about saving the order](dispatch://DEMO-7/message/" + ItemID("message", "m01") + ")."
-	want := "Reviewer of DEMO-22 ([DEMO-22 · Needs review · Export: progress bar for large exports]) is reviewing " +
-		"[DEMO-22 · Needs review · Export: progress bar for large exports]; " +
-		"chen@example.com wants to split this epic into CSV export and PDF export ([The CSV and PDF halves share nothing but the export menu. I…]), " +
-		"and the planner waits on the ask about saving the order ([Plan draft: 1) a drag handle on each column header, 2) save…])."
+	want := "Reviewer of DEMO-22 ([DEMO-22 · Needs review · Export: progress bar for large exports]) is reviewing DEMO-22; " +
+		"chen@example.com wants to split this epic into CSV export and PDF export (DEMO-12 comment), " +
+		"and the planner waits on the ask about saving the order (DEMO-7 message)."
 	if got := chips.RenderAnswer(chips.KeepLinkWords(answer, seed), seed); got != want {
 		t.Errorf("RenderAnswer of the stored answer\n= %q\nwant %q", got, want)
 	}

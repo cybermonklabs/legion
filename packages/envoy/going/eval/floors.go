@@ -23,7 +23,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The floors of R13. A run of the eval meets R13 when it reaches each of them.
+// The floors of R13. A run of the eval meets R13 when it reaches each of them. R13's floors for
+// the decision model Jev are going.JevRightFloor and going.JevP95Ceiling, which the bake-off
+// (cmd/going-bakeoff) holds each measured model to.
 const (
 	// PassOneFloor is the least share of all the tasks that the agent passes on one try (pass^1),
 	// counted over every task of every kind on the chat model of production.
@@ -46,13 +48,6 @@ const (
 
 	// JudgeCalibrationAnswers is how many labelled answers the judge's agreement is measured on.
 	JudgeCalibrationAnswers = 30
-
-	// JevRightFloor is the least share of the cases of going/bakeoff/cases.json on which the
-	// decision model Jev chooses the right action.
-	JevRightFloor = 0.95
-
-	// JevP95Ceiling is the time under which 95% of Jev's answers to those cases end.
-	JevP95Ceiling = 500 * time.Millisecond
 
 	// LeastTasks is the fewest tasks the eval holds.
 	LeastTasks = 150

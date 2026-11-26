@@ -1316,10 +1316,10 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 // written as the issue page writes it. A time is a link whose words are the page's and whose
 // address is the time the read gives, which the page shows with its full date on hover, and its
 // words are the time itself, with its zone and year, where the words ask when. The eval's answers
-// wrote a comment's words as the words of its link, which its chip hides as it hides an issue's
-// (c13 at 9ae5605b), so the prompt names comments and messages in that rule too. At 8fc4d59f an
-// answer wrote P3 as "no priority above the default", so the rule asks for the priority_shown
-// value word for word; and the bar draws a second link to an item as its words, with no chip.
+// wrote a comment's words as the words of its link (c13 at 9ae5605b), so the prompt names comments
+// and messages in the rule that puts every fact outside the link too. At 8fc4d59f an answer wrote
+// P3 as "no priority above the default", so the rule asks for the priority_shown value word for
+// word; and the bar draws a second link to an item as its words, with no chip.
 func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	for _, said := range []string{
 		"the direct answer in one or two sentences, then at most a short list",
@@ -1327,7 +1327,7 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"Name each item once, by its link alone",
 		"A second link to the same item adds its words to the answer and draws no chip.",
 		"never what it shows, such as an issue's title or status",
-		"The words of a link to a comment or a message are not shown either: its author and what it says go outside the link, never into its words.",
+		"A link to a comment or a message is no exception: its author and what it says go outside the link, never into its words.",
 		"never a correction of yourself or your working",
 		"Say each fact once: never say again, in other words, what the answer or its list already said",
 		"without saying what you read or how",
@@ -1542,9 +1542,11 @@ func TestThePromptNamesTheArgumentsOfAMessageAnAnswerAndAQuote(t *testing.T) {
 // answer lists only the items a result names, by the key or id it gives, and says where a block
 // stayed refused or a result was withheld. At 59e2a6ec the judge failed answers whose facts were a
 // link's words - a comment's author, an ask's issue, a holder's title on a link to its issue -
-// which the bar draws as the item's chip in place of them (answer-17, find-18, status-02), and a
-// summary of the page issue's thread with no priority or assignee (answer-01): the link rule says
-// what each chip shows and puts every other fact outside the link, with an example of each.
+// which the judge's view of the answer wrote as the item's chip in place of them (answer-17,
+// find-18, status-02), and a summary of the page issue's thread with no priority or assignee
+// (answer-01): the link rule says what the bar draws of each link - the first link to each issue
+// as its chip, a later link to it and a link to another item with words of its own as those words
+// - and puts every other fact outside the link, with an example of each.
 func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 	for _, said := range []string{
 		`a count of any items - issues, asks, comments, documents, sessions - with the total it is of, such as "21 open issues of 31", and with the items it counts, each linked, where they fit`,
@@ -1555,7 +1557,9 @@ func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 		"a count beside a list is the number of its items",
 		`never name one without its link, the one the answer is about and the page's own too, never as "this one" or "here"`,
 		"an ask, a comment or a document with the issue or project it belongs to",
-		"The bar shows each link as the item's chip in place of the link's words, which no one sees: an issue's key, status and title; the start of an ask's, a comment's or a message's text; a document's or a file's name",
+		"The bar draws the first link to each issue as the issue's chip in place of the link's words, which no one sees: its key, status and title. " +
+			"A later link to that issue, and a link to another item with words of its own, shows its own words; " +
+			"a link to another item whose words are its address shows the start of an ask's, a comment's or a message's text, or a document's or a file's name",
 		"So write every fact the chip does not show - the author, a holder, an issue key, a priority, a count - outside the link",
 		`"kim@example.com wrote [in a comment](dispatch://ACME-3/comment/<id>) that …" or "on ACME-3, [an ask](dispatch://ACME-3/ask/<id>) asks …"`,
 		"a person by the login the reads give, never by a name of your own",

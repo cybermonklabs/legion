@@ -84,7 +84,7 @@ func TestScorePoolsEveryRepeat(t *testing.T) {
 		}
 	}
 	if r.MeetsFloors() {
-		t.Error("a model right on half the named answers meets R13's floors")
+		t.Error("a model right on 4 of its 6 answers, at a p95 of 600 ms, meets R13's floors")
 	}
 }
 
@@ -186,7 +186,7 @@ func TestACaseOutsideR13CarriesItsNote(t *testing.T) {
 // A run the rule decides is written with the rule's model chosen, by the right choices.
 func TestARunTheRuleDecidesIsWrittenWithItsChoice(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "decision_models.json")
-	if err := conclude(io.Discard, []going.Record{floored("model-a", 103), floored("model-b", 104)}, "a test run", tieBreak{}, out); err != nil {
+	if err := conclude(io.Discard, []going.Record{floored("model-a", 115), floored("model-b", 116)}, "a test run", tieBreak{}, out); err != nil {
 		t.Fatal(err)
 	}
 	if chosen := chosenIn(t, out); len(chosen) != 1 || chosen[0].Model != "model-b" || chosen[0].ChosenBy != going.ChosenByRightChoices || chosen[0].Chooser != "" || chosen[0].ChosenReason != "" {
@@ -199,7 +199,7 @@ func TestARunTheRuleDecidesIsWrittenWithItsChoice(t *testing.T) {
 // broke the tie and why kept.
 func TestAFullTieWaitsForTheArchitect(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "decision_models.json")
-	tied := []going.Record{floored("model-a", 101, 100), floored("model-b", 100, 101)}
+	tied := []going.Record{floored("model-a", 113, 112), floored("model-b", 112, 113)}
 	err := conclude(io.Discard, tied, "a test run", tieBreak{}, out)
 	if err == nil || !strings.Contains(err.Error(), "--tie-break") || !strings.Contains(err.Error(), "--tie-chooser") {
 		t.Fatalf("a full tie concludes with %v, want an error naming --tie-break and --tie-chooser", err)
@@ -226,10 +226,10 @@ func TestAFullTieWaitsForTheArchitect(t *testing.T) {
 // right choices rank otherwise, it prints the same.
 func TestTheChoiceLineSaysWhatTheRuleCameTo(t *testing.T) {
 	tied := func() []going.Record {
-		return []going.Record{floored("model-a", 101), floored("model-b", 101)}
+		return []going.Record{floored("model-a", 113), floored("model-b", 113)}
 	}
 	unfloored := floored("model-a", 117)
-	unfloored.P95MS = going.P95CeilingMS
+	unfloored.P95MS = float64(going.JevP95Ceiling.Milliseconds())
 	for _, tc := range []struct {
 		name     string
 		records  []going.Record
@@ -239,10 +239,10 @@ func TestTheChoiceLineSaysWhatTheRuleCameTo(t *testing.T) {
 		// facts is what the line holds, in this order.
 		facts []string
 	}{
-		{"a decided run", []going.Record{floored("model-c", 101), floored("model-a", 103), floored("model-b", 104)}, "",
-			going.Named, "model-b", []string{"104 of 117", "model-a", "103", "model-c", "101"}},
-		{"a full tie", tied(), "", going.FullTie, "", []string{"model-a", "model-b", "101 of 117"}},
-		{"a full tie the architect broke", tied(), "model-b", going.Named, "model-b", []string{"architect of DEMO-1", "model-a", "model-b", "101 of 117", "the cheaper of two level models"}},
+		{"a decided run", []going.Record{floored("model-c", 113), floored("model-a", 115), floored("model-b", 116)}, "",
+			going.Named, "model-b", []string{"116 of 117", "model-a", "115", "model-c", "113"}},
+		{"a full tie", tied(), "", going.FullTie, "", []string{"model-a", "model-b", "113 of 117"}},
+		{"a full tie the architect broke", tied(), "model-b", going.Named, "model-b", []string{"architect of DEMO-1", "model-a", "model-b", "113 of 117", "the cheaper of two level models"}},
 		{"no model meeting the floors", []going.Record{unfloored}, "", going.NoCandidate, "", []string{"floors"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -293,9 +293,9 @@ func TestARecordOfOtherCasesIsRefused(t *testing.T) {
 		"other repeats":              func(r *going.Record) { r.Repeats, r.RepeatRights = 2, append(r.RepeatRights, r.RepeatRights[0]) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			other := floored("model-b", 100)
+			other := floored("model-b", 112)
 			differ(&other)
-			raw, err := going.EncodeRecords([]going.Record{floored("model-a", 101), other})
+			raw, err := going.EncodeRecords([]going.Record{floored("model-a", 113), other})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -316,7 +316,7 @@ func TestARecordOfOtherCasesIsRefused(t *testing.T) {
 func TestARecordOfAnUnknownChosenByIsRefused(t *testing.T) {
 	for _, by := range []string{"person", "noise"} {
 		t.Run(by, func(t *testing.T) {
-			tied := []going.Record{floored("model-a", 101), floored("model-b", 101)}
+			tied := []going.Record{floored("model-a", 113), floored("model-b", 113)}
 			tied[1].Chosen, tied[1].ChosenBy, tied[1].ChosenReason = true, by, "the cheaper model"
 			raw, err := going.EncodeRecords(tied)
 			if err != nil {
@@ -341,7 +341,7 @@ func TestARecordOfAnUnknownChosenByIsRefused(t *testing.T) {
 // refuses an outcome or a way it does not know rather than print it as one it does; the rule's
 // own choice of the same records prints.
 func TestTheChoiceLineRefusesWhatItDoesNotKnow(t *testing.T) {
-	records := []going.Record{floored("model-a", 101), floored("model-b", 100)}
+	records := []going.Record{floored("model-a", 113), floored("model-b", 112)}
 	named := going.Choose(records)
 	if line, err := says(records, named); err != nil || namedIn(line) != "model-a" {
 		t.Fatalf("the rule's own choice prints %q (%v), want model-a named", line, err)
@@ -363,7 +363,7 @@ func TestTheChoiceLineRefusesWhatItDoesNotKnow(t *testing.T) {
 func TestARecordedTieBreakIsKept(t *testing.T) {
 	dir := t.TempDir()
 	broken, again := filepath.Join(dir, "broken.json"), filepath.Join(dir, "again.json")
-	tied := []going.Record{floored("model-a", 101), floored("model-b", 101)}
+	tied := []going.Record{floored("model-a", 113), floored("model-b", 113)}
 	if err := conclude(io.Discard, tied, "a test run", tieBreak{"model-b", "architect of DEMO-1", "the cheaper of two level models"}, broken); err != nil {
 		t.Fatal(err)
 	}
@@ -391,8 +391,8 @@ func TestARecordedTieBreakTheRuleDoesNotBearOutIsRefused(t *testing.T) {
 		records []going.Record
 		model   string
 	}{
-		{"the rule names another", []going.Record{floored("model-a", 102), floored("model-b", 101)}, "model-b"},
-		{"a model outside the tie", []going.Record{floored("model-a", 101), floored("model-b", 101), floored("model-c", 100)}, "model-c"},
+		{"the rule names another", []going.Record{floored("model-a", 114), floored("model-b", 113)}, "model-b"},
+		{"a model outside the tie", []going.Record{floored("model-a", 113), floored("model-b", 113), floored("model-c", 112)}, "model-c"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for i := range tc.records {
@@ -414,16 +414,16 @@ func TestARecordedTieBreakTheRuleDoesNotBearOutIsRefused(t *testing.T) {
 // Nothing is written where no model meets the floors or a tie-break is refused: on a run the
 // rule decides, for a model outside the tie, with no chooser, or with no reason.
 func TestARunWithNoChoiceToRecordWritesNothing(t *testing.T) {
-	level := []going.Record{floored("model-a", 101), floored("model-b", 101)}
+	level := []going.Record{floored("model-a", 113), floored("model-b", 113)}
 	unfloored := floored("model-a", 117)
-	unfloored.P95MS = going.P95CeilingMS
+	unfloored.P95MS = float64(going.JevP95Ceiling.Milliseconds())
 	for _, tc := range []struct {
 		name    string
 		records []going.Record
 		tie     tieBreak
 	}{
 		{"no model meeting the floors", []going.Record{unfloored}, tieBreak{}},
-		{"a tie-break on a run the right choices decide", []going.Record{floored("model-a", 102), floored("model-b", 101)}, tieBreak{"model-b", "architect of DEMO-1", "a reason"}},
+		{"a tie-break on a run the right choices decide", []going.Record{floored("model-a", 114), floored("model-b", 113)}, tieBreak{"model-b", "architect of DEMO-1", "a reason"}},
 		{"a tie-break for a model outside the tie", level, tieBreak{"model-c", "architect of DEMO-1", "a reason"}},
 		{"a tie-break naming no chooser", level, tieBreak{"model-a", " ", "a reason"}},
 		{"a tie-break with no reason", level, tieBreak{"model-a", "architect of DEMO-1", " "}},
@@ -440,8 +440,8 @@ func TestARunWithNoChoiceToRecordWritesNothing(t *testing.T) {
 	}
 }
 
-// floored is a measured model that meets R13's floors, measured on 117 cases, 45 naming their
-// action, with its right choices in each repeat.
+// floored is a measured model, measured on 117 cases, 45 naming their action, with its right
+// choices in each repeat: at least 112 in each, 95% of its answers, make it meet R13's floors.
 func floored(model string, rights ...int) going.Record {
 	r := going.Record{Model: model, Cases: 117, NamedCases: 45, OtherCases: 72, NamedAccuracy: 0.95, OtherAccuracy: 0.9, P95MS: 150, Repeats: len(rights)}
 	for _, right := range rights {
@@ -542,7 +542,7 @@ func TestSavedAnswersScoreAgainstTheCasesGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if share := float64(record.Right()) / float64(r13); record.Right() != r13-10 || share >= 0.95 {
+	if share := record.RightShare(); record.Right() != r13-10 || share >= going.JevRightFloor {
 		t.Errorf("the saved answers against 10 changed labels are right on %d of %d (%.3f); want %d, under 95%%",
 			record.Right(), r13, share, r13-10)
 	}

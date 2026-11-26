@@ -52,8 +52,9 @@ const GroupNone = "none"
 
 // Transform is one step of a chain as a block spec writes it: Op names the step, and only the
 // fields that step takes are set. A filter's value may be a number (Operand): it picks the rows
-// the chain reads and is never drawn. Every other value a step is given is text, so a spec
-// carries no number a block shows (RunBlock).
+// the chain reads and is never drawn. Every other value a step is given is text, and an As that
+// writes a number on its own is refused (ParseRunBlock), so a spec carries no number a block
+// shows (RunBlock).
 //
 //   - filter keeps the rows whose Field meets exactly one condition: Is (its value, as text, is
 //     this), IsNot (it is not), In (it is one of these), Has (it is a list holding this), Since

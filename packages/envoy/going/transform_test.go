@@ -274,6 +274,44 @@ func TestARunsMetricKeepsTheLabelsItsSpecWrites(t *testing.T) {
 	}
 }
 
+// TestANumberIsRefusedInEveryNameABlockDraws: a block draws the column each step of its chain
+// names (as), and a metric draws the name of its field, and of the field it is compared with,
+// where its spec writes no label for them, so a number written on its own in any of them is the
+// model's and is refused as one in the title is, naming where the spec writes it. The same spec
+// without that number is held.
+func TestANumberIsRefusedInEveryNameABlockDraws(t *testing.T) {
+	for _, row := range []struct{ name, spec, number, says string }{
+		{
+			name:   "a count's as",
+			spec:   `{"kind":"table","title":"Issues","steps":[{"step":2,"call":1}],"chain":[{"op":"count","as":"41 issues"}]}`,
+			number: "41 ",
+			says:   `its chain[0].as writes "41"`,
+		},
+		{
+			name:   "a metric's field, drawn as its label",
+			spec:   `{"kind":"metric","title":"Estimate","steps":[{"step":2,"call":1}],"chain":[{"op":"filter","field":"key","is":"DEMO-1"}],"field":"estimate 2026"}`,
+			number: " 2026",
+			says:   `its label writes "2026"`,
+		},
+		{
+			name:   "the field a metric is compared with, drawn as its label",
+			spec:   `{"kind":"metric","title":"Estimate","steps":[{"step":2,"call":1}],"chain":[{"op":"filter","field":"key","is":"DEMO-1"}],"field":"estimate","compare":"estimate 2026"}`,
+			number: " 2026",
+			says:   `its compare_label writes "2026"`,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if _, err := going.ParseRunBlock(json.RawMessage(strings.Replace(row.spec, row.number, "", 1))); err != nil {
+				t.Fatalf("the spec without the number was refused: %v", err)
+			}
+			_, err := going.ParseRunBlock(json.RawMessage(row.spec))
+			if err == nil || !strings.Contains(err.Error(), "holds no number") || !strings.Contains(err.Error(), row.says) {
+				t.Errorf("the spec was answered %v, want it refused for holding a number, saying %q", err, row.says)
+			}
+		})
+	}
+}
+
 // TestASpecOfAnotherShapeIsToldDrawBlocksArguments: a block spec the model wrote in a shape of its
 // own - its results under data, or a chart's kind under chart, as two runs of the eval wrote them
 // (chart-08 of run 3) - is refused for the field draw_block does not take, not for the step and

@@ -79,11 +79,12 @@ const (
 	KindLine = "line"
 	// KindWords asks the server how many words the bar draws of a reply's text (CallRequest.Text)
 	// as the run's answer (WordsAnswer): the text as the server stores an answering reply frame's,
-	// each link drawn as its item's chip, an issue's its key, its status and its title. Like the
-	// line call, it records nothing, so its step and call are 0. The agent makes it for a reply in
-	// prose that would end the run's turn done, and holds the bound of the words (going/agent's
-	// wordsBound): a reply the bar draws in that many words or more gets its rewrite (going/agent's
-	// rewrite).
+	// the first link to each issue drawn as its chip, its key, its status and its title, and a
+	// later link to that issue and a link to another item with words of its own as those words
+	// (going/chips' DrawnWords). Like the line call, it records nothing, so its step and call are
+	// 0. The agent makes it for a reply in prose that would end the run's turn done, and holds the
+	// bound of the words (going/agent's wordsBound): a reply the bar draws in that many words or
+	// more gets its rewrite (going/agent's rewrite).
 	KindWords = "words"
 )
 

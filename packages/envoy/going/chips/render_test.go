@@ -43,6 +43,39 @@ func TestDrawnWordsCountsAnAnswerAsTheBarDrawsIt(t *testing.T) {
 	}
 }
 
+// TestRenderAnswerWritesEachLinkAsTheBarDrawsIt: the judge reads an answer as the bar draws it,
+// which is how DrawnWords counts it too: the first link to an issue is the issue's chip, and a
+// link to another item with words of its own, such as [its spec](dispatch://OPS-4/spec), is those
+// words, where RenderAnswer wrote the item's words, the issue's title, which the bar does not
+// draw. A link to another item whose words are its address is what the bar draws for the item,
+// and a later link to an issue that has its chip, a time link whose words are its key among them,
+// is its words, the time link's with the date its hover shows.
+func TestRenderAnswerWritesEachLinkAsTheBarDrawsIt(t *testing.T) {
+	for _, c := range []struct{ name, answer, want string }{
+		{
+			"a link to an issue's spec with words of its own",
+			"Read [its spec](dispatch://OPS-4/spec).",
+			"Read its spec.",
+		},
+		{
+			"a link to a document with words of its own, and one whose words are its address",
+			"See [the handbook](dispatch://OPS/artifact/oncall-handbook) or <dispatch://OPS/artifact/oncall-handbook>.",
+			"See the handbook or [On-call handbook].",
+		},
+		{
+			"later links to an issue that has its chip",
+			"[OPS-4](dispatch://OPS-4) moved [OPS-4](dispatch-time:2026-10-10T09:00:00Z), and [the rotation](/issues/OPS-4) waits.",
+			"[OPS-4 · In progress · Rotate the signing keys] moved OPS-4 (10 Oct 2026, 09:00 UTC), and the rotation waits.",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := RenderAnswer(c.answer, keptItems); got != c.want {
+				t.Errorf("RenderAnswer(%q) = %q, want %q: the bar draws %q", c.answer, got, c.want, render(c.answer, keptItems, false))
+			}
+		})
+	}
+}
+
 // TestDrawnWordsCountsEachAnswerOfTheFixtureAsTheBarDrawsIt: the bar draws an issue's chip at the
 // first link to the issue alone, and a later link to it as the words it was written with, so in a
 // preview at 8fc4d59f the server counted 96 to 111 words of answers the page drew in 71 to 87,

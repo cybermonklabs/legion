@@ -525,18 +525,19 @@ type StepRef struct {
 }
 
 // standaloneNumber matches a number written on its own in text a block draws, such as "42" or
-// "3.5%": a number of the model's, which a title or a label may not carry. A digit inside a word,
-// as in P0 or Q3, is part of a name.
+// "3.5%": a number of the model's, which a title, a label or the name a chain's step gives its
+// column (as) may not carry. A digit inside a word, as in P0 or Q3, is part of a name.
 var standaloneNumber = regexp.MustCompile(`(^|[^\p{L}\p{N}_])[+-]?\p{Nd}[\p{Nd},.]*%?($|[^\p{L}\p{N}_])`)
 
 // ParseRunBlock holds the spec a run's model wrote to RunBlock's schema. A spec that holds a
 // number is refused - a JSON number anywhere but a step and a call naming a saved result and a
 // filter's value, which picks rows and is never drawn (numberIn), or a number written on its own
-// in the title or a label - so every number the block shows is the server's. So is a spec of a
-// kind no block of a run is, one naming a field RunBlock has not, which is told every argument
-// draw_block takes (RunBlockArguments), one that names no step or the same step twice, one whose
-// chain refuses a step, and one that leaves a column to draw unnamed where its chain does not
-// name it (fillColumns).
+// in the title, a step's as, or a label as the block draws it, which is the name of the field it
+// labels where the spec writes none (settle) - so every number the block shows is the server's.
+// So is a spec of a kind no block of a run is, one naming a field RunBlock has not, which is told
+// every argument draw_block takes (RunBlockArguments), one that names no step or the same step
+// twice, one whose chain refuses a step, and one that leaves a column to draw unnamed where its
+// chain does not name it (fillColumns).
 func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	decoder := json.NewDecoder(bytes.NewReader(spec))
 	decoder.UseNumber()
@@ -554,11 +555,6 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 		return RunBlock{}, fmt.Errorf("going: the block spec does not fit draw_block's arguments: %v. %s", err, RunBlockArguments)
 	}
 	block.Title = strings.TrimSpace(block.Title)
-	for _, drawn := range []struct{ name, text string }{{"title", block.Title}, {"label", block.Label}, {"compare_label", block.CompareLabel}} {
-		if number := standaloneNumber.FindString(drawn.text); number != "" {
-			return RunBlock{}, fmt.Errorf("going: a block spec holds no number, and its %s writes %q: every number a block shows is the server's, so write the %s without it", drawn.name, strings.TrimSpace(number), drawn.name)
-		}
-	}
 	if !slices.Contains(RunBlockKinds, block.Kind) {
 		return RunBlock{}, fmt.Errorf("going: a block of a run is a %s, not %q", strings.Join(RunBlockKinds, ", a "), block.Kind)
 	}
@@ -589,6 +585,22 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 		return RunBlock{}, err
 	}
 	block.Mark, block.Label, block.CompareLabel = settled.Mark, settled.Label, settled.CompareLabel
+	// The text the block draws: its title, the column each step of its chain names (as), and its
+	// labels as settle filled them.
+	type drawnText struct{ name, text string }
+	drawn := make([]drawnText, 0, len(block.Chain)+3)
+	drawn = append(drawn, drawnText{"title", block.Title})
+	for index, step := range block.Chain {
+		if step.As != "" {
+			drawn = append(drawn, drawnText{fmt.Sprintf("chain[%d].as", index), step.As})
+		}
+	}
+	drawn = append(drawn, drawnText{"label", block.Label}, drawnText{"compare_label", block.CompareLabel})
+	for _, text := range drawn {
+		if number := standaloneNumber.FindString(text.text); number != "" {
+			return RunBlock{}, fmt.Errorf("going: a block spec holds no number, and its %s writes %q: every number a block shows is the server's, so write the %s without it", text.name, strings.TrimSpace(number), text.name)
+		}
+	}
 	return block, nil
 }
 

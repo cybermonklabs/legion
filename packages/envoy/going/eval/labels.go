@@ -22,7 +22,9 @@ const (
 
 // Labels is labels.json: who labelled, and each labelled answer. Each label is given to the answer
 // as the person reads it in the bar: rendered by chips.RenderAnswer against the seed's store, as it
-// stands before any task, which is also what the judge reads it as.
+// stands before any task - the first link to each issue as its chip, a later link to that issue and
+// a link to another item with words of its own as those words - which is also what the judge reads
+// it as.
 type Labels struct {
 	// Labellers are the two agents that labelled every answer, by the name each label gives, and
 	// the model family each runs on.

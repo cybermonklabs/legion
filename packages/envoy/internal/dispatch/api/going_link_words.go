@@ -3,20 +3,20 @@ package api
 // going_link_words.go keeps the words the model gave a link to an item in each answer of a run of
 // the command bar's agent, links each issue key the answer names bare that a read of the run
 // returned, and takes out of it each code block that holds a block the bar draws itself. The bar
-// draws an answer with chips (web features/going/ConversationView, MarkdownBody with chips): each
-// link to an item shows the item in place of the link's words, and the eval's judge reads an
-// answer the same way (going/chips' RenderAnswer). So a fact the model wrote as a link's words
-// reached no one, though the prompt tells it to write each fact outside the link (going/chips'
-// KeepLinkWords says what the eval measured), and an issue it named by a bare key, with no link,
-// showed no chip, so no one read its title (going/chips' LinkBareKeys). In 1 of 10 tries of
-// "Chart the DEMO project's issues by status." at 9fc43c69 the answer wrote the block draw_block
-// drew, its JSON in a code block whose info string was draw, which the bar drew as a box of code
-// above the chart itself (goingDrawnFence). The server writes each answer so as it stores the
-// answer's frame (AgentListener.step): the run's events are the one text the bar's conversation,
-// History and the eval all read an answer from. The server writes it rather than the agent since
-// it reads each item the answer links from the store, as the bar reads it for its chip, and the
-// run's tool results from its saved steps, where the agent holds only what its reads happened to
-// return. The agent's words call counts the words the bar draws of that same text
+// draws an answer with chips (web features/going/ConversationView, MarkdownBody with chips): the
+// first link to each issue shows the issue's chip in place of the link's words, and the eval's
+// judge reads an answer the same way (going/chips' RenderAnswer). So a fact the model wrote as the
+// words of such a link reached no one, though the prompt tells it to write each fact outside the
+// link (going/chips' KeepLinkWords says what the eval measured), and an issue it named by a bare
+// key, with no link, showed no chip, so no one read its title (going/chips' LinkBareKeys). In 1 of
+// 10 tries of "Chart the DEMO project's issues by status." at 9fc43c69 the answer wrote the block
+// draw_block drew, its JSON in a code block whose info string was draw, which the bar drew as a
+// box of code above the chart itself (goingDrawnFence). The server writes each answer so as it
+// stores the answer's frame (AgentListener.step): the run's events are the one text the bar's
+// conversation, History and the eval all read an answer from. The server writes it rather than
+// the agent since it reads each item the answer links from the store, as the bar reads it for its
+// chip, and the run's tool results from its saved steps, where the agent holds only what its reads
+// happened to return. The agent's words call counts the words the bar draws of that same text
 // (going_agent_words.go).
 
 import (

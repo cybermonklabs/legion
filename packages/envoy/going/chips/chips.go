@@ -1,14 +1,16 @@
 // Package chips is how the command bar draws the links of an answer. The bar draws an answer with
-// chips (the web's MarkdownBody with chips, ItemChip and RefLink): each link to an item shows the
-// item, read from Dispatch, in place of the words the model gave the link. RewriteLinks finds the
-// links of an answer's markdown, ParseTarget reads the item a link names, and Target.Words is what
-// the bar draws for it; RenderAnswer writes an answer as the eval's judge reads it with them, and
-// DrawnWords counts the words the bar draws of it. LinkBareKeys writes an answer so that each
-// issue key it names bare, which a read of its run returned, is a link the bar draws as the
-// issue's chip, KeepLinkWords so that the words of a link that say more than its chip draws stand
-// beside the chip, and DropCodeBlocks takes out the code blocks that hold a block the bar draws
-// itself; the server does each to each answer of a run as it stores it (internal/dispatch/api's
-// going_link_words.go).
+// chips (the web's MarkdownBody with chips, ItemChip and RefLink): the first link to each issue
+// shows the issue's chip, read from Dispatch, in place of the words the model gave the link; a
+// later link to that issue, and a link to another item with words of its own, shows those words;
+// and a link to another item whose words are its address shows the item, read from Dispatch.
+// RewriteLinks finds the links of an answer's markdown, ParseTarget reads the item a link names,
+// and Target.Words is what the bar draws for it; RenderAnswer writes an answer as the eval's judge
+// reads it with them, and DrawnWords counts the words the bar draws of it. LinkBareKeys writes an
+// answer so that each issue key it names bare, which a read of its run returned, is a link the bar
+// draws as the issue's chip, KeepLinkWords so that the words of a link that say more than its chip
+// draws stand beside the link, and DropCodeBlocks takes out the code blocks that hold a block the
+// bar draws itself; the server does each to each answer of a run as it stores it
+// (internal/dispatch/api's going_link_words.go).
 package chips
 
 import (

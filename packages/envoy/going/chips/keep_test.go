@@ -43,16 +43,17 @@ var keptItems = held{
 	},
 }
 
-// TestALinksWordsThatSayMoreThanItsChipStandBesideIt: the bar draws each link to an item as the
-// item's chip in place of the link's words, so the eval's answers lost what they wrote as a link's
-// words: a session's name as the words of a link to its issue (c13's status-02 and status-05), and
-// a comment's words, which the bar cuts to its first 60 characters (status-06 and status-13).
-// KeepLinkWords writes such words as text, and then the link, in parentheses, with the item's
-// short form as its words and its address and title as written. A link whose words are the item's
-// key, its title, the two together, its reference or a run of the head of its text says nothing
-// the chip hides, and stays as written; so do a time, a web address, a picture, an autolink and a
-// link in code. Each answer also holds a link that says more, so no case passes with no rewrite,
-// and KeepLinkWords of what it wrote is what it wrote.
+// TestALinksWordsThatSayMoreThanItsChipStandBesideIt: the bar draws the first link to an issue as
+// the issue's chip in place of the link's words, and the eval's judge read every link to an item
+// as the item's words, so the eval's answers lost what they wrote as a link's words: a session's
+// name as the words of a link to its issue (c13's status-02 and status-05), and a comment's words,
+// which the judge read as the comment's head, cut to its first 60 characters (status-06 and
+// status-13). KeepLinkWords writes such words as text, and then the link, in parentheses, with the
+// item's short form as its words and its address and title as written. A link whose words are the
+// item's key, its title, the two together, its reference or a run of the head of its text says
+// nothing the chip hides, and stays as written; so do a time, a web address, a picture, an
+// autolink and a link in code. Each answer also holds a link that says more, so no case passes
+// with no rewrite, and KeepLinkWords of what it wrote is what it wrote.
 func TestALinksWordsThatSayMoreThanItsChipStandBesideIt(t *testing.T) {
 	for _, c := range []struct{ name, answer, want string }{
 		{

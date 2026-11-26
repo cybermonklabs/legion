@@ -25,7 +25,8 @@ body: |-
   and to list only the items, ids and counts a result gives, saying where a block stayed refused.
   It gives the chains of "P0 and P1 open issues per project" and of each status across two
   projects, each with one group, and of each status per project, with two.
-  It says the bar shows each link as its item's chip in place of the link's words, so an answer
-  writes the author, an ask's issue key, a holder and every other fact outside the link, and gives
-  the priority and assignee of an issue whose thread it sums up.
+  It says the bar draws the first link to each issue as the issue's chip in place of the link's
+  words, and a later link to that issue, and a link to another item with words of its own, as
+  those words, so an answer writes the author, an ask's issue key, a holder and every other fact
+  outside the link, and gives the priority and assignee of an issue whose thread it sums up.
   The eval's facts name each person by login, as Dispatch shows them.

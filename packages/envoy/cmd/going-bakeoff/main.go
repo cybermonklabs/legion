@@ -17,7 +17,7 @@
 // other, but the table and the rule leave it out, the report gives it a line of its own with what
 // each model chose for it, and each model's record keeps that apart (going.Record.OutsideCases).
 //
-// R13's rule names the chosen model (going.Choose). Every model that meets R13's three floors is a
+// R13's rule names the chosen model (going.Choose). Every model that meets R13's two floors is a
 // candidate, and the candidates are ranked by their right choices pooled over every repeat; the
 // candidate ranked first alone is named, and nothing else decides. Where several candidates rank
 // first, level on right choices, the run is a full tie and the rule names none: the run writes
@@ -846,8 +846,8 @@ func render(records []going.Record, choice going.Choice, source string) (string,
 	var b strings.Builder
 	first := records[0]
 	fmt.Fprintf(&b, "## Decision model bake-off\n\n")
-	fmt.Fprintf(&b, "%d of the cases R13 names per model, each asked %d time(s), one `systemone` call each time, run one at a time. %s. Floors (R13): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. Every accuracy, latency and display rate pools every answer of every repeat.",
-		first.Cases, first.Repeats, source, going.NamedFloor*100, going.OtherFloor*100, going.P95CeilingMS)
+	fmt.Fprintf(&b, "%d of the cases R13 names per model, each asked %d time(s), one `systemone` call each time, run one at a time. %s. Floors (R13): the right action on at least %.0f%% of the cases R13 names, all together, and p95 under %d ms. Every accuracy, latency and display rate pools every answer of every repeat.",
+		first.Cases, first.Repeats, source, going.JevRightFloor*100, going.JevP95Ceiling.Milliseconds())
 	if n := len(first.OutsideCases); n > 0 {
 		fmt.Fprintf(&b, " %d case(s) outside R13's set are asked too and have a line of their own below; no count, rate or floor here includes them.", n)
 	}
@@ -858,7 +858,7 @@ func render(records []going.Record, choice going.Choice, source string) (string,
 		answers := r.Cases * r.Repeats
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %.0f | %.0f | %d | %d | %s |\n",
 			r.Model, r.ReleaseDate,
-			share(float64(r.Right())/float64(max(answers, 1)), answers),
+			share(r.RightShare(), answers),
 			share(r.NamedAccuracy, r.NamedCases*r.Repeats), share(r.OtherAccuracy, r.OtherCases*r.Repeats),
 			r.P50MS, r.P95MS,
 			r.ChartWorthyCases, r.Unanswered, yesNo(r.MeetsFloors()))
