@@ -841,6 +841,12 @@ func (p *blockPlacement) unstore(index int) {
 	p.unstored[index] = true
 }
 
+// unstoredAt says the pass places the block at index again though the store holds it stored
+// (unstore): an authored node whose parent attribute names another target than the parent value
+// the store holds (placeAuthored), or a decision that settles an ask. Neither keeps its stored
+// part_of (planBlockParents).
+func (p blockPlacement) unstoredAt(index int) bool { return p.unstored != nil && p.unstored[index] }
+
 // keepsStored says the block at index keeps the placement PlacementStored once the pass has run:
 // the pass kept its stored part_of (keepStored), or the store holds it stored, at the part_of the
 // text gives it, and the pass did not place it again (unstore). held is the placement the store
@@ -849,7 +855,7 @@ func (p blockPlacement) keepsStored(index int, held string) bool {
 	if p.stored != nil && p.stored[index] {
 		return true
 	}
-	return held == PlacementStored && (p.unstored == nil || !p.unstored[index])
+	return held == PlacementStored && !p.unstoredAt(index)
 }
 
 // removedParent says far, the part_of a stored block holds, is a block of the indexed document
@@ -1087,7 +1093,7 @@ func (b *BlockIndexing) planBlockParents(
 	var unvaluedIDs []string
 	applyCached := func(position int, far blockFarEnd, placementValue string) {
 		if placementValue == PlacementStored {
-			if !removed(far) && !settles(position) {
+			if !placement.unstoredAt(position) && !removed(far) && !settles(position) {
 				keep(position, far)
 				return
 			}
@@ -1136,7 +1142,8 @@ func (b *BlockIndexing) planBlockParents(
 	for _, difference := range read {
 		difference.block = probe.position(difference.block)
 		if difference.placement == PlacementStored {
-			if len(difference.retract) == 1 && !difference.holds && !removed(difference.retract[0]) && !settles(difference.block) {
+			if !placement.unstoredAt(difference.block) && len(difference.retract) == 1 && !difference.holds &&
+				!removed(difference.retract[0]) && !settles(difference.block) {
 				keep(difference.block, difference.retract[0])
 				continue
 			}
@@ -3459,11 +3466,17 @@ func parentTuple(address, toKind, toID string, at time.Time, writer model.Actor,
 // block's own From that helper answers the block itself, because it pushes every block
 // starting at or before the offset before it reads the top of its stack, so the parent is the
 // entry below the block on the stack and not the top of it.
+//
+// A block that writes no byte of its own starts where the block that holds it ends, and is held
+// by it all the same (endsBefore): the empty paragraph of an empty list item, which the renderer
+// writes as nothing after the item's marker (pmdoc's renderer.list), stands under that item, as
+// the tree the rendering was written from holds it (pmdoc.ValidDocument.BlockDescendantIDs), and
+// not at the document's top level.
 func blockParents(blocks []model.ArtifactBlock) []int {
 	parents := make([]int, len(blocks))
 	stack := make([]int, 0, 8)
 	for index, block := range blocks {
-		for len(stack) > 0 && blocks[stack[len(stack)-1]].To <= block.From {
+		for len(stack) > 0 && endsBefore(blocks[stack[len(stack)-1]], block) {
 			stack = stack[:len(stack)-1]
 		}
 		parents[index] = -1
@@ -3473,4 +3486,16 @@ func blockParents(blocks []model.ArtifactBlock) []int {
 		stack = append(stack, index)
 	}
 	return parents
+}
+
+// endsBefore reports whether above, a block that starts at or before block, ends before block
+// starts, so it does not hold it. A block that ends exactly where block starts holds it only
+// where block writes no byte and above writes some: the renderer puts at least a line end
+// between two blocks that stand side by side, so a block of no bytes at another's end is inside
+// that other, and a block of no bytes holds nothing.
+func endsBefore(above, block model.ArtifactBlock) bool {
+	if above.To != block.From {
+		return above.To < block.From
+	}
+	return block.To > block.From || above.To == above.From
 }
