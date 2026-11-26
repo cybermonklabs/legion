@@ -278,7 +278,7 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 // or during one. A try's own error does not always carry it: when ctx ends while a statement is
 // being written, pgx's context watcher sets a deadline on the socket and the statement fails with
 // the write's error ("write failed: … i/o timeout", pgproto3's writeError), which wraps no context
-// error (TestRegistersWaitEndsWithItsContext, run 43596122521, dispatch://INFRA-1075). So a try
+// error (TestRegistersWaitEndsWithItsContext, CI run 43596122521). So a try
 // that fails once ctx has ended returns an error wrapping both ctx's error and the try's: a caller
 // tells a stop from a failure by ctx's error - cmd/dispatch logs a SIGTERM during the wait as a
 // clean stop - and the log still reads what the statement hit.

@@ -149,7 +149,7 @@ func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T
 	if _, err := other.SetRoleWithPrevious(ctx, store.RoleClaimRequest{SessionID: holder, MachineID: "other-machine", ClientInstanceID: holdingProcess, Role: role}); err != nil {
 		t.Fatalf("grant %s to %s on the other listener: %v", role, holder, err)
 	}
-	waitFor(t, 10*time.Second, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
+	waitFor(t, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
 		held, err := registry.RolesHeldBy(holder)
 		return err == nil && slices.Contains(held, role)
 	})
