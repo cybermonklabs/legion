@@ -1,7 +1,0 @@
-kind: Fixed
-body: |-
-  A live grant of a `google-service-account` secret no longer mints at scopes it was not decided under. Its `scopes` tag was read again at every release and handed to the minter, and no fingerprint held it, so a grant decided under `devstorage.read_only` minted a `cloud-platform` token at its next release once the tag was widened, with no new decision. The tag is now in the fingerprint of every name that mints at it: the secret by its own name, behind the proxy or not, and each profile of it with no `google` block of its own (a profile with one mints at its own scopes, which its entry's fingerprint holds already). So a changed `scopes` tag, or one added or taken off, ends each grant decided under the old one at its next release, naming the tag, and the session asks again.
-  Each live grant of such a secret or profile whose source carries a `scopes` tag ends once, at the first broker of this release, since its recorded fingerprint holds no scopes; the session asks again. A secret with no `scopes` tag, and every other type, keeps the fingerprint it had.
-time: 2026-11-26T15:30:51Z
-custom:
-    Issue: google-scopes-grant

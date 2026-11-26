@@ -307,25 +307,20 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 
 // proxied holds the profile at index i, served from source as secret, to Cipher's proxy
 // (ProxyFaults), refusing it for the first fault, and otherwise writes into secret the kind it is
-// behind, its way, its source's proxy-narrowed tag and its fingerprint (servedDigest), which holds
-// its source's scopes tag where the profile mints at it, having no google block of its own.
+// behind, its way, its source's proxy-narrowed tag and its fingerprint (servedDigest).
 func (p Profiles) proxied(i int, source Secret, secret *Secret) (reason, detail string) {
 	profile := &p.list[i]
 	if faults := p.ProxyFaults(profile, &source); len(faults) > 0 {
 		return faults[0].Reason, faults[0].Detail
 	}
-	var scopes string
-	if profile.Google == nil {
-		scopes = source.Scopes
-	}
 	kind := p.fileRules.Kind(ProfileKind(profile, source.Proxy))
 	if kind == nil {
-		secret.ProfileDigest = p.servedDigest(i, servedAs{scopes: scopes})
+		secret.ProfileDigest = p.servedDigest(i, servedAs{})
 		return "", ""
 	}
 	way, _ := WayOf(*kind, source.Type())
 	secret.Proxy, secret.Way, secret.ProxyNarrowed = kind.Name, way, source.ProxyNarrowed
-	secret.ProfileDigest = p.servedDigest(i, servedAs{kind: kind.Name, kindAllow: p.kindAllowForm(kind.Name), narrowed: source.ProxyNarrowed, judge: source.Judge, scopes: scopes})
+	secret.ProfileDigest = p.servedDigest(i, servedAs{kind: kind.Name, kindAllow: p.kindAllowForm(kind.Name), narrowed: source.ProxyNarrowed, judge: source.Judge})
 	return "", ""
 }
 
