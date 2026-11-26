@@ -30,6 +30,7 @@ import (
 // names the new enrollment afterwards. Before, the reread took the lapsed enrollment, was refused,
 // went again unsigned at a second token of both reread buckets, and the write was never checked.
 func TestATypedWriteOnALapsedSignInRegistersItAgainAndIsChecked(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_signin_reread_test.go:40); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	const person = "ada@example.com"
 	for _, form := range []string{"create", "retag"} {
 		t.Run(form, func(t *testing.T) {
