@@ -328,7 +328,9 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 // store, so it travels on the connection the frame's message was pulled and is answered on. A
 // frame carries a stored message whole, of any size its sender gave it under the bound, with the
 // relay's own headers beside it, so it can pass the server's max payload by those headers: such a
-// frame is ErrTooLarge before the wait for a connection (Client.checkSend).
+// frame is ErrTooLarge before the wait for a connection (Client.checkSend), and so is nats.go's
+// own refusal of one the check let through (Client.refused), for a server whose max payload the
+// client had not read yet, so the relay tells such a frame by ErrTooLarge alone.
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.checkSend(msg); err != nil {
 		return err
@@ -336,8 +338,13 @@ func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return err
 	}
-	return s.client.Connection().PublishMsg(msg)
+	return s.client.refused(s.client.Connection().PublishMsg(msg), messageBytes(msg))
 }
+
+// MaxPayload is the max payload of the server the connection is on, as the client last read it
+// (Client.knownMaxPayload), 0 while it knows none: what a relay frame's data and headers are held
+// to, which the relay's notice of a frame too large to publish names.
+func (s *SessionConsumers) MaxPayload() int64 { return s.client.knownMaxPayload() }
 
 // NewInbox names a new inbox on the connection, under its inbox prefix (WithInboxPrefix): the
 // subject a relay frame's receipts are answered on, which SubscribeReplies subscribes.

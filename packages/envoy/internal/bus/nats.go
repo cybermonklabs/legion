@@ -2542,6 +2542,11 @@ func storedRefusal(err error) error {
 // payload), its verb, spaces and line ending: 62 bytes, which 64 covers.
 const maxSubjectBytes = 4<<10 - 64
 
+// MaxSubjectBytes is maxSubjectBytes for a caller outside the package: what a text the bus would
+// publish on must be within to be a subject at all, which cmd/listener's relay reads of the topic
+// a stored envelope names (relayTooLargeNotice).
+const MaxSubjectBytes = maxSubjectBytes
+
 // checkSubject refuses, before anything is sent, a subject the server would close the connection
 // over (ErrTooLarge) and one NATS does not accept (ErrInvalidSubject).
 func checkSubject(subject string) error {
@@ -2578,13 +2583,15 @@ func (c *Client) refused(err error, size int) error {
 // TooLargeToPublish answers the ErrTooLarge a publish of item on its own topic (PublishAckWithin)
 // would meet because the message - the envelope as that publish encodes it, and the Nats-Msg-Id
 // header it carries where the envelope earns one (storedMsgID) - is past the max payload the
-// client last read (knownMaxPayload), and nil for a message within it or while the client knows no
-// max payload. It sends nothing and reads no state of nats.go's, so no lock a reconnect holds keeps
-// it waiting, and a caller asks it before any other bus work for the message. The envelope is
-// counted as it is encoded rather than kept. A caller may add fields before it publishes
+// client last read (knownMaxPayload), or, for a topic the stream stores, because the relay frame
+// that hands the stored envelope to a session - the envelope and the relay's own headers
+// (RelayFrameHeaderBytes) - would be, and nil for a message within both or while the client knows
+// no max payload. It sends nothing and reads no state of nats.go's, so no lock a reconnect holds
+// keeps it waiting, and a caller asks it before any other bus work for the message. The envelope
+// is counted as it is encoded rather than kept. A caller may add fields before it publishes
 // (cmd/listener's sender stamp), and a forward of the envelope carries another dedupe key and
 // header (StartRequestStoredTo), so nil does not promise every later send fits: each send makes
-// its own check (checkSend).
+// its own check (checkSend, and publishJetStream's of the relay frame).
 func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
 	maxPayload := c.knownMaxPayload()
 	if maxPayload <= 0 {
@@ -2599,10 +2606,13 @@ func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
 	// Encode ends what it writes with a newline, which json.Marshal, and so the publish, leaves
 	// out.
 	size := int64(encoded) - 1
-	if c.publishPathOf(item.Topic) == overJetStream {
-		size += int64(messageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(item))}))
+	if c.publishPathOf(item.Topic) != overJetStream {
+		return payloadTooLarge(size, maxPayload)
 	}
-	return payloadTooLarge(size, maxPayload)
+	if err := payloadTooLarge(size+int64(messageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(item))})), maxPayload); err != nil {
+		return err
+	}
+	return relayFrameTooLarge(size, item.Topic, maxPayload)
 }
 
 // knownMaxPayload is the max payload of the server the client's connection is on, as the client
@@ -2806,8 +2816,7 @@ type StoredAck struct {
 // PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID,
 // none when it is empty, within ctx's bound as PublishWithin's, for a caller that names both the
 // subject it is stored on and the stored message itself, and returns the stream's
-// acknowledgement. publishJetStream publishes an envelope on its own topic through it, under the
-// id it derives. It is also how the listener keeps a role message it could not deliver: stored on
+// acknowledgement. It is how the listener keeps a role message it could not deliver: stored on
 // that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic field, so the
 // holder that later takes the role is handed the message as its sender sent it. Every listener
 // that keeps the same message writes it under one id (KeptMsgID), and the keep reads the
@@ -2872,8 +2881,30 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // the stream may hold while the caller is answered failure; that is the acknowledgement's own
 // ambiguity, which the MsgId's duplicate window absorbs for an envelope that earns one, and which
 // the failure names (ErrUnacknowledged, sendStored).
+//
+// The envelope is held to the relay frame beside the stream's own bound: the envelope and its
+// Nats-Msg-Id header within the server's max payload, which every stored write is (checkSend), and
+// the envelope and the relay's headers within it too (relayFrameTooLarge), since the relay hands
+// a session the stored envelope under headers of its own and none of the stored message's
+// (RelayFrameHeaderBytes). An envelope on its own topic is a message for the sessions that follow
+// that topic, so one the stream stores reaches each of them whole. Both are refused before the
+// wait for a reconnect or the read of ctx, the stored bound first, so a message past the max
+// payload by itself is named as such. A stored write that names its own subject (PublishStoredAck,
+// the raw writes) is held to the stream's bound alone: a frame of one past the max payload is the
+// relay's notice to the session in its place.
 func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
-	return c.PublishStoredAck(ctx, item.Topic, item, storedMsgID(item))
+	data, err := json.Marshal(item)
+	if err != nil {
+		return StoredAck{}, err
+	}
+	header := msgIDHeader(storedMsgID(item))
+	if err := c.checkSend(&nats.Msg{Data: data, Header: header}); err != nil {
+		return StoredAck{}, err
+	}
+	if err := relayFrameTooLarge(int64(len(data)), item.Topic, c.knownMaxPayload()); err != nil {
+		return StoredAck{}, err
+	}
+	return c.publishStoredRaw(ctx, item.Topic, data, header)
 }
 
 // ErrUnacknowledged is wrapped by the error of a stored publish that failed and may still have put
@@ -3132,8 +3163,12 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // envelope again under one MsgId until it is stored leaves the stream one copy per message and
 // recipient, however many attempts it makes, and the stream acknowledges each repeat as a
 // duplicate, which counts as stored. A forward past the server's max payload, its header
-// included, is ErrTooLarge before the wait for a connection or anything else (checkSend): a role
-// forward carries a message a caller sent. An error here is the publish's own, before any reply
+// included, is ErrTooLarge before the wait for a connection or anything else (checkSend), and so
+// is one whose relay frame would be past it (relayFrameTooLarge): the forward is stored for a
+// session's consumer, which hands it on as a frame of the forward's bytes under the relay's own
+// headers, so a forward the stream took and no session could be handed would reach its holder
+// only as the relay's notice. A role forward carries a message a caller sent. An error here is
+// the publish's own, before any reply
 // could arrive (a refused, denied or invalid forward, a connection that never came back within
 // timeout); every returned forward must be waited for, which releases its reply subscription.
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
@@ -3149,6 +3184,9 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	forward := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(msgID)}
 	if err := c.checkSend(forward); err != nil {
+		return nil, err
+	}
+	if err := relayFrameTooLarge(int64(len(data)), subject, c.knownMaxPayload()); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

@@ -1453,6 +1453,17 @@ func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
 // its own under the listener's reply inbox that names the session (bus.SessionReplySubject). gap
 // marks the frame as the first after a gap, and gapReason names that gap when it is not the
 // stream's retention gap.
+//
+// A frame the bus refuses for its size (bus.ErrTooLarge: the stored message and the relay's
+// headers past the server's max payload) goes out as a notice in its place (relayTooLargeNotice),
+// under the same headers and the same reply subject, so the session's answer to the notice
+// settles the message as its answer to the frame would have: done acknowledges it, and nak has
+// the server deliver it again, and so the notice again. Such a message never reaches the session
+// whole, however often it is sent, and before the notice its failed publish restarted the relay at
+// the ack floor, where it came first again, so no later message of the session was ever sent. A
+// message the listener accepted is held to the frame's room when it is stored
+// (bus.RelayFrameHeaderBytes); one stored before that, by a write held to the stream's bound
+// alone, or under a max payload the server has since lowered, is what meets this.
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason, owed string) error {
 	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
 	token := reply[strings.LastIndexByte(reply, '.')+1:]
@@ -1465,24 +1476,38 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	run.unanswered = append(run.unanswered, frame)
 	m.frames[token] = frame
 	m.framesMu.Unlock()
+	out := &nats.Msg{
+		Subject: bus.DeliverSubject(run.sessionID),
+		Reply:   reply,
+		Header:  relayFrameHeader(msg.Subject, msg.StreamSeq, streamID, msg.Delivered, msg.StoredAt, gap, gapReason),
+		Data:    msg.Data,
+	}
+	err := m.delivery.consumers.Publish(ctx, out)
+	if !errors.Is(err, bus.ErrTooLarge) {
+		return err
+	}
+	return m.publishTooLargeNotice(ctx, run.sessionID, out, msg, streamID, err)
+}
+
+// relayFrameHeader is the header of the frame of a message stored on subject at stream sequence
+// seq of the stream streamID, delivered for the delivered-th time and stored at storedAt, gap
+// marking it the first after a gap that gapReason names when it is not the stream's retention
+// gap. Its largest is bus.RelayFrameHeaderBytes(subject), the room the listener's publish of an
+// envelope on its own topic leaves for it (TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader).
+func relayFrameHeader(subject string, seq uint64, streamID string, delivered uint64, storedAt time.Time, gap bool, gapReason string) nats.Header {
 	header := nats.Header{}
-	header.Set(relayHeaderSubject, msg.Subject)
-	header.Set(relayHeaderStreamSeq, strconv.FormatUint(msg.StreamSeq, 10))
+	header.Set(relayHeaderSubject, subject)
+	header.Set(relayHeaderStreamSeq, strconv.FormatUint(seq, 10))
 	header.Set(relayHeaderStreamID, streamID)
-	header.Set(relayHeaderDelivered, strconv.FormatUint(msg.Delivered, 10))
-	header.Set(relayHeaderStoredAt, msg.StoredAt.UTC().Format(time.RFC3339Nano))
+	header.Set(relayHeaderDelivered, strconv.FormatUint(delivered, 10))
+	header.Set(relayHeaderStoredAt, storedAt.UTC().Format(time.RFC3339Nano))
 	if gap {
 		header.Set(relayHeaderGap, "true")
 		if gapReason != "" {
 			header.Set(relayHeaderGapReason, gapReason)
 		}
 	}
-	return m.delivery.consumers.Publish(ctx, &nats.Msg{
-		Subject: bus.DeliverSubject(run.sessionID),
-		Reply:   reply,
-		Header:  header,
-		Data:    msg.Data,
-	})
+	return header
 }
 
 // receiptDeadline is when the oldest frame of run the session has not answered reaches the
