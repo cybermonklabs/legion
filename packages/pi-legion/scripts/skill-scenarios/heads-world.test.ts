@@ -225,10 +225,12 @@ test("architect-pass-and-fail: k1 serves R1, its words are R1's, and its run mat
     writeFileSync(path.join(dir, "docs/usage.md"), text);
     return Bun.spawnSync(["bash", "-c", run], { cwd: dir }).stdout.toString().trim();
   };
-  // The fixture's line (rig.sh heads_fixture), and a line that names the CLI but not R1.
-  expect(grep("# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n")).toBe(
-    "1"
-  );
+  // The fixture's page (rig.sh heads_fixture), and a line that names the CLI but not R1.
+  expect(
+    grep(
+      "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n"
+    )
+  ).toBe("1");
   expect(grep("# Usage\n\nThe widgets CLI has commands.\n")).toBe("0");
 });
 
@@ -331,6 +333,47 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
         .map((call) => call.path.split("/").at(-1))
     ).toEqual([...records]);
   }
+});
+
+// Catches: an R1 that asks less of the page than the check beside it. In the worlds that hold k2
+// or k3, that check asks the page to list each command the CLI lists, and R1 asked only that the
+// page name `widgets --help`. A reviewer or an architect could then read the failing job as asking
+// more than the issue does, and judge the round by that reading rather than by the rule the case
+// measures. R1 now holds both clauses, k1 proves its first and the CI check its second, so each
+// serves R1 and neither asks more than R1 does.
+test("the worlds that hold k2 or k3: R1 asks what that check asks of the page", async () => {
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
+  const r1Of = (spec: string) => spec.split("\n").find((line) => line.startsWith("**R1.**")) ?? "";
+  const bodyOf = (content: string, block: string) =>
+    content.split(`:::check{#${block} `)[1]?.split("}\n")[1]?.split("\n:::")[0] ?? "";
+  for (const [scenario, which, block] of [
+    ["reviewer-own-head", "ci-check-fail", "k2"],
+    ["reviewer-own-head", "ci-check-fail-other-head", "k2"],
+    ["architect-pass-and-fail", "ci-check-fail", "k2"],
+    ["tester-reads-no-ci", "ci-late", "k3"],
+    ["tester-reads-no-ci", "ci-red", "k3"],
+  ] as const) {
+    const { calls } = await world(which, scenario);
+    const spec = String(calls.find((call) => call.path === "/api/v1/issues")?.body.spec);
+    const content = String(calls.find((call) => call.path.endsWith("/artifacts"))?.body.content);
+    expect(r1Of(spec)).toBe(
+      "**R1.** `docs/usage.md` names `widgets --help` and lists each command it lists. From: the issue."
+    );
+    expect(bodyOf(content, block)).toBe(
+      "The page `docs/usage.md` lists each command that `widgets --help` lists."
+    );
+    // k1 proves R1's first clause and the CI check its second, so the two together serve R1.
+    expect(bodyOf(content, "k1")).toBe(
+      "`docs/usage.md` names `widgets --help`, which lists every command."
+    );
+  }
+  // A world with neither check keeps R1 at what k1 alone proves.
+  const { calls } = await world(undefined, "architect-pass-and-fail");
+  expect(r1Of(String(calls.find((call) => call.path === "/api/v1/issues")?.body.spec))).toBe(
+    "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue."
+  );
 });
 
 // Catches: a tester world whose k3 is not CI's (a tester's result of it would then decide it), whose

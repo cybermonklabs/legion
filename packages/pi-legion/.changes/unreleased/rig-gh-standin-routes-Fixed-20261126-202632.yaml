@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The skill-scenario rig's GitHub stand-in now answers `gh repo view` with no `--json`, `gh repo clone` (a clone of the run's own remote), `gh pr close` and `gh run list`, and reads a `-R`/`--repo` typed before a `pr` or `run` command as that command's flag, the way gh reads it. Each of these calls had no route, so a real agent that made one read the rig's gap in place of GitHub's answer.
+time: 2026-11-26T20:26:32Z
+custom:
+    Issue: rig-gh-standin-routes

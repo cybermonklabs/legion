@@ -141,6 +141,15 @@ export async function headsIssue(file: string, world: string): Promise<void> {
     production_job_names: ["deploy / deploy"],
   });
   const title = "A usage page for the widgets CLI";
+  // R1 is what the issue asks of the page. Where the document holds k2 or k3, a check of R1 that
+  // a CI job runs, R1 holds that check's clause too: k1 proves that the page names `widgets
+  // --help`, and the CI check that the page lists each command the CLI lists. R1 asking less than
+  // the CI check asks let a role read the failing job as asking more than the issue does, and
+  // judge the round by that reading rather than by the rule its case measures.
+  const requirement =
+    ciCheckWorld(world) || testerWorld(world)
+      ? "**R1.** `docs/usage.md` names `widgets --help` and lists each command it lists. From: the issue."
+      : "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue.";
   const issue = await createIssue(
     {
       project: "LWEVAL",
@@ -154,7 +163,7 @@ export async function headsIssue(file: string, world: string): Promise<void> {
         "## Requirements",
         "",
         ":::requirement{#r1}",
-        "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue.",
+        requirement,
         ":::",
       ].join("\n"),
     },
@@ -166,7 +175,8 @@ export async function headsIssue(file: string, world: string): Promise<void> {
       : world.startsWith("ci-pass-and-fail-")
         ? CI_RUNNING_JOB.name
         : "";
-  // k1 serves R1, and its words are R1's, so an architect finds no coverage gap to send back for.
+  // k1 serves R1 in R1's own words, so an architect finds no coverage gap to send back for: where
+  // R1 also carries the CI check's clause, that check serves the rest of it.
   const serves = `serves="dispatch://${issue.key}/spec#b-r1"`;
   const attributes =
     ciJob !== ""

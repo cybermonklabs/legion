@@ -2219,8 +2219,11 @@ heads_fixture() {
   heads=$(jq -cn --arg base "$base" '{base:$base}')
   g checkout -qb "legion/$worker_key-702" "$worker_base"
   mkdir -p "$R/src/docs"
+  # The page names three of the four commands `widgets --help` lists, which is what the log of the
+  # failed CI job of the ci-check-fail worlds says it names (rig-world.json): the miss is export,
+  # and it shows in that job's log and in the check's state, never in the three-line diff alone.
   # shellcheck disable=SC2016 # Markdown, written as it stands
-  printf '# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n' >"$R/src/docs/usage.md"
+  printf '# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n' >"$R/src/docs/usage.md"
   g add -A && g commit -qm "docs: the usage page of the widgets CLI ($worker_key)"
   g checkout -qb "legion/$worker_key-703" "$worker_base"
   printf '\nUsage: see docs/usage.md.\n' >>"$R/src/README.md"

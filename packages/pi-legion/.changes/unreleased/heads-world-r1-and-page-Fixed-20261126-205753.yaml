@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  In the skill-scenario worlds whose Verification document holds a check that a CI job runs, R1 now asks of the usage page what that check asks, and the page names three of the four commands the failed job's log says it names. The page named none of them, so the miss the job reports was plain in the three-line diff, and R1 asked less than the failing check did.
+time: 2026-11-26T20:57:53Z
+custom:
+    Issue: heads-world-r1-and-page

@@ -10,25 +10,28 @@
 // no branch protection and no ruleset (GitHub's own answers, read on 20 November, are in the lane's
 // evidence), each GitHub read and write the role prompts, the skills and the agents' transcripts
 // name: `gh pr view`, `gh pr diff`, `gh pr checks` (exit 8 while a check runs; `--required` is
-// GitHub's "no required checks"), `gh pr list`, `gh pr edit`, `gh pr ready`, `gh pr merge`, `gh repo
-// view`, `gh auth status` and `gh --version`; the REST read and PATCH of each pull request, the
-// list of its commits (its one commit, the head on the base) and of its files; GraphQL (review
-// threads, the base's branch protection rule, which is none, and the head's check rollup); the
-// check runs and the combined status of each head (state `pending`, as GitHub answers a commit with
-// no status), and each check run by its id; the workflow runs of each head and their jobs, and
-// each job by its id; the repository; its branches (each `protected: false`), each branch's
-// protection read (403, "Resource not accessible by integration", as GitHub answers an App's
-// token), an unknown branch (404 "Branch not found"); the git refs of each branch; the comparison
-// of the base with each head, and GitHub's 404 for a commit the world does not hold; the rules and
-// rulesets of the base (none); `/user` (403, as for an App's token); the contents, trees, blobs and
-// commits of the base and of each head; and the reviews and issue comments of each pull request: a
-// review or comment the run writes is answered as GitHub answers it and then listed, and a read of
-// one review by its id answers it or GitHub's 404. A read lists no review but, where the world
-// approves, #702's one APPROVED review, whose Legion footer names #702's head. A `gh pr` read of a
-// number the world holds no pull request of is refused, as GitHub refuses it, and so is a REST call
-// to another repository. `gh run` answers only `gh run view` of a named job that has ended, with its
-// summary or, given `--log` or `--log-failed`, its log: a watch of a run in progress cannot end here
-// as it does on GitHub, so it has no route.
+// GitHub's "no required checks"), `gh pr list`, `gh pr edit`, `gh pr ready`, `gh pr merge`, `gh pr
+// close`, `gh repo view` (its `--json` fields, or its text off a terminal), `gh repo clone` (the
+// stand-in's clone of the run's remote), `gh auth status` and `gh --version`; the REST read and
+// PATCH of each pull request, the list of its commits (its one commit, the head on the base) and of
+// its files; GraphQL (review threads, the base's branch protection rule, which is none, and the
+// head's check rollup); the check runs and the combined status of each head (state `pending`, as
+// GitHub answers a commit with no status), and each check run by its id; the workflow runs of each
+// head and their jobs, and each job by its id; the repository; its branches (each `protected:
+// false`), each branch's protection read (403, "Resource not accessible by integration", as GitHub
+// answers an App's token), an unknown branch (404 "Branch not found"); the git refs of each branch;
+// the comparison of the base with each head, and GitHub's 404 for a commit the world does not
+// hold; the rules and rulesets of the base (none); `/user` (403, as for an App's token); the
+// contents, trees, blobs and commits of the base and of each head; and the reviews and issue
+// comments of each pull request: a review or comment the run writes is answered as GitHub answers
+// it and then listed, and a read of one review by its id answers it or GitHub's 404. A read lists
+// no review but, where the world approves, #702's one APPROVED review, whose Legion footer names
+// #702's head. A `gh pr` read of a number the world holds no pull request of is refused, as GitHub
+// refuses it, and so is a REST call to another repository. `gh run` answers `gh run list` (every
+// run, or one head's by its commit or branch) and `gh run view` of a named job that has ended, with
+// its summary or, given `--log` or `--log-failed`, its log: a watch of a run in progress cannot end
+// here as it does on GitHub, so it has no route. A close is answered and not kept: a later read
+// still finds the pull request open.
 //
 // Each route is {match, ...}, the form gh-standin.ts reads; its doc comment says how a call picks
 // one and what each field does. A call no route names is the stand-in's loud failure, which
@@ -121,6 +124,8 @@ export interface Route {
   list?: "reviews" | "comments";
   lookup?: "review";
   pull?: number;
+  /** `gh repo clone`: the stand-in clones the run's remote in place of an answer. */
+  clone?: true;
 }
 
 /** What gh-standin.ts reads from fixtures.json: the routes, the pull request a call that names
@@ -661,6 +666,61 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     match,
     ...refused(404, "Not Found", documentation),
   });
+  /** The world's repository as a `gh repo` argument names it: `<owner>/<name>` or its URL. */
+  const repoArg = `(https://github\\.com/)?${literal(repo)}(\\.git)?`;
+  /** The README at the root of the base, which `gh repo view` prints, or undefined. */
+  const readme = trees
+    .find((t) => t.sha === main)
+    ?.entries.find((entry) => entry.type === "blob" && /^readme(\.[a-z]+)?$/i.test(entry.path));
+  type WorkflowRun = ReturnType<typeof wfrun>;
+  /** `gh run list` with `filter`, lookaheads on the call: its `--json` form (each run's fields, as
+   * gh names them), then its text off a terminal (each run's status, conclusion, title, workflow,
+   * branch, event, id, elapsed time and start, with a tab between two and no header). The world
+   * dates each run at `at`, its now, so each took 0s. A filter the world cannot apply (a workflow,
+   * a status, an event, a user, a date) has no route. */
+  const runList = (filter: string, listed: WorkflowRun[]): Route[] => {
+    const match = `^gh run list(?= |$)(?!.* (-w|--workflow|-s|--status|-e|--event|-u|--user|--created)([ =]|$))${filter}`;
+    return [
+      {
+        match: `${match}(?=.* --json([ =]|$))`,
+        stdout: listed.map((w) => ({
+          attempt: w.run_attempt,
+          conclusion: w.conclusion ?? "",
+          createdAt: w.created_at,
+          databaseId: w.id,
+          displayTitle: w.display_title,
+          event: w.event,
+          headBranch: w.head_branch,
+          headSha: w.head_sha,
+          name: w.name,
+          number: w.run_number,
+          startedAt: w.created_at,
+          status: w.status,
+          updatedAt: w.updated_at,
+          url: w.html_url,
+          workflowName: w.name,
+        })),
+      },
+      {
+        match,
+        stdout: listed
+          .map((w) =>
+            [
+              w.status,
+              w.conclusion ?? "",
+              w.display_title,
+              w.name,
+              w.head_branch,
+              w.event,
+              w.id,
+              "0s",
+              w.created_at,
+            ].join("\t")
+          )
+          .join("\n"),
+      },
+    ];
+  };
 
   const routes: Route[] = [
     // A REST call to a repository other than the world's, which the token's App cannot read:
@@ -712,6 +772,13 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     { match: "^gh pr checks", stdout: checks(first), exit: checksExit(first) },
     { match: "^gh pr list", stdout: pulls.map(pr) },
     { match: "^gh pr edit", stdout: first.url },
+    // `gh pr close` of a pull request the world holds, the number or URL first after the command
+    // and a `-R`, as gh words its answer. A close that deletes the branch has no route, since the
+    // world keeps the branch.
+    ...pulls.map((pull) => ({
+      match: `^gh pr close (?!(.* )?(-d|--delete-branch)( |$))((-R|--repo)[ =]\\S+ )?(#?${pull.number}|https://github\\.com/${literal(repo)}/pull/${pull.number})( |$)`,
+      stderr: `✓ Closed pull request ${repo}#${pull.number} (${titled})\n`,
+    })),
     // GraphQL: the pull request a query names, by its number or its variable n, else the first.
     ...others.map((pull) => ({
       match: `^gh api .*graphql(?=.*(number: ?${pull.number}\\b|\\bn=${pull.number}\\b))`,
@@ -941,6 +1008,14 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
             ]
       )
     ),
+    // `gh run list`: one head's runs by its commit or branch, none for a commit or branch no run is
+    // at, else every run of the repository, in the REST list's order.
+    ...pulls.flatMap((pull) => [
+      ...runList(`(?=.* (-c|--commit)[ =]${pull.head}( |$))`, wfruns(pull)),
+      ...runList(`(?=.* (-b|--branch)[ =]${literal(ref(pull))}( |$))`, wfruns(pull)),
+    ]),
+    ...runList("(?=.* (-c|--commit|-b|--branch)[ =])", []),
+    ...runList("", everyRun),
     ...pulls.flatMap(checkruns).map((check) => ({
       match: `^gh api .*actions/jobs/${check.id}([ ?/]|$)`,
       stdout: jobOf(check),
@@ -970,6 +1045,14 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
     { match: "^gh api .*pulls([ ?]|$)", stdout: pulls.map(rest) },
     { match: "^gh api (.* )?/?repos/[^/ ]+/[^/ ?]+([ ?]|$)", stdout: repository },
     { match: "^gh repo view .*--json", stdout: repoview },
+    // `gh repo view` of the world's repository, or of the workspace's, off a terminal: its name,
+    // its description (none), then the base's README after `--`.
+    {
+      match: `^gh repo view( ${repoArg})?( -.*)?$`,
+      stdout: `name:\t${repo}\ndescription:\t\n${readme === undefined ? "" : `--\n${bytesOf(readme)}\n`}`,
+    },
+    // `gh repo clone` of the world's repository: gh-standin.ts clones the run's remote.
+    { match: `^gh repo clone ${repoArg}( |$)`, clone: true },
     {
       match: "^gh api (.* )?/?user([ ?]|$)",
       ...refused(

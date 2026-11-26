@@ -23,16 +23,25 @@ export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 
+/** How wide one build and run of daemon-pane.go goes: its `go run -p` jobs and its GOMAXPROCS. A
+ * batch starts several runs at once on a cold build cache, and each builds the daemon. At the
+ * host's width (on a 288-CPU box, one compile for each CPU, and up to about 80 threads in each go
+ * and compile process), six runs could not fork under a task cap of 4096. */
+const BUILD_WIDTH = "4";
+
 /** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
- * there is none), and returns its stdout. */
+ * there is none), and returns its stdout. The build runs BUILD_WIDTH jobs and threads wide, over
+ * the caller's environment. */
 export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "daemon-pane-"));
   try {
     const overlay = path.join(scratch, "overlay.json");
     const main = path.join(module, "cmd", "daemon-pane", "main.go");
     writeFileSync(overlay, JSON.stringify({ Replace: { [main]: PROGRAM } }));
-    const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {
+    const command = ["go", "run", "-p", BUILD_WIDTH, "-overlay", overlay, "./cmd/daemon-pane"];
+    const result = Bun.spawnSync([...command, ...args], {
       cwd: module,
+      env: { ...process.env, GOMAXPROCS: BUILD_WIDTH },
       stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
       stdout: "pipe",
       stderr: "pipe",
