@@ -4,7 +4,8 @@ package main
 
 // agent_supervisor_test.go holds the server's supervision of its agent process as a deployment
 // meets it: a real envoy-dispatch server on a real database, which starts its own envoy-dispatch
-// agent, kills it and starts it again, and shows both processes on /metrics. A server here names no
+// agent, kills it and starts it again from its own build, stops it in its order when a signal
+// reaches their whole process group, and shows both processes on /metrics. A server here names no
 // chat model unless a row gives it the fake one (agent_loop_test.go), so its agent ends each run it
 // claims failed with agent.ReasonNoModel. Its rows run two processes and wait out the bounds of
 // a background run, so they carry the multiprocess tag and run in CI's dispatch-multiprocess job;
@@ -18,6 +19,8 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,9 +33,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/going/agent"
+	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
@@ -191,6 +196,129 @@ func TestAStuckOrPanickingRunStopsOnlyTheAgent(t *testing.T) {
 		requireARunThatPanicsPastItsRecoveryFails)
 	t.Run("a route that panics during a call of the agent answers an error, and the server's process id does not change",
 		requireAPanickingRouteAnswersAnError)
+}
+
+// TestAStopSignalToTheServersProcessGroupStopsTheAgentInTheServersOrder: a SIGTERM or a SIGINT sent
+// to the whole process group of a server and its agent, as `kill -TERM -<group>` or a terminal's
+// Ctrl-C sends one, stops the two in the server's order. The agent does nothing with the signal
+// (runAgent), so it works on through the HTTP drain and exits only once the server has closed its
+// standard input after it. Its exit is then the server's stop and no crash: the run it holds alone
+// is neither failed nor charged a death (going_runs.kills) - an exit the server did not ask for
+// charges one, in the same step that makes the agent's other runs suspects (AgentExited) - and no
+// agent starts after it. A title change waiting on another writer's lock holds the drain for three
+// times the wait before the server starts an agent again after an exit (agentRestartFirst), so an
+// agent the signal ended is seen gone during the drain, with its death charged to its run and
+// another agent started.
+func TestAStopSignalToTheServersProcessGroupStopsTheAgentInTheServersOrder(t *testing.T) {
+	for _, stop := range []struct {
+		name   string
+		signal syscall.Signal
+	}{{"SIGTERM", syscall.SIGTERM}, {"SIGINT", syscall.SIGINT}} {
+		t.Run(stop.name, func(t *testing.T) {
+			server := startModelServer(t, nil)
+			pid := server.agentStarted(t, 1, 30*time.Second)
+			if group, err := syscall.Getpgid(pid); err != nil || group != server.Cmd.Process.Pid {
+				t.Fatalf("the agent %d is in process group %d (%v), want its server's, %d", pid, group, err, server.Cmd.Process.Pid)
+			}
+			server.waitForAgentRenewal(t)
+			key, _ := server.createIssue(t)
+			const words = "work on while the server stops"
+			never := make(chan struct{})
+			server.script.set(words, func(int) agenttest.Reply { return agenttest.Reply{Hold: never} })
+			run := server.begin(t, agentRun{login: "alice", words: words})[0]
+			server.eventually(t, 30*time.Second, "the run's model call", func() bool { return len(server.fake.Asking(words)) == 1 })
+
+			holder := lockIssue(t, server.database, key)
+			go func() {
+				// Its answer is not this test's.
+				_, _ = server.renameIssue(key, "Renamed while the server stops")
+			}()
+			if backend := waitForRenameBehind(t, server.database, holder, 10*time.Second); backend == 0 {
+				t.Fatalf("the title change never queued behind the issue lock:\n%s", server.Output.String())
+			}
+			if err := syscall.Kill(-server.Cmd.Process.Pid, stop.signal); err != nil {
+				t.Fatalf("send %s to the server's process group: %v", stop.name, err)
+			}
+			held := 3 * agentRestartFirst
+			time.Sleep(held)
+			if processGone(pid) {
+				t.Errorf("the agent %d had exited %v after the %s to its server's process group, with the HTTP drain still held", pid, held, stop.name)
+			}
+			if err := holder.Rollback(context.Background()); err != nil {
+				t.Fatalf("release the issue lock: %v", err)
+			}
+			server.WaitExit(t, "the "+stop.name+" to its process group")
+
+			if code := server.Cmd.ProcessState.ExitCode(); code != 0 {
+				t.Errorf("the server exited %d after the %s to its process group, want 0", code, stop.name)
+			}
+			if !server.logged(`msg="dispatch: closed the agent's standard input" pid=` + strconv.Itoa(pid)) {
+				t.Errorf("the server did not stop the agent %d by closing its standard input", pid)
+			}
+			if server.logged(`msg="dispatch: the agent process exited; it starts again"`) {
+				t.Error("the server counted the agent's exit as a crash, to start it again")
+			}
+			if pids := server.agentPids(); len(pids) != 1 {
+				t.Errorf("the server started the agents %v, want only the first: one started after the signal", pids)
+			}
+			if row := server.run(t, run); row.state == "failed" || row.kills != 0 {
+				t.Errorf("the run the agent held alone is %s with %d deaths charged to it, want neither failed nor charged one", row.state, row.kills)
+			}
+			if t.Failed() {
+				t.Logf("Dispatch's output:\n%s", server.Output.String())
+			}
+		})
+	}
+}
+
+// TestTheAgentStartsAgainFromTheServersOwnBuild: after a deploy has renamed another file over the
+// path the server was started from, the agent the server starts after an exit is still the
+// server's build (agentExecutable, /proc/self/exe on Linux): its executable is the file the server
+// runs, and it renews at the server. The file put at the path is a shell script that reads its
+// standard input until it closes, so an agent started from the path would run on as that script,
+// and be read as one, until the server stops it.
+func TestTheAgentStartsAgainFromTheServersOwnBuild(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only on Linux does the server start its agent from the file it runs, /proc/self/exe")
+	}
+	// The server runs from a name of the build of the test's own, so the file put there leaves the
+	// build the other tests start in place. t.TempDir and the builds are both under the system's
+	// temporary directory, so the link stays on one file system.
+	binary := filepath.Join(t.TempDir(), "envoy-dispatch")
+	if err := os.Link(cmdtest.Build(t, "envoy-dispatch"), binary); err != nil {
+		t.Fatalf("name the build at %s: %v", binary, err)
+	}
+	database := storetest.Open(t)
+	server := agentServer{
+		dispatchProcess: startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Binary: binary, OwnProcessGroup: true}),
+		database:        database,
+	}
+	server.waitHealthy(t)
+	first := server.agentStarted(t, 1, 30*time.Second)
+
+	// A deploy's new file, written beside the path and renamed over it, while the server runs on.
+	next := binary + ".next"
+	if err := os.WriteFile(next, []byte("#!/bin/sh\nexec cat >/dev/null\n"), 0o755); err != nil {
+		t.Fatalf("write the file the deploy puts at the server's path: %v", err)
+	}
+	if err := os.Rename(next, binary); err != nil {
+		t.Fatalf("put it at the server's path: %v", err)
+	}
+	signalProcess(t, first, syscall.SIGKILL)
+	second := server.agentStarted(t, 2, 30*time.Second)
+	executable := func(pid int) os.FileInfo {
+		t.Helper()
+		info, err := os.Stat(fmt.Sprintf("/proc/%d/exe", pid))
+		if err != nil {
+			t.Fatalf("read the executable of process %d: %v", pid, err)
+		}
+		return info
+	}
+	if !os.SameFile(executable(second), executable(server.Cmd.Process.Pid)) {
+		runs, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", second))
+		t.Fatalf("the agent %d started after the deploy runs %s, not the build its server runs", second, runs)
+	}
+	server.waitForAgentRenewal(t)
 }
 
 // TestMetricsShowBothProcesses: /metrics shows the goroutines, live heap, total memory and memory

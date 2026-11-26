@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -87,7 +86,9 @@ type agentEnd interface {
 // (agentEnd.AgentExited); two kills for memory within an hour that no run alone caused halve the
 // agent's run slots, to 1 at the least, for an hour. It is the process's agentShutdown: Stop
 // closes the agent's standard input after the HTTP drain, and Close waits for the agent to exit
-// and, for its share of the shutdown, for the record of that exit.
+// and, for its share of the shutdown, for the record of that exit. Each kill goes to the process
+// the supervisor started (os.Process.Kill), never to its pid, which another process may hold once
+// the agent has exited and been reaped.
 type agentSupervisor struct {
 	end     agentEnd
 	command []string
@@ -104,10 +105,10 @@ type agentSupervisor struct {
 	mu sync.Mutex
 	// stopping is closed when the server stops its agent (closeStandardInput).
 	stopping chan struct{}
-	// stdin, pid and started are the running agent's standard input, process id and start; a nil
-	// stdin and a pid of 0 while none runs.
+	// stdin, process and started are the running agent's standard input, process and start; nil
+	// while none runs.
 	stdin   io.Closer
-	pid     int
+	process *os.Process
 	started time.Time
 	// slots is the agent's run slots now, limits.Slots but for the hour after a halving, which
 	// ends at slotsUntil and restore gives back.
@@ -134,6 +135,21 @@ func startAgentSupervisor(end agentEnd, command, env []string, limits agentMemor
 	s := newAgentSupervisor(end, command, env, limits)
 	go s.run()
 	return s
+}
+
+// agentExecutable is the file the server starts its agent from: on Linux /proc/self/exe, which
+// names the file this process runs, whatever a deploy has put at its path since, so an agent
+// started after an exit is the server's own build; elsewhere the path os.Executable names. A
+// Linux with no /proc to read refuses, as os.Executable does there.
+func agentExecutable() (string, error) {
+	if runtime.GOOS != "linux" {
+		return os.Executable()
+	}
+	const self = "/proc/self/exe"
+	if _, err := os.Stat(self); err != nil {
+		return "", err
+	}
+	return self, nil
 }
 
 // newAgentSupervisor is a supervisor that has started nothing yet.
@@ -296,7 +312,7 @@ func (s *agentSupervisor) start() (*exec.Cmd, error) {
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("give the agent its secret: %w", err)
 	}
-	s.stdin, s.pid, s.started = stdin, cmd.Process.Pid, time.Now()
+	s.stdin, s.process, s.started = stdin, cmd.Process, time.Now()
 	lowerPriority(cmd.Process.Pid)
 	slog.Info("dispatch: started the agent process", "pid", cmd.Process.Pid, "ceiling", s.limits.Ceiling,
 		"gomemlimit", s.limits.AgentLimit, "slots", s.slots)
@@ -352,7 +368,7 @@ func (s *agentSupervisor) watch(cmd *exec.Cmd, started time.Time) bool {
 // the record's share of the shutdown is over.
 func (s *agentSupervisor) exited(killedForMemory bool) {
 	s.mu.Lock()
-	s.stdin, s.pid = nil, 0
+	s.stdin, s.process = nil, nil
 	var stopping bool
 	select {
 	case <-s.stopping:
@@ -422,14 +438,14 @@ func (s *agentSupervisor) closeStandardInput() {
 	default:
 	}
 	close(s.stopping)
-	stdin, pid := s.stdin, s.pid
+	stdin, process := s.stdin, s.process
 	s.mu.Unlock()
-	if pid == 0 {
+	if process == nil {
 		s.closeGone()
 	}
 	if stdin != nil {
 		_ = stdin.Close()
-		slog.Info("dispatch: closed the agent's standard input", "pid", pid)
+		slog.Info("dispatch: closed the agent's standard input", "pid", process.Pid)
 	}
 }
 
@@ -446,20 +462,22 @@ func (s *agentSupervisor) Stop() {
 
 // Close is the second half: the server's end closes once the calls in flight have ended or by
 // passes; the agent process, whose standard input Stop closed, is waited for agentExitGrace, then
-// killed and waited for as long again; and the record of its exit, the database write that frees
-// the runs it held, is waited for agentExitRecordWait, then cancelled, so the runs keep their
-// leases, which run out. After the calls in flight, then, the agent's part of the shutdown is the
-// agent's exit and at most agentExitRecordWait, whether the database answers or not.
+// killed through the process the supervisor started (os.Process.Kill), which signals nothing once
+// that process is reaped, and waited for as long again; and the record of its exit, the database
+// write that frees the runs it held, is waited for agentExitRecordWait, then cancelled, so the
+// runs keep their leases, which run out. After the calls in flight, then, the agent's part of the
+// shutdown is the agent's exit and at most agentExitRecordWait, whether the database answers or
+// not.
 func (s *agentSupervisor) Close(by time.Time) {
 	defer s.cancelRecords()
 	s.end.Close(by)
 	if !closedWithin(s.gone, agentExitGrace) {
 		s.mu.Lock()
-		pid := s.pid
+		process := s.process
 		s.mu.Unlock()
-		if pid != 0 {
-			slog.Warn("dispatch: the agent did not exit when its standard input closed; it is killed", "pid", pid)
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		if process != nil {
+			slog.Warn("dispatch: the agent did not exit when its standard input closed; it is killed", "pid", process.Pid)
+			_ = process.Kill()
 		}
 		if !closedWithin(s.gone, agentExitGrace) {
 			slog.Warn("dispatch: the agent process had not exited when the shutdown went on")
@@ -495,7 +513,7 @@ func closedWithin(ch <-chan struct{}, within time.Duration) bool {
 func (s *agentSupervisor) running() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.started, s.pid != 0
+	return s.started, s.process != nil
 }
 
 // runSlots is the agent's run slots now.

@@ -1165,6 +1165,33 @@ func TestTheAgentsShutdownEndsInsideItsShareWithTheDatabaseUnanswering(t *testin
 	}
 }
 
+// An agent process that does not exit when the server's stop closes its standard input is killed
+// once agentExitGrace has passed (agentSupervisor.Close), and is gone when Close returns. The kill
+// goes to the process the supervisor started (os.Process.Kill), which signals nothing once that
+// process has been reaped, where a kill by its pid could reach a process the kernel has given the
+// pid to since; no test can tell the two apart without that reuse, so this one holds the kill
+// itself. The agent here is a shell that sleeps and never reads its standard input.
+func TestTheServersCloseKillsAnAgentThatOutlivesItsStandardInput(t *testing.T) {
+	t.Parallel()
+	end := &unansweredRecordEnd{recorded: make(chan error, 1)}
+	supervisor := startAgentSupervisor(end, []string{"sh", "-c", "exec sleep 60"}, nil, agentLimits(0))
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, running := supervisor.running(); running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the agent process did not start within 10s")
+		}
+	}
+	supervisor.Stop()
+	supervisor.Close(time.Now().Add(time.Minute))
+	select {
+	case <-supervisor.gone:
+	default:
+		t.Fatal("the agent process, which never reads its standard input, still ran when the server's close returned")
+	}
+}
+
 // A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
 // as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
 // waits for it. On a database that has stopped answering it never comes back, so closePool gives up

@@ -112,7 +112,9 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // first, with no deadline of its own: a message send among them finishes, bounded by the listener
 // client's receipt timeout. The agent process is stopped then (agentShutdown.Stop): no claim is
 // answered a run from then on, every renew waiting is answered at once, and the agent's standard
-// input closes, so it exits. The document service settles the documents owed within
+// input closes, so it exits. That is its stop also when the signal went to the server's whole
+// process group, which the agent takes and does nothing with (runAgent), so the drain runs before
+// it either way. The document service settles the documents owed within
 // documentShutdownTimeout once those requests are done, or httpDrainBeforeDocuments after the
 // signal with some still running. The agent's calls in flight are waited for until
 // outboxStopBudget after shutdown began, the latest the document service's budget ends, 5 s inside

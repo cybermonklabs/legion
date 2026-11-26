@@ -1502,13 +1502,14 @@ func main() {
 	// The command bar's agent process makes every read and write of its runs as a call to this
 	// server over a Unix socket only this process's user can open (api.AgentListener). A socket
 	// this process cannot make leaves the runs waiting for one that can, and Dispatch serves on.
-	// The agent is this binary's own `agent` subcommand, which agentSupervisor starts with an
-	// environment of the chat model's settings alone, and starts again after each exit.
+	// The agent is this binary's own `agent` subcommand, which agentSupervisor starts from the file
+	// this process runs (agentExecutable), with an environment of the chat model's settings alone,
+	// and starts again after each exit.
 	var agent agentShutdown
 	var supervisor *agentSupervisor
 	if listening, err := background.ListenAgent(boot.RuntimeDir); err != nil {
 		slog.Warn("dispatch: listen for the command bar's agent; its runs wait for a server process that does", "error", err)
-	} else if executable, err := os.Executable(); err != nil {
+	} else if executable, err := agentExecutable(); err != nil {
 		slog.Error("dispatch: find this binary to start the agent process from; its runs wait for a server process that does", "error", err)
 		agent = listening
 	} else {

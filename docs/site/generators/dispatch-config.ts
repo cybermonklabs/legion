@@ -35,7 +35,7 @@ function render(settings: Setting[]): string {
   const lines = [
     `Dispatch's server, \`envoy-dispatch\`, and its subcommands take the ${settings.length} Dispatch settings below from the environment. \`envoy-dispatch settings\` prints the same table from the binary you run.`,
     "",
-    "The libraries Dispatch is built on read a few more variables for themselves, outside this table: `HOME` (where the data directory, `~/.local/share/dispatch`, is, and the user `envoy.json` when `XDG_CONFIG_HOME` is unset or empty), libpq's `PG*` variables (connection parameters `DATABASE_URL` leaves out), `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` (outbound HTTP), `SSL_CERT_FILE` and `SSL_CERT_DIR` (the certificates Dispatch trusts), and the Go runtime's `GO*` variables and `TZ`.",
+    "The libraries Dispatch is built on read a few more variables for themselves, outside this table: `HOME` (where the data directory, `~/.local/share/dispatch`, is, and the user `envoy.json` when `XDG_CONFIG_HOME` is unset or empty), libpq's `PG*` variables (connection parameters `DATABASE_URL` leaves out), `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` (outbound HTTP), `SSL_CERT_DIR` (a directory of the certificates Dispatch trusts; `SSL_CERT_FILE`, the file of them, is in the table), and the Go runtime's `GO*` variables and `TZ`.",
     "",
     "A setting with a file form can name a file that holds its value instead. When Dispatch reads that setting, the file's trimmed contents win over the variable, and a file that cannot be read, or holds nothing, refuses startup.",
     "",

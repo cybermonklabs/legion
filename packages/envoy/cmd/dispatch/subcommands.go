@@ -8,9 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
@@ -114,6 +116,11 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 // settings name, paced to its share of the model's quota, with its slots, until stdin closes,
 // when it exits 0. It exits 2 when started with no socket to call, and 1 when its secret or its
 // settings cannot be read or its loop fails, which the server answers by starting it again.
+// While it runs it takes SIGINT and SIGTERM and does nothing with them: a stop sent to the
+// server's whole process group, a terminal's Ctrl-C or a `kill -TERM -<group>`, reaches the agent
+// too, and the server's own stop, the close of stdin once the HTTP drain is over, is what ends it.
+// An agent the signal ended would exit before the drain, which the server counts as a crash: a
+// death charged to a run it held alone, its other runs made suspects, and another agent started.
 // DISPATCH_TEST_AGENT_HOOKS=1, which its server hands on only under the server's own test hooks,
 // turns the loop's test hooks on, makes each SIGUSR1 collect the agent's heap and log what it
 // found (collectAgentOnSignal) and each SIGUSR2 log its runtime figures as they stand
@@ -121,6 +128,11 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 // it allocate at full speed that long after its start (growAgentHeap); and DISPATCH_TEST_AGENT_NOW,
 // handed on the same way, is the time its runs tell their model as the time now (agent.Config.Now).
 func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io.Writer) int {
+	// Taken for as long as runAgent runs and then given back, so a test that calls it in its own
+	// process leaves that process's signals as they were.
+	stops := make(chan os.Signal, 1)
+	signal.Notify(stops, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stops)
 	socket := strings.TrimSpace(env.get("DISPATCH_AGENT_SOCKET"))
 	if socket == "" {
 		fmt.Fprintln(stderr, "agent: DISPATCH_AGENT_SOCKET is unset: envoy-dispatch agent is the command bar's agent process, which its server starts itself, naming the socket it listens on")
