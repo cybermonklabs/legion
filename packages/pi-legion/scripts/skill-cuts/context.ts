@@ -2149,6 +2149,45 @@ export async function subagentDefinition(
   return agentIn(c.context, (await agentDirs(c, trees, builds, options.source)).dirs);
 }
 
+/** The record of a repository skill a context installs, as its ContextRecord's `skills` names it:
+ *  the name the profile lists it under, and its repository, commit, path and cache key. */
+type CachedSkillRecord = {
+  readonly name: string;
+  readonly from: Exclude<ContextRecord["skills"][number]["from"], string>;
+};
+
+/** A skill of an arm's profile as its context installs it, under the name the profile lists it
+ *  under (`listed`, cases.ts's `listedName`): from the arm's directory (`armDir`), or from its
+ *  repository at its commit, kept in the cache under the key of its repository, commit and path
+ *  (`record`, as the context's record names it). */
+type ProfileCopy = { readonly skill: ProfileSkill; readonly listed: string } & (
+  | { readonly armDir: string; readonly record?: never }
+  | { readonly armDir?: never; readonly record: CachedSkillRecord }
+);
+
+/**
+ * Each skill of `arm.profileSkills`, in order, as its context installs it (ProfileCopy): each
+ * copy of the case's skill's source, under its own name or a namespace, from the arm's directory
+ * (arms.ts's `installedFromArm`), and every other skill from its repository. An arm with no skill
+ * directory (`none`) installs no copy from it: a copy it lists under the case's skill's name is
+ * another source's (arms.ts's `Arm.relisted`). It reads the arm alone: no repository, and no
+ * cache. `buildContext` installs by it, and capture.ts's `restoreCopies` compares a saved
+ * capture's record with its repository records.
+ */
+export function profileCopies(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
+): ProfileCopy[] {
+  const fromArm = installedFromArm(arm);
+  return arm.profileSkills.map((skill): ProfileCopy => {
+    const listed = listedName(skill);
+    const armDir = fromArm(skill);
+    if (armDir !== undefined) return { skill, listed, armDir };
+    const key = cacheKey(skill.repo, skill.commit, skill.path);
+    const from = { repo: skill.repo, commit: skill.commit, path: skill.path, key };
+    return { skill, listed, record: { name: listed, from } };
+  });
+}
+
 /** Writes the context of `c`'s arm `arm` under `options.root`, replacing one written there. */
 export async function buildContext(
   c: ContextCase,
@@ -2194,24 +2233,22 @@ export async function buildContext(
   mkdirSync(skillsDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
 
-  // Each copy of the case's skill's source, under its own name or a namespace, is installed from
-  // the arm's directory (arms.ts's `installedFromArm`); every other skill is its repository's. An
-  // arm with no skill directory (`none`) installs no copy from it: a copy it lists under the case's
-  // skill's name is another source's (arms.ts's `Arm.relisted`).
-  const fromArm = installedFromArm(arm);
+  const copies = profileCopies(arm);
   // The repository skills the cache lacks, read ahead per repository and commit: one tree and a
   // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own. Each is read
   // at the directory `skillReadDir` gives, kept by its cache key: its own, or the one its link
   // names.
   const ahead = new Map<string, { repo: string; commit: string; dirs: string[] }>();
   const readDirs = new Map<string, Extract<LinkedPath, { path: string }>>();
-  for (const skill of arm.profileSkills) {
-    const key = cacheKey(skill.repo, skill.commit, skill.path);
-    if (fromArm(skill) !== undefined || existsSync(path.join(options.cacheDir, "skills", key))) {
+  for (const { skill, record } of copies) {
+    if (
+      record === undefined ||
+      existsSync(path.join(options.cacheDir, "skills", record.from.key))
+    ) {
       continue;
     }
     const read = await skillReadDir(c, source, skill);
-    readDirs.set(key, read);
+    readDirs.set(record.from.key, read);
     const id = `${skill.repo}@${skill.commit}`;
     const group = ahead.get(id) ?? { repo: skill.repo, commit: skill.commit, dirs: [] };
     group.dirs.push(read.path);
@@ -2228,8 +2265,8 @@ export async function buildContext(
       const release = await source.prefetch?.(repo, commit, dirs);
       if (release !== undefined) releases.push(release);
     }
-    for (const skill of arm.profileSkills) {
-      const listed = listedName(skill);
+    for (const copy of copies) {
+      const { skill, listed } = copy;
       const dir =
         skill.namespace === undefined
           ? path.join(skillsDir, skill.name)
@@ -2242,15 +2279,15 @@ export async function buildContext(
         mkdirSync(parent, { recursive: true });
         if (!namespacedDirs.includes(parent)) namespacedDirs.push(parent);
       }
-      const armDir = fromArm(skill);
       // Where the copy comes from, as the refusal below names it.
       let from: string;
-      if (armDir !== undefined) {
-        cpSync(armDir, dir, { recursive: true, verbatimSymlinks: true });
+      if (copy.armDir !== undefined) {
+        cpSync(copy.armDir, dir, { recursive: true, verbatimSymlinks: true });
         skillRecords.push({ name: listed, from: "arm" });
-        from = `the arm's text, ${armDir}`;
+        from = `the arm's text, ${copy.armDir}`;
       } else {
-        const key = cacheKey(skill.repo, skill.commit, skill.path);
+        const { record } = copy;
+        const { key } = record.from;
         const cached = await builds.entry("skill", key, async (dest) => {
           // A skill whose cache entry was there at the read ahead is not in `readDirs`.
           const read = readDirs.get(key) ?? (await skillReadDir(c, source, skill));
@@ -2267,10 +2304,7 @@ export async function buildContext(
           }
         });
         cpSync(cached, dir, { recursive: true, verbatimSymlinks: true });
-        skillRecords.push({
-          name: listed,
-          from: { repo: skill.repo, commit: skill.commit, path: skill.path, key },
-        });
+        skillRecords.push(record);
         from = `${skill.path} of ${skill.repo} at ${skill.commit}`;
       }
       // Oh My Pi names the copy by its frontmatter `name`, else its directory's (common.ts's
@@ -2284,7 +2318,7 @@ export async function buildContext(
       const named = ompSkillName(frontmatter, skill.name);
       if (named !== skill.name) {
         throw new Refused(
-          `case ${c.id}: the profile's skill ${listed} is installed from ${from}, whose SKILL.md's frontmatter names it ${named}, and Oh My Pi names a skill by its frontmatter name, not ${skill.name}, the name the profile gives it${armDir === undefined ? "" : ": an arm's text must keep the case skill's name"}`
+          `case ${c.id}: the profile's skill ${listed} is installed from ${from}, whose SKILL.md's frontmatter names it ${named}, and Oh My Pi names a skill by its frontmatter name, not ${skill.name}, the name the profile gives it${copy.armDir === undefined ? "" : ": an arm's text must keep the case skill's name"}`
         );
       }
       skills.push({ name: listed, dir, ...listingFrontmatter(frontmatter) });

@@ -349,15 +349,18 @@ file is put back after, and the installed manifest holds it too), and a script t
 no number fails the plugin's build. A saved capture is read back and not made again; the
 installed copies of the profile's other skills that its record names, which its replays answer a
 read of such a skill from, are not in it but in the cache (`<cache-dir>/skills/<key>`), which is
-not kept with `--out`. So where the cache lacks one of them (on a new machine, say), the case's
-context is built again before the replays, as the capture built it, under a scratch directory of
-its own that is removed after: that makes each missing copy again from its repository at its
-commit. A saved capture whose copies are all in the cache builds nothing and reads no repository.
-One whose copies that build does not give again (the case's profile names another commit or
-another copy, or the record keeps a copy under another cache key) is refused (exit 2, or that
-task's failure in `load`), naming the case, the arm and the first copy that differs: make it again
-under a new `--out`. The run stops above 1 GiB of peak resident memory, and no new model call
-starts once the replies cost `--budget-usd` at list price.
+not kept with `--out`. A saved capture whose record names other copies than the case's profile
+now gives (the profile names another commit or copy, gives a copy the record lacks or lacks one
+it names, or the record keeps a copy under another cache key) is refused (exit 2, or that task's
+failure in `load`), naming the case, the arm and the first copy that differs (`no copy` where one
+side has none): make it again under a new `--out`. The runner compares the record with the
+profile alone, reading no repository and no cache, so it refuses such a capture whether or not the
+cache holds the record's copies. Then, where the cache lacks one of the record's copies (on a new
+machine, say), the case's context is built again before the replays, as the capture built it,
+under a scratch directory of its own that is removed after: that makes each missing copy again
+from its repository at its commit. A saved capture whose copies are all in the cache builds
+nothing and reads no repository. The run stops above 1 GiB of peak resident memory, and no new
+model call starts once the replies cost `--budget-usd` at list price.
 
 Each cache entry a context builds (`<cache-dir>/<kind>s/<key>`: a skill, a repository's checkout under `trees/`, a plugin, a compose, a file or a directory) has a file list, `<cache-dir>/lists/<kind>s/<key>.json`, kept apart from the entries: each file and symbolic link the entry was made with, with its size or its target.
 A context that finds the entry in the cache checks it against that list, and a listed path that is missing or changed stops the context with `IncompleteCacheEntry`, which names the entry, how many listed paths differ, and up to 5 of them in full with what differs; removing the entry and its list builds it again.
@@ -2038,6 +2041,6 @@ call, a load test's task or an `--after-case` command that failed, or `behaviour
 a drop no stage makes); 2 refused before any model call or store read (among the refusals, an
 `--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and `build-cases`),
 or as a case's capture installs a copy Oh My Pi would name otherwise than its profile does, or
-as a saved capture's installed copies, made again, are not the ones its record names;
+as a saved capture's record names other installed copies than its case's profile now gives;
 3 stopped (the budget is spent, the peak memory passed 1 GiB, 1.5 GiB for `copies`, or the listing
 rule dropped more than half of a load's tasks); 4 stopped by build-cases' stop rule.

@@ -3073,8 +3073,9 @@ test("a saved capture whose cache holds every installed copy its record names is
 
 // Catches: a saved capture replayed with other copies than the ones it was made with, where the
 // case's profile now names another commit of a copy than its record does, or the record keeps a
-// copy under another cache key than the build gives it.
-test("a saved capture whose installed copies, made again, differ from the ones its record names is refused, naming the case, the arm and the copy", async () => {
+// copy under another cache key than the profile gives it; and a refusal that first makes the
+// profile's copy in the cache, reading its repository for a capture it then refuses.
+test("a saved capture whose record names other installed copies than its case's profile now gives is refused before any copy is made, naming the case, the arm and the copy", async () => {
   const root = path.join(dir, "copies-differ");
   const repos = path.join(root, "repos");
   writeTree(path.join(repos, "acme/skills", COMMIT), {
@@ -3119,11 +3120,124 @@ test("a saved capture whose installed copies, made again, differ from the ones i
       `case ${id} arm old: the saved capture ${files.record} installed ${wasWords} where the case's profile now gives beta from skills/beta of acme/skills at ${COMMIT} (cache key ${betaKey}), so a replay of it would answer a read of that skill from another copy than the one it was made with: make it again under a new --out`
     );
   }
-  // The context each refusal built again is gone; the copies it made stay in the cache.
-  expect(readdirSync(path.join(options.scratchDir, "copies"))).toEqual([]);
-  expect(readFileSync(path.join(options.cacheDir, "skills", betaKey, "SKILL.md"), "utf8")).toBe(
-    BETA_SKILL
-  );
+  // The refusal comes before any copy is made again: no scratch directory and no cache entry,
+  // though the source holds every copy the profile names.
+  expect(existsSync(options.scratchDir)).toBe(false);
+  expect(existsSync(options.cacheDir)).toBe(false);
+});
+
+// Catches: a saved capture made under an older profile of its case replayed in silence because
+// the cache still holds every copy its record names (the comparison skipped when no copy is
+// missing), and a comparison that reads a repository or makes a copy to decide. Each row's cache
+// holds exactly the copies its record names, and the source throws on any read.
+test("a saved capture whose record names other installed copies than its case's profile now gives is refused even when the cache holds every copy its record names, and one whose copies match is read back with no read of any repository", async () => {
+  const root = path.join(dir, "copies-cached");
+  const old = path.join(root, "old");
+  writeTree(old, { "SKILL.md": OLD_SKILL, "references/x.md": X });
+  const texts: Readonly<Record<string, string>> = { beta: BETA_SKILL, delta: DELTA_SKILL };
+  const other = "fedcba9876543210fedcba9876543210fedcba98";
+  const gamma = { repo: "acme/skills", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  const betaWords = `beta from skills/beta of acme/skills at ${COMMIT} (cache key ${cacheKey("acme/skills", COMMIT, "skills/beta")})`;
+  const rows: readonly {
+    readonly id: string;
+    /** The repository skills the case's profile gained since the capture. */
+    readonly gained: Profile["skills"];
+    /** The repository copies the saved record names, each of them in the row's cache. */
+    readonly was: readonly ContextRecord["skills"][number][];
+    /** The copies the refusal names at the first place they differ: the record's, the profile's. */
+    readonly refusal?: { readonly was: string; readonly now: string };
+  }[] = [
+    // (a) Catches the early return that reused the old profile's copy: the case file was built
+    // again after the capture, its profile naming another commit of beta, and the cache still
+    // holds the commit the record names.
+    {
+      id: "c-cached-moved",
+      gained: [],
+      was: [skillsCopy("beta", other), skillsCopy("delta")],
+      refusal: {
+        was: `beta from skills/beta of acme/skills at ${other} (cache key ${cacheKey("acme/skills", other, "skills/beta")})`,
+        now: betaWords,
+      },
+    },
+    // (b) Catches the early return that reused a listing short of a skill, and a comparison that
+    // stops at the shorter list: the case file was built again with one more repository skill,
+    // gamma, which the record has no copy of, and the cache holds every copy the record names.
+    {
+      id: "c-cached-gained",
+      gained: [gamma],
+      was: [skillsCopy("beta"), skillsCopy("delta")],
+      refusal: {
+        was: "no copy",
+        now: `gamma from skills/gamma of acme/skills at ${COMMIT} (cache key ${cacheKey("acme/skills", COMMIT, "skills/gamma")})`,
+      },
+    },
+    // (c) Catches a comparison that refuses copies that match, or reads a repository or makes a
+    // copy where the cache holds them all: the record names the copies the profile gives.
+    { id: "c-cached-same", gained: [], was: [skillsCopy("beta"), skillsCopy("delta")] },
+  ];
+  const reads: string[] = [];
+  const read = async (what: string): Promise<never> => {
+    reads.push(what);
+    throw new Error(`no read is expected: ${what}`);
+  };
+  const source: RepoSource = {
+    name: "no repository",
+    file: (repo, _commit, file) => read(`file ${file} of ${repo}`),
+    tree: (repo, _commit, at) => read(`tree ${at} of ${repo}`),
+    link: (repo, _commit, file) => read(`link ${file} of ${repo}`),
+  };
+  const outcomes: unknown[] = [];
+  const expected: unknown[] = [];
+  for (const row of rows) {
+    const base = f1Case(row.id);
+    const c: Case = {
+      ...base,
+      profile: { ...base.profile, skills: [...base.profile.skills, ...row.gained] },
+    };
+    const arm = buildArm(c, "old", { old, new: old }, path.join(root, "arms"));
+    const cacheDir = path.join(root, row.id, "cache");
+    const keys: string[] = [];
+    for (const copy of row.was) {
+      if (typeof copy.from === "string") continue;
+      writeTree(path.join(cacheDir, "skills", copy.from.key), {
+        "SKILL.md": texts[copy.name] ?? "",
+      });
+      keys.push(copy.from.key);
+    }
+    const outDir = path.join(root, row.id, "out");
+    const files = saveOldCapture(outDir, c, row.was);
+    const scratchDir = path.join(root, row.id, "scratch");
+    const outcome = await captureBody(c, arm, {
+      outDir,
+      scratchDir,
+      cacheDir,
+      source,
+      hints,
+      session: SESSION,
+    }).then(
+      (saved) => `read back, made ${saved.made}`,
+      (caught: unknown) =>
+        caught instanceof Refused ? `refused: ${caught.message}` : `failed: ${String(caught)}`
+    );
+    outcomes.push({
+      id: row.id,
+      outcome,
+      reads: reads.splice(0),
+      cache: readdirSync(path.join(cacheDir, "skills")).sort(),
+      scratch: existsSync(scratchDir),
+    });
+    expected.push({
+      id: row.id,
+      outcome:
+        row.refusal === undefined
+          ? "read back, made false"
+          : `refused: case ${row.id} arm old: the saved capture ${files.record} installed ${row.refusal.was} where the case's profile now gives ${row.refusal.now}, so a replay of it would answer a read of that skill from another copy than the one it was made with: make it again under a new --out`,
+      reads: [],
+      cache: keys.sort(),
+      scratch: false,
+    });
+  }
+  expect(outcomes).toEqual(expected);
 });
 
 // Catches: every left-out plugin said to have failed its build, whatever left it out.

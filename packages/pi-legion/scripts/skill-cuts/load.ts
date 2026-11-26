@@ -120,8 +120,9 @@
  * 18:59:51Z). On Oh My Pi, a reply whose every tool call reads a skill file is answered as
  * replay.ts answers one: a read of another skill the profile installs from that skill's installed
  * copy (context.ts's `installedCopies` of the capture's record, made again before the runs where
- * the cache lacks it, capture.ts's `restoreCopies`), a read of a skill it does not
- * install with Oh My Pi's unknown-skill result, a read of another file of the tested skill from
+ * the cache lacks it, capture.ts's `restoreCopies`, which first refuses a capture whose record
+ * names other copies than the task's profile now gives, cached or not), a read of a skill it does
+ * not install with Oh My Pi's unknown-skill result, a read of another file of the tested skill from
  * its directory. Then the body goes again with the reply and the answers, at most MAX_SKILL_ROUNDS
  * times. A reply that reads skill files beside other calls, and does not read the tested skill, is
  * sorted with no model by replay.ts's LOAD_RULE (the architect of INFRA-4676,
