@@ -143,9 +143,10 @@ type replyFrame struct {
 	// its prompt, its tool definitions among it, its level's output tokens and its level's
 	// reasoning tokens (Level.estimate), and for a rewrite the estimate of its short prompt
 	// (rewritePrompt, the person's words, the held reply and longTold), no tool, since it sends
-	// none, its level's output tokens and rewriteReasoningTokens (rewrite), summed over its HTTP
-	// attempts, which a run whose deployment names no quota still counts. Set against
-	// input_tokens + output_tokens, it says how far the estimate is from what the call spent.
+	// none, its level's output tokens and Fast's reasoning tokens, rewriteReasoningTokens, though
+	// it asks for no reasoning (rewrite), summed over its HTTP attempts, which a run whose
+	// deployment names no quota still counts. Set against input_tokens + output_tokens, it says
+	// how far the estimate is from what the call spent.
 	ReservedTokens int `json:"reserved_tokens"`
 	// ChargedTokens is the tokens the pacer charged the call in the end: what it drew for the
 	// call's HTTP attempts, at most a minute's share each, and the tokens the call spent past
@@ -472,13 +473,13 @@ type stepOutcome struct {
 // (withhold). The run's last model call, which is offered no tool, is told so at the end of its
 // system message (lastCallNote). The step after a reply held back as long is that reply's rewrite
 // (heldLast, length.go): its call is given rewritePrompt, the person's words, the held reply and
-// longTold alone, not the run's conversation, is offered no tool, at rewriteEffort, within
-// rewriteCallTime, and the pacer reserves the tokens of that short prompt and
-// rewriteReasoningTokens for it (rewrite). A reply of the rewrite that links what the held reply
-// does not ends the turn done with the held reply shown whole, and any other reply of it ends the
-// turn as endProse ends it (endRewrite); a rewrite that draws no reply - its bound ended it, or
-// its call failed, was refused or was held back for the quota - ends the turn done with the held
-// reply shown whole too (missedRewrite).
+// longTold alone, not the run's conversation, is offered no tool, asks for no reasoning
+// (rewriteEffort), within rewriteCallTime, and the pacer reserves the tokens of that short prompt
+// and rewriteReasoningTokens for it (rewrite). A reply of the rewrite that links what the held
+// reply does not ends the turn done with the held reply shown whole, and any other reply of it
+// ends the turn as endProse ends it (endRewrite); a rewrite that draws no reply - its bound ended
+// it, or its call failed, was refused or was held back for the quota - ends the turn done with
+// the held reply shown whole too (missedRewrite).
 func (w *worker) step() stepOutcome {
 	base := w.next
 	var finish string
