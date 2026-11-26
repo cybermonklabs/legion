@@ -156,7 +156,8 @@ func (r *idleWakeRig) countPodWaitHeld(issue idleRigIssue) func() int {
 	}
 }
 
-// awaitUnownedReleasedThenStarted waits for the issue's pod, its Sandbox and its disk to be gone
+// awaitUnownedReleasedThenStarted waits for the issue's pod, its Sandbox and its disk to be gone,
+// or for a pod other than before to stand in its place,
 // while every claim of the issue but role's stays as it was — as awaitUnownedReleased waits, with
 // role's line left out, since the start that waits for the pod makes role's claim the moment the
 // Sandbox has left the store — then for role's claim to register in a new pod of the issue, other
@@ -192,9 +193,12 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 			r.t.Fatalf("the claims of %s read\n  %s\nwant the ones it stood at\n  %s\nthis release stops no role and changes no claim",
 				issue.key, strings.Join(got, "\n  "), strings.Join(held, "\n  "))
 		}
-		pod, sandbox, disk := r.kube.pod(issue.pod), r.kube.sandbox(issue.pod) != nil, r.kube.disk(issue.pod)
-		seen = fmt.Sprintf("pod %t, sandbox %t, disk %t", pod, sandbox, disk)
-		return !pod && !sandbox && !disk
+		// The release takes the pod, its Sandbox and its disk, and the start that waited builds the
+		// next pod at once: a poll that comes after both reads a pod standing, so a pod other than
+		// before, the one the release took, is that release too.
+		pod, sandbox, disk, uid := r.kube.pod(issue.pod), r.kube.sandbox(issue.pod) != nil, r.kube.disk(issue.pod), r.podUID(issue)
+		seen = fmt.Sprintf("pod %t, sandbox %t, disk %t, uid %q", pod, sandbox, disk, uid)
+		return !pod && !sandbox && !disk || uid != "" && uid != before
 	})
 	idleRigEventually(r.t, idleRigPodWait, "the "+string(role)+" of "+issue.key+" registered in a new pod", func() bool {
 		uid := r.podUID(issue)
