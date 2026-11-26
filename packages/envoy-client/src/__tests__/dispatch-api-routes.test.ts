@@ -55,7 +55,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAllIssues: (client) => client.listAllIssues({}),
   listProjectArtifacts: (client) => client.listProjectArtifacts("DSP"),
   listIssueArtifacts: (client) => client.listIssueArtifacts(ISSUE),
-  markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n"),
+  markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n", false),
+  fileRoundTrip: (client) => client.fileRoundTrip(new TextEncoder().encode("# Notes\n"), false),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes"),
   agentArtifact: (client) => client.agentArtifact("session-1", file),
@@ -100,6 +101,9 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   issueResults: (client) => client.issueResults(ISSUE),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
+  recordDeploy: (client) =>
+    client.recordDeploy({ repo: "acme/widgets", program: "worker", commit: check.commit }),
+  deploys: (client) => client.deploys("acme/widgets"),
   issueCoverage: (client) => client.issueCoverage(ISSUE),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment(ISSUE, { body: "Shipped.", actor }),

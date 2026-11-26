@@ -12,9 +12,9 @@ The command prints excluded results too.
 Passes at another commit, under older check words, or retracted passes do not count.
 A pass and a fail at one required head read not known until one is retracted.
 
-A check carrying `ci_check` is CI's: it derives one CI result per required head.
-Each derived result stands for both roles.
-Until each required run concludes, wait for it by name and head.
+A check carrying `ci_check` is CI's: `dispatch results` prints one derived CI result for it, and its `A pass stands:` line decides the check.
+That derived result stands for both roles.
+Until the named run concludes, wait for it by its name.
 Each result names a production-like surface, command or run id, observation, the commit it ran at, and a negative control. The gate is this issue's own checks at its globally required heads.
 A result a child records against one of them proves nothing here.
 A child carrying part of this issue's requirement proves it with its own check whose `serves` names that requirement. An issue with no Verification document, or with one that holds no `before_merge` check, is a gap you name in your review, never a review that asks for changes: say which of the two it is, and tell the architect, which writes the checks, while your own findings and the checks that do exist decide the review. Run the thermonuclear pair once at the head the round reviews, over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task: the branch's whole diff on your first review of the pull request, and on a later head only what the rule for a new head below has you review. Submit one review per round carrying every inline comment.

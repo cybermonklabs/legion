@@ -232,8 +232,9 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		pair.clock.advance(time.Minute)
 
 		read := pair.read(t, issue, "the read inside the hold")
-		// integrationCommit, which nothing stored places, and strayCommit: the hold answers
-		// integration/x unseen for each with no call, so each walk ends unknown.
+		// strayCommit, whose read made the hold, and integrationCommit, which nothing stored
+		// places: the hold answers integration/x unseen for each with no call, so each walk ends
+		// unknown.
 		for index, name := range []string{"the writer's result whose read made the hold", "the writer's result no stored row places"} {
 			stands := standsAt(t, read.writer, "m1", pair.writer.ids[index], name, model.CommitUnknown, false)
 			if stands.Reason != model.ReasonReadFailed {

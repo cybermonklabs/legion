@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4369
+body: |-
+  AskGate runs its dry run of a gated write with `DISPATCH_DRY_RUN_LOCAL=1`, so the dry run checks
+  the arguments alone and asks Dispatch nothing. The call that AskGate then lets run checks the
+  text as its dry run would: it asks Dispatch how it would store text given inline, read from
+  `--content-file` or from stdin, or what it refuses of a Markdown `--path` file's bytes, and
+  refuses a text that Dispatch would store under another spelling or that an upload refuses for
+  the text alone.

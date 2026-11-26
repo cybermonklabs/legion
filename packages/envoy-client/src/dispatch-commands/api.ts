@@ -55,11 +55,12 @@ export interface WriteRoute {
 
 /**
  * Each write route a `dispatch` command sends, with the commands that send it, which the refusal
- * of a gated session names. A route that writes nothing (`markdown/round-trip`, `related`,
- * `results/dry-run`) names the command that sends it, since the gate refuses it all the same. A
- * write method of `DispatchClient` that no command calls has no row, and neither has `sendRoute`,
- * which sends the route its caller names: `dispatch-api-routes.test.ts` names each in its
- * `NO_COMMAND`, and holds the table to every write `DispatchClient` sends.
+ * of a gated session names. A route that writes nothing (`markdown/round-trip`,
+ * `markdown/file-round-trip`, `related`, `results/dry-run`) names the command that sends it,
+ * since the gate refuses it all the same. A write method of `DispatchClient` that no command calls
+ * has no row, and neither has `sendRoute`, which sends the route its caller names:
+ * `dispatch-api-routes.test.ts` names each in its `NO_COMMAND`, and holds the table to every write
+ * `DispatchClient` sends.
  */
 export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues", commands: ["issue"] },
@@ -106,12 +107,14 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues/{key}/results", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/results/dry-run", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/results/{id}/retract", commands: ["result"] },
+  { method: "POST", pattern: "/api/v1/deploys", commands: ["deploy"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/handoffs/{phase}", commands: ["handoff-write"] },
   // The first two also carry the pictures of a comment, an ask or a message (`postWithPictures`,
   // command-context.ts).
   { method: "POST", pattern: "/api/v1/issues/{key}/artifacts", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/projects/{key}/artifacts", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/markdown/round-trip", commands: ["artifact"] },
+  { method: "POST", pattern: "/api/v1/markdown/file-round-trip", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/projects", commands: ["project"] },
   {
     method: "PUT",

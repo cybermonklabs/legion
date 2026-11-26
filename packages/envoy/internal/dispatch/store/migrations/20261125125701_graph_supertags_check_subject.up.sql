@@ -1,4 +1,7 @@
--- 20261125164529_graph_supertags_check_subject.up.sql
+-- 20261125125701_graph_supertags_check_subject.up.sql
+--
+-- It sorts below 20261125125703_btree_gin on purpose: a pending `create extension` takes the
+-- census's size exemptions from every later pending migration, and this one needs them.
 --
 -- The block schema moves to version 6. `pmdoc/schema/blocks.json` gave the `check` type two
 -- attributes after `ci_check`: `subject`, an enum of `code`, `production` and `graph` that says
