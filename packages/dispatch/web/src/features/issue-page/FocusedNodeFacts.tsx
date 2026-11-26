@@ -261,7 +261,10 @@ function AskThreadFacts({
         </div>
       ) : null}
       {ask === undefined || thread === undefined ? null : (
-        <div {...authorText}>
+        <div data-node-words="" {...authorText}>
+          {/* Marked as a node's words, so any link `AskEditHistory`'s renderer draws inside an
+              earlier wording of the question takes the words' own ink, never the old application's
+              link blue. `AskRecipients` draws no renderer or row chip. */}
           <AskEditHistory ask={ask} edits={thread.edits ?? []} renderText={markdownText} />
           <AskRecipients
             askId={ask.id}

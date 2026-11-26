@@ -985,7 +985,7 @@ function blockLines(
   });
 }
 
-test("a repaired block is named by its question's first words, never by its id", () => {
+test("a repaired block's line holds its node's kind word in place of its id and names the block's node and link", () => {
   seq = 0;
   const [line, ...rest] = blockLines(BLOCKS, [
     event("block.repaired", "2026-11-15T09:00:00Z", {
@@ -1009,7 +1009,7 @@ test("a repaired block is named by its question's first words, never by its id",
   });
 });
 
-test("a question's block marked malformed is named by the question's first words, never by its id", () => {
+test("a malformed question's block line holds its node's kind word in place of its id and names the block's link", () => {
   seq = 0;
   const [line, ...rest] = blockLines(BLOCKS, [
     event("block.invalid", "2026-11-15T09:00:00Z", {
@@ -1027,7 +1027,7 @@ test("a question's block marked malformed is named by the question's first words
   expect(line?.block?.path).toBe(buildIssuePath({ id: "q1", key: KEY, kind: "ask" }));
 });
 
-test("a refused check is named by its words where its id is a UUID, and by its id where that is a slug", () => {
+test("a refused check's line holds its node's kind word with its node and link where its id is a UUID, and keeps its id where that is a slug", () => {
   seq = 0;
   const refused = (at: string, blockId: string) =>
     event("block.invalid", at, {
@@ -1095,36 +1095,6 @@ test("a block whose id is a UUID that no node carries reads as a block that is g
     },
   ]);
   expect(CONTROL_LABELS.history_gone_block).toBe("a block that is gone");
-});
-
-// A question cites a node by its bare address. An address is no name, so no line of the history
-// holds it: the block's part of the line stands for the node's one line, which the panel draws in
-// its place with each reference in it read as its target's name (`history-entries.tsx`).
-test("a block whose question cites an address names it in no line by that address", () => {
-  seq = 0;
-  const cited = historyBlocks(
-    KEY,
-    [
-      {
-        block_id: QUESTION_BLOCK,
-        id: "q1",
-        question: "Ship it as dispatch://CORE-2 says.",
-        question_tree: undefined,
-      },
-    ],
-    []
-  );
-  const lines = blockLines(cited, [
-    event("block.repaired", "2026-11-15T09:00:00Z", {
-      block_id: QUESTION_BLOCK,
-      disturbed_by: PERSON,
-      version: 3,
-    }),
-  ]);
-  expect(lines).toHaveLength(1);
-  expect(lines[0]?.text, "the block's line draws the address as typed").not.toContain(
-    "dispatch://"
-  );
 });
 
 // Until every read the blocks come from has answered, whether a block is gone is not known, so

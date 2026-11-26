@@ -11,6 +11,9 @@ const AT = "2026-11-15T10:00:00Z";
 /** No item of the issue has words the page holds. */
 const NO_WORDS: ReadonlyMap<string, string> = new Map();
 
+/** No known reference names or edited marks: passed explicitly by cases that need neither. */
+const NO_KNOWN = { edited: new Set<string>(), names: new Map<string, string>() };
+
 /** One run of words of a reading, with the marks the server read around it. */
 function run(text: string, ...marks: DisplayTree[]): DisplayTree {
   return marks.length === 0 ? { text, type: "text" } : { marks, text, type: "text" };
@@ -70,22 +73,27 @@ function edge(fields: {
 
 test("one row per citing node, in the order the read answers them", () => {
   const words = commentWords({ "c-1": reading("Thread 1 opens here.") });
-  const rows = referenceRows(words, [
-    edge({
-      excerpt: "Thread 1 opens here.",
-      id: "c-1",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: "dispatch://LAY-2/comment/c-1",
-    }),
-    edge({
-      excerpt: "Check 1 of the redesign.",
-      id: "v-1",
-      kind: "serves",
-      nodeKind: "block",
-      ref: "dispatch://LAY-2/artifact/verification-md#b-c1",
-    }),
-  ]);
+  const rows = referenceRows(
+    words,
+    [
+      edge({
+        excerpt: "Thread 1 opens here.",
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: "dispatch://LAY-2/comment/c-1",
+      }),
+      edge({
+        excerpt: "Check 1 of the redesign.",
+        id: "v-1",
+        kind: "serves",
+        nodeKind: "block",
+        ref: "dispatch://LAY-2/artifact/verification-md#b-c1",
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows.map((row) => row.key)).toEqual(["comment:c-1", "block:v-1"]);
   expect(rows.map((row) => row.words)).toEqual(["Thread 1 opens here.", ""]);
   expect(rows.map((row) => row.ref)).toEqual([
@@ -96,50 +104,60 @@ test("one row per citing node, in the order the read answers them", () => {
 
 test("a node that cites the row twice is one row", () => {
   const words = commentWords({ "c-1": reading("It names it here.", "And again here.") });
-  const rows = referenceRows(words, [
-    edge({
-      excerpt: "It names it here.",
-      id: "c-1",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: "dispatch://LAY-2/comment/c-1",
-    }),
-    edge({
-      excerpt: "And again here.",
-      id: "c-1",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: "dispatch://LAY-2/comment/c-1",
-    }),
-  ]);
+  const rows = referenceRows(
+    words,
+    [
+      edge({
+        excerpt: "It names it here.",
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: "dispatch://LAY-2/comment/c-1",
+      }),
+      edge({
+        excerpt: "And again here.",
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: "dispatch://LAY-2/comment/c-1",
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows).toHaveLength(1);
   expect(rows[0]?.words).toBe("It names it here. And again here.");
 });
 
 test("a tuple of the model names the row over a mention, and keeps the mention's place", () => {
-  const rows = referenceRows(NO_WORDS, [
-    edge({
-      excerpt: "Task 8 of the redesign.",
-      id: "p-8",
-      kind: "mentions",
-      nodeKind: "block",
-      ref: "dispatch://LAY-2/artifact/plan-md#b-t8",
-    }),
-    edge({
-      excerpt: "Thread 1 opens here.",
-      id: "c-1",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: "dispatch://LAY-2/comment/c-1",
-    }),
-    edge({
-      excerpt: "Task 8 of the redesign.",
-      id: "p-8",
-      kind: "needs",
-      nodeKind: "block",
-      ref: "dispatch://LAY-2/artifact/plan-md#b-t8",
-    }),
-  ]);
+  const rows = referenceRows(
+    NO_WORDS,
+    [
+      edge({
+        excerpt: "Task 8 of the redesign.",
+        id: "p-8",
+        kind: "mentions",
+        nodeKind: "block",
+        ref: "dispatch://LAY-2/artifact/plan-md#b-t8",
+      }),
+      edge({
+        excerpt: "Thread 1 opens here.",
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: "dispatch://LAY-2/comment/c-1",
+      }),
+      edge({
+        excerpt: "Task 8 of the redesign.",
+        id: "p-8",
+        kind: "needs",
+        nodeKind: "block",
+        ref: "dispatch://LAY-2/artifact/plan-md#b-t8",
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows.map((row) => `${row.key} ${row.kind}`)).toEqual([
     "block:p-8 needs",
     "comment:c-1 mentions",
@@ -151,32 +169,37 @@ test("a tuple of the model names the row over a mention, and keeps the mention's
 // node's own text are its stored text, and no row draws them.
 test("a node outside this issue's items carries no line of the read's text", () => {
   const words = commentWords({ "c-1": reading("Thread 1 opens here.") });
-  const rows = referenceRows(words, [
-    edge({
-      id: "LAY-9",
-      kind: "child_of",
-      nodeKind: "issue",
-      ref: "dispatch://LAY-9",
-      text: "The rail becomes an icon rail.",
-    }),
-    edge({
-      excerpt: "Check 1 of the redesign.",
-      id: "v-1",
-      kind: "serves",
-      nodeKind: "block",
-      ref: "dispatch://LAY-2/artifact/verification-md#b-c1",
-      text: "Check 1 of the redesign.",
-    }),
-    edge({
-      excerpt: "It cites the statement from another issue.",
-      id: "c-9",
-      issueKey: "LAY-9",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: "dispatch://LAY-9/comment/c-9",
-      text: "It cites the statement from another issue.",
-    }),
-  ]);
+  const rows = referenceRows(
+    words,
+    [
+      edge({
+        id: "LAY-9",
+        kind: "child_of",
+        nodeKind: "issue",
+        ref: "dispatch://LAY-9",
+        text: "The rail becomes an icon rail.",
+      }),
+      edge({
+        excerpt: "Check 1 of the redesign.",
+        id: "v-1",
+        kind: "serves",
+        nodeKind: "block",
+        ref: "dispatch://LAY-2/artifact/verification-md#b-c1",
+        text: "Check 1 of the redesign.",
+      }),
+      edge({
+        excerpt: "It cites the statement from another issue.",
+        id: "c-9",
+        issueKey: "LAY-9",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: "dispatch://LAY-9/comment/c-9",
+        text: "It cites the statement from another issue.",
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows.map((row) => [row.key, row.words])).toEqual([
     ["issue:LAY-9", ""],
     ["block:v-1", ""],
@@ -196,16 +219,21 @@ test("a citing item of this issue is named by the words of its tree, never its s
       run("cited statement", { attrs: { href: "dispatch://CORE-2/spec#b-r1" }, type: "link" }),
     ]),
   });
-  const rows = referenceRows(words, [
-    edge({
-      excerpt: stored,
-      id: "c-1",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: "dispatch://LAY-2/comment/c-1",
-      text: stored,
-    }),
-  ]);
+  const rows = referenceRows(
+    words,
+    [
+      edge({
+        excerpt: stored,
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: "dispatch://LAY-2/comment/c-1",
+        text: stored,
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   const line = rows[0]?.words ?? "";
   expect(line).toBe("Bob checks the cited statement");
   expect(line).not.toContain("**");
@@ -221,15 +249,20 @@ test("a citing item is named by all of its words, with no cut", () => {
     "The rest of the block follows it, and runs on past the hundred characters one line of a node holds.",
   ];
   const words = commentWords({ "c-1": reading(...paragraphs) });
-  const rows = referenceRows(words, [
-    edge({
-      excerpt: paragraphs.join("\n\n"),
-      id: "c-1",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: "dispatch://LAY-2/comment/c-1",
-    }),
-  ]);
+  const rows = referenceRows(
+    words,
+    [
+      edge({
+        excerpt: paragraphs.join("\n\n"),
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: "dispatch://LAY-2/comment/c-1",
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows[0]?.words).toBe(paragraphs.join(" "));
 });
 
@@ -254,7 +287,8 @@ test("a citing item whose words cite a named node and one with no name draws all
         ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
       }),
     ],
-    new Map([[named, "The rail follows the statement"]])
+    { edited: new Set(), names: new Map([[named, "The rail follows the statement"]]) },
+    undefined
   );
   const line = rows[0]?.words ?? "";
   expect(line).toBe(
@@ -281,9 +315,8 @@ test("a citing item's words name a reference whose post its author edited with i
         ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
       }),
     ],
-    new Map([[named, "The rail follows the statement"]]),
-    "LAY-2",
-    new Set([named])
+    { edited: new Set([named]), names: new Map([[named, "The rail follows the statement"]]) },
+    "LAY-2"
   );
   expect(rows[0]?.words, "the row names the edited comment without its edited mark").toBe(
     "Compare The rail follows the statement · edited before the review."
@@ -302,22 +335,30 @@ test("a citing item whose words cite a project document's question with no name 
     slug: "design",
   });
   const text = `Answer ${unnamed} before the review.`;
-  const rows = referenceRows(commentWords({ "c-1": reading(text) }), [
-    edge({
-      excerpt: text,
-      id: "c-1",
-      kind: "mentions",
-      nodeKind: "comment",
-      ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
-    }),
-  ]);
+  const rows = referenceRows(
+    commentWords({ "c-1": reading(text) }),
+    [
+      edge({
+        excerpt: text,
+        id: "c-1",
+        kind: "mentions",
+        nodeKind: "comment",
+        ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows[0]?.words).toBe(`Answer ${NODE_REFERENCES_WORDS.kinds.ask} before the review.`);
 });
 
 test("a node the read carries no words and no address of is still one row", () => {
-  const rows = referenceRows(NO_WORDS, [
-    edge({ id: "s-1", kind: "mentions", nodeKind: "session" }),
-  ]);
+  const rows = referenceRows(
+    NO_WORDS,
+    [edge({ id: "s-1", kind: "mentions", nodeKind: "session" })],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows).toEqual([
     {
       at: AT,
@@ -347,38 +388,43 @@ test("a block of a comment, a message or a question that mentions the row is tha
       },
     ],
   });
-  const rows = referenceRows(words, [
-    edge({
-      excerpt: "It names the row here.",
-      id: "c-1#b1",
-      kind: "mentions",
-      nodeKind: "block",
-      parent: comment,
-      ref: "dispatch://LAY-2/comment/c-1#b1",
-    }),
-    edge({
-      excerpt: "And here again.",
-      id: "c-1#b2",
-      kind: "mentions",
-      nodeKind: "block",
-      parent: comment,
-      ref: "dispatch://LAY-2/comment/c-1#b2",
-    }),
-    edge({
-      excerpt: "Which statement is this about?",
-      id: "a-1#b1",
-      kind: "mentions",
-      nodeKind: "block",
-      parent: { id: "a-1", kind: "ask", ref: "dispatch://LAY-2/ask/a-1" },
-    }),
-    edge({
-      excerpt: "Its reply names the row.",
-      id: "m-2#b1",
-      kind: "mentions",
-      nodeKind: "block",
-      parent: { id: "m-2", kind: "message", ref: "dispatch://LAY-2/message/m-2" },
-    }),
-  ]);
+  const rows = referenceRows(
+    words,
+    [
+      edge({
+        excerpt: "It names the row here.",
+        id: "c-1#b1",
+        kind: "mentions",
+        nodeKind: "block",
+        parent: comment,
+        ref: "dispatch://LAY-2/comment/c-1#b1",
+      }),
+      edge({
+        excerpt: "And here again.",
+        id: "c-1#b2",
+        kind: "mentions",
+        nodeKind: "block",
+        parent: comment,
+        ref: "dispatch://LAY-2/comment/c-1#b2",
+      }),
+      edge({
+        excerpt: "Which statement is this about?",
+        id: "a-1#b1",
+        kind: "mentions",
+        nodeKind: "block",
+        parent: { id: "a-1", kind: "ask", ref: "dispatch://LAY-2/ask/a-1" },
+      }),
+      edge({
+        excerpt: "Its reply names the row.",
+        id: "m-2#b1",
+        kind: "mentions",
+        nodeKind: "block",
+        parent: { id: "m-2", kind: "message", ref: "dispatch://LAY-2/message/m-2" },
+      }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows.map((row) => [row.key, row.nodeKind, row.ref, row.words])).toEqual([
     [
       "comment:c-1",
@@ -393,22 +439,27 @@ test("a block of a comment, a message or a question that mentions the row is tha
 
 // A block of a document keeps its own kind and its own address: its parent is the document.
 test("a block of a document is not read as an item", () => {
-  const rows = referenceRows(NO_WORDS, [
-    {
-      ...edge({
-        id: "v-1",
-        kind: "serves",
-        nodeKind: "block",
-        ref: "dispatch://LAY-2/artifact/v#b-c1",
-      }),
-      node: {
-        ...edge({ id: "v-1", kind: "serves", nodeKind: "block" }).node,
-        document: "dispatch://LAY-2/artifact/v",
-        parent: { id: "artifact-v", kind: "artifact" },
-        ref: "dispatch://LAY-2/artifact/v#b-c1",
+  const rows = referenceRows(
+    NO_WORDS,
+    [
+      {
+        ...edge({
+          id: "v-1",
+          kind: "serves",
+          nodeKind: "block",
+          ref: "dispatch://LAY-2/artifact/v#b-c1",
+        }),
+        node: {
+          ...edge({ id: "v-1", kind: "serves", nodeKind: "block" }).node,
+          document: "dispatch://LAY-2/artifact/v",
+          parent: { id: "artifact-v", kind: "artifact" },
+          ref: "dispatch://LAY-2/artifact/v#b-c1",
+        },
       },
-    },
-  ]);
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows.map((row) => [row.key, row.nodeKind, row.ref])).toEqual([
     ["block:v-1", "block", "dispatch://LAY-2/artifact/v#b-c1"],
   ]);
@@ -417,16 +468,21 @@ test("a block of a document is not read as an item", () => {
 // Each source in the old panel carried the citing node's issue or project, and each edge
 // its time; a row carries both, and keeps the time of its first edge.
 test("a row carries where the citing node is from and when it referenced the row", () => {
-  const rows = referenceRows(NO_WORDS, [
-    edge({
-      at: "2026-11-14T09:00:00Z",
-      id: "c-9",
-      issueKey: "LAY-9",
-      kind: "mentions",
-      nodeKind: "comment",
-    }),
-    edge({ id: "a-1", kind: "mentions", nodeKind: "artifact", project: "LAY" }),
-  ]);
+  const rows = referenceRows(
+    NO_WORDS,
+    [
+      edge({
+        at: "2026-11-14T09:00:00Z",
+        id: "c-9",
+        issueKey: "LAY-9",
+        kind: "mentions",
+        nodeKind: "comment",
+      }),
+      edge({ id: "a-1", kind: "mentions", nodeKind: "artifact", project: "LAY" }),
+    ],
+    NO_KNOWN,
+    undefined
+  );
   expect(rows.map((row) => [row.source, row.at])).toEqual([
     ["LAY-9", "2026-11-14T09:00:00Z"],
     ["LAY", AT],
