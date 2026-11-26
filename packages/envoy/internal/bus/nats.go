@@ -2562,15 +2562,15 @@ func (c *Client) refused(err error, size int) error {
 }
 
 // TooLargeToPublish answers the ErrTooLarge a publish of item would meet because the envelope is
-// past the max payload of the server the client's connection is on (nats.Conn.MaxPayload, which
-// that server's INFO sets and a reconnect renews), and nil for an envelope within it, or while the
-// client has not connected yet and so knows no max payload. It sends nothing and waits on nothing,
-// so a caller can refuse such a message before it does any other bus work for it. The envelope is
+// past the max payload of the server the client's connection is on (knownMaxPayload), and nil for
+// an envelope within it, or while the client knows no max payload: a nil client, one with no
+// connection, or one that has not connected yet. It sends nothing and waits on nothing, so a
+// caller can refuse such a message before it does any other bus work for it. The envelope is
 // measured as a publish encodes it, counted rather than kept. A publish adds its headers, and a
 // caller may add fields before it publishes (cmd/listener's sender stamp), so nil does not promise
 // the publish fits: refused still names what nats.go refuses then.
 func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
-	maxPayload := c.Connection().MaxPayload()
+	maxPayload := c.knownMaxPayload()
 	if maxPayload <= 0 {
 		return nil
 	}
@@ -2583,6 +2583,23 @@ func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
 	// Encode ends what it writes with a newline, which json.Marshal, and so the publish, leaves
 	// out.
 	return payloadTooLarge(int64(encoded)-1, maxPayload)
+}
+
+// knownMaxPayload is the largest message the server the client's connection is on takes
+// (nats.Conn.MaxPayload, which that server's INFO sets and a reconnect renews), and 0 while the
+// client knows none: a nil client (a listener's deps a test built without one), a client with no
+// connection (a zero Client, whose publish ensureConnWithContext answers), or a connection that has
+// not connected yet. The size checks read it before anything else of the publish, so it touches
+// no connection that is not there.
+func (c *Client) knownMaxPayload() int64 {
+	if c == nil {
+		return 0
+	}
+	conn := c.Connection()
+	if conn == nil {
+		return 0
+	}
+	return conn.MaxPayload()
 }
 
 // payloadTooLarge is the ErrTooLarge of a body of size bytes past maxPayload, the max payload of
@@ -2763,7 +2780,7 @@ func (c *Client) PublishStoredAck(ctx context.Context, subject string, item cont
 	if err != nil {
 		return StoredAck{}, err
 	}
-	if err := payloadTooLarge(int64(len(data)), c.Connection().MaxPayload()); err != nil {
+	if err := payloadTooLarge(int64(len(data)), c.knownMaxPayload()); err != nil {
 		return StoredAck{}, err
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
@@ -2957,7 +2974,7 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
 	}
-	if err := payloadTooLarge(int64(len(data)), c.Connection().MaxPayload()); err != nil {
+	if err := payloadTooLarge(int64(len(data)), c.knownMaxPayload()); err != nil {
 		return StoredAck{}, err
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
@@ -3020,7 +3037,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	if err != nil {
 		return err
 	}
-	if err := payloadTooLarge(int64(len(data)), c.Connection().MaxPayload()); err != nil {
+	if err := payloadTooLarge(int64(len(data)), c.knownMaxPayload()); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, publishBound)

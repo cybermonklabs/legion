@@ -227,3 +227,47 @@ func TestAPublishPastTheMaxPayloadIsRefusedForItsSizeWhateverIsLeftOfItsContext(
 		}
 	}
 }
+
+// The size checks read the connection's max payload before anything else of a publish, so they
+// must touch no connection that is not there. A nil client (a listener's deps built without one)
+// and a zero Client know no max payload, so TooLargeToPublish refuses nothing on either, and a zero
+// Client's core publish of a body past any server's max payload is answered as it was before the
+// checks existed, by the connect that finds no connection (here under a context that has already
+// ended, so nothing is dialled), never by a panic and never as too large.
+func TestTheSizeChecksTouchNoConnectionThatIsNotThere(t *testing.T) {
+	t.Parallel()
+	big := contracts.Envelope{
+		EventID:        "event",
+		Source:         "agent",
+		SourceEventID:  "source-event",
+		Topic:          contracts.RoleTopicPrefix + "no-connection",
+		DedupeKey:      "publish.no-connection",
+		IssuedAt:       contracts.NowMillis(),
+		PayloadSummary: "a body past any server's max payload",
+		Payload:        strings.Repeat("p", 2<<20),
+		TraceID:        "trace",
+	}
+	// answer runs call and reports a panic as this test's failure rather than the binary's.
+	answer := func(name string, call func() error) (err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Errorf("%s panicked: %v", name, recovered)
+				err = nil
+			}
+		}()
+		return call()
+	}
+	var none *Client
+	zero := &Client{}
+	for name, client := range map[string]*Client{"a nil client": none, "a zero Client": zero} {
+		if err := answer("TooLargeToPublish on "+name, func() error { return client.TooLargeToPublish(big) }); err != nil {
+			t.Errorf("TooLargeToPublish on %s = %v, want nil: it knows no max payload", name, err)
+		}
+	}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := answer("a zero Client's core publish", func() error { return zero.PublishCoreContext(ended, big.Topic, big) })
+	if err == nil || errors.Is(err, ErrTooLarge) {
+		t.Errorf("a zero Client's core publish of a body past any max payload = %v, want the connect's own error", err)
+	}
+}
