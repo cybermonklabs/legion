@@ -18,7 +18,7 @@ Search first (`skill://dispatch-first`). An open issue that tracks the problem g
 
 1. Find the report issue: the issue the deployment instructions name for Legion's reports, else the project's `Legion daily report` (`dispatch search --query '"Legion daily report"' --project <PROJECT>`). Post the evidence on it as a `dispatch comment`, its first line exactly `Clear defect from <your role token>`. It prints `Posted comment <id>`.
 2. `envoy_publish` one message to the controller topic your `Legion addressing` line names, with `expects_reply: false`: your role token; the defect (what went wrong, where, to whom, the numbers, `dispatch://<KEY>`); the repository and component where the fix belongs; the fix; and `dispatch://<REPORT KEY>/comment/<id>`.
-3. File nothing and wait for nothing. The controller replies under your evidence comment with where the work went. When the report issue is missing or closed, put the evidence in the message itself.
+3. File nothing and wait for nothing. The controller replies under your evidence comment with where the work went. When the report issue is missing, put the evidence in the message itself.
 
 ## What the ask says
 
