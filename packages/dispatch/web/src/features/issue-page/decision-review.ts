@@ -10,8 +10,11 @@ import type { DocumentBlocks } from "./issue-tree";
  *
  * This module is pure and imports no code of the tree, only the type of a document's blocks, so
  * the tree (`tree-drafts.ts`), the Decisions filter (`decisions-filter/decisions-parts.ts`) and
- * the header's count of what waits on the reader (`waiting.ts`) read one rule each and cannot
- * disagree.
+ * the header's count of what waits on the reader (`dashboard/useWaitingItems.ts`'s
+ * `waitingItems`) read one rule each. Given the same reads they agree. The count reads no block
+ * of the decisions document, though, so where the tree reads the blocks it places a Change by the
+ * block its anchor names, and the count places it by its quote, the first decision whose words
+ * hold it: the two then differ, as `waiting.test.ts` pins.
  *
  * A Change is a comment of the issue anchored to the decision's own words in the decisions
  * document (`DecisionActions.tsx`), which is the write the old Decisions tab made; `changeAnchor`

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { type ColorPair, PAGE_COLORS } from "./classes";
 import { oklchToSrgb8 } from "./contrast";
-import { type CssBlock, topLevelBlocks, withoutComments } from "./css-source";
+import { type CssBlock, ruleDeclarations, topLevelBlocks, withoutComments } from "./css-source";
 import type { Swatch } from "./palette";
 
 /**
@@ -76,13 +76,12 @@ const stylesCss = readFileSync(STYLES_CSS_PATH, "utf8");
 
 /** A declaration of either prefix that the table does not hold fails the test. */
 const TOKEN_NAME_PATTERN = /^--color-(?:page-|icon-rail)/;
-const DECLARATION_PATTERN = /(--[\w-]+)\s*:\s*([^;]*);/g;
 
 /** Each declaration of `block` whose name starts `--color-page-` or `--color-icon-rail`. */
 function tokenDeclarations(block: CssBlock): (readonly [name: string, value: string])[] {
-  return [...block.body.matchAll(DECLARATION_PATTERN)]
-    .map(([, name, value]) => [name, value.trim()] as const)
-    .filter(([name]) => TOKEN_NAME_PATTERN.test(name));
+  return ruleDeclarations(block.body)
+    .filter(({ property }) => TOKEN_NAME_PATTERN.test(property))
+    .map(({ property, value }) => [property, value] as const);
 }
 
 /**

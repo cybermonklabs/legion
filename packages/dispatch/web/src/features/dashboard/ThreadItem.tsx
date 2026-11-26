@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -121,7 +121,7 @@ function ReplyThread({
   closed,
   issueKey,
   parentKind,
-  readKey,
+  readQuery,
   replies,
   root,
   thread,
@@ -130,8 +130,8 @@ function ReplyThread({
   issueKey: string;
   /** What the root is, which names each entry's source, the reply's parent and the address. */
   parentKind: "comment" | "message";
-  /** The key of the thread's own read, which a sent reply reads again. */
-  readKey: readonly unknown[];
+  /** The thread's own read (`commentQuery`, `messageQuery`), which a sent reply reads again. */
+  readQuery: { readonly queryKey: QueryKey };
   /** The replies the reader has not read. */
   replies: readonly (CommentWithTrees | MessageWithTrees)[];
   root: CommentWithTrees | MessageWithTrees;
@@ -176,7 +176,7 @@ function ReplyThread({
             mutationKey={replySendKey(root.id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: readKey });
+              void queryClient.invalidateQueries({ queryKey: readQuery.queryKey });
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={{ issueKey, kind: "issue" }}
@@ -216,7 +216,7 @@ function CommentThread({
       closed={closed}
       issueKey={issueKey}
       parentKind="comment"
-      readKey={commentQuery(root.id).queryKey}
+      readQuery={commentQuery(root.id)}
       replies={unreadEntries(row, read.replies ?? [], viewer)}
       root={root}
     />
@@ -247,7 +247,7 @@ function MessageThread({
       closed={closed}
       issueKey={issueKey}
       parentKind="message"
-      readKey={messageQuery(issueKey, root.id).queryKey}
+      readQuery={messageQuery(issueKey, root.id)}
       replies={unreadEntries(row, all, viewer)}
       root={root}
       thread={

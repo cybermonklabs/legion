@@ -19,11 +19,13 @@ import {
   READER,
   seedAskToday,
 } from "./dashboard-seed";
+import { literal } from "./dashboard-support";
 import { documentEditor } from "./editor";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { inboxList, inboxPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
 import { inboxAt } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
+import { viewportAt } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
@@ -90,11 +92,11 @@ async function openChangeAnswer(page: Page, id: string): Promise<Locator> {
 }
 
 async function wide(page: Page): Promise<void> {
-  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.setViewportSize(viewportAt(1440));
 }
 
 async function narrow(page: Page): Promise<void> {
-  await page.setViewportSize({ height: 900, width: 1279 });
+  await page.setViewportSize(viewportAt(1279));
 }
 
 interface Surface {
@@ -520,7 +522,7 @@ async function expectDecision(
   await expect(
     card.getByText(person ? "A person's decision" : "Agent's decision", { exact: true })
   ).toBeVisible();
-  const text = card.getByText(new RegExp(escapeRegex(entry.text))).last();
+  const text = card.getByText(new RegExp(literal(entry.text))).last();
   await expect(text).toBeVisible();
   await expectUnclippedInCard(text);
   await expect(card.locator("time").first()).toHaveAttribute("datetime", /.+/);
@@ -538,7 +540,7 @@ async function expectDecision(
     await expect(
       card
         .locator("[data-decision-statements]")
-        .getByRole("link", { name: new RegExp(`^${escapeRegex(line)}`) })
+        .getByRole("link", { name: new RegExp(`^${literal(line)}`) })
     ).toHaveAttribute("href", /#b-/);
   }
   await expect(card.getByText(/^Changed since/)).toHaveCount(unsure ? 1 : 0);
@@ -655,10 +657,6 @@ test("Keep and Change in the margin write as DecisionActions writes", async ({ p
       author: { id: READER },
     });
 });
-
-function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /** Keep path and query, including the id or scope of an ask, artifact or list read. */
 function getPaths(traffic: ApiRequests): string[] {
@@ -934,7 +932,6 @@ async function collectInventory(page: Page, data: AskTodaySeed): Promise<Invento
   };
   const measure = async (surface: string) => {
     await page.waitForFunction(() => document.readyState === "complete");
-    await page.waitForFunction(() => performance.getEntriesByType("navigation").length === 1);
     reads[surface] = getPaths(traffic).map((path) => normalize(path, data));
     traffic.reset();
   };

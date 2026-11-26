@@ -3,7 +3,8 @@
  * chunks today's pages fetch, which chunks Dashboard fetches, and which of the new page's modules
  * each holds.
  *
- * `bun web/scripts/today-chunks.ts <outDir>` reads a build made with `--manifest --sourcemap`:
+ * `bun web/scripts/today-chunks.ts <outDir>` reads a build made with `--manifest --sourcemap`, its
+ * `<outDir>` read as Vite reads `--outDir`: a relative path is below `web/`, Vite's root. It reads
  * `<outDir>/.vite/manifest.json` for each chunk's static and dynamic imports, and each chunk's
  * source map (`<chunk>.js.map`) for the modules the chunk holds. It reads the maps, not strings in
  * the chunks, because a minified chunk keeps no module's name, while its map's `sources` list
@@ -16,17 +17,22 @@
  *     imports, transitively, following no import into the new page's chunk (`IssueOutlinePage`)
  *     or the Dashboard chunk (`DashboardTab`). No chunk of this set holds the new page's word list
  *     (`page-words.ts` and its `page-words-*.ts` part files), `page-structure.ts`, `RowText.tsx`,
- *     the pure rules Dashboard reuses (`waiting.ts`, `decision-review.ts`,
- *     `verification-filter/statement-state.ts`) or the model (`tree-drafts.ts`, `issue-tree.ts`,
- *     `useIssueTree.ts`).
+ *     the new page's own rules (`waiting.ts`, `decision-review.ts`, which the Dashboard chunk
+ *     reads, and `verification-filter/statement-state.ts`) or the model (`tree-drafts.ts`,
+ *     `issue-tree.ts`, `useIssueTree.ts`). The rules Dashboard shares with today's pages live in
+ *     `statement-rules.ts`, `first-line.ts` and `target-naming.ts`, which import no model module,
+ *     so this set may hold them.
  * (2) The Dashboard chunk: `DashboardTab` with every chunk it imports statically, transitively.
  *     This set holds `page-words.ts` and `RowText.tsx`, and holds no `issue-tree.ts`,
  *     `useIssueTree.ts` or `tree-drafts.ts`.
  *
  * It exits 1 naming the module and the chunk where a rule breaks.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+
+/** Vite's root, which a relative `--outDir` is below. */
+const WEB_DIR = resolve(import.meta.dir, "..");
 
 /** Vite's root is `web/`, so a manifest's `src` is a path below `web/`. */
 const NEW_PAGE_SRC = "src/features/issue-page/IssueOutlinePage.tsx";
@@ -79,10 +85,18 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function readJson(path: string): unknown {
-  if (!existsSync(path)) {
-    throw new Error(`${path} does not exist: build with --manifest --sourcemap into this out dir`);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `${path} does not exist: build with --manifest --sourcemap into this out dir`
+      );
+    }
+    throw error;
   }
-  return JSON.parse(readFileSync(path, "utf8"));
+  return JSON.parse(text);
 }
 
 function readManifest(outDir: string): Map<string, ManifestChunk> {
@@ -198,15 +212,24 @@ function main(outDir: string): number {
   if (dashboard === null) breaks.push(`no dynamic entry chunk has the src ${DASHBOARD_SRC}`);
 
   const lazyPages = new Set([newPage, dashboard].filter((key) => key !== null));
+  // A chunk both sets reach is read once.
+  const read = new Map<string, Chunk>();
+  const chunkOf = (key: string): Chunk => {
+    const known = read.get(key);
+    if (known !== undefined) return known;
+    const chunk = readChunk(outDir, manifest, key);
+    read.set(key, chunk);
+    return chunk;
+  };
   const today = closure(
     manifest,
     entries,
     (entry) => [...entry.imports, ...entry.dynamicImports],
     lazyPages
-  ).map((key) => readChunk(outDir, manifest, key));
+  ).map(chunkOf);
   const dashboardSet = (
     dashboard === null ? [] : closure(manifest, [dashboard], (entry) => entry.imports, new Set())
-  ).map((key) => readChunk(outDir, manifest, key));
+  ).map(chunkOf);
 
   printSet("(1) Today's pages", today);
   printSet("(2) The Dashboard chunk", dashboardSet);
@@ -249,9 +272,10 @@ if (import.meta.main) {
   const outDir = process.argv[2];
   if (outDir === undefined) {
     console.error(
-      "usage: bun web/scripts/today-chunks.ts <outDir of a --manifest --sourcemap build>"
+      "usage: bun web/scripts/today-chunks.ts <outDir of a --manifest --sourcemap build>\n" +
+        "  a relative outDir is below web/, as Vite reads --outDir"
     );
     process.exit(2);
   }
-  process.exit(main(resolve(outDir)));
+  process.exit(main(resolve(WEB_DIR, outDir)));
 }

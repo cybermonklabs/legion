@@ -483,10 +483,10 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
-  const specTab = page.getByRole("tab", { exact: true, name: "Dashboard" });
-  await expect(specTab).toBeFocused();
-  await insideTablist(specTab);
-  expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  const dashboardTab = page.getByRole("tab", { exact: true, name: "Dashboard" });
+  await expect(dashboardTab).toBeFocused();
+  await insideTablist(dashboardTab);
+  expect((await dashboardTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   await expect.poll(masked).toBe(true);
   await page.keyboard.press("End");
   await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();

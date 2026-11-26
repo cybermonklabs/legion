@@ -500,15 +500,15 @@ test("the six controls are toggles with an address each, one line at every width
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}/conversation`);
 
-    // The toolbar Filters: five toggles in R7's order, each named by its view's word alone and
-    // described by its signal, whose count is the seed's.
-    await expect(presetToolbar(page), "no toolbar named Filters holds the five").toHaveCount(1);
+    // The toolbar Filters: six toggles in R7's order, Dashboard first, each named by its view's
+    // word alone and, but for Dashboard, described by its signal, whose count is the seed's.
+    await expect(presetToolbar(page), "no toolbar named Filters holds the six").toHaveCount(1);
     await expect(presetToggles(page)).toHaveCount(6);
     expect(
       await presetToggles(page).evaluateAll((buttons) =>
         buttons.map((button) => button.querySelector("[data-preset-name]")?.textContent ?? "")
       ),
-      "the row's controls are not Conversation, Spec, Verification, Plan and Decisions"
+      "the row's controls are not Dashboard, Conversation, Spec, Verification, Plan and Decisions"
     ).toEqual(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]));
     for (const preset of PRESET_ORDER) {
       const toggle = presetToggle(page, preset);
@@ -566,7 +566,8 @@ test("the six controls are toggles with an address each, one line at every width
     await page.keyboard.press("ArrowLeft");
     await expect(presetToggle(page, "decisions")).toBeFocused();
 
-    // Keys opens the list of keys, which names the five chords.
+    // Keys opens the list of keys, which names each view's chord; the five of Conversation and
+    // the filters are read here.
     await filterRow(page).getByRole("button", { exact: true, name: "Keys" }).click();
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(keys).toBeVisible();
@@ -605,7 +606,7 @@ test("the six controls are toggles with an address each, one line at every width
     await expect(presetToggle(page, "conversation")).toHaveAttribute("aria-pressed", "true");
 
     // Below 1280 px the one control, named by the view that is on and its signal, opens a menu
-    // of five, the one on checked; below 1024 px the Outline control stands beside it.
+    // of six, the one on checked; below 1024 px the Outline control stands beside it.
     for (const width of [1279, 390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, presetPath(key, "spec"));

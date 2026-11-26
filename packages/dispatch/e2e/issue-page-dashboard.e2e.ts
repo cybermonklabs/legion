@@ -35,22 +35,40 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { URGENCY_LABELS } from "../web/src/features/inbox/ask-urgency";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
   CONTROL_LABELS,
   NODE_TYPE_NAMES,
   PRESET_NAMES,
+  type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { getComment, getIssue } from "./api";
 import {
   type DashboardSeed,
-  type MainHolds,
-  mainHolds,
-  ROUNDS,
   SEEDED_LEGION,
   seedDashboard,
   type WaitingItem,
 } from "./dashboard-seed";
+import {
+  beyondShell,
+  countOf,
+  drawEveryItem,
+  drawnItems,
+  itemOf,
+  itemsOf,
+  literal,
+  mainOfThisRun,
+  namedByR8,
+  nextFive,
+  ROLE_WORDS,
+  STEP_ROWS,
+  shellPollsOf,
+  shellRoutesOf,
+  TILES,
+  testIdOf,
+  waitingOf,
+} from "./dashboard-support";
 import {
   contentsPane,
   gotoIssue,
@@ -59,7 +77,9 @@ import {
   openMenu,
   phase,
   presetChooser,
+  presetMenuItem,
   presetRow,
+  presetToggle,
   presetToggles,
   viewportAt,
 } from "./issue-page";
@@ -76,9 +96,6 @@ const PART_M_DETAILS = existsSync(
   fileURLToPath(new URL("../web/src/features/issue-page/FocusedNodeFacts.tsx", import.meta.url))
 );
 
-/** The view row's word for Dashboard, which `PRESET_NAMES` holds once Dashboard is a preset. */
-const DASHBOARD = "Dashboard";
-
 /** The widths the rows read, and the width from which the view row is a toolbar of toggles
  *  rather than one control with a menu (`IssuePresets.tsx`). */
 const DESKTOP_WIDTH = 1440;
@@ -88,116 +105,12 @@ const TOOLBAR_FROM = 1280;
 /** The most requests under `/api/` a cold load of Dashboard sends (c-dashboard-new (6)). */
 const COLD_LOAD_AT_MOST = 40;
 
-/** The eight steps of the track, in order (R3). */
-const STEPS = [
-  "Admitted",
-  "Planning",
-  "Implementing",
-  "Testing",
-  "Reviewing",
-  "Accepting",
-  "Retro",
-  "Merging",
-] as const;
-
-/** The rounds each counted step carries: the seed's handoffs of its phase (R3). */
-const STEP_ROUNDS: Readonly<Partial<Record<(typeof STEPS)[number], number>>> = {
-  Implementing: ROUNDS.implement,
-  Planning: ROUNDS.plan,
-  Reviewing: ROUNDS.review,
-  Testing: ROUNDS.test,
-};
-
-/** The role words of each claim state (R7): any other state reads "in another state", and a
- *  `retired` claim is not listed. */
-const ROLE_WORDS: Readonly<Record<string, string>> = {
-  failed: "failed",
-  idle: "idle",
-  launch_uncertain: "starting",
-  launching: "starting",
-  queued: "starting",
-  ready: "idle",
-  registered: "idle",
-  shim_connected: "starting",
-  suspended: "paused",
-  working: "in a turn",
-};
-
-const TILES = {
-  children: "Children done",
-  met: "Statements met",
-  passed: "Checks passed",
-  questions: "Questions waiting on others",
-} as const;
-
 /** Which main this run's server is, read once per worker (R27). */
-let holds: MainHolds | undefined;
-
-test.beforeAll(async () => {
-  holds = await mainHolds();
-});
-
-function thisMain(): MainHolds {
-  if (holds === undefined) throw new Error("the file's beforeAll read no main");
-  return holds;
-}
+const thisMain = mainOfThisRun();
 
 /** The Dashboard seed on the main this run's server is. */
 function seeded(): Promise<DashboardSeed> {
   return seedDashboard(thisMain());
-}
-
-/** `text` as a pattern that matches it literally. */
-function literal(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** The own address of `view` on `key`: `/issues/<KEY>/<view>`. */
-function viewPath(key: string, view: string): string {
-  return `/issues/${key}/${view}`;
-}
-
-/** The page's address is `view`'s own, with nothing after it. */
-function atView(key: string, view: string): RegExp {
-  return new RegExp(`/issues/${literal(key)}/${view}$`);
-}
-
-function waitingOf(page: Page): Locator {
-  return issuePage(page).getByRole("region", { exact: true, name: "Waiting on you" });
-}
-
-function itemsOf(waiting: Locator): Locator {
-  return waiting.locator('[data-testid^="dashboard-item-"]');
-}
-
-function testIdOf(item: WaitingItem): string {
-  return `dashboard-item-${item.kind}-${item.id}`;
-}
-
-function itemOf(waiting: Locator, item: WaitingItem): Locator {
-  return waiting.getByTestId(testIdOf(item));
-}
-
-/** The test id of each item drawn, in the order drawn. */
-function drawnItems(waiting: Locator): Promise<string[]> {
-  return itemsOf(waiting).evaluateAll((items) =>
-    items.map((item) => item.getAttribute("data-testid") ?? "")
-  );
-}
-
-function countOf(waiting: Locator): Locator {
-  return waiting.getByTestId("dashboard-waiting-count");
-}
-
-function nextFive(waiting: Locator): Locator {
-  return waiting.getByRole("button", { name: /^Show the next five/ });
-}
-
-/** Draws every item of the list: one press of the control for each five past the first. */
-async function drawEveryItem(waiting: Locator, seed: DashboardSeed): Promise<void> {
-  await expect(countOf(waiting)).toHaveText(String(seed.items.length));
-  for (let drawn = 5; drawn < seed.items.length; drawn += 5) await nextFive(waiting).click();
-  await expect(itemsOf(waiting)).toHaveCount(seed.items.length);
 }
 
 /** The name of the view the row has on: its pressed toggle's from 1280 px up, and the one
@@ -210,8 +123,10 @@ function viewOn(page: Page): Locator {
 
 /** Fails unless the page has Dashboard on and draws it, and draws no outline beside it. */
 async function expectDashboard(page: Page, where: string): Promise<void> {
-  await expect(viewOn(page), `${where} does not have Dashboard on`).toHaveText(DASHBOARD);
-  await expect(waitingOf(page), `${where} draws no Dashboard`).toBeVisible();
+  await expect(viewOn(page), `${where} does not have Dashboard on`).toHaveText(
+    PRESET_NAMES.dashboard
+  );
+  await expect(waitingOf(issuePage(page)), `${where} draws no Dashboard`).toBeVisible();
   await expect(tree(page), `${where} draws the outline with Dashboard`).toHaveCount(0);
 }
 
@@ -221,7 +136,7 @@ async function expectConversation(page: Page, where: string): Promise<void> {
     PRESET_NAMES.conversation
   );
   await expect(tree(page), `${where} draws no outline`).toHaveCount(1);
-  await expect(waitingOf(page), `${where} draws Dashboard`).toHaveCount(0);
+  await expect(waitingOf(issuePage(page)), `${where} draws Dashboard`).toHaveCount(0);
 }
 
 /** Fails unless Dashboard is the first control of the view row, in the row's shape at `width`:
@@ -231,7 +146,7 @@ async function expectDashboardFirst(page: Page, width: number): Promise<void> {
     await expect(
       presetToggles(page).first().locator("[data-preset-name]"),
       `the view row's first control is not Dashboard at ${width} px`
-    ).toHaveText(DASHBOARD);
+    ).toHaveText(PRESET_NAMES.dashboard);
     return;
   }
   await expect(presetChooser(page), `the view row draws no one control at ${width} px`).toHaveCount(
@@ -241,16 +156,17 @@ async function expectDashboardFirst(page: Page, width: number): Promise<void> {
   await expect(
     openMenu(page).getByRole("menuitemradio").first(),
     `the view row's first item is not Dashboard at ${width} px`
-  ).toHaveAccessibleName(new RegExp(`^${DASHBOARD}( |$)`));
+  ).toHaveAccessibleName(new RegExp(`^${PRESET_NAMES.dashboard}( |$)`));
   await page.keyboard.press("Escape");
   await expect(openMenu(page)).toHaveCount(0);
 }
 
-/** Presses the control of the view named `name`, in the row's shape at `width`: its toggle from
- *  1280 px up, and its item of the one control's menu below. */
-async function pressView(page: Page, name: string, width: number): Promise<void> {
+/** Presses the control of `preset`, in the row's shape at `width`: its toggle from 1280 px up,
+ *  and its item of the one control's menu below. */
+async function pressView(page: Page, preset: Preset, width: number): Promise<void> {
+  const name = PRESET_NAMES[preset];
   if (width >= TOOLBAR_FROM) {
-    const toggle = presetRow(page).getByRole("button", { exact: true, name });
+    const toggle = presetToggle(page, preset);
     await expect(toggle, `the view row draws no ${name} control at ${width} px`).toHaveCount(1);
     await toggle.click();
     return;
@@ -259,7 +175,7 @@ async function pressView(page: Page, name: string, width: number): Promise<void>
     1
   );
   await presetChooser(page).click();
-  const item = openMenu(page).getByRole("menuitemradio", { name: new RegExp(`^${name}( |$)`) });
+  const item = presetMenuItem(page, preset);
   await expect(item, `the view row's menu holds no ${name} at ${width} px`).toHaveCount(1);
   await item.click();
 }
@@ -324,7 +240,7 @@ test("Dashboard is the first tab and each of its numbers is the seed's", async (
 
     // What waits: the count, the newest five, a control that says how many are left, then each
     // item once, newest first.
-    const waiting = waitingOf(page);
+    const waiting = waitingOf(issuePage(page));
     await expect(countOf(waiting)).toHaveText(String(seed.items.length));
     await expect
       .poll(() => drawnItems(waiting), { message: "the first five are not the newest five" })
@@ -369,12 +285,7 @@ test("Dashboard is the first tab and each of its numbers is the seed's", async (
     // The track marks Planning, and the counted steps carry the seed's rounds.
     const track = issuePage(page).getByRole("region", { exact: true, name: "Phase" });
     await expect(track, "Dashboard draws no phase track").toBeVisible();
-    await expect(track.getByRole("listitem")).toHaveText(
-      STEPS.map((step) => {
-        const rounds = STEP_ROUNDS[step] ?? 0;
-        return new RegExp(rounds === 0 ? `^${step}$` : `^${step}\\s*${rounds}$`);
-      })
-    );
+    await expect(track.getByRole("listitem")).toHaveText(STEP_ROWS);
     await expect(track.locator('[aria-current="step"]')).toHaveText(/^Planning\b/);
     await expect(track.getByRole("button")).toHaveCount(0);
 
@@ -455,23 +366,23 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
       await gotoIssue(page, `/issues/${key}`);
       await expectDashboard(page, `the bare address ${at}`);
       await expectDashboardFirst(page, width);
-      await gotoIssue(page, viewPath(key, "dashboard"));
+      await gotoIssue(page, presetPath(key, "dashboard"));
       await expectDashboard(page, `/dashboard ${at}`);
 
       // `/conversation` draws Conversation, and the Dashboard control draws Dashboard.
-      await gotoIssue(page, viewPath(key, "conversation"));
+      await gotoIssue(page, presetPath(key, "conversation"));
       await expectConversation(page, `/conversation ${at}`);
-      await pressView(page, DASHBOARD, width);
-      await expect(page).toHaveURL(atView(key, "dashboard"));
+      await pressView(page, "dashboard", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "dashboard")}$`));
       await expectDashboard(page, `the Dashboard control ${at}`);
 
       // From 1280 px up, pressing Dashboard while it is on draws Conversation, as pressing each
       // view that is on turns it off. The one control's menu keeps the view that is on when its
       // item is chosen (`IssuePresets.tsx`, read by `e2e/issue-page-d.e2e.ts`), so below 1280 px
       // the Conversation item is the press that leaves Dashboard.
-      if (width >= TOOLBAR_FROM) await pressView(page, DASHBOARD, width);
-      else await pressView(page, PRESET_NAMES.conversation, width);
-      await expect(page).toHaveURL(atView(key, "conversation"));
+      if (width >= TOOLBAR_FROM) await pressView(page, "dashboard", width);
+      else await pressView(page, "conversation", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "conversation")}$`));
       await expectConversation(page, `the press that leaves Dashboard ${at}`);
 
       // `t w` draws Dashboard, and `t c` Conversation. A choice from the one control's menu (below
@@ -479,19 +390,21 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
       // takes only a focus nobody holds, is waited for only where the press left it loose.
       if (width >= TOOLBAR_FROM) await expectOpeningLanded(page);
       await chord(page, "w");
-      await expect(page, `t w did not open Dashboard ${at}`).toHaveURL(atView(key, "dashboard"));
+      await expect(page, `t w did not open Dashboard ${at}`).toHaveURL(
+        new RegExp(`${presetPath(key, "dashboard")}$`)
+      );
       await expectDashboard(page, `t w ${at}`);
       await chord(page, "c");
       await expect(page, `t c did not open Conversation ${at}`).toHaveURL(
-        atView(key, "conversation")
+        new RegExp(`${presetPath(key, "conversation")}$`)
       );
       await expectConversation(page, `t c ${at}`);
 
       // The Conversation control draws Conversation from Dashboard.
-      await pressView(page, DASHBOARD, width);
+      await pressView(page, "dashboard", width);
       await expectDashboard(page, `the Dashboard control ${at}`);
-      await pressView(page, PRESET_NAMES.conversation, width);
-      await expect(page).toHaveURL(atView(key, "conversation"));
+      await pressView(page, "conversation", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "conversation")}$`));
       await expectConversation(page, `the Conversation control ${at}`);
 
       // Where an address names a node, what it opens is the same at every width: the first width
@@ -547,17 +460,17 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
         slugs.get(seed.decisionsDocumentId) ?? "",
         seed.decisions.first.id
       );
-      await gotoIssue(page, viewPath(key, "decisions"));
+      await gotoIssue(page, presetPath(key, "decisions"));
       const link = decisionsBody(page)
         .locator(`[data-node-row][data-node-id="${decision}"] a[data-entry-link]`)
         .first();
       await expect(
         link,
         "the decision's link in the conversation is not /conversation's"
-      ).toHaveAttribute("href", `${viewPath(key, "conversation")}#b-${seed.decisions.first.id}`);
+      ).toHaveAttribute("href", `${presetPath(key, "conversation")}#b-${seed.decisions.first.id}`);
       await link.click();
       await expect(page).toHaveURL(
-        new RegExp(`/issues/${literal(key)}/conversation#b-${literal(seed.decisions.first.id)}$`)
+        new RegExp(`${presetPath(key, "conversation")}#b-${literal(seed.decisions.first.id)}$`)
       );
       await expectConversation(page, "the Decisions view's link in the conversation");
       await expect
@@ -577,11 +490,11 @@ test("the header counts Dashboard's items on every view and drops one per act", 
   test.setTimeout(180_000);
   await phase(browser, seeded, async (page, seed) => {
     const key = seed.key;
-    const waiting = waitingOf(page);
+    const waiting = waitingOf(issuePage(page));
     const counted = (items: number) => `Waiting on you (${items})`;
 
     // On Dashboard the header reads Dashboard's own count.
-    await gotoIssue(page, viewPath(key, "dashboard"));
+    await gotoIssue(page, presetPath(key, "dashboard"));
     await expectDashboard(page, "/dashboard");
     await expect(countOf(waiting)).toHaveText(String(seed.items.length));
     await expectHeaderDrawn(page);
@@ -591,8 +504,8 @@ test("the header counts Dashboard's items on every view and drops one per act", 
     ).toHaveText(counted(seed.items.length));
 
     // Every other view of the row, and a document, reads the same number.
-    for (const view of ["conversation", "spec", "verification", "plan", "decisions"]) {
-      await gotoIssue(page, viewPath(key, view));
+    for (const view of ["conversation", "spec", "verification", "plan", "decisions"] as const) {
+      await gotoIssue(page, presetPath(key, view));
       await expectHeaderDrawn(page);
       await expect(
         waitingCount(page),
@@ -608,7 +521,7 @@ test("the header counts Dashboard's items on every view and drops one per act", 
     ).toHaveText(counted(seed.items.length));
 
     // Each act in place takes its item out of the list, and one from the header's count.
-    await gotoIssue(page, viewPath(key, "dashboard"));
+    await gotoIssue(page, presetPath(key, "dashboard"));
     await expectDashboard(page, "/dashboard");
     let left = seed.items.length;
     const gone = async (item: WaitingItem) => {
@@ -691,9 +604,9 @@ test("a thread item's link opens the thread", async ({ browser }) => {
         id: seed.threads.comment,
       },
     ]) {
-      await gotoIssue(page, viewPath(seed.key, "dashboard"));
+      await gotoIssue(page, presetPath(seed.key, "dashboard"));
       await expectDashboard(page, "/dashboard");
-      const link = itemOf(waitingOf(page), { id: thread.id, kind: "thread" }).locator(
+      const link = itemOf(waitingOf(issuePage(page)), { id: thread.id, kind: "thread" }).locator(
         `a[href$="${thread.address}"]`
       );
       await expect(link, `the thread item draws no link to ${thread.address}`).not.toHaveCount(0);
@@ -734,9 +647,9 @@ test("Details on a focused ask reads that ask and its references", async ({ brow
         );
       }).length;
 
-    await gotoIssue(page, viewPath(seed.key, "dashboard"));
+    await gotoIssue(page, presetPath(seed.key, "dashboard"));
     await expectDashboard(page, "/dashboard");
-    const waiting = waitingOf(page);
+    const waiting = waitingOf(issuePage(page));
     await drawEveryItem(waiting, seed);
 
     // The focus goes inside the question's item, to its answer box.
@@ -782,46 +695,6 @@ test("Details on a focused ask reads that ask and its references", async ({ brow
   });
 });
 
-/** Whether a read of Dashboard's first load is one R8 names on this main, for `seed`: the issue,
- *  its open asks, its handoffs, its Legion state, the reader's unread replies of the issue with
- *  no `limit`, the own route of each thread drawn, the decisions and the Changes' comments of
- *  the decisions document, the results and the coverage, the batched reference targets, and a
- *  picture's version with the summary. Where dispatch://INFRA-1253 is on main, its tree read. It
- *  is the rule `e2e/issue-dashboard-today.e2e.ts` reads today's page by, since R8 names one set of
- *  reads for both pages. */
-function namedByR8(seed: DashboardSeed, method: string, sent: URL): boolean {
-  if (method !== "GET") return false;
-  const issue = `/api/v1/issues/${seed.key}`;
-  const query = [...sent.searchParams]
-    .map(([name, value]) => `${name}=${value}`)
-    .sort()
-    .join("&");
-  const threads = seed.items.filter((item) => item.kind === "thread").map((item) => item.id);
-  switch (sent.pathname) {
-    case issue:
-    case `${issue}/handoffs`:
-    case `${issue}/legion`:
-    case `${issue}/decisions`:
-    case `${issue}/results`:
-    case `${issue}/coverage`:
-    case `${issue}/summary`:
-      return query === "";
-    case `${issue}/asks`:
-      return query === "state=open";
-    case "/api/v1/me/replies":
-      return query === `issue=${seed.key}&state=unread`;
-    case `${issue}/comments`:
-      return query === `artifact=${seed.decisionsDocumentId}`;
-    case "/api/v1/reference-targets":
-      return true;
-    case `${issue}/tree`:
-      return seed.holds.treeRead;
-  }
-  const own = /^\/api\/v1\/(?:comments|issues\/[^/]+\/messages)\/([^/]+)$/.exec(sent.pathname);
-  if (own !== null) return threads.includes(own[1] ?? "");
-  return new RegExp(`^${literal(issue)}/artifacts/[^/]+/versions/\\d+$`).test(sent.pathname);
-}
-
 // SLOW(>=2s): the whole Dashboard seed, two loads of Spec and one cold load of Dashboard, each read
 // until nothing has been in flight for 1.5 s, and a press of Dashboard read the same way.
 test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays under 40", async ({
@@ -830,32 +703,25 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
   test.setTimeout(120_000);
   await phase(browser, seeded, async (page, seed) => {
     const reads = watchApiRequests(page);
-    await gotoIssue(page, viewPath(seed.key, "spec"));
+    await gotoIssue(page, presetPath(seed.key, "spec"));
     await expectLoadSettled(reads);
     // The same view in another tab, with no Dashboard, over the same time: what it sends is the
     // shell's own.
     const control = await page.context().newPage();
     await control.setViewportSize(viewportAt(DESKTOP_WIDTH));
     const shell = watchApiRequests(control);
-    await gotoIssue(control, viewPath(seed.key, "spec"));
+    await gotoIssue(control, presetPath(seed.key, "spec"));
     await expectLoadSettled(shell);
-    // The shell's own polls - the reads of no issue that the control tab made as it loaded, the
-    // agents registry among them - repeat on their own clock in either tab: a window the control
-    // tab polled in is no window this tab polls in. A read of the issue is held to the windows
-    // below.
-    const shellPolls = new Set(
-      shell.requests
-        .filter((sent) => !sent.route.includes("/issues/"))
-        .map((sent) => `${sent.method} ${sent.route}`)
-    );
+    // The shell's own polls repeat on their own clock in either tab (`shellPollsOf`).
+    const shellPolls = shellPollsOf(shell);
 
-    const dashboard = presetRow(page).getByRole("button", { exact: true, name: DASHBOARD });
+    const dashboard = presetToggle(page, "dashboard");
     await expect(dashboard, "Spec's view row draws no Dashboard control").toHaveCount(1);
     reads.reset();
     shell.reset();
     await dashboard.click();
     await expectDashboard(page, "the Dashboard control on Spec");
-    await expect(itemsOf(waitingOf(page))).toHaveCount(5);
+    await expect(itemsOf(waitingOf(issuePage(page)))).toHaveCount(5);
     await expectLoadSettled(reads);
     expect(
       reads.requests
@@ -870,14 +736,8 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
         .map((sent) => `${sent.pathname}${sent.search}`),
       "the press on Dashboard read the issue's whole comments or messages list"
     ).toEqual([]);
-    const shellRoutes = new Set(shell.requests.map((sent) => `${sent.method} ${sent.route}`));
     expect(
-      reads.requests
-        .filter(
-          (sent) =>
-            !shellRoutes.has(`${sent.method} ${sent.route}`) &&
-            !shellPolls.has(`${sent.method} ${sent.route}`)
-        )
+      beyondShell(reads.requests, shellRoutesOf(shell), shellPolls)
         .filter((sent) => !namedByR8(seed, sent.method, new URL(sent.path, "http://dashboard")))
         .map((sent) => `${sent.method} ${sent.path}`),
       "the press on Dashboard sent reads R8 does not name"
@@ -888,9 +748,9 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
     const cold = await page.context().newPage();
     await cold.setViewportSize(viewportAt(DESKTOP_WIDTH));
     const coldReads = watchApiRequests(cold);
-    await gotoIssue(cold, viewPath(seed.key, "dashboard"));
+    await gotoIssue(cold, presetPath(seed.key, "dashboard"));
     await expectDashboard(cold, "a cold load of /dashboard");
-    await expect(itemsOf(waitingOf(cold))).toHaveCount(5);
+    await expect(itemsOf(waitingOf(issuePage(cold)))).toHaveCount(5);
     await expectLoadSettled(coldReads);
     expect(
       coldReads.total(),

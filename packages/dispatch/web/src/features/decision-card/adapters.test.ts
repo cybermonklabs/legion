@@ -2,47 +2,30 @@ import { expect, test } from "bun:test";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import type { Decision } from "../../api/types";
+import { decision } from "../issue-page/decisions-filter/decisions-fixtures";
 import { fromDecision } from "./adapters";
 
+/** The bare `decisions` member, whose asks and links the read left out (`null`), of a decision
+ *  its maker was unsure of. */
 function model(fields: Partial<Decision> = {}): Decision {
-  return {
-    asks: null,
-    block_id: "store",
-    changed_at: "2026-11-01T00:00:00Z",
-    changed_version: 3,
-    heading: "Store notices in a table",
-    kept: null,
-    kind: "agent",
-    links: null,
-    ref: "dispatch://CORE-1/artifact/decisions-md#b-store",
-    replaced: false,
-    text: "## Store notices in a table\n\nA table keeps them queryable.",
-    text_sha256: "sum-store",
-    unsure: true,
-    waiting_review: true,
-    ...fields,
-  };
+  return decision("store", { asks: null, links: null, unsure: true, ...fields });
 }
 
 test("the bare member reads its unsure as the level and holds no author, level or reason", () => {
-  const decision = model();
-  expect(fromDecision(decision)).toEqual({
+  const made = model();
+  expect(fromDecision(made)).toEqual({
     asks: [],
-    changed_at: "2026-11-01T00:00:00Z",
-    heading: "Store notices in a table",
+    changed_at: made.changed_at,
+    heading: made.heading,
     kept_by: undefined,
     kind: "agent",
     links: [],
     replaced: false,
-    text: decision.text,
+    text: made.text,
     text_tree: undefined,
     unsure: true,
     waiting_review: true,
   });
-  const shown = fromDecision(decision);
-  for (const field of ["decided_by", "uncertainty", "uncertainty_reason", "answer", "change"]) {
-    expect(shown[field as keyof typeof shown], field).toBeUndefined();
-  }
 });
 
 test("a Keep names its person by login, and a person's decision is a person's", () => {

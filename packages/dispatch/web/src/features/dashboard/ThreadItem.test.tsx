@@ -12,6 +12,7 @@ import type {
   MessageRead,
   MessageWithTrees,
   MyReplyRow,
+  MyReplyThreadRow,
 } from "../../api/types";
 import type { SentDraft } from "../conversation/send-request";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
@@ -21,6 +22,7 @@ import { DASHBOARD_WORDS } from "../issue-page/page-words";
 import { AppProviders } from "../issue-page/slots/stage-fixtures";
 import { AgentRegistryPoller, agentsQuery } from "../refs/agent-registry";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { replyRow } from "../threads/replies-fixture";
 import asksOpenBody from "./fixtures/asks-open.json";
 import changesBody from "./fixtures/changes.json";
 import { replySendKey, ThreadItem } from "./ThreadItem";
@@ -70,17 +72,14 @@ function message(id: string, body: string, at: string, author: MessageWithTrees[
   } as unknown as MessageWithTrees;
 }
 
-function row(kind: MyReplyRow["kind"], threadId: string): MyReplyRow {
-  return {
+/** `threadId`'s unread row of `kind`, whose reply came after the reader's mark. */
+function row(kind: MyReplyThreadRow["kind"], threadId: string): MyReplyThreadRow {
+  return replyRow(threadId, {
     kind,
     read_through: MARK,
     ref: `dispatch://${KEY}/${kind}/${threadId}`,
-    reply: { author: PLANNER, created_at: AFTER },
-    subject: "",
-    thread_id: threadId,
-    unread: true,
-    unread_count: 1,
-  } as unknown as MyReplyRow;
+    reply: { ...replyRow(threadId).reply, author: PLANNER, created_at: AFTER },
+  });
 }
 
 /** Draws `thread`'s item; `kept` is a reply the reader typed in the thread's reply box and never

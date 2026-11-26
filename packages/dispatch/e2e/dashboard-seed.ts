@@ -7,7 +7,6 @@
  *  Legion state as the sampler writes it, and answers what the rows read back. */
 
 import { randomUUID } from "node:crypto";
-import type { LegionIssueResponse } from "@legion/contracts";
 import type { LegionClaimState, LegionPhase } from "@legion/contracts/legion-api";
 import type { Actor } from "../web/src/api/types";
 import { checkStanding } from "../web/src/features/issue-page/statement-rules";
@@ -214,10 +213,9 @@ export async function seedLegionState(key: string, legion: LegionStateSeed): Pro
     if (project !== LEGION_PROJECT) {
       throw new Error(`${key} is not of ${LEGION_PROJECT}, the project e2e/legion-seed.ts names`);
     }
-    const named = await sql(
-      `SELECT count(*) FROM legion_settings WHERE project = ${sqlLiteral(project)}`
-    );
-    if (named === "0") await seedLegionDaemon(NOTHING_ANSWERS);
+    // Each row starts from an emptied database (`e2e/test.ts`'s `freshDatabase`), and seeds one
+    // issue's Legion state, so the project names no daemon yet.
+    await seedLegionDaemon(NOTHING_ANSWERS);
   }
   const observed = [
     ...(legion.phase === null ? [] : [{ field: "phase", value: legion.phase }]),
@@ -248,18 +246,6 @@ export async function seedLegionState(key: string, legion: LegionStateSeed): Pro
   );
 }
 
-/** `GET /api/v1/issues/{key}/legion` as the reader reads it, which the agents part draws from. */
-export async function readLegionIssue(key: string): Promise<LegionIssueResponse> {
-  const answer = await fetch(new URL(`/api/v1/issues/${key}/legion`, baseUrl), {
-    headers: await userHeaders(READER),
-  });
-  if (!answer.ok) {
-    throw new Error(`GET /api/v1/issues/${key}/legion answered ${answer.status}`);
-  }
-  const body: LegionIssueResponse = await answer.json();
-  return body;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Handoffs
 // ---------------------------------------------------------------------------------------------
@@ -276,11 +262,10 @@ export const ROUNDS: Readonly<Record<HandoffPhase, number>> = {
   test: 1,
 };
 
-/** Records the next handoff of `phase` on `key` as an agent records one: under a personal agent
- *  token the reader mints, naming the planner's session, since the route refuses a cookie
- *  caller (`POST /api/v1/issues/{key}/handoffs/{phase}`, 403 HANDOFF_FORBIDDEN). */
-export async function writeHandoff(key: string, phase: HandoffPhase): Promise<void> {
-  const token = await mintAgentToken(`dashboard-${phase}-${randomUUID().slice(0, 8)}`, READER);
+/** Records the next handoff of `phase` on `key` as an agent records one: under `token`, a
+ *  personal agent token the reader minted, naming the planner's session, since the route refuses
+ *  a cookie caller (`POST /api/v1/issues/{key}/handoffs/{phase}`, 403 HANDOFF_FORBIDDEN). */
+export async function writeHandoff(key: string, phase: HandoffPhase, token: string): Promise<void> {
   const answer = await fetch(new URL(`/api/v1/issues/${key}/handoffs/${phase}`, baseUrl), {
     body: JSON.stringify({
       actor: PLANNER,
@@ -296,10 +281,12 @@ export async function writeHandoff(key: string, phase: HandoffPhase): Promise<vo
   }
 }
 
-/** The seed's rounds: Planning 2, Implementing 3, Testing 1 and Reviewing none. */
+/** The seed's rounds: Planning 2, Implementing 3, Testing 1 and Reviewing none, in that order,
+ *  each under the one agent token the reader mints for them. */
 export async function writeRounds(key: string): Promise<void> {
+  const token = await mintAgentToken(`dashboard-rounds-${randomUUID().slice(0, 8)}`, READER);
   for (const phase of ["plan", "implement", "test", "review"] as const) {
-    for (let round = 0; round < ROUNDS[phase]; round += 1) await writeHandoff(key, phase);
+    for (let round = 0; round < ROUNDS[phase]; round += 1) await writeHandoff(key, phase, token);
   }
 }
 
@@ -749,17 +736,18 @@ export async function seedDashboard(
   }
 
   const children: string[] = [];
-  const done: string[] = [];
-  for (const [index, status] of CHILD_STATUSES.entries()) {
+  for (const index of CHILD_STATUSES.keys()) {
     const child = await createIssue({
       parent: key,
       project: DASHBOARD_PROJECT,
       title: `Dashboard part ${index + 1}`,
     });
-    await patchIssue(child.key, { status });
     children.push(child.key);
-    if (status === "done") done.push(child.key);
   }
+  await Promise.all(
+    children.map((child, index) => patchIssue(child, { status: CHILD_STATUSES[index] }))
+  );
+  const done = children.filter((_, index) => CHILD_STATUSES[index] === "done");
 
   await writeRounds(key);
   await seedLegionState(key, legion);

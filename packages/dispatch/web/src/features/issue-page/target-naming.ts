@@ -63,7 +63,7 @@ export interface TreeContext {
  * the page publishes each reading and the shared reader projects it (`refs/reference-names.tsx`),
  * as a title drawn over one record, so no word of a name is written by a reader of this page's
  * own, and markup is never a word of one (R21). The name is the one a link to the target reads
- * (R8), and a chip cuts it again where it draws it (`issue-tree.ts`'s `chipName`).
+ * (R8), and a chip cuts it again where it draws it (`first-line.ts`'s `chipName`).
  *
  * - **A target nothing answers to now** by nothing, which the chip draws as gone. A short
  *   reference two or more targets carry the id of is such a target, which the read answers

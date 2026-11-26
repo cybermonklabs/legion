@@ -433,10 +433,11 @@ function addAsks(
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
     // An open question whose turn is the reader's own waits on the reader, and is what the
-    // header's count of what waits puts the focus on (R13, `waiting.ts`): the person the server
-    // resolved it waits on (`waiting_on_person`), as every other count of what waits on the
-    // reader reads it (`inbox/BlockedOnYou.tsx`'s `waitingOnYou`). A question waiting on
-    // somebody else is open all the same, and the fold still unfolds the path to it.
+    // header's count of what waits puts the focus on (R13, `dashboard/useWaitingItems.ts`'s
+    // `waitingItems`): the person the server resolved it waits on (`waiting_on_person`), as every
+    // other count of what waits on the reader reads it (`inbox/BlockedOnYou.tsx`'s
+    // `waitingOnYou`). A question waiting on somebody else is open all the same, and the fold
+    // still unfolds the path to it.
     draft.waiting =
       ask.state === "open" &&
       ask.waiting_on === "human" &&
@@ -686,7 +687,8 @@ function addDecisions(
     draft.state = decisionState(decision, changes.has(decision.ref));
     // The tie to a statement decides whether it waits on the reader, and a decision the reader
     // asked to change waits on its agent, not on the reader (`decision-review.ts`). Nothing
-    // waits on a reader whose login has not resolved, as `waiting.ts` counts it.
+    // waits on a reader whose login has not resolved, as `dashboard/useWaitingItems.ts`'s
+    // `waitingItems` counts it.
     draft.waiting =
       context.viewer !== undefined &&
       inReviewList(decision, isCoverageStatement, changes.has(decision.ref));

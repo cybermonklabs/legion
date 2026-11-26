@@ -252,7 +252,7 @@ export function rowReferences(
  * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
  * which a chip draws in place of its name (decision 39) and which `names` holds for it instead -
  * the line the page's store projects beside its name (`KnownReferences.lines`, from
- * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
+ * `target-naming.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
  * address and `issue`, the issue the row belongs to (`node-row-chip.ts`'s `documentWord`); an
  * issue by its key, then its title; a party by the name its own read gives it; anything else as
  * a chip in place, by its target's own words cut as a tie's chip cuts them (`chipName`), then

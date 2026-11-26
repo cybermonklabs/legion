@@ -12,7 +12,7 @@ import (
 // that an order the read made of its own would show, and k3 none, which carries no serves at all.
 func TestCheckResultsCarryWhatEachCheckServes(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := newTestServer(t, testServerOptions{})
+	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "ACME", "Serves", twoRequirements)
 	r1, r2 := "dispatch://"+issue.Key+"/spec#b-r1", "dispatch://"+issue.Key+"/spec#b-r2"
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",

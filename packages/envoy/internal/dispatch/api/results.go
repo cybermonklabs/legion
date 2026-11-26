@@ -520,8 +520,8 @@ type issueCheckResults struct {
 // results are compared with and whether a pass of it stands, and every result recorded
 // against it from any issue, newest first, each with where its commit stands and whether the
 // check's words moved since. Each check names the statements its block serves, as its `serves`
-// attribute writes them (checkServes). An issue with no Verification document has no checks and
-// no error.
+// attribute writes them (docs.CheckBlockOf). An issue with no Verification document has no checks
+// and no error.
 //
 // A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
 // head, and its one result is the one derived from the run its `ci_check` names
@@ -977,19 +977,18 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 	return markdown, nil, err
 }
 
-// checkBlocksIn is every `check` block of one document, in document order, with its attributes,
-// the references its `serves` attribute names (checkServes) and its words (typedBlocksIn). trees is
-// the request's own reader, nil for a caller that asked for no tree: each check registers with it,
-// as its text_tree, the markdown typedBlocksIn reads the block's tree from (the rule GET
-// /api/v1/reference-targets reads the same block by), once the slice has stopped growing, since
-// what is registered is a pointer into the row.
+// checkBlocksIn is every `check` block of one document, in document order, with its attributes
+// and the references its `serves` attribute names (docs.CheckBlockOf), and its words
+// (typedBlocksIn). trees is the request's own reader, nil for a caller that asked for no tree:
+// each check registers with it, as its text_tree, the markdown typedBlocksIn reads the block's
+// tree from (the rule GET /api/v1/reference-targets reads the same block by), once the slice has
+// stopped growing, since what is registered is a pointer into the row.
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string
 	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
-		check.Serves = checkServes(node)
 		checks = append(checks, check)
 		if trees != nil {
 			contents = append(contents, content)
@@ -1002,18 +1001,6 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *di
 		trees.text(&checks[index].TextTree, content)
 	}
 	return checks, nil
-}
-
-// checkServes is the references a check block's `serves` attribute names, each as the block writes
-// it and in its order: the parse reads the attribute's text as references split at each space
-// (pmdoc.ParseBlockPointerValue), so the list is the one the markdown writes. It is nil for a block
-// whose `serves` names nothing or that has none, so that check's `serves` is left out.
-func checkServes(node *pmdoc.Node) []string {
-	serves, _ := node.Attrs["serves"].([]string)
-	if len(serves) == 0 {
-		return nil
-	}
-	return serves
 }
 
 // checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
