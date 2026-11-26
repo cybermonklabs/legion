@@ -1,10 +1,11 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import type { RigDaemonReady, RigDaemonRecord } from "./scored-runs-contracts";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
@@ -4264,5 +4265,174 @@ test("a scored run whose label's built-from names no model line is a rig error, 
   expect(scoredRowOf("owner-walk-root-B-claude-head-3")).toMatchObject({
     outcome: "rig-error",
     error: "its label's built-from names no model line, so the run's model cannot be checked",
+  });
+});
+
+// pathCheck (C4 of dispatch://INFRA-5581's plan): whether the scripted model's two calls of a run
+// reached the label's daemon through the real pane, its plugin and its `legion` tool. Each row of
+// C4's table has a run that breaks that row alone.
+describe("pathCheck", () => {
+  const head = "a".repeat(40);
+  const scripted = "path check: src/config.ts loadConfig returns DEFAULTS on a parse error";
+  const call = (at: number, route: string, status: number, body: object, answer: unknown = {}) => ({
+    at: `2026-11-26T00:00:0${at}.000Z`,
+    method: "POST",
+    path: `/legion/v1/${route}`,
+    status,
+    body,
+    answer,
+  });
+  /** A made run's files, each by the schema the rig and the label write it in. */
+  interface PathRun {
+    ready: RigDaemonReady;
+    record: RigDaemonRecord;
+    request: { role: string; paneDaemon: string };
+    script: { calls: { tool: string; input: Record<string, unknown> }[] };
+    log: { answered: number; toolResult: string | null }[];
+  }
+  /** A run whose two scripted calls reached the label daemon, and each part of it by its file. */
+  const passing = (): PathRun => ({
+    ready: {
+      daemonUrl: "http://127.0.0.1:7",
+      claim: "c-implementer",
+      session: "ses_pane",
+      replaced: "ses_fake",
+      generation: 2,
+      head,
+      systemPrompt: "/rig/system.md",
+      sessionDir: "/rig/sessions",
+    },
+    record: {
+      issue: "ACME-1",
+      phase: "merging",
+      generation: 2,
+      calls: [
+        call(1, "claims/register", 200, { sessionId: "ses_fake" }),
+        call(2, "claims/register", 200, { sessionId: "ses_pane" }),
+        call(3, "claims/ready", 204, { sessionId: "ses_pane", generation: 2 }, null),
+        call(4, "defects/report", 200, { issue: "ACME-1", defect: scripted, head }, {
+          defect: "d-7",
+          state: "recorded",
+          nextChange: 1,
+        }),
+        call(5, "handoff/complete", 200, { summary: "path check" }),
+      ],
+      defects: [
+        { id: "d-7", text: scripted, role: "implementer", head, generation: 2, carriedBy: null, withdrawn: null },
+      ],
+      steps: [],
+    },
+    request: { role: "implementer", paneDaemon: "label" },
+    script: {
+      calls: [
+        { tool: "legion", input: { op: "report_defect", issue: "ACME-1", defect: scripted, head } },
+        { tool: "legion", input: { op: "handoff_complete", summary: "path check", plan_rating: 3, plan_reason: "path check" } },
+      ],
+    },
+    log: [
+      { answered: 1, toolResult: null },
+      { answered: 2, toolResult: '{"defect":"d-7","state":"recorded","nextChange":1}' },
+      { answered: 3, toolResult: '{"summary":"path check"}' },
+    ],
+  });
+  let made = 0;
+  /** A run directory holding RUN's files. */
+  const runDir = (run: PathRun) => {
+    const dir = path.join(work, "path-check", `run-${++made}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "ready.json"), JSON.stringify(run.ready));
+    writeFileSync(path.join(dir, "record.json"), JSON.stringify(run.record));
+    writeFileSync(path.join(dir, "daemon-request.json"), JSON.stringify(run.request));
+    writeFileSync(path.join(dir, "standin-script.json"), JSON.stringify(run.script));
+    writeFileSync(
+      path.join(dir, "model-standin.jsonl"),
+      run.log.map((line) => `${JSON.stringify({ at: "2026-11-26T00:00:00.000Z", method: "POST", path: "/anthropic/v1/messages", ...line })}\n`).join("")
+    );
+    return dir;
+  };
+  /** pathCheck's line of RUN, as `score.ts path-check` prints it. */
+  const line = async (run: PathRun) => {
+    // Imported here, not at the file's top: a scorer without pathCheck then fails these rows
+    // alone, and not every row of the file at its load.
+    const { pathCheck, pathLine } = await import("./score");
+    expect(typeof pathCheck).toBe("function");
+    return pathLine(pathCheck(runDir(run)));
+  };
+  /** RUN with its record's call of ROUTE taken out. */
+  const without = (run: PathRun, route: string) => {
+    run.record.calls = run.record.calls.filter((each) => each.path !== `/legion/v1/${route}`);
+    return run;
+  };
+
+  // Catches: a check that passes a run whose calls never reached the label daemon, and a command
+  // line that prints anything but the one line.
+  test("pathCheck passes a run that holds all seven, and its command prints PATH OK with the id", async () => {
+    const run = passing();
+    expect(await line(run)).toBe("PATH OK d-7");
+    const printed = Bun.spawnSync([process.execPath, path.join(import.meta.dir, "score.ts"), "path-check", runDir(run)]);
+    expect({ code: printed.exitCode, stdout: printed.stdout.toString() }).toEqual({ code: 0, stdout: "PATH OK d-7\n" });
+  });
+
+  // Catches: a path taken as the label daemon's when the new session never registered or became
+  // ready there, or is the session it replaced.
+  test("pathCheck row 1: a new session that never became ready at the label daemon", async () => {
+    const want = "PATH FAIL: the new session never became ready at the label daemon";
+    expect(await line(without(passing(), "claims/ready"))).toBe(want);
+    const same = passing();
+    same.ready.replaced = "ses_pane";
+    expect(await line(same)).toBe(want);
+    const unregistered = passing();
+    unregistered.record.calls = unregistered.record.calls.filter(
+      (each) => !(each.path.endsWith("claims/register") && JSON.stringify(each.body).includes("ses_pane"))
+    );
+    expect(await line(unregistered)).toBe(want);
+  });
+
+  // Catches: a report that another daemon answered (the intercepting proxy's control) taken as the
+  // label daemon's.
+  test("pathCheck row 2: no call of the plugin at the label daemon", async () => {
+    expect(await line(without(passing(), "defects/report"))).toBe(
+      "PATH FAIL: the label daemon recorded no call of the plugin"
+    );
+  });
+
+  // Catches: a label without the route (the no-defect-route control) whose 404 reads as a report.
+  test("pathCheck row 3: the plugin's call refused by the label daemon", async () => {
+    const run = passing();
+    const report = run.record.calls[3];
+    if (report === undefined) throw new Error("the made run has no report");
+    report.status = 404;
+    expect(await line(run)).toBe("PATH FAIL: the plugin's call got 404 from the label daemon");
+  });
+
+  // Catches: a tool result the plugin made up, or another call's, read as the daemon's answer.
+  test("pathCheck row 4: a tool result that is not the label daemon's answer", async () => {
+    const run = passing();
+    run.log[1] = { answered: 2, toolResult: '{"defect":"d-8","state":"recorded","nextChange":1}' };
+    expect(await line(run)).toBe("PATH FAIL: the tool result is not the label daemon's answer");
+  });
+
+  // Catches: an answer whose defect the daemon stored with other text or another role.
+  test("pathCheck row 5: a stored defect that is not the reported one", async () => {
+    const run = passing();
+    const stored = run.record.defects[0];
+    if (stored === undefined) throw new Error("the made run stores no defect");
+    stored.text = "another text";
+    expect(await line(run)).toBe("PATH FAIL: the stored defect is not the reported one");
+  });
+
+  // Catches: a completion the plugin refused before any HTTP call (a pane's `bin/jj`), read as
+  // completed.
+  test("pathCheck row 6: a completion that never reached the label daemon", async () => {
+    expect(await line(without(passing(), "handoff/complete"))).toBe(
+      "PATH FAIL: the completion never reached the label daemon"
+    );
+  });
+
+  // Catches: a run whose pane pointed at the intercepting proxy passed as the label daemon's path.
+  test("pathCheck row 7: a pane that did not point at the label daemon", async () => {
+    const run = passing();
+    run.request.paneDaemon = "intercept-report";
+    expect(await line(run)).toBe("PATH FAIL: the run's pane did not point at the label daemon");
   });
 });

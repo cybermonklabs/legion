@@ -3465,3 +3465,588 @@ esac
     });
   });
 });
+
+/** The head a made label's daemon entry reports in ready.json. */
+const madeHead = "a".repeat(40);
+/**
+ * label-texts.sh of a made label. `daemon <request> <ready> <status> <record>` plays the plan in
+ * <runDir>/stub-plan.json, its runDir read from the request: ready.json once `readyAfterMs` has
+ * passed (never when it is null), with a transcript and a subagent's under its sessionDir; each
+ * status of `statuses` at its `afterMs`; and at SIGTERM the plan's `record`, the PASS line and the
+ * plan's `exit`. It records its arguments (stub-argv), its LEGION_TEST_PG_DSN (stub-pg) and each
+ * event with its epoch milliseconds (stub-events.jsonl). `build [--compile]` records its arguments
+ * in $RIG_TEXTS_BIN/build-calls.
+ */
+const STUB_ENTRY = String.raw`#!/usr/bin/env bash
+set -u
+case ${"${1:-}"} in
+build) mkdir -p "$RIG_TEXTS_BIN" && printf '%s\n' "$*" >>"$RIG_TEXTS_BIN/build-calls" && exit 0 ;;
+daemon) ;;
+*) exit 2 ;;
+esac
+request=$2 ready=$3 status=$4 record=$5
+run=$(jq -r .runDir "$request")
+plan=$run/stub-plan.json
+event() { jq -cn --argjson at "$(date +%s%3N)" --arg e "$1" '{at: $at, event: $e}' >>"$run/stub-events.jsonl"; }
+printf '%s\n' "$*" >"$run/stub-argv"
+printf '%s\n' "${"${LEGION_TEST_PG_DSN:-}"}" >"$run/stub-pg"
+term=0
+trap 'term=1' TERM
+start=$(date +%s%3N)
+ready_at=$(jq '.readyAfterMs // 300' "$plan")
+statuses=$(jq -c '.statuses // []' "$plan")
+count=$(jq length <<<"$statuses")
+next=0 wrote=0
+sessions=$(jq -r .home "$request")/.omp/agent/sessions/rig
+event start
+while [ "$term" = 0 ]; do
+  now=$(($(date +%s%3N) - start))
+  if [ "$wrote" = 0 ] && [ "$ready_at" != null ] && [ "$now" -ge "$ready_at" ]; then
+    mkdir -p "$sessions/ses_pane"
+    printf '%s\n' '{"type":"session","id":"ses_pane"}' >"$sessions/ses_pane.jsonl"
+    printf '%s\n' '{"type":"session","id":"sub"}' >"$sessions/ses_pane/sub.jsonl"
+    jq -n --arg sessions "$sessions" --arg head "${madeHead}" --argjson extra "$(jq -c '.ready // {}' "$plan")" \
+      '{daemonUrl: "http://127.0.0.1:1", claim: "c-implementer", session: "ses_pane", replaced: "ses_fake",
+        generation: 2, head: $head, systemPrompt: "/rig/system.md", sessionDir: $sessions} + $extra' >"$ready.tmp"
+    mv "$ready.tmp" "$ready"
+    wrote=1
+    event ready
+  fi
+  while [ "$next" -lt "$count" ] && [ "$now" -ge "$(jq ".[$next].afterMs" <<<"$statuses")" ]; do
+    jq -c ".[$next].status" <<<"$statuses" >"$status.tmp"
+    mv "$status.tmp" "$status"
+    event "status $next"
+    next=$((next + 1))
+  done
+  sleep 0.05 &
+  wait $!
+done
+event term
+jq '.record // {issue: "ACME-1", phase: "merging", generation: 2, calls: [], defects: [], steps: []}' "$plan" >"$record"
+echo '--- PASS: TestRigDaemonLive (1.00s)'
+exit "$(jq '.exit // 0' "$plan")"
+`;
+
+/** The files of a made world with `daemon: label`, W1's shape, which the rig takes. */
+const madeWorld = (fields: Record<string, unknown> = {}): Record<string, string> => ({
+  "world.json": JSON.stringify({
+    daemon: "label",
+    scenario: "forward-only",
+    world: "retro-defect",
+    role: "implementer",
+    moment: "retro",
+    issue: "ACME-1",
+    title: "List rows a page at a time",
+    steps: ["implementer", "reviewer", "acceptance:owner"],
+    repository: "acme/widgets",
+    defaultBranch: "main",
+    pull: 41,
+    passes: ["c-list-rows"],
+    item: 1,
+    ...fields,
+  }),
+  "anchors.json": JSON.stringify({ defect: ["src/config.ts", "loadConfig"] }),
+  "spec.md": "# List rows a page at a time\n\n`listRows(rows, limit)` returns at most `limit` rows.\n",
+  "verification.md":
+    '# Verification\n\n:::check{#c-list-rows surface="cli" run="bun test" when="before_merge"}\nThe list test passes.\n:::\n',
+  "fixtures.json": '{"routes":[]}\n',
+  "head.patch": "",
+});
+/** A status file the stand-in entry writes: the turn, and the newest activity report after it. */
+const status = (turn: "running" | "idle", activity: object | null) => ({
+  at: "2026-11-26T00:00:00.000Z",
+  paneAlive: true,
+  turn,
+  activity,
+});
+const ended = status("idle", { backgroundWork: { running: false }, phase: { nextReminderAt: null } });
+
+/**
+ * run_forward on a made label whose entry is STUB_ENTRY, playing PLAN, in a run directory of its
+ * own, with own_dispatch, seed.ts and the Dispatch read of the results stood in (each call goes to
+ * <R>/rig-calls): RESULTS_MISSING, when set, is the backstop's answer of a check with no pass. The
+ * Oh My Pi that rig_omp names records any run but `--version` in <work>/omp-ran. WORLD's files go
+ * over madeWorld's. MODEL_LINE, when given, is the built-from's model line, and the label's profile
+ * then holds the stand-in route.
+ */
+function labelRun(
+  name: string,
+  plan: object,
+  options: {
+    world?: Record<string, string>;
+    env?: Record<string, string>;
+    readyBound?: number;
+    modelLine?: string;
+  } = {}
+) {
+  const R = freshDir(name);
+  const co = freshDir(`${name}-label`);
+  const work = freshDir(`${name}-work`);
+  const worlds = freshDir(`${name}-worlds`);
+  const entry = path.join(co, "packages/pi-legion/scripts/skill-scenarios/label-texts.sh");
+  mkdirSync(path.dirname(entry), { recursive: true });
+  writeFileSync(entry, STUB_ENTRY, { mode: 0o755 });
+  mkdirSync(path.join(work, "profiles/head/home/.omp/profiles/skills-head/agent"), { recursive: true });
+  const world = path.join(worlds, "forward-only/retro-defect");
+  mkdirSync(world, { recursive: true });
+  for (const [file, text] of Object.entries({ ...madeWorld(), ...options.world }))
+    writeFileSync(path.join(world, file), text);
+  for (const dir of ["bin", "sessions", "cwd", "logs"]) mkdirSync(path.join(R, dir));
+  writeFileSync(path.join(R, "stub-plan.json"), JSON.stringify(plan));
+  writeFileSync(
+    path.join(R, "built-from"),
+    `checkout ${co}\ncommit ${"b".repeat(40)}\n${options.modelLine === undefined ? "" : `${options.modelLine}\n`}`
+  );
+  writeFileSync(
+    path.join(work, "services-env"),
+    "ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=nats://127.0.0.1:2\nENVOY_TOKEN_FILE=/rig/envoy-token\n"
+  );
+  const omp = path.join(work, "omp-install/bin/omp");
+  mkdirSync(path.dirname(omp), { recursive: true });
+  writeFileSync(
+    omp,
+    `#!/bin/sh\n[ "$1" = --version ] && { echo omp/1.2.3; exit 0; }\ntouch ${JSON.stringify(path.join(work, "omp-ran"))}\n`,
+    { mode: 0o755 }
+  );
+  const script = [
+    "set -euo pipefail",
+    "root=$1 R=$2 co=$3 work=$4 forward_worlds=$5 here=$6 evidence=$2 timeout_hook=",
+    "P=$work/profiles/head services_env=$work/services-env profile=skills-head pin=github:example/oh-my-pi@1.2.3-4",
+    `rpc_poll=0.2 rpc_ready_bound=${options.readyBound ?? 10} entry_pid='' model_pid='' dispatch_port=1 pg_url=''`,
+    defs("fail", "note"),
+    '. "$root/scripts/e2e/lib/rig.sh"',
+    defs(
+      "require_label_texts",
+      "base_env",
+      "standins",
+      "pod_standins",
+      "pinned_omp",
+      "rig_omp",
+      "service_value",
+      "install_standin_route",
+      "route_config",
+      "route_model_standin",
+      "forward_holds",
+      "daemon_request",
+      "forward_ready",
+      "forward_script",
+      "forward_status",
+      "forward_held",
+      "forward_wait",
+      "forward_end",
+      "run_forward"
+    ),
+    assignment("model_standin"),
+    assignment("model_standin_unrouted"),
+    assignment("path_check_defect"),
+    'own_dispatch() { printf "own_dispatch %s\\n" "$*" >>"$R/rig-calls"; pg_url=postgres://rig@127.0.0.1:1/postgres; }',
+    'seed_ts() { printf "seed %s\\n" "$*" >>"$R/rig-calls"; }',
+    'forward_results() { printf "results %s\\n" "$1" >>"$R/rig-calls"; [ -z "${RESULTS_MISSING:-}" ] || { printf "%s\\n" "$RESULTS_MISSING"; return 1; }; }',
+    `trap 'for pid in "$entry_pid" "$model_pid"; do [ -z "$pid" ] || kill -KILL "$pid" 2>/dev/null || true; done' EXIT`,
+    options.modelLine === undefined ? "" : 'install_standin_route "$profile" "$P/home"',
+    "run_forward forward-only-retro-defect-head-1 forward-only retro-defect",
+  ].join("\n");
+  const result = bash(script, [root, R, co, work, worlds, scenarios], {
+    USER: "rig",
+    SKILL_SCENARIOS_OMP: omp,
+    ...options.env,
+  });
+  const read = (file: string) =>
+    existsSync(path.join(R, file)) ? readFileSync(path.join(R, file), "utf8") : "";
+  return {
+    ...result,
+    R,
+    co,
+    work,
+    omp,
+    world,
+    read,
+    events: jsonLines(path.join(R, "stub-events.jsonl")) as { at: number; event: string }[],
+    calls: read("rig-calls"),
+  };
+}
+
+/** The forward branch of scored-job.sh with a planted rig.sh beside it, which records each call and
+ * the forward variables batch-scored is handed, plants one scored run of each world it batches,
+ * fails label-tree when PLANT_TREE_FAIL is set, and answers forward-cell with a planted line; and
+ * a planted bun that answers `install` and `score.ts path-check`. */
+function plantedForwardJob() {
+  const repo = freshDir("forward-job-repo");
+  const here = path.join(repo, "packages/pi-legion/scripts/skill-scenarios");
+  mkdirSync(here, { recursive: true });
+  cpSync(path.join(scenarios, "scored-job.sh"), path.join(here, "scored-job.sh"));
+  writeFileSync(
+    path.join(here, "rig.sh"),
+    String.raw`#!/usr/bin/env bash
+work=$SKILL_SCENARIOS_WORK
+printf '%s\n' "$*" >>"$work/rig-calls"
+case $1 in
+label-tree) [ -z "${"${PLANT_TREE_FAIL:-}"}" ] || { echo "the manifest $4 does not exist" >&2; exit 1; } ;;
+batch-scored)
+  printf 'world=%s check=%s control=%s model=%s\n' "$SKILL_SCENARIOS_FORWARD_WORLD" "${"${SKILL_SCENARIOS_PATH_CHECK:-}"}" \
+    "${"${SKILL_SCENARIOS_PATH_CONTROL:-}"}" "${"${SKILL_SCENARIOS_MODEL:-}"}" >>"$work/rig-env"
+  mkdir -p "$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1"
+  echo '{"outcome":"scored"}' >"$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1/row.json"
+  ;;
+forward-cell) echo "CONTROL BIT: $3 $4 1/5, 4 failed runs noticed" && echo "head Job of $4: may start" ;;
+esac
+`
+  );
+  git(repo, "init", "-q");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "the job");
+  const bin = freshDir("forward-job-bin");
+  writeFileSync(
+    path.join(bin, "bun"),
+    String.raw`#!/bin/sh
+case "$1 $2" in
+"install --frozen-lockfile") exit 0 ;;
+*"/score.ts path-check") echo "PATH OK d-planted" ;;
+*) echo "the planted bun has no answer to $*" >&2; exit 9 ;;
+esac
+`,
+    { mode: 0o755 }
+  );
+  const work = freshDir("forward-job-work");
+  const run = (args: string[], env: Record<string, string> = {}) => {
+    const result = childSpawn(["bash", path.join(here, "scored-job.sh"), ...args], {
+      PATH: `${bin}:${callerPath}`,
+      SKILL_SCENARIOS_WORK: work,
+      ...env,
+    });
+    const read = (file: string) =>
+      existsSync(path.join(work, file)) ? readFileSync(path.join(work, file), "utf8") : "";
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+      calls: read("rig-calls"),
+      env: read("rig-env"),
+    };
+  };
+  return { repo: realpathSync(repo), work, run };
+}
+
+// A world whose world.json names `daemon: label` runs its agent as a real pane of the label's whole
+// daemon (C4 of dispatch://INFRA-5581's plan): the rig runs the label's `label-texts.sh daemon`,
+// and starts neither the daemon stand-in nor an Oh My Pi of its own.
+describe("a world with daemon: label", () => {
+  // Catches: a label-daemon run that still starts daemon-standin.ts or Oh My Pi in RPC mode, so the
+  // agent's calls reach a stand-in and not the label's daemon, and a request that names another
+  // run's files.
+  test("a world with daemon: label starts no daemon-standin and no Oh My Pi", () => {
+    const run = labelRun("label-world", { statuses: [{ afterMs: 500, status: ended }] });
+    expect({ code: run.code, stderr: run.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(path.join(run.R, "logs/daemon.log"))).toBe(false);
+    expect(existsSync(path.join(run.R, "rpc-events.jsonl"))).toBe(false);
+    expect(existsSync(path.join(run.work, "omp-ran"))).toBe(false);
+    expect(run.read("stub-argv")).toBe(
+      `daemon ${run.R}/daemon-request.json ${run.R}/ready.json ${run.R}/status.json ${run.R}/record.json\n`
+    );
+    expect(run.read("stub-pg")).toBe("postgres://rig@127.0.0.1:1/postgres\n");
+    expect(run.calls).toBe(
+      [
+        `own_dispatch project ${run.co}`,
+        `seed forward ${run.R}/fixture.json ${run.world}`,
+        `results ${madeHead}`,
+        `seed capture-forward ${run.R}/fixture.json ${run.R}`,
+        "",
+      ].join("\n")
+    );
+    expect(JSON.parse(run.read("daemon-request.json"))).toEqual({
+      moment: "retro",
+      role: "implementer",
+      issue: "ACME-1",
+      steps: ["implementer", "reviewer", "acceptance:owner"],
+      world: run.world,
+      dispatchUrl: "http://127.0.0.1:1",
+      dispatchTokenFile: `${run.work}/services/dispatch-token`,
+      envoyUrl: "http://127.0.0.1:1",
+      natsUrl: "nats://127.0.0.1:2",
+      postgresUrl: "postgres://rig@127.0.0.1:1/postgres",
+      ghLog: `${run.R}/calls.jsonl`,
+      omp: run.omp,
+      home: `${run.R}/home`,
+      profile: "skills-head",
+      paneLogs: `${run.R}/panes`,
+      paneDaemon: "label",
+      runDir: run.R,
+      envoyTokenFile: "/rig/envoy-token",
+    });
+    expect(run.read("out.txt")).toBe("exit=0\n");
+    // The gh stand-in is first on the PATH the request names the run's bin of.
+    expect(existsSync(path.join(run.R, "bin/gh"))).toBe(true);
+    // Control: a world.json that names another daemon is refused by name, before anything starts.
+    const other = labelRun(
+      "label-world-other",
+      { statuses: [{ afterMs: 500, status: ended }] },
+      {
+        world: { "world.json": madeWorld({ daemon: "standin" })["world.json"] ?? "" },
+      }
+    );
+    expect(other.code).toBe(1);
+    expect(other.stderr).toContain("the world forward-only/retro-defect is refused:");
+    expect(other.stderr).toContain("daemon");
+    expect(other.calls).toBe("");
+  });
+
+  // Catches: a run cut off while its turn runs, its background work runs or a reminder is armed,
+  // which PR #5461's three end facts forbid, and a bound read as an end.
+  test("the run ends on the status file's three facts, and not before", () => {
+    const statuses = [
+      { afterMs: 400, status: status("running", null) },
+      {
+        afterMs: 900,
+        status: status("idle", {
+          backgroundWork: { running: true, kinds: ["task"] },
+          phase: { nextReminderAt: null },
+        }),
+      },
+      {
+        afterMs: 1400,
+        status: status("idle", {
+          backgroundWork: { running: false },
+          phase: { nextReminderAt: "2026-11-26T00:10:00.000Z" },
+        }),
+      },
+      { afterMs: 1900, status: ended },
+    ];
+    const run = labelRun("label-status", { statuses });
+    expect({ code: run.code, stderr: run.stderr }).toEqual({ code: 0, stderr: "" });
+    const at = (event: string) => run.events.find((each) => each.event === event)?.at ?? -1;
+    expect(at("status 3")).toBeGreaterThan(0);
+    expect(at("term")).toBeGreaterThanOrEqual(at("status 3"));
+    expect(run.read("out.txt")).toBe("exit=0\n");
+    // At its bound the run ends `exit=bound`, and held.txt names what held it.
+    const held = labelRun("label-status-bound", { statuses: statuses.slice(0, 2) }, { env: { SKILL_SCENARIOS_TIMEOUT: "2" } });
+    expect({ code: held.code, stderr: held.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(held.read("out.txt")).toBe("exit=bound\n");
+    expect(held.read("held.txt")).toBe(
+      "the run did not end within 2 seconds: background work running: task\n"
+    );
+  });
+
+  // Catches: a run whose daemon never writes its record (no SIGTERM), a record kept elsewhere, and
+  // transcripts left in the pane's HOME, where the scorer reads none.
+  test("the run's end sends SIGTERM, keeps record.json, and copies the transcripts from ready.sessionDir", () => {
+    const record = {
+      issue: "ACME-1",
+      phase: "merging",
+      generation: 2,
+      calls: [],
+      defects: [],
+      steps: [{ task: "t1", step: 3, kind: "retro", role: "implementer", attempt: 1, result: "passed" }],
+    };
+    const run = labelRun("label-end", { statuses: [{ afterMs: 500, status: ended }], record });
+    expect({ code: run.code, stderr: run.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(run.events.map((each) => each.event)).toContain("term");
+    expect(JSON.parse(run.read("record.json"))).toEqual(record);
+    expect(run.read("sessions/ses_pane.jsonl")).toBe('{"type":"session","id":"ses_pane"}\n');
+    expect(run.read("sessions/ses_pane/sub.jsonl")).toBe('{"type":"session","id":"sub"}\n');
+    // Control: an entry that exits 1 after SIGTERM fails the run, naming its log.
+    const failed = labelRun("label-end-exit", { statuses: [{ afterMs: 500, status: ended }], exit: 1 });
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toContain("label-texts.sh daemon of label head exited 1");
+  });
+
+  // Catches: a launch whose pane never became ready waited on without end, or scored as a run.
+  test("a ready file that never comes within the bound makes the launch a rig error", () => {
+    const run = labelRun("label-no-ready", { readyAfterMs: null }, { readyBound: 1 });
+    expect(run.code).toBe(1);
+    const line = run.stderr.split("\n").filter((each) => each.startsWith("skill-scenarios: ")).at(-1) ?? "";
+    expect(line).toContain("the label daemon took no claims/ready of the real pane within 1s");
+    expect(existsSync(path.join(run.R, "out.txt"))).toBe(false);
+    // The batch writes its row as the rig's error (scored_rig_error), of the forward scenario.
+    const work = freshDir("label-no-ready-rows");
+    const row = bash(
+      `${defs("fail", "scored_rig_error")}\nwork=$1\nscored_rig_error forward-only-retro-defect-head-1 head retro-defect "$2"`,
+      [work, line]
+    );
+    expect(row.code).toBe(0);
+    const parsed = RunRow.parse(
+      JSON.parse(readFileSync(path.join(work, "runs/forward-only-retro-defect-head-1/row.json"), "utf8"))
+    );
+    expect(parsed).toMatchObject({ outcome: "rig-error", scenario: "forward-only", case: "retro-defect" });
+    // A ready.json that fails RigDaemonReady is no ready either.
+    const bad = labelRun("label-bad-ready", { ready: { head: "not-a-head" } }, { readyBound: 1 });
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain("ready.json fails RigDaemonReady: head:");
+  });
+
+  // Catches: a record the scorer cannot read taken as a run with no defect and no move back.
+  test("a record that fails RigDaemonRecord is a rig error", () => {
+    const run = labelRun("label-bad-record", {
+      statuses: [{ afterMs: 500, status: ended }],
+      record: { issue: "ACME-1", calls: [] },
+    });
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain("record.json fails RigDaemonRecord: phase:");
+  });
+
+  // Catches: a path check whose label must pass its route case before the run, so a label whose
+  // route is deleted never reaches the plugin's calls, and a scored batch on a label built with no
+  // test run.
+  test("--path-check builds with build --compile, and a scored batch with the full build", () => {
+    const co = freshDir("build-label");
+    const entry = path.join(co, "packages/pi-legion/scripts/skill-scenarios/label-texts.sh");
+    mkdirSync(path.dirname(entry), { recursive: true });
+    writeFileSync(entry, STUB_ENTRY, { mode: 0o755 });
+    const build = (env: Record<string, string>) => {
+      const bin = freshDir("build-bin");
+      const result = bash(
+        `${defs("fail", "label_texts", "build_label_texts")}\nco=$1 P=$2 pg_url=postgres://rig@127.0.0.1:1/postgres\nbuild_label_texts`,
+        [co, freshDir("build-profile")],
+        { RIG_TEXTS_BIN: bin, ...env }
+      );
+      return { ...result, calls: readFileSync(path.join(bin, "build-calls"), "utf8") };
+    };
+    expect(build({ SKILL_SCENARIOS_PATH_CHECK: "1" })).toMatchObject({ code: 0, calls: "build --compile\n" });
+    expect(build({})).toMatchObject({ code: 0, calls: "build\n" });
+    // The Job hands the batch the path check's variable with --path-check alone.
+    const job = plantedForwardJob();
+    const checked = job.run(["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check"], {
+      SKILL_SCENARIOS_MODEL: "standin-report",
+    });
+    expect({ code: checked.code, stderr: checked.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(checked.env).toBe("world=retro-defect check=1 control= model=standin-report\n");
+    expect(checked.stdout.split("\n")).toContain("PATH OK d-planted");
+    const scored = plantedForwardJob().run(["forward-only", "head", "--world", "retro-defect", "--count", "1"], {
+      SKILL_SCENARIOS_MODEL: "standin",
+    });
+    expect({ code: scored.code, stderr: scored.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(scored.env).toBe("world=retro-defect check= control= model=standin\n");
+    expect(scored.stdout).not.toContain("PATH OK");
+    // A path check needs the scripted model.
+    const refused = plantedForwardJob().run(["forward-only", "head", "--world", "retro-defect", "--path-check"], {
+      SKILL_SCENARIOS_MODEL: "standin",
+    });
+    expect({ code: refused.code, calls: refused.calls }).toEqual({ code: 2, calls: "" });
+    expect(refused.stderr).toContain("set SKILL_SCENARIOS_MODEL=standin-report");
+  });
+
+  // Catches: a scripted model whose report names another issue or head than the run's, or whose
+  // completion comes first, and a script written for a run on the real model.
+  test("with standin-report the rig writes standin-script.json with the report, then the completion", () => {
+    const run = labelRun(
+      "label-script",
+      { statuses: [{ afterMs: 500, status: ended }] },
+      { env: { SKILL_SCENARIOS_MODEL: "standin-report" }, modelLine: "model standin/standin-model" }
+    );
+    expect({ code: run.code, stderr: run.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(JSON.parse(run.read("standin-script.json"))).toEqual({
+      calls: [
+        {
+          tool: "legion",
+          input: {
+            op: "report_defect",
+            issue: "ACME-1",
+            defect: "path check: src/config.ts loadConfig returns DEFAULTS on a parse error",
+            head: madeHead,
+          },
+        },
+        {
+          tool: "legion",
+          input: { op: "handoff_complete", summary: "path check", plan_rating: 3, plan_reason: "path check" },
+        },
+      ],
+    });
+    // The run's own profile reaches the run's model stand-in.
+    const models = JSON.parse(run.read("home/.omp/profiles/skills-head/agent/models.yml"));
+    expect(models.providers.standin.baseUrl).toStartWith("http://");
+    expect(models.providers.standin.baseUrl).not.toContain("model-standin.invalid");
+    // Control: a run on the plain stand-in gets no script.
+    const plain = labelRun(
+      "label-script-plain",
+      { statuses: [{ afterMs: 500, status: ended }] },
+      { env: { SKILL_SCENARIOS_MODEL: "standin" }, modelLine: "model standin/standin-model" }
+    );
+    expect({ code: plain.code, stderr: plain.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(path.join(plain.R, "standin-script.json"))).toBe(false);
+  });
+
+  // Catches: the intercepting proxy given to a scored run, whose report would then never reach the
+  // label's daemon, or a control that never gets it.
+  test("--path-control intercept writes paneDaemon intercept-report, and no other run does", () => {
+    const request = (env: Record<string, string>) => {
+      const R = freshDir("pane-daemon");
+      const world = freshDir("pane-daemon-world");
+      writeFileSync(path.join(world, "world.json"), madeWorld()["world.json"] ?? "");
+      const services = path.join(R, "services-env");
+      writeFileSync(services, "ENVOY_URL=http://e\nENVOY_NATS_URL=nats://n\nENVOY_TOKEN_FILE=/t\n");
+      const omp = path.join(R, "omp-install/bin/omp");
+      mkdirSync(path.dirname(omp), { recursive: true });
+      writeFileSync(omp, "#!/bin/sh\necho omp/1.2.3\n", { mode: 0o755 });
+      const result = bash(
+        `${defs("fail", "pinned_omp", "rig_omp", "service_value", "daemon_request")}\nR=$1 work=$1 services_env=$2 pin=github:example/oh-my-pi@1.2.3-4 profile=skills-head dispatch_port=1 pg_url=postgres://p\ndaemon_request "$3"`,
+        [R, services, world],
+        { SKILL_SCENARIOS_OMP: omp, ...env }
+      );
+      return { ...result, paneDaemon: result.code === 0 ? JSON.parse(result.stdout).paneDaemon : null };
+    };
+    expect(request({ SKILL_SCENARIOS_PATH_CONTROL: "intercept" })).toMatchObject({ code: 0, paneDaemon: "intercept-report" });
+    expect(request({})).toMatchObject({ code: 0, paneDaemon: "label" });
+    const other = request({ SKILL_SCENARIOS_PATH_CONTROL: "proxy" });
+    expect(other.code).toBe(1);
+    expect(other.stderr).toContain("SKILL_SCENARIOS_PATH_CONTROL is 'proxy': it is intercept, or unset");
+    // The Job hands the batch the control's variable with --path-control intercept alone.
+    const job = plantedForwardJob().run(
+      ["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check", "--path-control", "intercept"],
+      { SKILL_SCENARIOS_MODEL: "standin-report" }
+    );
+    expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(job.env).toBe("world=retro-defect check=1 control=intercept model=standin-report\n");
+    const alone = plantedForwardJob().run(
+      ["forward-only", "head", "--world", "retro-defect", "--path-control", "intercept"],
+      { SKILL_SCENARIOS_MODEL: "standin-report" }
+    );
+    expect({ code: alone.code, calls: alone.calls }).toEqual({ code: 2, calls: "" });
+  });
+
+  // Catches: a world whose task names the plant, so every run would notice it from its task alone
+  // (Review Focus 3).
+  test("a world whose task holds a defect anchor is refused", () => {
+    const run = labelRun(
+      "label-anchor",
+      { statuses: [{ afterMs: 500, status: ended }] },
+      {
+        world: {
+          "spec.md": "# List rows\n\nKeep `src/config.ts` as it is.\n",
+        },
+      }
+    );
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain('the task\'s text holds the defect anchor "src/config.ts", in spec.md');
+    expect({ calls: run.calls, argv: run.read("stub-argv") }).toEqual({ calls: "", argv: "" });
+  });
+
+  // Catches: a world whose retro gate would return the task for a check that has no pass, a cause
+  // that stays (Review Focus 4), refused neither before the start nor once the head is known.
+  test("a forward-only run does not launch while a before_merge check has no pass", () => {
+    const run = labelRun(
+      "label-unpassed",
+      { statuses: [{ afterMs: 500, status: ended }] },
+      {
+        world: {
+          "verification.md":
+            '# Verification\n\n:::check{#c-list-rows surface="cli" run="bun test" when="before_merge"}\nThe list test passes.\n:::\n\n:::check{#c-page-size surface="cli" run="bun test" when="before_merge"}\nThe page size holds.\n:::\n',
+        },
+      }
+    );
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain(
+      "verification.md holds the before_merge check c-page-size, which world.json's passes does not name"
+    );
+    expect({ calls: run.calls, argv: run.read("stub-argv") }).toEqual({ calls: "", argv: "" });
+    // The backstop: the run's Dispatch shows a check with no pass at the head the entry built.
+    const unrecorded = labelRun(
+      "label-unrecorded",
+      { statuses: [{ afterMs: 500, status: ended }] },
+      { env: { RESULTS_MISSING: `the before_merge check c-list-rows of ACME-1 has no pass at ${madeHead}` } }
+    );
+    expect(unrecorded.code).toBe(1);
+    expect(unrecorded.stderr).toContain(
+      `the run's Dispatch shows a before_merge check with no pass at the head ${madeHead}, so the run stops: the before_merge check c-list-rows of ACME-1 has no pass at ${madeHead}`
+    );
+    expect(existsSync(path.join(unrecorded.R, "out.txt"))).toBe(false);
+  });
+});
