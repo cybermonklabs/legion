@@ -467,8 +467,6 @@ func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		return intake.Result{}, err
 	}
 	switch issue.Phase {
-	case phase.Done:
-		return intake.Result{}, e.tellClosedCheckFailed(ctx, tx, *issue, fact)
 	case phase.Verifying:
 		if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
