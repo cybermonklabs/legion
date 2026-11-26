@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { act, type RenderResult, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useContext, useEffect, useRef } from "react";
@@ -532,21 +532,23 @@ test("a click a link's own handler already took moves the router once, where tha
 });
 
 /**
- * The addresses the window was asked to load while `run` ran. For that time the window's own
- * `location` carries an `assign` of its own, standing over the one every location takes from its
- * prototype, which would load a page into the unit suite's document; it is taken away after,
- * whatever `run` did.
+ * The loads the window was asked for while `run` ran: each address given to `assign`, and
+ * `"reload"` for a `reload`. Both are stood in for, since a real one would load a page into the
+ * unit suite's document.
  */
 function loadsDuring(run: () => void): string[] {
   const loads: string[] = [];
-  Object.defineProperty(window.location, "assign", {
-    configurable: true,
-    value: (url: string | URL) => loads.push(String(url)),
+  const assign = spyOn(window.location, "assign").mockImplementation((url) => {
+    loads.push(String(url));
+  });
+  const reload = spyOn(window.location, "reload").mockImplementation(() => {
+    loads.push("reload");
   });
   try {
     run();
   } finally {
-    Reflect.deleteProperty(window.location, "assign");
+    assign.mockRestore();
+    reload.mockRestore();
   }
   return loads;
 }
@@ -637,6 +639,30 @@ test("a plain click on a rendered link in a modal dialog inside Details' own she
     expect(address(), "the router moved behind the dialog").toBe(OPENED);
   } finally {
     view.unmount();
+  }
+});
+
+// A move that changes only the hash is no load of a document: the window would only scroll, the
+// router would move behind the dialog, and the dialog would stay. The rule loads the document
+// again.
+test("a plain click inside a modal dialog on a link that differs from the window's address only by its hash loads the document again", () => {
+  window.history.replaceState(null, "", OPENED);
+  const view = drawAt(
+    OPENED,
+    <div aria-modal="true" role="dialog">
+      <a href="/issues/CORE-1#b-x">Words</a>
+    </div>
+  );
+  try {
+    const { left, loads } = pressLoading("Words");
+    expect(left, "the click was left to load the address without the parameter").toBe(false);
+    expect(loads, "the window was not asked to load the document again").toEqual([
+      "/issues/CORE-1?issue_page=new#b-x",
+      "reload",
+    ]);
+  } finally {
+    view.unmount();
+    window.history.replaceState(null, "", "/");
   }
 });
 

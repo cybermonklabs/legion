@@ -25,15 +25,6 @@ const NEW_PAGE = "new";
  *  drawn inside Details is one. */
 const MODAL_DIALOG = `[aria-modal="true"]:not([${DETAILS_ATTRIBUTE}]), [role="dialog"]:not([${DETAILS_ATTRIBUTE}])`;
 
-/** Whether `element` stands in an editable text, where a plain click on a link puts the caret in
- *  the link, as the document editor does, and is no press of the link: the nearest element that
- *  names `contenteditable` decides, and a part of the text drawn as `contenteditable="false"` (a
- *  block's header and footer in the row editor) is no editable text. */
-function inEditableText(element: Element): boolean {
-  const host = element.closest("[contenteditable]");
-  return host !== null && host.getAttribute("contenteditable") !== "false";
-}
-
 /**
  * The key of the issue whose address `pathname` + `search` is, where that address carries
  * `?issue_page=new`, and undefined for every other address: an issue's address without it or with
@@ -125,7 +116,11 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
       const anchor = event
         .composedPath()
         .find((node) => node instanceof Element && node.matches("a[href]"));
-      if (!(anchor instanceof HTMLAnchorElement) || inEditableText(anchor)) return;
+      // A link inside an editable text is the editor's: a plain click puts the caret in it, as
+      // the document editor does. `isContentEditable` is the nearest element that names
+      // `contenteditable` deciding, so a part drawn as `contenteditable="false"` (a block's header
+      // and footer in the row editor) is no editable text, and its links are followed.
+      if (!(anchor instanceof HTMLAnchorElement) || anchor.isContentEditable) return;
       if (anchor.hasAttribute("download") || anchor.hasAttribute("target")) return;
       const url = new URL(anchor.href, window.location.href);
       if (url.origin !== window.location.origin) return;
@@ -134,8 +129,19 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
       if (!keeps(key, url.pathname, url.search)) return;
       event.preventDefault();
       const to = { hash: url.hash, pathname: url.pathname, search: url.search };
-      if (anchor.closest(MODAL_DIALOG) === null) handedOn.push(to);
-      else window.location.assign(handedOn.createHref(to));
+      if (anchor.closest(MODAL_DIALOG) === null) {
+        handedOn.push(to);
+        return;
+      }
+      const kept = handedOn.createHref(to);
+      // A move that changes only the hash is no load of a document, and the dialog would stay.
+      const target = new URL(kept, window.location.href);
+      const hashOnly =
+        target.hash !== "" &&
+        target.pathname === window.location.pathname &&
+        target.search === window.location.search;
+      window.location.assign(kept);
+      if (hashOnly) window.location.reload();
     };
     document.addEventListener("click", follow);
     return () => document.removeEventListener("click", follow);
