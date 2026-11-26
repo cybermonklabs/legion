@@ -350,6 +350,43 @@ func (s *server) v2MiscRows() []routeRow {
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
 		},
 		{
+			Method: http.MethodPost, Pattern: "/deploys", Auth: authAny, Versions: onlyV2,
+			Description: "Record a program's deployed build {repo, program, commit, deployed_at?, url?}: repo is the " +
+				"owner/repo the program is built from, program 1 to 64 lowercase letters, digits or hyphens, commit the " +
+				"40 lowercase hexadecimal characters of the build, and deployed_at no more than five minutes ahead (the " +
+				"time of the request where the body names none). Answers 201 the new deploy, its writer the credential's " +
+				"own identity, and 200 the program's current deploy where the body names that build again. 400 " +
+				"DEPLOY_INPUT for a value the record does not take, 400 DEPLOY_COMMIT_UNKNOWN where GitHub proves the " +
+				"repository holds no such commit, and 409 DEPLOY_NOT_NEWEST for a deploy older than the program's " +
+				"current one. A deploy is a deployment-wide fact, so a credential scoped to one project is refused it.",
+			Handler:  s.createDeployV2,
+			Resource: "deploys", Kind: kindCollection,
+			Body: requestBody{Kind: bodyJSON, Type: deployInput{}},
+			Shape: routeShape{
+				Status: http.StatusCreated, Response: model.Deploy{},
+				Also: []routeAnswer{{Status: http.StatusOK, Body: model.Deploy{}}},
+			},
+			Scope: scopeDeployment,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal,
+				{Condition: apicode.DeployInputInvalid, Code: apicode.DeployInput},
+				{Condition: apicode.DeployCommitAbsent, Code: apicode.DeployCommitUnknown},
+				{Condition: apicode.DeployOlderThanCurrent, Code: apicode.DeployNotNewest},
+			},
+		},
+		{
+			Method: http.MethodGet, Pattern: "/deploys", Auth: authAny, Versions: onlyV2,
+			Description: "Each program's current deploy in the repository repo= names (owner/repo; any other value, " +
+				"none among them, is 400 DEPLOY_INPUT), ordered by program, each with its source, its writer and its " +
+				"workflow run attempt, known or unknown. limit 1 to 200 (default 50) and offset; {items, total, limit, " +
+				"offset}.",
+			Handler:  s.listDeploysV2,
+			Resource: "deploys", Kind: kindCollection,
+			Query:    deploysV2Query{},
+			Shape:    routeShape{Status: http.StatusOK, Response: page[model.Deploy]{}},
+			Refusals: listRefusals(apicode.Refusal{Condition: apicode.DeployInputInvalid, Code: apicode.DeployInput}),
+		},
+		{
 			Method: http.MethodGet, Pattern: "/users", Auth: authAny, Versions: onlyV2,
 			Description: "Everyone who has signed in, by lowercase email, each {login}: the assignee picker's options. " +
 				"Needs the person scope. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}.",

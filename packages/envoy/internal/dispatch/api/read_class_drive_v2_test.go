@@ -20,7 +20,7 @@ func init() {
 	for _, path := range []string{
 		"", "/agents", "/agents/{session_id}/messages", "/artifacts/{id}/blocks/{block_id}",
 		"/artifacts/{id}/events", "/artifacts/{id}/reviews", "/artifacts/{id}/subscribers", "/artifacts/{id}/versions/{number}",
-		"/block-links", "/broadcasts", "/broadcasts/{id}", "/credential-requests", "/credential-grants", "/machine-logins",
+		"/block-links", "/broadcasts", "/broadcasts/{id}", "/credential-requests", "/credential-grants", "/deploys", "/machine-logins",
 		"/handoffs/{id}", "/issues", "/issues/{key}/collaborators", "/issues/{key}/coverage",
 		"/issues/{key}/decisions", "/issues/{key}/references", "/issues/{key}/steps",
 		"/me/agent-tokens", "/me/answers", "/near-copy-checks/{id}", "/priorities", "/projects/{key}/architecture",

@@ -86,6 +86,8 @@ GET /api/v1/delivery/runs/{id}
 POST /api/v1/delivery/session-groups
 DELETE /api/v1/delivery/session-groups/{id}
 PATCH /api/v1/delivery/session-groups/{id}
+GET /api/v1/deploys # #5416, after-merge checks count only commits holding the merge: a repository's programs' current deploys
+POST /api/v1/deploys # #5416, after-merge checks count only commits holding the merge: a program's deployed build
 GET /api/v1/events/log
 GET /api/v1/github/app-installation/{owner}/{repo}
 GET /api/v1/going/capability

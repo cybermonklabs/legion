@@ -131,6 +131,21 @@ func miscTourSteps() []tourStep {
 			Setup: asAlice(nil),
 		},
 		{
+			// A program of its own for each send, so each send records a deploy rather than naming
+			// another send's build again. GitHub answers no installation of the repository, so the
+			// commit is not proven absent and the deploy is recorded.
+			Method: http.MethodPost, Pattern: "/deploys", Status: http.StatusCreated,
+			Setup: func(*testing.T, *routeTour) tourRequest {
+				return tourRequest{Body: map[string]any{
+					"repo": "acme/widgets", "program": "tour-" + uuid.NewString()[:8], "commit": tourDeployCommit,
+				}, As: alice}
+			},
+		},
+		{
+			Method: http.MethodGet, Pattern: "/deploys", Status: http.StatusOK,
+			Setup: asAlice(url.Values{"repo": {"acme/widgets"}, "limit": {"5"}}),
+		},
+		{
 			Method: http.MethodGet, Pattern: "/users", Status: http.StatusOK,
 			Setup: asAlice(url.Values{"limit": {"5"}}),
 		},
@@ -213,6 +228,9 @@ func (tour *routeTour) sessionGroup(t *testing.T) string {
 
 // tourDeployRun is the deploy-repository run deployRun records.
 const tourDeployRun = 7
+
+// tourDeployCommit is the build every deploy of the tour names.
+const tourDeployCommit = "0123456789abcdef0123456789abcdef01234567"
 
 // deployRun configures the deployment's delivery settings and records one run of its deploy
 // repository with a job, answering the run's id.

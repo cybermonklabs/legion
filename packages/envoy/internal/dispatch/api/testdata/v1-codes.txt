@@ -282,6 +282,9 @@ AS_OF_TOKEN_NOT_SERVED 403 # #4557, a read at a cut is not served by this build
 BROWSER_SIGN_IN_REQUIRED 403 # #4631, closing descendants needs a browser sign-in
 CHECK_CONTENDED 409 # #2468, a write holds its transaction id only for its database statements
 DELETE_CONTENDED 409 # #3512, the author of a comment or an issue message can correct or delete it
+DEPLOY_COMMIT_UNKNOWN 400 # #5416, a deploy names a commit its repository holds
+DEPLOY_INPUT 400 # #5416, record a program's deployed build
+DEPLOY_NOT_NEWEST 409 # #5416, a deploy older than the program's current one is refused
 DOCUMENT_WRITER_NOT_ARCHITECT 403 # #4725, only a person or an architect of its tree writes the spec or Verification document of an issue Legion runs
 FOREIGN_CHILD_OPEN 409 # #4884, an acceptance write waits for an open child of another project
 INVALID_REPOSITORY 400 # #4457, each project has an optional default repository, and Dispatch writes no repository mapping

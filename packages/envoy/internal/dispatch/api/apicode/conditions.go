@@ -241,6 +241,14 @@ var (
 	// PriorityZeroWithoutP0Scope is an issue write, a create or a change, that makes the issue's own
 	// priority 0 from a credential that does not hold the p0 scope (refuseP0WithoutScope).
 	PriorityZeroWithoutP0Scope = Condition{"issue priority 0 written without the p0 scope"}
+	// DeployInputInvalid is a deploy's repository, program, commit or deployed_at that the record
+	// does not take, or a list of deploys whose repository is no owner/repo (recordDeploy,
+	// currentDeploysIn).
+	DeployInputInvalid = Condition{"deploy input invalid"}
+	// DeployCommitAbsent is a deploy of a commit GitHub proves its repository does not hold.
+	DeployCommitAbsent = Condition{"deploy commit absent from its repository"}
+	// DeployOlderThanCurrent is a deploy older than the program's current deploy.
+	DeployOlderThanCurrent = Condition{"deploy older than its program's current one"}
 	// SpecWriterNotArchitect is a write of the spec or the Verification document of an issue
 	// Legion runs - a version of the document, a create or a move under a parent, a close, a
 	// reopen, or a write that takes the issue out of Legion - by a session that is no person and

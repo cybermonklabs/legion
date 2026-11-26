@@ -75,6 +75,8 @@ POST /api/v1/delivery/session-groups any
 DELETE /api/v1/delivery/session-groups/{id} any
 PATCH /api/v1/delivery/session-groups/{id} any
 GET /api/v1/delivery/timeline any
+GET /api/v1/deploys any
+POST /api/v1/deploys any
 GET /api/v1/events/log any
 GET /api/v1/github/app-installation/{owner}/{repo} any
 GET /api/v1/going/capability any
@@ -274,6 +276,8 @@ GET /api/v2/delivery/measures any
 GET /api/v2/delivery/pipeline any
 GET /api/v2/delivery/timeline any
 GET /api/v2/deploy-runs/{id} any
+GET /api/v2/deploys any
+POST /api/v2/deploys any
 GET /api/v2/events any
 GET /api/v2/going-actions any
 POST /api/v2/going-requests any
