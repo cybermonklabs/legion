@@ -141,17 +141,24 @@ PY
 out=$(select_change)
 check "a comment: no daemon-go package" "$(is "$(packages "$out" daemon-go)" "")"
 undo
+# Move internal/workflow out of whichever daemon-go leg holds it, to the first line of another leg,
+# so the case holds whatever layout the file has.
 python3 - <<'PY'
 import re
 p = ".github/go-legs.yaml"
-t = open(p).read()
-line = re.search(r"^      - internal/workflow\b.*\n", t, re.M).group(0)
-t = t.replace(line, "", 1)
-t = re.sub(r"^(      - internal/workspace\b.*\n)", lambda m: m.group(1) + "      - internal/workflow\n", t, count=1, flags=re.M)
-open(p, "w").write(t)
+lines = open(p).read().split("\n")
+start = lines.index("  daemon-go:")
+end = next(i for i in range(start + 1, len(lines)) if re.match(r"^  \S", lines[i]))
+headers = [i for i in range(start + 1, end) if re.match(r"^    \d+:$", lines[i])]
+at = next(i for i in range(start + 1, end) if re.match(r"^      - internal/workflow\b", lines[i]))
+own = max(h for h in headers if h < at)
+other = next(h for h in headers if h != own)
+del lines[at]
+lines.insert(other + 1 if other < at else other, "      - internal/workflow")
+open(p, "w").write("\n".join(lines))
 PY
 out=$(select_change)
-check "internal/workflow moved from daemon-go leg 1 to leg 2: it alone" "$(is "$(packages "$out" daemon-go)" "internal/workflow")"
+check "internal/workflow moved to another daemon-go leg: it alone" "$(is "$(packages "$out" daemon-go)" "internal/workflow")"
 undo
 
 echo "case: a workflow selects every package of a job only where its legs' definition changed"
