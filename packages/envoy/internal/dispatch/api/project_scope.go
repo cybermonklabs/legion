@@ -20,45 +20,9 @@ package api
 // decides only which private projects it reaches, so its write to a public project's object reaches
 // the handler whatever it lists, and its write to a private project it does not list is one to an
 // object it does not see; a restricted member's list narrows every project it reaches.
-// TestNoWriteReachesAHiddenObject calls every write row that names an object, on PRIV's object and
-// on one nobody holds, and holds the two to one answer; undecidableWrites refuses to mount a
-// project's write that walk has no probe for.
-//   - Nothing moves an object between projects. An issue's, an artifact's, an ask's, a comment's
-//     and a message's project is written when the row is inserted and updated by no route: no
-//     `update ... set project_key` and no `update ... set issue_key` exists outside the
-//     migrations and the tests, and the three writes that take another issue's project into
-//     account move nothing: a rank neighbour outside the issue's own project is refused, while
-//     a parent and a `blocked_by` target may each be an issue of any project, which the write
-//     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
-//     inside the write because this check reads the project of the object the path names and no
-//     key in the body). So the project this check reads before the handler runs is the project
-//     the handler will write, and the check needs no transaction of its own.
-//   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
-//     agent token, a Kubernetes service-account token and the shared token name none, and so do
-//     six access tokens the broker issues, each of which reaches brokerTokenActor with no
-//     Project. Two of them the broker scopes to a person rather than to one project, and both
-//     carry `project_scope` `person`: a dev box session's, unscoped here with no second mechanism
-//     of its own, and a machine's that names a service and no person, whose every write
-//     writeNeedsASignedInPerson refuses below. The third is the `named` token of an account
-//     entry that names no project (`<service account>==<person>`, the shared public-session
-//     account's), which names its person and writes wherever Dispatch's own rules let it
-//     (brokerTokenActor). The fourth is the `named` token of an account entry that names no
-//     person either (`<service account>==`), which names the account as its service and writes
-//     the same way, recorded under that account. The fifth is a job's `public` token, which
-//     names its job's identity as its service and no person, carries the private projects its
-//     list names, which no check here reads, and writes wherever Dispatch's own rules let a token
-//     naming no project: writeNeedsASignedInPerson lets it write, and a write that belongs to the
-//     deployment is not refused here. The sixth is the read entry's token, which carries
-//     `project_scope` `none` and the scope `read` alone and names a service and no person. It
-//     never reaches this check, and nor does any other read-only credential (a token narrowed to
-//     reading, which may name the project it reads as, or an account it would have written as):
-//     the read-only gate register puts outside it answers every such credential 403
-//     READ_ONLY_TOKEN on every route outside the read class, every write among them
-//     (refuseReadOnlyToken, readClasses). A job's `named` token is no such credential: it carries
-//     the one project its entry names, and the check below judges it as it judges a person's
-//     named token for that project. That is the rule and not a transitional measure: every caller
-//     that exists today writes exactly what it wrote before, which is what lets this deploy before
-//     anything presents a broker token.
+// undecidableWrites refuses to mount a project's write that writeProbes has no probe for, so a
+// walk of the probes can call every write row that names an object, on a hidden project's object
+// and on one nobody holds, and hold the two to one answer.
 //
 // A read-only token, which carries `project_scope` `none` and the scope `read` alone and names a
 // service and no person, never reaches these checks: the read-only gate register puts outside
@@ -112,8 +76,9 @@ const (
 	codeSessionScope = "SESSION_SCOPE"
 	// codeSessionNotFound answers a write to a session the caller may not see as one nobody holds.
 	codeSessionNotFound = "SESSION_NOT_FOUND"
-	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment, and
-	// an issue write that names repo (refuseRepoOfRestrictedMember).
+	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment
+	// (refuseDeploymentWrite), and a machine-login row other than at their browser
+	// (restrictedOwnLoginRefusal).
 	codeRestrictedMember = "RESTRICTED_MEMBER"
 )
 
@@ -217,7 +182,7 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // broker, so a restricted member makes them as a full member does, and only a credential whose
 // writes a list holds is refused them; whose each sign-in is the broker decides, and whose each
 // grant the broker decides for a full member and the handler for a restricted member
-// (revokeCredentialGrant, memberGrants). The rows that decide, list or end a machine login
+// (revokeCredentialGrant). The rows that decide, list or end a machine login
 // (restrictedOwnLoginRoutes) are a restricted member's at a browser alone
 // (restrictedOwnLoginAtBrowser, the rule the read gate reads too), whose handlers hold that member
 // to a login of their own: never their personal token and never a broker token, so no agent of
@@ -569,8 +534,8 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 // is not its own and has acted in a project it does not see, or, for a restricted member's
 // reader, in none it sees. A context with no reader is answered hidden,
 // failing closed: every request's check puts its reader in ctx, and the server's own work names
-// the server's reader (everyReader) where it reads every session, as the delivery's resolve of a
-// session route does (resolveDeliveryTarget).
+// the server's reader (everyReader) where it reads every session, as the delivery sweep's resume
+// does (resumeOwedDelivery).
 func (s *server) sessionHiddenFromReader(ctx context.Context, id string) (bool, error) {
 	reader, ok := readerFromContext(ctx)
 	if !ok {
@@ -679,7 +644,7 @@ func writesAsItsService(credential *model.Credential) bool {
 
 // undecidableWrites names every mutating row that nothing decides: one writeClasses gives no
 // class, and one classed scopeProject whose address names no object writeProbes probes, which
-// TestNoWriteReachesAHiddenObject therefore cannot hold to answering a hidden object as missing.
+// no walk of the probes can hold to answering a hidden object as missing.
 // Every other class is decided: scopeDeployment by the open viewer it needs, scopeProjectInBody
 // by its handler's check of the body's project, scopeSession by withinSessionScope and the
 // handlers behind it, and scopeNoWrite by writing nothing at all.

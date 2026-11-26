@@ -16,8 +16,9 @@ type Queryer interface {
 // Readable is the read rule a statement of this package holds the events it reads to, for a
 // caller that answers a reader: Where, a predicate over the events row the statement reads
 // (named events) that binds the reader's viewer at $2, and Viewer, the argument bound there. The
-// rule is the api package's (eventReadableSQL), which this package cannot import: the access
-// package it is built from imports this one.
+// rule is the api package's, which this package cannot import: the access package it is built
+// from imports this one. At this slice every caller reads EveryEvent; slice S3c-issues adds the
+// api package's rule.
 type Readable struct {
 	Where  string
 	Viewer any

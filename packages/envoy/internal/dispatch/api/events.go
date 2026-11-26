@@ -202,8 +202,8 @@ func (s *server) issueEventSequence(ctx context.Context, who model.Actor, key st
 
 // listEventLog pages the whole event log by id, whatever owns each event: an issue, a document,
 // a project or nothing. It answers the events after ?after= (default 0) in ascending id order,
-// at most ?limit= of them, of those the caller may read (eventReadableSQL): an event of a project
-// it does not see, or of a conversation it may not read, is not in the log it pages.
+// at most ?limit= of them. Any authenticated caller may read it, as the events view on a page's
+// live socket carries every event to them; slice S3c-issues holds each event to its reader.
 //
 // Ids are not commit order (events.Broker.Append), so a caller that pages by the id of the last
 // row it was answered would step over a lower id still open and never see it. The page is

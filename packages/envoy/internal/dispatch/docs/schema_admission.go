@@ -260,9 +260,9 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 	s.recheckAccess(ctx)
 }
 
-// RunAccessRecheck runs the access re-check (recheckAccess) once every every, until ctx ends. The
-// API runs it on the document sockets' heartbeat (its Deps.StreamHeartbeat, accessRecheckEvery),
-// on which the live socket and the Delivery views resolve their readers again too. An access change
+// RunAccessRecheck runs the access re-check (recheckAccess) once every every, until ctx ends. At
+// this slice only tests run it: slice S6a's API starts it on the document sockets' heartbeat, on
+// which the live socket and the Delivery views resolve their readers again too. An access change
 // made by SQL alone - a statement at a psql prompt - appends no event and announces nothing on
 // store.AccessChangedChannel, so no notification reaches room sync's access lane, and it moves
 // what a person sees all the same: this pass is what finds it, a heartbeat at most after it
