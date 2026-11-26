@@ -110,6 +110,16 @@ test("the entry's static imports reach no file of the new issue page's model", (
   ).toEqual([]);
 });
 
+// Today's issue page is a chunk of its own, which `app.tsx` loads through a dynamic import and the
+// walk from the entry does not follow (the case below), so the same rule is read from its own
+// module: it loads none of the model either, the margin and the reading pane it draws included.
+test("today's issue page's static imports reach no file of the new issue page's model", () => {
+  expect(
+    modelPaths("features/issue/IssuePage.tsx"),
+    "each path of imports from today's issue page to a model file, which its chunk would load"
+  ).toEqual([]);
+});
+
 // The control of the walk: from the tree's hook it reaches the model, and names the path.
 test("the walk from the tree's hook reaches the model and names the path to it", () => {
   expect(modelPaths("features/issue-page/useIssueTree.ts")).toContain(
