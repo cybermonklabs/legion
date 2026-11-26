@@ -1728,13 +1728,17 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 // such read, a test's fake among them. A bot identity is the App's own and no owner's, so it
 // needs no repository. A launch's table of every role's identity reads it for the roles of the
 // other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
-// daemon knows its identity.
+// daemon knows its identity. A role that acts as no App (appauth.ErrRoleNotDefined) has none.
 func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, bool) {
 	known, ok := w.tokens.(appauth.KnownIdentities)
 	if !ok {
 		return runtime.GitIdentity{}, false
 	}
-	return known.KnownIdentity(appauth.AppRoleFor(role))
+	app, err := appauth.AppRoleFor(role, w.deployed)
+	if err != nil {
+		return runtime.GitIdentity{}, false
+	}
+	return known.KnownIdentity(app)
 }
 
 // ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
