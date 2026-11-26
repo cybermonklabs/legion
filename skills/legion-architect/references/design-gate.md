@@ -1,116 +1,95 @@
 # The root spec and the design gate
 
-Read this before you write a root spec, before any edit to an approved one, and on
-`design-approved` or `design-changes-requested`. A child's own architect runs no gate.
+Write the spec and its Verification document as `skill://dispatch-writing-specs` says.
+A child's architect runs no gate.
 
-## Writing the root spec
+## Checks
 
-- Write it as `skill://dispatch-writing-specs` says, extending the issue's primary document in
-  place with `dispatch doc-edit`. Never post a second spec artifact: `dispatch artifact --force`
-  replaces a whole document. Each point the person decides is a decision block.
-- Upload `verification.md` beside it (`--force` from its second version). Each clause of a check's
-  `negative_control` names the test row or run that drives it. A requirement over every member of
-  a class iterates the class's list, never a sample.
-- Your `Production check` line says whether this project checks production after a merge. When it
-  names a role, write one `after_merge` check for the production check in the Verification
-  document, with the spec and while the issue is open, because a closed issue refuses every new
-  document. Under `Production check: off`, write none.
-- Where a real recorded input exists (a stored record, a captured log, a real service's answer),
-  hold at least one read-only check against it, or say in a decision block why none can be
-  written. A requirement of the form "try X and see" is accepted by an observed real run.
-- Cut each requirement carried over from an earlier issue that no source of this issue states:
-  the words a person wrote in it, and what its `Filed for` line cites.
+- Where a real recorded input exists (a stored record, a captured log, a real service's answer), hold at least one read-only check against it.
+  Where none can be written, say why in an ask block.
+- Each clause of a check's `negative_control` names the test row or the run that drives it.
+- A requirement over every member of a class iterates the class's list, never a sample.
 
 ## A check CI proves
 
-A check carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): it names
-the check run that proves it at the head, takes no `run`, its `when` is `before_merge`, and no
-role runs or records it. Where a CI job already makes a check's proof, write that check as
-`ci_check` rather than as a command. A `run` that names tests names specific tests or files; a
-whole suite is the CI job that runs it.
+1. Name the check run of the job that runs the proof, never a roll-up.
+   On cybermonklabs/legion, never name `ci-ok`: it passes when the jobs it did not select were skipped (`.github/scripts/ci-ok.sh`).
+2. A held-back job needs its label on the pull request while a check names it (on cybermonklabs/legion, `full-ci`, or the job's `lane:` label that `.github/workflows/ci.yaml` names beside it); without it the check reads `absent` or `skipped`.
+3. Write in `negative_control` the case inside that job that fails when the property breaks.
+   A step with `continue-on-error` keeps its job green.
 
-1. Name the check run of the job that runs the proof, never a roll-up. On cybermonklabs/legion
-   never `ci-ok`, which passes when jobs it did not select were skipped
-   (`.github/scripts/ci-ok.sh`).
-2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
-3. A held-back job needs its label (`full-ci` or `lane:<output>`) on the pull request while a
-   check names it; without it the check reads `absent` or `skipped`.
-4. Write in `negative_control` the case inside that job that fails when the property breaks: a
-   step with `continue-on-error` keeps its job green.
+## Show the surface before you ask
+
+Where this tree builds or changes a surface a person opens (a page, a screen, a dashboard), that person sees it and answers before you request approval.
+A new surface or a large visual change needs this round, and a flow needs a page they can click.
+A small change inside a shape that stands needs none, unless you are not sure what they want.
+For a surface that is only text (an alert, a report, printed output), put that literal text in the spec instead.
+
+1. Build the surface as a page from real readings of the real system.
+   Draw the empty state and the worst realistic data, or say which states you left out.
+   Mark each invented figure in the picture.
+   Draw an existing surface as it is now, beside the new one.
+2. Take the picture with the pod's Chromium, and put it on the issue.
+   For a flow, also put the clickable page on the issue as a `file` artifact.
+
+   ```bash
+   chromium --headless --disable-gpu --no-sandbox --window-size=1440,900 \
+     --screenshot=<file.png> file://<page.html>
+   dispatch artifact --issue <KEY> --name <name>.png --path <file.png>
+   ```
+
+3. Ask one question with two to four answers. One answer says that this is the wrong surface.
+   Write no code for the round, and end your turn.
+4. Put the agreed pictures in the spec, each with a line on what it shows and which readings are real.
+   The spec's words still govern the build.
+
+The round writes no spec version of its own.
+A tree whose gate is open starts no round.
+Under `Design gate steps: none`, put the picture in the spec and ask nobody.
+A child's architect sends the surface to the root's architect, who runs the round.
 
 ## Which steps are gated
 
-The `Design gate steps` sentence of your `Legion addressing` line names the gated steps, or `none`.
-Each step records one document of the root issue:
+Your `Design gate steps` line names the gated steps, or `none`.
+The step `spec` records the primary document, `criteria` the Verification document, and `decisions` the decisions document.
+Where the line names `spec` and not `criteria`, register the Verification document as `criteria` too.
+Under `none`, register the spec at its current version with no `step`, and request no approval: that registration opens the gate.
+Then tell each phase holder of each later version of the root's documents yourself, with `envoy_publish`.
 
-| Step | Document |
-| --- | --- |
-| `criteria` | the Verification document (`verification.md`) |
-| `spec` | the primary document |
-
-Under `none`, `register_gate` the spec at its current version with no `step`, and request nothing.
+A root that is a view on an approved ancestor holds no `requirement` block of its own.
+It registers each gated step on the ancestor's approval instead, with `register_gate`'s `basis` and `basisVersion`, and requests no approval of its own.
 
 ## The armed gate
 
-For each gated step, once every child is filed:
+Arm the gate only after every child is filed and the root has its plan.
 
-1. Edit the document in place: `dispatch doc-edit --issue <root> --ops-json-file -`.
-2. Settle every decision block (`skill://dispatch-writing-specs`, "Approval").
-3. Where the spec is large, or changed in a way you cannot check alone,
-   `task(agent="plan-gap-analyst")` can find its gaps and `task(agent="plan-reviewer")`, told the
-   document is a spec, can check its factual claims; each runs as a job of its own, so `wait` for
-   its result.
-4. Request approval only once the person has agreed to every point; a new point gets its own
-   decision block first. `--include-verification` covers `spec` and `criteria` in one request:
+1. Settle each ask block of the document.
+2. Request approval only when the person has agreed to every point.
+   A new point gets its own ask block first.
+   `--include-verification` asks for the spec and the Verification document in one request.
+3. Register each gated step on its own document, at the version that the request printed:
+   `legion({ op: "register_gate", issue: "<root>", step: "spec", artifactId: "<id>", version: <N> })`.
+   An answer of `already approved at version <N>` still needs that registration.
+4. End your turn. The person's review brings your next wake.
 
-   ```bash
-   dispatch request-approval --issue <root> --include-verification --summary '<what they approve>'
-   ```
-
-   `--summary` says in one to three sentences what the person approves, and nothing else. A
-   measurement or test result the design rests on goes in the document the request names.
-
-5. Register each step on its own document, with the id and version the request printed, never a
-   slug. Leave `step` out only where your line names one step:
-
-   ```ts
-   legion({ op: "register_gate", issue: "<root>", step: "spec", artifactId: "<UUID>", version: <N> })
-   ```
-
-6. End your turn. The person's review brings your next task (the `design-approved` row of
-   `skill://legion-architect/references/wake-routing.md`).
-
-- A newer version moves the open request to it and to your turn, and the person stops seeing it:
-  once they have agreed to that version, run `dispatch request-approval` again to give it back.
-- `already approved at version <N>`: still `register_gate` that id and version.
-- Refusals record nothing: `VERSION_NOT_IN_DISPATCH` (register the latest version),
-  `GATE_STEP_REQUIRED` (name the step),
-  `GATE_STEP_NOT_CONFIGURED` (register only gated steps, and `criteria` where the line names `spec` and not `criteria`),
-  `GATE_STEP_DOCUMENT_MISMATCH` (register that step's own document).
-- Never open a `dispatch ask` with an `Approve` option: the daemon ignores its answer.
+Each new version of a document needs a new request and a new registration at that version.
+Never open a `dispatch ask` with an `Approve` option: the daemon ignores its answer.
 
 ## After approval
 
-An approval is pinned to its version: any new version closes that step. The daemon tells the
-architect and every phase holder when the gate closes. Three keep it: a version whose only change
-is the approver's answer to a decision block, given after the approval at a browser or under a
-credential with the approve scope; one equal to the approved text (an accidental edit undone
-exactly) with no decision block in it decided since; and, after a close and a reopen, the approved
-text with only the questions the close withdrew open again.
+A new version closes its step, and the daemon tells you and each phase holder.
+Work in flight goes on; a child released while the gate is closed waits for it to open.
 
-Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
-decision changes: put the problem to the person as a decision block at the end of the section it
-changes. When their answer changes text outside the block, rewrite it and repeat steps 4 and 5,
-with a `--summary` sentence naming what changed. Work in flight goes on; release no further child
-until the next `design-approved`.
+Change an approved spec only where its Summary, a requirement, a check, the scope or a settled decision changes.
+Put that change to the person as an ask block at the end of the section it changes.
+When the answer changes text outside the block, rewrite that text, request approval, and register again.
+The `--summary` names what changed.
 
-A change that keeps all five goes in the plan (`plan.md`), never the spec. A plan overturns a
-settled decision only with evidence the person did not weigh, put to them as a decision block. A
-person's later request is a requirement only once written into the spec and approved.
+Every other change goes in the plan, never the spec.
+A plan overturns a settled decision only with evidence the person did not weigh, put to them as an ask block.
 
-## A decision block for a read no pod can make
+## A read no pod can make
 
-When a check needs evidence from a production or outside system, first check whether a credential
-the pod carries reaches it: read the pod's environment (for example `AWS_CONFIG_FILE` or
-`AGENT_SECRETS_URL`) and `skill://agent-secrets`. If none does, write the missing capability as a
-decision block (which system, which read, why); never fold in a read another session made.
+When a check needs evidence from a production or outside system, first find whether a credential the pod carries reaches it (`skill://agent-secrets`).
+When none does, write the missing capability as an ask block: which system, which read, and why.
+Never use a read that another session made.

@@ -41,9 +41,8 @@ import (
 // roster: GET /v1/roles/{role} does report a lapsed holder's last_seen, and takes nothing from
 // that holder to do it (its claim_released is always false), but it answers for one role per
 // call, which is the lookup per issue this file's whole design refuses, and the last-seen memory
-// behind it is the answering listener's own process cache, not the shared registry. The owner
-// audit (skills/legion-controller/references/backlog-stewardship.md) and
-// `dispatch issues --help` (route_status) ask for two reads ten minutes apart instead.
+// behind it is the answering listener's own process cache, not the shared registry.
+// `dispatch issues --help` (route_status) asks for two reads ten minutes apart instead.
 
 // routeRoster is one listener answer about who is running. answered is false when the listener
 // is unconfigured or gave no list; every route then reads unknown, and reason says why:

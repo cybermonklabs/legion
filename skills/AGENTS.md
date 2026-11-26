@@ -13,6 +13,8 @@ A Legion pane installs both plugins; any other session has only the skills of `@
 
 - The `SKILL.md` body holds the routing, and the rules the model would not follow by default.
 
+- A new line of guidance comes with the case or the record that shows a role fails without it, and never as a second copy of a tool's description or refusal.
+
 - A procedure is numbered steps, with no narrative.
 
 - Detail goes in `references/`, one level deep.

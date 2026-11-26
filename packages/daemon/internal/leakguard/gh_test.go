@@ -195,8 +195,8 @@ func hexSHA256(text string) string {
 //
 // This is the surface the issue was written for — 43 of its 60 measured refusals are text an
 // agent posted to GitHub — and a file is how a Legion role posts it:
-// skills/legion-retro/references/pr-body-content.md writes a pull request's body with
-// `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@"$dir/body.md"`.
+// skills/legion-worker/references/pr-body.md writes a pull request's body back with
+// `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@<file>`.
 func TestAGhCallsBodyFileIsRead(t *testing.T) {
 	body := filepath.Join(t.TempDir(), "body.md")
 	if err := os.WriteFile(body, []byte("the box is at "+leakguardtest.RulesHost+"\n"), 0o600); err != nil {

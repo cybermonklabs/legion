@@ -41,8 +41,9 @@ A measurement outranks any line here.
 
 Each directory below that is marked "guide" has an `AGENTS.md` of its own.
 
-- `packages/daemon/`: the daemon, the `legion` CLI, the role prompts it embeds (`internal/prompts/roles/`) and the worker image (`docker/`);
+- `packages/daemon/`: the daemon, the `legion` CLI, the role prompts it embeds (`internal/prompts/roles/` and `internal/prompts/go/`) and the worker image (`docker/`);
   `docs/deployment.md` and `docs/kubernetes.md` say how it runs.
+  A new line of a role prompt comes with the case or the record that shows a role fails without it, and never as a second copy of a tool's description or refusal.
 
 - `packages/envoy/` (guide): the Envoy listener, Dispatch's server and the secrets broker, in Go;
   `cmd/dispatch/` has a guide, and so does `infra/`, the Pulumi components.
