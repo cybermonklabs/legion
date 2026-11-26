@@ -222,7 +222,7 @@ func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL stri
 	}
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
-		fmt.Fprintf(out, "%s: open database: %v\n", label, err)
+		fmt.Fprintf(out, "%s: open database: %v\n", label, databaseURLRefusal(err))
 		return nil, false
 	}
 	if err := database.Migrate(ctx); err != nil {

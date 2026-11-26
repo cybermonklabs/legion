@@ -407,7 +407,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		readinessAttempt(func(attempt context.Context) error {
 			var err error
 			st, err = store.Open(attempt, cfg.PostgresDSN)
-			return err
+			return postgresDSNRefusal(err)
 		}, storeOpenAttempt, store.OpenRetryable))
 	if err != nil {
 		if st != nil {

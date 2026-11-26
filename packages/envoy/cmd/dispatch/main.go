@@ -408,7 +408,7 @@ func main() {
 
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
-		slog.Error("dispatch: open database", "error", err)
+		slog.Error("dispatch: open database", "error", databaseURLRefusal(err))
 		os.Exit(1)
 	}
 	if err := database.Migrate(ctx); err != nil {

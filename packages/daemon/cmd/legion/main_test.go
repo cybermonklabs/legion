@@ -1053,9 +1053,9 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 // operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation, the
 // real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not, and a
 // postgres_dsn pgx cannot parse. Each is refused in boot's words, written through the URL rule boot
-// writes its own refusals through (printRefusal); the refusal of such a DSN is the store's fixed
-// words, which name neither the DSN's user name nor its query. No App key command runs, and no
-// state directory is made.
+// writes its own refusals through (printRefusal); the refusal of such a DSN is the setting's name
+// before the store's fixed words, which name neither the DSN's user name nor its query. No App key
+// command runs, and no state directory is made.
 func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct {
@@ -1105,7 +1105,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 				"postgres_dsn: postgres://legion-reader@127.0.0.1:1/legion?token=planted-query-token-4193&pool_max_conns=not-a-number")
 		},
 			func(string) string {
-				return "legion config check: connect to Postgres at 127.0.0.1:1: pgx cannot read its connection settings\n"
+				return "legion config check: postgres_dsn: connect to Postgres at 127.0.0.1:1: pgx cannot read its connection settings\n"
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
