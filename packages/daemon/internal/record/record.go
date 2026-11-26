@@ -3376,15 +3376,38 @@ func PhaseRowForClaim(rows []PhaseRow, role claim.Role, token claim.Token) Phase
 // row no entry was raised on, and a row the release before wrote. project is the project's token,
 // as claim.NewToken takes it, and a role that is no role of Legion yields its refusal.
 //
+// Under the task key a row is one agent's (PhaseRow.Key), so a later entry of a step for another
+// agent writes a row of its own beside the earlier agent's, and both name the step. A step is one,
+// worked by the row of its latest entry (the highest Entry among the rows naming its StepTask and
+// StepPlace), so the earlier agent's row no longer names the step's worker. Two steps of role
+// worked by two claims at once, the steps of two tasks, name no one worker, and the read is refused
+// so the caller names the claim it means. Two rows of one step at one entry are refused too.
+//
 // Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
 // names a role reaches the agent that works that role's step when the row runs.
 func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
-	var worker claim.Token
+	type step struct {
+		task  string
+		place int
+	}
+	latest := map[step]PhaseRow{}
+	tied := map[step]bool{}
 	for _, row := range rows {
 		if row.Role != role || row.StepTask == "" || row.Claim == "" {
 			continue
 		}
-		if worker != "" && worker != row.Claim {
+		at := step{row.StepTask, row.StepPlace}
+		held, seen := latest[at]
+		switch {
+		case !seen || row.Entry > held.Entry:
+			latest[at], tied[at] = row, false
+		case row.Entry == held.Entry && row.Claim != held.Claim:
+			tied[at] = true
+		}
+	}
+	var worker claim.Token
+	for at, row := range latest {
+		if tied[at] || worker != "" && worker != row.Claim {
 			return "", fmt.Errorf("the %s of %s is worked by several agents; name the claim of the intended agent", role, issue)
 		}
 		worker = row.Claim
