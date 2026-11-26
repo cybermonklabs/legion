@@ -37,6 +37,9 @@ func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string,
 		roleNode, listNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
 		if !slices.Contains(RoleConfigRoles, role) {
+			if !keyShape(roleNode.Value) {
+				return nil, fmt.Errorf("%s: it must be a Legion role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(RoleConfigRoles))
+			}
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := files[role]; seen {

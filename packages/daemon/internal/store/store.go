@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"math"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -23,6 +22,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/pgdsn"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
@@ -92,7 +93,7 @@ type Store struct {
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	config, err := PoolConfig(dsn)
 	if err != nil {
-		return nil, ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(DSNSetting, dsn, err)
 	}
 	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
 		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling
@@ -101,12 +102,12 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	}
 	raw, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(DSNSetting, dsn, err)
 	}
 	pool := NewPool(raw)
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(DSNSetting, dsn, err)
 	}
 	return &Store{pool: pool}, nil
 }
@@ -161,14 +162,9 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 		"and describe_exec", mode)
 }
 
-// ConnectError is a failure to reach the Postgres dsn names as an operator reads it: the address
-// it points at and the driver's detail, never dsn's password (connectError). Every connection Legion
-// opens reports its refusal this way, the daemon's own and Oh My Pi's session database's
-// (internal/ompsessions).
-func ConnectError(dsn string, err error) error {
-	address, password := target(dsn)
-	return &connectError{address: address, password: password, err: err}
-}
+// DSNSetting names the setting the daemon's own DSN comes from, as Open's refusal of a DSN pgx
+// cannot parse names it (pgdsn.ConnectError).
+const DSNSetting = "postgres_dsn (or LEGION_POSTGRES_DSN)"
 
 // OpenRetryable reports whether err, an error Open returned, is one the next attempt to open the
 // store can clear: the database gave no answer, or it answered with a code that tells the client
@@ -176,11 +172,11 @@ func ConnectError(dsn string, err error) error {
 // list, in this order, and never its text:
 //
 //   - A *pgconn.PgError anywhere in the chain — inside the *pgconn.ConnectError pgx wraps a refused
-//     connection in, and inside connectError — is the server's answer. A code of class 08
-//     (connection exception) can clear, and so can 53300 (too many connections), 57P01 (admin
-//     shutdown), 57P02 (crash shutdown) and 57P03 (cannot connect now). Every other code is an
-//     answer the next attempt gets again: a refused password (28P01), a connection pg_hba.conf
-//     does not admit (28000), a database that does not exist (3D000).
+//     connection in, and inside pgdsn.ConnectError's error — is the server's answer. A code of
+//     class 08 (connection exception) can clear, and so can 53300 (too many connections), 57P01
+//     (admin shutdown), 57P02 (crash shutdown) and 57P03 (cannot connect now). Every other code
+//     is an answer the next attempt gets again: a refused password (28P01), a connection
+//     pg_hba.conf does not admit (28000), a database that does not exist (3D000).
 //   - A *pgconn.ParseConfigError is a DSN pgx cannot read, which no attempt changes.
 //   - A TLS failure is not tried again: a certificate the client cannot verify, a peer that does
 //     not answer in TLS (tls.RecordHeaderError), and a TLS alert, on the handshake or on a later
@@ -532,46 +528,4 @@ func schemaVersionExists(ctx context.Context, tx pgx.Tx) (bool, error) {
 		return false, fmt.Errorf("look for schema_version: %w", err)
 	}
 	return exists, nil
-}
-
-// connectError says where the daemon could not reach Postgres without saying
-// how it would have got in: an operator reads this in a boot refusal, and a
-// DSN's password has no business in a log line.
-type connectError struct {
-	address  string
-	password string
-	err      error
-}
-
-func (e *connectError) Error() string {
-	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactPassword(e.err.Error(), e.password))
-}
-
-// redactPassword hides a password where a driver would print one: after the
-// password= of a keyword DSN, and between the : and @ of a URL. Only in those
-// positions — a password equal to the user or the database name is the
-// ordinary devbox DSN (postgres://legion:legion@…), and blanking every
-// occurrence would hide the fields an operator reads to diagnose a refusal.
-func redactPassword(detail, password string) string {
-	if password == "" {
-		return detail
-	}
-	detail = strings.ReplaceAll(detail, "password="+password, "password=xxxxx")
-	return strings.ReplaceAll(detail, ":"+password+"@", ":xxxxx@")
-}
-
-func (e *connectError) Unwrap() error { return e.err }
-
-// target reads the address a DSN points at and the password it carries. pgx
-// understands both the URL and the keyword/value forms; url.Parse answers for a
-// DSN pgx itself rejects, so even then the operator learns the host.
-func target(dsn string) (string, string) {
-	if config, err := pgconn.ParseConfig(dsn); err == nil && config.Host != "" {
-		return net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), config.Password
-	}
-	if parsed, err := url.Parse(dsn); err == nil && parsed.Host != "" {
-		password, _ := parsed.User.Password()
-		return parsed.Host, password
-	}
-	return "the configured Postgres", ""
 }

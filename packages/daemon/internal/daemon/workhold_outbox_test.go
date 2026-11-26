@@ -1217,7 +1217,9 @@ func TestWorkHoldIsNotEndedByAPauseResume(t *testing.T) {
 // hold takes it over its release at once, its session and its pending task kept. A CI settlement's
 // task, the release backstop's wake and a hook prompt during the hold start none of it, and the
 // opening starts it with one task that starts with the close message's sentences and carries the
-// task it kept.
+// task it kept. The hold outlasts the hour a kept role message waits for a session of its role
+// (keptRoleMessageHoldBound), and the hook prompt is still delivered at the opening: a claim the
+// hold holds counts as a start that is coming (wakeComing).
 func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.inTx(func(tx pgx.Tx) error {
@@ -1250,6 +1252,11 @@ func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 	}
 	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
 		t.Fatalf("the hook prompt ran with the role held (%d rows left), want it waiting for the opening", got)
+	}
+	r.clock.advance(keptRoleMessageHoldBound + time.Minute)
+	r.drain()
+	if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
+		t.Fatalf("the hook prompt's row ended past its hour with the role held (%d rows left), want it waiting for the opening", got)
 	}
 
 	r.publisher.setAbsent()

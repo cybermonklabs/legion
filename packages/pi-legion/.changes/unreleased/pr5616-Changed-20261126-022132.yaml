@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Step 3 of "Reconcile the weekly plan" in the `legion-controller` skill's backlog stewardship says
+  that a controller makes an issue P0 only where the project owner's own words, cited on the issue,
+  ask for it, and only with the `p0` credential its deployment instructions name. A controller whose
+  instructions name none tells the owner that only they set P0, at a browser, and sets no P0.
+time: 2026-11-26T02:21:32Z
+custom:
+    Issue: pr5616

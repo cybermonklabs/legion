@@ -1,7 +1,8 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables named below are the caller's to set or read
-# local-stack.sh — the loopback Envoy stack the smokes beside it each bring up: free ports below
-# the kernel's ephemeral range, and natsd (packages/envoy/internal/testnats/cmd/natsd) and the
-# listener (packages/envoy/cmd/listener) built from a checkout with `go build`.
+# local-stack.sh — the loopback Envoy stack the smokes beside it each bring up: natsd
+# (packages/envoy/internal/testnats/cmd/natsd) and the listener (packages/envoy/cmd/listener),
+# built from a checkout with `go build`, each on loopback ports the kernel chooses when the service
+# binds them, read back from what the service logs.
 # smoke-role-takeover.sh and smoke-registration-stall.sh (--local-stack) source it, so what those
 # two know about the stack is written once; packages/envoy-client/test/envoy-stack.ts is the same
 # stack for the TypeScript suite.
@@ -12,44 +13,10 @@
 # waits for what — so this hands out an argv and a set of assignments rather than starting
 # anything, and each script's own messages, exit codes and timeouts stay its own.
 #
-# The caller defines
-#   refuse MESSAGE    prints MESSAGE prefixed with the script's name and exits 2; port_range
-#                     reports a kernel with no usable range below its ephemeral one through it
-# and sets
-#   local_stack_fail  the function pick_port reports an exhausted range through: `refuse` in both
-#                     callers, each of which prints with the script's name and exits 2
-# and reads, after port_range, ephemeral_low and port_floor.
-
-# port_range: the kernel's ephemeral range (ephemeral_low), which every outbound connection
-# autobinds from, and the floor a service binds above (port_floor).
-port_range() {
-  read -r ephemeral_low _ </proc/sys/net/ipv4/ip_local_port_range
-  port_floor=10000
-  ((ephemeral_low > port_floor + 1000)) ||
-    refuse "the kernel's ephemeral range starts at ${ephemeral_low}, leaving no ports below it above ${port_floor}"
-}
-
-# port_open PORT: something answers on 127.0.0.1:PORT.
-port_open() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
-# pick_port VAR: a loopback port nothing answers on, below the kernel's ephemeral range and
-# distinct from this run's earlier picks, which is what keeps one run from handing two services
-# one port.
-picked_ports=" "
-pick_port() {
-  local candidate i
-  for ((i = 0; i < 200; i++)); do
-    candidate=$((port_floor + RANDOM % (ephemeral_low - port_floor)))
-    [[ "$picked_ports" != *" ${candidate} "* ]] || continue
-    port_open "$candidate" && continue
-    picked_ports+="${candidate} "
-    printf -v "$1" '%s' "$candidate"
-    return 0
-  done
-  "$local_stack_fail" "no free loopback port below ${ephemeral_low}"
-}
+# No port is picked here and handed to a service: a port found free and bound later is any other
+# process's to take in between, and the service then exits with "address already in use". Each
+# service binds port 0 and names the port it got, and a caller reads it from the service's log
+# once the service is up (natsd_port, listener_addr).
 
 # poll_until SECONDS INTERVAL COMMAND...: polls COMMAND every INTERVAL seconds, quietly; its last
 # run's own status once SECONDS have passed.
@@ -75,25 +42,52 @@ build_listener() {
   (cd -- "$1" && go build -o "$2" ./cmd/listener)
 }
 
-# set_natsd_argv BIN PORT MONITOR_PORT STORE_DIR: sets the array `natsd_argv` to natsd serving
-# 127.0.0.1:PORT with JetStream stored under STORE_DIR, monitoring on MONITOR_PORT unless it is
-# empty. The caller runs it under its own environment isolation and redirection.
+# set_natsd_argv BIN STORE_DIR [monitor]: sets the array `natsd_argv` to natsd serving a client
+# port of 127.0.0.1 the kernel chooses, with JetStream stored under STORE_DIR, and with `monitor`
+# a monitoring port the kernel chooses too. -1 is nats-server's RANDOM_PORT: a -p of 0 would be
+# its default 4222, and an -m of 0 no monitoring at all. The caller runs it under its own
+# environment isolation and redirection, and reads the ports with natsd_port once it serves.
 set_natsd_argv() {
-  natsd_argv=("$1" -p "$2")
-  [[ -z "$3" ]] || natsd_argv+=(-m "$3")
-  natsd_argv+=(-js -store_dir "$4")
+  natsd_argv=("$1" -p -1)
+  [[ "${3:-}" != monitor ]] || natsd_argv+=(-m -1)
+  natsd_argv+=(-js -store_dir "$2")
 }
 
-# set_listener_env PORT NATS_URL MACHINE_ID: sets the array `listener_env` to the assignments the
-# listener is run with, to serve 127.0.0.1:PORT against NATS_URL as MACHINE_ID. HOME is the
-# caller's to add: each run gives the listener a scratch home of its own.
+# set_listener_env NATS_URL MACHINE_ID: sets the array `listener_env` to the assignments the
+# listener is run with, to serve a port of 127.0.0.1 the kernel chooses (PORT=0) against NATS_URL
+# as MACHINE_ID. HOME is the caller's to add: each run gives the listener a scratch home of its
+# own. The caller reads the address with listener_addr once the listener logs it.
 set_listener_env() {
-  listener_env=(PORT="$1" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="$3" NATS_URLS="$2")
+  listener_env=(PORT=0 ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="$2" NATS_URLS="$1")
 }
 
-# natsd_serving LOG: natsd's log says it is serving.
+# natsd_serving LOG: natsd's log says it is serving, which it logs after the addresses it bound.
 natsd_serving() {
   grep -q 'Server is ready' "$1"
+}
+
+# natsd_port LOG client|monitor VAR: assigns VAR the client or monitoring port natsd reports in LOG
+# that it bound ("Listening for client connections on 127.0.0.1:<port>", "Starting http monitor
+# on 127.0.0.1:<port>"). Non-zero while LOG holds no such line.
+natsd_port() {
+  local pattern match
+  case "$2" in
+    client) pattern='Listening for client connections on [^ ]*:[0-9]+' ;;
+    monitor) pattern='Starting http monitor on [^ ]*:[0-9]+' ;;
+    *) return 2 ;;
+  esac
+  match=$(grep -m1 -oE -- "$pattern" "$1" 2>/dev/null) || return 1
+  printf -v "$3" '%s' "${match##*:}"
+}
+
+# listener_addr LOG: prints the address the listener reports in LOG that it serves on, the `addr`
+# of its JSON "envoy-listener listening" line, which names the bound address, not the configured
+# one. Non-zero, printing nothing, while LOG holds no such line or names port 0.
+listener_addr() {
+  local addr
+  addr=$(jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$1" 2>/dev/null)
+  [[ "$addr" =~ ^127\.0\.0\.1:[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$addr"
 }
 
 # listener_healthy URL: the listener at URL answers /healthz healthy.
