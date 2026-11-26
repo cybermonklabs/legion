@@ -333,13 +333,10 @@ type ProfileFault struct {
 
 // ProfileKind is the name of the kind profile p is served behind, where its source's proxy tag
 // names sourceTag ("" for none): that tag's kind, or else the kind p's own proxy string names, or
-// else, in a file that declares no kinds, the kind of its own its proxy block is served behind
-// (readsBlocks), or "" for none. The tag wins because the store, not the file, says where a
-// credential may go; a string that names another kind is a fault (ReasonProxyKindConflict). In a
-// file that declares no kinds no tag names a kind (proxyTags) and no string does (checkProxy), so
-// the block's kind is the one there.
+// "" for none. The tag wins because the store, not the file, says where a credential may go; a
+// string that names another kind is a fault (ReasonProxyKindConflict).
 func ProfileKind(p *Profile, sourceTag string) string {
-	return cmp.Or(sourceTag, p.ProxyKind, p.blockKind)
+	return cmp.Or(sourceTag, p.ProxyKind)
 }
 
 // ProxyFaults is every fault for which the policy load refuses profile, a profile of p, at
