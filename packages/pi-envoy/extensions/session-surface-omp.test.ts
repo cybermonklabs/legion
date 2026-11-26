@@ -11,6 +11,7 @@ import {
   messageStream,
   ompRoot,
   type Request,
+  type Rpc,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
@@ -180,6 +181,9 @@ interface SurfaceSession {
   flushed(): Promise<void>;
   /** Sends one RPC command and resolves with its response frame. */
   command(command: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Ends this omp and starts another on the same session with `--continue`, as a pod's restart
+   *  does, and resolves once the new one has registered the session with the listener. */
+  restart(): Promise<void>;
   /** Resolves once `get_state` reports the session settled. */
   settled(): Promise<void>;
   /** The session file's lines, as raw JSON. */
@@ -302,37 +306,45 @@ async function startSession(
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
-  const rpc = spawnRpc(
-    binary,
-    {
-      extensions: [
-        path.join(import.meta.dir, "envoy.ts"),
-        ...(noWindowModel
-          ? [path.join(import.meta.dir, "..", "test", "no-window-provider.ts")]
-          : []),
-      ],
-      home,
-      workspace,
-      sessions,
-      env: {
-        ENVOY_URL: base,
-        ENVOY_NATS_URL: nats,
-        DISPATCH_URL: base,
-        DISPATCH_TOKEN,
-        ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
-        ...env,
+  /** omp over the session's directories, with `args` after the harness's flags: the first life
+   *  with none, and a restart's with `--continue`. The end of a life fails the case only while it
+   *  is the live one: a restart ends the life before it on purpose. */
+  const start = (args: readonly string[]): Rpc => {
+    const life = spawnRpc(
+      binary,
+      {
+        extensions: [
+          path.join(import.meta.dir, "envoy.ts"),
+          ...(noWindowModel
+            ? [path.join(import.meta.dir, "..", "test", "no-window-provider.ts")]
+            : []),
+        ],
+        home,
+        workspace,
+        sessions,
+        env: {
+          ENVOY_URL: base,
+          ENVOY_NATS_URL: nats,
+          DISPATCH_URL: base,
+          DISPATCH_TOKEN,
+          ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
+          ...env,
+        },
+        args,
+        onFrame: (frame) => {
+          if ("type" in frame && frame.type === "response" && "id" in frame) {
+            responses.get(String(frame.id))?.resolve(frame as Record<string, unknown>);
+          }
+        },
       },
-      onFrame: (frame) => {
-        if ("type" in frame && frame.type === "response" && "id" in frame) {
-          responses.get(String(frame.id))?.resolve(frame as Record<string, unknown>);
-        }
-      },
-    },
-    cleanup
-  );
-  rpc.closed.catch((error: unknown) => {
-    closed.error = error;
-  });
+      cleanup
+    );
+    life.closed.catch((error: unknown) => {
+      if (rpc === life) closed.error = error;
+    });
+    return life;
+  };
+  let rpc: Rpc | undefined = start([]);
 
   const sid = await until(
     "the session's registration with the listener",
@@ -527,15 +539,35 @@ async function startSession(
       );
     },
     async command(command) {
+      const live = rpc;
+      if (live === undefined)
+        throw new Error(`omp is restarting: ${String(command.type)} not sent`);
       const id = randomUUID();
       const waiting = Promise.withResolvers<Record<string, unknown>>();
       responses.set(id, waiting);
-      rpc.send({ ...command, id });
-      const response = await Promise.race([waiting.promise, rpc.closed]);
+      live.send({ ...command, id });
+      const response = await Promise.race([waiting.promise, live.closed]);
       if (response.success !== true) {
         throw new Error(`omp refused ${String(command.type)}: ${JSON.stringify(response)}`);
       }
       return response;
+    },
+    async restart() {
+      const registered = () =>
+        requests.filter(
+          (request) => request.path === "/v1/interests/subscribe" && request.body.session_id === sid
+        ).length;
+      const ending = rpc;
+      rpc = undefined;
+      // omp exits once its stdin closes, as a pod's omp ends at its restart.
+      await ending?.end();
+      const before = registered();
+      rpc = start(["--continue"]);
+      await until(
+        "the resumed session's registration with the listener",
+        () => (registered() > before ? true : undefined),
+        closed
+      );
     },
     async settled() {
       await until(
@@ -1465,6 +1497,75 @@ test.skipIf(skip)(
     expect(frameText(messages[card] ?? {})).toBe(`Envoy message from envoy:\n\n${brief}`);
     const reply = messages.findIndex((message) => frameText(message) === "ready");
     expect(reply).toBeGreaterThan(card);
+  },
+  120_000
+);
+
+// A pod's restart ends the session's omp and starts another on the same session with
+// `--continue`, which resumes it from its transcript: the terminal shows every earlier turn, and
+// the live view replayed none of them (dispatch://INFRA-5990, R1). The replay after the restart
+// holds the message frames the replay before it held, each the same but for the number its own
+// process gave it: a prompt and its reply, a person's Send, still tagged with its Dispatch message
+// so the page shows it once, and an Envoy card with the reply it started.
+test.skipIf(skip)(
+  "after omp restarts on the session it resumes, the live view's replay holds the turns it held before",
+  async () => {
+    const session = await startSession();
+    await session.arm();
+    await session.command({ type: "prompt", message: "What is the first question?" });
+    (await session.nextTurn("the prompt's model request")).reply([text("The first answer.")]);
+    await session.settled();
+    const sent = await session.send("What is the second question?");
+    (await session.nextTurn("the turn the person's Send started")).reply([
+      text("The second answer."),
+    ]);
+    await session.settled();
+    const label = `card-${randomUUID()}`;
+    const note = "Please check the second answer.";
+    await session.relay(
+      JSON.stringify({
+        event_id: `evt-${label}`,
+        source: "envoy",
+        source_event_id: `source-${label}`,
+        topic: "notifications.role.alice-acme-1",
+        dedupe_key: `envoy.role.forward.publish.${randomUUID().replaceAll("-", "")}`,
+        issued_at: Date.now(),
+        payload: note,
+        payload_summary: note,
+        expects_reply: false,
+        trace_id: `trace-${label}`,
+      }),
+      "the card"
+    );
+    (await session.nextTurn("the turn the card started")).reply([text("The card's answer.")]);
+    await session.settled();
+
+    const conversationOf = async () =>
+      (await session.replay()).frames
+        .filter((frame) => frame.kind === "message")
+        .map(({ seq: _seq, ...frame }) => frame as { readonly message: Record<string, unknown> });
+    const before = await conversationOf();
+    const said = before.map((frame) => frameText(frame.message));
+    expect(said).toEqual(
+      expect.arrayContaining([
+        "What is the first question?",
+        "The first answer.",
+        "What is the second question?",
+        "The second answer.",
+        `Envoy message from envoy:\n\n${note}`,
+        "The card's answer.",
+      ])
+    );
+    const send = before.find(
+      (frame) => frameText(frame.message) === "What is the second question?"
+    );
+    expect(send?.message.dispatchMessageId).toBe(sent.messageID);
+
+    await session.restart();
+    await session.arm();
+    const after = await conversationOf();
+    // A card the new process shows as it starts comes after every turn before it.
+    expect(after.slice(0, before.length)).toEqual(before);
   },
   120_000
 );

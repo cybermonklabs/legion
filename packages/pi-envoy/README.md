@@ -187,7 +187,25 @@ shows an untagged turn twice: once from the stream and once as the message Dispa
 turn goes untagged when the record misses it: a typed turn the host starts under a new session
 id, and, on a host without `sendUserInput`, where the record finds a turn by its text until the
 run ends, a Send the host runs as a turn of its own after the run's `agent_end` and a prompt
-template or file command, whose stream carries the expanded text.
+template or file command, whose stream carries the expanded text. A turn read back from the
+transcript (below) is tagged by the tag the host wrote on it, where the transcript records that
+the session handled that Dispatch message (`handledMessages` in
+`@legion/pi-shared/dispatch-user-turn`); a `!command` report, which the host never writes as a
+turn, is not read back, and the page shows the person's line and the session's reply from
+Dispatch's store instead.
+
+## The live view after a restart
+
+The live view's replay is the session's answer from a ring of its newest messages held in the
+process (`AgentStreamPublisher` in `@legion/pi-shared/agent-stream`). A process that takes up a
+session whose transcript already holds turns (a pod's restart and `omp --continue`, a
+`--resume`, a `/resume`, a fork) fills that ring from the session's branch when it takes the
+session up (`restoreLocalSessionState`), within the ring's bounds: the newest 200 messages it
+carries, and the replay's 512 KiB. So a person who opens the session after a restart sees the
+turns its terminal shows, as the process before the restart would have replayed them; a session
+that starts fresh has no turns to read back. The ring keys a card that names no id, such as one of
+the plugin's own notices, by what it says, since Oh My Pi hands `message_end` a copy of the
+message `message_start` was handed.
 
 ## A `task` subagent
 

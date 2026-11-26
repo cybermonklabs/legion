@@ -170,6 +170,7 @@ import {
   type AcceptedUserTurn,
   HANDLED_ATTEMPT_ENTRY,
   handledAttempts,
+  handledMessages,
   typedInputReply,
 } from "@legion/pi-shared/dispatch-user-turn";
 import {
@@ -177,6 +178,7 @@ import {
   endInjectedUserTurns,
   forgetInjectedUserTurns,
   matchInjectedUserTurn,
+  messageTag,
   noteInjectedUserTurn,
   noteTypedUserTurn,
 } from "@legion/pi-shared/injected-user-turns";
@@ -247,6 +249,7 @@ import {
 import { type SessionInbound, sessionInbound } from "../src/session-inbound";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
+import { transcriptMessages } from "../src/transcript-messages";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -1124,6 +1127,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     legionManagedTranscript = branch.some(isLegionManagedEntry);
     const entries = context.sessionManager.getEntries();
     handledDispatchAttempts = handledAttempts(entries);
+    // The turns the transcript already holds, for a viewer who opens the session: a process that
+    // takes a session up records none of them itself (`restoreAgentStream`).
+    restoreAgentStream(sessionID, branch, entries);
     // The delivery ledger, from every entry of the session file as handled attempts are: what
     // this session was shown, on any branch, with the cards the host wrote, and the topics it
     // follows. The notices it records held and not handed, which a
@@ -3007,6 +3013,27 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       agentStreams.set(session, ring);
     }
     return ring;
+  };
+  // A session this process takes up with turns already in its transcript (its start on a session
+  // it resumes: a pod's restart, `omp --continue`, `--resume`; a `/resume`; a fork) gets a ring
+  // that holds none of them, so a viewer who opened it was replayed none of what its terminal
+  // shows (dispatch://INFRA-5990). The ring a session is first given here is filled from its
+  // branch instead, as the process that ran those turns recorded them. A person's Send the
+  // session took as its typed turn carries its Dispatch message as it did then: the turn's tag,
+  // where the transcript records that the session handled that message (`handledMessages`), which
+  // is the turn `matchInjectedUserTurn` finds live. A session whose ring is held already keeps
+  // it, and records its turns as they end.
+  const restoreAgentStream = (
+    session: string,
+    branch: readonly unknown[],
+    entries: readonly unknown[]
+  ): void => {
+    if (session === "" || agentStreams.has(session)) return;
+    const handled = handledMessages(entries);
+    agentStreamOf(session).restore(transcriptMessages(branch), (message) => {
+      const tag = messageTag(message);
+      return tag !== undefined && handled.has(tag) ? tag : undefined;
+    });
   };
   // The control subscription this session currently holds, and the id it was opened for.
   let agentStreamControl: InboundSubscription | undefined;

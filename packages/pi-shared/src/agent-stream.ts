@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   AGENT_STREAM_LIMITS,
   AGENT_STREAM_PROTOCOL,
@@ -24,7 +25,9 @@ import type { ContextUsage } from "@legion/pi-shared/pi-types";
  * the window a viewer's `watch` or `replay` arms, so a session nobody is looking at puts no
  * conversation on the bus at all. **Nothing is stored anywhere else:** the only history is the
  * bounded ring below, in this process, beside the transcript the session already keeps on disk;
- * the relay and the dashboard hold frames no longer than a viewer's connection.
+ * the relay and the dashboard hold frames no longer than a viewer's connection. A process that
+ * takes up a session whose transcript already holds turns fills the ring from that transcript
+ * (`restore`), so a session resumed after a restart replays what the process before it would have.
  *
  * The ring holds the host's own message object, not a built frame. A streamed tool call arrives
  * as one `message_update` per delta — tens of thousands for a large write — and building a frame
@@ -220,9 +223,13 @@ function streamedCard(host: HostMessage): boolean {
 
 /** The ring slot a message occupies, or null for a message this build does not carry. A tagged
  *  user message's slot names its tag too: two Sends can be stamped in the same millisecond. So
- *  does a card's: the wake's id for it, else the event it shows, else `untagged`'s number for the
- *  host's message object, which the host hands each record of one message as. */
-function keyFor(message: ReadableMessage, untagged: (host: HostMessage) => number): string | null {
+ *  does a card's: the wake's id for it, else the event it shows, else a digest of what it says.
+ *  A card that names neither (one of the plugin's own notices) has nothing else that holds across
+ *  its records: the pinned Oh My Pi hands `message_end` a copy of the message `message_start`
+ *  was handed (`cloneMessageNotification`, `extensibility/extensions/lifecycle-mirror.ts`), and a
+ *  process that takes up the session reads it from the transcript (`restore`). Two such notices
+ *  stamped in the same millisecond say different things. */
+function keyFor(message: ReadableMessage): string | null {
   if (message.role === "toolResult") {
     return message.toolCallId === undefined ? null : `t:${message.toolCallId}`;
   }
@@ -233,7 +240,7 @@ function keyFor(message: ReadableMessage, untagged: (host: HostMessage) => numbe
     const card =
       stringField(details, "envoyCard") ??
       stringField(details, "event_id") ??
-      untagged(message.host);
+      createHash("sha256").update(contentText(message.host.content)).digest("hex").slice(0, 16);
     return `m:c${message.timestamp}:${card}`;
   }
   if (message.role !== "user") return null;
@@ -427,10 +434,6 @@ export class AgentStreamPublisher {
   /** When each message was last put on the wire, so a token storm costs one frame per
    *  `snapshotIntervalMs` rather than one per delta. */
   readonly #publishedAt = new Map<string, number>();
-  /** The number each card that names no id of its own keys under (`keyFor`), by the host's
-   *  message object; held weakly, so a card the ring dropped is not kept alive by its number. */
-  readonly #untaggedCards = new WeakMap<HostMessage, number>();
-  #untaggedCount = 0;
   /** The last sequence number handed out. Seeded from the clock, so it is monotonic across the
    *  session's processes as well as within one: see `SEQ_PER_MS`. `reset` never touches it. */
   #seq: number;
@@ -692,21 +695,61 @@ export class AgentStreamPublisher {
    * does not carry, and for a late streaming update of a message the host has already settled.
    */
   record(subject: string, raw: unknown, streaming: boolean, dispatchMessageId?: string): boolean {
+    const entry = this.#keep(raw, streaming, dispatchMessageId);
+    if (entry === undefined) return false;
+    if (!this.watched) return true;
+    const now = this.#deps.now();
+    const published = this.#publishedAt.get(entry.key);
+    const tooSoon =
+      published !== undefined && now - published < AGENT_STREAM_LIMITS.snapshotIntervalMs;
+    if (entry.streaming && tooSoon) return true;
+    this.#publishedAt.set(entry.key, now);
+    this.#deps.publish(subject, JSON.stringify(frameFor(entry)));
+    return true;
+  }
+
+  /**
+   * Fills the ring with turns this process did not run: the messages a session's transcript holds
+   * when the process takes the session up (a pod's restart and `omp --continue`, a `--resume`, a
+   * `/resume`), oldest first, each as the host handed it to `message_end` when it ran. Each is kept
+   * as `record` keeps a settled message, so a replay after a restart reads as one before it would
+   * have, inside the same bounds: the newest `AGENT_STREAM_LIMITS.historyMessages` of the messages
+   * this build carries, and the replay's byte budget. Only those are read: the walk goes back from
+   * the newest no further than the bound reaches, so a long transcript costs the bound, not its
+   * length. Nothing is published, since a viewer reads these from its replay.
+   * `dispatchMessageIdOf` names the Dispatch message a user message delivered, which only the
+   * caller can know (`record`'s `dispatchMessageId`).
+   */
+  restore(
+    messages: readonly unknown[],
+    dispatchMessageIdOf: (message: unknown) => string | undefined = () => undefined
+  ): void {
+    const carried = new Set<string>();
+    let first = messages.length;
+    while (first > 0 && carried.size < AGENT_STREAM_LIMITS.historyMessages) {
+      first -= 1;
+      const message = readMessage(messages[first]);
+      const key = message === null ? null : keyFor(message);
+      if (key !== null) carried.add(key);
+    }
+    for (const raw of messages.slice(first)) this.#keep(raw, false, dispatchMessageIdOf(raw));
+  }
+
+  /** Puts one message into the ring, dropping the oldest past the bound, and returns its entry;
+   *  undefined for a message this build does not carry, and for a late streaming update of a
+   *  message the host has already settled (see the class note). */
+  #keep(
+    raw: unknown,
+    streaming: boolean,
+    dispatchMessageId: string | undefined
+  ): RingEntry | undefined {
     const message = readMessage(raw);
-    if (message === null) return false;
-    const key = keyFor(message, (host) => {
-      let number = this.#untaggedCards.get(host);
-      if (number === undefined) {
-        this.#untaggedCount += 1;
-        number = this.#untaggedCount;
-        this.#untaggedCards.set(host, number);
-      }
-      return number;
-    });
-    if (key === null) return false;
+    if (message === null) return undefined;
+    const key = keyFor(message);
+    if (key === null) return undefined;
     const stillStreaming = message.role === "assistant" && streaming;
     // The host's updates outlive its own `message_end`, so a settled message is final.
-    if (stillStreaming && this.#settled.has(key)) return false;
+    if (stillStreaming && this.#settled.has(key)) return undefined;
     this.#seq += 1;
     const entry: RingEntry = {
       at: message.timestamp,
@@ -725,15 +768,7 @@ export class AgentStreamPublisher {
       this.#settled.delete(oldest.value);
       this.#publishedAt.delete(oldest.value);
     }
-    if (!this.watched) return true;
-    const now = this.#deps.now();
-    const published = this.#publishedAt.get(key);
-    const tooSoon =
-      published !== undefined && now - published < AGENT_STREAM_LIMITS.snapshotIntervalMs;
-    if (stillStreaming && tooSoon) return true;
-    this.#publishedAt.set(key, now);
-    this.#deps.publish(subject, JSON.stringify(frameFor(entry)));
-    return true;
+    return entry;
   }
 
   /**
