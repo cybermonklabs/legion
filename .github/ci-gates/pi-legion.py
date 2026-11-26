@@ -19,6 +19,8 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("packages/envoy-client/test/keyed-layer.ts", "`packages/pi-shared/test/omp-harness.ts#keyedLayer`, which this package's "
                                                   "omp tests drive and its typecheck compiles, serves its stand-in "
                                                   "behind keyedLayer"),
+    ("packages/envoy-client/test/fake-dispatch.ts", "`packages/pi-legion/src/tools.test.ts#fakeDispatchFetch` imports "
+                                                     "it from @legion/envoy-client/test/fake-dispatch"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),

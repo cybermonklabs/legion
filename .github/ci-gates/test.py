@@ -55,6 +55,14 @@ GATE = gate("test", "test", runs=[
     (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", '`scripts/e2e/lib/stage4b-capabilities.test.ts#"web-search-open-planner.json"`'),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "`scripts/e2e/lib/stage4b-pods.test.ts#golden`"),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "`scripts/e2e/lib/stage4b-pods.test.ts#operatorRoute`"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_sessions_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#newsMarks` reads its news marks, and `scripts/e2e/lib/approved-version-news-runs.test.ts#sessionsFile` names it among the files the test copies into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#partOneDriverFiles` names it among the files the test copies into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_part_one_steps_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#partOneDriverFiles` names it among the files the test copies into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_seed_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#partOneDriverFiles` names it among the files the test copies into the scratch checkout"),
     (".github/actions/install-changie/**", f"{at('test', './.github/actions/install-changie')}, which "
                                            "release-push.test.sh's fold-notes cases render with"),
     (".github/ci-tools.yaml", "`.github/actions/install-changie/action.yml#ci_tools_field` and `.github/actions/install-changie/action.yml#ci_tools_fetch` installs the tarball of the changie row, "

@@ -102,6 +102,9 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
+	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
+	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current

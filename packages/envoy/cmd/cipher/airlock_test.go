@@ -38,6 +38,12 @@ func testRelease(name string, hosts []string, slots map[string]string) *AirlockR
 	}
 }
 
+// prepareAirlock is prepareProxyFilesFor with one environment as both agent-secrets' own and the
+// command's, as a test that releases no value into the command's environment has.
+func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
+	return prepareProxyFilesFor(environ, environ, release, grantID, expiresAt)
+}
+
 // childEnvMap is buildChildEnv's answer as a map, for a test that asks after single variables.
 func childEnvMap(t *testing.T, environ []string, values map[string]string, release *AirlockRelease, files airlockFiles) map[string]string {
 	t.Helper()
@@ -359,7 +365,7 @@ func TestPrepareAirlockWritesTheTrustBundleAndWgetrc(t *testing.T) {
 		t.Fatalf("prepareAirlock: %v", err)
 	}
 
-	dir := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-one")
+	dir := grantDirOf(t, filepath.Join(runtimeDir, "agent-secrets", "airlock"), "grant-one", files.bundle)
 	if filepath.Dir(files.bundle) != dir || filepath.Dir(files.wgetrc) != dir {
 		t.Fatalf("the files are at %q and %q, want both under %q", files.bundle, files.wgetrc, dir)
 	}
@@ -603,9 +609,7 @@ func TestPrepareAirlockIsNeverSeenHalfWrittenByAnotherRunsTidy(t *testing.T) {
 			<-swept
 			t.Fatalf("%s: prepareAirlock while another run tidied the same root: %v", grant, err)
 		}
-		if filepath.Dir(files.bundle) != filepath.Join(root, grant) {
-			t.Fatalf("%s: the bundle is at %q, want it under %q", grant, files.bundle, filepath.Join(root, grant))
-		}
+		grantDirOf(t, root, grant, files.bundle)
 	}
 	close(stop)
 	<-swept
@@ -633,7 +637,7 @@ func TestPrepareAirlockTwiceForOneGrantKeepsTheDirectoryThatIsThere(t *testing.T
 	if err != nil {
 		t.Fatalf("the second run for the same grant: %v", err)
 	}
-	if second != first {
+	if second.bundle != first.bundle || second.wgetrc != first.wgetrc {
 		t.Fatalf("the second run answers %+v, want the first run's %+v", second, first)
 	}
 	for _, path := range []string{first.bundle, first.wgetrc, filepath.Join(filepath.Dir(first.bundle), "expires")} {
@@ -645,12 +649,14 @@ func TestPrepareAirlockTwiceForOneGrantKeepsTheDirectoryThatIsThere(t *testing.T
 	if err != nil {
 		t.Fatalf("read the airlock root: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "grant-one" {
-		names := make([]string, len(entries))
-		for i, entry := range entries {
-			names[i] = entry.Name()
-		}
-		t.Fatalf("the airlock root holds %v, want the one grant directory: the second run's own is left behind", names)
+	// The root holds the key the directory names are keyed with (proxyTrustDirKey) and the one
+	// grant directory, nothing else.
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	if want := []string{proxyTrustKeyFile, filepath.Base(filepath.Dir(first.bundle))}; !slices.Equal(names, want) {
+		t.Fatalf("the airlock root holds %v, want %v, the key and the one grant directory: the second run's own is left behind", names, want)
 	}
 }
 
@@ -663,7 +669,7 @@ func TestPrepareAirlockFallsBackToTheTemporaryDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareAirlock: %v", err)
 	}
-	want := filepath.Join(tmp, "agent-secrets", "airlock", "grant-one")
+	want := grantDirOf(t, filepath.Join(tmp, "agent-secrets", "airlock"), "grant-one", files.bundle)
 	if filepath.Dir(files.bundle) != want {
 		t.Fatalf("the bundle is at %q, want it under %q", files.bundle, want)
 	}
@@ -905,13 +911,18 @@ func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	if strings.Contains(env["NO_PROXY"], "api.example.com") || !strings.Contains(env["NO_PROXY"], "intranet.example.org") {
 		t.Errorf("the command's NO_PROXY is %q, want the bound host gone and the other inherited entry kept", env["NO_PROXY"])
 	}
-	bundle := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-airlock", "ca-bundle.pem")
+	airlockRoot := filepath.Join(runtimeDir, "agent-secrets", "airlock")
+	bundle := env["CURL_CA_BUNDLE"]
+	grantDir := grantDirOf(t, airlockRoot, "grant-airlock", bundle)
+	if filepath.Base(bundle) != "ca-bundle.pem" {
+		t.Errorf("the command's CURL_CA_BUNDLE is %q, want the grant directory's ca-bundle.pem", bundle)
+	}
 	for _, key := range airlockBundleVars {
 		if env[key] != bundle {
 			t.Errorf("the command's %s is %q, want %q", key, env[key], bundle)
 		}
 	}
-	if want := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-airlock", "wgetrc"); env["WGETRC"] != want {
+	if want := filepath.Join(grantDir, "wgetrc"); env["WGETRC"] != want {
 		t.Errorf("the command's WGETRC is %q, want %q", env["WGETRC"], want)
 	}
 	if env["AGENT_SECRETS_URL"] != broker.URL {
