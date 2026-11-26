@@ -87,12 +87,15 @@ def go(module: Path, args: list, **env) -> str:
     """The output of a go command run in the module, so with its own toolchain, under
     go_environment() with `env` added (GOOS and GOARCH, for a listing of another platform): a
     caller's GOTOOLCHAIN=local with an older go first on PATH, or a caller's GOFLAGS, then changes
-    no set."""
+    no set. go_environment() drops setup-go's GOTOOLCHAIN=local too, so where go.work asks for a
+    newer go than the one installed, the first go command here downloads that toolchain, in the vet
+    steps and as ci_job_reads.py is imported. go's standard error therefore goes to this script's
+    as go writes it, so a download that stalls is named while it waits; standard output is kept."""
     result = subprocess.run(["go", *args], cwd=module, env={**go_environment(), **env},
-                            capture_output=True, text=True)
+                            stdout=subprocess.PIPE, text=True)
     if result.returncode != 0:
-        raise SystemExit(f"go_build_tags.py: in {module}, go {' '.join(args[:3])} ... failed: "
-                         f"{' '.join(result.stderr.split())[:500]}")
+        raise SystemExit(f"go_build_tags.py: in {module}, go {' '.join(args[:3])} ... exited "
+                         f"{result.returncode}; its standard error is above")
     return result.stdout
 
 

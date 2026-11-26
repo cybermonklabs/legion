@@ -437,17 +437,20 @@ class Session:
 
         GOTOOLCHAIN=auto satisfies a `go` directive above the installed go by fetching that
         toolchain into GOMODCACHE, so the empty cache below would make every go command fetch it
-        again and GOPROXY=off refuse: `toolchain not available`, and every closure unknown. CI
-        never sees it, since setup-go installs the pinned version itself, but a developer's or an
-        agent's machine on an older go does. So the toolchain is resolved once per module
-        directory, with this machine's own GOMODCACHE and GOPROXY, and its own binary runs every
-        go command below under GOTOOLCHAIN=local: the empty cache then holds modules alone, and a
-        module pinning a toolchain this machine cannot resolve fails saying which go it wants
-        rather than which download it could not make.
+        again and GOPROXY=off refuse: `toolchain not available`, and every closure unknown. A
+        developer's or an agent's machine on an older go sees that. CI sees it only where go.work
+        asks, by its go or toolchain line, for a newer go than setup-go installs, since
+        go_environment() drops setup-go's GOTOOLCHAIN=local too. So the toolchain is resolved once
+        per module directory, with this machine's own GOMODCACHE and GOPROXY, and its own binary
+        runs every go command below under GOTOOLCHAIN=local: the empty cache then holds modules
+        alone, and a module pinning a toolchain this machine cannot resolve fails saying which go
+        it wants rather than which download it could not make. go's standard error goes to this
+        check's as go writes it, so a download this command makes, and one that stalls, is named
+        in the log while it runs.
         """
         if workdir not in self.toolchains:
             root = subprocess.run([GO, "env", "GOROOT"], cwd=REPO / workdir, env=self.environment,
-                                  capture_output=True, text=True).stdout.strip()
+                                  stdout=subprocess.PIPE, text=True).stdout.strip()
             exe = Path(root) / "bin" / "go" if root else None
             self.toolchains[workdir] = str(exe) if exe and exe.is_file() else GO
         return self.toolchains[workdir]

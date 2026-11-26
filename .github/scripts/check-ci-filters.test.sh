@@ -63,7 +63,9 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# proxy is the stalled proxy a case below runs while it runs, which the trap stops if the run ends.
+proxy=""
+trap 'if [ -n "$proxy" ]; then kill "$proxy" 2>/dev/null; fi; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -3788,6 +3790,41 @@ check "fails" "$(is "$status" 1)"
 check "says there is no go on PATH" \
   "$(contains "$out" '^::error file=.github/scripts/check-ci-filters.sh::no go on PATH, so this check cannot list the closure of any go command')"
 
+# The engine's toolchain() asks go for the root of the toolchain go.work selects, under
+# go_environment() and this machine's own module cache and GOPROXY, and then runs every go
+# command with that toolchain under GOTOOLCHAIN=local. go_environment() drops setup-go's
+# GOTOOLCHAIN=local with the caller's Go variables, so where go.work asks for a go newer than the
+# one installed, by its go line or by its toolchain line, that `go env GOROOT` downloads the
+# toolchain, in the ci-filters job too, and a download that stalls must be named in the step's log
+# while it waits. The proxy here accepts every connection and answers none, as a stalled download
+# does; go1.999.0 is a version no module cache holds.
+echo "case: a toolchain download the check's go env GOROOT makes is on standard error while go waits"
+for what in toolchain go; do
+  root=$(fixture "asks-by-$what")
+  if [ "$what" = toolchain ]; then asked=$'go 1.21\ntoolchain go1.999.0'; else asked='go 1.999.0'; fi
+  printf '%s\n\nuse ./mod\n' "$asked" > "$root/go.work"
+  # Outside the fixture, whose files the check lists.
+  io=$work/asks-by-$what-io
+  mkdir -p "$io/modcache"
+  stalled_proxy "$io"
+  (GOPROXY="http://127.0.0.1:$port" GOMODCACHE="$io/modcache" \
+    exec "$root/.github/scripts/check-ci-filters.sh" >"$io/out" 2>"$io/err") &
+  checking=$!
+  # The wait ends on one of two facts: go has reached the proxy, which it does only once it has
+  # written its downloading line (cmd/go's modfetch.DownloadZip writes the line, then asks the
+  # proxy), or the check has ended without reaching it, so the line can no longer come while go
+  # waits. Reached, go waits on a proxy that never answers, so the check still runs.
+  await_file "$io/accepted" "$checking"
+  seen=$(grep -q '^go: downloading go1\.999\.0 (' "$io/err" && echo true || echo false)
+  running=$(kill -0 "$checking" 2>/dev/null && echo true || echo false)
+  kill "$proxy"
+  wait "$proxy" || true
+  proxy=""
+  wait "$checking" || true
+  check "go.work's $what line asks for go1.999.0: go reaches the proxy with its downloading line already on the check's standard error, while go waits" \
+    "$(is "$came/$seen/$running" file/true/true)"
+done
+
 echo "case: a claimed command that cds into another module of the workspace before it runs"
 root=$(fixture cd-other-module)
 mkdir -p "$root/mod2/cmd/app" "$root/mod2/lib"
@@ -4945,8 +4982,9 @@ check "prints every tag, then the set without probe, each as a whole -tags= flag
 # no set: before, a GOFLAGS go list refuses stopped the script.
 check "prints the same sets under a caller's GOFLAGS" \
   "$(is "$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)" "$sets")"
-# A go that fails fails the script, naming the go command: a go first on PATH that refuses. The
-# interpreter runs by its own path, since a version manager's python3 shim puts its own go first.
+# A go that fails fails the script, naming the go command, with go's own standard error above the
+# refusal, as go wrote it: a go first on PATH that refuses. The interpreter runs by its own path,
+# since a version manager's python3 shim puts its own go first.
 mkdir -p "$work/refusing-go"
 printf '#!/bin/sh\necho "this go refuses" >&2\nexit 1\n' > "$work/refusing-go/go"
 chmod +x "$work/refusing-go/go"
@@ -4954,8 +4992,35 @@ interpreter=$(python3 -I -c 'import sys; print(sys.executable)')
 status=0
 sets=$(cd "$root" && PATH="$work/refusing-go:$PATH" "$interpreter" .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
 check "and fails when go list fails" "$(is "$status" 1)"
-check "naming the go command and its error" \
-  "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed: this go refuses')"
+check "naming the go command and its exit, with go's own standard error above it" \
+  "$(is "$sets" $'this go refuses\ngo_build_tags.py: in mod, go tool dist list ... exited 1; its standard error is above')"
+
+# go_build_tags.py's go commands run under go_environment(), which drops setup-go's
+# GOTOOLCHAIN=local, so where go.work asks for a go newer than the one installed, its first go
+# command downloads that toolchain: in the vet steps, and in the changes and ci-filters jobs, where
+# ci_job_reads.py runs it as it is imported, before the engine's own `go env GOROOT`. A download
+# that stalls must be named in the log while it waits. The proxy accepts every connection and
+# answers none (stalled_proxy); go1.999.0 is a version no module cache holds.
+echo "case: a toolchain download go_build_tags.py's go makes is on standard error while go waits"
+root=$(fixture vet-tags-stalled)
+printf 'go 1.999.0\n\nuse ./mod\n' > "$root/go.work"
+io=$work/vet-tags-stalled-io
+mkdir -p "$io/modcache"
+stalled_proxy "$io"
+(cd "$root" && GOPROXY="http://127.0.0.1:$port" GOMODCACHE="$io/modcache" \
+  exec "$interpreter" .github/scripts/go_build_tags.py mod darwin arm64 >"$io/out" 2>"$io/err") &
+listing=$!
+# The wait ends on go reaching the proxy, which it does only after it has written its downloading
+# line, or on the script's end without it, after which the line can no longer come while go waits.
+await_file "$io/accepted" "$listing"
+seen=$(grep -q '^go: downloading go1\.999\.0 (' "$io/err" && echo true || echo false)
+running=$(kill -0 "$listing" 2>/dev/null && echo true || echo false)
+kill "$proxy"
+wait "$proxy" || true
+proxy=""
+wait "$listing" || true
+check "go reaches the proxy with its downloading line already on the script's standard error, while go waits" \
+  "$(is "$came/$seen/$running" file/true/true)"
 
 # odatrace is the one name go_build_tags.py leaves out of every vet that the toolchain does not
 # set or that marks a file no build compiles: only forced-order.sh's build passes it, against a
