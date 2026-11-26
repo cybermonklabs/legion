@@ -1367,14 +1367,23 @@ func (e *Engine) taskStepRuns(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // fixWayOf is the way fix's end takes (R7a's three ways) on a task of steps steps, and the place
-// of the step the task returns to for the first two. The first: the fix failed, or a step beside
-// it failed to a step other than the fix's, so the task returns to the earliest such step, or,
-// where the fix made new commits (its end is not its start), to the step after the fix where that
-// is earlier. The second: the fix made new commits or got a failed step's report, so the steps
-// after it run again. The third, in each other case, and where no step comes after the fix's:
-// each step keeps its result.
-func fixWayOf(fix record.TaskFix, steps int) (way, place int) {
-	next, madeCommits := fix.Place+1, fix.EndHead != fix.Head
+// of the step the task returns to for the first two. taskHead is the head of the task's branch
+// when the way is taken, "" where the record holds none.
+//
+// The commits the way counts are the task's, not the fix's own: a head that is not the one the
+// fix's check failed at carries work the steps after the fix have not seen, whether the fix pushed
+// it or anyone else did while the fix ran. Where the record holds no head, the fix's own end
+// answers for it. The first way: the fix failed, or a step beside it failed to a step other than
+// the fix's, so the task returns to the earliest such step, or, where the branch holds new
+// commits, to the step after the fix where that is earlier. The second: the branch holds new
+// commits, or the fix got a failed step's report, so the steps after it run again. The third, in
+// each other case, and where no step comes after the fix's: each step keeps its result.
+func fixWayOf(fix record.TaskFix, steps int, taskHead string) (way, place int) {
+	head := taskHead
+	if head == "" {
+		head = fix.EndHead
+	}
+	next, madeCommits := fix.Place+1, head != fix.Head
 	switch {
 	case fix.Failed || fix.ReturnTo > 0:
 		place = fix.ReturnTo
@@ -1411,7 +1420,12 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if runs, err := e.taskStepRuns(ctx, tx, issue, w); err != nil || runs {
 		return err
 	}
-	way, place := fixWayOf(*fix, len(w.Steps))
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	_, head := taskHead(pr)
+	way, place := fixWayOf(*fix, len(w.Steps), head)
 	if !e.noWayKept {
 		fix.Way = way
 		if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
@@ -1423,15 +1437,12 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 			return err
 		}
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
-		return err
-	}
 	// The head the started step's working copy moves to is the fix's own end where it made commits:
 	// its completion reports the commit it pushed, and it reaches the engine before the synchronize
-	// of that push may have moved the record's head.
-	_, moveTo := taskHead(pr)
-	if fix.EndHead != "" && fix.EndHead != fix.Head && !e.wayFromRecordedHead {
+	// of that push may have moved the record's head. Where the record's head is further on, it is
+	// that head, which holds the fix's commits and every commit pushed after them.
+	moveTo := head
+	if fix.EndHead != "" && fix.EndHead != fix.Head && head == fix.Head && !e.wayFromRecordedHead {
 		moveTo = fix.EndHead
 	}
 	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
