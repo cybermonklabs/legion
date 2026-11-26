@@ -27,8 +27,12 @@ const (
 	GitPhaseGit    = "git"
 )
 
-// gitFetchBatch is how many commits one fetch asks the remote for at most.
-const gitFetchBatch = 40
+// gitFetchBatch is how many commits, or pull requests' head refs, one fetch asks the remote for at
+// most, and gitListBatch how many head refs one git ls-remote asks it for.
+const (
+	gitFetchBatch = 40
+	gitListBatch  = 200
+)
 
 // GitConfig is one collection of git's reading of a repository's pull requests into a window
 // (CollectGit).
@@ -123,11 +127,13 @@ type GitCollected struct {
 // The git phase reads no GitHub API. It clones the repository once, where cfg.Clones holds no
 // clone of it, as git clone --filter=blob:none --no-checkout --bare of cfg.Branch alone, from
 // https://github.com/<owner>/<name>.git with the credential the environment's git credential
-// helper gives, which it reads, prints and stores none of; it fetches each commit it needs that
-// the clone lacks (GIT_NO_LAZY_FETCH=1 git cat-file --batch-check), in batches of up to
-// gitFetchBatch, then each still lacking alone. It writes, for each commit of cfg.Branch the
-// merges file holds and each base commit a read names, the paths it changes, and for each head its
-// tip, merge base, paths and verdicts (GitHead). Every git command runs alone under the memory
+// helper gives, which it reads, prints and stores none of. It fetches each commit it needs that the
+// clone lacks (GIT_NO_LAZY_FETCH=1 git cat-file --batch-check): first the head ref of each pull
+// request whose heads the clone lacks, where the remote holds one, then each commit still lacking,
+// each into a ref of the clone's so a later fetch sends nothing twice (ensure). It writes, for each
+// commit of cfg.Branch the merges file holds and each base commit a read names, the paths it
+// changes, and for each head its tip, merge base, paths and verdicts (GitHead), each read once in
+// the run however many pull requests hold the head. Every git command runs alone under the memory
 // guard (gitGuard, cfg.MemoryCap) and its time; a command git fails, or the guard kills, is a
 // missing input, and the run goes on.
 //
@@ -315,7 +321,8 @@ type gitCollector struct {
 
 	cur, old  GitInput
 	holdsFile bool
-	// The old file's readings by what each rests on, and each head a missing input of git's names.
+	// The readings the old file holds and those the run read, by what each rests on, and each head a
+	// missing input of git's names.
 	mergeBases map[commitPair]string
 	headPaths  map[commitPair][]string
 	verdicts   map[commitPair]GitVerdict
@@ -667,6 +674,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 			objects = append(objects, sha)
 		}
 	}
+	heads := make(map[int][]string)
 	for _, pull := range c.cur.Pulls {
 		if _, known := tips[pull.Number]; !known {
 			objects = append(objects, pull.Merge)
@@ -674,6 +682,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 		for _, h := range pull.Heads {
 			if _, held := whole(pull.Number, h.SHA); !held {
 				objects = append(objects, h.SHA)
+				heads[pull.Number] = append(heads[pull.Number], h.SHA)
 			}
 		}
 	}
@@ -686,7 +695,7 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 		if clone, err = c.openClone(ctx, clones); err != nil {
 			return err
 		}
-		if unreachable, err = clone.ensure(ctx, objects); err != nil {
+		if unreachable, err = clone.ensure(ctx, objects, heads); err != nil {
 			return fmt.Errorf("replay: collect-git: %w", err)
 		}
 	}
@@ -774,9 +783,10 @@ func (c *gitCollector) git(ctx context.Context, clones string) error {
 
 // readHead reads h, a head of the pull request pr, against tip with git: its merge base, the paths
 // it changes since, and its verdict at each commit of the merges file on its tip's first-parent
-// chain after its merge base whose paths (commitPaths) share one of its own, each the file holds
-// rather than read again. A merge base, paths or chain git does not give leave h unread; a verdict
-// git does not give ends its verdicts. It is the missing inputs of what git did not give.
+// chain after its merge base whose paths (commitPaths) share one of its own, each the file holds or
+// the run read already rather than read again, and each it reads kept for the run's other heads. A
+// merge base, paths or chain git does not give leave h unread; a verdict git does not give ends its
+// verdicts. It is the missing inputs of what git did not give.
 func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h *GitHead, tip string, commitPaths map[string][]string) []GitMissing {
 	failed := func(run guardedRun, timeout time.Duration, base, what string) []GitMissing {
 		return []GitMissing{c.missingOf(gitFailure{run, timeout, what}, pr, h.SHA, base, GitError)}
@@ -787,6 +797,7 @@ func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h 
 		if mergeBase = strings.TrimSpace(string(run.stdout)); !run.ok() || !commitSHA.MatchString(mergeBase) {
 			return failed(run, gitOtherTime, tip, "git merge-base of the head and its tip")
 		}
+		c.mergeBases[commitPair{h.SHA, tip}] = mergeBase
 	}
 	paths, held := c.headPaths[commitPair{mergeBase, h.SHA}]
 	if !held {
@@ -794,6 +805,7 @@ func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h 
 		if paths, held = gitPaths(run); !held {
 			return failed(run, gitOtherTime, mergeBase, "git diff of the head since its merge base")
 		}
+		c.headPaths[commitPair{mergeBase, h.SHA}] = paths
 	}
 	run := clone.git(ctx, gitOtherTime, nil, false, "rev-list", "--first-parent", "--reverse", tip, "^"+h.SHA)
 	chain := strings.Fields(string(run.stdout))
@@ -814,6 +826,7 @@ func (c *gitCollector) readHead(ctx context.Context, clone *gitClone, pr int, h 
 				missing = failed(run, gitMergeTime, base, "git merge-tree of the base and the head")
 				break
 			}
+			c.verdicts[commitPair{h.SHA, base}] = verdict
 		}
 		verdicts = append(verdicts, verdict)
 	}
@@ -1053,38 +1066,120 @@ func (r *gitClone) run(ctx context.Context, dir string, timeout time.Duration, s
 	return r.guard.run(ctx, cmd, timeout)
 }
 
-// ensure has the clone hold each commit of shas, fetching each it lacks (present) in batches of up
-// to gitFetchBatch, then each still lacking alone, and is each commit it still lacks, with the
-// fetch of it alone that failed. A check of what the clone holds that fails fails the run.
-func (r *gitClone) ensure(ctx context.Context, shas []string) (map[string]gitFailure, error) {
+// ensure has the clone hold each commit of shas, fetching each it lacks (present): first the head
+// ref of each pull request of heads, each pull request's heads by its number, that holds a head
+// the clone lacks (fetchPulls); then each commit still lacking, in batches of up to gitFetchBatch
+// (fetchCommits). Each fetch writes a ref of what it fetched, so each later fetch tells the remote
+// the clone holds it, and the remote sends no commit or tree twice. It is each commit the clone
+// still lacks, with the fetch of it alone that failed. A check of what the clone holds that fails
+// fails the run.
+func (r *gitClone) ensure(ctx context.Context, shas []string, heads map[int][]string) (map[string]gitFailure, error) {
 	held, err := r.present(ctx, shas)
 	if err != nil {
 		return nil, err
 	}
 	lacking := slices.DeleteFunc(slices.Clone(shas), func(sha string) bool { return held[sha] })
-	failures := make(map[string]gitFailure)
-	fetch := []string{"fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin"}
-	for start := 0; start < len(lacking); start += gitFetchBatch {
-		batch := lacking[start:min(start+gitFetchBatch, len(lacking))]
-		r.git(ctx, gitBranchTime, nil, false, append(slices.Clone(fetch), batch...)...)
-		if held, err = r.present(ctx, batch); err != nil {
+	var numbers []int
+	for number, its := range heads {
+		if slices.ContainsFunc(its, func(sha string) bool { return !held[sha] }) {
+			numbers = append(numbers, number)
+		}
+	}
+	slices.Sort(numbers)
+	if r.fetchPulls(ctx, numbers) {
+		if held, err = r.present(ctx, lacking); err != nil {
 			return nil, err
 		}
-		for _, sha := range batch {
-			if held[sha] {
-				continue
-			}
-			run := r.git(ctx, gitFetchTime, nil, false, append(slices.Clone(fetch), sha)...)
-			alone, err := r.present(ctx, []string{sha})
-			if err != nil {
-				return nil, err
-			}
-			if !alone[sha] {
-				failures[sha] = gitFailure{run, gitFetchTime, "git fetch of the commit alone"}
-			}
+		lacking = slices.DeleteFunc(lacking, func(sha string) bool { return held[sha] })
+	}
+	failures := make(map[string]gitFailure)
+	for start := 0; start < len(lacking); start += gitFetchBatch {
+		if err := r.fetchCommits(ctx, lacking[start:min(start+gitFetchBatch, len(lacking))], failures); err != nil {
+			return nil, err
 		}
 	}
 	return failures, nil
+}
+
+// fetchPulls fetches the head ref of each pull request of numbers the remote holds one of,
+// refs/pull/<n>/head, into refs/pulls/<n>, moved wherever it stood, in batches of up to
+// gitFetchBatch, and says whether it fetched any. It asks the remote first which of those refs it
+// holds (git ls-remote, gitListBatch at a time), so a pull request whose ref the remote does not
+// hold, as on a remote that holds no pull request's ref, fails no fetch. A list or a fetch that
+// fails leaves the commits to fetchCommits.
+func (r *gitClone) fetchPulls(ctx context.Context, numbers []int) bool {
+	ref := func(number int) string { return "refs/pull/" + strconv.Itoa(number) + "/head" }
+	var held []int
+	for start := 0; start < len(numbers); start += gitListBatch {
+		batch := numbers[start:min(start+gitListBatch, len(numbers))]
+		args := []string{"ls-remote", "origin"}
+		for _, number := range batch {
+			args = append(args, ref(number))
+		}
+		run := r.git(ctx, gitOtherTime, nil, false, args...)
+		if !run.ok() {
+			continue
+		}
+		listed := make(map[string]bool)
+		for line := range strings.Lines(string(run.stdout)) {
+			if sha, name, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok && commitSHA.MatchString(sha) {
+				listed[name] = true
+			}
+		}
+		for _, number := range batch {
+			if listed[ref(number)] {
+				held = append(held, number)
+			}
+		}
+	}
+	for start := 0; start < len(held); start += gitFetchBatch {
+		var refspecs []string
+		for _, number := range held[start:min(start+gitFetchBatch, len(held))] {
+			refspecs = append(refspecs, "+"+ref(number)+":refs/pulls/"+strconv.Itoa(number))
+		}
+		r.fetch(ctx, gitBranchTime, refspecs)
+	}
+	return len(held) > 0
+}
+
+// fetchCommits fetches each commit of batch into a ref of its own, refs/fetched/<sha>, and, where
+// the clone still lacks some of them, the two halves of those it lacks in turn, down to a commit
+// alone, since a fetch that names one commit the remote does not hold fetches nothing. Each commit
+// the clone still lacks once fetched alone is a failure of failures, with that fetch.
+func (r *gitClone) fetchCommits(ctx context.Context, batch []string, failures map[string]gitFailure) error {
+	timeout := gitBranchTime
+	if len(batch) == 1 {
+		timeout = gitFetchTime
+	}
+	refspecs := make([]string, len(batch))
+	for i, sha := range batch {
+		refspecs[i] = sha + ":refs/fetched/" + sha
+	}
+	run := r.fetch(ctx, timeout, refspecs)
+	held, err := r.present(ctx, batch)
+	if err != nil {
+		return err
+	}
+	lacking := slices.DeleteFunc(slices.Clone(batch), func(sha string) bool { return held[sha] })
+	if len(lacking) > 0 && len(batch) == 1 {
+		failures[batch[0]] = gitFailure{run, gitFetchTime, "git fetch of the commit alone"}
+		return nil
+	}
+	for _, half := range [][]string{lacking[:len(lacking)/2], lacking[len(lacking)/2:]} {
+		if len(half) == 0 {
+			continue
+		}
+		if err := r.fetchCommits(ctx, half, failures); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fetch runs git fetch of refspecs from the remote, with no tags and no blob, as the clone holds
+// none, under the guard and its time timeout.
+func (r *gitClone) fetch(ctx context.Context, timeout time.Duration, refspecs []string) guardedRun {
+	return r.git(ctx, timeout, nil, false, append([]string{"fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin"}, refspecs...)...)
 }
 
 // present is each commit of shas the clone holds, asked with lazy fetching off, so asking fetches

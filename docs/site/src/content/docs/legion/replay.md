@@ -478,9 +478,14 @@ A timeline page or event that does not read, a force push that names no commit a
 The git phase reads no GitHub API.
 It clones `--repo` once into `--clones`, as `git clone --filter=blob:none --no-checkout --bare` of `--branch` alone, from `https://github.com/<owner>/<name>.git`.
 Git takes the credential that your git credential helper gives, and `collect-git` never reads, prints or stores it.
-It tests which commits the clone holds with lazy fetching off (`GIT_NO_LAZY_FETCH=1 git cat-file --batch-check`), and fetches the commits that it lacks in batches of up to 40, then each that it still lacks alone.
+It tests which commits the clone holds with lazy fetching off (`GIT_NO_LAZY_FETCH=1 git cat-file --batch-check`), and fetches the commits that it lacks.
+It first asks the remote which of the pull requests whose heads the clone lacks have a head ref, `refs/pull/<n>/head` (`git ls-remote`, 200 refs at a time), and fetches each such ref into `refs/pulls/<n>`, 40 at a time.
+It then fetches each commit that it still lacks into a ref of its own, `refs/fetched/<sha>`, in batches of up to 40.
+A batch whose fetch does not bring all its commits splits in two, and each half is fetched in turn, down to a commit alone.
+These refs tell each later fetch which commits the clone holds, so the remote sends no commit or tree twice.
 A commit that the remote does not give is a `head-unreachable` or `base-unreachable` missing input.
 `git merge-tree` fetches the blobs that it needs as it merges.
+Git reads a head that several pull requests hold once: each merge base, each list of paths and each verdict that it gives serves every pull request that rests on it.
 
 Each git command runs alone, under a memory guard: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
 The guard also kills a command past its time: 180 seconds for the clone and for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.

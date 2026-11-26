@@ -477,8 +477,9 @@ func TestCollectGitWritesAPullRequestGitHubWillNotReadAsPullUnread(t *testing.T)
 // A run on a window whose git file collect-git wrote asks GitHub and git for nothing the file
 // holds: run again with the same clones, it sends GitHub no request, since the file holds both
 // pull requests with no missing input of GitHub's, and runs no git but what reaches for #13's head,
-// whose missing input names it: the check of the clone, the fetch of its batch, the check, the fetch
-// of it alone and the check. The file it leaves is the one the first run wrote, byte for byte.
+// whose missing input names it: the check of the clone, the ask of the remote for #13's head ref,
+// which it holds none of, the fetch of the head alone into a ref of its own and the check. The file
+// it leaves is the one the first run wrote, byte for byte.
 func TestCollectGitAgainAsksForNothingTheFileHolds(t *testing.T) {
 	t.Parallel()
 	c := newGitCase(t)
@@ -496,9 +497,10 @@ func TestCollectGitAgainAsksForNothingTheFileHolds(t *testing.T) {
 	if _, err := CollectGit(context.Background(), c.config(dir, clones, calls)); err != nil {
 		t.Fatalf("CollectGit again: %v", err)
 	}
-	fetch := []string{"fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin", unreachableHead}
+	list := []string{"ls-remote", "origin", "refs/pull/13/head"}
+	fetch := []string{"fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin", unreachableHead + ":refs/fetched/" + unreachableHead}
 	check := []string{"cat-file", "--batch-check"}
-	if got, want := calls.take(), [][]string{check, fetch, check, fetch, check}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+	if got, want := calls.take(), [][]string{check, list, fetch, check}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
 		t.Errorf("collect-git run again ran git %q, want only the reach for #13's head %q", got, want)
 	}
 	if got := c.seen.all()[requests:]; len(got) != 0 {
@@ -510,6 +512,203 @@ func TestCollectGitAgainAsksForNothingTheFileHolds(t *testing.T) {
 	}
 	if !bytes.Equal(first, again) {
 		t.Errorf("collect-git run again wrote\n%s\nwant the first run's\n%s", again, first)
+	}
+}
+
+// callsOf is each of calls that runs the git subcommand named, in order.
+func callsOf(calls [][]string, subcommand string) [][]string {
+	return slices.DeleteFunc(slices.Clone(calls), func(call []string) bool { return len(call) == 0 || call[0] != subcommand })
+}
+
+// cloneRefs is each ref the repository in dir holds (git show-ref), its commit by its name.
+func cloneRefs(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "show-ref").Output()
+	if err != nil {
+		t.Fatalf("git show-ref in %s: %v", dir, err)
+	}
+	refs := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if sha, name, ok := strings.Cut(line, " "); ok {
+			refs[name] = sha
+		}
+	}
+	return refs
+}
+
+// gitOnly is the case's config of the git phase alone into the window in dir, the clones in
+// clones, git's calls told to calls.
+func (c *gitCase) gitOnly(dir, clones string, calls *gitCalls) GitConfig {
+	config := c.config(dir, clones, calls)
+	config.Token, config.API, config.GitOnly = "", "", true
+	return config
+}
+
+// collect-git fetches each pull request's head ref before any commit of it: it asks the remote
+// which pull requests whose heads the clone lacks it holds refs/pull/<n>/head of (git ls-remote),
+// fetches each such ref into refs/pulls/<n> of the clone, and then fetches no commit that a ref
+// brought. Here the remote holds #12's head ref at p1b, so p1 and p1b come with it, and only p2, of
+// the force push, and #13's head, which the remote holds no ref and no commit of, are fetched as
+// commits; #13's head ref, which the remote does not hold, is never fetched. The file is the one a
+// run against a remote with no pull request's ref writes (gitCase). It fails where a commit the ref
+// brings is fetched by itself, where a ref the remote does not hold is fetched, or where the clone
+// keeps no ref of #12's head.
+func TestCollectGitFetchesAPullRequestsHeadRefBeforeItsCommits(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	c.remote.git("update-ref", "refs/pull/12/head", c.p1b)
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	calls := &gitCalls{}
+	if _, err := CollectGit(context.Background(), c.config(dir, clones, calls)); err != nil {
+		t.Fatalf("CollectGit: %v", err)
+	}
+	fetches := callsOf(calls.take(), "fetch")
+	pulled := false
+	for _, call := range fetches {
+		for _, arg := range call {
+			switch {
+			case arg == "+refs/pull/12/head:refs/pulls/12":
+				pulled = true
+			case strings.Contains(arg, c.p1) || strings.Contains(arg, c.p1b):
+				t.Errorf("collect-git fetched %q, which names a commit #12's head ref brings", call)
+			case strings.Contains(arg, "refs/pull/13/"):
+				t.Errorf("collect-git fetched %q, which names #13's head ref, which the remote does not hold", call)
+			}
+		}
+	}
+	if !pulled {
+		t.Errorf("collect-git fetched %q, want #12's head ref fetched as +refs/pull/12/head:refs/pulls/12", fetches)
+	}
+	if got := cloneRefs(t, filepath.Join(clones, "acme__widgets"))["refs/pulls/12"]; got != c.p1b {
+		t.Errorf("the clone holds refs/pulls/12 at %q, want p1b %s", got, c.p1b)
+	}
+	if got, want := gitFileLines(t, dir, fetchFailed), c.wantLines(true); !slices.Equal(got, want) {
+		t.Errorf("the git file holds%s\nwant%s", describeLines(got), describeLines(want))
+	}
+}
+
+// collect-git fetches each commit it lacks into a ref of its own, refs/fetched/<sha>, so each later
+// fetch tells the remote it holds the commit, and splits a batch whose fetch did not bring all its
+// commits into two halves, each fetched again, down to a commit alone. Here the git file alone
+// gives #13's heads: fifteen commits the remote holds, each off c1 on no branch, and
+// unreachableHead; the remote holds no pull request's ref. The fetch of the batch of sixteen fails
+// whole, as a fetch that names a commit the remote does not hold does; then at each of four
+// halvings the half that holds unreachableHead fails and the other half is fetched: nine fetches,
+// not the batch and then each of the sixteen alone. The clone keeps a ref of each of the fifteen,
+// each is read, and unreachableHead is the head-unreachable missing input of its fetch alone.
+func TestCollectGitKeepsARefOfEachCommitAndSplitsAFailingFetch(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	heads := []GitHead{{SHA: unreachableHead, At: c.window.From, From: GitHeadCommit}}
+	var reachable []string
+	for i := range 15 {
+		c.remote.git("checkout", "--quiet", "--detach", c.c1)
+		sha := c.remote.commit(fmt.Sprintf("head %d", i), map[string]string{"k.txt": fmt.Sprintf("k%d\n", i)})
+		reachable = append(reachable, sha)
+		heads = append(heads, GitHead{SHA: sha, At: c.window.From, From: GitHeadCommit})
+	}
+	c.remote.git("checkout", "--quiet", "main")
+	slices.SortFunc(heads, compareGitHeads)
+	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{{Number: 13, Base: "main", Heads: heads}}}}
+	dir, clones := c.windowDir(t), filepath.Join(t.TempDir(), "clones")
+	calls := &gitCalls{}
+	if _, err := CollectGit(context.Background(), c.gitOnly(dir, clones, calls)); err != nil {
+		t.Fatalf("CollectGit --git-only: %v", err)
+	}
+	fetches := callsOf(calls.take(), "fetch")
+	for _, call := range fetches {
+		for _, arg := range call[slices.Index(call, "origin")+1:] {
+			if sha, ref, _ := strings.Cut(arg, ":"); !commitSHA.MatchString(sha) || ref != "refs/fetched/"+sha {
+				t.Errorf("collect-git fetched %q, whose %q is no <sha>:refs/fetched/<sha>", call, arg)
+				break
+			}
+		}
+	}
+	if len(fetches) > 9 {
+		t.Errorf("collect-git ran %d fetches of #13's sixteen heads, want at most 9, the batch and two at each halving: %q", len(fetches), fetches)
+	}
+	refs := cloneRefs(t, filepath.Join(clones, "acme__widgets"))
+	for _, sha := range reachable {
+		if got := refs["refs/fetched/"+sha]; got != sha {
+			t.Errorf("the clone holds refs/fetched/%s at %q, want the commit", sha, got)
+		}
+	}
+	if got, held := refs["refs/fetched/"+unreachableHead]; held {
+		t.Errorf("the clone holds refs/fetched/%s at %s, a commit the remote does not hold", unreachableHead, got)
+	}
+	var missing []string
+	for _, line := range gitFileLines(t, dir, fetchFailed) {
+		if strings.HasPrefix(line, `{"kind":"missing"`) {
+			missing = append(missing, line)
+		}
+	}
+	want := []string{fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":"","reason":"head-unreachable","detail":"%s%s"}`, unreachableHead,
+		fetchFailed, gitDetailOfGit)}
+	if !slices.Equal(missing, want) {
+		t.Errorf("the git file holds the missing lines%s\nwant%s", describeLines(missing), describeLines(want))
+	}
+	read, err := ReadWindow(dir)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window collect-git wrote: %v", err)
+	}
+	pull, held := read.Git["acme/widgets"].Pull(13)
+	if !held || len(pull.Heads) != len(heads) {
+		t.Fatalf("the git file holds #13 as %+v (%v), want its %d heads", pull, held, len(heads))
+	}
+	for _, h := range pull.Heads {
+		if h.Read() == (h.SHA == unreachableHead) {
+			t.Errorf("the git file holds #13's head %s read %v, want each head read but unreachableHead", h.SHA, h.Read())
+		}
+	}
+}
+
+// collect-git asks git once for what a head two pull requests share rests on. Here the git file
+// alone gives #12 and #13 each the one head p1, neither merged in the window's inputs, so each reads
+// p1 against m6, the merges file's last commit: git gives p1's merge base with m6, its paths since
+// and its verdict at each base commit once, and the second pull request takes them, so both write
+// the same reading. It fails where git is asked again for what it gave the run.
+func TestCollectGitReadsAHeadTwoPullRequestsShareOnce(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	head := []GitHead{{SHA: c.p1, At: c.window.From, From: GitHeadCommit}}
+	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{{Number: 12, Base: "main", Heads: head}, {Number: 13, Base: "main", Heads: head}}}}
+	dir := c.windowDir(t)
+	calls := &gitCalls{}
+	if _, err := CollectGit(context.Background(), c.gitOnly(dir, filepath.Join(t.TempDir(), "clones"), calls)); err != nil {
+		t.Fatalf("CollectGit --git-only: %v", err)
+	}
+	ran := calls.take()
+	merges := make(map[string]int)
+	for _, call := range callsOf(ran, "merge-tree") {
+		merges[strings.Join(call, " ")]++
+	}
+	for call, n := range merges {
+		if n != 1 {
+			t.Errorf("git ran %q %d times, want once", call, n)
+		}
+	}
+	if bases, diffs := countCalls(ran, "merge-base"), countCalls(ran, "diff"); bases != 1 || diffs != 1 {
+		t.Errorf("git ran %d merge-bases and %d diffs, want one of each for p1: %q", bases, diffs, ran)
+	}
+	read, err := ReadWindow(dir)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window collect-git wrote: %v", err)
+	}
+	input := read.Git["acme/widgets"]
+	twelve, _ := input.Pull(12)
+	thirteen, _ := input.Pull(13)
+	if len(twelve.Heads) != 1 || len(thirteen.Heads) != 1 || len(input.Missing) != 0 {
+		t.Fatalf("the git file holds #12 as %+v, #13 as %+v and the missing inputs %+v, want one head of each and none missing", twelve, thirteen,
+			input.Missing)
+	}
+	a, errA := json.Marshal(twelve.Heads[0])
+	b, errB := json.Marshal(thirteen.Heads[0])
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	if h := twelve.Heads[0]; !h.Read() || len(h.Verdicts) != len(merges) || len(merges) == 0 || !bytes.Equal(a, b) {
+		t.Errorf("the git file holds p1 of #12 as %s and of #13 as %s, want the same reading, one verdict for each of git's %d merge-trees", a, b,
+			len(merges))
 	}
 }
 
