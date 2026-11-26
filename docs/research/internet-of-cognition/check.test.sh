@@ -249,7 +249,7 @@ fresh() {
 
 # not_landed_plant <dir> <line>; commits the fixture's one step of sources.json's landed list,
 # the page 'An execution record under the gen_ai. names', as not landed, for the condition
-# "needs a decision of the owner's" and two records, NOT_LANDED_RECORD, the owner's ruling,
+# "needs a decision of the owner's" and two records, NOT_LANDED_RECORD, the owner's decision,
 # and cybermonklabs/legion#4544, and writes <line> on that page in place of its Landed and
 # Proven by lines. It returns non-zero when either could not be planted.
 NOT_LANDED_RECORD='dispatch://INFRA-1484/ask/b426938b-404d-4044-8231-49e7147aba8f'
@@ -1752,7 +1752,7 @@ else
     printf 'SKIP the replay of a go row on a cold cache: go is missing\n'
 fi
 
-# 84-87 come from the eleventh review of the pull request and the architect's ruling on
+# 84-87 come from the eleventh review of the pull request and the architect's decision on
 # it, and the header of check.sh states each rule they hold: a run that cannot run ends
 # exit 2 and is never counted as failed assertions, a fixture runs in an environment of
 # its own, and nothing a killed run leaves is trusted. Each fault ended at 0fdbb24ddf in a
@@ -1929,7 +1929,7 @@ else
     printf 'SKIP the stamp of an environment a row installs into: uv, or an environment it builds here offline, is missing\n'
 fi
 
-# 88-89 come from the twelfth review of the pull request and the architect's rulings on it
+# 88-89 come from the twelfth review of the pull request and the architect's decisions on it
 # of 2026-11-15T22:45Z and 23:10Z, and the header of check.sh states each rule they hold:
 # the one parse of claims.jsonl, and the three endings, read in one way from each run's
 # ending record. Each fault ended at 9c82069807 in a mode that could not run, in a pass, or
@@ -2078,7 +2078,7 @@ out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no ending record, fails gate-cases" gate-cases \
     '^1 of 46 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
 
-# 90-92 come from the thirteenth review of the pull request and the architect's rulings on
+# 90-92 come from the thirteenth review of the pull request and the architect's decisions on
 # it of 2026-11-16T06:40Z and 07:08Z, and the header of check.sh states each rule they hold:
 # one ending record of each run, which every case and --self-test read the run by; env.sh
 # reading a value of a row from its evidence alone; and an id naming one row. Each fault
@@ -3462,7 +3462,7 @@ if case_read "$renew_case" "$out"; then
 fi
 
 # 119. A failed read of GitHub's REST API names what GitHub answered, and a refusal for
-# GitHub's rate limit is no verdict on the deliverable (the architect's ruling on the replay
+# GitHub's rate limit is no verdict on the deliverable (the architect's decision on the replay
 # at 882b668c). There the five rows that sent a dead token each failed with "'curl -sS
 # --fail-with-body -H @<file> https://api.github.com/<path>' exited 22" and nothing more,
 # since each hands GitHub's body to jq and the row's output holds only curl's own line, so
@@ -5134,7 +5134,7 @@ case_result "a project-code row whose repository's owner is mistyped fails --cit
     "$(fixture_run "$dir" --citations)"
 
 # 171. Each part of a symbol is read against its own file, and a part that names no file
-# against the file before it (the architect's ruling of round 46 on check.sh:5632). At
+# against the file before it (the architect's decision of round 46 on check.sh:5632). At
 # 2b46c850 resolve_symbol read only the last line a symbol names, after its last colon, and
 # held it to the first path of the citation's file field, so a symbol naming two files read
 # the second file's line in the first, and the first file's line not at all, as the live row
@@ -5203,7 +5203,7 @@ for form in mistyped honest; do
 done
 
 # 173. The deployment repository is an input of --replay, never a name in this tree (the
-# architect's ruling of round 46 on AGENTS.md's rule for this public repository: name
+# architect's decision of round 46 on AGENTS.md's rule for this public repository: name
 # neither the repository Legion is deployed from nor the company that runs it, and make a
 # value a live script needs a required input). At c7ba7ee3 check.sh, env.sh, sources.json
 # and the rows wrote that repository's owner and name; now IOC_DEPLOYMENT_REPO holds it as
@@ -5398,7 +5398,7 @@ else
 fi
 
 # 179. A tool the machine ends by a signal in the ending's other places is no verdict and
-# leaves no run without its record (the architect's ruling of round 47 on case 176: the
+# leaves no run without its record (the architect's decision of round 47 on case 176: the
 # rule holds in every shell the ending runs in, and a stop there writes the environment
 # ending through the one record). Case 176 reaches finish; the three places it does not
 # reach are run_ending's own write, check.test.sh's summary, which run_ending writes, and
@@ -6312,7 +6312,7 @@ for form in honest call scope; do
 done
 
 # 201. A file's name is read at or below the paths the citation names, and never anywhere else
-# in the tree (the architect's ruling of round 49 on the readings the grammar kept: a part
+# in the tree (the architect's decision of round 49 on the readings the grammar kept: a part
 # stands where the row cites it, not anywhere in the repository). At 1a24ac7d a part that is a
 # file's name passed when any path of the tree ended with it, so 'handoff.go' cited in the
 # directory skills passed citation-our-code on packages/daemon/internal/api/handoff.go, a file
@@ -6343,7 +6343,7 @@ for form in honest elsewhere; do
 done
 
 # 202. A path's glob is read as paths the commit holds, from the root or below a directory the
-# citation names, and never as a pattern over a file's text (the architect's ruling of round
+# citation names, and never as a pattern over a file's text (the architect's decision of round
 # 49). At 1a24ac7d a path holding `*` that named no path was read as an extended regular
 # expression over its file, so 'thermonuclear-deep-review/*', which names no path of the
 # fixture, passed citation-our-code in skills/legion-worker/references/pr-body.md, whose text
@@ -6375,7 +6375,7 @@ for form in honest text; do
 done
 
 # 203. A bare file's name is a file beside the paths the citation names or none, and only a
-# full path, holding `/`, is read from the root of the tree (the architect's ruling of round
+# full path, holding `/`, is read from the root of the tree (the architect's decision of round
 # 49: a part stands where the row cites it). At 1a24ac7d symbol_file read any name, last, as
 # a path from the root, so 'NOTES.md:1' cited in skills/legion-worker/references/pr-body.md
 # read line 1 of the root's NOTES.md, a file beside no path the citation names, and passed
@@ -6568,7 +6568,7 @@ for form in honest paren bracket backslash; do
 done
 
 # 208. A part that begins with `[` and ends with `]` is a table head, and holds only on a line
-# that is that head, its inside read as a glob (the architect's ruling of round 50: `[tool.*]`
+# that is that head, its inside read as a glob (the architect's decision of round 50: `[tool.*]`
 # was a false pass). An author cites the tables under [tool] of a pyproject.toml as
 # `[tool.*]`; at aec374fe the part held `[`, so it was read as an extended regular
 # expression, a bracket expression that matches any line holding t, o, l, `.` or `*`, and it
@@ -6608,7 +6608,7 @@ done
 
 # 209. A table head with no glob in it holds only on a line that is that head, after spaces or
 # tabs and before spaces, tabs and a comment, and never as text inside a line (the
-# architect's ruling of round 50). At aec374fe `[project]` was a key path of form 5, read as
+# architect's decision of round 50). At aec374fe `[project]` was a key path of form 5, read as
 # text its file holds, so it passed in a file that writes `[project]` only in a comment. The
 # case commits pyproject.toml and writes the fixture's row f-our-1 as citing it with the
 # symbol '[project]' (symbol_plant) over a file holding the head [project], then the head
@@ -6842,7 +6842,7 @@ for form in glob regex glob-other; do
     esac
 done
 
-# 215. A namespace reading never holds a part that starts with a digit (the architect's ruling
+# 215. A namespace reading never holds a part that starts with a digit (the architect's decision
 # on review 6031558230: such a part is read by every reading of its form that reads it as a
 # file or as text its file holds, and a namespace reading reads it as neither). The namespace
 # reading of a qualified name holds where its file holds the local part and each component of
@@ -6924,7 +6924,7 @@ for form in field part field-other part-other; do
 done
 
 # 217. A part in words holding a colon is read by the readings of a prefixed name (6), which
-# can hold it and never fail it (the architect's ruling on review 6031558230, the class of case
+# can hold it and never fail it (the architect's decision on review 6031558230, the class of case
 # 212: no refusal runs before a reading that can hold the part). Form 2 reads such a part by 6,
 # else by 8, else not at all, but resolve_symbol failed it wherever the reading of 6 that
 # applied did not hold it, so at ef564aae `deploy: the replica count`, cited in a directory that
@@ -7068,7 +7068,7 @@ for form in text name other; do
 done
 
 # 221. A path part below a cited glob holding no `/` is read at any depth, as the glob itself is
-# (the architect's ruling: the rule above paths_at holds in every reading of a cited path).
+# (the architect's decision: the rule above paths_at holds in every reading of a cited path).
 # Form 7 read a path part below each directory or glob the citation names by paths_at over the
 # glob and the part joined, `pkg*/sub/tools`, which holds a `/` and so was read from the root
 # alone, while the glob `pkg*` names its paths at any depth, and 5c read a file's name below a
@@ -7508,7 +7508,7 @@ fi
 
 # 234. The comment on dispatch://INFRA-1098 records the gaps R8 found, each by the row
 # node-model.md's section "## 3. The gaps" cites for it, or, where that section cites none,
-# the judgement holds R8's sentence (the architect's ruling of 2026-11-25T02:09Z on item 6).
+# the judgement holds R8's sentence (the architect's decision of 2026-11-25T02:09Z on item 6).
 # At 3e1e50ce published-delivery passed any comment of INFRA-1098 that held the word
 # INFRA-3134, so each of the two ways the part can fail passed, exit 0: a comment naming
 # this issue that cites one of the fixture's two gap rows, and a node-model.md whose section
@@ -7599,7 +7599,7 @@ else
 fi
 
 # 238. The default branch carries every path under docs/research/internet-of-cognition/ the
-# judgement names, front page and pages (the architect's ruling of 2026-11-25T02:09Z). At
+# judgement names, front page and pages (the architect's decision of 2026-11-25T02:09Z). At
 # 3e1e50ce published-tree read seven fixed files and the files of the landed list and no path
 # of the judgement, so a page naming coordination/no-such-count.md, which the fixture's head
 # does not carry, passed, exit 0. The case plants --self-test's fault of published-tree
