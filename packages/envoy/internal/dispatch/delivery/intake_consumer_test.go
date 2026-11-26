@@ -515,12 +515,14 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 	}
 }
 
-// TestIntakeDrainsABacklogPublishedBeforeItBinds pins what the server does with events that
-// arrive while no subscriber is attached: the window between the durable being created and the
-// subscription attaching to it, and the whole time the process is down. The backlog is held
-// undelivered rather than pushed at an inbox nobody is reading, so one larger than
-// intakeMaxAckPending drains in full once the intake comes up, with nothing waiting on the ack
-// wait to be redelivered.
+// TestIntakeDrainsABacklogPublishedBeforeItBinds: a backlog published while no process is bound to
+// the durable, three times intakeMaxAckPending, drains in full once the intake comes up, every run
+// stored within the 60 s the test gives awaitRuns. That is under the 80 s ack wait the shrunk flow
+// control derives (intakeTuning.ackWait), so no run is stored by a redelivery after an ack wait.
+// A first intake makes the durable and stops before the backlog is published: the durable's first
+// bind starts at the stream's next message
+// (TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart), so what the stream held
+// before the durable existed is no backlog of the durable's.
 func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 	t.Parallel()
 	shrinkIntakeFlowControl(t)
@@ -538,6 +540,9 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 	})
 
 	natsClient := intakeTestClient(t)
+	stopFirst := runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	awaitBoundDurable(t, natsClient)
+	stopFirst()
 	for i := range backlog {
 		publishWorkflowEnvelope(t, natsClient, "acme", "widgets", settings.DeployWorkflowPath, int64(5000+i))
 	}
@@ -566,7 +571,7 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 	publisher := intakeTestClient(t)
 
 	holder := startIntakeProcess(t, pool, natsURL, nil)
-	held := awaitPushBound(t, publisher, "the first process did not bind the durable")
+	held := awaitPushBound(t, publisher, "", "the first process did not bind the durable")
 	startIntakeProcess(t, pool, natsURL, nil)
 	standingBy := "dispatch delivery: NATS consumer held by another process; standing by"
 	waitFor(t, 20*time.Second, func() bool {
@@ -584,7 +589,7 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 			t.Fatalf("standing by for a durable another process holds was logged as an error: %v", record)
 		}
 	}
-	if info := awaitPushBound(t, publisher, "the first process lost the durable to the standby"); info.Config.DeliverSubject != held.Config.DeliverSubject || !info.Created.Equal(held.Created) {
+	if info := awaitPushBound(t, publisher, "", "the first process lost the durable to the standby"); info.Config.DeliverSubject != held.Config.DeliverSubject || !info.Created.Equal(held.Created) {
 		t.Fatalf("the standby changed the durable the first process holds: deliver subject %s created %s, was %s %s",
 			info.Config.DeliverSubject, info.Created, held.Config.DeliverSubject, held.Created)
 	}
@@ -637,7 +642,7 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	// The intake starts only once the server reports the other process bound to the durable:
 	// that binding reaches the server a moment after Subscribe returns, and the branch under test
 	// is the one a bound durable takes.
-	awaitPushBound(t, holder, "the durable is not bound to the other process")
+	awaitPushBound(t, holder, "", "the durable is not bound to the other process")
 
 	startIntakeProcess(t, pool, natsURL, nil)
 	standingBy := "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go"
@@ -652,7 +657,7 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 		return fmt.Sprintf("the intake never said it was standing by for the bound durable: %v", logs())
 	})
 	time.Sleep(2 * durableBindInterval)
-	after := awaitPushBound(t, holder, "the other process lost its binding to the durable")
+	after := awaitPushBound(t, holder, "", "the other process lost its binding to the durable")
 	if !slices.Equal(after.Config.FilterSubjects, legacy.FilterSubjects) || after.Config.FilterSubject != "" {
 		t.Fatalf("the durable's filter is %q / %v, want the set it carried: %v",
 			after.Config.FilterSubject, after.Config.FilterSubjects, legacy.FilterSubjects)
@@ -742,25 +747,26 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	if held := <-ran; !held {
 		t.Fatalf("the other caller never held the %s lease, so the take-over was free", consumerLease(bus.DispatchDeliveryDurable))
 	}
-	takenOver := awaitPushBound(t, natsClient, "the intake did not take the durable over once the lease was free")
+	takenOver := awaitPushBound(t, natsClient, "", "the intake did not take the durable over once the lease was free")
 	if takenOver.Config.DeliverSubject == before.Config.DeliverSubject || takenOver.Config.MaxAckPending != intakeMaxAckPending || takenOver.Config.AckWait != tuningFor(t).ackWait() {
 		t.Fatalf("the take-over left deliver subject %s ack_wait %s max_ack_pending %d, want a fresh subject and %s/%d",
 			takenOver.Config.DeliverSubject, takenOver.Config.AckWait, takenOver.Config.MaxAckPending, tuningFor(t).ackWait(), intakeMaxAckPending)
 	}
 }
 
-// awaitPushBound waits for the server to report the durable push-bound and answers with the info
-// it read. A subscription's binding reaches the server a moment after Subscribe returns, so a
-// single ConsumerInfo straight after a bind reads a consumer that is about to be bound and fails
-// on it (CI run 39535772120); every other state this package asserts about a durable is waited
-// for the same way (awaitBoundDurable).
-func awaitPushBound(t *testing.T, client *bus.Client, failure string) *natsgo.ConsumerInfo {
+// awaitPushBound waits for the server to report the durable push-bound, to a deliver subject other
+// than notOn ("" for any), and answers with the info it read. A subscription's binding reaches the
+// server a moment after Subscribe returns, so a single ConsumerInfo straight after a bind reads a
+// consumer that is about to be bound and fails on it (CI run 39535772120); every other state this
+// package asserts about a durable is waited for the same way (awaitBoundDurable). notOn is how a
+// test waits for a take-over's new binding while the durable it replaces may still read bound.
+func awaitPushBound(t *testing.T, client *bus.Client, notOn, failure string) *natsgo.ConsumerInfo {
 	t.Helper()
 	var info *natsgo.ConsumerInfo
 	var err error
 	waitFor(t, 20*time.Second, func() bool {
 		info, err = client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound
+		return err == nil && info.PushBound && info.Config.DeliverSubject != notOn
 	}, func() string {
 		return fmt.Sprintf("%s: %+v, %v", failure, info, err)
 	})
@@ -788,6 +794,25 @@ var consumerGenerations = map[int]map[string]consumerGenerationRow{
 		bus.DispatchDeliveryDurable: {
 			filterSubject: "notifications.github.>",
 			deliverPolicy: natsgo.DeliverAllPolicy,
+			ackPolicy:     natsgo.AckExplicitPolicy,
+			ackWait:       5 * time.Minute,
+			maxAckPending: 4,
+		},
+		bus.DispatchJobDurable: {
+			filterSubject: "notifications.github.*.*.job.>",
+			deliverPolicy: natsgo.DeliverNewPolicy,
+			ackPolicy:     natsgo.AckExplicitPolicy,
+			ackWait:       30 * time.Second,
+			maxAckPending: 64,
+		},
+	},
+	// The events durable asks for new messages only, which a create with no start recorded makes
+	// an explicit start at the stream's next sequence (heldDurable.takeOver): its first bind in a
+	// deployment that never had it no longer hands it the stream's retained history.
+	2: {
+		bus.DispatchDeliveryDurable: {
+			filterSubject: "notifications.github.>",
+			deliverPolicy: natsgo.DeliverNewPolicy,
 			ackPolicy:     natsgo.AckExplicitPolicy,
 			ackWait:       5 * time.Minute,
 			maxAckPending: 4,

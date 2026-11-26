@@ -175,6 +175,7 @@ func wire(t *testing.T, manifest any) any {
 // wrong type, and a value outside an enum. Without these, a clean walk of the real manifests
 // would prove nothing.
 func TestSchemaWalkFindsUnknownFieldsAndWrongTypes(t *testing.T) {
+	t.Parallel()
 	schema := sandboxSchema(t)
 	for name, tc := range map[string]struct {
 		manifest string

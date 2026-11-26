@@ -226,8 +226,8 @@ func (t *bindThrottle) reportStandby(logger *slog.Logger, name, message string) 
 //     only then (finalizeHandBacks); a hold lost meanwhile severs that connection instead
 //     (severHandBacks).
 //
-// The run loop owns hold, recorded and subject; mu guards delivering, which StopDelivering reads
-// from any goroutine.
+// The run loop owns hold, recorded, subject and resumeAt; mu guards delivering, which
+// StopDelivering reads from any goroutine.
 type heldDurable struct {
 	nats   *bus.Client
 	leases intakeLeases
@@ -262,6 +262,11 @@ type heldDurable struct {
 	recorded intakeHoldToken
 	// subject is the deliver subject this intake delivers at, and empty while it delivers nothing.
 	subject string
+	// resumeAt is the stream sequence the durable this intake bound is created again at if it is
+	// lost outside a take-over (check): the start it was created at, and then the sequence after
+	// the ack floor each check reads of it (bus.AckFloor). 0 is no start known, while this intake
+	// has bound nothing or created the durable with none.
+	resumeAt uint64
 	// boundHook, when not nil, runs once a take-over has bound the durable, before the take-over
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
@@ -270,6 +275,11 @@ type heldDurable struct {
 	// outside tests, where its only cost is one comparison when run starts; worstPhasePoll
 	// (intake_takeover_lost_test.go) says why a row sets it.
 	bindEvery time.Duration
+	// attemptHook, when not nil, runs before each attempt run makes while this intake delivers
+	// nothing, whatever started it: the first, a poll, or the lapse timer. It is nil outside tests,
+	// where its only cost is one comparison per attempt; runNotingAttempts
+	// (intake_lapse_timer_test.go) sets it to note when each attempt is made.
+	attemptHook func()
 
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
@@ -298,14 +308,12 @@ const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops d
 // run delivers from the durable while this intake holds its hold, and stands by for it otherwise,
 // until ctx ends; then it stops delivering and releases the hold (stop), under the one stop
 // deadline armed at ctx's end (stopContext), so a take-over under way at that moment spends that
-// budget rather than starting one of its own. Each durableBindInterval while it delivers nothing,
-// and ready reports true, it tries for the hold and the durable (attempt), and again the moment a
-// hold an attempt found another process holding lapses, by the time that attempt's read left it;
-// each intakeHoldRenew while it delivers, it checks the durable still delivers to it (check); and
-// the moment its hold is lost it stops delivering. wake, when not nil, answers a channel the loop
-// waits on beside its tickers and takes again each time it fires -- the delivery intake's settings
-// cache storing settings, which is what makes its first attempt ready (Intake.Run).
-func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, ready func() bool) {
+// budget rather than starting one of its own. At once and each durableBindInterval while it
+// delivers nothing, it tries for the hold and the durable (attempt), and again the moment a hold
+// an attempt found another process holding lapses, by the time that attempt's read left it; each
+// intakeHoldRenew while it delivers, it checks the durable still delivers to it (check); and the
+// moment its hold is lost it stops delivering.
+func (d *heldDurable) run(ctx context.Context) {
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
@@ -332,7 +340,10 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	lapse.Stop()
 	defer lapse.Stop()
 	attempt := func() {
-		if d.subject == "" && ready() {
+		if d.subject == "" {
+			if d.attemptHook != nil {
+				d.attemptHook()
+			}
 			switch left := d.attempt(ctx); {
 			case left > 0:
 				lapse.Reset(left)
@@ -340,12 +351,6 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 				lapse.Stop()
 			}
 		}
-	}
-	// Taken before each attempt, which reads what the cache holds, so settings stored after that
-	// read wake the loop.
-	var changed <-chan struct{}
-	if wake != nil {
-		changed = wake()
 	}
 	attempt()
 	for {
@@ -357,9 +362,6 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 		select {
 		case <-ctx.Done():
 			return
-		case <-changed:
-			changed = wake()
-			attempt()
 		case <-binds.C:
 			attempt()
 		case <-lapse.C:
@@ -479,10 +481,30 @@ func (d *heldDurable) holds() bool {
 // deliver subject, so it stops delivering (check).
 const durableDeliversElsewhere = "dispatch delivery: the NATS consumer no longer delivers to this intake; it stops delivering"
 
+// durableLost is the line of an intake whose bound durable is gone, which the next take-over
+// creates again at start_seq (check), moved back to the first message the stream holds when it lies
+// past the stream's end (createStart): the sequence after the last ack floor the intake read, or
+// the start it was created at when no check had read one since. check runs only while this intake
+// delivers from a durable it created, and every create names a start of at least 1
+// (finishTakeOver sets resumeAt to it), so start_seq is never 0.
+const durableLost = "dispatch delivery: the NATS consumer this intake had bound is gone; the next take-over creates it again at start_seq"
+
 // check stops delivering when the durable no longer delivers to this intake's deliver subject:
 // something deleted it, or replaced it with one on another subject. The intake keeps its hold, and
 // its next attempt takes the durable over again, or waits for a process that binds without a
 // hold. A lookup that fails says nothing, and changes nothing.
+//
+// A durable that still delivers here gives check its ack floor (bus.AckFloor, takeOverStart's
+// floor rule), and the sequence after it is where the durable is created again if it is lost
+// (resumeAt). A durable that has been delivered nothing (deliveredNothing) teaches nothing beyond
+// the start it was created at, which resumeAt already holds. A durable that is gone was lost
+// outside a take-over, by a delete or a stream's loss: check says so at ERROR, in the one line it
+// writes for the loss, and records resumeAt as the start in the hold's token (recordLoss), so the
+// next take-over, this intake's or the next holder's, creates it there (takeOver, createStart),
+// moved back to the stream's first message if the stream's end now lies below it. Created at the
+// stream's next message instead, as a durable with no start recorded is, it would skip every
+// message unacknowledged at the loss and every one published before the new create, and no
+// reconcile pass writes the head rows those messages carry (intake.go's package comment).
 func (d *heldDurable) check(ctx context.Context) {
 	if d.subject == "" {
 		return
@@ -490,16 +512,34 @@ func (d *heldDurable) check(ctx context.Context) {
 	info, err := d.lookupDurable(ctx)
 	switch {
 	case errors.Is(err, natsgo.ErrConsumerNotFound):
+		d.recordLoss(ctx)
 	case err != nil:
 		return
 	case info.Config.DeliverSubject == d.subject:
+		if !deliveredNothing(info) {
+			d.resumeAt = bus.AckFloor(consumerPosition(info)) + 1
+		}
 		return
+	default:
+		d.tuning.log.Warn(durableDeliversElsewhere, "name", d.name)
 	}
-	d.tuning.log.Warn(durableDeliversElsewhere, "name", d.name)
 	// The durable's messages are the next holder's from here, so a handler still running after
 	// the renewal interval is given up rather than left to write what that holder writes too.
 	d.stopDeliveringWithin(intakeHoldRenew)
 	d.subject = ""
+}
+
+// recordLoss says at ERROR that the durable this intake had bound is gone, and records resumeAt as
+// the start in the hold's token, where the next take-over reads it (check). A token write that
+// fails is logged and leaves the start in this intake's own record, so its own next take-over
+// creates the durable there all the same; only another holder's would not.
+func (d *heldDurable) recordLoss(ctx context.Context) {
+	d.tuning.log.Error(durableLost, "name", d.name, "start_seq", d.resumeAt)
+	pending := intakeHoldToken{subject: d.recorded.subject, start: d.resumeAt}
+	if err := d.hold.SetToken(ctx, pending.String()); err != nil {
+		d.tuning.log.Error("dispatch delivery: record the lost NATS consumer's start", "name", d.name, "start_seq", d.resumeAt, "error", err)
+	}
+	d.recorded = pending
 }
 
 // stop is the end of run: it stops delivering under ctx, the run's stop deadline, and releases the

@@ -113,11 +113,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,
@@ -216,7 +212,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
@@ -1966,6 +1962,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           sendUserInput(turn.body, {
             ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
             tag: turn.messageId,
+            // The person's own turn, from outside the session: like a line typed at the terminal,
+            // it ends a cyber-policy hold the session is under (`PiApi.sendUserInput`'s `origin`).
+            origin: "outside",
           })
         )
         .then(
@@ -2441,10 +2440,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
             const injectionSessionID = sessionID;
             noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
             notedSessionIDs.add(injectionSessionID);
-            pi.sendUserMessage(
-              delivery.content,
-              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
-            );
+            pi.sendUserMessage(delivery.content, {
+              ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
+              // The person's own turn, from outside the session, as `runTypedInput` sends it.
+              origin: "outside",
+            });
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's
             // end, which stops that search (`endInjectedUserTurns`).

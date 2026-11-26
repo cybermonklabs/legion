@@ -83,6 +83,7 @@ func refusedWords(t *testing.T, row permissionRow, planted string) string {
 // make needs prints that permission, and nothing else of the store's message. Control: a
 // permission no call needs, in the same shape, prints as not named.
 func TestEachCallsRefusalNamesItsPermission(t *testing.T) {
+	t.Parallel()
 	planted := "hunter2pw-" + "permcall-" + "3a9e"
 	for _, row := range permissionRows {
 		t.Run(row.store+" "+row.permission, func(t *testing.T) {
@@ -112,6 +113,7 @@ func TestEachCallsRefusalNamesItsPermission(t *testing.T) {
 // change adds fails here until its permissions are listed and a row checks them. Control: the
 // walks found the calls they read (a count of zero is a walk that read nothing, and fails).
 func TestEveryCallTheFormsMakeHasItsPermissions(t *testing.T) {
+	t.Parallel()
 	awsCalls := 0
 	for _, api := range []reflect.Type{reflect.TypeFor[secretsAPI](), reflect.TypeFor[stsAPI]()} {
 		for i := range api.NumMethod() {

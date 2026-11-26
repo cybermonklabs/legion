@@ -336,7 +336,7 @@ From this directory:
 ```sh
 bun run test
 bun test extensions/envoy.test.ts -t "<name>"   # one test
-bunx tsc --noEmit
+bun run typecheck   # renders the Dispatch API types from the document first, then tsc --noEmit
 bun run lint
 bun run build
 ```

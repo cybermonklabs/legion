@@ -183,7 +183,7 @@ func TestAHolderThatRenewsBetweenAStandbysReadAndItsLapseTimerKeepsTheHold(t *te
 		t.Fatalf("the holder no longer holds its hold: its delivery is the one it bound with %t, its loss deadline %s, %s past the one before its renewal",
 			subscribedDelivery(holder.intake) == delivering, delivering.hold.Deadline(), delivering.hold.Deadline().Sub(deadline))
 	}
-	info := awaitPushBound(t, publisher, "the durable the holder holds is bound to nobody")
+	info := awaitPushBound(t, publisher, "", "the durable the holder holds is bound to nobody")
 	if info.Config.DeliverSubject != held.Config.DeliverSubject {
 		t.Fatalf("the durable delivers to %s, want the holder's subject %s", info.Config.DeliverSubject, held.Config.DeliverSubject)
 	}
@@ -444,34 +444,35 @@ func bindAsPreviousBuild(t *testing.T, client *bus.Client) {
 		t.Fatalf("bind the durable as a process of the build before holds: %v", err)
 	}
 	t.Cleanup(func() { _ = bound.Unsubscribe() })
-	awaitPushBound(t, client, "the durable is not bound to the process of the build before holds")
+	awaitPushBound(t, client, "", "the durable is not bound to the process of the build before holds")
 }
 
 // notedRun is one intake's run, started by the row, with the moment of each attempt it makes while
-// it delivers nothing noted: run asks ready before every such attempt, whatever started it -- the
-// first, a poll, the lapse timer, a settings wake (heldDurable.run) -- so a ready that notes the
-// moment and answers as Intake.Run's does notes them all.
+// it delivers nothing noted: run calls the intake's attemptHook before every such attempt, whatever
+// started it -- the first, a poll, the lapse timer (heldDurable.run) -- so a hook that notes the
+// moment notes them all.
 type notedRun struct {
 	mu   sync.Mutex
 	at   []time.Time
 	stop func()
 }
 
-// runNotingAttempts runs intake as Intake.Run does, noting its attempts, until the test ends or
-// its stop is called; the stop returns once the run has.
+// runNotingAttempts runs intake by Intake.Run, noting its attempts, until the test ends or its stop
+// is called; the stop returns once the run has. Its callers' intakes (newTakeOverProcess) route by a
+// settings cache that has made its first read (loadedSettingsCache), so Run starts its run at once.
 func runNotingAttempts(t *testing.T, intake *Intake) *notedRun {
 	t.Helper()
 	noted := &notedRun{}
+	intake.attemptHook = func() {
+		noted.mu.Lock()
+		noted.at = append(noted.at, time.Now())
+		noted.mu.Unlock()
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		intake.run(ctx, intake.settings.Changed, func() bool {
-			noted.mu.Lock()
-			noted.at = append(noted.at, time.Now())
-			noted.mu.Unlock()
-			return intake.ready()
-		})
+		intake.Run(ctx)
 	}()
 	noted.stop = sync.OnceFunc(func() {
 		cancel()
