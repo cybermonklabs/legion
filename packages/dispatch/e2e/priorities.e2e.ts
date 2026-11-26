@@ -3779,22 +3779,26 @@ async function holdTableWrites(cell: TableCell) {
 
 /** Answers each write of the field 503, with a second's Retry-After, until `stop` presses the
  *  shell's Stop trying for it: the write ends with no answer. Where `reaches` is set, the first
- *  try reaches the server, which takes it, and only its answer is lost. Set before she types. */
+ *  try reaches the server, which takes it, and only its answer is lost. Set before she types. A
+ *  try is counted (`tried`) once its 503 is sent: `stop` goes on, and unroutes, only then. An
+ *  unroute while a try's handler still waits on the server's answer hands that route on
+ *  (Playwright continues a route in flight whose handler is removed), and the handler's
+ *  `route.fulfill` then throws "Route is already handled!". */
 async function refuseTableWrites(cell: TableCell, reaches: boolean) {
   let first = true;
   let tried = 0;
   await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
     if (route.request().method() !== "PATCH") return route.fallback();
-    tried += 1;
     if (first && reaches) {
       first = false;
       await route.fetch();
     }
-    return route.fulfill({
+    await route.fulfill({
       headers: { "Retry-After": "1" },
       json: { code: "DATABASE_BUSY", error: "the database is too busy to take this request" },
       status: 503,
     });
+    tried += 1;
   });
   return {
     stop: async () => {
