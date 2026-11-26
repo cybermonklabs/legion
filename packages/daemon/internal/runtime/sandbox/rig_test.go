@@ -489,14 +489,15 @@ func (a action) String() string {
 // while it is Suspended it deletes the pod it owns — the two behaviours of v1.0.3's reconcilePod
 // the runtime depends on (sandbox_controller.go:1256-1287, 1380-1453).
 type rig struct {
-	t     *testing.T
-	ctx   context.Context
-	stop  context.CancelFunc
-	r     *Runtime
-	dyn   *dynamicfake.FakeDynamicClient
-	kube  *kubefake.Clientset
-	conns *fake.Conns
-	now   atomic.Pointer[time.Time]
+	t             *testing.T
+	ctx           context.Context
+	stop          context.CancelFunc
+	deadlineWaits bool
+	r             *Runtime
+	dyn           *dynamicfake.FakeDynamicClient
+	kube          *kubefake.Clientset
+	conns         *fake.Conns
+	now           atomic.Pointer[time.Time]
 	// store is the runtime's in-memory durable state, unless an option handed it another.
 	store *fakeStore
 
@@ -568,7 +569,19 @@ func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options
 // withTestBootTimeout keeps the named two-second rig bound for a test whose assertion is that a
 // launch gives up at its boot timeout. Other newRig calls take withWaitsToTheDeadline by default.
 func withTestBootTimeout() rigOption {
-	return withOptions(func(o *Options) { o.BootTimeout = testRigBootTimeout })
+	return func(g *rig, o *Options) {
+		g.deadlineWaits = false
+		o.BootTimeout = testRigBootTimeout
+	}
+}
+
+// withMeasuredBootTimeout is a finite timing assertion's own bound. Its rig must start even where
+// the binary has less than testwait's normal clean-failure margin left.
+func withMeasuredBootTimeout(bound time.Duration) rigOption {
+	return func(g *rig, o *Options) {
+		g.deadlineWaits = false
+		o.BootTimeout = bound
+	}
 }
 
 // withWaitsToTheDeadline sets the runtime's boot timeout to what is left of the test binary's
@@ -782,12 +795,11 @@ func (h *heldEvents) Stop() {
 	})
 }
 
-// newRig builds a runtime over its fakes. Its ordinary call context ends 30 s before the test
-// binary's deadline (testwait.Context), so waits that use it give up with the test's margin.
+// newRig builds a runtime over its fakes. An event-wait rig's ordinary call context ends 30 s
+// before the test binary's deadline (testwait.Context); a finite-timeout row takes a cancellable
+// context with no earlier deadline so it can assert its own bound.
 func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *rig {
 	t.Helper()
-	ctx, stop := context.WithCancel(testwait.Context(t))
-	t.Cleanup(stop)
 	var dynamicObjects []*unstructured.Unstructured
 	var kubeObjects []k8sruntime.Object
 	for _, object := range objects {
@@ -798,7 +810,7 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		}
 	}
 	g := &rig{
-		t: t, ctx: ctx, stop: stop, conns: fake.NewConns(),
+		t: t, deadlineWaits: true, conns: fake.NewConns(),
 		dyn: newDynamic(t, dynamicObjects...), kube: kubefake.NewClientset(kubeObjects...),
 	}
 	g.autoStart.Store(true)
@@ -823,6 +835,13 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		// finite BootTimeout through withTestBootTimeout or an option of their own.
 		withWaitsToTheDeadline()(g, &opts)
 	}
+	parent := context.Background()
+	if g.deadlineWaits {
+		parent = testwait.Context(t)
+	}
+	ctx, stop := context.WithCancel(parent)
+	t.Cleanup(stop)
+	g.ctx, g.stop = ctx, stop
 	g.store, _ = opts.Store.(*fakeStore)
 	g.opts = opts
 	var dyn dynamic.Interface = g.dyn
