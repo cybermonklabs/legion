@@ -26,6 +26,7 @@ var (
 	mutationFilter   = flag.String("hold-mutation-filter", "", "run only mutants whose site matches this regexp")
 	mutationParallel = flag.Int("hold-mutation-parallel", max(1, runtime.NumCPU()/2), "mutants run at once")
 	mutationDepth    = flag.Int("hold-mutation-depth", 2, "state-machine depth each mutant is explored to")
+	mutationDeeper   = flag.Int("hold-mutation-deeper", 0, "explore each mutant nothing caught again to this depth (0: no second pass)")
 )
 
 // The files whose transitions write state (rule 7 of the INFRA-3149 architect's
@@ -39,7 +40,10 @@ var stateRoots = map[string]bool{"d": true, "r": true, "w": true, "h": true, "q"
 
 type stateMutation struct {
 	ID, File, Func, Target, Kind, Replace string
-	Line, Start, End                      int
+	// Stmt is the changed statement's text, which with Func keys its
+	// written reason (survivorReasons) whatever line it moves to.
+	Stmt             string
+	Line, Start, End int
 }
 
 type mutationResult struct {
@@ -47,10 +51,25 @@ type mutationResult struct {
 	Outcome, Catcher string
 }
 
+// survivorReason is the written reason a mutant may survive: the one for its
+// kind of change and target, else the one for its statement.
+func survivorReason(m stateMutation) string {
+	if reason, ok := survivorReasons[reasonKey(m)]; ok {
+		return reason
+	}
+	return survivorReasons[m.Func+": "+m.Stmt]
+}
+
+func reasonKey(m stateMutation) string {
+	return m.Func + ": " + m.Stmt + " | " + m.Kind + " " + m.Target
+}
+
 // TestStateWriteMutations runs each mutant of a state write against the
 // state machine at -hold-mutation-depth (2 by default), the planted-oracle
-// controls and the D10 restore plant. A mutant is caught when any of them
-// fails; the table names the oracle or seed that failed.
+// controls and the D10 restore plant, and each mutant nothing caught again at
+// -hold-mutation-deeper. A mutant is caught when any of them fails; the table
+// names the oracle or seed that failed, and a mutant that survives both
+// passes must have a written reason (survivorReasons).
 func TestStateWriteMutations(t *testing.T) {
 	if *mutationOutput == "" {
 		t.Skip("set -hold-mutation-output to run the state-write mutations")
@@ -84,28 +103,70 @@ func TestStateWriteMutations(t *testing.T) {
 	defer os.RemoveAll(base)
 
 	results := make([]mutationResult, len(mutants))
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	for range *mutationParallel {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for index := range jobs {
-				results[index] = runStateMutation(pkg, base, mutants[index])
+	runAll := func(indices []int, depth int, record func(int, mutationResult)) {
+		jobs := make(chan int)
+		var wg sync.WaitGroup
+		for range *mutationParallel {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for index := range jobs {
+					record(index, runStateMutation(pkg, base, mutants[index], depth))
+				}
+			}()
+		}
+		for _, index := range indices {
+			jobs <- index
+		}
+		close(jobs)
+		wg.Wait()
+	}
+	all := make([]int, len(mutants))
+	for index := range all {
+		all[index] = index
+	}
+	runAll(all, *mutationDepth, func(index int, r mutationResult) { results[index] = r })
+	if *mutationDeeper > *mutationDepth {
+		var again []int
+		for index, r := range results {
+			if r.Outcome == "survived" || r.Outcome == "plant-only" {
+				again = append(again, index)
 			}
-		}()
+		}
+		fmt.Printf("deeper=%d again=%d\n", *mutationDeeper, len(again))
+		runAll(again, *mutationDeeper, func(index int, r mutationResult) {
+			if r.Outcome == "caught" {
+				r.Catcher = fmt.Sprintf("depth %d: %s", *mutationDeeper, r.Catcher)
+				results[index] = r
+			}
+		})
 	}
-	for index := range mutants {
-		jobs <- index
-	}
-	close(jobs)
-	wg.Wait()
 
 	counts := map[string]int{}
+	used := map[string]bool{}
 	for _, r := range results {
 		counts[r.Outcome]++
-		if r.Outcome != "caught" {
-			t.Logf("%s %s %s:%d %s %s: %s", r.Outcome, r.ID, r.File, r.Line, r.Kind, r.Target, r.Catcher)
+		if r.Outcome == "caught" {
+			continue
+		}
+		t.Logf("%s %s %s:%d %s %s: %s", r.Outcome, r.ID, r.File, r.Line, r.Kind, r.Target, r.Catcher)
+		if r.Outcome != "survived" && r.Outcome != "plant-only" {
+			continue
+		}
+		key := r.Func + ": " + r.Stmt
+		if _, ok := survivorReasons[reasonKey(r.stateMutation)]; ok {
+			key = reasonKey(r.stateMutation)
+		}
+		used[key] = true
+		if survivorReason(r.stateMutation) == "" {
+			t.Errorf("%s %s:%d %s %s of %q survived with no written reason (survivorReasons)", r.ID, r.File, r.Line, r.Func, r.Kind, r.Stmt)
+		}
+	}
+	if *mutationFilter == "" {
+		for key := range survivorReasons {
+			if !used[key] {
+				t.Errorf("survivorReasons[%q] names no surviving mutant: delete it", key)
+			}
 		}
 	}
 	fmt.Printf("mutants=%d caught=%d plant-only=%d survived=%d invalid=%d timeout=%d\n", len(results), counts["caught"], counts["plant-only"], counts["survived"], counts["invalid"], counts["timeout"])
@@ -130,7 +191,7 @@ var oracleFuncs = map[string]bool{
 	"execute": true, "fatalClose": true, "fatalCloseBad": true, "recoveryMutation": true,
 	"recoveryAuthorized": true, "appliedInput": true, "attemptBoundBad": true, "settleOne": true,
 	"settleBad": true, "checkServed": true, "checkCommit": true, "Check": true,
-	"creditedOpen": true, "creditPromptOpen": true, "bootMemoryBad": true,
+	"creditedOpen": true, "creditPromptOpen": true, "bootMemoryBad": true, "launchCauses": true,
 }
 
 func collectStateMutations(pkg string) ([]stateMutation, int, error) {
@@ -171,6 +232,7 @@ func collectStateMutations(pkg string) ([]stateMutation, int, error) {
 			}
 			all = append(all, stateMutation{
 				File: name, Func: fn, Target: target, Kind: kind, Replace: replace,
+				Stmt: strings.Join(strings.Fields(text(n)), " "),
 				Line: fset.Position(n.Pos()).Line, Start: start, End: fset.Position(n.End()).Offset,
 			})
 		}
@@ -342,7 +404,7 @@ var maskPattern = regexp.MustCompile(`invariant mask (\d+)`)
 var witnessPattern = regexp.MustCompile(`model_test\.go:\d+: ([A-Za-z0-9-]+): `)
 var plantPattern = regexp.MustCompile(`missed (?:plant|scheduler plant) ?([A-Za-z0-9-]*)`)
 
-func runStateMutation(pkg, base string, m stateMutation) mutationResult {
+func runStateMutation(pkg, base string, m stateMutation, depth int) mutationResult {
 	result := mutationResult{stateMutation: m}
 	dir, err := os.MkdirTemp(base, m.ID+"-")
 	if err != nil {
@@ -374,7 +436,7 @@ func runStateMutation(pkg, base string, m stateMutation) mutationResult {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-vet=off", "-overlay", overlay,
 		"-run", "^(TestTheHoldStateMachine|TestPlants|TestCleanRestartSendPlant)$",
-		"./internal/supervise/holdmodel", "-hold-depth="+strconv.Itoa(*mutationDepth))
+		"./internal/supervise/holdmodel", "-hold-depth="+strconv.Itoa(depth))
 	cmd.Dir = filepath.Clean(filepath.Join(pkg, "..", "..", ".."))
 	out, err := cmd.CombinedOutput()
 	switch {
@@ -451,12 +513,23 @@ func mutationCatcher(out string) (names string, byOracle bool) {
 func writeMutationTable(path string, results []mutationResult, excluded int) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Hold-model state-write mutations at depth %d\n\n", *mutationDepth)
-	b.WriteString("Each row changes one place a transition writes state in `step.go`, `prompt.go`, `suspension.go`, `transaction.go` or `enabled.go`, or the timer selection in `enabled.go` and `state.go`'s `armed`. A mutant is caught when the depth-2 search, a named seed or a planted-oracle control fails; `plant-only` means only a planted control went blind.\n\n")
+	fmt.Fprintf(&b, "Each row changes one place a transition writes state in `step.go`, `prompt.go`, `suspension.go`, `transaction.go` or `enabled.go`, or the timer selection in `enabled.go` and `state.go`'s `armed`. A mutant is caught when the depth-%d search, a named seed or a planted-oracle control fails", *mutationDepth)
+	if *mutationDeeper > *mutationDepth {
+		fmt.Fprintf(&b, ", or, for a mutant nothing caught there, the same at depth %d (`depth %d:` in the last column)", *mutationDeeper, *mutationDeeper)
+	}
+	b.WriteString("; `plant-only` means only a planted control went blind. The last column of a row nothing caught is the written reason it may survive (`survivorReasons`).\n\n")
 	fmt.Fprintf(&b, "%d further sites are test-only plant doors (a body under `%s`, or a write of the plant-only `World.FatalStuck`) and are not mutated.\n\n", excluded, "d.store != nil`, `d.load != nil`, `d.badFatalClose`, `d.skipFatalApply`, `d.intentDropsPause`, `d.forceFatalFailure`, `d.W.FatalStuck && d.H.FatalPending")
-	b.WriteString("| ID | Place | Write | Mutant | Result | Caught by |\n| --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| ID | Place | Write | Mutant | Result | Caught by, or why it may survive |\n| --- | --- | --- | --- | --- | --- |\n")
 	for _, r := range results {
+		last := r.Catcher
+		if r.Outcome == "survived" || r.Outcome == "plant-only" {
+			last = survivorReason(r.stateMutation)
+			if r.Catcher != "" {
+				last = r.Catcher + "; " + last
+			}
+		}
 		fmt.Fprintf(&b, "| %s | `%s:%d` %s | `%s` | %s | %s | %s |\n", r.ID, r.File, r.Line, r.Func,
-			strings.ReplaceAll(r.Target, "|", `\|`), r.Kind, r.Outcome, strings.ReplaceAll(r.Catcher, "|", `\|`))
+			strings.ReplaceAll(r.Target, "|", `\|`), r.Kind, r.Outcome, strings.ReplaceAll(last, "|", `\|`))
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

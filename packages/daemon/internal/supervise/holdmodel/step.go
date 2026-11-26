@@ -68,6 +68,23 @@ func execute(d decision) (State, Effects) {
 	if a := before.recordedDeadline(); a != 0 && d.Now > before.Now && d.Now > a {
 		d.H.Bad |= Late
 	}
+	// The driver's own reading of the task a receipt names. A receipt arrives
+	// before the step changes the deciding row; a restart that judges the
+	// redelivered item again reads the rebuilt row.
+	switch {
+	case d.Booted && d.H.FatalPending && d.W.Fatal.K != 0:
+		d.H.ReceiptL, d.H.ReceiptID = d.M.Task.L, d.M.Task.ID
+	case d.H.FatalReceived != before.H.FatalReceived:
+		d.H.ReceiptL, d.H.ReceiptID = before.M.Task.L, before.M.Task.ID
+	}
+	// Ids only grow, so no older prompt's answer reads as the current one's.
+	// A failure keeps the id its receipt named (fatalCloseBad judges that).
+	if l := d.S.Task.L; l != 0 && d.S.Phase != PhFailed {
+		if d.S.Task.ID < d.H.TopID[l] {
+			d.H.Bad |= I1
+		}
+		d.H.TopID[l] = max(d.H.TopID[l], d.S.Task.ID)
+	}
 	if fatalClose(before, d.State) {
 		if fatalCloseBad(before, d.State, d.Effects) {
 			d.H.Bad |= FatalClose

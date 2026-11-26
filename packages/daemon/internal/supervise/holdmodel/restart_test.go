@@ -46,12 +46,12 @@ func restartSeeds() []seed {
 	cs = append(cs, seed{"D12/nullable-pre-migration-row", legacy, "boot reconnect :doubt rec :unread prepare register w :single"})
 	add("earlier-id/prior-news", ack+"wait boot reconnect ok :single :served")
 	add("Q-first-on-restored-working", work+"boot new :doubt :kept")
-	add("streaming-confirms-restored-unconfirmed", wire+"boot reconnect stream :provisional")
+	add("streaming-confirms-restored-unconfirmed", wire+"boot reconnect stream :provisional :working")
 	add("unnamed-start-after-restore", wire+"boot reconnect foreign :provisional")
 	add("end-pause-leaves-H0-bound", waiting+"boot unpause :H0 :doubt reconnect rec :unread")
 	add("reboot-does-not-extend-bound", ack+"boot boot reconnect rec :unread")
 	add("accepted-fatal-crash-before-write", waiting+"fatal!3.1 drain :failed :kept")
-	add("fatal-no-task-durable-redelivery", "open fatalReport!3.1 drain failEffects :failed")
+	add("fatal-no-task-durable-redelivery", "open fatalReport!3.1 drain failEffects :failed :notified")
 	add("lost-queue-reply-adopt-meta", "open q!2.1 row :owed :kept")
 	add("lost-retirement-reply-no-resurrection", waiting+"ok!2.1 repair :served :H4")
 	add("wake-consumed-crash-before-commit", "foreign open row park wake!5.1 :H4o save :owed")
@@ -59,6 +59,6 @@ func restartSeeds() []seed {
 	add("stop-permanent-write-error", waiting+"bound!1.2 :H4o down save :H4o up save :H4 :owed")
 	add("stop-failed-precommit-crash", waiting+"bound!1.2 boot :H4o save :owed")
 	add("detached-alias-response", wire+"lost "+next+"ack1 start named1 no :alias end :unread")
-	add("lost-exact-success-before-boot", wire+"lost ok :single :served")
+	add("lost-exact-success-before-boot", wire+"lost ok :single :served :news1")
 	return cs
 }

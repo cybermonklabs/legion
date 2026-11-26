@@ -79,10 +79,29 @@ func TestPlants(t *testing.T) {
 				return r
 			}
 		}},
+		// I2's other half: the answer bound outlives the wait it bounded.
+		{"I2-answer-bound-outlives-wait", I2, "", 1, func(d *decision) {
+			d.store = func(s State, _ Write, r Row) Row {
+				if r.Hold.By != 0 && !r.waiting() && s.M.Hold.Answer != 0 {
+					r.Hold.Answer = s.M.Hold.Answer
+				}
+				return r
+			}
+		}},
 		{"I3-claim-only-stop", I3, "", 1, func(d *decision) {
 			d.store = func(_ State, k Write, r Row) Row {
 				if k == StopWrite {
 					r.Task = Task{}
+				}
+				return r
+			}
+		}},
+		// I1's id ledger: a take-back moves the task back to its first id,
+		// where an older prompt's answer would read as the current one's.
+		{"I1-take-back-reuses-id", I1, "", 1, func(d *decision) {
+			d.store = func(s State, _ Write, r Row) Row {
+				if r.Task.L != 0 && r.Task.L == s.M.Task.L && r.Task.ID > s.M.Task.ID && s.M.Task.ID > 1 {
+					r.Task.ID = 1
 				}
 				return r
 			}
@@ -162,6 +181,16 @@ func TestPlants(t *testing.T) {
 			d.store = func(_ State, k Write, r Row) Row {
 				if k == DeliveryWrite && r.Att[1].Stage == AtAcked {
 					r.Att[1].TurnBy = 0
+				}
+				return r
+			}
+		}},
+		// Attempt bound: the row's turn bound outlives the attempts an
+		// intent invalidated, so a turn timer would still take the task back.
+		{"turn-bound-outlives-attempts", AttemptBound, "", 1, func(d *decision) {
+			d.store = func(s State, k Write, r Row) Row {
+				if k == IntentWrite && !r.outstanding() {
+					r.TurnBy = s.M.TurnBy
 				}
 				return r
 			}

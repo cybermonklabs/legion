@@ -36,9 +36,9 @@ func proofSeeds() []seed {
 		add(o+"another-stop-over-waiting-pause/"+by, waiting+by+" :H2 error :H4 :kept")
 	}
 	add(o+"fatal-unprompted-report-over-hold", waiting+"fatalReport error :failed :kept")
-	cs = append(cs, seed{o + "resumable-root-exits-over-hold", Start(PhIdle, true), waiting + "exit error :H4 :kept"})
+	cs = append(cs, seed{o + "resumable-root-exits-over-hold", Start(PhIdle, true), waiting + "exit error :H4 :kept :byExit"})
 	add("TestIndepPauseEdges/late-stop-after-busy-unconfirmed", ack+"wait "+next+"busy1 probe open row :H2 ok :H4 :served")
-	add("TestIndepPauseEdges/prompted-fatal-error", waiting+"fatal :failed :kept")
+	add("TestIndepPauseEdges/prompted-fatal-error", waiting+"fatal :failed :kept :news1")
 	for _, group := range []string{"TestIndepPauseRestart/", "TestIndepCompareRestartOutcome/"} {
 		for _, a := range []struct{ n, p, x string }{{"provider", waiting, "error"}, {"no-turn", waiting, "no"}, {"waited-out", ack + "wait start open row end ", "no"}, {"late", waiting, "late"}, {"replayed", held + "end detach late reconnect ", "replay"}} {
 			add(group+a.n, a.p+a.x+"!1.1 :pending :noStop boot row :kept bound :H4 :owed")

@@ -89,7 +89,6 @@ func (d *decision) wire(k uint8) {
 			h.Bad |= Twice
 		}
 		h.Twice[q.L] = reason
-		h.Ledger[k] = reason
 	}
 	h.LastRoot[q.L] = k + 1
 	h.Admissions[q.L]++

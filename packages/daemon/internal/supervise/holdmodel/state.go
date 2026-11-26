@@ -230,7 +230,6 @@ type History struct {
 	// Per forwarded request, not just the latest reason per logical task.
 	// Certified records the decision that actually committed the retry.
 	Certified  [NA]Reason
-	Ledger     [NA]Reason
 	Recovering uint8 // bit per logical task, from boot until an authoritative decision
 	// Turned is a bit per request whose attempt a turn start confirmed the
 	// logical task through. The replacement oracle reads it, not Task.Conf.
@@ -242,7 +241,15 @@ type History struct {
 	FatalClosed   uint8    // receipt sequence the committed failure closed
 	FatalL        uint8    // logical task the received fatal named
 	FatalID       uint8    // delivery identity it named; fatal failure never takes it back
-	Bad           uint16
+	// ReceiptL and ReceiptID are the driver's own reading of the task a
+	// receipt named (execute): the deciding row's task when the item arrived,
+	// or the rebuilt row's at the restart that judges it again. The close is
+	// judged against them, never against the FatalL and FatalID it restores.
+	ReceiptL, ReceiptID uint8
+	// TopID is the driver's highest committed id of each logical task: a
+	// take-back moves a task to a new id, never back to one it held.
+	TopID [3]uint8
+	Bad   uint16
 }
 type State struct {
 	M, S                                        Row

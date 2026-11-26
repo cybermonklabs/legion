@@ -115,7 +115,7 @@ func (d *decision) stop() {
 		d.W.Attached = false
 		d.W.Agent, d.W.Dedupe = 0, 0
 		if i.Pause != 0 {
-			d.H.Need[i.Pause] |= reasons(r)
+			d.H.Need[i.Pause] |= launchCauses(r)
 		}
 		if d.input.Fault == CrashAfterRuntime && d.fault(CrashAfterRuntime) {
 			d.crash = true

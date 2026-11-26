@@ -159,6 +159,34 @@ func verdict(s State, v string) bool {
 		return s.W.Fatal.K == 0
 	case "proc":
 		return s.W.Proc
+	case "errRun1":
+		return r.ErrRun == 1
+	case "interrupted":
+		return r.Task.Interrupted
+	case "news1":
+		return r.News == 1 // the copy its own prompt carried (Delivery.Carried)
+	case "notified":
+		return !r.Notify && !s.S.Notify
+	case "working":
+		return r.Phase == PhWork
+	case "noWork":
+		return !r.compact() && r.Work != WkBusy
+	case "idle":
+		return r.Phase == PhIdle && !r.compact() && r.Work != WkBusy
+	case "ended":
+		return r.Phase == PhEnded
+	case "noLaunchCause":
+		return !r.Wake && !r.DeathCharged && !r.Relaunch
+	case "noRelaunch":
+		return !r.Wake && !r.Relaunch
+	case "byOp":
+		return r.SuspendedBy == SrcOperator
+	case "byExit":
+		return r.SuspendedBy == SrcExit
+	case "noAttempt":
+		return !r.outstanding()
+	case "noAgent":
+		return s.W.Agent == 0 // the replaced or ended process's turn is gone with it
 	case "rt1", "rt2", "rt3", "rt4", "rt5", "lostCost", "unmatched":
 		return s.H.Twice[1] == map[string]Reason{"rt1": OldSocket, "rt2": Overflow, "rt3": NoProcess, "rt4": Unapplied, "rt5": Expired, "lostCost": LostSend, "unmatched": Unmatched}[v]
 	default:

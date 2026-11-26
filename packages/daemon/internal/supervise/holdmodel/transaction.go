@@ -374,14 +374,25 @@ func recoveryAuthorized(before State, input Event, after State, fx Effects) bool
 // attemptBoundBad checks the deadline an acknowledgement arms for its own
 // prompt. A task may keep an earlier prompt's confirmation while a separate
 // resend waits for a turn, so this is intentionally per request. An open
-// attempt under a hold shares that hold's answer bound.
+// attempt under a hold shares that hold's answer bound. The row's turn bound
+// is the earliest bound of an open attempt: one left armed after its attempts
+// closed or were invalidated takes the task back for a prompt nobody awaits.
 func attemptBoundBad(s State) bool {
-	if s.H.FatalPending || s.W.Fatal.K != 0 {
-		return false // fatal evidence decides before an attempt can wait again
-	}
 	r := s.M
 	if s.P.Kind != 0 {
 		r = s.P.Want // a failed repair already computed and armed its bounds
+	}
+	var bound uint16
+	for _, a := range r.Att {
+		if a.open() {
+			bound = earlier(bound, a.TurnBy)
+		}
+	}
+	if r.TurnBy != bound {
+		return true
+	}
+	if s.H.FatalPending || s.W.Fatal.K != 0 {
+		return false // fatal evidence decides before an attempt can wait again
 	}
 	for k, a := range r.Att {
 		if !a.open() || a.L != r.Task.L {
@@ -470,7 +481,7 @@ func fatalCloseBad(before, after State, fx Effects) bool {
 	if !fatalClose(before, after) {
 		return false
 	}
-	l, id := after.H.FatalL, after.H.FatalID
+	l, id := after.H.ReceiptL, after.H.ReceiptID
 	if after.S.Phase != PhFailed || after.S.RecoverBy != 0 {
 		return true
 	}
@@ -501,9 +512,37 @@ func checkServed(r Row, h History) uint16 {
 	}
 	return 0
 }
+
+// launchCauses is the oracles' own reading of a row's launch causes (the
+// snapshot a pause's runtime stop takes, and the causes an intent must carry),
+// kept apart from the transitions' reasons so a defect there cannot hide.
+func launchCauses(r Row) uint8 {
+	var causes uint8
+	if r.Wake {
+		causes |= WakeLaunch
+	}
+	if r.Hold.Launch {
+		causes |= HeldLaunch
+	}
+	if r.DeathCharged {
+		causes |= DeathLaunch
+	}
+	if r.Relaunch {
+		causes |= RelaunchLaunch
+	}
+	if r.Task.L != 0 {
+		causes |= TaskLaunch
+	}
+	return causes
+}
 func checkCommit(s State, prev Row, p Pending) uint16 {
 	bad := checkServed(s.S, s.H)
 	if r := s.S; r.Hold.By != 0 && r.Intent.By == 0 && (r.Hold.due() == 0 || r.waiting() && r.Hold.Answer == 0) {
+		bad |= I2
+	}
+	// The answer bound lasts only while an answer is awaited: a stale one
+	// stops a claim whose wait has ended at a bound it no longer has.
+	if r := s.S; !r.waiting() && r.Hold.Answer != 0 {
 		bad |= I2
 	}
 	if l := prev.Task.L; l != 0 && s.S.Task.L != l {
@@ -528,7 +567,7 @@ func checkCommit(s State, prev Row, p Pending) uint16 {
 		}
 	}
 	if p.Kind == IntentWrite && s.S.Intent.Pause != 0 {
-		want := prev.Intent.Causes | reasons(prev)
+		want := prev.Intent.Causes | launchCauses(prev)
 		if p.Cause.K == KDeath {
 			want |= DeathLaunch
 		}
@@ -582,7 +621,7 @@ func Check(s State) uint16 {
 	r := s.M
 	repair := s.P.Kind != 0 || s.StopRetry || s.StopOwed || s.W.Fatal.K != 0
 	if r.Hold.By != 0 && !repair {
-		if r.Phase == PhIdle && !r.waiting() || r.Hold.due() <= s.Now || r.waiting() && r.Hold.Answer == 0 || !r.live() {
+		if r.Phase == PhIdle && !r.waiting() || r.Hold.due() <= s.Now || r.waiting() && r.Hold.Answer == 0 || !r.waiting() && r.Hold.Answer != 0 || !r.live() {
 			bad |= I2
 		}
 	}
