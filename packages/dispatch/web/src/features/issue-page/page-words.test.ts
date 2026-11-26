@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import type { Actor, AskResolution } from "../../api/types";
+import * as askBodyWords from "../ask-body/ask-body-words";
+import * as decisionCardWords from "../decision-card/decision-card-words";
 import { compiledBlockSchema } from "../doc/schema";
 import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
 import * as pageStructure from "./page-structure";
@@ -136,7 +138,7 @@ const UNASKED: readonly unknown[] = [
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
-  ...WORD_FILES.flatMap(({ module }) => module.default.unasked),
+  ...WORD_FILES.flatMap<unknown>(({ module }) => module.default.unasked),
 ];
 
 const ANSWERS: readonly unknown[] = [
@@ -384,8 +386,9 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the five controls are named in the order the row draws them, and none is called Tree", () => {
+test("the six controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
+    "Dashboard",
     "Conversation",
     "Spec",
     "Verification",
@@ -553,6 +556,17 @@ test("DECLARED_WORDS holds every declared word and no other", () => {
   // Verification is the filter's name, his word for what draws the checks (R2, the Design's
   // "The words"), and no longer a word the page holds back.
   expect(DECLARED_WORDS).toContain("verification");
+
+  // The ask body's list and the decision card's are taken in whole (R13): every word of each of
+  // their tables is a declared word, though Dashboard's part file splits a table between what the
+  // page draws on load and what it says only in answer to the reader's act.
+  const lists = [...Object.values(askBodyWords), ...Object.values(decisionCardWords)];
+  expect(
+    lists
+      .flatMap(phrasesOf)
+      .flatMap(wordsIn)
+      .filter((word) => !DECLARED_WORDS.includes(word))
+  ).toEqual([]);
 });
 
 // An internal word is how the model or the code spells a thing, not how a person says it: a
@@ -906,10 +920,11 @@ test("the join adds each file's keys after the table's own, nested as the table 
   });
 });
 
-// A part's file that the join does not read fails here. So does a part that has no file.
+// A part's file that the join does not read fails here. So does a part that has no file. The
+// open parts are lettered, and Dashboard's part (dispatch://INFRA-5702) is named.
 test("each open part of the page has its own words file, which the join reads", () => {
-  const letters = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z"];
-  const expected = letters.map((letter) => `page-words-${letter.toLowerCase()}.ts`);
+  const parts = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z", "Dashboard"];
+  const expected = parts.map((part) => `page-words-${part.toLowerCase()}.ts`);
   const read: readonly string[] = WORD_FILES.map(({ file }) => file);
   expect(read).toEqual(expected);
   const inDirectory = readdirSync(import.meta.dir).filter(

@@ -16,6 +16,12 @@ import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api
 import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
+import { useDrawerPage } from "../issue-page/drawer-page";
+import {
+  type MarginDrawer,
+  type MarginDrawerPage,
+  MarginSlotProvider,
+} from "../issue-page/margin-slot";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -583,10 +589,11 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
     const needsYou = await marginAskCard(unanchoredAsk.id, "needs-you");
     expect(await within(needsYou).findByText(unanchoredAsk.question)).toBeTruthy();
     expect(within(needsYou).getAllByRole("time")).toHaveLength(1);
-    expect(within(needsYou).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    // The answer box stands in place: no disclosure folds it.
+    expect(within(needsYou).getByLabelText("Your answer")).toBeInTheDocument();
     expect(
-      within(needsYou).getByText("Add a note or answer in your own words", { exact: true })
-    ).toBeTruthy();
+      within(needsYou).queryByText("Add a note or answer in your own words", { exact: true })
+    ).not.toBeInTheDocument();
     const shipOption = await within(needsYou).findByRole("radio", { name: "Ship" });
     await user.click(shipOption);
     expect((shipOption as HTMLInputElement).checked).toBe(true);
@@ -2564,5 +2571,171 @@ test("Margin restores edit controls and the draft when an owner save rejects", a
     commentBlocks.mockRestore();
     getInbox.mockRestore();
     listArtifactAsks.mockRestore();
+  }
+});
+
+/**
+ * The new page with Details beside it: the drawer held as `app.tsx` holds it, closed on the load;
+ * the page's root, which hands the drawer its words (`PageBesideDetailsRoot`); a field the reader
+ * writes in, where F2 opens Details as a key of the page can while the reader writes; a view
+ * control; and the header's Details control, whose press takes no focus
+ * (`IssueIdentityRow.tsx`).
+ */
+function PageBesideDetails(): ReactNode {
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState<MarginDrawerPage | undefined>(undefined);
+  const drawer: MarginDrawer = { open, page, setOpen, setPage };
+  return (
+    <MarginSlotProvider drawer={drawer} drawsSlot>
+      <PageBesideDetailsRoot />
+      <textarea
+        aria-label="Your answer"
+        onKeyDown={(event) => {
+          if (event.key === "F2") setOpen(true);
+        }}
+      />
+      <button type="button">Spec</button>
+      <button
+        onClick={() => setOpen(!open)}
+        onMouseDown={(event) => event.preventDefault()}
+        type="button"
+      >
+        Details
+      </button>
+      <Margin />
+    </MarginSlotProvider>
+  );
+}
+
+/** The new page's root, which hands the drawer its words and its address rule while it is
+ *  mounted (`drawer-page.ts`). */
+function PageBesideDetailsRoot(): null {
+  useDrawerPage(issue);
+  return null;
+}
+
+/** `PageBesideDetails` on the issue's address, with the issue, its asks and its comments read. */
+function renderPageBesideDetails() {
+  const queryClient = marginQueryClient();
+  queryClient.setQueryData(["issue", issue.key], issue);
+  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(["asks", issue.key], []);
+  queryClient.setQueryData(["user-state"], {});
+  queryClient.setQueryData(["comments", issue.key], []);
+  return render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <PageBesideDetails />
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// R12: from the phone's width up Details opens beside the page. Opened by a pointer's press on
+// the header's Details, which takes no focus, while the reader writes in a field, it leaves the
+// focus in that field, so an answer being written on Dashboard keeps its caret. The same press
+// from a control that is no field puts the focus on Details' Close, as every other open does.
+test("a pointer open of Details beside the page leaves the focus in the field being written", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = renderPageBesideDetails();
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    const field = screen.getByRole("textbox", { name: "Your answer" });
+    const control = screen.getByRole("button", { name: "Details" });
+    await user.click(field);
+    await user.keyboard("Ledger first");
+    await user.click(control);
+    await waitFor(() =>
+      expect(details.hasAttribute("hidden"), "the press opened no Details").toBe(false)
+    );
+    expect(
+      screen.getByTestId("details-close"),
+      "opening Details put the focus on its Close"
+    ).not.toHaveFocus();
+    expect(field, "opening Details took the focus off the field being written").toHaveFocus();
+    expect(field).toHaveValue("Ledger first");
+
+    await user.click(control);
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(true));
+    expect(field, "closing Details took the focus off the field being written").toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Spec" }));
+    await user.click(control);
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    expect(
+      screen.getByTestId("details-close"),
+      "a press from a control that is no field left the focus off Details' Close"
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// R12: a key's open of Details puts the focus on its Close, whether the reader pressed the
+// header's Details from the keyboard or a key opened Details while they wrote in a field. On a
+// phone Details is a sheet over the whole page, a dialog, which takes the focus to its Close even
+// from a pointer's press while the reader writes.
+test("a keyboard open of Details, and the phone's sheet, put the focus on Close", async () => {
+  const user = userEvent.setup();
+  const restoreDesktop = stubViewport(DESKTOP_WIDTH);
+  const desktop = renderPageBesideDetails();
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    const field = screen.getByRole("textbox", { name: "Your answer" });
+    const control = screen.getByRole("button", { name: "Details" });
+
+    // From the view control the reader stood on, to the header's Details, pressed by Enter.
+    await user.click(screen.getByRole("button", { name: "Spec" }));
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(details.hasAttribute("hidden"), "Enter on Details opened no Details").toBe(false)
+    );
+    expect(
+      screen.getByTestId("details-close"),
+      "a keyboard open of Details left the focus off its Close"
+    ).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(true));
+
+    // A key that opens Details while the reader writes in the field.
+    await user.click(field);
+    await user.keyboard("Ledger first{F2}");
+    await waitFor(() =>
+      expect(details.hasAttribute("hidden"), "F2 in the field opened no Details").toBe(false)
+    );
+    expect(
+      screen.getByTestId("details-close"),
+      "a key's open of Details from the field being written left the focus off its Close"
+    ).toHaveFocus();
+  } finally {
+    desktop.unmount();
+    restoreDesktop();
+  }
+
+  const restorePhone = stubViewport(PHONE_WIDTH);
+  const phone = renderPageBesideDetails();
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    const field = screen.getByRole("textbox", { name: "Your answer" });
+    await user.click(field);
+    await user.keyboard("Ledger first");
+    await user.click(screen.getByRole("button", { name: "Details" }));
+    await waitFor(() =>
+      expect(details.hasAttribute("hidden"), "the press opened no phone's sheet").toBe(false)
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("details-close"),
+        "the phone's sheet left the focus off its Close"
+      ).toHaveFocus()
+    );
+  } finally {
+    phone.unmount();
+    restorePhone();
   }
 });

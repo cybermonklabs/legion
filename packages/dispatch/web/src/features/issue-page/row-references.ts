@@ -1,8 +1,13 @@
 import { isPartyRoute } from "../refs/party-references";
 import { editedName } from "../refs/post-marks";
-import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
+import {
+  buildDispatchReference,
+  type DispatchReferenceRoute,
+  parseNodeReference,
+  referenceHref,
+} from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
-import { chipName } from "./issue-tree";
+import { chipName } from "./first-line";
 import { documentWord } from "./node-row-chip";
 
 /**
@@ -173,6 +178,18 @@ export function citedReferences(text: string): string[] {
   }
   for (const key of needs.keys) cited.add(`dispatch://${key}`);
   return [...cited];
+}
+
+/** Adds `reference` to the set `asked` the batched read is given, and beside an issue's whole
+ *  spec the issue's own address: a link titles the spec by the issue's title
+ *  (`issueOrDocumentTitle`), which the read answers only under that address. The tree asks the
+ *  read so (`useIssueTree.ts`'s `treeReferences`), and so does Dashboard (`useDashboardNames`). */
+export function addAskedReference(asked: Set<string>, reference: string): void {
+  asked.add(reference);
+  const route = parseNodeReference(reference);
+  if (route?.kind === "spec" && route.block === undefined) {
+    asked.add(buildDispatchReference({ key: route.key, kind: "issue" }));
+  }
 }
 
 /** An issue's own reference, which is the form the batched read answers a bare key under. */

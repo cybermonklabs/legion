@@ -35,7 +35,7 @@ import { CONTROL_LABELS } from "./page-words";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { AppProviders, focusedRow, stubReads } from "./slots/stage-fixtures";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId } from "./statement-rules";
 
 /**
  * What an address to a block of a document opens (dispatch://INFRA-1196 part N's R6, decision

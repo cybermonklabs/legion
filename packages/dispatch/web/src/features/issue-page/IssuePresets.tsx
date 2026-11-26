@@ -16,6 +16,7 @@ import {
   pagePaperBg,
   pageQuietText,
 } from "../../theme/classes";
+import { buildIssuePath } from "../refs/routes";
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
@@ -31,9 +32,10 @@ import type { PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (R2, R11, R20, and the prototype's view tabs): five
- * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
- * Decisions; the four filters draw signals and Conversation does not. Keys sits at the right end.
+ * The view row (R2, R11, R20, and the prototype's view tabs): Dashboard - the page's opening
+ * view (dispatch://INFRA-5702/spec#b-r-new-page) - and Conversation - the page with no view on -
+ * then Spec, Verification, Plan and Decisions, and part N's Documents; the four filters draw
+ * signals, and Dashboard, Conversation and Documents do not. Keys sits at the right end.
  *
  * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
  * At 760 px and below the row is the one control and Outline,
@@ -90,8 +92,9 @@ export function IssuePresets({
    *  the row draws one Outline control (`slots/view-row.tsx`). */
   sheet?: (tools: ReactNode) => ReactNode;
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). A control with no
-   *  signal, such as Conversation, draws just its name. The whole record is undefined until the
-   *  counts can be read (`slots/view-row.tsx`). */
+   *  signal, such as Conversation, draws just its name, and so does Dashboard, whose count of
+   *  what waits on the reader is the header's (dispatch://INFRA-5702/spec#b-r-header-count). The
+   *  whole record is undefined until the counts can be read (`slots/view-row.tsx`). */
   signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
   /** The version control: the view's document's while a view is on, or the opened document's;
    *  none with neither (part N's R3). */
@@ -211,11 +214,20 @@ export function IssuePresets({
   }, [open]);
 
   // A press on a view turns it on, or off where it is the one on; Conversation turns every view
-  // off, and is a press that changes nothing only on the issue's own address, which is
-  // Conversation's: from any other address of the issue - `/collaborators` among them - it goes
-  // to the issue's own.
+  // off, and is a press that changes nothing only where Conversation is on at its own address or
+  // at the issue's own one naming a node or words: from any other address of the issue -
+  // Dashboard's, `/collaborators` among them - it goes to Conversation's own. Pressing Dashboard
+  // while it is on returns to Conversation, as every view does
+  // (dispatch://INFRA-5702/spec#b-r-new-page).
   const press = (preset: Preset) => {
-    if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
+    if (
+      preset === "conversation" &&
+      active === "conversation" &&
+      (pathname === presetPath(issueKey, "conversation") ||
+        pathname === buildIssuePath({ key: issueKey, kind: "issue" }))
+    ) {
+      return;
+    }
     // Part N's Documents (its R4): its list goes back to the address it was opened from on
     // Escape (the location's `outline`, `escape-order.ts`), and the words go with the reader.
     if (preset === "documents" && active !== "documents") {

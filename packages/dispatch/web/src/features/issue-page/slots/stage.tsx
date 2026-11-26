@@ -22,6 +22,7 @@ import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useFollowing } from "./following";
+import { ViewDashboardSlot } from "./view-dashboard";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
@@ -30,8 +31,8 @@ import { ViewVerificationSlot } from "./view-verification";
 /**
  * The stage: the outline, or one view in its place, never both. The `preset` the address opens
  * chooses one slot: the body, which draws the outline, with no view on, and that view's own
- * slot under Spec, Verification, Plan or Decisions. Each slot draws its own measure, so the
- * stage adds no box and no width. A view whose slot is not filled yet draws nothing.
+ * slot under Dashboard, Spec, Verification, Plan or Decisions. Each slot draws its own measure,
+ * so the stage adds no box and no width. A view whose slot is not filled yet draws nothing.
  *
  * An address that names a node beside a view's own address and opens no document - an item
  * beside it (`?ask=`, `?comment=`), as `documentItemPath` writes the address of an item of the
@@ -212,9 +213,11 @@ export interface ViewSlotProps extends SlotProps {
 export type ViewSlots = Readonly<Record<Preset, ((props: ViewSlotProps) => ReactNode) | undefined>>;
 
 /** The slot each view draws in place of the outline; none for Conversation, which is the
- *  outline itself. */
+ *  outline itself. Dashboard draws in the outline's place as a view does
+ *  (`view-dashboard.tsx`). */
 export const VIEW_SLOTS: ViewSlots = {
   conversation: undefined,
+  dashboard: ViewDashboardSlot,
   decisions: ViewDecisionsSlot,
   // Documents draws its list before any view's slot (`StageSlot`'s second branch).
   documents: undefined,
@@ -233,6 +236,7 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
  *  (`ViewSlotProps.onAddressDrawn`): the stage then draws the outline in the view's place. */
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
+  dashboard: true,
   decisions: true,
   documents: true,
   plan: true,

@@ -28,7 +28,7 @@ import { isFilter } from "./presets";
 import { scrollingAncestor } from "./scroll-box";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId } from "./statement-rules";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";

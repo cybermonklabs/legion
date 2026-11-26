@@ -1139,12 +1139,13 @@ export async function assertInventoryCarried(
  * again after each merge of `main`; the table is declared here, so a new recording does not lose
  * it.
  *
- * Owed to dispatch://INFRA-5702, which this stack does not hold, and so renamed by its pull
- * request: the ask body's Decline and Hand on, for "Decline to answer" and "Hand this question
- * to", and the settled ask's body, for a settled question's record ("Change answer"). Until it
- * lands the new page draws today's ask card's own controls under those names, so each of them
- * stands unrenamed. Part M's Details facts of the focused ask carry an ask's edit history,
- * recipients and copy handles under their own names, which the fixture holds unchanged.
+ * The ask body of dispatch://INFRA-5702, which this stack holds, draws an ask on every surface of
+ * the new page. It keeps today's names for Decline ("Decline to answer"), Hand on ("Hand this
+ * question to") and the settled ask's record ("Change answer"), so each of them stands
+ * unrenamed, and it draws its answer box in place under the options rather than behind today's
+ * "Add a note or answer in your own words", so that disclosure is renamed to the box. Part M's
+ * Details facts of the focused ask carry an ask's edit history, recipients and copy handles under
+ * their own names, which the fixture holds unchanged.
  */
 export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
   'tab "Spec"': 'button "Spec" | menuitem "Spec" | menuitemradio "Spec"',
@@ -1192,6 +1193,7 @@ export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
   'button "Open review panel (1 open ask)"': 'button "Details"',
   'button "Open review panel (0 open asks)"': 'button "Details"',
   'complementary "Review panel"': 'complementary "Review margin"',
+  'button "Add a note or answer in your own words"': 'textbox "Your answer"',
 };
 
 /** Why a child of the issue's link is the child's row on the new page. */
@@ -1286,6 +1288,8 @@ export const INVENTORY_RENAME_REASONS: Readonly<Record<string, string>> = {
     "As above, on the closed issue, which waits on no ask.",
   'complementary "Review panel"':
     "The phone's review sheet is the margin inside Details, which on the issue page is one box at every width and named as the margin is (R14); Details opens it over the whole screen.",
+  'button "Add a note or answer in your own words"':
+    "The disclosure opened an open question's box for a note or an answer in the reader's own words; the ask body draws that box in place under the options on every surface and no surface draws the disclosure (dispatch://INFRA-5702/spec#b-r-ask-body, R15), so the reader types in the box, whose placeholder reads 'Answer in your own words, or ask a question back', with no press first.",
 };
 
 /** Links of today's page that a parent row of the outline carries (`ParentRowMapping`), keyed
@@ -1718,6 +1722,16 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
       opens: () => ({ kind: "view", preset: "conversation" }),
     },
   ],
+  // Dashboard's own address (dispatch://INFRA-5702), a route kind of `IssueRoute` since that part
+  // landed under this branch; the bare address that opens Dashboard too stays in
+  // `PART_ADDRESSES`, since its kind is the issue's own.
+  dashboard: [
+    {
+      address: (seed) => issuePath(seed, "/dashboard"),
+      builtBy: "INFRA-5702",
+      opens: () => ({ kind: "control", name: "Dashboard" }),
+    },
+  ],
   decisions: [
     {
       address: (seed) => issuePath(seed, "/decisions"),
@@ -1816,23 +1830,19 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
 };
 
 /**
- * The addresses of the views that parts other than this one build (R6): Dashboard's, which opens
- * the bare address too (dispatch://INFRA-5702), Threads' (dispatch://INFRA-5704), Graph's (part
- * T) and a handoff's (dispatch://INFRA-4870). Each has no route kind of `IssueRoute` on this
- * branch, so none is a case of `OLD_PAGE_ADDRESSES`; each is marked with the part that builds it,
- * and the row reads it only where the page draws that part (`drawsPart`). Where it does not, the
- * row names the address as not read, and the pull request names it. While dispatch://INFRA-5704
- * follows this part, `/threads`, `/threads/<id>` and each address root R20 lands in Threads are
- * left out here (R11). When a part lands, its kind joins `OLD_PAGE_ADDRESSES` with its cases.
+ * The addresses of the views that parts other than this one build (R6): Dashboard's bare address
+ * (dispatch://INFRA-5702), whose route kind is the issue's own, Threads' (dispatch://INFRA-5704),
+ * Graph's (part T) and a handoff's (dispatch://INFRA-4870). None but Dashboard's has a route kind
+ * of `IssueRoute` on this branch, so none is a case of `OLD_PAGE_ADDRESSES`, where Dashboard's
+ * own `/dashboard` is; each is marked with the part that builds it, and the row reads it only
+ * where the page draws that part (`drawsPart`). Where it does not, the row names the address as
+ * not read, and the pull request names it. While dispatch://INFRA-5704 follows this part,
+ * `/threads`, `/threads/<id>` and each address root R20 lands in Threads are left out here (R11).
+ * When a part lands, its kind joins `OLD_PAGE_ADDRESSES` with its cases.
  */
 export const PART_ADDRESSES: readonly AddressCase[] = [
   {
     address: (seed) => issuePath(seed),
-    builtBy: "INFRA-5702",
-    opens: () => ({ kind: "control", name: "Dashboard" }),
-  },
-  {
-    address: (seed) => issuePath(seed, "/dashboard"),
     builtBy: "INFRA-5702",
     opens: () => ({ kind: "control", name: "Dashboard" }),
   },

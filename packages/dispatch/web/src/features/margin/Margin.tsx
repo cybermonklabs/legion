@@ -229,6 +229,18 @@ export function Margin({
  *  link, for one. Every other link followed inside the sheet closes it. */
 export const KEEPS_DETAILS_ATTRIBUTE = "data-keeps-details";
 
+/** Whether `element` is a field the reader writes in: an editable, a text area, or an input that
+ *  takes typed text, as the drawer's Escape reads a field (`DetailsDrawer`), but not a select,
+ *  where the reader picks rather than writes. */
+function writtenIn(element: HTMLElement): boolean {
+  return (
+    element.isContentEditable ||
+    element.tagName === "TEXTAREA" ||
+    (element instanceof HTMLInputElement &&
+      !["button", "checkbox", "radio", "reset", "submit"].includes(element.type))
+  );
+}
+
 /**
  * The new issue page's panel as a drawer, Details, which opens over the right of the page rather
  * than keeping a column of its own (R14, the prototype's `#details`), so
@@ -289,6 +301,27 @@ function DetailsDrawer({
         ]
       : []
   );
+  // Whether the reader's last act was a press of the pointer rather than a key, heard on the
+  // document before any element's own handler. Opened by a pointer's press beside the page - the
+  // header's Details, whose press takes no focus - the drawer leaves the focus in a field the
+  // reader is writing in (`writtenIn`), so an answer being written on Dashboard keeps its caret.
+  // Opened by a key it puts the focus on its Close as below, and the phone's sheet, a dialog,
+  // always does (R12).
+  const pointerPressed = useRef(false);
+  useEffect(() => {
+    const byPointer = () => {
+      pointerPressed.current = true;
+    };
+    const byKey = () => {
+      pointerPressed.current = false;
+    };
+    document.addEventListener("pointerdown", byPointer, true);
+    document.addEventListener("keydown", byKey, true);
+    return () => {
+      document.removeEventListener("pointerdown", byPointer, true);
+      document.removeEventListener("keydown", byKey, true);
+    };
+  }, []);
   // From the phone's width up the drawer sits beside the page the reader keeps working in, so it
   // holds no focus of its own: opening it puts the focus on its Close, and closing it - by Close,
   // by Escape, or by the page's own control - gives the focus back to where it was taken from
@@ -305,7 +338,8 @@ function DetailsDrawer({
       active instanceof HTMLElement && active !== document.body && !drawerBox?.contains(active)
         ? active
         : null;
-    closeButton.current?.focus({ preventScroll: true });
+    const writing = pointerPressed.current && opener.current !== null && writtenIn(opener.current);
+    if (!writing) closeButton.current?.focus({ preventScroll: true });
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
     // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
     // inside the drawer or beside it. So does a layer over the drawer or inside it: an open

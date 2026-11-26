@@ -9,7 +9,7 @@ import {
   STATE_LINES,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { createComment, createNamedVersion, getArtifact, getIssue } from "./api";
 import {
   type PlanOrderSeed,
@@ -266,7 +266,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
   };
   await page.route(BLOCKS_READ, refuse);
   try {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     // The page places its first focus once, when the reads its first rows come from have
     // answered: on the question that waits on the reader, whatever reads failed (`IssueTree.tsx`).
@@ -723,7 +723,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
 
     // `t p` turns Plan on from the conversation, and puts the focus on the first step's row. The
     // page's opening puts the focus on a row first, and the focus leaves for the page after it.
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -816,7 +816,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     await nodeRow(page, step(T.loose)).first().focus();
     await page.keyboard.press("Enter");
     await expect(page, `Enter on ${T.loose} does not go to it in the conversation`).toHaveURL(
-      new RegExp(`/issues/${seeded.key}#b-${T.loose}$`)
+      new RegExp(`/issues/${seeded.key}/conversation#b-${T.loose}$`)
     );
 
     // Back on /plan, Tab goes from "Chart" to "Steps", then into the chart at its first step;

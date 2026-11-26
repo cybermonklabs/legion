@@ -609,7 +609,7 @@ for (const variant of ["full", "compact"] as const) {
     const card = within(view.container);
     try {
       const line = card.getByText(/^Approved at version 11 on/);
-      expect(line.textContent).toBe("Approved at version 11 on 2026-10-05 by alice.");
+      expect(line.textContent).toBe("Approved at version 11 on 2026-10-05 by alice");
       const time = line.querySelector("time");
       expect(time?.getAttribute("datetime")).toBe("2026-10-05T14:30:00Z");
       expect(time?.getAttribute("title")).toBe("2026-10-05T14:30:00Z");

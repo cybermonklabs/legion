@@ -7,7 +7,7 @@ import type { Artifact, IssueDetails } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import type { ChipRecord } from "./chip-return";
 import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
-import { type IssueAddress, issueAddress } from "./issue-address";
+import { type IssueAddress, issueAddress, presetPath } from "./issue-address";
 import { NODE_TYPES } from "./page-words";
 import { nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import { useIssueDetail } from "./useIssueDetail";
@@ -91,7 +91,7 @@ export function useOpenedDocument(
  *  (`escape-order.ts`), and each write that keeps the reader's place - the filter by words, a
  *  version picked - hands it on to the location it writes. */
 export function useOutlineAddress(key: string): string {
-  return outlineOf(useLocation().state) ?? buildIssuePath({ key, kind: "issue" });
+  return outlineOf(useLocation().state) ?? presetPath(key, "conversation");
 }
 
 /** Documents' list's own address, `/issues/<key>/documents` (part N's R2). */

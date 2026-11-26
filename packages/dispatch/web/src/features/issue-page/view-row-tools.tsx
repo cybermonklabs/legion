@@ -19,8 +19,9 @@ export interface ViewRowTools {
    *  `active` stands everywhere else, so this is given there alone. */
   readonly active?: Preset;
   readonly filter: string;
-  /** How the box writes `?q=`; not given on Documents, which draws no Filter (part N's R4), so
-   *  the row draws no box there and still carries the words to the control pressed next. */
+  /** How the box writes `?q=`; not given on Documents, which draws no Filter (part N's R4), nor on
+   *  Dashboard, which draws no outline (dispatch://INFRA-5702/spec#b-r-new-page), so the row
+   *  draws no box there and still carries the words to the control pressed next. */
   readonly onFilterChange?: (next: string) => void;
   readonly toolbar: ReactNode;
 }
@@ -30,7 +31,7 @@ export interface ViewRowTools {
  * R3, R4): the filter by words, which writes `?q=` in place; and the version control, which reads
  * the opened document's versions, else the view's document's, else is not drawn. Below 1024 px
  * the row draws the two in the Outline sheet (`slots/view-row.tsx`). Documents, on while its list
- * or a document opened from the list is drawn, draws no Filter.
+ * or a document opened from the list is drawn, draws no Filter, and neither does Dashboard.
  */
 export function useViewRowTools(props: SlotProps): ViewRowTools {
   const { issue, route } = props;
@@ -75,6 +76,7 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
   const viewDocument = (
     {
       conversation: undefined,
+      dashboard: undefined,
       decisions: undefined,
       documents: undefined,
       plan: planArtifact,
@@ -124,7 +126,7 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
   return {
     ...(documentsOn && address.preset !== "documents" ? { active: "documents" as const } : {}),
     filter: address.filter,
-    ...(documentsOn ? {} : { onFilterChange }),
+    ...(documentsOn || address.preset === "dashboard" ? {} : { onFilterChange }),
     toolbar,
   };
 }

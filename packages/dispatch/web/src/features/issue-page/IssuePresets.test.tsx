@@ -76,9 +76,9 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowDown}", "plan"],
       ["{ArrowDown}", "decisions"],
       ["{ArrowDown}", "documents"],
-      ["{ArrowDown}", "conversation"],
+      ["{ArrowDown}", "dashboard"],
       ["{ArrowUp}", "documents"],
-      ["{Home}", "conversation"],
+      ["{Home}", "dashboard"],
       ["{End}", "documents"],
       ["{ArrowUp}", "decisions"],
       ["{ArrowUp}", "plan"],
@@ -302,8 +302,8 @@ function missingReferences(within: HTMLElement): string[] {
 // (`slots/view-row.tsx`), since a count drawn then reads as the real one. The row is drawn all
 // the same, each control with its name alone, and no control points at a signal that is not
 // there. The case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the
-// row of five.
-test("with no signals the row of five draws every view's control with its name alone, and no description names a missing element", () => {
+// row of six.
+test("with no signals the row of six draws every view's control with its name alone, and no description names a missing element", () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
@@ -582,7 +582,9 @@ test("pressing Documents while it is active returns to Conversation", async () =
   }
 });
 
-// The row is one tab stop that the arrows, Home and End move along, Documents among the rest.
+// The row is one tab stop that the arrows, Home and End move along, Documents among the rest,
+// from Dashboard, the row's first control (dispatch://INFRA-5702/spec#b-r-new-page), to
+// Documents, its last.
 test("the arrows move along the row across Documents", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
@@ -595,10 +597,10 @@ test("the arrows move along the row across Documents", async () => {
     toggle("decisions").focus();
     for (const [key, to] of [
       ["{ArrowRight}", "documents"],
-      ["{ArrowRight}", "conversation"],
+      ["{ArrowRight}", "dashboard"],
       ["{ArrowLeft}", "documents"],
       ["{ArrowLeft}", "decisions"],
-      ["{Home}", "conversation"],
+      ["{Home}", "dashboard"],
       ["{End}", "documents"],
     ] as const) {
       await user.keyboard(key);
@@ -618,8 +620,8 @@ test("the arrows move along the row across Documents", async () => {
 
 // Part N's R4 and ST-1: a control that draws no outline draws no filter by words - neither its
 // Filter in the row nor the box, nor an Outline sheet to hold them - on its own address and, for
-// Documents, on a document opened from its list. Of the three, `main` holds Documents alone:
-// Dashboard and Threads join the list below as each part adds its control, which is no filter.
+// Documents, on a document opened from its list. Of the three, Threads alone is not yet held: it
+// joins the list below as its part adds its control, which is no filter.
 test("Dashboard, Threads and Documents draw no Filter", async () => {
   const outlineless = PRESET_ORDER.filter(
     (preset) => preset !== "conversation" && !isFilter(preset)
@@ -687,5 +689,62 @@ test("Documents draws no count", async () => {
     expect(screen.getByRole("button", { name: PRESET_NAMES.documents })).toBeInTheDocument();
   } finally {
     narrow.done();
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-new-page (R2): Dashboard is the first control of the row, in
+// both its shapes, drawn and pressed as every control is: pressing it while it is on returns to
+// Conversation, at Conversation's own address, and Conversation's control opens that address
+// from Dashboard's, the issue's own among them. Dashboard draws no signal: what waits on the
+// reader is counted in the header.
+test("Dashboard is the first control, draws no count, and a press of it while it is on returns to Conversation", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    const dashboard = screen.getByRole("button", { name: PRESET_NAMES.dashboard, pressed: true });
+    expect(
+      within(screen.getByRole("toolbar")).getAllByRole("button")[0],
+      "Dashboard is not the row's first control"
+    ).toBe(dashboard);
+    expect(dashboard.getAttribute("aria-describedby"), "Dashboard is described by a signal").toBe(
+      null
+    );
+    expect(
+      view.container.querySelector('[data-preset-count="dashboard"]'),
+      "Dashboard drew a count"
+    ).toBeNull();
+    await user.click(dashboard);
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+
+  const restorePhone = stubViewport(PHONE_WIDTH);
+  const phone = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: PRESET_NAMES.dashboard }));
+    expect(screen.getAllByRole("menuitemradio")[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getAllByRole("menuitemradio")[0]).toBe(menuItem("dashboard"));
+    await user.click(menuItem("conversation"));
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    phone.unmount();
+    restorePhone();
   }
 });

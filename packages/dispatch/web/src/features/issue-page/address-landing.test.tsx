@@ -12,10 +12,10 @@ import {
   specRef,
 } from "./decisions-filter/decisions-fixtures";
 import { TWO_THREADS } from "./outline-fixtures";
-import { type Preset, STATE_LINES } from "./page-words";
+import { STATE_LINES } from "./page-words";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { drawnSlot, drawStage, GONE_COMMENT, REFUSED, stubReads } from "./slots/stage-fixtures";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId } from "./statement-rules";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { check, VERIFICATION_SLUG } from "./verification-filter/verification-fixtures";
 
@@ -162,7 +162,7 @@ function named(element: Element | null | undefined): string {
  *  but the held one in. */
 async function viewDrawsRows(
   view: RenderResult,
-  preset: Exclude<Preset, "decisions" | "documents">,
+  preset: keyof typeof VIEW_BODY | "conversation",
   what: string
 ): Promise<void> {
   const body = preset === "conversation" ? "[data-issue-body]" : VIEW_BODY[preset];

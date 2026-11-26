@@ -1,5 +1,6 @@
 import { type ReactNode, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocation } from "react-router-dom";
 
 import {
   focusVisibleRing,
@@ -17,7 +18,6 @@ import { useOpenedDocument } from "./document-address";
 import { issueAddress } from "./issue-address";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-import { isFilter } from "./presets";
 import type { SlotProps } from "./slot-props";
 import { ContentsSlot } from "./slots/contents";
 
@@ -33,8 +33,9 @@ export const PAGE_INSET = "px-3.5 md:px-7";
  * The Contents pane at the left of the issue page (R14, R8, the
  * prototype's `#left`), which draws `slots/contents.tsx`. It is drawn from 1024 px up with no
  * view on, beside the outline; under a view it is not drawn, and the view's body has the whole
- * width (the architect's ruling 5). Below 1024 px the same slot is in the sheet the Outline
- * control opens (`OutlineSheet`).
+ * width (the architect's ruling 5), and neither is it on Dashboard, which draws no outline
+ * (dispatch://INFRA-5702/spec#b-r-new-page). Below 1024 px the same slot is in the sheet the
+ * Outline control opens (`OutlineSheet`).
  *
  * It stands under the band that stays at the top of the screen (`identity-block.ts`'s
  * `--issue-identity-height`), as tall as the window less that band, and scrolls what it holds
@@ -42,13 +43,15 @@ export const PAGE_INSET = "px-3.5 md:px-7";
  */
 export function IssueContentsPane(props: SlotProps): ReactNode {
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
-  // Part N's: Documents' list and a document drawn in place of the outline draw no Contents
-  // pane (its R2, root R14).
+  const { hash, search } = useLocation();
+  // Part N's: a document drawn in place of the outline draws no Contents pane (its R2, root
+  // R14); Documents' list is no Conversation, so the rule below leaves it out too.
   const opened = useOpenedDocument(props.issue, props.route);
-  const documents = issueAddress(props.route, "", "", undefined).preset === "documents";
-  const viewOn = isFilter(issueAddress(props.route, "", "", undefined).preset);
-  if (!paned || viewOn) return null;
-  if (documents || opened !== undefined) return null;
+  // Only Conversation draws the outline beside it: every filter draws its own view, and the
+  // issue's own address opens Dashboard unless it names a node or a words filter.
+  const outline = issueAddress(props.route, search, hash, undefined).preset === "conversation";
+  if (!paned || !outline) return null;
+  if (opened !== undefined) return null;
   return (
     <aside
       aria-label={CONTROL_LABELS.contents}

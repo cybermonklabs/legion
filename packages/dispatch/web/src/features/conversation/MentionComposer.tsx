@@ -69,6 +69,7 @@ import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
+import type { AgentNames } from "./CachedAuthor";
 import {
   type AskOptionDraft,
   type Draft,
@@ -188,6 +189,10 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
 
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
+  /** How the quote of the post a reply answers names its author: `live`, as everywhere, or
+   *  `cache`, from the registry the cache already holds, which starts no agents read when the
+   *  composer draws (`ReplyQuote`). */
+  readonly agentNames?: AgentNames;
   readonly anchor?: ComposerAnchor;
   /** What the host says in place of the server's words when it refused this send for a mark the
    *  document no longer holds (`ANCHOR_MISSING`) and could not write that mark again: the margin's
@@ -296,6 +301,7 @@ interface MentionComposerProps {
 }
 
 export function MentionComposer({
+  agentNames = "live",
   agents: suppliedAgents,
   anchor,
   anchorRefusal,
@@ -960,6 +966,7 @@ export function MentionComposer({
       {replyTo === null ? null : (
         <div className="flex items-center gap-1">
           <ReplyQuote
+            agentNames={agentNames}
             author={replyTo.actor}
             className="min-w-0 flex-1"
             deleted={postDeletion(replyParent)}

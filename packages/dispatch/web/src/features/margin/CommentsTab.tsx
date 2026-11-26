@@ -351,13 +351,18 @@ export function CommentsTab({
               threads={threads}
               viewerLogin={viewerLogin}
             />
-            <DecisionList
-              blockPlacements={blockPlacements}
-              decisions={decisions}
-              hoveredItemId={hoveredItemId}
-              onSelect={onSelectCard}
-              selectedItemId={selectedItemId}
-            />
+            {/* Decisions stand beside an issue's spec alone (`useMarginItems`). */}
+            {owner.kind === "issue" ? (
+              <DecisionList
+                blockPlacements={blockPlacements}
+                decisions={decisions}
+                hoveredItemId={hoveredItemId}
+                isClosed={isClosed}
+                issueKey={owner.key}
+                onSelect={onSelectCard}
+                selectedItemId={selectedItemId}
+              />
+            ) : null}
             {threads.length === 0 &&
             resolvedThreads.length === 0 &&
             historicalAsks.length === 0 &&

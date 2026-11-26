@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { artifactBlocksQuery, issueCoverageQuery, projectsQuery } from "../../api/queries";
+import { projectsQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -19,8 +19,8 @@ import {
   pageWaitingBg,
   pageWaitingChip,
 } from "../../theme/classes";
+import { useWaitingItems } from "../dashboard/useWaitingItems";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
@@ -31,17 +31,14 @@ import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { APPROVAL_CHIP } from "./approval-chip-box";
-import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { PullRequestLink } from "./PullRequestLink";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
-import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery, useWhoIsReading } from "./useIssueTree";
-import { type WaitingPress, waitingOnReader } from "./waiting";
+import type { WaitingPress } from "./waiting";
 
 /**
  * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,
@@ -83,50 +80,25 @@ export function IssuePropertiesRow({
   // the page's body.
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
-  // What the count counts, read from what the outline already reads under the same keys - the
-  // reader's login, the decisions, the coverage's statements, the comments a Change is written
-  // as, and the decisions document's blocks, whose sections say which decision a Change's anchor
-  // belongs to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`):
-  // events refresh them, never their age (decision 180). Staleness is per observer, so each read
-  // here takes that rule too, and the count costs no request of its own (`waiting.ts`). Until
-  // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does
-  // with no blocks read.
-  const viewer = useWhoIsReading().data?.login;
-  const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
-  const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
-  const comments = useQuery({
-    ...issueCommentsQuery(issue.key),
-    ...EVENT_FRESH,
-  });
-  const decisionsDocument = decisionsDocumentId(issue.artifacts, decisions.data);
-  const decisionsBlocks = useQuery({
-    ...artifactBlocksQuery(decisionsDocument ?? ""),
-    ...EVENT_FRESH,
-    enabled: decisionsDocument !== undefined,
-  }).data;
-  const documents = useMemo(
-    () =>
-      decisionsDocument === undefined || decisionsBlocks === undefined
-        ? undefined
-        : [{ artifactId: decisionsDocument, blocks: decisionsBlocks }],
-    [decisionsDocument, decisionsBlocks]
-  );
-  const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
-  const statements = useMemo(
-    () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
-    [coverage.data, nodeIdOf]
-  );
-  const waiting = useMemo(
-    () =>
-      waitingOnReader(
-        issue,
-        viewer,
-        decisions.data,
-        (reference) => statements.has(nodeIdOf(reference)),
-        comments.data,
-        documents
-      ),
-    [issue, viewer, decisions.data, statements, nodeIdOf, comments.data, documents]
+  // What waits on the reader: Dashboard's items, from the one rule and the reads Dashboard reads
+  // (`features/dashboard/useWaitingItems.ts`), so the count is the number of Dashboard's items on
+  // every view (dispatch://INFRA-5702/spec#b-r-header-count). Each read is kept fresh by the
+  // events that name its key, never by its age (`EVENT_FRESH`), and none is the issue's whole
+  // comments list: a Change is matched to its decision by its anchor, with no blocks read.
+  const waiting = useWaitingItems(issue.key).items;
+  // The document each approval request that waits on the reader is on, by artifact id: the
+  // ask's own, else the one its approval names by slug, else the issue's spec. The header's
+  // approval control for each carries Approve and Request changes, and is where the count puts
+  // the focus when nothing else waits. A stale approval is no request and moves no control.
+  const requested = waiting.flatMap((item) =>
+    item.kind === "approval"
+      ? [
+          item.ask.artifact_id ??
+            issue.artifacts?.find((artifact) => artifact.slug === item.ask.approval_artifact?.slug)
+              ?.id ??
+            issue.primary_artifact_id,
+        ]
+      : []
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -150,25 +122,27 @@ export function IssuePropertiesRow({
   const approval = documentArtifact?.approval;
   const line = useRef<HTMLDivElement>(null);
 
-  // The count's press, where an ask or a decision waits: it sets the Decisions filter's address
-  // and leaves the press in that history entry as its `WaitingPress` mark, one number per press.
-  // This part draws no view at that address; a later part's Decisions view reads the mark to put
-  // the focus on the next item there that waits, each press on the one after the last. An
+  // The count's press, where a question or a decision waits: it sets the Decisions filter's
+  // address and leaves the press in that history entry as its `WaitingPress` mark, one number per
+  // press. This part draws no view at that address; a later part's Decisions view reads the mark
+  // to put the focus on the next item there that waits, each press on the one after the last. An
   // approval request alone puts the focus on the first chip or entry on this line of a document
   // whose request waits. Where the header draws no chip or entry of the waiting document -
   // another document of a child, or a document no step of a gated root names - the request is
   // counted and the press does nothing in the header, rather than put the focus on another
   // document's chip. A press made on the filter already replaces its entry, so Back leaves the
-  // filter rather than walking back through the presses.
+  // filter rather than walking back through the presses. Where only threads or stale approvals
+  // wait, the press does nothing, though the count reads them, until part N moves the press onto
+  // Dashboard's list (dispatch://INFRA-3940 R5, dispatch://INFRA-5702/spec#b-r-header-count).
   const goToWaiting = () => {
-    if (waiting.asks + waiting.decisions > 0) {
+    if (waiting.some((item) => item.kind === "question" || item.kind === "decision")) {
       const press: WaitingPress = { waitingPress: performance.now() };
       const path = presetPath(issue.key, "decisions");
       navigate(path, { replace: pathname === path, state: press });
       return;
     }
     const control = [...(line.current?.querySelectorAll<HTMLElement>(APPROVAL_CHIP) ?? [])].find(
-      (found) => waiting.approvals.includes(found.dataset.approvalArtifact ?? "")
+      (found) => requested.includes(found.dataset.approvalArtifact ?? "")
     );
     control?.focus();
   };
@@ -223,7 +197,7 @@ export function IssuePropertiesRow({
       />
       <PullRequestLink pullRequest={issue.pull_request} />
       <ChildrenProgress childIssues={issue.children ?? []} />
-      {waiting.total > 0 ? (
+      {waiting.length > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold ${pageWaitingChip} ${focusVisibleRing}`}
@@ -237,7 +211,7 @@ export function IssuePropertiesRow({
               the brackets and the number each took the gap and the count drew "Waiting on
               you ( 2 )". */}
           <span>
-            {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+            {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.length}</span>)
           </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (
@@ -273,14 +247,14 @@ export function IssuePropertiesRow({
           artifact={documentArtifact}
           keepActionsTogether
           layout="contents"
-          showActions={waiting.approvals.includes(documentArtifact.id)}
+          showActions={requested.includes(documentArtifact.id)}
           size="compact"
           variant="header"
         />
       )}
       {entries.length === 0 ? null : (
         <ApprovalSteps
-          actionsOn={waiting.approvals}
+          actionsOn={requested}
           entries={entries}
           layout="contents"
           primaryArtifactId={issue.primary_artifact_id}

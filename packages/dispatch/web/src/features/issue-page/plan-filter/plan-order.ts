@@ -3,7 +3,7 @@ import { parseNodeReference } from "../../refs/routes";
 import { documentOfNode } from "../issue-artifacts";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS } from "../page-words";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId } from "../statement-rules";
 
 /**
  * The plan's tasks as ordered steps.

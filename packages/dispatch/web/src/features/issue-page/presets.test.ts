@@ -469,3 +469,13 @@ test("the words filter matches a deleted post by no words", () => {
     friday: ["comment-2"],
   });
 });
+
+// dispatch://INFRA-5702/spec#b-r-new-page (R2): Dashboard is a control of the row and no filter,
+// as Conversation is none: the row's filter rule leaves both out, and every filter is one.
+test("Dashboard and Conversation are no filter, and the four views are", () => {
+  expect(isFilter("dashboard")).toBe(false);
+  expect(isFilter("conversation")).toBe(false);
+  for (const filter of ["spec", "verification", "plan", "decisions"] as const) {
+    expect(isFilter(filter), filter).toBe(true);
+  }
+});

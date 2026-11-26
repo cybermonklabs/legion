@@ -258,12 +258,14 @@ async function focusOnChip(artifactId: string, what: string): Promise<void> {
 }
 
 const DECISIONS = presetPath(KEY, "decisions");
+/** Conversation's own address, the view the count's press leaves from in these cases. */
+const CONVERSATION = presetPath(KEY, "conversation");
 const OLDER = decisionNode("d-older").id;
 const NEWER = decisionNode("d-newer").id;
 
 test("questions and decisions wait, and an approval request: the first press turns the Decisions view on with the focus on the first waiting question", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await pressCount(user, "pointer");
     await waitFor(() => expect(address()).toBe(DECISIONS));
@@ -277,7 +279,7 @@ test("questions and decisions wait, and an approval request: the first press tur
 
 test("after the last question: the next press puts the focus on the first decision waiting for review", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await pressCount(user, "Enter");
     await focusOn("q-first", "the first press");
@@ -294,7 +296,7 @@ test("after the last question: the next press puts the focus on the first decisi
 
 test("after the last decision: the next press puts the focus on the header's approval control of the waiting request", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     for (const [node, by] of [
       ["q-first", "pointer"],
@@ -315,7 +317,7 @@ test("after the last decision: the next press puts the focus on the header's app
 
 test("on the approval control: the next press puts the focus on the first waiting question again", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     for (const node of ["q-first", "q-second", NEWER, OLDER]) {
       await pressCount(user, "Enter");
@@ -339,18 +341,19 @@ test("on the approval control: the next press puts the focus on the first waitin
 
 test("only an approval request waits: each press puts the focus on the approval control", async () => {
   const user = userEvent.setup();
+  const approval = approvalOf(SPEC.id);
   restoreReads.push(
     spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
-    spyOn(api, "listIssueAsks").mockResolvedValue([])
+    spyOn(api, "listIssueAsks").mockResolvedValue([approval])
   );
-  const view = drawPage(`/issues/${KEY}`, issueWith([approvalOf(SPEC.id)]));
+  const view = drawPage(CONVERSATION, issueWith([approval]));
   try {
     await waitFor(async () => expect((await count()).textContent).toContain("(1)"));
     for (const by of ["pointer", "Enter"] as const) {
       await pressCount(user, by);
       await focusOnChip(SPEC.id, `a press by ${by} left the approval control`);
       expect(address(), "a press with only an approval waiting turned a view on").toBe(
-        `/issues/${KEY}`
+        CONVERSATION
       );
     }
   } finally {
@@ -374,7 +377,7 @@ test("a document open: the first press closes it, and the first waiting item tak
 
 test("an item answered between presses: the next press goes to the next item still waiting, by the order at the press", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await pressCount(user, "pointer");
     await focusOn("q-first", "the first press");
@@ -408,7 +411,7 @@ test("the reads still out: a press turns the Decisions view on, and the focus la
   const user = userEvent.setup();
   const asksOut = Promise.withResolvers<IssueAskRow[]>();
   restoreReads.push(spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise));
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await pressCount(user, "pointer");
     await waitFor(() => expect(address()).toBe(DECISIONS));
@@ -425,7 +428,7 @@ test("the reads still out: a press turns the Decisions view on, and the focus la
 test("an approval with no control in the header: after the last decision the next press goes to the first waiting question", async () => {
   const user = userEvent.setup();
   // The request is for a document of no role, which the header draws no approval control for.
-  const view = drawPage(`/issues/${KEY}`, issueWith([...QUESTIONS, approvalOf(NOTES.id)]));
+  const view = drawPage(CONVERSATION, issueWith([...QUESTIONS, approvalOf(NOTES.id)]));
   try {
     for (const node of ["q-first", "q-second", NEWER, OLDER]) {
       await pressCount(user, "pointer");

@@ -273,12 +273,16 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
       "No reader reaches it: a message's Reply on a phone is answered by the docked conversation composer, and this box opens over a comment thread alone.",
     write: "message-reply",
   },
-  // The Inbox's reading column: one reply box, under a comment thread or a message thread.
+  // The Inbox's reading column: one reply box, under a comment thread or a message thread. A
+  // thread item of Dashboard draws the same box under the same thread.
   {
     box: "inbox-thread-reply",
     covered: true,
     delivers: true,
-    files: ["packages/dispatch/web/src/features/inbox/ThreadBody.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/dashboard/ThreadItem.tsx",
+      "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
+    ],
     issueRows: true,
     reach: "Reply",
     write: "comment",
@@ -287,7 +291,10 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "inbox-thread-reply",
     covered: true,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/inbox/ThreadBody.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/dashboard/ThreadItem.tsx",
+      "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
+    ],
     issueRows: true,
     reach: "Reply",
     write: "message-reply",
@@ -437,13 +444,13 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Option 1 description",
     write: "ask",
   },
-  // The ask card's one box, which the Inbox and a document's decision block both draw: an
-  // answer goes to whoever asked, and a question back is a comment on the ask.
+  // The ask body's one box, which the Inbox and a document's decision block both draw (through
+  // the ask card): an answer goes to whoever asked, and a question back is a comment on the ask.
   {
     box: "ask-answer",
     covered: true,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/inbox/AskCard.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/AskBody.tsx"],
     issueRows: true,
     reach: "[data-ask-answer]",
     write: "ask-answer",
@@ -452,7 +459,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "ask-answer",
     covered: true,
     delivers: true,
-    files: ["packages/dispatch/web/src/features/inbox/AskCard.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/AskBody.tsx"],
     issueRows: true,
     reach: "[data-ask-answer]",
     write: "ask-back",
@@ -466,7 +473,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "ask-decline-note",
     covered: true,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/inbox/DeclineControl.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/DeclineControl.tsx"],
     issueRows: true,
     reach: "Note (optional)",
     write: "ask-decline",
@@ -480,14 +487,15 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Reply",
     write: "comment",
   },
-  // The issue's Decisions panel, and a decision's row on the new issue page: a change is a
-  // comment anchored to the decision it quotes.
+  // The issue's Decisions panel and the margin, which draw a change through the decision card,
+  // and a decision's row on the new issue page: a change is a comment anchored to the decision
+  // it quotes.
   {
     box: "decisions-change",
     covered: true,
     delivers: true,
     files: [
-      "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
+      "packages/dispatch/web/src/features/decision-card/DecisionCard.tsx",
       "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",
     ],
     issueRows: true,

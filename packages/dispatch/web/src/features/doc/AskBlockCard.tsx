@@ -13,9 +13,9 @@ import {
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { AskCompletionCard } from "../ask-body/AskCompletionCard";
+import { AskOptionList } from "../ask-body/AskOptionList";
 import { AskCard } from "../inbox/AskCard";
-import { AskCompletionCard } from "../inbox/AskCompletionCard";
-import { AskOptionList } from "../inbox/AskOptionList";
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
 import { AgentName } from "../refs/AgentName";
 import { blockFragment } from "../refs/block-reference";

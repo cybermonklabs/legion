@@ -36,7 +36,7 @@ import {
   UNASKED_SOURCES,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { VIEW_LOADING } from "../web/src/features/issue-page/view-loading-line";
 import { type FakeSession, getUnsubscribeCalls } from "./agents";
 import {
@@ -235,6 +235,7 @@ import {
 import { openIssue } from "./keyboard-issue";
 import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { settledScrollTop } from "./mermaid-helpers";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { sql } from "./psql";
 import {
   ANCHOR,
@@ -242,7 +243,7 @@ import {
   referenceAgent,
   seedReferenceWorld,
 } from "./reference-surfaces";
-import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
+import { navigateInApp } from "./sends";
 import {
   type Browser,
   type BrowserContext,
@@ -331,7 +332,7 @@ test("the first node starts on the first screen, with six nodes in full at 1440 
       const seed = requestWaiting ? "a request waiting" : "no request waiting";
       for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
         await page.setViewportSize(viewportAt(width));
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await gotoIssue(page, `/issues/${seeded.key}/conversation`);
         await expectIssuePageDrawn(page);
         await expect(identityBlock(page)).toContainText(MEASURED_TITLE);
         await expect(
@@ -677,7 +678,7 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
     // Outline sheet, at 390 px.
     for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectIssuePageDrawn(page);
       await expectOpeningLanded(page);
       await page.keyboard.press("t");
@@ -704,7 +705,7 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
     // The words box opens from its control with the caret in it, narrows the outline by `?q=`,
     // stays open while it holds words, and shuts back into its control once emptied and left.
     await page.setViewportSize(viewportAt(DESKTOP.width));
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expect(
       filterBox(page),
       "the words box is drawn before its control is pressed"
@@ -870,7 +871,7 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
     // leaving its bodies out of the walk.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const settling = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
@@ -969,7 +970,7 @@ test("documents open from Documents and are never rows of the outline @phone", a
     for (const size of [DESKTOP, PHONE]) {
       const where = `at ${size.width} px`;
       await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectIssuePageDrawn(page);
       await expect(nodeMenuButton(page), `the page draws a node menu ${where}`).toHaveCount(0);
       await openIssueActions(page);
@@ -1561,7 +1562,7 @@ function inventoryOutline(
 ): (mapping: ParentRowMapping) => Promise<void> {
   return async (mapping) => {
     const settling = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectLoadSettled(settling);
     if (width >= 1024) {
       await unfoldEveryBranch(page);
@@ -1807,7 +1808,7 @@ function inventoryViews(
         // The tree is drawn empty and fills as the reads land, so it is read once the page has
         // stopped reading, as `unfoldEveryBranch` asks of its caller.
         const settling = watchApiRequests(page);
-        await gotoIssue(page, `/issues/${key}`);
+        await gotoIssue(page, `/issues/${key}/conversation`);
         await expectLoadSettled(settling);
         if (width >= 1024) await unfoldEveryBranch(page);
         const first = nodeRows(page);
@@ -1875,7 +1876,7 @@ function inventoryViews(
                 // document's own copy control read as lost on the attempt and was found on the
                 // retry.
                 const settling = watchApiRequests(page);
-                await gotoIssue(page, `/issues/${key}`);
+                await gotoIssue(page, `/issues/${key}/conversation`);
                 await expectLoadSettled(settling);
                 zoomsInto.clear();
                 const rows = nodeRows(page);
@@ -1891,7 +1892,7 @@ function inventoryViews(
               } else if (!zoomsInto.has(into)) {
                 return false;
               } else {
-                await gotoIssue(page, `/issues/${key}`);
+                await gotoIssue(page, `/issues/${key}/conversation`);
               }
               if (!zoomsInto.has(into)) return into === 0;
               // A twisty opens a branch in place at every width, and zooming is the row's own key
@@ -1982,7 +1983,7 @@ async function carryEveryElement(
       state,
       views: inventoryViews(page, seeded.key, documents, size.width),
     });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     if (state.startsWith("closed")) await expectClosedClear(page, seeded.key);
     await writes(page, seeded, specName);
@@ -2260,8 +2261,8 @@ async function writeFromAnOpenIssue(
   // composer with an @ mention, and the new page's is Threads' New thread, which follows this part
   // too (`AWAITING_THREADS`).
 
-  // Back to the issue's own address, where the tree opens on the spec's nodes.
-  await gotoIssue(page, `/issues/${seeded.key}`);
+  // Back to Conversation's address, where the tree opens on the spec's nodes.
+  await gotoIssue(page, `/issues/${seeded.key}/conversation`);
   const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
 
   await nodeRow(page, blockNodeId(specSlug, requirementBlockId(3)))
@@ -2758,7 +2759,7 @@ test("every address of the old page still resolves and each new one opens its vi
 
     // `t e`, the Steps tab's chord, opens Details at its steps as `/steps` does (answer A).
     await resolves("t e", async () => {
-      await gotoIssue(page, `/issues/${seed.key}`);
+      await gotoIssue(page, `/issues/${seed.key}/conversation`);
       await expectOpeningLanded(page);
       await focusThePage(page);
       await page.keyboard.press("t");
@@ -3859,7 +3860,7 @@ async function openTree(browser: Browser): Promise<OpenedTree> {
   const context = await asReader(browser, "alice");
   const page = await context.newPage();
   await page.setViewportSize({ height: 900, width: 1280 });
-  await gotoIssue(page, `/issues/${seeded.key}`);
+  await gotoIssue(page, `/issues/${seeded.key}/conversation`);
   await expectOpeningLanded(page);
   await focusThePage(page);
   return { context, page, seeded };
@@ -5909,7 +5910,7 @@ test("a press on a row puts the caret where it lands @phone", async ({ browser }
       await test.step(`${width} px`, async () => {
         await page.setViewportSize(viewportAt(width));
         const traffic = watchApiRequests(page);
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await gotoIssue(page, `/issues/${seeded.key}/conversation`);
         await expectOpeningLanded(page);
         await expectLoadSettled(traffic);
         await expect(statement, "the statement's row takes no typing").toHaveAttribute(
@@ -6401,7 +6402,7 @@ test("a Rebuild by keyboard keeps the focus in the opened document", async ({ br
 test("a dialog opened from a row's act gives the focus back to the row", async ({ browser }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     const [thread = ""] = seeded.comments.threads;

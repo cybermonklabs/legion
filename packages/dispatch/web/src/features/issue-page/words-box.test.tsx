@@ -60,9 +60,11 @@ function StandInView({ route }: ViewSlotProps): ReactNode {
   );
 }
 
-/** Every view is a stand-in; Conversation is the outline itself, and Documents draws its list. */
+/** Every view is a stand-in, Dashboard among them; Conversation is the outline itself, and
+ *  Documents draws its list. */
 const STAND_INS: ViewSlots = {
   conversation: undefined,
+  dashboard: StandInView,
   decisions: StandInView,
   documents: undefined,
   plan: StandInView,
@@ -497,13 +499,16 @@ test("Dashboard, Threads or Documents drawn, t f turns Conversation on and opens
     [DOCUMENTS, DESKTOP_WIDTH, ""],
     [`${DOCUMENTS}?q=ab`, PHONE_WIDTH, "ab"],
   ] as const) {
-    // The chord lands on Conversation, whose stage is the outline.
+    // The chord lands on Conversation, at its own address (`/conversation`,
+    // dispatch://INFRA-5702/spec#b-r-new-page), whose stage is the outline.
     const view = drawPage(address, { outline: true, width });
     try {
       await screen.findByRole("searchbox", { name: "Filter files and documents" });
       await user.keyboard("tf");
       await waitFor(() =>
-        expect(where().textContent).toBe(`/issues/CORE-1${words === "" ? "" : `?q=${words}`}`)
+        expect(where().textContent).toBe(
+          `/issues/CORE-1/conversation${words === "" ? "" : `?q=${words}`}`
+        )
       );
       const holder = width === PHONE_WIDTH ? await screen.findByRole("dialog") : viewRow(view);
       await waitFor(() =>

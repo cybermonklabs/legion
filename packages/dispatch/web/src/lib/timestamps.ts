@@ -59,3 +59,14 @@ export function compareTimestamps(left: string, right: string): number {
   }
   return leftFraction < rightFraction ? -1 : 1;
 }
+
+/** Orders two times newest first, to the microsecond the server writes (`compareTimestamps`),
+ *  which `Date.parse` would cut to the millisecond and so tie. A time that cannot be read
+ *  (`isTimestamp`) is the oldest possible, so one with no readable time never outranks one that
+ *  has one, two such tie, and no time throws. */
+export function newestTimeFirst(first: string, second: string): number {
+  const firstRead = isTimestamp(first);
+  const secondRead = isTimestamp(second);
+  if (firstRead && secondRead) return compareTimestamps(second, first);
+  return Number(secondRead) - Number(firstRead);
+}

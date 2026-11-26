@@ -1,8 +1,8 @@
 /** the Spec view reads the server's stored decisions, ties and results */
 import type { Locator } from "@playwright/test";
 
+import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import {
   CONTROL_LABELS,
   DECLARED_WORDS,
@@ -20,7 +20,7 @@ import {
   VERIFICATION_WORDS,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import {
   answerAsk,
   createAsk,
@@ -239,7 +239,7 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
     // 1440 px, no view: in the Contents pane, at the left of the outline. The sentences are read
     // before the outline is waited for, so a slot that draws none fails on its own reading.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     const pane = contentsPane(page).getByTestId("issue-three-things");
     await expectTheThree(pane, "in the Contents pane at 1440 px");
     // The rows count what the filter row counts: the Plan control's count, and the Verification
@@ -338,7 +338,7 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
     // 390 px, no view: not above the outline, and in the sheet the Outline control opens, which
     // holds the three sentences, the two rows and the Contents list.
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect
       .poll(() => nodeRows(page).count(), { message: "no row is drawn at 390 px" })
@@ -362,7 +362,7 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
   // row's one line: this issue holds no plan task either, which is the first row's.
   await phase(browser, seedNoSummary, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     // The rows wait on every read the tree is built from, which the spec's blocks are one of:
     // until they answer a row draws its label alone, so the reading waits for the lines.
@@ -411,7 +411,7 @@ test("a Contents entry draws a node's first line, cut at a word", async ({ brows
     expect(indexed, "the seed's open question is none of the issue's asks").toBeDefined();
     words.set(openQuestion, indexed ?? "");
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     const entries = drawnContentsEntries(contentsPane(page));
     await expect
       .poll(() => entries.count(), { message: "the Contents pane draws no entry at 1440 px" })
@@ -482,7 +482,7 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
   await phase(browser, seedNoChildren, async (page, seeded) => {
     const question = await createAsk(seeded.key, { question: FACE_MOVING_QUESTION });
     await page.setViewportSize(size);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     if (phone) await outlineControl(page).click();
     await expect
       .poll(() => drawnContentsEntries(phone ? outlineSheet(page) : contentsPane(page)).count(), {
@@ -511,7 +511,7 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
       const late = await reader.newPage();
       await late.setViewportSize(size);
       // `commit`, because the page's load event waits on the held file.
-      await late.goto(`/issues/${seeded.key}`, { waitUntil: "commit" });
+      await late.goto(`/issues/${seeded.key}/conversation`, { waitUntil: "commit" });
       await expectIssuePageDrawn(late);
       if (phone) await outlineControl(late).click();
       const entry = (phone ? outlineSheet(late) : contentsPane(late)).locator(
@@ -571,7 +571,7 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
     // The outline draws the tree read by read, and the issue read alone puts a child first:
     // the whole outline's first row is read once the page has stopped reading.
     const traffic = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     const entry = contentsPane(page).locator(`[data-contents-entry="${question}"]`);
     await expect
       .poll(() => entry.count(), {
@@ -638,7 +638,7 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
     // 390 px: the list is in the Outline sheet, and a choice there goes to the node and closes
     // the sheet (`useContentsChosen`).
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await outlineControl(page).click();
     const chosen = outlineSheet(page).locator(`[data-contents-entry="${question}"]`);
@@ -688,7 +688,7 @@ test("a choice in the Outline sheet leaves the focused row below the sticky view
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const question = blockNodeId(specSlug, seeded.openQuestion.blockId);
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     const root = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement);
@@ -1169,7 +1169,7 @@ test("the Spec view draws statements alone, each parent once, and no check once"
     // With no view on, `f` steps to the decision's first chip and Enter follows it. The page's
     // reads are watched from that load on, so the keys below wait until they have settled.
     const followed = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await focusRow(page, decision);
     await page.keyboard.press("f");
@@ -1662,7 +1662,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
     // From the outline, `t s` leaves the focus on a statement of the view's tree, on screen. The
     // page's reads are watched from this load on, for the moves up the statements below.
     const reads = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await focusThePage(page);
     await page.keyboard.press("t");

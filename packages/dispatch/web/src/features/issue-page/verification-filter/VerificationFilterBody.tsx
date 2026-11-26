@@ -42,9 +42,10 @@ import { parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, useReleaseFocus } from "../IssueTree";
-import { chipName, type NodeChip, type TreeNode } from "../issue-tree";
+import type { NodeChip, TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { NODE_EDITED_MARKS } from "../NodeRow";
@@ -71,11 +72,11 @@ import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useFollowing } from "../slots/following";
 import { useAddressLanding } from "../spec-filter/address-landing";
+import type { CheckReading } from "../statement-rules";
 import { nodesInOrder } from "../tree-keys";
 import { moveToRow } from "../useTreeKeymap";
 import { ViewLoadingLine } from "../view-loading-line";
 import {
-  type CheckReading,
   STATEMENT_STATES,
   type StatementReading,
   shortCommit,

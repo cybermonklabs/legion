@@ -1,0 +1,150 @@
+{
+  "rows": [
+    {
+      "thread_id": "b1658546-ca10-43dc-85f8-3b73bd0ff574",
+      "kind": "message",
+      "ref": "/issues/ACME-1/messages/b1658546-ca10-43dc-85f8-3b73bd0ff574",
+      "issue": {
+        "key": "ACME-1",
+        "title": "Dashboard on today's issue page"
+      },
+      "project": "ACME",
+      "subject": "Planning started.",
+      "subject_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Planning started."
+              }
+            ]
+          }
+        ]
+      },
+      "reply": {
+        "id": "a3ca19fb-aa49-42ae-b386-5d097348145f",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "dashboard-planner",
+          "origin": {
+            "session_title": "Planner (dashboard)"
+          }
+        },
+        "first_line": "The plan is on its way.",
+        "created_at": "2026-11-25T22:25:00.359982Z"
+      },
+      "root_author": {
+        "kind": "session",
+        "id": "legion-daemon:ACME"
+      },
+      "read_through": "2026-11-25T22:25:00.347883Z",
+      "unread": true,
+      "unread_count": 1,
+      "version": 1
+    },
+    {
+      "thread_id": "ee53d1a3-8aba-482c-b588-fb8dd705cadd",
+      "kind": "message",
+      "ref": "/issues/ACME-1/messages/ee53d1a3-8aba-482c-b588-fb8dd705cadd",
+      "issue": {
+        "key": "ACME-1",
+        "title": "Dashboard on today's issue page"
+      },
+      "project": "ACME",
+      "subject": "The tiles read the results and the coverage.",
+      "subject_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "The tiles read the results and the coverage."
+              }
+            ]
+          }
+        ]
+      },
+      "reply": {
+        "id": "9cdec0cc-5b11-4ec3-9329-d0556ed45982",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "dashboard-planner",
+          "origin": {
+            "session_title": "Planner (dashboard)"
+          }
+        },
+        "first_line": "The children from the issue read.",
+        "created_at": "2026-11-25T22:25:00.320382Z"
+      },
+      "root_author": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "read_through": "2026-11-25T22:25:00.305619Z",
+      "unread": true,
+      "unread_count": 1,
+      "version": 1
+    },
+    {
+      "thread_id": "ed0a67b3-a35e-43cc-b2e5-702c95e29441",
+      "kind": "comment",
+      "ref": "/issues/ACME-1/comments/ed0a67b3-a35e-43cc-b2e5-702c95e29441",
+      "issue": {
+        "key": "ACME-1",
+        "title": "Dashboard on today's issue page"
+      },
+      "project": "ACME",
+      "subject": "Does the count drop as soon as I act?",
+      "subject_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Does the count drop as soon as I act?"
+              }
+            ]
+          }
+        ]
+      },
+      "reply": {
+        "id": "09fbeafd-5354-4f89-b22c-a0657cd6982a",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "dashboard-planner",
+          "origin": {
+            "session_title": "Planner (dashboard)"
+          }
+        },
+        "first_line": "It drops when the write lands, with no reload.",
+        "created_at": "2026-11-25T22:25:00.266635Z"
+      },
+      "root_author": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "read_through": "2026-11-25T22:25:00.23927Z",
+      "unread": true,
+      "unread_count": 1,
+      "version": 1
+    }
+  ],
+  "total": 3,
+  "limit": 0,
+  "offset": 0,
+  "as_of": "2026-11-25T22:25:12.682685Z"
+}

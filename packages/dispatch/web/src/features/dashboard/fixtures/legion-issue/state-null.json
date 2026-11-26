@@ -1,0 +1,8 @@
+{
+  "issue": "ACME-17",
+  "project": "ACME",
+  "configured": true,
+  "state": null,
+  "read": { "at": "2026-11-25T14:04:59.036214Z", "ok": true, "error": null },
+  "runs_revision": 0
+}

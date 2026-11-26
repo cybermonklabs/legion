@@ -20,6 +20,7 @@ import {
   pageQuietText,
   textMutedOnCanvas,
 } from "../../../theme/classes";
+import { waitingOnHuman } from "../../inbox/BlockedOnYou";
 import { useAgentText } from "../../refs/AgentName";
 import {
   PublishedReferenceNames,
@@ -29,10 +30,11 @@ import {
 import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
 import { APPROVAL_CHIP } from "../approval-chip-box";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
-import { chipName, type TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
@@ -54,7 +56,6 @@ import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { ViewLoadingLine } from "../view-loading-line";
-import { waitingOnReader } from "../waiting";
 import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
@@ -397,19 +398,25 @@ export function DecisionsFilterBody({
   const went = useRef<string | undefined>(undefined);
   const waiting = useMemo(() => waitingOrder(parts), [parts]);
   // Part N's stop at the header's approval control inside the cycle (its R5, the plan's ST-3):
-  // the documents whose open approval request waits on the reader, by P's one rule for it
-  // (`waiting.ts`), which reads the issue's open asks and who is reading; the order the last
-  // press read, where an item answered since is found; and whether the reads that say what
-  // waits hold their answers. Each is read as it stands at the press.
+  // the documents whose open approval request waits on the reader, by the turn rule every count
+  // of the reader's work reads (`waitingOnHuman`, which Dashboard's `readersTurn` reads), over
+  // the issue's open asks and who is reading, each on the document the header's approval control
+  // names (`IssuePropertiesRow.tsx`); the order the last press read, where an item answered since
+  // is found; and whether the reads that say what waits hold their answers. Each is read as it
+  // stands at the press.
   const approvals = useRef<readonly string[]>([]);
-  approvals.current = waitingOnReader(
-    issue,
-    reader,
-    undefined,
-    () => false,
-    undefined,
-    undefined
-  ).approvals;
+  approvals.current =
+    reader === undefined
+      ? []
+      : waitingOnHuman((issue.open_asks ?? []).filter((ask) => ask.state === "open"))
+          .filter((ask) => ask.kind === "approval" && ask.waiting_on_person === reader)
+          .map(
+            (ask) =>
+              ask.artifact_id ??
+              issue.artifacts?.find((artifact) => artifact.slug === ask.approval_artifact?.slug)
+                ?.id ??
+              issue.primary_artifact_id
+          );
   const order = useRef<readonly string[]>([]);
   const held = useRef(readsHeld);
   held.current = readsHeld;

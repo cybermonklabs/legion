@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry two optional members:
+  `MyReplyRow.root_author`, the `Actor` who wrote the thread's root (the ask's asker, the root
+  comment's author or the root message's author, a root the Legion daemon wrote reading as its
+  session `legion-daemon:<PROJECT>`), which an `agent` row leaves out, and `CheckBlock.serves`,
+  the references a check block's `serves` attribute names, as the block writes them and in its
+  order, left out where the block names none.
+time: 2026-11-25T20:43:11Z
+custom:
+    Issue: INFRA-5702

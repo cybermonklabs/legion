@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { createComment, createIssue, createProject, editArtifact, getArtifact } from "./api";
 import { PROJECT } from "./issue-layout-seed-support";
 import { requirementBlockId, specDocument } from "./issue-layout-seed-text";

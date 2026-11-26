@@ -296,7 +296,7 @@ function drawRowTools(
 // draw none, even with an editor of the spec open in the outline.
 test("with no view on and no document open the version control is not drawn", async () => {
   for (const address of [
-    "/issues/CORE-1",
+    "/issues/CORE-1/conversation",
     "/issues/CORE-1/decisions",
     "/issues/CORE-1/artifacts",
   ]) {
@@ -450,8 +450,9 @@ test("Compare shows the change view against the current text", async () => {
     const where = screen.getByTestId("where");
     await waitFor(() => expect(where).toHaveTextContent("/issues/CORE-1/artifacts/spec?v=1"));
     expect(where).toHaveAttribute("data-diffs", SPEC.id);
-    // The spec opened at that version, its change view on, goes back to the outline.
-    expect(where).toHaveAttribute("data-outline", "/issues/CORE-1");
+    // The spec opened at that version, its change view on, goes back to the outline, at
+    // Conversation's own address (dispatch://INFRA-5702/spec#b-r-new-page).
+    expect(where).toHaveAttribute("data-outline", "/issues/CORE-1/conversation");
     expect(
       within(screen.getByTestId("issue-version-control")).getByRole("button", {
         name: "Show version",

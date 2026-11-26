@@ -28,13 +28,20 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
+import {
+  anchorBlock,
+  anchorQuote,
+  type ChangeAnchor,
+  changeCommentInput,
+  keptDecisions,
+  readChangeAnchor,
+} from "../decision-card/change-anchor";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorBlock, anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -210,23 +217,14 @@ function DecisionControls({
     write: (id: string, bounds) =>
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     onSuccess: (kept) => {
+      const decisionsKey = issueDecisionsQuery(issueKey, true).queryKey;
       if (kept === null) {
-        void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
+        void queryClient.invalidateQueries({ exact: true, queryKey: decisionsKey });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
-        view === undefined
-          ? view
-          : {
-              ...view,
-              // The Keep is of the text this node showed, which the server took, so it applies
-              // to the row that still holds that text.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
-                  : row
-              ),
-            }
+      // The Keep is of the text this node showed, which the server took (`keptDecisions`).
+      queryClient.setQueryData<IssueDecisions>(decisionsKey, (view) =>
+        keptDecisions(view, kept, decision.text_sha256)
       );
     },
   });
@@ -342,21 +340,8 @@ function ChangeComposer({
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
-    // A comment on an issue's document is the issue's own write: the artifact route refuses it,
-    // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
-      api.createComment(
-        issueKey,
-        {
-          anchor: {
-            artifact: documentId,
-            occurrence: input.anchor.occurrence,
-            quote: input.anchor.quote,
-          },
-          body: input.body,
-        },
-        bounds
-      ),
+      api.createComment(issueKey, changeCommentInput(documentId, input), bounds),
     // The change is a comment of the issue's, and the comments read is what tells the page a
     // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
     // the review list and draws the change under it as soon as the comment lands.
@@ -413,26 +398,10 @@ function ChangeComposer({
         // takes it where the quote stands once, and refuses it where the quote stands more than
         // once, which the form says in the page's words with the draft kept.
         setReading(true);
-        void queryClient
-          .fetchQuery({
-            queryFn: () => api.getArtifactText(documentId),
-            queryKey: ["artifact", documentId, "text"],
-            staleTime: 0,
-          })
-          .then(
-            (text) => text.markdown_tree,
-            () => undefined
-          )
-          .then((tree) => {
-            setReading(false);
-            const anchor = changeAnchor(
-              decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-                ?.decisions,
-              tree
-            );
-            send.mutate({ anchor: anchor ?? { quote }, body });
-          });
+        void readChangeAnchor(queryClient, decision, documentId, issueKey, quote).then((anchor) => {
+          setReading(false);
+          send.mutate({ anchor, body });
+        });
       }}
     >
       <blockquote

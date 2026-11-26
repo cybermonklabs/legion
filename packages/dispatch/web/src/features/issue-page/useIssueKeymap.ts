@@ -124,23 +124,32 @@ function toggled(key: string, view: Preset, active: Preset): string {
 }
 
 /**
- * The chords of the view row, which are the `t` table of the spec's Design section for the five
+ * The chords of the view row, which are the `t` table of the spec's Design section for the six
  * views. Each one opens an address and puts the focus in what that address draws.
  *
- * `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification, Plan and Decisions views, and
- * `t c` is the conversation, the page with every view off; each leaves the focus in the
- * outline. A label names what the chord does on this page, in the view row's own names
- * (`PRESET_NAMES`).
+ * `t w` toggles Dashboard (dispatch://INFRA-5702/spec#b-r-new-page), which draws no outline, so
+ * it leaves the focus where it was. `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification,
+ * Plan and Decisions views, and `t c` is the conversation, the page with every view off; each
+ * leaves the focus in the outline. A label names what the chord does on this page, in the view
+ * row's own names (`PRESET_NAMES`). The table is exported for the inventory of the places that
+ * write Conversation's address (`issue-address.test.ts`).
  */
-const CHORDS: readonly {
+export const CHORDS: readonly {
   keys: string;
   label: string;
   /** The address the chord opens from the view on. */
   path: (key: string, active: Preset) => string;
-  part: keyof typeof PARTS;
+  /** The part the chord puts the focus in, where the address draws one. */
+  part?: keyof typeof PARTS;
   /** What names the binding, which is the tab the address was that tab's. */
   tab: IssueTab;
 }[] = [
+  {
+    keys: "t w",
+    label: `Turn ${PRESET_NAMES.dashboard} on or off`,
+    path: (key, active) => toggled(key, "dashboard", active),
+    tab: "dashboard",
+  },
   {
     keys: "t s",
     label: `Turn the ${PRESET_NAMES.spec} filter on or off`,
@@ -188,14 +197,14 @@ const CHORDS: readonly {
  */
 export function useIssueKeymap(issueKey: string): void {
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { hash, pathname, search } = useLocation();
   // Where `t a` and `t f` leave from (part N's R4).
-  const { search } = useLocation();
   const outline = useOutlineAddress(issueKey);
-  // The view the address has on, which a view's chord toggles from.
+  // The view the address has on, which a view's chord toggles from: the issue's own address is
+  // Dashboard's unless it names a node or words, so the whole address is read.
   const route = parseIssuePath(pathname);
   const active =
-    route === undefined ? "conversation" : issueAddress(route, "", "", undefined).preset;
+    route === undefined ? "conversation" : issueAddress(route, search, hash, undefined).preset;
   useKeymapScope("issue");
   useKeymap(
     "issue",
@@ -208,7 +217,7 @@ export function useIssueKeymap(issueKey: string): void {
         // The part is looked for once the address has drawn: the outline is the same element
         // under every view, and a row of the view being left would take the focus and then be
         // unmounted with it - a view draws its rows at another depth than the outline does.
-        requestAnimationFrame(() => reachPart(part));
+        if (part !== undefined) requestAnimationFrame(() => reachPart(part));
       },
     }))
   );
@@ -237,9 +246,9 @@ export function useIssueKeymap(issueKey: string): void {
       keys: "t f",
       label: "Filter by words",
       run: () => {
-        // Where the row draws no Filter, in the row or in its Outline sheet - on Documents, which
-        // draws no outline - the chord turns Conversation on with the words kept, and opens its
-        // box there (part N's R4, ST-1).
+        // Where the row draws no Filter, in the row or in its Outline sheet - on Documents and on
+        // Dashboard, which draw no outline - the chord turns Conversation on with the words kept,
+        // and opens its box there (part N's R4, ST-1).
         if (
           document.querySelector(PARTS.filter) === null &&
           document.querySelector(OUTLINE_CONTROL) === null

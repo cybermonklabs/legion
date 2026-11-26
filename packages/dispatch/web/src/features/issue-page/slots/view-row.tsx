@@ -17,10 +17,10 @@ import { useWhoIsReading } from "../useIssueTree";
 import { useViewRowTools } from "../view-row-tools";
 
 /**
- * The view row (R2, R11): Conversation with no count, the four filter controls with signals
- * from the issue's tree, and Keys (`IssuePresets.tsx`). Below 1024 px, with no view on, the
- * Outline control stands beside the one control (`contents-frame.tsx`). The row binds the
- * views' chords (`useIssueKeymap.ts`).
+ * The view row (R2, R11): Dashboard and Conversation with no count, the four filter controls
+ * with signals from the issue's tree, and Keys (`IssuePresets.tsx`). Below 1024 px, with no view
+ * on, the Outline control stands beside the one control (`contents-frame.tsx`). The row binds
+ * the views' chords (`useIssueKeymap.ts`).
  *
  * Signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves nodes
  * missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
@@ -38,7 +38,8 @@ import { useViewRowTools } from "../view-row-tools";
  * Part N adds the row's two small controls, the version control and the filter by words, before
  * Keys (`view-row-tools.tsx`), and below 1024 px the Outline sheet that holds them, with a view on
  * too, in place of D's Outline control. Documents draws no outline and so no sheet (root R14),
- * and neither does a document drawn as the stage.
+ * and neither do Dashboard (dispatch://INFRA-5702/spec#b-r-new-page) and a document drawn as the
+ * stage.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;

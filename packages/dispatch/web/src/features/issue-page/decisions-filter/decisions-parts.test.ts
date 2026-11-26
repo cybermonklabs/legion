@@ -7,7 +7,7 @@ import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
-import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
+import { nodeIdOf as issueNodeIdOf } from "../statement-rules";
 import {
   AGENT,
   answeredAsk,
@@ -48,7 +48,7 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
+/** How this issue addresses a node, which is the page's own rule (`statement-rules.ts`). */
 const nodeIdOf = issueNodeIdOf(issueDetails());
 
 /** The decisions document's blocks as the blocks read answers them: each decision's own block,
@@ -540,19 +540,19 @@ test("a decision that shaped three statements is one entry that reaches all thre
     {
       id: statement("s1").id,
       line: "The first statement holds.",
-      path: `/issues/${KEY}#b-s1`,
+      path: `/issues/${KEY}/conversation#b-s1`,
       stale: false,
     },
     {
       id: statement("s2").id,
       line: "The page draws s2.",
-      path: `/issues/${KEY}#b-s2`,
+      path: `/issues/${KEY}/conversation#b-s2`,
       stale: true,
     },
     {
       id: statement("s3").id,
       line: "The page draws s3.",
-      path: `/issues/${KEY}#b-s3`,
+      path: `/issues/${KEY}/conversation#b-s3`,
       stale: false,
     },
   ]);
@@ -583,14 +583,16 @@ test("each entry carries its address in the conversation and its parent's line",
   const under = parts.review.find((entry) => entry.node.id === D("under"));
   expect(under).toMatchObject({
     parent: { id: "q1", type: "ask" },
-    path: `/issues/${KEY}#b-under`,
+    path: `/issues/${KEY}/conversation#b-under`,
   });
   expect(under?.parent === undefined ? undefined : parentLinkWords(under.parent)).toBe(
     "On a phone, where does the box sit?"
   );
   expect(parts.review.find((entry) => entry.node.id === D("top"))?.parent).toBeUndefined();
 
-  expect(conversationPath({ reference: decisionRef("d1") })).toBe(`/issues/${KEY}#b-d1`);
+  expect(conversationPath({ reference: decisionRef("d1") })).toBe(
+    `/issues/${KEY}/conversation#b-d1`
+  );
   expect(conversationPath({})).toBeUndefined();
   expect(conversationPath({ reference: `dispatch://${KEY}` })).toBeUndefined();
 });

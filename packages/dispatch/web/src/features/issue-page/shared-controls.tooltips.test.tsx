@@ -1463,8 +1463,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     [
       "alice",
       localTime("2026-10-08T00:00:00Z"),
-      "Copy reference dispatch://CORE-1/ask/ask-2",
+      // The card's reference stands under the ask body, after its submit (INFRA-5702 R16).
       "Add a reason to send Request changes",
+      "Copy reference dispatch://CORE-1/ask/ask-2",
     ],
   ],
   // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
@@ -2113,6 +2114,7 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
+  "features/ask-body/AskBody.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
   "features/inbox/AskThread.tsx",

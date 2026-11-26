@@ -53,6 +53,7 @@ func treeOf(root *cobra.Command) string {
 // they are, `start` without --check-config, and the commands a program runs hidden. Each case
 // after the walk is a full invocation against a test double, with its exit code and effect.
 func TestLegionTreeGolden(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	got := treeOf(newRoot(io.Discard, io.Discard))
 	if *updateTree {
 		if err := os.WriteFile(treeGolden, []byte(got), 0o644); err != nil {

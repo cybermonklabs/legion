@@ -444,7 +444,7 @@ test("IssuePage focuses the node its address names, followed on the page or fres
     document.activeElement?.closest("[data-node-row]")?.getAttribute("data-node-id");
   const user = userEvent.setup();
   try {
-    const followed = renderIssuePage("/issues/CORE-1", "/issues/CORE-1/spec#b-r1");
+    const followed = renderIssuePage("/issues/CORE-1/conversation", "/issues/CORE-1/spec#b-r1");
     try {
       await waitFor(() => expect(row(followed.container)).not.toBeNull());
       await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
@@ -778,7 +778,7 @@ test("`/documents` and `/artifacts` draw Documents' list and no three sentences,
   const childRow = () => document.querySelector('[data-node-row][data-node-id="CORE-2"]');
   const tree = () => screen.queryByRole("tree", { name: CONTROL_LABELS.tree });
   try {
-    const conversation = renderIssuePage("/issues/CORE-1");
+    const conversation = renderIssuePage("/issues/CORE-1/conversation");
     try {
       await waitFor(() => expect(childRow(), "Conversation draws no child's row").not.toBeNull());
       expect(screen.getByTestId("issue-contents")).toBeInTheDocument();

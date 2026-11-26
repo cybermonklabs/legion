@@ -283,7 +283,7 @@ test("Escape from a document a chip opened returns to the chip's row with the fo
           ]
         : [comment]
   );
-  const { undraw, view } = drawPage(`/issues/${KEY}`, threads);
+  const { undraw, view } = drawPage(`/issues/${KEY}/conversation`, threads);
   const chipRow = `[data-issue-body] ${nodeRowSelectorOf("head-b")}`;
   const chipIn = () =>
     waitFor(() => {
@@ -296,7 +296,7 @@ test("Escape from a document a chip opened returns to the chip's row with the fo
     await waitFor(() => expect(address()).toBe(NOTES_ADDRESS));
     await focusTheNotes();
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(address()).toBe(`/issues/${KEY}`));
+    await waitFor(() => expect(address()).toBe(`/issues/${KEY}/conversation`));
     const chip = await chipIn();
     await waitFor(() => expect(chip, "the focus is not on the chip").toHaveFocus());
   } finally {

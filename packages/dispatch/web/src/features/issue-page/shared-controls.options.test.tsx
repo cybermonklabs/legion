@@ -2202,17 +2202,25 @@ test("the default shapes keep main's class strings", async () => {
       "relative rounded-xl border-l-4 shadow-sm px-4 pt-5 pb-4 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
     "AskCard urgency notch":
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-rose-800 dark:text-rose-300",
+    // The ask body's row (dispatch://INFRA-5702/spec#b-r-ask-body, root R34): the question's
+    // words, the bullet, the first line that holds them, the kind at its right end with the
+    // asker and the time, and the turn on its own line under the words. On a phone the first
+    // line's end stands under the words and wraps.
     "AskCard question":
-      "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
-    "AskCard asker line":
-      "@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the group of the turn and the asker.
-    "AskCard turn and asker":
-      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap",
-    "AskCard turn": "shrink-0 font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
-    // `main`'s features/inbox/AskCard.tsx: the turn an agent holds.
-    "AskCard turn, an agent's":
-      "min-w-0 truncate font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+      "min-w-0 flex-1 text-[15px] leading-relaxed font-medium max-[761px]:basis-full text-slate-900 dark:text-slate-100",
+    "AskCard bullet": "block size-[7px] rounded-full bg-page-question",
+    "AskCard first line":
+      "flex items-start justify-end gap-x-3 max-[761px]:flex-wrap max-[761px]:justify-start",
+    "AskCard kind": "shrink-0 font-semibold text-page-question",
+    "AskCard first line's end":
+      "flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start shrink-0 whitespace-nowrap text-slate-500 dark:text-slate-400",
+    "AskCard turn line": "mt-1.5 flex min-w-0 text-xs whitespace-nowrap",
+    "AskCard turn": "shrink-0 font-semibold text-slate-700 dark:text-slate-300",
+    // The turn an agent holds.
+    "AskCard turn, an agent's": "min-w-0 truncate font-semibold text-slate-700 dark:text-slate-300",
+    // The card's line of its reference and its copy handles, under the ask body.
+    "AskCard handles line":
+      "mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
     "AskCard asker":
       "flex min-w-0 items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the asker's `AgentName`, its class after `main`'s
@@ -2244,11 +2252,10 @@ test("the default shapes keep main's class strings", async () => {
       "relative rounded-xl border-l-4 shadow-sm px-3 pt-4 pb-3 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
     "AskCard compact urgency notch":
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-300",
-    "AskCard approval requested":
-      "text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400",
+    // An approval request's mark, beside the kind at the right end of the first line.
+    "AskCard approval requested": "shrink-0 font-semibold",
     "AskCard approval document":
       "mt-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
-    "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard reason label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
     // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
@@ -3109,13 +3116,24 @@ test("the default shapes keep main's class strings", async () => {
     classAt("AskCard card", article);
     classAt("AskCard urgency notch", article.querySelector(":scope > span[aria-hidden='true']"));
     classAt("AskCard question", article.querySelector(".dispatch-markdown")?.parentElement);
+    classAt("AskCard bullet", article.querySelector("[data-ask-bullet] > i"));
+    classAt(
+      "AskCard first line",
+      article.querySelector(".dispatch-markdown")?.parentElement?.parentElement
+    );
+    const kind = card.getByText("question", { exact: true });
+    classAt("AskCard kind", kind);
+    classAt("AskCard first line's end", kind.parentElement);
     const turn = card.getByTestId("turn-ask-1");
     classAt("AskCard turn", turn);
-    classAt("AskCard asker line", turn.parentElement?.parentElement);
-    classAt("AskCard turn and asker", turn.parentElement);
+    classAt("AskCard turn line", turn.parentElement);
     const asker = card.getByRole("button", { expanded: false, name: /Implementer/ });
     classAt("AskCard asker", asker);
     classAt("AskCard asker's name", asker.closest("[data-agent-name]"));
+    classAt(
+      "AskCard handles line",
+      card.getByRole("button", { name: /^Copy reference / }).parentElement?.parentElement
+    );
     const handOn = card.getByRole("combobox", { name: "Hand this question to" });
     classAt("AskCard hand-on line", handOn.parentElement?.parentElement);
     classAt(
@@ -3200,8 +3218,8 @@ test("the default shapes keep main's class strings", async () => {
     undraw(unsentReply);
   }
 
-  // A compact approval request: its label, its document, the disclosure of the reader's own
-  // words, and the reason Request changes asks for.
+  // A compact approval request: its label, its document, and the reason Request changes asks
+  // for.
   const approval = openAsk({
     approval: {
       artifact_id: "artifact-1",
@@ -3237,10 +3255,6 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt("AskCard approval requested", card.getByText("Approval requested"));
     classAt("AskCard approval document", card.getByRole("link", { name: /spec\.md/ }).closest("p"));
-    classAt(
-      "AskCard own words",
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    );
     await user.click(await card.findByRole("radio", { name: /Request changes/ }));
     classAt("AskCard reason label", await card.findByText("Reason (required)"));
     classAt("AskCard submit hint", card.getByText(/^Add a reason to send/));

@@ -14,7 +14,7 @@ import {
   specRef,
 } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId } from "../statement-rules";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import { drawnSlot, drawStage, focusedRow, rowTakesFocus, stubReads } from "./stage-fixtures";

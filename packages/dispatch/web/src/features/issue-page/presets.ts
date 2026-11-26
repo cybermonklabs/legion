@@ -35,14 +35,15 @@ import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
  * signals the filter row draws (`IssuePresets.tsx`) and the unit tests all read the same model.
  */
 
-/** One of the four filters: every control of the row but Conversation, which turns them off. */
+/** One of the four filters: every control of the row but Conversation, which turns them off,
+ *  and Dashboard, which draws no view of the tree (dispatch://INFRA-5702/spec#b-r-new-page). */
 // Part N's Documents is no filter either: it draws its list in the outline's place, and no
 // outline, words box or Contents pane (its R4).
-export type Filter = Exclude<Preset, "conversation" | "documents">;
+export type Filter = Exclude<Preset, "conversation" | "dashboard" | "documents">;
 
-/** Whether `preset` is a filter rather than the page with no filter on. */
+/** Whether `preset` is a filter rather than the page with no filter on or Dashboard. */
 export function isFilter(preset: Preset): preset is Filter {
-  return preset !== "conversation" && preset !== "documents";
+  return preset !== "conversation" && preset !== "dashboard" && preset !== "documents";
 }
 
 /** The kinds each filter draws as rows of its own (R2). */
@@ -293,7 +294,7 @@ export function filterSignals(
   const verification = view("verification");
   const decisions = view("decisions");
   // A check's state is the page's one reading of it, as the server reads its results
-  // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
+  // (`statement-rules.ts`'s `checkStanding`), so this flag and the Verification body count the same
   // checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");
   // The decisions of the review list (R35): an agent's decision that waits and that a link ties

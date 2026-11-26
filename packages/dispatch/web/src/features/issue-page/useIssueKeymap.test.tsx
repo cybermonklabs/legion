@@ -116,7 +116,7 @@ test("t a opens Documents' list with the focus on its first row", async () => {
 
 test("t f opens the words box with the caret in it", async () => {
   const user = userEvent.setup();
-  for (const address of ["/issues/CORE-1", "/issues/CORE-1/spec"]) {
+  for (const address of ["/issues/CORE-1/conversation", "/issues/CORE-1/spec"]) {
     const view = drawRow(address);
     try {
       await screen.findByRole("button", { name: "Filter" });

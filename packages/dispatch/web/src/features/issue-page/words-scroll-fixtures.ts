@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { withoutComments } from "../../theme/css-source";
+
 /** One rule of `styles.css`: its selector list, kept whole, since a comma inside `:is(…)`
  *  separates no selectors, and its declarations, each written `property: value`. */
 export interface StyleRule {
@@ -16,9 +18,8 @@ export interface StyleRule {
  * (`wordsScrollSheet`). Throws where `styles.css` holds none, so no case passes on no rules.
  */
 export function wordsScrollRules(): StyleRule[] {
-  const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    ""
+  const css = withoutComments(
+    readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8")
   );
   const rules = [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(
     ([, selectors = "", body = ""]) => {

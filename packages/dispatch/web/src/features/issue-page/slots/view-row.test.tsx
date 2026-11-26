@@ -68,7 +68,8 @@ function blocksWithStep(id: string): never {
 }
 
 /** The counts once every read has answered: two statements and no decisions, steps or checks.
- *  Conversation draws no count. */
+ *  Conversation draws no count, and neither does Dashboard: what waits on the reader is counted
+ *  in the header. */
 const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
   decisions: "0",
   plan: "0",
@@ -109,7 +110,7 @@ function answerReads() {
  *  the row of five. */
 function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation")) {
   const issue = issueDetails();
-  const route = { key: issue.key, kind: "issue" } as const;
+  const route = { key: issue.key, kind: "conversation" } as const;
   return render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>

@@ -1,7 +1,8 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
@@ -10,10 +11,18 @@ import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
-import type { AskRead, Decision } from "../../api/types";
+import type {
+  AskRead,
+  Decision,
+  DecisionKeep,
+  IssueDecisions,
+  IssueDetails,
+} from "../../api/types";
+import type { StatementWords } from "../decision-card/adapters";
+import { issueDecisionsQuery } from "../doc/spec-marks";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionCard, DecisionList } from "./DecisionCard";
-import type { DecisionMarginItem } from "./useMarginItems";
+import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -49,10 +58,19 @@ function item(decision: Partial<Decision>): DecisionMarginItem {
   };
 }
 
+/** A card's decisions here hold their statements' words, or shape none: no name is read. */
+const NO_EXCERPT = (): StatementWords => ({});
+
 function renderCard(decision: Partial<Decision>, onSelect: (id: string) => void = () => {}) {
   return render(
     <MemoryRouter>
-      <DecisionCard item={item(decision)} onSelect={onSelect} selected={false} />
+      <DecisionCard
+        issueKey="CORE-1"
+        item={item(decision)}
+        onSelect={onSelect}
+        selected={false}
+        statementExcerpt={NO_EXCERPT}
+      />
     </MemoryRouter>
   );
 }
@@ -79,6 +97,33 @@ test("an unsure decision is drawn in the unsure colour and says so; a person's s
     expect(card).toHaveAttribute("data-decision-unsure", "true");
     expect(screen.getByText("Unsure")).toBeDefined();
     expect(screen.getByText("A person's decision")).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+// An answer that carried no reading of the text - a pod of the build before this one, during a
+// rolling deploy - hands the card the decision's markdown alone, its heading line first. The card
+// draws the heading above the text, so the text leaves its heading out, as the Decisions tab's
+// renderer does: the heading is drawn once.
+test("a decision read with no reading of its text draws its heading once", async () => {
+  const { decision, ...rest } = item({
+    text: "## Store notices in a table\n\nA table keeps them through a restart.",
+  });
+  const view = render(
+    <MemoryRouter>
+      <DecisionCard
+        issueKey="CORE-1"
+        item={{ ...rest, decision: { ...decision, text_tree: undefined } }}
+        onSelect={() => {}}
+        selected={false}
+        statementExcerpt={NO_EXCERPT}
+      />
+    </MemoryRouter>
+  );
+  try {
+    expect(await screen.findByText("A table keeps them through a restart.")).toBeDefined();
+    expect(screen.getAllByText("Store notices in a table")).toHaveLength(1);
   } finally {
     view.unmount();
   }
@@ -119,7 +164,7 @@ test("a `#id` in the passage names the question of the decisions document", asyn
   const view = renderCard({ text: "Settled by #q2 before the rollout." });
   try {
     const linked = () =>
-      [...view.container.querySelectorAll("[data-markdown-preview] [data-dispatch-ref]")].map(
+      [...view.container.querySelectorAll("[data-decision-text] [data-dispatch-ref]")].map(
         (reference) => reference.getAttribute("data-dispatch-ref")
       );
     await waitFor(() => expect(linked()).toEqual(["dispatch://CORE-1/ask/ask-2"]));
@@ -155,7 +200,13 @@ test("before the engine answers, the card is named after its heading as written"
   const html = renderToString(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <DecisionCard item={item({})} onSelect={() => {}} selected={false} />
+        <DecisionCard
+          issueKey="CORE-1"
+          item={item({})}
+          onSelect={() => {}}
+          selected={false}
+          statementExcerpt={NO_EXCERPT}
+        />
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -175,6 +226,86 @@ test("selecting a decision card selects its margin item", async () => {
   }
 });
 
+const DOCUMENT_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const NO_PLACEMENTS: ReadonlyMap<string, MarkPlacement> = new Map();
+
+/** The margin's decisions as `useMarginItems` makes them, from the decisions read the page
+ *  holds: one decision beside two blocks of the spec is two cards. */
+function TwoCopies(): ReactNode {
+  const read = useQuery(issueDecisionsQuery("CORE-1", false));
+  const items = (read.data?.decisions ?? []).flatMap((decision) =>
+    ["p-plan", "p-test"].map((blockId) => ({
+      blockId,
+      decision,
+      documentId: DOCUMENT_ID,
+      id: `decision:${decision.block_id}:${blockId}`,
+      kind: "decision" as const,
+    }))
+  );
+  return (
+    <DecisionList
+      blockPlacements={NO_PLACEMENTS}
+      decisions={items}
+      hoveredItemId={undefined}
+      isClosed={false}
+      issueKey="CORE-1"
+      onSelect={() => {}}
+      selectedItemId={undefined}
+    />
+  );
+}
+
+// R21: a decision beside two statements draws two cards, each with Keep and Change. Both read
+// the one decisions read, so a Keep pressed on one is drawn on both. The document the Keep names
+// comes from the issue read and the decisions read the page holds, and the margin reads neither.
+test("Keep on one copy settles the other", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(["issue", "CORE-1"], {
+    artifacts: [{ id: DOCUMENT_ID, kind: "doc", primary: false, slug: "decisions-md" }],
+    key: "CORE-1",
+  } as unknown as IssueDetails);
+  client.setQueryData<IssueDecisions>(["decisions", "CORE-1"], {
+    decisions: [item({}).decision],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  });
+  const keep = spyOn(api, "keepDecision").mockResolvedValue({
+    artifact_id: DOCUMENT_ID,
+    block_id: "d-1",
+    changed_version: 2,
+    kept_at: "2026-10-03T00:00:00Z",
+    kept_by: "alice",
+  } satisfies DecisionKeep);
+  const view = render(
+    <MemoryRouter>
+      <TwoCopies />
+    </MemoryRouter>,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    const copies = screen.getAllByRole("article", { name: "Decision: Store notices in a table" });
+    expect(copies).toHaveLength(2);
+    const keeps = screen.getAllByRole("button", { name: "Keep" });
+    expect(keeps).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Change" })).toHaveLength(2);
+    await user.click(keeps[0] as HTMLElement);
+    await waitFor(() => expect(screen.queryAllByRole("button", { name: "Keep" })).toHaveLength(0));
+    expect(keep).toHaveBeenCalledTimes(1);
+    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([DOCUMENT_ID, "d-1", "sum-d-1"]);
+    expect(screen.getAllByText("Kept by alice")).toHaveLength(2);
+  } finally {
+    view.unmount();
+    keep.mockRestore();
+    client.clear();
+  }
+});
+
 // The decisions' region stands as tall as its lowest card and follows a card's height the moment
 // the card resizes, with no render of the list: a region that read the cards' heights at render
 // kept a card's earlier height until an unrelated render - a hover - read it again, and the
@@ -189,6 +320,8 @@ test("the decisions' region follows its card's height when the card resizes, wit
         blockPlacements={new Map([["p-plan", { pos: 5, top: 120 }]])}
         decisions={[decision]}
         hoveredItemId={undefined}
+        isClosed={false}
+        issueKey="CORE-1"
         onSelect={() => {}}
         selectedItemId={undefined}
       />

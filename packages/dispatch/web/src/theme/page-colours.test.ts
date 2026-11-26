@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { type ColorPair, PAGE_COLORS } from "./classes";
 import { oklchToSrgb8 } from "./contrast";
+import { type CssBlock, topLevelBlocks, withoutComments } from "./css-source";
 import type { Swatch } from "./palette";
 
 /**
@@ -76,41 +77,6 @@ const stylesCss = readFileSync(STYLES_CSS_PATH, "utf8");
 /** A declaration of either prefix that the table does not hold fails the test. */
 const TOKEN_NAME_PATTERN = /^--color-(?:page-|icon-rail)/;
 const DECLARATION_PATTERN = /(--[\w-]+)\s*:\s*([^;]*);/g;
-const COMMENT_PATTERN = /\/\*[\s\S]*?\*\//g;
-
-interface CssBlock {
-  /** The selector or at-rule before the block's `{`. */
-  readonly prelude: string;
-  readonly body: string;
-}
-
-/** The blocks at the top level of `css`, a stylesheet whose comments are removed. */
-function topLevelBlocks(css: string): CssBlock[] {
-  const blocks: CssBlock[] = [];
-  let depth = 0;
-  let preludeStart = 0;
-  let bodyStart = 0;
-  let prelude = "";
-  for (let index = 0; index < css.length; index++) {
-    const char = css[index];
-    if (char === "{") {
-      if (depth === 0) {
-        prelude = css.slice(preludeStart, index).trim();
-        bodyStart = index + 1;
-      }
-      depth++;
-    } else if (char === "}") {
-      depth--;
-      if (depth === 0) {
-        blocks.push({ prelude, body: css.slice(bodyStart, index) });
-        preludeStart = index + 1;
-      }
-    } else if (char === ";" && depth === 0) {
-      preludeStart = index + 1;
-    }
-  }
-  return blocks;
-}
 
 /** Each declaration of `block` whose name starts `--color-page-` or `--color-icon-rail`. */
 function tokenDeclarations(block: CssBlock): (readonly [name: string, value: string])[] {
@@ -168,7 +134,7 @@ function differences(
   return problems;
 }
 
-const topLevel = topLevelBlocks(stylesCss.replace(COMMENT_PATTERN, ""));
+const topLevel = topLevelBlocks(withoutComments(stylesCss));
 const themeBlocks = topLevel.filter((block) => /^@theme(?:\s|$)/.test(block.prelude));
 /** The file's other dark `:root`, the pre-hydration fallback's `color` and `background`, declares
  * no token, so `differences` passes over it. */

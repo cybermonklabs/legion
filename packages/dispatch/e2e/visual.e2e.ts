@@ -41,7 +41,7 @@
  *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
  *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
- *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are painted over as well, by the
+ *    Inbox.tsx`, `web/src/features/ask-body/EarlierApproval.tsx`) are painted over as well, by the
  *    page itself (`e2e/visual-time.css`; the mask list below says why that is not a mask). The
  *    cost is that the text of a timestamp is in no baseline; its place, its size and the layout
  *    around it still are.
@@ -77,6 +77,7 @@ import { type Browser, expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
 import {
+  listedRequests,
   phoneShotRoutes,
   type ReviewedRoute,
   type ReviewSeed,
@@ -190,7 +191,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
       // still resolving itself - each would compare clean against itself for ever after,
       // and the third is what two container runs of this corpus disagreed about
       // (`waitForRouteSettled`).
-      await waitForRouteSettled(page, route);
+      await waitForRouteSettled(page, route, listedRequests(page));
       // `soft`, so a row that fails in light still shoots dark and reports both. A hard
       // assertion throws out of the `SCHEMES` loop, so a change that moved both schemes was
       // reported as one, and the reader fixed light, re-ran, and met dark the round after.

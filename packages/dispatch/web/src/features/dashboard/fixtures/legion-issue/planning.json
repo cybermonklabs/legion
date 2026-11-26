@@ -1,0 +1,30 @@
+{
+  "issue": "ACME-2",
+  "project": "ACME",
+  "configured": true,
+  "state": {
+    "phase": "planning",
+    "phase_since": "2026-11-25T14:04:41.308496Z",
+    "phase_start_seen": false,
+    "roles": [
+      { "role": "role-failed", "state": "failed" },
+      { "role": "role-idle", "state": "idle" },
+      { "role": "role-launch-uncertain", "state": "launch_uncertain" },
+      { "role": "role-launching", "state": "launching" },
+      { "role": "role-queued", "state": "queued" },
+      { "role": "role-ready", "state": "ready" },
+      { "role": "role-registered", "state": "registered" },
+      { "role": "role-retired", "state": "retired" },
+      { "role": "role-shim-connected", "state": "shim_connected" },
+      { "role": "role-suspended", "state": "suspended" },
+      { "role": "role-unlisted", "state": "parked" },
+      { "role": "role-working", "state": "working" }
+    ],
+    "slot": null,
+    "waiting_line": null,
+    "blocked_by": [],
+    "waiting_on": null
+  },
+  "read": { "at": "2026-11-25T14:04:41.308496Z", "ok": true, "error": null },
+  "runs_revision": 0
+}

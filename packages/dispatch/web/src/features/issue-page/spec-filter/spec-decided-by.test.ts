@@ -9,7 +9,7 @@ import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
 import { publishingNames } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
-import { treeContext } from "../tree-drafts";
+import { treeContext } from "../target-naming";
 import {
   check,
   checkNode,

@@ -3,11 +3,12 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 import type { IssueDetails } from "../../api/types";
 import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference, shortForm } from "../refs/routes";
-import { chipName, drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
+import { chipName, drawnLine, firstLineOf } from "./first-line";
+import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 import { withoutDirectiveLines } from "./RowText";
 import { rowReferences } from "./row-references";
-import { treeContext } from "./tree-drafts";
+import { treeContext } from "./target-naming";
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its

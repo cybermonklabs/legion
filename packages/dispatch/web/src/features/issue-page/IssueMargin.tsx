@@ -18,6 +18,7 @@ import {
   pageQuietText,
   pageRowHoverBg,
 } from "../../theme/classes";
+import { useWaitingRequests } from "../dashboard/useWaitingItems";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
@@ -82,10 +83,8 @@ import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { useWhoIsReading } from "./useIssueTree";
 import { useMarginSections } from "./useMarginSections";
 import { usePriorityHandOffs } from "./usePriorityHandOffs";
-import { waitingOnReader } from "./waiting";
 
 /** The id of the Parent row's line that says why Dispatch refused a parent. */
 export const PARENT_ERROR_ID = "issue-parent-error";
@@ -468,12 +467,10 @@ export function IssueMarginPanel({
     )
   );
   // Approve and Request changes are here wherever no approval request waits on the reader,
-  // and in the header while one does: the approvals are all this reads of the count, so it
-  // hands it no decisions.
-  const viewer = useWhoIsReading().data?.login;
-  const approvalWaits =
-    waitingOnReader(issue, viewer, undefined, () => false, undefined, undefined).approvals.length >
-    0;
+  // and in the header while one does: the requests are the approval-request items of what waits
+  // on the reader (`useWaitingRequests`), the rule the header's count reads, so a stale approval
+  // moves no control (dispatch://INFRA-5702/spec#b-r-header-count).
+  const approvalWaits = useWaitingRequests(issue.key).length > 0;
   // The status as the header draws it: the one being saved while any caller's write of it is
   // in flight, so the page never says two statuses at once.
   const status = writes.pendingStatus ?? issue.status;

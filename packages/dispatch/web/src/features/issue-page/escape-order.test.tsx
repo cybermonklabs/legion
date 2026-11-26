@@ -47,7 +47,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { AppProviders, focusedRow, stubReads } from "./slots/stage-fixtures";
 import { ViewRowSlot } from "./slots/view-row";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId } from "./statement-rules";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { check, VERIFICATION_SLUG } from "./verification-filter/verification-fixtures";
 
@@ -752,14 +752,14 @@ test("a view on: one Escape turns every view off, and the outline draws the node
 
 test("a row of the outline focused, nothing above: one Escape leaves the outline", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     const row = await rowOf(view, "[data-issue-body]", "head-a");
     await focus(row);
     await user.keyboard("{Escape}");
     await waitFor(() => expect(focusedRow()).toBeUndefined());
     expect(document.activeElement).toBe(document.body);
-    expect(address()).toBe(`/issues/${KEY}`);
+    expect(address()).toBe(CONVERSATION);
     expect(where()).toHaveAttribute("data-move", "POP");
   } finally {
     view.unmount();
@@ -799,7 +799,7 @@ async function specOn(user: UserEvent): Promise<void> {
 
 test("the reader scrolls the outline: the place is recorded for the following it was scrolled in", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await rowOf(view, "[data-issue-body]", "head-a");
     scrollPage(200);
@@ -814,7 +814,7 @@ test("the reader scrolls the outline: the place is recorded for the following it
     await waitFor(() => expect(address()).toBe(`/issues/${KEY}/spec`));
     scrollPage(0);
     await user.click(screen.getByRole("button", { name: "Back" }));
-    await waitFor(() => expect(address()).toBe(`/issues/${KEY}`));
+    await waitFor(() => expect(address()).toBe(CONVERSATION));
     expect(window.scrollY, "Back put the later following's place back").toBe(480);
   } finally {
     view.unmount();
@@ -823,7 +823,7 @@ test("the reader scrolls the outline: the place is recorded for the following it
 
 test("a view press or chord: the outline's place is kept while the view draws", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await rowOf(view, "[data-issue-body]", "head-a");
     scrollPage(480);
@@ -851,7 +851,7 @@ test("Conversation press, t c, or Escape off the view: the outline's place is pu
     ["t c", () => user.keyboard("tc")],
     ["Escape", () => user.keyboard("{Escape}")],
   ] as const) {
-    const view = drawPage(`/issues/${KEY}`);
+    const view = drawPage(CONVERSATION);
     try {
       await rowOf(view, "[data-issue-body]", "head-a");
       scrollPage(480);
@@ -873,13 +873,13 @@ test("Conversation press, t c, or Escape off the view: the outline's place is pu
 test("Back to the outline address: the outline's place is put back", async () => {
   const user = userEvent.setup();
   // The browser's Back from a view.
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await rowOf(view, "[data-issue-body]", "head-a");
     scrollPage(480);
     await specOn(user);
     await user.click(screen.getByRole("button", { name: "Back" }));
-    await waitFor(() => expect(address()).toBe(`/issues/${KEY}`));
+    await waitFor(() => expect(address()).toBe(CONVERSATION));
     expect(window.scrollY).toBe(480);
   } finally {
     view.unmount();
@@ -905,7 +905,7 @@ test("Back to the outline address: the outline's place is put back", async () =>
 
 test("a new address, a link: the outline's place is not put back, and the address lands by its own rules", async () => {
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   try {
     await rowOf(view, "[data-issue-body]", "head-a");
     scrollPage(480);
@@ -960,7 +960,7 @@ function specWithNoStatement(): void {
 test("t s then t c: the outline's place is put back and the row the reader was on holds the focus", async () => {
   specWithNoStatement();
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   const boxes = layOutRows();
   try {
     await rowOf(view, "[data-issue-body]", "head-b");
@@ -988,7 +988,7 @@ test("t s then t c: the outline's place is put back and the row the reader was o
 test("a reader who scrolled away from the focused row: a round trip puts the place back and the first row on screen takes the focus", async () => {
   specWithNoStatement();
   const user = userEvent.setup();
-  const view = drawPage(`/issues/${KEY}`);
+  const view = drawPage(CONVERSATION);
   const boxes = layOutRows();
   try {
     await rowOf(view, "[data-issue-body]", "head-b");
