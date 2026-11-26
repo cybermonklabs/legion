@@ -54,14 +54,6 @@ loopback_database_url() {
   fi
 }
 
-# declared SECTION WHAT FILE SED: the one value SED prints out of a source file, refused when the
-# file or the declaration is gone, so a build that moved it moves the driver that reads it.
-declared() {
-  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
-  answer="$(sed -n "$4" "$3")"
-  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
-}
-
 # require_commands COMMAND…: refuses the first named command that is not on PATH.
 require_commands() {
   local command

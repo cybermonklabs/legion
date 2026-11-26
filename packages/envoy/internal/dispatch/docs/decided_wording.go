@@ -326,17 +326,20 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 		// The restored ask's parts are its question, its restored options and the answer the
 		// decision was given on, which the restore leaves on the row. Their write is queued
 		// after the restore's, so the trigger that marks the ask's parts owed on that update has
-		// already run when this index clears it.
+		// already run when this index clears it, and after the question's, so the statement that
+		// ends the parts' index settles the ask's row of the forms queue after both deletes
+		// (refs.ItemIndexing.SettlingForms).
 		ask := model.Ask{
 			ID:       wording.ask,
 			Question: wording.wording.Question,
 			Options:  wording.wording.Options,
 			Answer:   wording.answer,
 		}
-		indexing, err := planAskPartIndex(ctx, tx, reader, ask, at)
+		indexing, _, err := planAskPartIndex(ctx, tx, reader, ask, at)
 		if err != nil {
 			return nil, fmt.Errorf("index the parts of the restored ask %s: %w", wording.ask, err)
 		}
+		indexing = indexing.SettlingForms()
 		steps = append(steps, func(b *store.WriteBatch) error {
 			indexing.Queue(b)
 			return nil

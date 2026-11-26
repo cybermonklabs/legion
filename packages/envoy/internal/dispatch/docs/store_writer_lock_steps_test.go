@@ -226,7 +226,7 @@ const (
 	// their base attributes and moves them onto the cause in the same statement (queueAppend).
 	docsTupleStatement = "with written as ("
 	// docsCursorStatement is the block-index tick's move of its build's event cursor row, which
-	// records the build's marking rule, whether the tick found another build, and the debt of the
+	// records the build's marking rule, whether the tick found another build and the debt of the
 	// object pass with it.
 	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id, marking_rule, another_build_seen, object_nodes_owed_at)"
 	// docsMarkingStatement is the block-index tick's marking (markVersionedDocuments), which takes
@@ -271,7 +271,7 @@ func (r *docsWriterRig) tick() docsWriter {
 			r.recordEvent(t, ctx, "artifact.created", map[string]any{"artifact": map[string]any{"id": document}})
 			r.awaitDurable(t, document)
 			return docsRun{document: document, write: func() error {
-				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, owedDocument{id: document, version: 1})
+				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, owedDocument{id: document, version: 1}, nil)
 				if err != nil {
 					return err
 				}

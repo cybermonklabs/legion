@@ -323,7 +323,8 @@ func (s *server) planParentStatusFixUnderLocks(ctx context.Context, steps []pare
 	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(again))}
 	for index := range again {
-		again[index].title = rows[again[index].key].title
+		row := rows[again[index].key]
+		again[index].title, again[index].project = row.title, row.project
 		writes.steps = append(writes.steps, again[index].issueWriteStep)
 	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, parentStatusFixWriter(), writes)

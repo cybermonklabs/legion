@@ -22,11 +22,26 @@ import (
 // named something the server cannot narrow to one thing, and the caller picks. The page that
 // lists the candidates is the dashboard's, rendered from this answer; there is no route of its
 // own to read them from.
-func writeAmbiguousID(w http.ResponseWriter, ambiguous *refs.ErrPrefixAmbiguous) {
+//
+// A caller that asked for the trees (wantsDisplayTrees) is given each candidate's first line with
+// its tree beside it, as every other stored text is given: the head of an ask's question, of a
+// comment's or a message's body, or of a block's text. A document's first line is its file's
+// name, which the dashboard draws as the characters it is, so it has none. A first line is a cut,
+// which the table holds no row of, so the ten candidates at most are read where they stand
+// (shapeBuilt).
+func writeAmbiguousID(w http.ResponseWriter, ambiguous *refs.ErrPrefixAmbiguous, trees bool) {
+	candidates := ambiguous.Candidates
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		for index := range candidates {
+			if candidate := &candidates[index]; candidate.Kind != "artifact" {
+				reader.text(&candidate.FirstLineTree, candidate.FirstLine)
+			}
+		}
+	})
 	WriteJSON(w, http.StatusConflict, map[string]any{
 		"error":      ambiguous.Error(),
 		"code":       contracts.IDAmbiguous,
-		"candidates": ambiguous.Candidates,
+		"candidates": candidates,
 	})
 }
 
@@ -132,7 +147,9 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 			return
 		}
 		r = r.WithContext(withReader(r.Context(), who))
-		viewer := refs.Viewer{Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session"))}
+		viewer := refs.Viewer{
+			Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session")), Origins: s.deps.Origins,
+		}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {
@@ -181,7 +198,7 @@ func (s *server) resolvePathValue(
 ) bool {
 	whole, err := s.wholeID(r.Context(), kind, scope, prefix, who, viewer)
 	if err != nil {
-		s.writeIDPrefixError(w, err)
+		s.writeIDPrefixError(w, r, err)
 		return false
 	}
 	if whole == "" {
@@ -220,12 +237,12 @@ func (s *server) wholeID(
 }
 
 // writeIDPrefixError writes what wholeID could not resolve a prefix through: the 409 of a prefix
-// two items or more carry, listing them (writeAmbiguousID), and otherwise the 500 of a database
-// that could not be read.
-func (s *server) writeIDPrefixError(w http.ResponseWriter, err error) {
+// two items or more carry, listing them with the trees r asked for (writeAmbiguousID), and
+// otherwise the 500 of a database that could not be read.
+func (s *server) writeIDPrefixError(w http.ResponseWriter, r *http.Request, err error) {
 	var ambiguous *refs.ErrPrefixAmbiguous
 	if errors.As(err, &ambiguous) {
-		writeAmbiguousID(w, ambiguous)
+		writeAmbiguousID(w, ambiguous, wantsDisplayTrees(r))
 		return
 	}
 	s.writeHandlerError(w, err)

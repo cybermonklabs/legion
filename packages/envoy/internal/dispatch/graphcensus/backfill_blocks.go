@@ -32,8 +32,9 @@ type blockRow struct {
 // store holds. A block whose address is past refs.MaxBlockNodeBytes is no node of the store by
 // design, so it is neither written nor counted as skipped: the writers leave it unprojected too.
 // A row a version write deleted after its batch was read is not written either
-// (writeBlockBatch), and is counted nowhere: it is no row of the database any more. Each batch is
-// p's, and p paces the pass (pacer).
+// (writeBlockBatch), and is counted nowhere: it is no row of the database any more. A row whose
+// document is between a party graphstore.PartiesValue refuses is skipped (partiesRefused). Each
+// batch is p's, and p paces the pass (pacer).
 func backfillBlocks(ctx context.Context, database *store.Store, rule int, p *pacer) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	// The documents the run marked, each once however many of its batches marked it.

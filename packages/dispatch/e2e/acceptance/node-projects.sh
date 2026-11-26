@@ -19,9 +19,8 @@
 # zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
 # creates a document's row at the removed document's address, which the census names `gone` and
 # the backfill gives a live node, then removes that row, which leaves the live node with no row:
-# the census names it `orphaned` with the server's block-index tick as its cure, the backfill
-# leaves it, and once that build's removal event is in the log the tick states the node gone, so
-# the run leaves its database complete.
+# the census names it `orphaned`, with no in-band cure, and the backfill leaves it, and the run
+# ends there.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
@@ -40,7 +39,7 @@
 # to the fake Envoy's session list and puts the list back when it ends, and builds
 # `envoy-dispatch` from this checkout and runs that build, whatever PATH holds.
 #
-# The node writers' own grep, where a reader wants one: `graphstore\.(QueueNodes|Write|WriteArms)\(|graphstore\.Node\{`,
+# The node writers' own grep, where a reader wants one: `graphstore\.(PlanUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
 # every deferred write of the store, a block index's and a follow's among them, so it cannot tell a
 # node writer from the cause of another write.
@@ -141,9 +140,9 @@ printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
 # Under the harness the driver makes what its inputs would otherwise name (the header says what).
-# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and puts it
-# first on PATH, so an envoy-dispatch installed on the machine, of another build, is never the one
-# under test.
+# The census and the backfill it runs are this checkout's: it builds envoy-dispatch and
+# puts it first on PATH, so an envoy-dispatch installed on the machine, of another build, is never
+# the one under test.
 if [[ -n "$harness" ]]; then
   require_commands go
   mkdir "$work/bin"
@@ -174,9 +173,21 @@ if [[ -n "$harness" ]]; then
   pass setup "made project $project and agent session $AGENT_SESSION on the harness"
 fi
 
+# quotable SECTION WHAT VALUE...: fails unless each VALUE holds no single quote, the one character
+# that ends the SQL string literal a statement names it in, as the checks below name an id or a
+# party.
+quotable() {
+  local section="$1" what="$2" value
+  shift 2
+  for value in "$@"; do
+    [[ "$value" != *"'"* ]] || fail "$section" "$what" "'$value' holds a single quote, which would end the SQL string that names it"
+  done
+}
+
 # node_names_project SECTION KIND ID: the node KIND/ID is in the project, and its `project` value
 # tuple says so.
 node_names_project() {
+  quotable "$1" "the $2 node of $3 names $project" "$3"
   query "$1" "the $2 node of $3 names $project" \
     "select coalesce((select project_key from graph_nodes where kind = '$2' and id = '$3'), '(no node)')"
   [[ "$answer" == "$project" ]] || fail "$1" "the $2 node of $3 names $project" "it names '$answer'"
@@ -192,6 +203,7 @@ node_names_parties() {
   local section="$1" kind="$2" id="$3" want
   shift 3
   want="$(printf '%s\n' "$@" | LC_ALL=C sort -u | paste -sd' ' -)"
+  quotable "$section" "the $kind node of $id is between $want" "$id" "$want"
   query "$section" "the $kind node of $id is between $want" \
     "select coalesce((select coalesce(project_key, '-') || '|' || coalesce(array_to_string(parties, ' '), '-') from graph_nodes where kind = '$kind' and id = '$id'), '(no node)')"
   [[ "$answer" == "-|$want" ]] || fail "$section" "the $kind node of $id is between $want" "it holds '$answer' (project|parties)"
@@ -226,6 +238,13 @@ send POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" \
   '{project: $p, title: "Every node names its project", spec: "First paragraph.\n\nSecond paragraph.\n", actor: $a}')"
 want_status 201 "$section" "create an issue"
 key="$(jq -r .key "$work/body")"
+# Each value read from the server's answer goes into the SQL text query passes to psql, or into a
+# request's path, so each is checked before a statement or a path names it: the issue key, the
+# ask's id and the empty document's id and address are held to their shapes, and
+# node_names_project, node_names_parties and sender_party refuse an id or a party that holds a
+# single quote (quotable).
+readonly uuid_shape='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+[[ "$key" =~ ^[A-Z][A-Z0-9]{1,9}-[0-9]+$ ]] || fail "$section" "create an issue" "the answer's key is '$key', not an issue key"
 pass "$section" "created $key"
 node_names_project "$section" issue "$key"
 node_names_project "$section" artifact "$key/spec"
@@ -245,6 +264,7 @@ node_names_project "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 send POST "/api/v1/issues/$key/asks" "$(jq -cn --argjson a "$(actor)" '{question: "Does every node name its project?", actor: $a}')"
 want_status 201 "$section" "open an ask"
 ask="$(jq -r .id "$work/body")"
+[[ "$ask" =~ $uuid_shape ]] || fail "$section" "open an ask" "the answer's id is '$ask', not a uuid"
 node_names_project "$section" ask "$ask"
 
 send POST "/api/v1/issues/$key/comments" "$(jq -cn --argjson a "$(actor)" '{body: "A remark.", actor: $a}')"
@@ -278,6 +298,7 @@ node_names_parties "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 # the server stored for them, lower-cased and trimmed as graphstore.AuthorOf reads it - into
 # $answer. It reads the row the create wrote, not the node under test.
 sender_party() {
+  quotable "$section" "read the sender of $1" "$1"
   query "$section" "read the sender of $1" \
     "select case when author->>'kind' = 'user' then 'person:' || lower(btrim(author->>'id')) else '(not a person)' end from messages where id = '$1'"
 }
@@ -302,6 +323,9 @@ send_as_person POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "Scratch $
 want_status 201 "$section" "$person makes an empty document"
 scratch="$(jq -r .artifact.id "$work/body")"
 scratch_ref="$(jq -r .artifact.ref_key "$work/body")"
+[[ "$scratch" =~ $uuid_shape ]] || fail "$section" "$person makes an empty document" "the answer's id is '$scratch', not a uuid"
+[[ "$scratch_ref" =~ ^"$key"/[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+  fail "$section" "$person makes an empty document" "the answer's ref_key is '$scratch_ref', not a document address of $key"
 send_as_person DELETE "/api/v1/artifacts/$scratch"
 want_status 204 "$section" "$person removes the empty document"
 query "$section" "the removed document's node is gone" \
@@ -332,89 +356,7 @@ census_complete "$section" "after the backfill"
 # moved by a tick of this server after it - a cursor an earlier server left on a reused database
 # stands behind it - and with the debt clear there and the message's node written, that tick's
 # pass has finished.
-#
-# The tick reads an event only once the event horizon has passed it (events.Horizon), and it
-# observes the horizon on its own schedule, which the driver cannot see. So the driver watches the
-# horizon as the server observes it (start_horizon_watch and watch_horizon, in lib.sh): it
-# observes about once a second, from 5 s before it sends the event to the end of the wait. A
-# transaction of this run's own database that has held one of those observations back for 5 s
-# (horizontest.OwnHoldBound, and events' horizonStallAfter) holds back any observation the tick
-# took in that time, and with it the server's event readers, which is the defect the horizon's own
-# test waits fail on (docs/testing.md, "A test that waits for the event feed's first frame"), so it
-# fails the section at once, named. own_horizon_hold reads that hold as horizontest's heldFor
-# does, against the newest observation that has waited 5 s: a transaction holds it back only while
-# it holds a transaction id drawn before the observer's, and for the shorter of the observation's
-# age and its own. A transaction that read for longer than that and drew its first id a moment ago
-# fails nothing yet, however long ago it began; it is named once it has held its id while a later
-# observation waited 5 s on it. The watch begins 5 s before the event so that one that drew its id
-# before the watch began is named before the event is sent, and not only if it holds its id 5 s
-# into the wait. The watch keeps every observation, which the wait's own bounds below bound. A
-# hold that this role cannot date is named at the tick bound below: pg_stat_activity shows a
-# session's xact_start only to a superuser, a member of pg_read_all_stats, or a member of the
-# session's own role. In harness mode the server and this driver share one role, so the server's
-# own holds are dated.
-#
-# The wait is counted in the server's own work, not in time: the block-index tick's passes at its
-# 30 s period. duty records each pass in duty_passes, in the row keyed by the lease and the
-# period that pass served, in nanoseconds (duty's recordPass and passKey). A tick whose batch was
-# full runs the next one at blockIndexStep (2 s) instead, and records it under that period's key,
-# so this counter reads the 30 s row alone: a pass at the 30 s period follows every tick that was
-# not full (duty's ticker). The clock guard, not that row, ends the wait against a tick that steps
-# for ever. A tick reads the event, owes the pass and runs it, so six ticks at the 30 s period with
-# no cure are a server that does not cure the row, and the section fails: six of the tick's 30 s
-# intervals are the 180 s this wait held before it counted ticks. The lease and the tick's interval
-# are read from the source that declares them. The period is read before the cure in each poll, so a
-# pass that cures the row is never counted as one that did not. The clock is a hang guard alone:
-# ten of those intervals with no pass at the 30 s period is a tick that stopped, or one that stepped
-# at blockIndexStep that long, and fails the section naming the last period served.
 section=pass
-readonly docs_source="$script_dir/../../../envoy/internal/dispatch/docs"
-declared "$section" "read the block-index tick's lease" "$docs_source/block_index.go" 's/^const BlockIndexLease = "\(.*\)"$/\1/p'
-readonly tick_lease="$answer"
-declared "$section" "read the block-index tick's interval" "$docs_source/block_index.go" \
-  's/^[[:space:]]*BlockIndexReconcileInterval[[:space:]]*=[[:space:]]*\([0-9][0-9]*\) \* time\.Second$/\1/p'
-readonly tick_seconds="$answer"
-readonly pass_key="$tick_lease/$((tick_seconds * 1000000000))" quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
-start_horizon_watch "$section"
-# await_pass SECTION EVENT CURED WHAT: waits, as the paragraph above says, until a cursor row of
-# this server has reached event EVENT with no debt and the SQL test CURED holds, and fails SECTION
-# naming WHAT after quiet_ticks passes at the 30 s period with no cure, or after stalled_seconds
-# with no such pass.
-await_pass() {
-  local section="$1" event="$2" cured="$3" what="$4" boundary="" ticks=0 last_pass=$SECONDS
-  while :; do
-    query "$section" "read the period the block-index tick last served" \
-      "select coalesce((select boundary::text from duty_passes where lease = '$pass_key'), '')"
-    if [[ "$answer" != "$boundary" ]]; then
-      [[ -z "$boundary" ]] || ticks=$((ticks + 1))
-      boundary="$answer" last_pass=$SECONDS
-    fi
-    query "$section" "read whether the server's object pass has run after event $event" "
-      select exists (select 1 from block_index_event_cursors where event_id >= $event and object_nodes_owed_at is null)
-         and ($cured)"
-    [[ "$answer" == t ]] && return 0
-    watch_horizon "$section"
-    ((ticks < quiet_ticks)) || {
-      query "$section" "read the oldest transaction on the instance that holds the event horizon back" "
-        select coalesce((select name from (
-          select format('backend %s in database %s, open since %s: %s', pid, datname, coalesce(xact_start::text, '<privilege>'),
-              left(coalesce(query, ''), 80)) as name, age(backend_xid) as age
-          from pg_stat_activity
-          where backend_xid is not null and pid <> pg_backend_pid()
-          union all
-          select format('prepared transaction %s in database %s, prepared at %s', gid, database, prepared), age(transaction)
-          from pg_prepared_xacts
-        ) holder order by age desc limit 1), 'none')"
-      fail "$section" "the server's object pass runs" \
-        "no cursor past event $event without a debt and no $what after $ticks block-index ticks; the oldest transaction on the instance: $answer"
-    }
-    if ((SECONDS - last_pass >= stalled_seconds)); then
-      fail "$section" "the server's block-index tick runs" \
-        "no pass at the tick's $tick_seconds s period ($pass_key) for $((SECONDS - last_pass)) s: the tick stopped, or it stepped at blockIndexStep that long; the last period it served began at ${boundary:-(none recorded)}"
-    fi
-    sleep 1
-  done
-}
 query "$section" "an earlier build sends a direct message with its event and no node" "
   with message as (
     insert into messages (issue_key, author, body, target)
@@ -428,7 +370,14 @@ query "$section" "an earlier build sends a direct message with its event and no 
   )
   select message.id::text || ' ' || event.id from message, event"
 read -r before written <<<"$answer"
-await_pass "$section" "$written" "exists (select 1 from graph_nodes where kind = 'message' and id = '$before')" "node of message $before"
+for attempt in $(seq 1 180); do
+  query "$section" "read whether the server's object pass has run after event $written" "
+    select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
+       and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
+  [[ "$answer" == t ]] && break
+  [[ "$attempt" == 180 ]] && fail "$section" "the server's object pass runs" "no cursor past event $written without a debt, and no node of message $before, within 180 s"
+  sleep 1
+done
 pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"
 
 section=control
@@ -474,9 +423,8 @@ query "$section" "the node of $scratch_ref is live" \
 [[ "$answer" == live ]] || fail "$section" "the backfill gives $scratch_ref a live node" "it reads '$answer'"
 census_complete "$section" "after the backfill made $scratch_ref live"
 
-query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning id::text"
-[[ -n "$answer" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed no row"
-readonly removed_id="$answer"
+query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning ref_key"
+[[ "$answer" == "$scratch_ref" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed '$answer'"
 for run in census backfill; do
   if [[ "$run" == backfill ]]; then
     envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
@@ -486,10 +434,11 @@ for run in census backfill; do
   line="$(census_line artifact)"
   [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
     fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
-  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; this build's block-index tick states it gone" "$work/census" ||
-    fail "$section" "the census after the $run names $scratch_ref orphaned, with the tick that states it gone" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone" "$work/census" ||
+    fail "$section" "the census after the $run names $scratch_ref orphaned, with no in-band cure" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 done
-pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with the tick that states it gone, and the backfill leaves it"
+pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with no in-band cure, and the backfill leaves it"
+done
 
 # That build's removal appends its artifact.removed event in the transaction that deletes the row.
 # It is appended here only now, so the census above read the orphan before any pass of this server

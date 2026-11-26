@@ -532,7 +532,8 @@ export function listPriorities(
 }
 
 /** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
- *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
+ *  title, as the title's slug cut to `PRIORITY_ID_MAX` (200) characters at the end of a word when
+ *  it is longer, and refuses a second write of that id with 409 PRIORITY_EXISTS. */
 export function createPriority(
   input: Body<"/api/v1/priorities", "post">,
   options: ApiOptions = {}
@@ -911,6 +912,17 @@ export async function documentBase(
 /** The blocks of the document's current version, each with the span of markdown it covers. */
 export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
+}
+
+/** `GET /api/v1/references/questions` for a document's own text: each question block the
+ *  document's latest version declares, with the ask the server settled for it and that ask's
+ *  address, which is what a `#id` in a text of that document's scope names. */
+export function getDocumentQuestions(artifactID: string, options: ApiOptions = {}) {
+  return get(
+    "/api/v1/references/questions",
+    { query: { id: artifactID, kind: "artifact" } },
+    options
+  );
 }
 
 /** The same markdown by the slug route, `GET /api/v1/issues/{key}/artifacts/{slug}/text`. */

@@ -730,12 +730,18 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // already stored, whose row the reader reads for itself (refs.ScopeOf). It is read only if a
 // part holds a `#` candidate, and a route that reconciles the ask's question too hands the same
 // one to both readers, so the two of them read it once.
+//
+// questionReconciled says the route queued the reconciliation of the ask's question before this
+// call, so the parts' statements settle the ask's row of the forms queue; a route that writes the
+// parts alone - an answer, a resolution, a restoration - passes false, and the parts' step
+// reconciles the question's references after them and settles it there (planAskPartsCounted).
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	origins text.Origins,
 	document *refs.PendingDocument,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
 	if l.writer == nil {
@@ -753,7 +759,7 @@ func (l *Ledger) QueueAskParts(
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, origins, document)
-	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
+	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -1081,9 +1087,16 @@ func (l *Ledger) commit(ctx context.Context) error {
 		captures = append(captures, flushCapture(flush))
 	}
 	// Each write leaves its room a shadow (roomShadow), installed by the commit under its state's
-	// lock, after the flushes' classes are marked stored.
+	// lock, after the flushes' classes are marked stored. The shadow's document is the write's
+	// fork, so here is the last point the fork is the write's own, where its rendering is checked
+	// (checkRendering): once the commit drops the document's advisory lock, the room's worker
+	// stores the browser updates that lock held back and measures each on the shadow
+	// (roomShadow.measure), before the publish or after it.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
+		if l.service.checkRendering != nil {
+			l.service.checkRendering("commit", write)
+		}
 		if shadow := write.newShadow(); shadow != nil {
 			captures = append(captures, roomCapture{room: artifactID, capture: authorCapture{state: write.state}, shadow: shadow})
 		}

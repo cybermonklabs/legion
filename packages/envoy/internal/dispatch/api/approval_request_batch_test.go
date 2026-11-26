@@ -164,7 +164,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (queueNewAskReferences, through refs.PlanReplace);
 //  21. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  22. a batch of 19: the whole write phase, sent back to back - the ask's node, in its
+//  21. a batch of 19: the whole write phase, sent back to back - the ask's node, in its
 //     document's project, which costs no read of its own since the document was read with its
 //     project, in the three statements of the store's node write (graphstore.QueueNodes: the
 //     insert, the check that no node moves project, and the move), the ask row, its block state

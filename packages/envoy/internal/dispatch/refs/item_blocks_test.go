@@ -30,11 +30,11 @@ func itemBlockNodeID(kind ItemKind, itemID, blockID string) string {
 func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body, serverURL string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, text.NewOrigins(serverURL)).Mentions(body)
-	if _, err := IndexItem(ctx, tx, kind, itemID, body, at, located, nil); err != nil {
+	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, origins).Mentions(body)
+	if _, err := IndexItem(ctx, tx, kind, itemID, body, origins, at, located, nil); err != nil {
 		t.Fatalf("index the blocks of %s %s: %v", kind, itemID, err)
 	}
-	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("index the references of %s %s: %v", kind, itemID, err)
 	}
 }

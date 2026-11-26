@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
@@ -100,7 +101,7 @@ func TestCreateMakesTheBranchAtTheNamedBase(t *testing.T) {
 	for _, base := range []string{"main", "develop", "release/v7.1"} {
 		t.Run(base, func(t *testing.T) {
 			g := &github{refs: map[string]string{base: baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
-			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", base); err != nil {
+			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", base, nil); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			if got := g.reads(); !slices.Equal(got, []string{"/repos/acme/widgets/git/ref/heads/" + base}) {
@@ -128,7 +129,7 @@ func TestCreateReadsABaseWhoseNameHoldsURLSyntaxAsItself(t *testing.T) {
 	} {
 		t.Run(tc.base, func(t *testing.T) {
 			g := &github{refs: map[string]string{tc.base: baseCommit, tc.decoy: decoyCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
-			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", tc.base); err != nil {
+			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", tc.base, nil); err != nil {
 				t.Fatalf("Create at %q: %v", tc.base, err)
 			}
 			if got := g.reads(); !slices.Equal(got, []string{"/repos/acme/widgets/git/ref/heads/" + tc.base}) {
@@ -144,7 +145,7 @@ func TestCreateReadsABaseWhoseNameHoldsURLSyntaxAsItself(t *testing.T) {
 // A base GitHub does not have is refused naming it, before anything is created.
 func TestCreateRefusesABaseGitHubDoesNotHave(t *testing.T) {
 	g := &github{refs: map[string]string{"main": baseCommit}}
-	err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "develop")
+	err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "develop", nil)
 	if err == nil || !strings.Contains(err.Error(), "read refs/heads/develop of acme/widgets") || len(g.creates) != 0 {
 		t.Fatalf("err=%v creates=%d, want a refusal naming refs/heads/develop and no create", err, len(g.creates))
 	}
@@ -249,7 +250,7 @@ func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 			g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return tc.status, tc.body }}
 			api := g.serve(t)
 
-			err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main")
+			err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", nil)
 
 			if got := errorText(err); got != tc.want {
 				t.Fatalf("Create error = %q, want %q", got, tc.want)
@@ -278,7 +279,7 @@ func TestCreateRefusesARepositoryWhoseBaseItCannotRead(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "release/v7.1")
+	err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "release/v7.1", nil)
 
 	if want := `read refs/heads/release/v7.1 of acme/widgets: GitHub answered GET /git/ref/heads/release/v7.1 with 404: {"message":"Not Found","status":"404"}`; errorText(err) != want {
 		t.Fatalf("Create error = %q, want %q", errorText(err), want)
@@ -297,44 +298,55 @@ func errorText(err error) string {
 	return err.Error()
 }
 
-// theHost is the one refusable literal this test needs: a Tailscale MagicDNS host of invented
-// words, which names no machine and no tailnet. It is spelled in two pieces so that this file
-// itself passes .github/scripts/check-private-names.sh, the way leakguard's own tests spell
-// theirs; joined here, it would be the very name the rules refuse, in a tracked file of a public
-// repository.
-const theHost = "wobble-fern.quiet-harbor.ts" + ".net"
+// The ref name passes the rules the caller hands Create, and no others. With the fixture's rules
+// (leakguardtest), a branch naming the fixture's invented host is refused before anything is
+// sent: GitHub is asked for nothing, no ref is created, and the refusal shows the ref name the
+// rule matched. A clean name of the same shape is created. With no rules, a deployment that names
+// no rule file, the same branch is created, even where the process's environment points
+// LEGION_PRIVATE_NAME_RULES_FILE at the fixture's file: the rules are what the daemon compiled at
+// boot, never a file the environment the create runs in names.
+func TestCreateRunsTheDeploymentsRules(t *testing.T) {
+	rules, err := leakguard.LoadRules([]byte(leakguardtest.Rules))
+	if err != nil {
+		t.Fatalf("compile the fixture rules: %v", err)
+	}
+	branch := "legion/" + leakguardtest.RulesHost
 
-// theClass is what the rules call that host, the description of their tailnet_host_rule, and the
-// whole of what a report says about the text it matched.
-const theClass = "names a Tailscale MagicDNS host"
+	t.Run("refused with the rules", func(t *testing.T) {
+		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
+		api := g.serve(t)
 
-// A branch name this repository's own private-name rules match is refused before anything is
-// sent: GitHub is asked for nothing, no ref is created, and the refusal names the class the
-// rules put the name in and never the name itself. A clean name of the same shape is created.
-func TestCreateRefusesABranchNameTheRulesMatch(t *testing.T) {
-	g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
-	api := g.serve(t)
+		err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
 
-	err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/"+theHost, "main")
+		var refused *leakguard.Refusal
+		if !errors.As(err, &refused) {
+			t.Fatalf("Create of a branch naming the fixture's host = %v, want a leak guard refusal", err)
+		}
+		want := []string{"the ref name: " + leakguardtest.RulesHostClass + `: matched "` + leakguardtest.RulesHost + `" on line 1: "refs/heads/` + branch + `"`}
+		if !slices.Equal(refused.Lines, want) {
+			t.Errorf("the report is %q, want %q", refused.Lines, want)
+		}
+		if len(g.creates) != 0 || len(g.reads()) != 0 {
+			t.Errorf("GitHub was asked for %v and created %v, want nothing of either", g.reads(), g.creates)
+		}
 
-	var refused *leakguard.Refusal
-	if !errors.As(err, &refused) {
-		t.Fatalf("Create of a branch naming a host = %v, want a leak guard refusal", err)
-	}
-	if want := []string{"the ref name: " + theClass}; !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
-	if strings.Contains(err.Error(), theHost) {
-		t.Errorf("the refusal carries the name it refused: %v", err)
-	}
-	if len(g.creates) != 0 || len(g.reads()) != 0 {
-		t.Errorf("GitHub was asked for %v and created %v, want nothing of either", g.reads(), g.creates)
-	}
+		if err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", rules); err != nil {
+			t.Fatalf("Create of a clean branch name: %v", err)
+		}
+		if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/legion/WIDGETS-12" || g.creates[0]["sha"] != baseCommit {
+			t.Errorf("creates = %v, want the one clean ref at the base", g.creates)
+		}
+	})
 
-	if err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main"); err != nil {
-		t.Fatalf("Create of a clean branch name: %v", err)
-	}
-	if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/legion/WIDGETS-12" || g.creates[0]["sha"] != baseCommit {
-		t.Errorf("creates = %v, want the one clean ref at the base", g.creates)
-	}
+	t.Run("created with none", func(t *testing.T) {
+		t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
+		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
+
+		if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", nil); err != nil {
+			t.Fatalf("Create with no rules: %v", err)
+		}
+		if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/"+branch || g.creates[0]["sha"] != baseCommit {
+			t.Errorf("creates = %v, want the branch at the base", g.creates)
+		}
+	})
 }

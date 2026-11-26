@@ -117,7 +117,7 @@ func issueKeyServed(t *testing.T, body []byte, name string) map[string]json.RawM
 // holding a slot and an issue the line does not name are served no `waitingLine` key at all.
 func TestTheWaitingLinePlaceIsServedOnEachIssue(t *testing.T) {
 	state := waitingLineState()
-	body := stateFrom(t, state, "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, state, "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 	line, served := state.Admission.Waiting, waitingLinesServed(t, body)
 
 	if blocked := state.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != "LEGION-30" ||
@@ -178,15 +178,15 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 		t.Fatalf("waitingLineContract = %d, want %d, the contract whose entry in version.go added each waiting issue's place in the line",
 			waitingLineContract, addedWaitingLine)
 	}
-	if waitingLineContract > DaemonAPIVersion {
+	if waitingLineContract > DaemonAPIVersion() {
 		t.Fatalf("waitingLineContract = %d, above DaemonAPIVersion %d: no caller could be served the field",
-			waitingLineContract, DaemonAPIVersion)
+			waitingLineContract, DaemonAPIVersion())
 	}
 }
 
 // mergeWaitState is a state whose two reviewing issues each carry what their round waits on from
 // GitHub — one waiting for GitHub's first answer about the head the approval stands on, one
-// GitHub has held on `blocked`, whose architect and reviewer have been told of it — beside an
+// GitHub has held `behind` its base, whose architect and reviewer have been told of it — beside an
 // implementing issue, whose round waits on nothing there and carries no such object.
 func mergeWaitState() State {
 	const (
@@ -206,9 +206,9 @@ func mergeWaitState() State {
 				MergeWait: &MergeWaitView{WaitsOn: waitingHead, HeadUpdatedAt: &pushed}},
 			"LEGION-30": {Key: "LEGION-30", Phase: phase.Reviewing, Status: "needs_review",
 				PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 30, Head: stuckHead,
-					State: "open", MergeState: "blocked", ReviewDecision: "approved"},
-				MergeWait: &MergeWaitView{WaitsOn: stuckHead, MergeState: "blocked", StateReadAt: &read,
-					HeadUpdatedAt: &stood, CheckRuns: 2, ToldHead: stuckHead, ToldState: "blocked"}},
+					State: "open", MergeState: "behind", ReviewDecision: "approved"},
+				MergeWait: &MergeWaitView{WaitsOn: stuckHead, MergeState: "behind", StateReadAt: &read,
+					HeadUpdatedAt: &stood, CheckRuns: 2, ToldHead: stuckHead, ToldState: "behind"}},
 		},
 	}
 }
@@ -288,9 +288,9 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
 			mergeWaitContract, addedMergeWait)
 	}
-	if mergeWaitContract > DaemonAPIVersion {
+	if mergeWaitContract > DaemonAPIVersion() {
 		t.Fatalf("mergeWaitContract = %d, above DaemonAPIVersion %d: no caller could be served the object",
-			mergeWaitContract, DaemonAPIVersion)
+			mergeWaitContract, DaemonAPIVersion())
 	}
 }
 

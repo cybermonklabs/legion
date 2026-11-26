@@ -93,7 +93,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	body := "see dispatch://CORE/artifact/design-notes and dispatch://OPS-2/artifact/spec and https://example.com"
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, text.NewOrigins("https://dispatch.example")), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -140,7 +140,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 		t.Fatalf("begin clear transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", text.NewOrigins("https://dispatch.example")), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("clear references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -187,14 +187,14 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(ctx)
-			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, text.NewOrigins(server)), nil); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, server), nil, true); err != nil {
 				t.Fatalf("write the reference at the bound from a comment: %v", err)
 			}
 			createReferenceProject(t, tx, "ACME")
 			citer, _ := createReferenceArtifact(t, tx, "", "ACME", "citer")
 			citingBlock := random(t, text.MaxBlockIDBytes)
 			blocks := []model.ArtifactBlock{{ID: citingBlock, Type: "paragraph", From: 0, To: len(markdown)}}
-			if _, _, _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil); err != nil {
+			if _, _, _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, ""); err != nil {
 				t.Fatalf("write the reference at the bound from a block of %d bytes: %v", text.MaxBlockIDBytes, err)
 			}
 			var fromComment, fromBlock int
@@ -268,12 +268,12 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "ACME")
 	citer, _ := createReferenceArtifact(t, tx, "", "ACME", "citer")
-	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, text.NewOrigins(server)), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, server), nil, true); err != nil {
 		t.Fatalf("write the references at the bound from a document: %v", err)
 	}
 	citingBlock := random(t, text.MaxBlockIDBytes)
 	blocks := []model.ArtifactBlock{{ID: citingBlock, Type: "paragraph", From: 0, To: len(markdown)}}
-	if _, _, _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, ""); err != nil {
 		t.Fatalf("write the references at the bound from a block of %d bytes: %v", text.MaxBlockIDBytes, err)
 	}
 	for _, table := range []string{"refs", "block_refs"} {
@@ -321,6 +321,10 @@ func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
 	const server, from = "https://dispatch.example", "00000000-0000-4000-8000-000000000000"
 	for _, test := range []struct{ reference, kind, node string }{
 		{"dispatch://CORE-1", "issue", "CORE-1"},
+		{"dispatch://CORE-1/", "issue", "CORE-1"},
+		{"dispatch://CORE-1/plan", "issue", "CORE-1"},
+		{"https://dispatch.example/issues/CORE-1/conversation", "issue", "CORE-1"},
+		{"https://dispatch.example/issues/CORE-1/artifact/notes-md?v=2", "artifact", notes},
 		{"dispatch://CORE-1/spec", "artifact", spec},
 		{"dispatch://CORE-1/artifact/notes-md@v2", "artifact", notes},
 		{"dispatch://CORE/artifact/handbook-md", "artifact", handbook},
@@ -344,7 +348,7 @@ func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
 			if !ok || target.Kind != test.kind || target.ID != test.node {
 				t.Fatalf("%s parsed as %#v (%t), whose target is %#v; want a %s at %q", test.reference, ref, ok, target, test.kind, test.node)
 			}
-			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", text.NewOrigins(server)), nil); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", server), nil, true); err != nil {
 				t.Fatalf("write the reference: %v", err)
 			}
 			var stored []string
@@ -398,7 +402,7 @@ func replaceAndStamp(t *testing.T, database *store.Store, fromKind, fromID, body
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, text.NewOrigins("https://dispatch.example")), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := Stamp(ctx, tx, fromKind, fromID, eventID); err != nil {
@@ -502,7 +506,7 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	references, err := Closure(ctx, database.Pool, serverReader, "CORE-1")
+	references, err := Closure(ctx, database.Pool, serverReader, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
@@ -531,7 +535,7 @@ func TestReferencedByIncludesArtifactSources(t *testing.T) {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	got, err := ReferencedBy(ctx, database.Pool, serverReader, d2RefKey)
+	got, err := ReferencedBy(ctx, database.Pool, serverReader, d2RefKey, "")
 	if err != nil {
 		t.Fatalf("read artifact sources: %v", err)
 	}
@@ -560,7 +564,7 @@ func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
 	writeAskAnswer(t, tx, &ask, "bob", []string{"gRPC"}, "Ship it, as dispatch://"+refKey+" says.")
 	indexAskPartsAt(t, tx, ask, 1)
 
-	got, err := ReferencedBy(ctx, tx, serverReader, refKey)
+	got, err := ReferencedBy(ctx, tx, serverReader, refKey, "")
 	if err != nil {
 		t.Fatalf("read the citers of %s: %v", refKey, err)
 	}

@@ -92,8 +92,8 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	messageBlock := itemBlockNodeID(ItemMessage, message, "b2")
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
-	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(itemBlockServer)).Mentions(ask.Question)
-	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
+	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, itemBlockServer).Mentions(ask.Question)
+	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil, false); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
 	indexAskPartsAt(t, tx, ask, 1)
@@ -258,7 +258,7 @@ func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
 	mark("comments", comment, `body = '', deleted_at = $2, deleted_by = '{"kind":"user","id":"alice"}'`, deletedAt)
 	// The delete's own writes, as api's clearDeletedPostBody makes them: the index of the empty
 	// body, then the tombstone of what the index leaves of the old one.
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, "", deletedAt, nil, nil); err != nil {
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, "", "", deletedAt, nil, nil); err != nil {
 		t.Fatalf("index the comment's cleared body: %v", err)
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -297,14 +297,14 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/handbook-md.")
 	insertIndexedItem(t, tx, ItemComment, "CORE-1", "Cites dispatch://CORE-1/comment/"+comment+"#b-b2.")
 
-	references, err := Closure(ctx, tx, serverReader, "CORE-1")
+	references, err := Closure(ctx, tx, serverReader, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
 	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
-	citers, err := ReferencedBy(ctx, tx, serverReader, handbook)
+	citers, err := ReferencedBy(ctx, tx, serverReader, handbook, "")
 	if err != nil {
 		t.Fatalf("read referenced-by: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 		t.Fatalf("the ask holds %d refs rows of its own; the link is meant to be its option's alone", own)
 	}
 
-	references, err := Closure(ctx, tx, serverReader, "CORE-1")
+	references, err := Closure(ctx, tx, serverReader, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
@@ -373,12 +373,12 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	artifact, document := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 	parts := []part{{"intro", "heading", "# Rollout"}, {"plan", "paragraph", "Ship it on Monday."}}
 	markdown, blocks := documentOf(parts)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
 		t.Fatalf("index version 1 of the document: %v", err)
 	}
 	parts[1].text = "Ship it on Tuesday, after the freeze."
 	markdown, blocks = documentOf(parts)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
 		t.Fatalf("index version 2 of the document: %v", err)
 	}
 

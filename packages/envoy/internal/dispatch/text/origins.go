@@ -40,6 +40,16 @@ func (o Origins) base(page *url.URL) *url.URL {
 	return nil
 }
 
+// Canonical is the canonical origin as it was written (DISPATCH_SERVER_URL), and empty where the
+// value names none: what a caller that still carries one URL of the deployment reads, until it
+// carries the origins themselves.
+func (o Origins) Canonical() string {
+	if len(o.urls) == 0 {
+		return ""
+	}
+	return o.urls[0].String()
+}
+
 // Hosts is each origin's host name in lower case, the canonical one first.
 func (o Origins) Hosts() []string {
 	hosts := make([]string, 0, len(o.urls))

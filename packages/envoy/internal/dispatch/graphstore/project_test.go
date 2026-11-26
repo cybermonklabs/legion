@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -20,12 +21,11 @@ import (
 // mark that names those attributes (nodeMarks): the node write PlanUncaused plans and QueueNodes
 // queues, and the arms of WriteArmsUncaused.
 //
-// A node the write makes whose state its caller states itself (PlanUncaused's stated tuples) would
-// be one an upload makes where it read an orphaned node standing that was no longer there at the
-// upload's write, which no writer of the store leaves, since none deletes a node: the caller's gone
-// and live come first, and the node write states every other base attribute of the node it made,
-// as it states them for any node it makes. Only the node write takes such tuples; the arms state no
-// caller's base attribute.
+// A node the write makes whose state its caller states itself (PlanUncaused's stated tuples) is
+// one an upload makes where it read an orphaned node standing and a delete outside the builds took
+// that node before the upload's write: the caller's gone and live come first, and the node write
+// states every other base attribute of the node it made, as it states them for any node it makes.
+// Only the node write takes such tuples; the arms state no caller's base attribute.
 func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
 	database := storetest.Open(t)
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)

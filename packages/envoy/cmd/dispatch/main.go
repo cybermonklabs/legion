@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -217,6 +218,16 @@ type bootConfig struct {
 	// by the broker client on each call, never here: a projected token rotates.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE=on. It turns on the refusal of three
+	// writes of a Legion issue from a credential that holds neither the person scope nor
+	// legion-status: a write of its status, the removal of its legion label, and a move that
+	// leaves it under no labelled issue, but for the status write of the architect of an issue
+	// above (api's legion_status_scope.go). Unset or off, it is false (api.Deps.LegionStatusScope).
+	LegionStatusScope bool
+	// ProofOrigins is DISPATCH_PROOF_ORIGINS read (proofOriginEntries): the origins Dispatch is
+	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
+	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
+	ProofOrigins []string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -643,7 +654,7 @@ func main() {
 	// whose loops would each run everywhere, so it ends here.
 	//
 	// The loops come in these shapes, so that a database nobody writes costs them nothing except
-	// where GitHub gives them nothing to wake on, and the five timers of the last shape:
+	// where GitHub gives them nothing to wake on, and the seven timers of the last shape:
 	//   - woken loops, which run a pass at start and then only when a Postgres notification on the
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
@@ -679,15 +690,17 @@ func main() {
 	//     never refuses a lone process's tick. Two tickers started minutes apart almost never
 	//     meet inside a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
-	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
-	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
-	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
-	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
-	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     batch is full), the reference forms drain (docs.Service.RunRefsFormsReconciliation, at
+	//     the same pace under a lease of its own), the repair of closed and reopened issues' asks
+	//     (api.RunIssueAskRepair, every 10 minutes on a plain ticker, after the boot's own
+	//     unleased pass), the prune of the server process registry (processes.RunPrune, every
+	//     minute, which joinRegistry starts below), the keyed writes' maintenance sweep
+	//     (api.RunMaintenanceSweep, every minute), the document compaction sweep
+	//     (docs.Service.RunCompactionSweep, every hour from a tick at start, with or without NATS)
+	//     and the display tree fill (texttreefill.Run, every hour from a tick at start, whose
+	//     first pass of a display parser version runs until every stored text has a tree at it),
+	//     each recording its passes in duty_passes like the timers above; each tick sends its
+	//     statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -759,6 +772,10 @@ func main() {
 	documentCompactionLeases := reserve("document compaction")
 	editNoticesLeases := reserve("edit notices")
 	blockIndexLeases := reserve("block index")
+	// The reference forms drain's, a caller of its own beside the block index's: the two passes
+	// run on their own goroutines under their own leases, so each can hold a connection while the
+	// other does.
+	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
 	// configuration runs them, as every caller's here is: the count the pool is sized for is the
@@ -1051,6 +1068,13 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// The reference forms drain: each comment, ask, issue message and document a build that
+	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
+	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
+	// interval: a period a process of the previous release served under the block index's lease
+	// would otherwise drain none of it, and a document's row is settled only by this build's own
+	// index of the document.
+	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
@@ -1687,6 +1711,19 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
 	}
+	// The value is strict, as DISPATCH_DEV_SIGNIN's is: a misspelt `on` must refuse the boot, not
+	// leave a deployment that meant to refuse these writes taking them.
+	switch value := env.get("DISPATCH_LEGION_STATUS_SCOPE"); value {
+	case "", "off":
+	case "on":
+		boot.LegionStatusScope = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_LEGION_STATUS_SCOPE=%q (expected on, off or unset)", value)
+	}
+	boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS"))
+	if err != nil {
+		return bootConfig{}, err
+	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
 		return bootConfig{}, err
@@ -2062,6 +2099,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
+	built.LegionStatusScope = boot.LegionStatusScope
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
@@ -2353,12 +2391,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 }
 
 // brokerTokenVerifier decides callers presenting an access token the secrets broker issued, under
-// the RFC 9449 DPoP scheme. It is built from the settings Dispatch already has and needs none of
-// its own: the broker DISPATCH_AGENT_SECRETS_URL names, which the approval relays already call,
-// Dispatch's own projected ServiceAccount token from DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE,
-// which it already presents there, and DISPATCH_SERVER_URL as the origin a proof's 'htu' is
-// checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
-// the maintenance pass sweeps.
+// the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
+// the approval relays already call, Dispatch's own projected ServiceAccount token from
+// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
+// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
+// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
+// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
 //
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
@@ -2376,7 +2415,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origin:    strings.TrimSuffix(serverURL, "/"),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
@@ -2386,6 +2425,48 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// token reaches the reads of that class and no other route.
 		ServesReadOnly: true,
 	})
+}
+
+// proofOriginEntries reads DISPATCH_PROOF_ORIGINS: each comma-separated entry as the bare origin
+// it is, written scheme://host. A value of nothing but whitespace is unset. An entry that is not a
+// bare origin - empty, a scheme other than http or https, no host, a path, a query, a fragment or
+// user info - refuses the start, naming the entry by its position and by its value where
+// redact.URL prints it, as the DISPATCH_AGENT_SECRETS_URL refusal names its value.
+func proofOriginEntries(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	origins := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is empty", i+1, len(entries))
+		}
+		parsed, err := url.Parse(entry)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||
+			parsed.Path != "" || parsed.User != nil || strings.ContainsAny(entry, "?#") {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is %q (expected an origin: an absolute http(s) URL with no path, query, fragment or user)",
+				i+1, len(entries), redact.URL(entry))
+		}
+		origins = append(origins, parsed.Scheme+"://"+parsed.Host)
+	}
+	return origins, nil
+}
+
+// proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
+// first, the one a proof naming none of them is checked against, then each origin added names. An
+// origin equal to one before it, compared without case as an origin's scheme and host are, is
+// taken once rather than refused: a deployment lists the public origin again beside the
+// in-cluster one.
+func proofOrigins(serverURL string, added []string) []string {
+	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
+	for _, origin := range added {
+		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
 
 // healthzHandler answers the readiness probe: 200 while this process can serve requests, which is

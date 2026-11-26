@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,8 +9,15 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArchitectureSource } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const architectureSource: ArchitectureSource = {
   branch: "main",
@@ -76,6 +83,7 @@ test("a human adds an architecture source and the verified row appears", async (
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockResolvedValue(
@@ -126,6 +134,7 @@ test("a failed architecture source access check shows the server's reason inline
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockRejectedValue(
@@ -191,6 +200,7 @@ test("each architecture source of a project is its own row, refreshed and delete
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockImplementation(server.put);
@@ -287,6 +297,7 @@ async function sourcesOf(
         key: "CORE",
         name: "Core",
         open_asks: 0,
+        proven_sessions: false,
       },
     ]),
     spyOn(api, "putArchitectureSource").mockImplementation(put),

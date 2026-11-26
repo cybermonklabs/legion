@@ -203,13 +203,16 @@ var readsWithoutAViewer = map[string]string{
 		"of its root or leave an ancestor out of work above an issue in work; the status change's plan names the ancestors " +
 		"it will move to the caller who asked to move them, in its dry run, its answer and its 403 PROJECT_SCOPE",
 	"IssueDescendantRows": "every caller is a rule of a write - a status change's plan, which moves or unlinks every open " +
-		"issue under the parent so that the parent status rule (R24) holds - and a plan that skipped an issue it may not " +
-		"see would leave that issue open under a done parent; the plan names the issues it will move or unlink to the " +
-		"caller who asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
+		"issue under the parent so that the parent status rule (R24) holds, and the move check of who writes a Legion-run " +
+		"issue's spec, which judges each issue of the moved subtree that Legion runs - and a plan that skipped an issue it " +
+		"may not see would leave that issue open under a done parent, and a move check that skipped one would let a writer " +
+		"take that issue by moving the issue above it; the plan names the issues it will move or unlink to the caller who " +
+		"asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
 	"IssueRepository":  noNode,
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
@@ -227,6 +230,7 @@ var readsWithoutAViewer = map[string]string{
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
 	"SourceText":         serverWork,
+	"StillOwed":          serverWork + " - a drain's read phase checks the queue row it listed is still owed under the source's owner lock",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -345,7 +349,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	for _, kind := range nodeKinds {
 		record("TargetNames", "TargetNames of kind "+kind, func() error {
-			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}}, "")
 			return err
 		})
 		record("Node", "Node of kind "+kind, func() error {
@@ -385,7 +389,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return database.Pool.SendBatch(ctx, batch).Close()
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
-		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
+		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec", "")
 		return err
 	})
 	// A message's blocks record no revisions, so no block of one is ever removed and
@@ -405,7 +409,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1")
+		_, err := Closure(ctx, recorder, who, "CORE-1", "")
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -439,7 +443,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 	} {
 		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
-			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked})
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked}, "")
 			return err
 		})
 	}
@@ -525,8 +529,8 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "source", Type: "paragraph", From: 0, To: len(source)},
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
-	located := text.ExtractAt(markdown, text.NewOrigins("https://dispatch.example"))
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
+	located := text.ExtractAt(markdown, "https://dispatch.example")
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, "")
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}

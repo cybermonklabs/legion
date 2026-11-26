@@ -197,10 +197,10 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 	// second run cures, holds back neither the rest of that pass nor the fill: the run answers it
 	// after both.
 	var moved error
-	for _, write := range []func(context.Context, *store.Store, *pacer) ([]KindBackfill, error){
+	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
 		backfillObjectNodes, backfillScopes,
 	} {
-		done, err := write(ctx, database, p)
+		done, err := write(ctx, database)
 		report.Kinds = append(report.Kinds, done...)
 		for _, kind := range done {
 			writeKindBackfill(out, kind)

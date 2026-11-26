@@ -637,7 +637,7 @@ const (
 	receiptDrive       = "outbox/publisher.go#recordBatch, the receipt of the comment's mention"
 	fallbackDrive      = "outbox/mentions.go#recordFallbackCopies"
 	objectBatchDrive   = "graphcensus/projects_backfill.go#writeObjectBatch"
-	scopeBatchDrive    = "graphstore/scope.go#FillScopes"
+	scopeBatchDrive    = "graphcensus/projects_backfill.go#writeScopeBatch"
 	orphanSweepDrive   = "graphcensus/orphans.go#StateOrphanedGone"
 )
 
@@ -667,10 +667,10 @@ func seededDrives(database *store.Store) []StoreDrive {
 			}
 		}
 	}
-	passes := func(pass func(context.Context, *store.Store, *pacer) ([]KindBackfill, error)) func(*testing.T) {
+	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T) {
 		return func(t *testing.T) {
 			t.Helper()
-			if _, err := pass(ctx, database, unpaced()); err != nil {
+			if _, err := pass(ctx, database); err != nil {
 				t.Fatalf("run a backfill pass: %v", err)
 			}
 		}
@@ -955,7 +955,7 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 			t.Fatalf("begin the index of version %d: %v", version.number, err)
 		}
 		_, won, write, err := refs.IndexBlocks(ctx, tx, version.artifact, version.number, version.at, version.markdown,
-			blocks, text.ExtractAt(version.markdown, text.NewOrigins(sizedServerURL)), nil)
+			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, sizedServerURL)
 		if err == nil && !won {
 			err = fmt.Errorf("the pass lost the revision fence, so it wrote nothing")
 		}
