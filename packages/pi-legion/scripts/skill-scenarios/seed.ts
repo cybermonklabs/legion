@@ -86,6 +86,16 @@
 //                                          the world's Dispatch records after a scored run, as
 //                                          captured.json in <run dir> (owner-walk-seed.ts
 //                                          captureScored)
+//   seed.ts forward <file> <world dir>     a forward world (forward-only, forward-owner) on the
+//                                          run's Dispatch: its issue, spec, Verification document,
+//                                          children and comments (forward-seed.ts forwardIssues)
+//   seed.ts results-hold <file> <head>     each before_merge check of the forward issue with no
+//                                          pass at <head>, one a line; exit 1 when one has none
+//                                          (forward-seed.ts resultsHold)
+//   seed.ts capture-forward <file> <run dir>
+//                                          the forward issue's spec versions and approval
+//                                          requests after the run, as forward-captured.json in
+//                                          <run dir> (forward-seed.ts captureForward)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Actor, ArtifactBlock, Ask, AskOption } from "@legion/contracts";
@@ -112,6 +122,7 @@ import {
   listIssueMessages,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { captureForward, forwardIssues, resultsHold } from "./forward-seed";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
 import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
@@ -907,7 +918,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir> | forward <file> <world dir> | results-hold <file> <head> | capture-forward <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -960,6 +971,12 @@ async function main(argv: string[]): Promise<boolean> {
     await ownerWalkIssues(file, second, third);
   else if (command === "capture-scored" && file !== undefined && second !== undefined && n === 3)
     await captureScored(file, second);
+  else if (command === "forward" && file !== undefined && second !== undefined && n === 3)
+    await forwardIssues(file, second);
+  else if (command === "results-hold" && file !== undefined && second !== undefined && n === 3) {
+    if (!(await resultsHold(file, second))) process.exitCode = 1;
+  } else if (command === "capture-forward" && file !== undefined && second !== undefined && n === 3)
+    await captureForward(file, second);
   else return false;
   return true;
 }

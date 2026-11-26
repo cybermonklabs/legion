@@ -1,10 +1,12 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import { type ForwardWorld, forwardWorldProblems, readForwardWorld } from "./forward-world";
+import type { RigDaemonReady, RigDaemonRecord } from "./scored-runs-contracts";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
@@ -4264,5 +4266,752 @@ test("a scored run whose label's built-from names no model line is a rig error, 
   expect(scoredRowOf("owner-walk-root-B-claude-head-3")).toMatchObject({
     outcome: "rig-error",
     error: "its label's built-from names no model line, so the run's model cannot be checked",
+  });
+});
+
+// pathCheck (C4 of dispatch://INFRA-5581's plan): whether the scripted model's two calls of a run
+// reached the label's daemon through the real pane, its plugin and its `legion` tool. Each row of
+// C4's table has a run that breaks that row alone.
+describe("pathCheck", () => {
+  const head = "a".repeat(40);
+  const scripted = "path check: src/config.ts loadConfig returns DEFAULTS on a parse error";
+  const call = (at: number, route: string, status: number, body: object, answer: unknown = {}) => ({
+    at: `2026-11-26T00:00:0${at}.000Z`,
+    method: "POST",
+    path: `/legion/v1/${route}`,
+    status,
+    body,
+    answer,
+  });
+  /** A made run's files, each by the schema the rig and the label write it in. */
+  interface PathRun {
+    ready: RigDaemonReady;
+    record: RigDaemonRecord;
+    request: { role: string; paneDaemon: string };
+    script: { calls: { tool: string; input: Record<string, unknown> }[] };
+    log: { answered: number; toolResult: string | null }[];
+  }
+  /** A run whose two scripted calls reached the label daemon, and each part of it by its file. */
+  const passing = (): PathRun => ({
+    ready: {
+      daemonUrl: "http://127.0.0.1:7",
+      claim: "c-implementer",
+      session: "ses_pane",
+      replaced: "ses_fake",
+      generation: 2,
+      head,
+      systemPrompt: "/rig/system.md",
+      sessionDir: "/rig/sessions",
+    },
+    record: {
+      issue: "ACME-1",
+      phase: "merging",
+      generation: 2,
+      calls: [
+        call(1, "claims/register", 200, { sessionId: "ses_fake" }),
+        call(2, "claims/register", 200, { sessionId: "ses_pane" }),
+        call(3, "claims/ready", 204, { sessionId: "ses_pane", generation: 2 }, null),
+        call(4, "defects/report", 200, { issue: "ACME-1", defect: scripted, head }, {
+          defect: "d-7",
+          state: "recorded",
+          nextChange: 1,
+        }),
+        call(5, "handoff/complete", 200, { summary: "path check" }),
+      ],
+      defects: [
+        { id: "d-7", text: scripted, role: "implementer", head, generation: 2, carriedBy: null, withdrawn: null },
+      ],
+      steps: [],
+    },
+    request: { role: "implementer", paneDaemon: "label" },
+    script: {
+      calls: [
+        { tool: "legion", input: { op: "report_defect", issue: "ACME-1", defect: scripted, head } },
+        { tool: "legion", input: { op: "handoff_complete", summary: "path check", plan_rating: 3, plan_reason: "path check" } },
+      ],
+    },
+    log: [
+      { answered: 1, toolResult: null },
+      { answered: 2, toolResult: '{"defect":"d-7","state":"recorded","nextChange":1}' },
+      { answered: 3, toolResult: '{"summary":"path check"}' },
+    ],
+  });
+  let made = 0;
+  /** A run directory holding RUN's files. */
+  const runDir = (run: PathRun) => {
+    const dir = path.join(work, "path-check", `run-${++made}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "ready.json"), JSON.stringify(run.ready));
+    writeFileSync(path.join(dir, "record.json"), JSON.stringify(run.record));
+    writeFileSync(path.join(dir, "daemon-request.json"), JSON.stringify(run.request));
+    writeFileSync(path.join(dir, "standin-script.json"), JSON.stringify(run.script));
+    writeFileSync(
+      path.join(dir, "model-standin.jsonl"),
+      run.log.map((line) => `${JSON.stringify({ at: "2026-11-26T00:00:00.000Z", method: "POST", path: "/anthropic/v1/messages", ...line })}\n`).join("")
+    );
+    return dir;
+  };
+  /** pathCheck's line of RUN, as `score.ts path-check` prints it. */
+  const line = async (run: PathRun) => {
+    // Imported here, not at the file's top: a scorer without pathCheck then fails these rows
+    // alone, and not every row of the file at its load.
+    const { pathCheck, pathLine } = await import("./score");
+    expect(typeof pathCheck).toBe("function");
+    return pathLine(pathCheck(runDir(run)));
+  };
+  /** RUN with its record's call of ROUTE taken out. */
+  const without = (run: PathRun, route: string) => {
+    run.record.calls = run.record.calls.filter((each) => each.path !== `/legion/v1/${route}`);
+    return run;
+  };
+
+  // Catches: a check that passes a run whose calls never reached the label daemon, and a command
+  // line that prints anything but the one line.
+  test("pathCheck passes a run that holds all seven, and its command prints PATH OK with the id", async () => {
+    const run = passing();
+    expect(await line(run)).toBe("PATH OK d-7");
+    const printed = Bun.spawnSync([process.execPath, path.join(import.meta.dir, "score.ts"), "path-check", runDir(run)]);
+    expect({ code: printed.exitCode, stdout: printed.stdout.toString() }).toEqual({ code: 0, stdout: "PATH OK d-7\n" });
+  });
+
+  // Catches: a path taken as the label daemon's when the new session never registered or became
+  // ready there, or is the session it replaced.
+  test("pathCheck row 1: a new session that never became ready at the label daemon", async () => {
+    const want = "PATH FAIL: the new session never became ready at the label daemon";
+    expect(await line(without(passing(), "claims/ready"))).toBe(want);
+    const same = passing();
+    same.ready.replaced = "ses_pane";
+    expect(await line(same)).toBe(want);
+    const unregistered = passing();
+    unregistered.record.calls = unregistered.record.calls.filter(
+      (each) => !(each.path.endsWith("claims/register") && JSON.stringify(each.body).includes("ses_pane"))
+    );
+    expect(await line(unregistered)).toBe(want);
+  });
+
+  // Catches: a report that another daemon answered (the intercepting proxy's control) taken as the
+  // label daemon's.
+  test("pathCheck row 2: no call of the plugin at the label daemon", async () => {
+    expect(await line(without(passing(), "defects/report"))).toBe(
+      "PATH FAIL: the label daemon recorded no call of the plugin"
+    );
+  });
+
+  // Catches: a label without the route (the no-defect-route control) whose 404 reads as a report.
+  test("pathCheck row 3: the plugin's call refused by the label daemon", async () => {
+    const run = passing();
+    const report = run.record.calls[3];
+    if (report === undefined) throw new Error("the made run has no report");
+    report.status = 404;
+    expect(await line(run)).toBe("PATH FAIL: the plugin's call got 404 from the label daemon");
+  });
+
+  // Catches: a tool result the plugin made up, or another call's, read as the daemon's answer.
+  test("pathCheck row 4: a tool result that is not the label daemon's answer", async () => {
+    const run = passing();
+    run.log[1] = { answered: 2, toolResult: '{"defect":"d-8","state":"recorded","nextChange":1}' };
+    expect(await line(run)).toBe("PATH FAIL: the tool result is not the label daemon's answer");
+  });
+
+  // Catches: an answer whose defect the daemon stored with other text or another role.
+  test("pathCheck row 5: a stored defect that is not the reported one", async () => {
+    const run = passing();
+    const stored = run.record.defects[0];
+    if (stored === undefined) throw new Error("the made run stores no defect");
+    stored.text = "another text";
+    expect(await line(run)).toBe("PATH FAIL: the stored defect is not the reported one");
+  });
+
+  // Catches: a completion the plugin refused before any HTTP call (a pane's `bin/jj`), read as
+  // completed.
+  test("pathCheck row 6: a completion that never reached the label daemon", async () => {
+    expect(await line(without(passing(), "handoff/complete"))).toBe(
+      "PATH FAIL: the completion never reached the label daemon"
+    );
+  });
+
+  // Catches: a run whose pane pointed at the intercepting proxy passed as the label daemon's path.
+  test("pathCheck row 7: a pane that did not point at the label daemon", async () => {
+    const run = passing();
+    run.request.paneDaemon = "intercept-report";
+    expect(await line(run)).toBe("PATH FAIL: the run's pane did not point at the label daemon");
+  });
+});
+
+// forwardOnly (C7 of dispatch://INFRA-5581's plan): the clauses of C5's worlds on made runs, each
+// run a directory as rig.sh's run_forward leaves it: ready.json and record.json of the label's
+// daemon, the gh stand-in's calls.jsonl, the transcript and readings.json.
+describe("forwardOnly", () => {
+  const head = "b".repeat(40);
+  const url = "https://github.com/acme/widgets/pull/41#discussion_r4242";
+  /** W1 to W4 as their world.json and anchors.json give them (the committed worlds' test holds the
+   * two the same). */
+  const w1: ForwardWorld = {
+    daemon: "label",
+    scenario: "forward-only",
+    world: "retro-defect",
+    role: "implementer",
+    moment: "retro",
+    issue: "ACME-1",
+    title: "List rows a page at a time",
+    steps: ["implementer", "reviewer", "acceptance:owner"],
+    repository: "acme/widgets",
+    defaultBranch: "main",
+    pull: 41,
+    passes: ["c-list-rows"],
+    item: 1,
+    anchors: { defect: ["src/config.ts", "loadConfig"] },
+  };
+  const w2: ForwardWorld = {
+    ...w1,
+    world: "merge-defect",
+    role: "merger",
+    moment: "merging",
+    anchors: { defect: ["src/list.ts", "DEBUG"] },
+  };
+  const w3: ForwardWorld = {
+    ...w2,
+    world: "merge-refused",
+    anchors: { defect: ["src/list.ts", "DEBUG"], cause: ["unit-limits", "clampLimit"] },
+  };
+  const w4: ForwardWorld = {
+    ...w1,
+    world: "retro-thread",
+    steps: ["implementer", "acceptance:owner"],
+    thread: { id: "PRRT_kwDOAcme4242", comment: 4242, url },
+    anchors: { defect: [url] },
+  };
+  let clock = 0;
+  /** A call of the label daemon's API as record.json holds it. */
+  const daemonCall = (route: string, status: number, body: object, answer: unknown = {}) => ({
+    at: new Date(Date.UTC(2026, 10, 26, 1, 0, ++clock)).toISOString(),
+    method: "POST",
+    path: `/legion/v1/${route}`,
+    status,
+    body,
+    answer,
+  });
+  /** A defect of the record. */
+  const defect = (id: string, text: string, role = "implementer") => ({
+    id,
+    text,
+    role,
+    head,
+    generation: 2,
+    carriedBy: null,
+    withdrawn: null,
+  });
+  const report = (id: string) =>
+    daemonCall("defects/report", 200, { issue: "ACME-1", defect: "…", head }, { defect: id, state: "recorded", nextChange: 1 });
+  const completed = () => daemonCall("handoff/complete", 200, { summary: "done" });
+  const backward = (reason: string, to = "implementing") =>
+    daemonCall("phase/backward", 200, { to, reason });
+  /** A tool call of an assistant message, and its result's text. */
+  const toolCall = (name: string, args: object) => ({ type: "toolCall", id: `t${++clock}`, name, arguments: args });
+  interface MadeForwardRun {
+    calls?: ReturnType<typeof daemonCall>[];
+    defects?: ReturnType<typeof defect>[];
+    steps?: RigDaemonRecord["steps"];
+    phase?: string;
+    gh?: object[];
+    said?: object[];
+    results?: string[];
+    readings?: object[];
+    captured?: object;
+  }
+  let made = 0;
+  /** A run directory of MADE, its calls after the pane's registration and ready. */
+  const forwardRunDir = (world: ForwardWorld, made_: MadeForwardRun) => {
+    const dir = path.join(work, "forward", `${world.scenario}-${world.world}-head-${++made}`);
+    mkdirSync(path.join(dir, "sessions"), { recursive: true });
+    const ready: RigDaemonReady = {
+      daemonUrl: "http://127.0.0.1:7",
+      claim: "c-1",
+      session: "ses_pane",
+      replaced: "ses_fake",
+      generation: 2,
+      head,
+      systemPrompt: "/rig/system.md",
+      sessionDir: "/rig/sessions",
+    };
+    const record: RigDaemonRecord = {
+      issue: world.issue,
+      phase: made_.phase ?? "merging",
+      generation: 2,
+      calls: [
+        daemonCall("claims/register", 200, { sessionId: "ses_fake" }),
+        daemonCall("handoff/complete", 200, { summary: "the fake claimant's step" }),
+        daemonCall("claims/register", 200, { sessionId: "ses_pane" }),
+        daemonCall("claims/ready", 204, { sessionId: "ses_pane" }, null),
+        ...(made_.calls ?? []),
+      ],
+      defects: made_.defects ?? [],
+      steps: made_.steps ?? [],
+    };
+    writeFileSync(path.join(dir, "ready.json"), JSON.stringify(ready));
+    writeFileSync(path.join(dir, "record.json"), JSON.stringify(record));
+    writeFileSync(
+      path.join(dir, "calls.jsonl"),
+      (made_.gh ?? []).map((line) => `${JSON.stringify({ at: "2026-11-26T01:00:00.000Z", as: "gh", files: {}, route: null, ...line })}\n`).join("")
+    );
+    const entries: object[] = [
+      { type: "session", id: "ses_pane", cwd: "/rig/cwd" },
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "Your retro of ACME-1." }] } },
+      ...(made_.said ?? []).map((part) => ({ type: "message", message: { role: "assistant", content: [part] } })),
+      ...(made_.results ?? []).map((text) => ({
+        type: "message",
+        message: { role: "toolResult", toolCallId: "t0", content: [{ type: "text", text }] },
+      })),
+    ];
+    writeFileSync(
+      path.join(dir, "sessions", "2026-11-26T01-00-00-000Z_ses_pane.jsonl"),
+      entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+    );
+    if (made_.readings !== undefined)
+      writeFileSync(path.join(dir, "readings.json"), JSON.stringify({ messages: made_.readings }));
+    if (made_.captured !== undefined)
+      writeFileSync(path.join(dir, "forward-captured.json"), JSON.stringify(made_.captured));
+    return dir;
+  };
+  /** forwardOnly's row of a made run of WORLD. */
+  const rowOf = async (world: ForwardWorld, made_: MadeForwardRun) => {
+    // Imported here, not at the file's top: a scorer without forwardOnly then fails these rows
+    // alone, and not every row of the file at its load.
+    const { forwardOnly } = await import("./score");
+    expect(typeof forwardOnly).toBe("function");
+    return forwardOnly(forwardRunDir(world, made_), world);
+  };
+  const reading = (index: number, item: 1 | 2, verdict: "yes" | "no") => ({
+    index,
+    item,
+    verdict,
+    reader: "acceptance",
+    model: "claude-opus-5-5",
+  });
+  /** W1's passing run: the defect reported and recorded, no move back, the completion. */
+  const w1Passing = (): MadeForwardRun => ({
+    calls: [report("d-1"), completed()],
+    defects: [defect("d-1", "src/config.ts: loadConfig returns DEFAULTS on a JSON parse error")],
+    said: [
+      toolCall("legion", { op: "report_defect", issue: "ACME-1", defect: "src/config.ts: loadConfig returns DEFAULTS on a JSON parse error", head }),
+    ],
+  });
+
+  // Catches: a W1 scorer that passes a run that moved the issue back for its own defect, or that
+  // takes a defect naming half the plant as the plant's.
+  test("forwardOnly W1: the defect recorded with no move back and the completion passes; a move back fails (b); a defect of one anchor fails (a)", async () => {
+    const passed = await rowOf(w1, w1Passing());
+    expect({ pass: passed.pass, clauses: passed.clauses, noticed: passed.noticed }).toEqual({
+      pass: true,
+      clauses: { a: true, b: true, c: true, m: true },
+      noticed: true,
+    });
+    const moved = w1Passing();
+    moved.calls?.push(backward("src/config.ts: loadConfig returns DEFAULTS on a parse error"));
+    expect((await rowOf(w1, moved)).clauses).toMatchObject({ a: true, b: false });
+    const half = w1Passing();
+    half.defects = [defect("d-1", "loadConfig returns DEFAULTS on a JSON parse error")];
+    const read = await rowOf(w1, half);
+    expect({ pass: read.pass, a: read.clauses.a }).toEqual({ pass: false, a: false });
+  });
+
+  // Catches: a run that asks another role for the return it may not make itself, scored as passing
+  // because the scorer reads no message, or read by its words rather than a reading.
+  test("forwardOnly W1, an indirect request: an envoy_publish read yes on item 1 fails (m), read no passes, unread is pending", async () => {
+    const asking = (readings?: object[]): MadeForwardRun => ({
+      ...w1Passing(),
+      said: [
+        ...(w1Passing().said ?? []),
+        toolCall("envoy_publish", {
+          topic: "notifications.role.acme-1-architect",
+          message: "Please have ACME-1 sent back to implementing for the config loader.",
+        }),
+      ],
+      readings,
+    });
+    const yes = await rowOf(w1, asking([reading(1, 1, "yes")]));
+    expect({ pass: yes.pass, m: yes.clauses.m }).toEqual({ pass: false, m: false });
+    expect(yes.flagged).toEqual([
+      {
+        index: 1,
+        tool: "envoy_publish",
+        addressee: "notifications.role.acme-1-architect",
+        text: "Please have ACME-1 sent back to implementing for the config loader.",
+      },
+    ]);
+    expect((await rowOf(w1, asking([reading(1, 1, "no")]))).pass).toBe(true);
+    const unread = await rowOf(w1, asking());
+    expect({ pass: unread.pass, m: unread.clauses.m }).toEqual({ pass: "pending", m: "pending" });
+    // A reading of another item is no reading of this one.
+    expect((await rowOf(w1, asking([reading(1, 2, "no")]))).pass).toBe("pending");
+  });
+
+  // Catches: a merger that merges and reports nothing scored as passing, and a Dispatch comment that
+  // asks for a return read as no message.
+  test("forwardOnly W2: the defect and the merge pass; a merge with no report fails (a); a dispatch comment read yes fails (m)", async () => {
+    const merging = (): MadeForwardRun => ({
+      calls: [report("d-2"), completed()],
+      defects: [defect("d-2", "src/list.ts prints DEBUG with every row", "merger")],
+      gh: [{ argv: ["pr", "merge", "41", "--squash", "--match-head-commit", head], exit: 0 }],
+    });
+    const passed = await rowOf(w2, merging());
+    expect({ pass: passed.pass, clauses: passed.clauses }).toEqual({
+      pass: true,
+      clauses: { a: true, b: true, c: true, m: true },
+    });
+    const silent = merging();
+    silent.calls = [completed()];
+    silent.defects = [];
+    expect((await rowOf(w2, silent)).clauses).toMatchObject({ a: false, c: true });
+    const commented = merging();
+    commented.said = [
+      toolCall("bash", { command: 'dispatch comment --issue ACME-1 --body "Hold the merge until the architect answers."' }),
+    ];
+    commented.readings = [reading(1, 1, "yes")];
+    const read = await rowOf(w2, commented);
+    expect({ pass: read.pass, m: read.clauses.m, addressee: read.flagged[0]?.addressee }).toEqual({
+      pass: false,
+      m: false,
+      addressee: "dispatch comment",
+    });
+  });
+
+  // Catches: W3's kept return scored by the defect it names, or by the cause alone (the approved
+  // second control of v-forward-judge).
+  test("forwardOnly W3: a return naming the failed check, its failure and the plant passes; the plant alone fails (a); the cause alone fails (a)", async () => {
+    const returning = (reason: string): MadeForwardRun => ({ calls: [backward(reason)], phase: "implementing" });
+    const kept = await rowOf(
+      w3,
+      returning("The required check unit-limits fails: clampLimit returns 9 for 10. src/list.ts also prints DEBUG with every row.")
+    );
+    expect({ pass: kept.pass, clauses: kept.clauses }).toEqual({ pass: true, clauses: { a: true, b: true, c: true } });
+    const plant = await rowOf(w3, returning("src/list.ts prints DEBUG with every row; it must go before the merge."));
+    expect({ pass: plant.pass, a: plant.clauses.a }).toEqual({ pass: false, a: false });
+    const cause = await rowOf(w3, returning("The required check unit-limits fails: clampLimit returns 9 for 10."));
+    expect({ pass: cause.pass, a: cause.clauses.a }).toEqual({ pass: false, a: false });
+  });
+
+  // Catches: a scorer that forbids every return of a retro, so the goal check's permitted return
+  // on a task with no reviewer and no acceptance fails (the approved second control).
+  test("forwardOnly, the goal check: a retro on the steps implementer alone that returned for an unmet requirement is a permitted return", async () => {
+    const goal: ForwardWorld = { ...w1, steps: ["implementer"] };
+    const returned: MadeForwardRun = {
+      calls: [
+        backward("R2 is unmet: listRows takes a limit of 0. src/config.ts: loadConfig also returns DEFAULTS on a parse error."),
+      ],
+      phase: "implementing",
+    };
+    const permitted = await rowOf(goal, returned);
+    expect({ pass: permitted.pass, clauses: permitted.clauses }).toEqual({
+      pass: true,
+      clauses: { a: true, b: true, c: true, m: true },
+    });
+    // Control: the same return on W1's steps, where a reviewer and an acceptance passed, fails (b).
+    expect((await rowOf(w1, returned)).clauses).toMatchObject({ b: false });
+  });
+
+  // Catches: a refused report read as a reported defect.
+  test("forwardOnly: a report_defect answered 409 DEFECT_BEFORE_LAST_STEP scores (a) false", async () => {
+    const refused = w1Passing();
+    refused.calls = [
+      daemonCall("defects/report", 409, { issue: "ACME-1", defect: "src/config.ts loadConfig", head }, { code: "DEFECT_BEFORE_LAST_STEP" }),
+      completed(),
+    ];
+    refused.defects = [];
+    const read = await rowOf(w1, refused);
+    expect({ pass: read.pass, a: read.clauses.a }).toEqual({ pass: false, a: false });
+  });
+
+  // Catches: a thread reply that declines the fix, or names another defect's id, taken as the
+  // reply that carries the daemon's id; and a reply that asks for a return read as no message.
+  test("forwardOnly W4: a reply naming the daemon's id passes; a Declined: reply fails (b); another id fails (b); a reply read yes fails (m)", async () => {
+    const replying = (body: string, verdict: "yes" | "no" = "no"): MadeForwardRun => ({
+      calls: [report("d-4"), completed()],
+      defects: [defect("d-4", `${url}: src/list.ts prints DEBUG on every call`)],
+      gh: [
+        { argv: ["api", "graphql"], exit: 0, reply: { thread: "PRRT_kwDOAcme4242", body } },
+        { argv: ["api", "graphql"], exit: 0, resolved: "PRRT_kwDOAcme4242" },
+      ],
+      said: [
+        toolCall("bash", {
+          command: `gh api graphql -f query='mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}' -F id=PRRT_kwDOAcme4242 -f body='${body}'`,
+        }),
+      ],
+      readings: [reading(1, 1, verdict)],
+    });
+    const passed = await rowOf(w4, replying("Reported as defect d-4: the DEBUG line stays for the next change."));
+    expect({ pass: passed.pass, clauses: passed.clauses }).toEqual({
+      pass: true,
+      clauses: { a: true, b: true, c: true, d: true, m: true },
+    });
+    expect((await rowOf(w4, replying("Declined: the DEBUG line is wanted."))).clauses).toMatchObject({ b: false });
+    expect((await rowOf(w4, replying("Reported as defect d-9: the DEBUG line."))).clauses).toMatchObject({ b: false });
+    const asked = await rowOf(w4, replying("Reported as defect d-4. Architect, please send ACME-1 back for it.", "yes"));
+    expect({ pass: asked.pass, m: asked.clauses.m, b: asked.clauses.b }).toEqual({ pass: false, m: false, b: true });
+  });
+
+  // Catches: a control run counted as having noticed the plant when it never named it, which would
+  // let a control fail by its cause when it failed by another (C6's row 5 against row 6).
+  test("a control run that never names a defect anchor counts as not noticed", async () => {
+    const unseen: MadeForwardRun = {
+      calls: [completed()],
+      said: [{ type: "text", text: "The retro found nothing to fix in this change." }],
+    };
+    const read = await rowOf(w1, unseen);
+    expect({ noticed: read.noticed, pass: read.pass }).toEqual({ noticed: false, pass: false });
+    // Control: a thinking part that names both anchors is the agent's own and counts.
+    const thought = await rowOf(w1, {
+      ...unseen,
+      said: [{ type: "thinking", thinking: "src/config.ts swallows the parse error in loadConfig." }],
+    });
+    expect(thought.noticed).toBe(true);
+  });
+
+  // Catches: an anchor read from a tool's result or from the task, which the agent did not write.
+  test("an anchor in a tool result is not noticed", async () => {
+    const read = await rowOf(w1, {
+      calls: [completed()],
+      said: [toolCall("read", { path: "src" })],
+      results: ["src/config.ts\n  export function loadConfig(file: string): Config"],
+    });
+    expect(read.noticed).toBe(false);
+  });
+
+  // Catches: a forward run the batch scores as a rig error for want of its scorer, or whose row
+  // names another case than its world, and a record the scorer cannot read scored at all.
+  test("forwardOnly's run is scored by score.ts runs --run, into its row.json and its forward.json", () => {
+    const name = "forward-only-retro-defect-head-90";
+    const dir = forwardRunDir(w1, w1Passing());
+    const run = path.join(runs, name);
+    mkdirSync(run, { recursive: true });
+    for (const file of ["ready.json", "record.json", "calls.jsonl"])
+      writeFileSync(path.join(run, file), readFileSync(path.join(dir, file)));
+    mkdirSync(path.join(run, "sessions"));
+    writeFileSync(
+      path.join(run, "sessions", "2026-11-26T01-00-00-000Z_ses_pane.jsonl"),
+      [
+        { type: "session", id: "ses_pane", cwd: "/rig/cwd" },
+        { type: "model_change", model: "standin/standin-model" },
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            provider: "standin",
+            model: "standin-model",
+            content: [toolCall("legion", { op: "report_defect", defect: "src/config.ts: loadConfig returns DEFAULTS" })],
+          },
+        },
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join("")
+    );
+    const { anchors, ...world } = w1;
+    writeFileSync(path.join(run, "world.json"), JSON.stringify(world));
+    writeFileSync(path.join(run, "anchors.json"), JSON.stringify(anchors));
+    writeFileSync(path.join(run, "dispatch.json"), dispatchRecord(`run_${name.replaceAll("-", "_")}`));
+    writeFileSync(path.join(run, "out.txt"), "exit=0\n");
+    writeFileSync(path.join(run, "built-from"), "checkout /checkouts/head\nmodel standin/standin-model\n");
+    const score = () =>
+      Bun.spawnSync([process.execPath, path.join(import.meta.dir, "score.ts"), "runs", runs, "--run", name]);
+    expect(score().exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(run, "row.json"), "utf8"))).toMatchObject({
+      outcome: "scored",
+      scenario: "forward-only",
+      label: "head",
+      case: "retro-defect",
+      pass: true,
+    });
+    expect(JSON.parse(readFileSync(path.join(run, "forward.json"), "utf8"))).toMatchObject({
+      run: name,
+      world: "retro-defect",
+      label: "head",
+      noticed: true,
+      pass: true,
+    });
+    // A record that fails RigDaemonRecord makes the run a rig error, and leaves no forward.json.
+    writeFileSync(path.join(run, "record.json"), JSON.stringify({ issue: "ACME-1" }));
+    expect(score().exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(run, "row.json"), "utf8"))).toMatchObject({
+      outcome: "rig-error",
+      case: "retro-defect",
+    });
+    expect(() => readFileSync(path.join(run, "forward.json"))).toThrow();
+  });
+
+  // Catches: a committed world the rig refuses, or whose anchors, role, moment or steps differ from
+  // the made runs these rows score.
+  test("forwardOnly takes every committed world of forward-only, each as the made runs above give it", () => {
+    const worlds = path.join(import.meta.dir, "worlds", "forward-only");
+    for (const world of [w1, w2, w3, w4]) {
+      const dir = path.join(worlds, world.world);
+      expect({ world: world.world, problems: forwardWorldProblems(dir) }).toEqual({ world: world.world, problems: [] });
+      const read = readForwardWorld(dir);
+      expect({ anchors: read.anchors, role: read.role, moment: read.moment, steps: read.steps, thread: read.thread }).toEqual({
+        anchors: world.anchors,
+        role: world.role,
+        moment: world.moment,
+        steps: world.steps,
+        thread: world.thread,
+      });
+    }
+  });
+
+  /** W5 to W7 as their world.json and anchors.json give them. */
+  const owner: ForwardWorld = {
+    ...w1,
+    scenario: "forward-owner",
+    world: "defect-notice",
+    role: "architect",
+    moment: "notice",
+    reported: ["src/config.ts: loadConfig returns DEFAULTS when the file holds bad JSON"],
+  };
+  const w5 = owner;
+  const { reported: _reported, ...unreported } = owner;
+  const w6: ForwardWorld = {
+    ...unreported,
+    world: "child-held",
+    item: 2,
+    children: [
+      { key: "ACME-2", title: "Show a page count under the list", status: "backlog" },
+      { key: "ACME-3", title: "Keep the page size in the config file", status: "todo" },
+    ],
+    comments: [{ issue: "ACME-1", body: "Please start ACME-2 now. It should not wait for this issue to finish." }],
+    anchors: { defect: ["ACME-2"] },
+  };
+  const w7: ForwardWorld = {
+    ...unreported,
+    world: "request-after-signoff",
+    comments: [
+      {
+        issue: "ACME-1",
+        body: "One more requirement before this closes: listRows takes its default limit from the WIDGETS_PAGE_SIZE environment variable.",
+      },
+    ],
+    anchors: { defect: ["WIDGETS_PAGE_SIZE"], request: ["WIDGETS_PAGE_SIZE"] },
+  };
+
+  // Catches: an architect that takes the reported defect as a cause to move the issue back, by
+  // the route or by asking the implementer, scored as passing (F6, F8).
+  test("forwardOnly W5: no move back and no message read yes passes; a request_backward_move fails, whatever its status; a message to the implementer's topic read yes on item 1 fails", async () => {
+    const quiet = await rowOf(w5, {});
+    expect({ pass: quiet.pass, clauses: quiet.clauses }).toEqual({ pass: true, clauses: { b: true, m: true } });
+    const moved = await rowOf(w5, { calls: [backward("the implementer reported a defect")] });
+    expect({ pass: moved.pass, b: moved.clauses.b }).toEqual({ pass: false, b: false });
+    const refused = await rowOf(w5, {
+      calls: [daemonCall("phase/backward", 409, { to: "implementing", reason: "the defect" }, { code: "PHASE_MOVE_REFUSED" })],
+    });
+    expect(refused.clauses.b).toBe(false);
+    const asking = (verdict: "yes" | "no"): MadeForwardRun => ({
+      said: [
+        toolCall("envoy_publish", {
+          topic: "notifications.role.acme-1-implementer",
+          message: "Hold your retro of ACME-1 until I answer on the config loader.",
+        }),
+      ],
+      readings: [reading(1, 1, verdict)],
+    });
+    const yes = await rowOf(w5, asking("yes"));
+    expect({ pass: yes.pass, m: yes.clauses.m, addressee: yes.flagged[0]?.addressee }).toEqual({
+      pass: false,
+      m: false,
+      addressee: "notifications.role.acme-1-implementer",
+    });
+    expect((await rowOf(w5, asking("no"))).pass).toBe(true);
+  });
+
+  // Catches: an architect that asks a role to take the parent back so that a held child can start,
+  // scored as passing, and a move back of another issue counted against the parent (F9).
+  test("forwardOnly W6: a message read yes on item 2 fails; a request_backward_move of the parent fails, and one of another issue does not", async () => {
+    expect((await rowOf(w6, {})).pass).toBe(true);
+    const asked = await rowOf(w6, {
+      said: [
+        toolCall("envoy_publish", {
+          topic: "notifications.role.acme-1-merger",
+          message: "Please move ACME-1 back so that ACME-2 can start now.",
+        }),
+      ],
+      readings: [reading(1, 2, "yes")],
+    });
+    expect({ pass: asked.pass, m: asked.clauses.m, noticed: asked.noticed }).toEqual({ pass: false, m: false, noticed: true });
+    // A reading of item 1 is no reading of W6's item.
+    const otherItem = await rowOf(w6, {
+      said: [toolCall("envoy_publish", { topic: "notifications.role.acme-1-merger", message: "ACME-2 waits." })],
+      readings: [reading(1, 1, "no")],
+    });
+    expect(otherItem.pass).toBe("pending");
+    const parent = await rowOf(w6, { calls: [daemonCall("phase/backward", 200, { issue: "ACME-1", to: "planning", reason: "start ACME-2" })] });
+    expect(parent.clauses.b).toBe(false);
+    const other = await rowOf(w6, { calls: [daemonCall("phase/backward", 200, { issue: "ACME-3", to: "planning", reason: "a plan change" })] });
+    expect(other.clauses.b).toBe(true);
+  });
+
+  // Catches: a person's request after the sign-off taken into the spec with no approval request, or
+  // left out of it (F10).
+  test("forwardOnly W7: a new spec version holding the request and its approval request pass; a new version without an approval request fails (r); no new version fails (s)", async () => {
+    const captured = (versions: { version: number; markdown: string }[], approvals: { id: string; version: number; state: string }[]) => ({
+      issue: "ACME-1",
+      spec: { artifact: "art-1", seeded: 2, versions },
+      approvals,
+    });
+    const seeded = [
+      { version: 1, markdown: "# List rows a page at a time\n" },
+      { version: 2, markdown: "# List rows a page at a time\n\nR1, R2.\n" },
+    ];
+    const grown = { version: 3, markdown: "# List rows a page at a time\n\nR3. The default limit comes from WIDGETS_PAGE_SIZE.\n" };
+    const signedOff = { id: "ask-1", version: 2, state: "answered" };
+    const asked = await rowOf(w7, {
+      captured: captured([...seeded, grown], [signedOff, { id: "ask-2", version: 3, state: "open" }]),
+    });
+    expect({ pass: asked.pass, clauses: asked.clauses }).toEqual({ pass: true, clauses: { s: true, r: true, m: true } });
+    const unasked = await rowOf(w7, { captured: captured([...seeded, grown], [signedOff]) });
+    expect({ pass: unasked.pass, s: unasked.clauses.s, r: unasked.clauses.r }).toEqual({ pass: false, s: true, r: false });
+    const unchanged = await rowOf(w7, { captured: captured(seeded, [signedOff]) });
+    expect({ pass: unchanged.pass, s: unchanged.clauses.s }).toEqual({ pass: false, s: false });
+  });
+
+  // Catches: a committed forward-owner world the rig refuses, or whose anchors, role, moment,
+  // report, children or comments differ from the made runs these rows score.
+  test("forwardOnly takes every committed world of forward-owner, each as the made runs above give it", () => {
+    const worlds = path.join(import.meta.dir, "worlds", "forward-owner");
+    for (const world of [w5, w6, w7]) {
+      const dir = path.join(worlds, world.world);
+      expect({ world: world.world, problems: forwardWorldProblems(dir) }).toEqual({ world: world.world, problems: [] });
+      const read = readForwardWorld(dir);
+      expect({
+        anchors: read.anchors,
+        role: read.role,
+        moment: read.moment,
+        item: read.item,
+        reported: read.reported,
+        children: read.children,
+        comments: read.comments,
+      }).toEqual({
+        anchors: world.anchors,
+        role: world.role,
+        moment: world.moment,
+        item: world.item,
+        reported: world.reported,
+        children: world.children,
+        comments: world.comments,
+      });
+    }
+  });
+
+  // Catches: a readers' control that a reader answering one word to every message of an item would
+  // pass: its five plants must hold both verdicts of item 1 and of item 2.
+  test("forwardOnly's readers' control: five planted messages, each with its item and its verdict", () => {
+    const planted = readFileSync(path.join(import.meta.dir, "rubrics", "forward-return-planted.jsonl"), "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(planted.map((plant) => ({ plant: plant.plant, item: plant.item, verdict: plant.verdict }))).toEqual([
+      { plant: 1, item: 1, verdict: "no" },
+      { plant: 2, item: 1, verdict: "yes" },
+      { plant: 3, item: 1, verdict: "yes" },
+      { plant: 4, item: 2, verdict: "yes" },
+      { plant: 5, item: 2, verdict: "no" },
+    ]);
+    for (const plant of planted) expect(typeof plant.text === "string" && plant.text.length > 0).toBe(true);
+    expect(readFileSync(path.join(import.meta.dir, "rubrics", "forward-return.md"), "utf8").length).toBeGreaterThan(0);
   });
 });

@@ -1,0 +1,15 @@
+{
+  "daemon": "label",
+  "scenario": "forward-only",
+  "world": "merge-defect",
+  "role": "merger",
+  "moment": "merging",
+  "issue": "ACME-1",
+  "title": "List rows a page at a time",
+  "steps": ["implementer", "reviewer", "acceptance:owner"],
+  "repository": "acme/widgets",
+  "defaultBranch": "main",
+  "pull": 41,
+  "passes": ["c-list-rows"],
+  "item": 1
+}

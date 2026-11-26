@@ -1,0 +1,20 @@
+{
+  "daemon": "label",
+  "scenario": "forward-only",
+  "world": "retro-thread",
+  "role": "implementer",
+  "moment": "retro",
+  "issue": "ACME-1",
+  "title": "List rows a page at a time",
+  "steps": ["implementer", "acceptance:owner"],
+  "repository": "acme/widgets",
+  "defaultBranch": "main",
+  "pull": 41,
+  "passes": ["c-list-rows"],
+  "item": 1,
+  "thread": {
+    "id": "PRRT_kwDOAcme4242",
+    "comment": 4242,
+    "url": "https://github.com/acme/widgets/pull/41#discussion_r4242"
+  }
+}

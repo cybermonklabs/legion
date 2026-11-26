@@ -28,9 +28,10 @@
 #   rig.sh batch-scored <scenario> <count> <label>...
 #                                                  starts the scratch services and runs each
 #                                                  label's cell of the case the scenario's case
-#                                                  variable names until <count> runs of it scored,
-#                                                  at most three times <count> launches; a cell
-#                                                  short of its count prints UNKNOWN
+#                                                  variable names (a forward scenario's world)
+#                                                  until <count> runs of it scored, at most three
+#                                                  times <count> launches; a cell short of its
+#                                                  count prints UNKNOWN
 #   rig.sh rows      [<scenario>]                  each scored run's row.json, then each entry of
 #                                                  its reach, without scoring it again
 #   rig.sh cell      <scenario> <label> <case> <count>
@@ -39,6 +40,11 @@
 #                                                  passed each clause, and its verdict; a control
 #                                                  form's case the control's own cell over every
 #                                                  owner of the form, with cells' verdict
+#   rig.sh forward-cell <scenario> <label> <world> <count>
+#                                                  a forward scenario's cell (score.ts
+#                                                  forward-cell): its discarded launches, then C6's
+#                                                  decision on a control label's cell or the head's
+#                                                  line, then whether the head's Job may start
 #   rig.sh evidence  [<scenario>]                  the cells, each label's built-from and each
 #                                                  run's row and model, as Markdown
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
@@ -136,6 +142,16 @@
 #                   (owner-walk.ts cases), which the run's name carries:
 #                   owner-walk-<case>-<label>-<n>. Scored by ownerWalk, one run at a time
 #                   (`score.ts runs --run`), and counted in cells (`score.ts cells`).
+#   forward-only, forward-owner
+#                   Scored scenarios whose agent is a real pane of the label's whole daemon: an
+#                   implementer in retro or a merger (forward-only), or an architect at a notice
+#                   (forward-owner), in a world of worlds/<scenario>/<world>/ whose world.json names
+#                   `daemon: label` (forward-world.ts names each file). SKILL_SCENARIOS_FORWARD_WORLD
+#                   names the world, which the run's name carries: <scenario>-<world>-<label>-<n>.
+#                   The run has no daemon stand-in, and the rig starts no Oh My Pi:
+#                   `label-texts.sh daemon` runs the label's TestRigDaemonLive, whose daemon
+#                   launches the pane (run_forward, below). Scored by forwardOnly, one run at a time
+#                   (`score.ts runs --run`), and decided in cells (`rig.sh forward-cell`).
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -195,7 +211,9 @@
 #   SKILL_SCENARIOS_MODEL         `profile`: standin, in place of every route above: the profile's
 #                                 one provider block is the model stand-in (install_standin_route),
 #                                 which model-standin.ts serves for each run of a scored scenario,
-#                                 and its built-from's model line names it
+#                                 and its built-from's model line names it. standin-report is the
+#                                 same route for a path check: the stand-in plays the calls of
+#                                 <run>/standin-script.json, which run_forward writes
 # `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
@@ -262,6 +280,12 @@
 #                                 which `rig.sh plans-capture` writes (required)
 #   SKILL_SCENARIOS_GUIDANCE_MODELS  forms A, C and D: "<claude model> <gpt model>", the ids the
 #                                 guidance names (owner-walk.ts world), the ids the gateway lists
+# For forward-only and forward-owner:
+#   SKILL_SCENARIOS_FORWARD_WORLD  the run's world, a directory name of worlds/<scenario>/ (required)
+#   SKILL_SCENARIOS_PATH_CHECK     1: batch-scored builds the label with `label-texts.sh build
+#                                 --compile` (build_label_texts)
+#   SKILL_SCENARIOS_PATH_CONTROL   intercept: the request's paneDaemon is intercept-report, the
+#                                 path check's control (daemon_request)
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -455,7 +479,7 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
 # ports, URLs and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
-proxy_pid='' model_pid='' omp_pid='' rpc_fd=''
+proxy_pid='' model_pid='' omp_pid='' rpc_fd='' entry_pid=''
 S='' envoy_port='' dispatch_port='' pg_url='' nats_url=''
 
 label_dir() {
@@ -512,13 +536,13 @@ load_label() {
 install_model_route() {
   local co=$1 profile=$2 dir=$3
   case ${SKILL_SCENARIOS_MODEL:-} in
-  standin)
+  standin | standin-report)
     install_standin_route "$profile" "$dir/home"
     return
     ;;
   '') ;;
   *)
-    echo "SKILL_SCENARIOS_MODEL is '$SKILL_SCENARIOS_MODEL': it is standin, or unset for the route LEGION_E2E_MODEL_ROUTE names" >&2
+    echo "SKILL_SCENARIOS_MODEL is '$SKILL_SCENARIOS_MODEL': it is standin or standin-report, or unset for the route LEGION_E2E_MODEL_ROUTE names" >&2
     return 1
     ;;
   esac
@@ -650,7 +674,7 @@ route_config() {
 # on, for built-from, and nothing for a route that names no one model: the stand-in's, or the
 # provider route's block and model. A scored run is held to it (scored-runs.ts modelProblem).
 route_model_line() {
-  if [ "${SKILL_SCENARIOS_MODEL:-}" = standin ]; then
+  if [ "${SKILL_SCENARIOS_MODEL:-}" = standin ] || [ "${SKILL_SCENARIOS_MODEL:-}" = standin-report ]; then
     printf 'model %s\n' "$model_standin"
   elif [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" = provider ]; then
     printf 'model %s/%s\n' "$LEGION_E2E_MODEL_PROVIDER" "${LEGION_E2E_MODEL_PROVIDER_MODEL:-$route_model_id}"
@@ -987,17 +1011,18 @@ stop_panes() {
   for pid in $(tmux list-panes -s -t "=$1" -F '#{pane_pid}' 2>/dev/null || true); do stop_tree "$pid" "$server"; done
 }
 
-# A run's or a live read's exit: its RPC session (launch_rpc's Oh My Pi), its daemon stand-in, its
-# Dispatch proxy and model stand-in, its own Dispatch server, its agent's session, and every
-# process that carries its SKILL_SCENARIO_RUN. The run's database stays in the batch's Postgres:
-# services_down removes the container it started, and leaves a given server, with every database
-# its runs made, to the operator. The services are this shell's own jobs, so each is waited for
-# once it is killed: bash otherwise prints a `Killed` notice for it on stderr.
+# A run's or a live read's exit: its RPC session (launch_rpc's Oh My Pi), its label's daemon entry
+# (run_forward), its daemon stand-in, its Dispatch proxy and model stand-in, its own Dispatch
+# server, its agent's session, and every process that carries its SKILL_SCENARIO_RUN. The run's
+# database stays in the batch's Postgres: services_down removes the container it started, and
+# leaves a given server, with every database its runs made, to the operator. The services are this
+# shell's own jobs, so each is waited for once it is killed: bash otherwise prints a `Killed` notice
+# for it on stderr.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
   [ -z "$rpc_fd" ] || { exec {rpc_fd}>&- && rpc_fd=''; } 2>/dev/null || true
-  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid"; do
+  for pid in "$omp_pid" "$entry_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -2482,6 +2507,243 @@ run_owner_walk() {
   scored_session
 }
 
+# ---- A world with `daemon: label`: its agent a real pane of the label's whole daemon ----
+
+# The worlds of forward-only and forward-owner, each worlds/<scenario>/<world>/ (forward-world.ts).
+forward_worlds=$here/worlds
+# The defect a path check's scripted model reports (SKILL_SCENARIOS_MODEL=standin-report).
+path_check_defect='path check: src/config.ts loadConfig returns DEFAULTS on a parse error'
+
+# forward_world_name SCENARIO prints the world SKILL_SCENARIOS_FORWARD_WORLD names, a directory of
+# worlds/SCENARIO/ that holds a world.json, and fails, naming the scenario's worlds, when it names
+# none.
+forward_world_name() {
+  local value=${SKILL_SCENARIOS_FORWARD_WORLD:-} dir worlds=()
+  for dir in "$forward_worlds/$1"/*/; do
+    [ ! -f "$dir/world.json" ] || worlds+=("$(basename -- "$dir")")
+  done
+  [[ $value =~ ^[a-z0-9][a-z0-9-]*$ ]] && [ -f "$forward_worlds/$1/$value/world.json" ] ||
+    fail "SKILL_SCENARIOS_FORWARD_WORLD is '$value', no world of $1: its worlds are ${worlds[*]:-none}"
+  printf '%s\n' "$value"
+}
+
+# forward_holds SCHEMA FILE succeeds when FILE is JSON that the schema SCHEMA of
+# scored-runs-contracts.ts takes, and else prints the first issue, with its path, and fails.
+forward_holds() {
+  # shellcheck disable=SC2016 # JavaScript for bun, not shell
+  bun -e '
+    const [contracts, name, file] = process.argv.slice(1);
+    const schema = (await import(contracts))[name];
+    let value;
+    try {
+      value = JSON.parse(await Bun.file(file).text());
+    } catch (error) {
+      console.log(`it is no JSON: ${error.message}`);
+      process.exit(1);
+    }
+    const read = schema.safeParse(value);
+    if (!read.success) {
+      const [issue] = read.error.issues;
+      console.log(`${issue.path.join(".") || "the value"}: ${issue.message}`);
+      process.exit(1);
+    }
+  ' "$here/scored-runs-contracts.ts" "$1" "$2"
+}
+
+# daemon_request WORLD_DIR prints the request of `label-texts.sh daemon` (C4's RigDaemonRequest,
+# with runDir and envoyTokenFile): the world's moment, role, issue and steps, the world's directory,
+# the run's own Dispatch, the batch's listener, NATS, Postgres and Envoy bearer, the gh stand-in's
+# log, the pinned Oh My Pi, the run's HOME and the label's profile, the directory of the panes' own
+# output, and the run's directory, whose bin/ goes first on the real pane's PATH. paneDaemon is
+# `label`, and `intercept-report` only for the path check's control
+# (SKILL_SCENARIOS_PATH_CONTROL=intercept).
+daemon_request() {
+  local omp pane_daemon=label
+  case ${SKILL_SCENARIOS_PATH_CONTROL:-} in
+  '') ;;
+  intercept) pane_daemon=intercept-report ;;
+  *) fail "SKILL_SCENARIOS_PATH_CONTROL is '$SKILL_SCENARIOS_PATH_CONTROL': it is intercept, or unset" ;;
+  esac
+  omp=$(rig_omp "$pin") || exit 1
+  jq -n --slurpfile w "$1/world.json" --arg world "$1" --arg dispatch "http://127.0.0.1:$dispatch_port" \
+    --arg dispatchToken "$work/services/dispatch-token" --arg envoy "$(service_value ENVOY_URL)" \
+    --arg nats "$(service_value ENVOY_NATS_URL)" --arg postgres "$pg_url" --arg ghLog "$R/calls.jsonl" \
+    --arg omp "$omp" --arg home "$R/home" --arg profile "$profile" --arg paneLogs "$R/panes" \
+    --arg paneDaemon "$pane_daemon" --arg runDir "$R" --arg envoyToken "$(service_value ENVOY_TOKEN_FILE)" '
+    $w[0] as $w
+    | {moment: $w.moment, role: $w.role, issue: $w.issue, steps: $w.steps, world: $world,
+       dispatchUrl: $dispatch, dispatchTokenFile: $dispatchToken, envoyUrl: $envoy, natsUrl: $nats,
+       postgresUrl: $postgres, ghLog: $ghLog, omp: $omp, home: $home, profile: $profile,
+       paneLogs: $paneLogs, paneDaemon: $paneDaemon, runDir: $runDir, envoyTokenFile: $envoyToken}'
+}
+
+# forward_ready waits, bounded (rpc_ready_bound), for the entry to write $R/ready.json, which it
+# writes once the label daemon took the real pane's claims/ready, and requires it to hold
+# RigDaemonReady. It fails when the entry exits first, and at the bound: the launch is then a rig
+# error.
+forward_ready() {
+  local i why=''
+  for ((i = 0; i < rpc_ready_bound * 2; i++)); do
+    if [ -s "$R/ready.json" ]; then
+      why=$(forward_holds RigDaemonReady "$R/ready.json") && return 0
+    fi
+    kill -0 "$entry_pid" 2>/dev/null ||
+      fail "label-texts.sh daemon of label ${P##*/} exited before it wrote ready.json; see $R/logs/entry.log"
+    sleep 0.5
+  done
+  [ -z "$why" ] || fail "$R/ready.json fails RigDaemonReady: $why"
+  fail "the label daemon took no claims/ready of the real pane within ${rpc_ready_bound}s: no ready.json; see $R/logs/entry.log"
+}
+
+# forward_results HEAD prints, one a line, each before_merge check of the issue that has no pass at
+# HEAD in the run's Dispatch (seed.ts results-hold), and fails when there is one.
+forward_results() {
+  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" results-hold "$R/fixture.json" "$1") 2>&1
+}
+
+# forward_script writes $R/standin-script.json, which the model stand-in plays in its mode
+# standin-report (model-standin.ts): the issue's report_defect, with path_check_defect and the
+# head of ready.json, and then the retro's completion.
+forward_script() {
+  jq -n --slurpfile request "$R/daemon-request.json" --slurpfile ready "$R/ready.json" --arg defect "$path_check_defect" '
+    {calls: [
+      {tool: "legion", input: {op: "report_defect", issue: $request[0].issue, defect: $defect, head: $ready[0].head}},
+      {tool: "legion", input: {op: "handoff_complete", summary: "path check", plan_rating: 3, plan_reason: "path check"}}]}' \
+    >"$R/standin-script.json"
+}
+
+# forward_status prints what $R/status.json says of the run: none (no status yet), gone (the real
+# pane is dead), ended (PR #5461's three end facts: the claim is out of a turn, and the newest
+# claims/activity after that turn says no background work runs and names no reminder), or running.
+forward_status() {
+  [ -s "$R/status.json" ] || { echo none && return 0; }
+  jq -r 'if .paneAlive == false then "gone"
+    elif .turn == "idle" and (.activity | type) == "object"
+      and .activity.backgroundWork.running == false
+      and (.activity.phase | type) == "object" and .activity.phase.nextReminderAt == null then "ended"
+    else "running" end' "$R/status.json" 2>/dev/null || echo running
+}
+
+# forward_held BOUND writes held.txt: what $R/status.json says held the run at its bound.
+forward_held() {
+  local reason
+  reason=$(jq -r 'if .turn == "running" then "a turn running"
+    elif (.activity | type) != "object" then "no activity report of the session since its turn"
+    elif .activity.backgroundWork.running != false
+      then "background work running: \((.activity.backgroundWork.kinds // []) | join(", "))"
+    else "a reminder armed for \(.activity.phase.nextReminderAt)" end' "$R/status.json" 2>/dev/null) ||
+    reason="no status file"
+  printf 'the run did not end within %s seconds: %s\n' "$1" "$reason" >"$R/held.txt"
+}
+
+# forward_wait BOUND reads $R/status.json every rpc_poll seconds until the run has ended
+# (forward_status), and fails past BOUND seconds. A dead pane, or an entry that exits first, is a
+# rig error.
+forward_wait() {
+  local deadline=$((SECONDS + $1))
+  while :; do
+    case $(forward_status) in
+    ended) return 0 ;;
+    gone) fail "the real pane exited before its run ended; see $R/status.json and $R/logs/entry.log" ;;
+    esac
+    kill -0 "$entry_pid" 2>/dev/null ||
+      fail "label-texts.sh daemon of label ${P##*/} exited before the run ended; see $R/logs/entry.log"
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep "$rpc_poll"
+  done
+}
+
+# forward_end ends the run: SIGTERM to the entry, which then writes $R/record.json and exits, and
+# a bounded wait for its exit. The entry must exit 0 and its record hold RigDaemonRecord, or the
+# launch is a rig error. Then the transcripts of ready.sessionDir go into $R/sessions.
+forward_end() {
+  local i status=0 why sessions
+  kill -TERM "$entry_pid" 2>/dev/null || true
+  for ((i = 0; i < 120; i++)); do
+    kill -0 "$entry_pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 "$entry_pid" 2>/dev/null; then
+    stop_tree "$entry_pid" || true
+    fail "label-texts.sh daemon of label ${P##*/} did not exit within 60 s of SIGTERM; see $R/logs/entry.log"
+  fi
+  wait "$entry_pid" 2>/dev/null || status=$?
+  entry_pid=''
+  if [ "$status" != 0 ]; then
+    why=$(grep -m1 -E '^[[:space:]]+[a-z_]+_test\.go:[0-9]+: ' "$R/logs/entry.log" | sed 's/^[[:space:]]*//') ||
+      why=$(tail -n 1 "$R/logs/entry.log")
+    fail "label-texts.sh daemon of label ${P##*/} exited $status: $why; see $R/logs/entry.log"
+  fi
+  [ -s "$R/record.json" ] || fail "label-texts.sh daemon of label ${P##*/} wrote no record.json; see $R/logs/entry.log"
+  why=$(forward_holds RigDaemonRecord "$R/record.json") || fail "$R/record.json fails RigDaemonRecord: $why"
+  sessions=$(jq -r .sessionDir "$R/ready.json")
+  [ -d "$sessions" ] || fail "ready.json's sessionDir $sessions is no directory"
+  cp -a "$sessions/." "$R/sessions/"
+}
+
+# run_forward NAME SCENARIO WORLD: a run of WORLD, worlds/SCENARIO/WORLD/, whose agent is a real pane
+# that the label's own daemon launches and serves (C4). The rig refuses the world first
+# (`score.ts forward-world`: a task text that holds a defect anchor, or a before_merge check with no
+# pass named). The world's issue goes on the run's own Dispatch (seed.ts forward), and the pane gets
+# the run's HOME, gh and pod stand-ins, and the model stand-in when the label's model line names it.
+# There is no daemon stand-in, and the rig starts no Oh My Pi: `label-texts.sh daemon` runs the
+# label's TestRigDaemonLive, whose daemon launches the pane. The rig waits for ready.json, holds the
+# run's Dispatch to a pass of each before_merge check at its head, writes the scripted model's
+# calls (standin-report), reads status.json every rpc_poll seconds until the run ends or its bound
+# (SKILL_SCENARIOS_TIMEOUT), and ends it (forward_end). out.txt's last line is `exit=0`, or
+# `exit=bound` with held.txt. seed.ts capture-forward reads back the issue's spec and approvals.
+run_forward() {
+  local scenario=$2 dir why head bound=${SKILL_SCENARIOS_TIMEOUT:-1500}
+  dir=$forward_worlds/$scenario/$3
+  require_label_texts "$co" "${P##*/}"
+  why=$(bun "$here/score.ts" forward-world "$dir" 2>&1) || fail "the world $scenario/$3 is refused: $why"
+  cp "$dir/world.json" "$dir/anchors.json" "$dir/fixtures.json" "$R/"
+  own_dispatch project "$co"
+  seed_ts forward "$R/fixture.json" "$dir"
+  base_env
+  standins
+  pod_standins
+  mkdir -p "$R/panes"
+  if grep -qxF "model $model_standin" "$R/built-from"; then
+    start_process model bun "$here/model-standin.ts" "$R/model-standin.jsonl"
+    await_start model "$model_pid" 30 "the model stand-in to listen" grep -q '^listening on ' "$R/logs/model.log"
+    route_model_standin "$R/home" "$profile" "$(sed -n 's|^listening on ||p' "$R/logs/model.log")"
+  fi
+  daemon_request "$dir" >"$R/daemon-request.json"
+  start_process entry env LEGION_TEST_PG_DSN="$pg_url" bash "$co/packages/pi-legion/scripts/skill-scenarios/label-texts.sh" \
+    daemon "$R/daemon-request.json" "$R/ready.json" "$R/status.json" "$R/record.json"
+  forward_ready
+  head=$(jq -r .head "$R/ready.json")
+  why=$(forward_results "$head") ||
+    fail "the run's Dispatch shows a before_merge check with no pass at the head $head, so the run stops: $why"
+  [ "${SKILL_SCENARIOS_MODEL:-}" != standin-report ] || forward_script
+  : >"$R/out.txt"
+  if forward_wait "$bound"; then
+    echo exit=0 >>"$R/out.txt"
+  else
+    forward_held "$bound"
+    echo exit=bound >>"$R/out.txt"
+  fi
+  forward_end
+  seed_ts capture-forward "$R/fixture.json" "$R"
+}
+
+# build_label_texts builds the label's texts once for a batch (`label-texts.sh build`), or, for a
+# path check (SKILL_SCENARIOS_PATH_CHECK=1), `label-texts.sh build --compile`, which makes the
+# binaries and runs no test: a label whose defect route is deleted still compiles, and its run
+# reaches the plugin's calls (C4, "The startup of a path check").
+build_label_texts() {
+  if [ "${SKILL_SCENARIOS_PATH_CHECK:-}" = 1 ]; then label_texts build --compile; else label_texts build; fi
+}
+
+# cmd_forward_cell SCENARIO LABEL WORLD COUNT prints the cell of WORLD under LABEL (score.ts
+# forward-cell): each discarded launch, then C6's decision line of a control label's cell, or the
+# head's line, then whether the head's Job of WORLD may start.
+cmd_forward_cell() {
+  [ $# = 4 ] || fail "usage: rig.sh forward-cell <forward-only|forward-owner> <label> <world> <count>"
+  bun "$here/score.ts" forward-cell "$work/runs" "$@"
+}
+
 # Where a label manifest's patch and text files are named from (controls/patches/README.md).
 rig_files=$here
 
@@ -2676,11 +2938,12 @@ decode_plans_answer() {
   mv "$partial" "$out"
 }
 
-# scored_count LABEL CASE prints how many runs of CASE under LABEL hold a scored row.
+# scored_count SCENARIO LABEL CASE prints how many runs of CASE under LABEL hold a scored row. A
+# forward scenario's case is its world.
 scored_count() {
   local dir n=0
-  for dir in "$work/runs/owner-walk-$2-$1-"*; do
-    [[ ${dir##*/} =~ ^owner-walk-$2-$1-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
+  for dir in "$work/runs/$1-$3-$2-"*; do
+    [[ ${dir##*/} =~ ^$1-$3-$2-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
     [ "$(jq -r .outcome "$dir/row.json")" != scored ] || n=$((n + 1))
   done
   printf '%s\n' "$n"
@@ -2694,23 +2957,31 @@ score_scored_run() {
 
 # scored_rig_error NAME LABEL CASE REASON writes the row of a run the rig failed (RigErrorRow),
 # with the rig's own reason, beside rig-error.txt, which keeps `rig.sh score` from scoring it again.
+# The run's scenario is the one its name starts with.
 scored_rig_error() {
-  local dir=$work/runs/$1 reason=${4#skill-scenarios: }
+  local dir=$work/runs/$1 reason=${4#skill-scenarios: } scenario=owner-walk
+  case $1 in
+  forward-only-*) scenario=forward-only ;;
+  forward-owner-*) scenario=forward-owner ;;
+  esac
   [ -n "$reason" ] || reason="rig.sh run failed and named no reason"
   mkdir -p "$dir"
   printf '%s\n' "$reason" >"$dir/rig-error.txt"
-  jq -cn --arg run "$1" --arg label "$2" --arg case "$3" --arg error "the rig failed the run: $reason" \
-    '{outcome: "rig-error", run: $run, scenario: "owner-walk", label: $label, case: $case, error: $error}' >"$dir/row.json"
+  jq -cn --arg run "$1" --arg scenario "$scenario" --arg label "$2" --arg case "$3" --arg error "the rig failed the run: $reason" \
+    '{outcome: "rig-error", run: $run, scenario: $scenario, label: $label, case: $case, error: $error}' >"$dir/row.json"
 }
 
 # scored_attempt SCENARIO LABEL CASE N launches one run, `rig.sh run`, and writes its row: the
 # scenario's score (score_scored_run), or the rig's error with the reason the run's stderr named.
+# The case goes to the run as SKILL_SCENARIOS_OWNER_WALK_CASE, or for a forward scenario as its
+# world, SKILL_SCENARIOS_FORWARD_WORLD.
 scored_attempt() {
-  local name=$1-$3-$2-$4 err status=0
+  local name=$1-$3-$2-$4 err status=0 variable=SKILL_SCENARIOS_OWNER_WALK_CASE
+  case $1 in forward-only | forward-owner) variable=SKILL_SCENARIOS_FORWARD_WORLD ;; esac
   mkdir -p "$work/scored-logs"
   err=$work/scored-logs/$name.err
   scored_index=$((scored_index + 1))
-  SKILL_SCENARIOS_OWNER_WALK_CASE=$3 bash "$here/rig.sh" run "$1" "$2" "$4" "$scored_index" "$start" 2>"$err" || status=$?
+  env "$variable=$3" bash "$here/rig.sh" run "$1" "$2" "$4" "$scored_index" "$start" 2>"$err" || status=$?
   cat "$err" >&2
   if [ "$status" = 0 ]; then
     score_scored_run "$name"
@@ -2725,9 +2996,9 @@ scored_index=0
 # it prints UNKNOWN: a cell short of its count is never a pass.
 batch_scored_cell() {
   local scenario=$1 label=$2 case=$3 count=$4 launches=0
-  while [ "$(scored_count "$label" "$case")" -lt "$count" ]; do
+  while [ "$(scored_count "$scenario" "$label" "$case")" -lt "$count" ]; do
     if [ "$launches" -ge $((3 * count)) ]; then
-      echo "UNKNOWN: $scenario $label $case: $(scored_count "$label" "$case") scored runs of $count after $launches launches, three times its count"
+      echo "UNKNOWN: $scenario $label $case: $(scored_count "$scenario" "$label" "$case") scored runs of $count after $launches launches, three times its count"
       return 0
     fi
     launches=$((launches + 1))
@@ -2736,14 +3007,18 @@ batch_scored_cell() {
 }
 
 # cmd_batch_scored SCENARIO COUNT LABEL... (the header): the batch's services, each label's texts
-# built once (`label-texts.sh build`), and one cell of COUNT scored runs for each label, of the
-# case SKILL_SCENARIOS_OWNER_WALK_CASE names, one run at a time.
+# built once (build_label_texts), and one cell of COUNT scored runs for each label, of the case
+# SKILL_SCENARIOS_OWNER_WALK_CASE names (owner-walk) or the world SKILL_SCENARIOS_FORWARD_WORLD names
+# (forward-only, forward-owner), one run at a time.
 cmd_batch_scored() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch-scored owner-walk <count> <label>..."
+  [ $# -ge 3 ] || fail "usage: rig.sh batch-scored <owner-walk|forward-only|forward-owner> <count> <label>..."
   local scenario=$1 count=$2 label case
-  [ "$scenario" = owner-walk ] || fail "batch-scored runs owner-walk, the one scored scenario, not '$scenario'"
   [[ $count =~ ^[1-9][0-9]*$ ]] || fail "the count '$count' is not a whole number above 0"
-  case=$(owner_walk_case) || exit 1
+  case $scenario in
+  owner-walk) case=$(owner_walk_case) || exit 1 ;;
+  forward-only | forward-owner) case=$(forward_world_name "$scenario") || exit 1 ;;
+  *) fail "batch-scored runs owner-walk, forward-only or forward-owner, the scored scenarios, not '$scenario'" ;;
+  esac
   shift 2
   for label in "$@"; do
     load_label "$label"
@@ -2755,7 +3030,7 @@ cmd_batch_scored() {
   services_up 1
   for label in "$@"; do
     load_label "$label"
-    label_texts build
+    build_label_texts
   done
   start=$(date +%s)
   for label in "$@"; do batch_scored_cell "$scenario" "$label" "$case" "$count"; done
@@ -2808,30 +3083,40 @@ cmd_evidence() {
 }
 
 # cmd_score [SCENARIO] scores the runs of the scenario (`score.ts runs`), or of every scenario.
-# A scored scenario's run is scored one by one (score_scored_run), but a run the rig failed, whose
-# row is its rig error (rig-error.txt), and then their rows and reach lines (cmd_rows) and cells.
+# A scored scenario's run (owner-walk, forward-only, forward-owner) is scored one by one
+# (score_scored_run), but a run the rig failed, whose row is its rig error (rig-error.txt), and
+# then their rows and reach lines (cmd_rows), and owner-walk's cells.
 cmd_score() {
-  local scenario=${1:-} dir names=()
-  [ "$scenario" = owner-walk ] || bun "$here/score.ts" runs "$work/runs" "$@" || return
-  [ -z "$scenario" ] || [ "$scenario" = owner-walk ] || return 0
-  for dir in "$work/runs"/owner-walk-*/; do
-    [ -d "$dir" ] || continue
-    names+=("$(basename -- "$dir")")
+  local scenario=${1:-} scored dir names
+  case $scenario in
+  owner-walk | forward-only | forward-owner) ;;
+  *)
+    bun "$here/score.ts" runs "$work/runs" "$@" || return
+    [ -z "$scenario" ] || return 0
+    ;;
+  esac
+  for scored in owner-walk forward-only forward-owner; do
+    [ -z "$scenario" ] || [ "$scenario" = "$scored" ] || continue
+    names=()
+    for dir in "$work/runs/$scored"-*/; do
+      [ -d "$dir" ] || continue
+      names+=("$(basename -- "$dir")")
+    done
+    if [ ${#names[@]} = 0 ]; then
+      [ -z "$scenario" ] || note "no $scored run under $work/runs"
+      continue
+    fi
+    for dir in "${names[@]}"; do
+      [ -f "$work/runs/$dir/rig-error.txt" ] || score_scored_run "$dir"
+    done
+    cmd_rows "$scored"
+    [ "$scored" != owner-walk ] || bun "$here/score.ts" cells "$work/runs" owner-walk
   done
-  if [ ${#names[@]} = 0 ]; then
-    [ -z "$scenario" ] || note "no owner-walk run under $work/runs"
-    return 0
-  fi
-  for dir in "${names[@]}"; do
-    [ -f "$work/runs/$dir/rig-error.txt" ] || score_scored_run "$dir"
-  done
-  cmd_rows owner-walk
-  bun "$here/score.ts" cells "$work/runs" owner-walk
 }
 
 cmd_run() {
-  [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|owner-walk> <label> <n> <index> <start>"
-  local scenario=$1 n=$3 index=$4 start=$5 name owner_case=''
+  [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|owner-walk|forward-only|forward-owner> <label> <n> <index> <start>"
+  local scenario=$1 n=$3 index=$4 start=$5 name owner_case='' world=''
   load_label "$2"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
@@ -2849,6 +3134,10 @@ cmd_run() {
     # A scored run's name carries its case (score.ts runs --run reads it).
     owner_case=$(owner_walk_case) || exit 1
     name=$scenario-$owner_case-${P##*/}-$n
+  elif [ "$scenario" = forward-only ] || [ "$scenario" = forward-owner ]; then
+    # A forward run's name carries its world (score.ts runs --run reads it).
+    world=$(forward_world_name "$scenario") || exit 1
+    name=$scenario-$world-${P##*/}-$n
   else
     name=$scenario-${P##*/}-$n
   fi
@@ -2866,6 +3155,7 @@ cmd_run() {
   askgate) run_askgate "$name" ;;
   spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;
   owner-walk) run_owner_walk "$name" "$owner_case" ;;
+  forward-only | forward-owner) run_forward "$name" "$scenario" "$world" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
   echo "$name: $(tail -n 1 "$R/out.txt")"
@@ -2891,7 +3181,7 @@ cmd_batch() {
   batch_scenario=$1
   case $batch_scenario in
   ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite) ;;
-  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, brainstorm, askgate, spec-writing or spec-rewrite, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`" ;;
+  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, brainstorm, askgate, spec-writing or spec-rewrite, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`, or forward-only or forward-owner in place of owner-walk" ;;
   esac
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
@@ -2946,6 +3236,7 @@ run) shift && cmd_run "$@" ;;
 score) shift && cmd_score "$@" ;;
 rows) shift && cmd_rows "$@" ;;
 cell) shift && cmd_cell "$@" ;;
+forward-cell) shift && cmd_forward_cell "$@" ;;
 evidence) shift && cmd_evidence "$@" ;;
 label-tree) shift && cmd_label_tree "$@" ;;
 unpatch-holds) shift && cmd_unpatch_holds "$@" ;;

@@ -1,0 +1,118 @@
+{
+  "routes": [
+    { "match": "^gh pr list( .*)? (--state[ =]|-s ?)(closed|merged)( |$)", "stdout": [] },
+    {
+      "match": "^gh pr list",
+      "stdout": [
+        {
+          "number": 41,
+          "url": "https://github.com/acme/widgets/pull/41",
+          "title": "feat: list rows a page at a time (ACME-1)",
+          "state": "OPEN",
+          "headRefName": "legion/ACME-1",
+          "headRefOid": "{{HEAD}}",
+          "baseRefName": "main"
+        }
+      ]
+    },
+    {
+      "match": "^gh pr view|^gh api .*pulls/41$",
+      "stdout": {
+        "number": 41,
+        "url": "https://github.com/acme/widgets/pull/41",
+        "html_url": "https://github.com/acme/widgets/pull/41",
+        "title": "feat: list rows a page at a time (ACME-1)",
+        "state": "OPEN",
+        "isDraft": false,
+        "headRefName": "legion/ACME-1",
+        "headRefOid": "{{HEAD}}",
+        "baseRefName": "main",
+        "body": "Dispatch: ACME-1\n\nAdds `listRows(rows, limit)`, which the CLI pages its list with, and the page's header and footer.\n\n## Verification\n\n**Threads:** 0 resolved, 1 unresolved.\n\n**Checks:**\n- Check c-list-rows (before_merge): pass at {{HEAD}}, recorded by the implementer.\n\n**Not proven / risk:** none.\n\n**Chain:** not stacked.",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "reviewDecision": "",
+        "head": { "sha": "{{HEAD}}", "ref": "legion/ACME-1" },
+        "base": { "ref": "main" },
+        "statusCheckRollup": [{ "name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS" }]
+      }
+    },
+    {
+      "match": "^gh pr checks",
+      "stdout": "unit\tpass\t21s\thttps://github.com/acme/widgets/actions/runs/9001/job/9101\n"
+    },
+    {
+      "match": "^gh api graphql.*addPullRequestReviewThreadReply",
+      "stdout": {
+        "data": {
+          "addPullRequestReviewThreadReply": {
+            "comment": { "id": "PRRC_kwDOAcme4300", "url": "https://github.com/acme/widgets/pull/41#discussion_r4300" }
+          }
+        }
+      }
+    },
+    {
+      "match": "^gh api graphql.*resolveReviewThread",
+      "stdout": { "data": { "resolveReviewThread": { "thread": { "id": "PRRT_kwDOAcme4242", "isResolved": true } } } }
+    },
+    {
+      "match": "^gh api graphql.*reviewThreads",
+      "stdout": {
+        "data": {
+          "repository": {
+            "pullRequest": {
+              "reviewThreads": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": [
+                  {
+                    "id": "PRRT_kwDOAcme4242",
+                    "isResolved": false,
+                    "isOutdated": false,
+                    "path": "src/list.ts",
+                    "line": 42,
+                    "comments": {
+                      "nodes": [
+                        {
+                          "databaseId": 4242,
+                          "url": "https://github.com/acme/widgets/pull/41#discussion_r4242",
+                          "author": { "login": "ci-review[bot]" },
+                          "body": "This prints a DEBUG line on every call. Remove it."
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "match": "^gh api .*pulls/41/comments/4242/replies",
+      "stdout": { "id": 4300, "html_url": "https://github.com/acme/widgets/pull/41#discussion_r4300" }
+    },
+    {
+      "match": "^gh api .*pulls/41/comments",
+      "stdout": [
+        {
+          "id": 4242,
+          "path": "src/list.ts",
+          "line": 42,
+          "user": { "login": "ci-review[bot]" },
+          "body": "This prints a DEBUG line on every call. Remove it.",
+          "html_url": "https://github.com/acme/widgets/pull/41#discussion_r4242"
+        }
+      ]
+    },
+    { "match": "^gh api .*pulls/41/reviews", "stdout": [] },
+    { "match": "^gh pr (edit|comment|review|ready)", "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1" },
+    {
+      "match": "^gh api .*(check-runs|status)",
+      "stdout": {
+        "total_count": 1,
+        "check_runs": [{ "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "{{HEAD}}" }]
+      }
+    },
+    { "match": "^gh (api user|auth status)", "stdout": { "login": "rig[bot]" } }
+  ]
+}

@@ -61,7 +61,7 @@ const SPEC_SETTLE_POLL_MS = 250;
 /** The person approves the newest version of a spec: an approval request opened as
  * OWNER_WALK_SEEDER once the spec has a settled version, answered Approve as the person. Answers
  * the approved version. */
-async function approveSpec(artifact: string): Promise<number> {
+export async function approveSpec(artifact: string): Promise<number> {
   const deadline = Date.now() + SPEC_SETTLE_WAIT_MS;
   while (((await getArtifact(artifact, { as: "agent" })).versions ?? []).length === 0) {
     if (Date.now() > deadline)

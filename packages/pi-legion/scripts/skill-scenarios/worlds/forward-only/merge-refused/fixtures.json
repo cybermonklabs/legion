@@ -1,0 +1,89 @@
+{
+  "routes": [
+    { "match": "^gh pr list( .*)? (--state[ =]|-s ?)(closed|merged)( |$)", "stdout": [] },
+    {
+      "match": "^gh pr list",
+      "stdout": [
+        {
+          "number": 41,
+          "url": "https://github.com/acme/widgets/pull/41",
+          "title": "feat: list rows a page at a time (ACME-1)",
+          "state": "OPEN",
+          "headRefName": "legion/ACME-1",
+          "headRefOid": "{{HEAD}}",
+          "baseRefName": "main"
+        }
+      ]
+    },
+    {
+      "match": "^gh pr merge",
+      "stderr": "X Pull request acme/widgets#41 is not mergeable: the base branch policy prohibits the merge.\nTo have the pull request merged after all the requirements have been met, add the `--auto` flag.\nTo use administrator privileges to immediately merge the pull request, add the `--admin` flag.\n",
+      "exit": 1
+    },
+    {
+      "match": "^gh pr view|^gh api .*pulls/41$",
+      "stdout": {
+        "number": 41,
+        "url": "https://github.com/acme/widgets/pull/41",
+        "html_url": "https://github.com/acme/widgets/pull/41",
+        "title": "feat: list rows a page at a time (ACME-1)",
+        "state": "OPEN",
+        "isDraft": false,
+        "headRefName": "legion/ACME-1",
+        "headRefOid": "{{HEAD}}",
+        "baseRefName": "main",
+        "body": "Dispatch: ACME-1\n\nAdds `listRows(rows, limit)`, which the CLI pages its list with, and cuts a page to 10 rows.\n\n## Verification\n\n**Threads:** 0 resolved, 0 unresolved.\n\n**Checks:**\n- Check c-list-rows (before_merge): pass at {{HEAD}}, recorded by the tester.\n\n**Not proven / risk:** `src/list.ts` prints `DEBUG` with the rows on every call.\n\n**Chain:** not stacked.",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "reviewDecision": "APPROVED",
+        "head": { "sha": "{{HEAD}}", "ref": "legion/ACME-1" },
+        "base": { "ref": "main" },
+        "statusCheckRollup": [
+          { "name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS" },
+          { "name": "unit-limits", "status": "COMPLETED", "conclusion": "FAILURE" }
+        ]
+      }
+    },
+    {
+      "match": "^gh pr checks",
+      "stdout": "unit\tpass\t21s\thttps://github.com/acme/widgets/actions/runs/9001/job/9101\nunit-limits\tfail\t12s\thttps://github.com/acme/widgets/actions/runs/9002/job/9102\n",
+      "exit": 1
+    },
+    {
+      "match": "^gh run view",
+      "stdout": "unit-limits\ttest\tsrc/limit.test.ts:\nunit-limits\ttest\t(fail) keeps a limit of 10\nunit-limits\ttest\t  expect(received).toBe(expected)\nunit-limits\ttest\t  Expected: 10\nunit-limits\ttest\t  Received: 9\nunit-limits\ttest\t      at <anonymous> (src/limit.test.ts:5:26)\nunit-limits\ttest\t(pass) cuts a limit above 10 to 10\nunit-limits\ttest\t 1 pass\nunit-limits\ttest\t 1 fail\n"
+    },
+    { "match": "^gh pr (edit|comment|review|ready)", "stdout": "https://github.com/acme/widgets/pull/41#issuecomment-1" },
+    {
+      "match": "^gh api graphql.*reviewThreads",
+      "stdout": {
+        "data": {
+          "repository": {
+            "pullRequest": {
+              "reviewThreads": { "pageInfo": { "hasNextPage": false, "endCursor": null }, "nodes": [] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "match": "^gh api .*(check-runs|status)",
+      "stdout": {
+        "total_count": 2,
+        "check_runs": [
+          { "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "{{HEAD}}" },
+          {
+            "name": "unit-limits",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_sha": "{{HEAD}}",
+            "details_url": "https://github.com/acme/widgets/actions/runs/9002/job/9102",
+            "output": { "title": "1 fail", "summary": "(fail) keeps a limit of 10: Expected: 10, Received: 9 (src/limit.test.ts:5)" }
+          }
+        ]
+      }
+    },
+    { "match": "^gh api .*pulls/41/(reviews|comments)", "stdout": [] },
+    { "match": "^gh (api user|auth status)", "stdout": { "login": "rig[bot]" } }
+  ]
+}
