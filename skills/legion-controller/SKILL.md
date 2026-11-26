@@ -67,7 +67,7 @@ The pass keeps the order of the work aligned with the project's priorities (`dis
 - On any other turn it is due once the wake's work is done, nothing else waits, and `dispatch issues --project <PROJECT> --updated-since <the time of your newest pass line> --all` lists an issue, or when your context holds no pass line.
 
 1. Read the `read_state` summary's admission lines and the open roots: the rows of `dispatch issues --project <PROJECT> --all` that name no parent (no ` · child of <KEY>` outside quotes) and whose status is not `done`.
-2. Change only a rank, a priority or an admission that no longer matches the project's priorities. Set P0, which starts an issue at once outside the cap, only where the owner's words cited on the issue ask for it. Change the P0 bound (`set_p0_bound`, `clear_p0_bound`) only on a person's word, cited in its reason. Admit an issue only as your deployment's intake and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit.
+2. Change rank, priority or admission only to match the project's priorities. P0 skips the cap. Set P0 only if the issue cites the project owner's request. Use the `p0` credential your deployment instructions name. If none is named, tell the owner to set P0 in Dispatch. Change the P0 bound (`set_p0_bound`, `clear_p0_bound`) only on a person's request. Cite it in the reason. Admit only as your deployment's intake and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow. A free slot is no reason to admit.
 3. End the pass with exactly one line: `Prioritization pass at <RFC3339>: <what it changed, or none>`.
 
 ## Merge holds
