@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { HeldChipLinesProvider } from "./held-chip-lines";
 import { type IssueTreeView, useIssueTree } from "./useIssueTree";
 
 /** The tree the page's owner holds (`IssueTreeOwnerProvider`), with the key of the issue it is
@@ -24,6 +25,9 @@ const IssueTreeOwner = createContext<OwnedTree | undefined>(undefined);
  * address as each of those readers did (`useTreeRead`), so it holds the tree of the view the
  * address draws, Graph's read in Graph, and the reads, the names it publishes and the trees it
  * builds are those one reader made before.
+ *
+ * It holds for every chip under it the line the tree holds for each block it names, so a chip
+ * holds its place before the names read names it (`held-chip-lines.tsx`).
  */
 export function IssueTreeOwnerProvider({
   children,
@@ -37,7 +41,13 @@ export function IssueTreeOwnerProvider({
   // One value for as long as the tree says the same, so a reader is drawn again only when it
   // changes.
   const owned = useMemo((): OwnedTree => ({ key, tree }), [key, tree]);
-  return <IssueTreeOwner.Provider value={owned}>{children}</IssueTreeOwner.Provider>;
+  return (
+    <IssueTreeOwner.Provider value={owned}>
+      <HeldChipLinesProvider namesFailed={tree.namesFailure !== undefined} root={tree.root}>
+        {children}
+      </HeldChipLinesProvider>
+    </IssueTreeOwner.Provider>
+  );
 }
 
 /**

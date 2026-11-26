@@ -11,7 +11,7 @@ import {
 } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, DisplayTree } from "../../api/types";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   pageFailedText,
@@ -32,12 +32,14 @@ import {
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { type ReferenceNaming, useMarkdownHeadline } from "../refs/markdown-engine";
 import { EditedMark } from "../refs/PostMarks";
 import { usePlainHeadline } from "../refs/plain-text";
 import { deletedLineText, postDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
 import { namesBlockByLine, useKnownReferences } from "../refs/reference-names";
-import { parseNodeReference, referenceHref } from "../refs/routes";
+import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
+import { referenceTargetKind } from "../refs/target-id";
 import { agentRoleWord } from "./agent-role";
 import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
@@ -45,6 +47,7 @@ import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
 import { holdsFirstFocus } from "./first-focus";
 import { chipName } from "./first-line";
+import { useHeldChipLine } from "./held-chip-lines";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { presetNodePath } from "./issue-address";
@@ -1410,7 +1413,23 @@ function Chip({
           ? chipName(target, text.text)
           : "";
   const words = ambiguous ? chip.ref : (word ?? name);
-  if (!gone && words === "") return reads;
+  // A block the names read has not named yet, or whose line the store has not projected from its
+  // answer yet, holds its place from the first drawing with the line the tree holds for it
+  // (`held-chip-lines.tsx`): drawn with that line, cut as its name is cut, invisible, heard by no
+  // screen reader and reached by no key or press, until it is named in the same box. Drawing
+  // nothing meanwhile, a trail grew by its chips' words as the names came, and took a line of
+  // its own under the row's words (R3). Where the page holds no such line - no owner of the tree
+  // above, the names read refused, a block the tree holds no words of - it draws nothing, as
+  // before.
+  const heldLine = useHeldChipLine(chip.ref);
+  const holds =
+    heldLine !== undefined &&
+    !gone &&
+    words === "" &&
+    target !== undefined &&
+    referenceTargetKind(target) === "block" &&
+    (!chip.answered || blockLine);
+  if (!gone && words === "" && !holds) return reads;
   const href = chip.gone || target === undefined ? undefined : referenceHref(target);
   // A target's name is its author's words, but for the page's own in it: the deleted line's
   // opening and the edited mark, marked as the page's chrome (INFRA-1523, R3).
@@ -1441,12 +1460,18 @@ function Chip({
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
-    <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
+    <span
+      aria-hidden={holds || undefined}
+      className={`min-w-0 [overflow-wrap:anywhere]${holds ? " invisible" : ""}`}
+      data-node-chip=""
+    >
       {reads}
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
-      {gone ? (
+      {holds && heldLine !== undefined && target !== undefined ? (
+        <HeldChipName line={heldLine} target={target} />
+      ) : gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
       ) : href === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
@@ -1467,6 +1492,29 @@ function Chip({
           {shown}
         </Link>
       )}
+    </span>
+  );
+}
+
+/** What a held chip's line is projected with: as the names store projects a block's line
+ *  (`refs/reference-names.tsx`), a title over one record's words, in which no name is read. */
+const HELD_NAMING: ReferenceNaming = { names: new Map(), readsNone: true };
+
+/** A held chip's name (`Chip`'s `holds`): the line the tree holds for its block, projected as the
+ *  names store projects a block's line, and cut as a chip cuts it (`chipName`), in the weight and
+ *  the wrapping of the link that names it once the names read has, so it holds that link's box. */
+function HeldChipName({
+  line,
+  target,
+}: {
+  line: DisplayTree;
+  target: DispatchReferenceRoute;
+}): ReactNode {
+  const words =
+    useMarkdownHeadline(line, Number.POSITIVE_INFINITY, undefined, HELD_NAMING)?.text ?? "";
+  return (
+    <span className="font-medium whitespace-nowrap" data-chip-name="" {...authorText}>
+      {chipName(target, words)}
     </span>
   );
 }
