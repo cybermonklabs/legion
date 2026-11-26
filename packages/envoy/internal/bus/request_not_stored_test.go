@@ -8,6 +8,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A role forward is a window's Request to the holder's agent subject, under the forward's
@@ -17,7 +18,8 @@ import (
 // the stream holding nothing of it. Once the stream has room, the forward sent again under the
 // same id is stored on the holder's subject, exactly once: a further send under that id leaves
 // that one copy and adds no second. A window whose deadline has passed writes nothing at all: its
-// forward answers ErrWindowDeadline before anything is sent, and the stream holds nothing of it.
+// forward answers ErrWindowDeadline before anything is sent, and the stream holds nothing of it
+// once it has stored a marker the same connection sent after it.
 func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(t *testing.T) {
 	const limit = 16 << 10
 	cluster := testnats.StartCluster(t, 3)
@@ -103,7 +105,19 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 	if err := answer(fencedWindow.Request(fencedHolder, fenced, fencedOpts)); !errors.Is(err, ErrWindowDeadline) {
 		t.Fatalf("a forward through a window whose deadline has passed = %v, want ErrWindowDeadline", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// The stream stores what the client's connection sends in the order it sends it, so once it has
+	// stored a marker sent after the fenced forward on that connection, it holds whatever of the
+	// forward went out before the marker, however late it stored it. The marker's wait is the
+	// binary's own bound, not a span of this test's.
+	markerHolder := contracts.LegacyAgentSubject("ses_forward_fence_marker")
+	marker := forward("fence-marker")
+	markerOpts := RequestOptions{MsgID: ForwardMsgID(marker.DedupeKey, markerHolder), Timeout: testwait.Remaining(t, 30*time.Second)}
+	if err := testwait.Receive(t, "the answer to the marker sent after the fenced forward", client.WindowUntil(nil).Request(markerHolder, marker, markerOpts)); err != nil {
+		t.Fatalf("the marker sent after the fenced forward = %v, want it stored", err)
+	}
+	if n := held(markerHolder); n != 1 {
+		t.Fatalf("the marker answered nil and the stream holds %d copies on %s, want 1", n, markerHolder)
+	}
 	if n := held(fencedHolder); n != 0 {
 		t.Fatalf("the stream holds %d copies on %s of the forward the window's deadline fenced, want none", n, fencedHolder)
 	}
