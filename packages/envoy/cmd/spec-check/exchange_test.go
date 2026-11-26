@@ -668,6 +668,9 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "notes"), 0o755); err != nil {
 			t.Fatal(err)
 		}
+		// The directory holds a note, so it is no entry that holds nothing, which a stopped move
+		// of print leaves and the next run finishes (holdsNothing).
+		writeFile(t, filepath.Join(dir, "notes", "note.md"), []byte("A note.\n"))
 		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(second))
 		old := filepath.Join(root, "old")
 		if err := os.MkdirAll(filepath.Join(old, "notes"), 0o755); err != nil {

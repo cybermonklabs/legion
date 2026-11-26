@@ -19,6 +19,16 @@ func inode(info fs.FileInfo) uint64 {
 	return uint64(info.Sys().(*syscall.Stat_t).Ino)
 }
 
+// renameReplacing renames from to to, and replaces an entry of the name to that is of its kind:
+// the system's rename, where os.Rename refuses an existing directory itself (EEXIST) whatever the
+// system answers, so a move that took the name as an empty directory could not rename over it.
+func renameReplacing(from, to string) error {
+	if err := unix.Rename(from, to); err != nil {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: err}
+	}
+	return nil
+}
+
 // writable answers nil when this process may write in the directory dir and in its parent, where
 // print builds the directory that takes the place of dir (stagingPath), and else the refusal. The
 // refusal of the parent says what to change: write permission on the parent, or, for a dir that is

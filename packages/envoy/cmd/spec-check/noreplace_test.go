@@ -123,3 +123,85 @@ func TestPrintOnAFileSystemThatRefusesARenameWithNoReplace(t *testing.T) {
 		}
 	})
 }
+
+// The fallback move, on a system with no rename that refuses an existing name, replaces no entry
+// that another program made at the name: print takes the name itself first, an empty directory for
+// a directory and a new file for a file, so another program that makes the name meanwhile gets the
+// refusal, and print replaces nothing but what it made. The rows: a directory and a file whose
+// hard link the system refuses, which falls through to the rename; in each, another program makes
+// the name at the one moment the move could replace it, which the stand-in plays at each call by
+// which print takes a name or renames. The control is each move with no other program, which moves
+// the entry.
+func TestTheFallbackMoveReplacesNoEntryOfAnotherProgram(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name      string
+		directory bool
+		other     bool
+	}{
+		{"the control: a directory, no other program", true, false},
+		{"the control: a file whose link the system refuses, no other program", false, false},
+		{"a directory, and another program makes the name", true, true},
+		{"a file whose link the system refuses, and another program makes the name", false, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			from, to := filepath.Join(root, "old", "notes"), filepath.Join(root, "spec", "notes")
+			if err := os.Mkdir(filepath.Join(root, "old"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Dir(to), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const text = "A note of the old directory.\n"
+			if row.directory {
+				if err := os.Mkdir(from, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, filepath.Join(from, "note.md"), []byte(text))
+			} else {
+				writeFile(t, from, []byte(text))
+			}
+			// made is the inode of the entry that the other program holds at the name, 0 for none:
+			// it takes the name at the first call by which print takes it or renames over it, which
+			// is the one moment a move could replace it.
+			var made uint64
+			fsys := callFS{func(op, path string, do func() error) error {
+				if op == "link" && !row.directory {
+					return &os.LinkError{Op: "link", Old: from, New: path, Err: syscall.EPERM}
+				}
+				if row.other && made == 0 && (op == "rename" || op == "mkdir" || op == "create") {
+					if err := os.WriteFile(to, []byte("Another program's file.\n"), 0o644); err == nil {
+						made = inodeOf(t, to)
+					}
+				}
+				return do()
+			}}
+			err := moveByHand(fsys, from, to)
+			switch {
+			case made != 0:
+				if err == nil || !fileExists(from) || inodeOf(t, to) != made {
+					t.Errorf("moveByHand: %v; want a refusal, the entry of the other program at %s as it made it, and the entry still at %s", err, to, from)
+				}
+			case row.other:
+				t.Logf("the other program could not take the name, so print held it first: %v", err)
+				fallthrough
+			default:
+				moved := fileExists(to) && !fileExists(from)
+				if row.directory {
+					moved = moved && fileExists(filepath.Join(to, "note.md"))
+				}
+				if err != nil || !moved {
+					t.Errorf("moveByHand: %v; want the entry moved to %s", err, to)
+				}
+			}
+		})
+	}
+}
+
+// fileExists reports whether path names an entry.
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}

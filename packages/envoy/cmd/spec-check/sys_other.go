@@ -26,3 +26,7 @@ func tryLock(*os.File) error {
 
 // unlock does nothing: with no flock, tryLock took no lock.
 func unlock(*os.File) {}
+
+// renameReplacing is os.Rename: print takes no lock on a system that is not Unix, so it never
+// writes, and moveByHand renames only over the entry that it made itself.
+func renameReplacing(from, to string) error { return os.Rename(from, to) }

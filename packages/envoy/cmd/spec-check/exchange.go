@@ -101,8 +101,9 @@ type fileSystem interface {
 	exchange(a, b string) error
 	// moveNoReplace renames from to to, and refuses when an entry has the name to.
 	moveNoReplace(from, to string) error
-	// rename renames from to to, and replaces an entry of the name to as the system's rename does
-	// (moveByHand).
+	// rename renames from to to, and replaces an entry of the name to that is of its kind, a
+	// directory over an empty directory and a file over a file, as the system's rename does.
+	// moveByHand renames only over the entry that it made itself at to.
 	rename(from, to string) error
 	// remove removes the file or the empty directory path.
 	remove(path string) error
@@ -126,7 +127,7 @@ func (osFileSystem) sync(f *os.File) error                     { return f.Sync()
 func (osFileSystem) chmod(path string, mode fs.FileMode) error { return os.Chmod(path, mode) }
 func (osFileSystem) lchown(path string, uid, gid int) error    { return os.Lchown(path, uid, gid) }
 func (osFileSystem) link(oldname, newname string) error        { return os.Link(oldname, newname) }
-func (osFileSystem) rename(from, to string) error              { return os.Rename(from, to) }
+func (osFileSystem) rename(from, to string) error              { return renameReplacing(from, to) }
 func (osFileSystem) lock(f *os.File) error                     { return tryLock(f) }
 func (osFileSystem) remove(path string) error                  { return os.Remove(path) }
 
@@ -405,8 +406,20 @@ func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines 
 			continue
 		}
 		info, err := os.Lstat(path)
-		secondName := err == nil && !info.IsDir() && os.SameFile(info, current)
-		if !secondName && (!entry.Type().IsRegular() || !current.Mode().IsRegular() || !removable(path, current, read, name)) {
+		switch {
+		// A second name of the entry of dir: a file, or a link that a stop between the two steps
+		// of moveByHand left under two names.
+		case err == nil && !info.IsDir() && os.SameFile(info, current):
+		// An entry of dir that holds nothing, an empty file or an empty directory, where old holds
+		// an entry of that name: the name that a stop after moveByHand took it and before its
+		// rename left, which this run finishes. Such an entry holds nothing, so a move over one
+		// that another program made loses nothing either.
+		case err == nil && holdsNothing(now, current) && fsys.remove(now) == nil:
+			if err := move(fsys, path, now); err != nil {
+				refuse(name, err)
+			}
+			continue
+		case !entry.Type().IsRegular() || !current.Mode().IsRegular() || !removable(path, current, read, name):
 			changed = append(changed, name)
 			continue
 		}
@@ -424,6 +437,20 @@ func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines 
 	}
 	return []string{fmt.Sprintf("print kept %s, which held %s before the run: %s, so compare each with the entry of that name in %s",
 		path, dir, cause, dir)}, true
+}
+
+// holdsNothing reports whether the entry at path, which info describes, holds nothing: an empty
+// regular file or a directory with no entry. moveByHand takes the name of its move as such an
+// entry, and a stop between that step and its rename leaves one (finishOld).
+func holdsNothing(path string, info fs.FileInfo) bool {
+	switch {
+	case info.Mode().IsRegular():
+		return info.Size() == 0
+	case info.IsDir():
+		list, err := os.ReadDir(path)
+		return err == nil && len(list) == 0
+	}
+	return false
 }
 
 // keptCause is why finishOld kept an old directory, each cause once with its own entries: the
@@ -539,8 +566,11 @@ func move(fsys fileSystem, from, to string) error {
 // moveByHand renames from to to, and refuses an entry of the name to, with no rename that keeps an
 // existing name: a file or a link by a second name, which the system refuses where an entry has
 // the name, and then a removal of the first name; a directory, or a file of a system that refuses
-// a second name, by a rename once no entry has the name to. The caller holds the lock of the spec
-// directory, so no run of print makes that name between the two steps; another program could.
+// a second name, by taking the name first, an empty directory for a directory and a new file for a
+// file, which the system refuses where an entry has the name, and a rename over what it made. The
+// rename replaces an entry of its own kind, so print takes the name before it renames: a check of
+// the name and then a rename would replace an entry that another program made between the two. The
+// caller holds the lock of the spec directory, so no run of print makes that name meanwhile.
 func moveByHand(fsys fileSystem, from, to string) error {
 	info, err := os.Lstat(from)
 	if err != nil {
@@ -554,13 +584,23 @@ func moveByHand(fsys fileSystem, from, to string) error {
 			return err
 		}
 	}
-	switch _, err := os.Lstat(to); {
-	case err == nil:
-		return &os.LinkError{Op: "move", Old: from, New: to, Err: fs.ErrExist}
-	case !errors.Is(err, fs.ErrNotExist):
+	if info.IsDir() {
+		err = fsys.mkdir(to, 0o700)
+	} else if f, made := fsys.create(to); made == nil {
+		err = f.Close()
+	} else {
+		err = made
+	}
+	if err != nil {
 		return err
 	}
-	return fsys.rename(from, to)
+	if err := fsys.rename(from, to); err != nil {
+		if !errors.Is(err, fs.ErrExist) && !errors.Is(err, syscall.ENOTEMPTY) {
+			_ = fsys.remove(to) // the entry that this move made, which it did not rename over
+		}
+		return err
+	}
+	return nil
 }
 
 // probeName and probeMoved are the names of the entry that probeMove makes in the new directory
