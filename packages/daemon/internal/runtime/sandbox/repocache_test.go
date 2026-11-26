@@ -571,7 +571,7 @@ func TestRefreshCacheTokensRewritesALostOrForeignSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	g.eventually("the cache pod", func() bool { return g.r.storedPod(name) != nil })
+	cacheStored(g, cacheRepo)
 	s := g.sandbox(name)
 	secretsGVR := corev1.SchemeGroupVersion.WithResource("secrets")
 
@@ -609,6 +609,22 @@ func TestRefreshCacheTokensRewritesALostOrForeignSecret(t *testing.T) {
 	}
 }
 
+// cacheStored waits until the runtime's stores hold the cache Sandbox of repo and its pod. A
+// Sandbox and its pod arrive on informers of their own, and nothing orders the Sandbox store after
+// the pod store, so a test that waits for the pod alone can read a Sandbox store that does not hold
+// the cache yet. RepositoryCache read such a store and found no cache on a loaded runner (#5643), and
+// the sweep (sweepCaches), which judges only the cache Sandboxes the store holds, passed over the
+// cache, wrote nothing and returned nil, so the mark a test then waited for never came (CI run
+// 45783744798, TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes).
+func cacheStored(g *rig, repo ghrepo.Repository) {
+	g.t.Helper()
+	name := CacheSandboxName(testProject, repo)
+	g.eventually("the cache "+name+"'s Sandbox and its pod in the runtime's stores", func() bool {
+		s, _ := g.r.storedSandbox(name)
+		return s != nil && g.r.storedPod(name) != nil
+	})
+}
+
 // A cache is ready, at its Service's http://<sandbox>.<namespace>.svc:8418, when the pod its Sandbox
 // owns has passed its readiness probe, and not before, whatever address the pod holds; a long
 // repository is found by the name it derives, with its whole name; and a cache name another
@@ -623,15 +639,10 @@ func TestRepositoryCacheReadsReadiness(t *testing.T) {
 		}
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	// RepositoryCache reads the Sandbox store, which nothing orders after the pod store: a Sandbox
-	// and its pod arrive on informers of their own, and a read made once the pod store held the pod
-	// found no Sandbox on a loaded runner. So the test waits for both caches' Sandboxes and pods.
+	// RepositoryCache reads the Sandbox store, so the test waits for both caches' Sandboxes and
+	// pods in the runtime's stores (cacheStored).
 	for _, repo := range []ghrepo.Repository{cacheRepo, longRepo} {
-		cache := CacheSandboxName(testProject, repo)
-		g.eventually("the cache "+cache+"'s Sandbox and its pod in the runtime's stores", func() bool {
-			s, _ := g.r.storedSandbox(cache)
-			return s != nil && g.r.storedPod(cache) != nil
-		})
+		cacheStored(g, repo)
 	}
 	status, found := g.r.RepositoryCache(cacheRepo)
 	if !found || status.Ready || status.Address != "" || status.Sandbox != name || status.Repo != cacheRepo {
@@ -939,7 +950,7 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testin
 	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
 		t.Fatalf("the sweep wrote %q, want the cache of the repository a record names made", writes)
 	}
-	g.eventually("the cache pod of "+recorded.String(), func() bool { return g.r.storedPod(name) != nil })
+	cacheStored(g, recorded)
 
 	sweep("of the cache of a repository a live record still names")
 	if writes := g.sandboxWrites(); len(writes) != 0 {
@@ -987,8 +998,7 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatalf("make the cache of %s: %v", repo, err)
 		}
-		name := CacheSandboxName(testProject, repo)
-		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+		cacheStored(g, repo)
 	}
 	kept, unused := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
 
@@ -1515,8 +1525,7 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatal(err)
 		}
-		name := CacheSandboxName(testProject, repo)
-		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+		cacheStored(g, repo)
 	}
 	g.update(g.pod(CacheSandboxName(testProject, cacheRepo)), func(p *corev1.Pod) {
 		p.Status.PodIP = "10.0.0.5"

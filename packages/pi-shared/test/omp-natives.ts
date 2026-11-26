@@ -1,7 +1,7 @@
 // Oh My Pi's native modules for the tests that run the real binary under a fresh HOME
 // (omp-harness.ts's ompRoot). Oh My Pi extracts the one its CPU needs from its own binary into
 // .omp/natives/<version>-<digest prefix> (the version and the first 12 hexadecimal digits of the
-// embedded addons' digest) under any HOME that lacks it, about 124 MiB at the pin. It reads that
+// embedded addons' digest) under any HOME that lacks it, about 125 MiB at the pin. It reads that
 // directory from elsewhere only under a variable a test would have to set (getNativesDir,
 // @oh-my-pi/pi-natives native/natives-dir.js, in this order): PI_NATIVES_DIR or
 // OMP_DOWNLOAD_ROOT, which no pod or pane sets, then $XDG_CACHE_HOME/omp/natives when

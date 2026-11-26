@@ -35,59 +35,61 @@ With Docker the command is the script alone; this run used a Postgres server of 
 
 ```console
 $ DEV_BROKER_POSTGRES_URL='postgres://<user>@<host>:<port>/<database>' bash packages/envoy/scripts/dev-broker.sh
-dev-broker: workdir /tmp/agent-secrets-dev.ueLLNT
-dev-broker: created isolated database dev_broker_uellnt
+dev-broker: workdir /tmp/agent-secrets-dev.nkqDjj
+dev-broker: created isolated database dev_broker_nkqdjj
 dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay...
-dev-broker: built all six into /tmp/agent-secrets-dev.ueLLNT/bin
+dev-broker: built all six into /tmp/agent-secrets-dev.nkqDjj/bin
 dev-broker: starting dev-airlock-stands (its GitHub stand mints the github-app secrets)...
-dev-airlock-stands: stands listening records=http://127.0.0.1:36255
+dev-airlock-stands: stands listening records=http://127.0.0.1:42953
 dev-broker: starting dev-oidc-issuer...
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod e2846eb7-75bd-4a20-aaff-7d940e7a9afc)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod 04a195bb-3aad-406b-a059-d206275b7dc0)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod f3441030-cb31-4b5c-9d21-38a7840c2ab7)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43)
-dev-oidc-issuer: /tmp/agent-secrets-dev.ueLLNT/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod cc2f2a54-2da0-4c64-b713-8dcbeaeb7aec)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod a783f456-e8c5-4333-b101-5f09e9bf5996)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod e976227d-37cd-4280-889d-f71b3dd6af38)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod eb9d903e-d8bb-404f-a9c7-d4e61fe28b75)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/read-token holds system:serviceaccount:example-ns:example-reader's token for audience legion-broker-exchange (pod c3313473-645a-4893-8aec-059e8f267625)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod eb9d903e-d8bb-404f-a9c7-d4e61fe28b75)
+dev-oidc-issuer: /tmp/agent-secrets-dev.nkqDjj/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod dec75e69-97ec-49aa-81a5-9050046ba34c)
 dev-oidc-issuer: code flow serves client dev-broker; an authorization with none queued at /_dev/sign-in-as signs in ada@example.com
-dev-oidc-issuer: issuer listening url=http://127.0.0.1:38099
+dev-oidc-issuer: issuer listening url=http://127.0.0.1:45983
 dev-broker: starting the proxy's front...
-dev-airlock-stands: front listening addr=127.0.0.1:45131
+dev-airlock-stands: front listening addr=127.0.0.1:46523
 dev-broker: starting broker...
-{"time":"2026-11-20T12:18:58.317983713Z","severity":"INFO","message":"broker stop budget","drain":"0s","shutdown":"60s","total":"60s"}
-{"time":"2026-11-20T12:18:58.31806511Z","severity":"INFO","message":"database sign-in","method":"password"}
-{"time":"2026-11-20T12:18:58.31807062Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:38099","client_id":"dev-broker","domain":"example.com"}
-{"time":"2026-11-20T12:19:00.102688928Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
-{"time":"2026-11-20T12:19:00.116899771Z","severity":"INFO","message":"broker: profiles applied","served":5,"refused":0,"file_digest":"43c09443bc35d5082de9e2e066e13e251c06b0370d57db3824657ed9bce57a73"}
-{"time":"2026-11-20T12:19:00.131371349Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
-{"time":"2026-11-20T12:19:00.13195859Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:42923"}
-{"time":"2026-11-20T12:19:00.131977753Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:35365"}
-{"time":"2026-11-20T12:19:00.131982771Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:43185"}
-{"time":"2026-11-20T12:19:00.132024111Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
-{"time":"2026-11-20T12:19:00.134967315Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is"}
-{"time":"2026-11-20T12:19:00.134988011Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"read_accounts":1,"workflows":0,"machines":0}
-{"time":"2026-11-20T12:19:00.13499594Z","severity":"INFO","message":"pod-session registrars","entries":1,"registration_audience":false}
-{"time":"2026-11-20T12:19:00.135005921Z","severity":"INFO","message":"session account pairs","state":"off","detail":"BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds"}
-{"time":"2026-11-20T12:19:00.135200468Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
-{"time":"2026-11-20T12:19:00.177832932Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
-{"time":"2026-11-20T12:19:00.882481016Z","severity":"INFO","message":"broker: registered a pod to write under a session name","service":"legion-daemon","account":"system:serviceaccount:example-ns:example-worker","pod":"d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43","session":"example-worker-session"}
+{"time":"2026-11-22T18:14:08.696464357Z","severity":"INFO","message":"broker stop budget","drain":"0s","shutdown":"60s","total":"60s"}
+{"time":"2026-11-22T18:14:08.696508928Z","severity":"INFO","message":"database sign-in","method":"password"}
+{"time":"2026-11-22T18:14:08.696512855Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:45983","client_id":"dev-broker","domain":"example.com"}
+{"time":"2026-11-22T18:14:08.82726499Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
+{"time":"2026-11-22T18:14:08.832569148Z","severity":"INFO","message":"broker: profiles applied","served":5,"refused":0,"file_digest":"43c09443bc35d5082de9e2e066e13e251c06b0370d57db3824657ed9bce57a73"}
+{"time":"2026-11-22T18:14:08.845442154Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
+{"time":"2026-11-22T18:14:08.846128621Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:37577"}
+{"time":"2026-11-22T18:14:08.846143554Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:40407"}
+{"time":"2026-11-22T18:14:08.846152116Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:42175"}
+{"time":"2026-11-22T18:14:08.846257624Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
+{"time":"2026-11-22T18:14:08.848199915Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is"}
+{"time":"2026-11-22T18:14:08.848220488Z","severity":"INFO","message":"hold of refused people","state":"off","reason":"BROKER_PROJECT_ACCESS_URL is not set"}
+{"time":"2026-11-22T18:14:08.848227791Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"read_accounts":1,"workflows":0,"machines":0}
+{"time":"2026-11-22T18:14:08.848234227Z","severity":"INFO","message":"pod-session registrars","entries":1,"registration_audience":false}
+{"time":"2026-11-22T18:14:08.848250011Z","severity":"INFO","message":"session account pairs","state":"off","detail":"BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds"}
+{"time":"2026-11-22T18:14:08.848394516Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
+{"time":"2026-11-22T18:14:08.84864145Z","severity":"INFO","message":"NATS auth service","state":"off","edge_listeners":0,"detail":"BROKER_NATS_URLS is unset, so the broker answers no hub; GET /v1/project-repositories reads the edge-listener entries of BROKER_NATS_SERVICES"}
+{"time":"2026-11-22T18:14:08.864198922Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
+{"time":"2026-11-22T18:14:09.459006351Z","severity":"INFO","message":"broker: registered a pod to write under a session name","service":"legion-daemon","account":"system:serviceaccount:example-ns:example-worker","pod":"eb9d903e-d8bb-404f-a9c7-d4e61fe28b75","session":"example-worker-session"}
 dev-broker: registered the exchange pod to write under example-worker-session
 
 dev-broker: ready.
 
-  export AGENT_SECRETS_URL=http://127.0.0.1:42923
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.ueLLNT/account-token
+  export AGENT_SECRETS_URL=http://127.0.0.1:37577
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.nkqDjj/account-token
   export AGENT_SECRETS_APPROVER=ada@example.com
-  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.ueLLNT/helper.sock
-  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.ueLLNT/operator
-  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.ueLLNT/machine.json
-  export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.ueLLNT/sessions.json
-  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.ueLLNT
-  export DEV_BROKER_METRICS_URL=http://127.0.0.1:43185/metrics
-  export DEV_BROKER_POD_UID=d32c8b7f-0c69-4e2c-9f6f-51d5d5721d43
+  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.nkqDjj/helper.sock
+  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.nkqDjj/operator
+  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.nkqDjj/machine.json
+  export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.nkqDjj/sessions.json
+  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.nkqDjj
+  export DEV_BROKER_METRICS_URL=http://127.0.0.1:42175/metrics
+  export DEV_BROKER_POD_UID=eb9d903e-d8bb-404f-a9c7-d4e61fe28b75
   export DEV_BROKER_SERVICE=legion-daemon
-  export DEV_BROKER_GITHUB_URL=http://127.0.0.1:40305
-  export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:36255/records/github
-  export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:36255/answers/github
+  export DEV_BROKER_GITHUB_URL=http://127.0.0.1:35403
+  export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:42953/records/github
+  export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:42953/answers/github
   export DEV_BROKER_GITHUB_SECRET=DEMO_GITHUB_APP
   export DEV_BROKER_GITHUB_OWNER=acme-org
   export DEV_BROKER_GITHUB_INSTALLATION=7
@@ -98,11 +100,11 @@ dev-broker: ready.
   export DEV_BROKER_GITHUB_READ_PROFILE=DEMO_GITHUB_READ
   export DEV_BROKER_GITHUB_ADMIN_READ_PROFILE=DEMO_GITHUB_ADMIN_READ
   export DEV_BROKER_GITHUB_PROXIED_URL=https://api.github.test
-  export DEV_BROKER_GITHUB_TLS_RECORDS_URL=http://127.0.0.1:36255/records/github-tls
+  export DEV_BROKER_GITHUB_TLS_RECORDS_URL=http://127.0.0.1:42953/records/github-tls
   export DEV_BROKER_GITHUB_COMMIT=5fd1c0a5a4e3b2c1d0e9f8a7b6c5d4e3f2a1b0c9
-  export DEV_BROKER_PROFILES_FILE=/tmp/agent-secrets-dev.ueLLNT/profiles.json
-  export DEV_BROKER_PROXY_URL=http://127.0.0.1:45131
-  export PATH=/tmp/agent-secrets-dev.ueLLNT/bin:$PATH
+  export DEV_BROKER_PROFILES_FILE=/tmp/agent-secrets-dev.nkqDjj/profiles.json
+  export DEV_BROKER_PROXY_URL=http://127.0.0.1:46523
+  export PATH=/tmp/agent-secrets-dev.nkqDjj/bin:$PATH
 ...
 ```
 
@@ -589,7 +591,7 @@ seeded EXAMPLE
 ok   [job pod] GET /api/v1/whoami: exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE (want exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE)
 ok   [job pod] POST /api/v1/issues (EXAMPLE, body on standard input): exit 0 -, key EXAMPLE-1 (want exit 0 -, a key)
 ok   [job pod] GET /api/v1/issues/EXAMPLE-1/events: exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none (want exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none)
-ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 1 PROJECT_SCOPE (want the person entry's: exit 1 PROJECT_SCOPE)
+ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 0 - (want the person entry's: exit 0 -)
 ok   [job workflow] POST /api/v1/issues/EXAMPLE-1/comments (body from a file): exit 0 - (want exit 0 -)
 ok   [job workflow] GET /api/v1/whoami: exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main, session example-workflow-session, project null (want exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main)
 ok   [person entry] GET /api/v1/whoami: exit 0 -, owner ada@example.com, service null, session example-worker-session, project EXAMPLE (want exit 0 -, owner ada@example.com)
@@ -602,8 +604,8 @@ entry's issue in `OPS`, in an environment that keeps only `PATH`, `HOME` and `TM
 pod (`AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` with `job-token`) creates an issue in `EXAMPLE`
 from standard input, and Dispatch records it under the entry's session with the account as its
 service and no owner. The same issue in `OPS` gets the answer that the example entry's token, a
-person's named token for `EXAMPLE`, gets there, and the line wants exactly that answer:
-`403 PROJECT_SCOPE`, `exit 1 PROJECT_SCOPE`, until dispatch://INFRA-4799 changes that for both.
+person's named token for `EXAMPLE`, gets there, and the line wants exactly that answer. `OPS` is
+public, so both tokens create it as a token that names no project does: `exit 0 -`.
 The workflow's run (`github-actions`, with the actions request URL and token and no
 `DISPATCH_HOST` or session id) comments on that issue from a file. The example entry's token, the
 control, names its person as the owner. It exits 1 when any answer is not the one it wants.

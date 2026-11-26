@@ -1214,8 +1214,12 @@ else
     *'Your credential names session '*)
       row C7 "$want7" "bun $entry whoami: the credential names another session than $terminal_session: $(cell "${terminal_out:0:300}")" FAIL
       ;;
-    *" acts for $person_lower:"*"may write project $project and no other"*)
-      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, may write project $project and no other" PASS
+    # A release since a token naming a project also writes other projects says "Its token names
+    # project <P>."; a release before it says "It may write project <P> and no other.". The leg
+    # may pin either, and each names the project the token names.
+    *" acts for $person_lower:"*"Its token names project $project."* | \
+      *" acts for $person_lower:"*"may write project $project and no other"*)
+      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, its token names project $project" PASS
       ;;
     *) row C7 "$want7" "bun $entry whoami named another person or project: $(cell "${terminal_out:0:300}")" FAIL ;;
   esac

@@ -127,6 +127,8 @@ func inlineCommentEnd(lines []string, i int, after string) (end int, rest string
 // either stay as written. A fence inside a block that a tag opens is a line of that block and opens
 // no fenced block, so a comment it is followed by hides as the block's would.
 func TestVisibleMarkdownShowsWhatTheRenderedPageShows(t *testing.T) {
+	// Not parallel: this file must stay the daemon's copy token for token, comments aside
+	// (TestVisibleMarkdownIsTheDaemonsReader), and the daemon's test makes no t.Parallel call.
 	for _, text := range []struct{ shape, written, shown string }{
 		{"a comment around a fenced block",
 			"Run this:\n<!--\n```sh\nlegion start\n```\n-->\nThen this.",
