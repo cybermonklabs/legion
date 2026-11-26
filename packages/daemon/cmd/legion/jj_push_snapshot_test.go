@@ -116,7 +116,8 @@ func rolePushDescendantRows() []rolePushNamedRow {
 		// commit, and the step has no commit to rewrite. -c of H changes a word of the push all the
 		// same, so the step takes the push's one snapshot first, which rebases Y onto E with the
 		// write, and gives the push the id of that Y. jj alone pushes H itself, and so has no row.
-		{name: "-c <a hidden commit id of Y>, nothing to rewrite, @ brought back to E with a waiting write", setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+		// The snapshot family's check that the two forms agree (rolePushNamedRow.bothForms).
+		{name: "-c <a hidden commit id of Y>, nothing to rewrite, @ brought back to E with a waiting write", bothForms: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			f.track("be")
 			f.track("by")
 			e := f.commitOn(impl, impl, "main", rolePushMessage("E", "implementer"))
@@ -207,6 +208,8 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 	// it leaves, or, where setup is nil, of a waiting form (rolePushFixture.waiting); whether the
 	// step has a commit to rewrite; the recording jj's behaviour, rolePushRecords where it is "";
 	// and, where after is not nil, more that the row checks of what the push left and printed.
+	// bothForms runs the row in each form (rolePushForEach): the row with a --config of the role's,
+	// which the pod's wrapper reads too, is this test's check that the two forms agree.
 	type row struct {
 		name      string
 		form      rolePushWaitingForm
@@ -214,13 +217,16 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 		behaviour string
 		setup     func(f *rolePushFixture) ([]string, rolePushWant)
 		after     func(f *rolePushFixture, stderr string)
+		bothForms bool
 	}
 	var rows []row
 	for _, waiting := range rolePushWaitingForms {
 		rows = append(rows, row{name: waiting.name, form: waiting, rewrite: true})
 	}
 	for _, waiting := range rolePushWaitingIgnoredForms {
-		rows = append(rows, row{name: waiting.name + ", a commit to rewrite", form: waiting, rewrite: true})
+		// A global flag in front of the command word is the expansion's (jjCommandWord in a pane,
+		// command_word in a pod), so that row runs in both forms.
+		rows = append(rows, row{name: waiting.name + ", a commit to rewrite", form: waiting, rewrite: true, bothForms: waiting.args[0] == "--ignore-working-copy"})
 	}
 	const another = "another@example.invalid"
 	quiet := rolePushWaitingForm{name: "--bookmark on @ with --quiet", args: []string{"--quiet", "git", "push", "--bookmark", "legion/K-1"}, ref: "legion/K-1", bookmark: true}
@@ -231,13 +237,13 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 					f.t.Errorf("the push printed %q %d times, want once, as its snapshot printed it:\n%s", rolePushSnapshotLine, n, stderr)
 				}
 			}},
-		row{name: quiet.name + ", a snapshot that prints on standard error", form: quiet, rewrite: true, behaviour: rolePushSnapshotPrints,
+		row{name: quiet.name + ", a snapshot that prints on standard error", form: quiet, rewrite: true, behaviour: rolePushSnapshotPrints, bothForms: true,
 			after: func(f *rolePushFixture, stderr string) {
 				if n := strings.Count(stderr, rolePushSnapshotLine); n != 0 {
 					f.t.Errorf("the push printed %q %d times, want none, as its snapshot prints it under the role's --quiet:\n%s", rolePushSnapshotLine, n, stderr)
 				}
 			}},
-		row{name: "--bookmark on a commit to rewrite, @ outside the push with an empty author and a waiting write, the push's own --config user.email=<X>", rewrite: true,
+		row{name: "--bookmark on a commit to rewrite, @ outside the push with an empty author and a waiting write, the push's own --config user.email=<X>", rewrite: true, bothForms: true,
 			setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 				c := f.commitOn(rolePushReviewer, rolePushImplementer, "main", rolePushMessage("work", "implementer"))
 				f.bookmark("legion/K-1", c.commit)
@@ -266,7 +272,7 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 					return row.form.args, want
 				}
 			}
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushForEach(t, row.bothForms, func(t *testing.T, form rolePushForm) {
 				if ignores {
 					twin := newRolePushFixture(t, form, "")
 					c, _ := twin.waiting(row.form, row.rewrite)
