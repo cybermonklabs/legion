@@ -148,9 +148,11 @@ func cacheEntryRefusal(name string, dir bool) string {
 // renames the file into place.
 var serverInfoLeftover = regexp.MustCompile(`^(?:info/refs|objects/info/packs)_[A-Za-z0-9]{6}$`)
 
-// cacheConfigKeys are the configuration a repository cache may hold. Git's bare,
-// single-branch no-tags clone writes remote.origin.url and remote.origin.tagopt. Cache refreshes
-// name their URL and refspec on the command line, so no persistent fetch refspec belongs here.
+// cacheConfigKeys are the configuration a repository cache may hold: what `git init --bare` and
+// cacheConfiguration write, and remote.origin.url, which the `git clone --bare` of an earlier
+// release's cache wrote, so that a volume such a cache filled is narrowed in place rather than
+// filled afresh. Every fetch names its URL and refspec on the command line and passes --no-tags, so
+// no persistent remote, refspec or tag option belongs here.
 var cacheConfigKeys = map[string][]string{
 	"core.repositoryformatversion": {"0", "1"},
 	"core.filemode":                {"true", "false"},
@@ -160,7 +162,6 @@ var cacheConfigKeys = map[string][]string{
 	"maintenance.auto":             {"false"},
 	"fetch.unpacklimit":            {"1"},
 	"remote.origin.url":            nil,
-	"remote.origin.tagopt":         {"--no-tags"},
 }
 
 // cacheConfigHeader and cacheConfigPair are the only lines git writes in a configuration file: a

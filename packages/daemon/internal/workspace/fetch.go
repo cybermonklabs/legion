@@ -148,10 +148,11 @@ func StreamCache(ctx context.Context, run Runner, stream CacheStream, gitDir str
 	}, nil
 }
 
-// CacheFetchTimeout is the repository cache's own Bound: its first clone takes the whole repository
-// from GitHub and indexes every object of it, which on 2026-10-26 took one deployment's cache pod (one CPU,
-// gVisor) past FetchTimeout 289 times over 30 hours, each attempt killed at 30 minutes and begun
-// again from nothing, so the cache was never ready (sjawhar/legion#2240).
+// CacheFetchTimeout is the repository cache's own Bound: its first fill takes the default branch's
+// whole history from GitHub and indexes every object of it, which on 2026-10-26 took one
+// deployment's cache pod (one CPU, gVisor) past FetchTimeout 289 times over 30 hours, each attempt
+// killed at 30 minutes and begun again from nothing, so the cache was never ready
+// (sjawhar/legion#2240).
 const CacheFetchTimeout = 2 * time.Hour
 
 // CacheRepositoryHeader names, on every answer the repository cache gives a request its token
@@ -200,22 +201,24 @@ func (e outsideVolume) Unwrap() []error { return []error{e.err, ErrOutsideVolume
 // the locks and partial packs a killed fetch left are gone (RemoveStaleCacheLocks). A cache clone
 // in a shape Fetch does not write is removed and filled afresh. An absent cache clone is filled in a
 // temporary sibling, its garbage collection turned off (cacheConfiguration), and renamed into place
-// once everything that fills it succeeded, so the repository is whole and current, or absent. The
-// initial clone takes GitHub's default branch alone; a cache clone that exists has that branch
-// fetched into it.
+// once everything that fills it succeeded, so the repository is whole and current, or absent. Both
+// fetch GitHub's default branch alone, as GitHub's HEAD names it, with --no-tags: the first fill is
+// that fetch into an empty bare repository, never a `git clone`, which asks GitHub for every
+// annotated tag that points into the branch it brings (include-tag) even with --no-tags, so the
+// cache would hold, and stream to every pod, tag objects no ref names.
 //
 // Each GitHub transfer gets FetchTimeout unless the request sets Bound (the repository cache's own
-// first clone), and none starts past the one it is in. The repository cache's first clone may take
+// first fill), and none starts past the one it is in. The repository cache's first fill may take
 // the whole CacheFetchTimeout. The few local git commands around each transfer (reading refs and
 // writing the cache's configuration) keep CommandTimeout and take moments. Every attempt reads the
 // provisioning token anew as it starts (FetchRequest.Token, fetchCredential.renew), so it presents
 // the token as its file stands then, not as it stood when the fetch began. A transfer from GitHub
 // that fails transiently (transientCloneFailure) is run again after the next of fetchBackoff's
-// waits, once per wait, its failure logged and whatever a failed clone left removed first, and no
-// retry starts past the bound. A transfer still failing after the last wait, and every other
-// failure, is the answer at once. Each attempt's stderr has every token the fetch has read replaced
-// by *** as soon as the attempt returns, so nothing Fetch logs or returns carries one, wherever git
-// echoed it.
+// waits, once per wait, its failure logged and, in the first fill, whatever a failed attempt left in
+// the temporary sibling removed first, and no retry starts past the bound. A transfer still failing
+// after the last wait, and every other failure, is the answer at once. Each attempt's stderr has
+// every token the fetch has read replaced by *** as soon as the attempt returns, so nothing Fetch
+// logs or returns carries one, wherever git echoed it.
 //
 // A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text: a
 // read of the provisioning token that failed, or a transfer or ref listing from GitHub that
@@ -259,14 +262,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 	held := &fetchCredential{remote: credential, env: merge(credential.env, isolatedGitConfig), read: request.Token, held: []string{token}}
 	if present {
 		deadline := request.Clock.Now().Add(request.bound())
-		target, err := remoteHead(ctx, run, request, cache, held, deadline)
-		if err != nil {
-			return err
-		}
-		if target == "" {
-			return fmt.Errorf("GitHub names no default branch for %s", request.Repo)
-		}
-		if _, err := transferWithRetries(ctx, run, request, cacheFetchInto(cache, request.Repo, target), held, deadline); err != nil {
+		if _, err := fetchDefaultBranch(ctx, run, request, cache, held, deadline, false); err != nil {
 			return err
 		}
 		fetched, err := repositoryRefs(ctx, run, cache)
@@ -286,16 +282,14 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 	defer func() {
 		_ = rolefile.RemoveTree(staging)
 	}()
-	clone := gitHubTransfer{
-		verb: "clone",
-		argv: slices.Concat(isolatedGit, []string{
-			"-c", "gc.auto=0", "-c", "maintenance.auto=false",
-			"clone", "--bare", "--single-branch", "--no-tags", "--quiet", GitHubURL(request.Repo), staging,
-		}),
-		destination: staging,
-		dir:         filepath.Dir(staging),
+	if _, err := RunChecked(ctx, run, slices.Concat(isolatedGit, []string{"init", "--bare", "--quiet", staging}), isolatedGitConfig, filepath.Dir(staging)); err != nil {
+		return err
 	}
-	if _, err := transferWithRetries(ctx, run, request, clone, held, request.Clock.Now().Add(request.bound())); err != nil {
+	target, err := fetchDefaultBranch(ctx, run, request, staging, held, request.Clock.Now().Add(request.bound()), true)
+	if err != nil {
+		return err
+	}
+	if _, err := CacheGit(ctx, run, staging, "symbolic-ref", "HEAD", target); err != nil {
 		return err
 	}
 	if err := settleCache(ctx, run, staging, cache); err != nil {
@@ -304,17 +298,42 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 	return credential.remove()
 }
 
-// cacheFetchInto refreshes the one branch the cache retains. repocache narrows any pre-existing
-// foreign refs after this fetch and before it publishes the cache.
-func cacheFetchInto(cache string, repo ghrepo.Repository, target string) gitHubTransfer {
+// fetchDefaultBranch reads the branch GitHub's HEAD names and fetches it alone into the bare
+// repository gitDir (cacheFetchInto), both under the one-shot credential held, with Fetch's
+// retries, before deadline, and answers the branch's ref. With sweep set, each retry first removes
+// the locks and partial packs a failed attempt left in gitDir, so it starts from the repository as
+// the first attempt found it: the first fill's temporary sibling, as a clone's retry once started
+// from an empty directory.
+func fetchDefaultBranch(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time, sweep bool) (string, error) {
+	target, err := remoteHead(ctx, run, request, gitDir, held, deadline)
+	if err != nil {
+		return "", err
+	}
+	if target == "" {
+		return "", fmt.Errorf("GitHub names no default branch for %s", request.Repo)
+	}
+	transfer := cacheFetchInto(gitDir, request.Repo, target)
+	if sweep {
+		transfer.sweep = gitDir
+	}
+	if _, err := transferWithRetries(ctx, run, request, transfer, held, deadline); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// cacheFetchInto is the fetch of target, the one branch the cache retains, into the bare
+// repository gitDir, with no tag: the cache's first fill into its temporary sibling and each
+// refresh. repocache narrows any other ref after this fetch and before it publishes the cache.
+func cacheFetchInto(gitDir string, repo ghrepo.Repository, target string) gitHubTransfer {
 	return gitHubTransfer{
 		verb: "fetch",
 		argv: slices.Concat(isolatedGit, []string{
 			"-c", "gc.auto=0", "-c", "maintenance.auto=false",
-			"--git-dir=" + cache, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(repo),
+			"--git-dir=" + gitDir, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(repo),
 			"+" + target + ":" + target,
 		}),
-		dir: cache,
+		dir: gitDir,
 	}
 }
 
@@ -447,15 +466,15 @@ var cacheClient = &http.Client{Transport: &http.Transport{Proxy: nil, ForceAttem
 const CachePoll = 10 * time.Second
 
 // CacheWaitTimeout bounds Fetch's wait on a repository cache that is not ready: the cache's own
-// first clone, which may take up to CacheFetchTimeout, and 10 minutes for its pod to be scheduled
-// and its volume bound. A pod launched while a large repository's first clone runs waits it out
+// first fill, which may take up to CacheFetchTimeout, and 10 minutes for its pod to be scheduled
+// and its volume bound. A pod launched while a large repository's first fill runs waits it out
 // rather than failing its fetch, which the daemon would count as one of its claim's launch
-// failures (launch_failure_limit, 3 by default), so a first clone that finishes within
+// failures (launch_failure_limit, 3 by default), so a first fill that finishes within
 // CacheFetchTimeout never ends a claim failed. The cost is that a waiting pod holds its node
 // reservation, and its launch the issue's lifecycle lane, for up to the whole wait. That happens
-// while a first clone runs, and also whenever the cache never becomes ready: a cache in a crash
+// while a first fill runs, and also whenever the cache never becomes ready: a cache in a crash
 // loop (a refused token, GitHub down), one whose pod cannot be scheduled or whose volume does not
-// bind, or a first clone that runs past CacheFetchTimeout and starts again from nothing. Nothing
+// bind, or a first fill that runs past CacheFetchTimeout and starts again from nothing. Nothing
 // cuts the wait short then (the daemon describes the cache only once the fetch has failed), so
 // each launch spends 130 minutes rather than 40 before its fetch fails, and a claim takes about
 // three times as long to reach its launch_failure_limit.
@@ -878,22 +897,22 @@ func (r *countingReader) stalledBy(err error) error {
 // errStreamStalled is what a stream the low-speed bound ended says of itself, naming the bound.
 var errStreamStalled = fmt.Errorf("the repository cache delivered less than %d bytes in %s, the low-speed bound below which its stream is ended", CacheStreamLowSpeedBytes, CacheStreamLowSpeedTime)
 
-// gitHubTransfer is how Fetch brings a repository from GitHub: verb names each attempt in the
-// log and in a failure, argv is the attempt, destination, for a clone, is the temporary
-// directory the attempt clones into, removed before a retry, and dir is the directory each
-// attempt runs in. That is never destination: transferWithRetries removes it between attempts,
-// and a child whose working directory has been removed cannot start.
+// gitHubTransfer is how a transfer from GitHub runs: verb names each attempt in the log and in a
+// failure, argv is the attempt, dir is the directory each attempt runs in, and sweep, when set, is
+// the bare repository whose stale locks and partial packs a failed attempt left are removed before
+// the next one (RemoveStaleCacheLocks): the repository cache's first fill's temporary sibling,
+// which nothing else writes.
 type gitHubTransfer struct {
-	verb        string
-	argv        []string
-	destination string
-	dir         string
+	verb  string
+	argv  []string
+	dir   string
+	sweep string
 }
 
-// stageBeside is the temporary sibling of destination a clone that lacks the repository is filled
-// in. Fetch uses it for the repository cache, and ensureRepoClone uses it for an issue pod's clone.
+// stageBeside is the temporary sibling of destination a repository that lacks it is filled in.
+// Fetch uses it for the repository cache, and ensureRepoClone uses it for an issue pod's clone.
 // A sibling an earlier attempt left — killed before it renamed or removed it — is removed first and
-// logged: a killed clone of a large repository left on a volume of fixed size would fill it.
+// logged: a killed fill of a large repository left on a volume of fixed size would fill it.
 func stageBeside(destination string, log func(string)) (string, error) {
 	stale, err := filepath.Glob(destination + cloneSuffix + "*")
 	if err != nil {
@@ -980,9 +999,9 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		}
 		request.Log(fmt.Sprintf("%s attempt %d failed; retrying in %s: %s", transfer.verb, attempt, wait,
 			strings.ReplaceAll(strings.TrimSpace(result.Stderr), "\n", " | ")))
-		if transfer.destination != "" {
-			if err := rolefile.RemoveTree(transfer.destination); err != nil {
-				return Result{}, fmt.Errorf("remove what %s attempt %d left at %s: %w", transfer.verb, attempt, transfer.destination, err)
+		if transfer.sweep != "" {
+			if err := RemoveStaleCacheLocks(transfer.sweep, request.Clock.Now(), request.Log); err != nil {
+				return Result{}, fmt.Errorf("remove what %s attempt %d left in %s: %w", transfer.verb, attempt, transfer.sweep, err)
 			}
 		}
 		if err := request.Clock.Sleep(ctx, wait); err != nil {
@@ -1092,8 +1111,8 @@ var streamCuts = []string{
 	"the remote end hung up unexpectedly",
 }
 
-// transientCloneFailure is whether a clone of GitHub that failed may succeed if run again: git's
-// fatal exit, with a cause that names a status GitHub may not answer again — 408 (it timed the
+// transientCloneFailure is whether a transfer from GitHub that failed may succeed if run again:
+// git's fatal exit, with a cause that names a status GitHub may not answer again — 408 (it timed the
 // request out), 429 (it is limiting the rate) or a 5xx (it failed) — or a connection that failed
 // or broke (curlNetworkFailures), or, with no cause line at all, a pack stream that ended early
 // (streamCuts). The cause line decides, never the follow-on line git prints after it: a 403 on a

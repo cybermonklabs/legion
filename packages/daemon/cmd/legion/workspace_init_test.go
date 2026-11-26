@@ -59,41 +59,18 @@ PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
 
 // fakeGit maps GitHub to the fixture remote while recording the one-shot provisioning credential:
-// a bare clone of github.com/acme/widgets (the repository cache's), a fetch from it into a
-// repository and a read of its HEAD (`ls-remote --symref`) each reach the local bare remote instead,
-// whose file transport joins the https the runner allows, after appending the token file's path and
-// what it held to WINIT_CREDENTIAL_LOG. With WINIT_CLONE_FAILURES set (failClones), the clone first
-// counts itself in that directory's `attempts`, and an attempt whose number names a file there
-// fails as git does: it leaves a partial clone at its destination, writes the file to stderr with
-// @TOKEN@ replaced by the token it was handed, and exits 128, git's fatal status. With
-// WINIT_FETCH_FAILURES set (failFetches), a fetch fails its attempts the same way, leaving nothing,
-// and exits with the status the directory's `status` file holds. Every other invocation is the
-// real git's.
+// a fetch from github.com/acme/widgets into a repository — an issue pod's fill's, or the repository
+// cache's first fill's and refresh's — and a read of its HEAD (`ls-remote --symref`) each reach the
+// local bare remote instead, whose file transport joins the https the runner allows, after
+// appending the token file's path and what it held to WINIT_CREDENTIAL_LOG. With
+// WINIT_FETCH_FAILURES set (failFetches), a fetch first counts itself in that directory's
+// `attempts`, and an attempt whose number names a file there fails as git does: it writes the file
+// to stderr with @TOKEN@ replaced by the token it was handed, and exits with the status the
+// directory's `status` file holds. Every other invocation is the real git's.
 const fakeGit = `#!/bin/sh
 while [ "$1" = "-c" ]; do
 	shift 2
 done
-if [ "$1" = clone ]; then
-	for arg in "$@"; do
-		if [ "$arg" = https://github.com/acme/widgets ]; then github=1; fi
-		destination=$arg
-	done
-	if [ -n "$github" ]; then
-		printf '%s %s\n' "$LEGION_PROVISIONING_TOKEN_FILE" "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")" >> "$WINIT_CREDENTIAL_LOG"
-		if [ -n "$WINIT_CLONE_FAILURES" ]; then
-			attempt=$(( $(cat "$WINIT_CLONE_FAILURES/attempts" 2>/dev/null || echo 0) + 1 ))
-			echo "$attempt" > "$WINIT_CLONE_FAILURES/attempts"
-			if [ -f "$WINIT_CLONE_FAILURES/$attempt" ]; then
-				mkdir -p "$destination" && echo partial > "$destination/partial"
-				sed "s/@TOKEN@/$(cat "$LEGION_PROVISIONING_TOKEN_FILE")/g" "$WINIT_CLONE_FAILURES/$attempt" >&2
-				exit 128
-			fi
-		fi
-		while [ "$1" != https://github.com/acme/widgets ]; do shift; done
-		shift
-		GIT_ALLOW_PROTOCOL="$GIT_ALLOW_PROTOCOL:file" exec "$WINIT_REAL_GIT" clone --bare --single-branch --no-tags --quiet "$WINIT_REMOTE" "$@"
-	fi
-fi
 if [ "$2" = fetch ]; then
 	printf '%s %s\n' "$LEGION_PROVISIONING_TOKEN_FILE" "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")" >> "$WINIT_CREDENTIAL_LOG"
 	if [ -n "$WINIT_FETCH_FAILURES" ]; then
@@ -182,7 +159,6 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_REMOTE":         filepath.Join(dir, "no-remote.git"),
 		"WINIT_JJ_LOG":         v.jjLog,
 		"WINIT_CREDENTIAL_LOG": v.credentialLog,
-		"WINIT_CLONE_FAILURES": "",
 		"WINIT_FETCH_FAILURES": "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
@@ -194,27 +170,10 @@ func newIssueVolume(t *testing.T) *issueVolume {
 	return v
 }
 
-// failClones has the volume's git fail its first clones of github.com/acme/widgets, one per entry
-// of stderr, in order (fakeGit), and returns the file that counts every clone attempt.
-func (v *issueVolume) failClones(t *testing.T, stderr ...string) string {
-	t.Helper()
-	v.env["WINIT_CLONE_FAILURES"] = failures(t, 128, stderr...)
-	return filepath.Join(v.env["WINIT_CLONE_FAILURES"], "attempts")
-}
-
 // failFetches has the volume's git fail its first fetches from github.com/acme/widgets, one per
 // entry of stderr, in order, each exiting status (fakeGit), and returns the file that counts every
 // fetch attempt.
 func (v *issueVolume) failFetches(t *testing.T, status int, stderr ...string) string {
-	t.Helper()
-	v.env["WINIT_FETCH_FAILURES"] = failures(t, status, stderr...)
-	return filepath.Join(v.env["WINIT_FETCH_FAILURES"], "attempts")
-}
-
-// failures is a directory of the test's own that fails fakeGit's transfers: a file per attempt
-// that fails, named by the attempt's number and holding what it prints, and `status`, the status
-// it exits.
-func failures(t *testing.T, status int, stderr ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "status"), []byte(strconv.Itoa(status)), 0o600); err != nil {
@@ -225,19 +184,17 @@ func failures(t *testing.T, status int, stderr ...string) string {
 			t.Fatal(err)
 		}
 	}
-	return dir
+	v.env["WINIT_FETCH_FAILURES"] = dir
+	return filepath.Join(dir, "attempts")
 }
 
-// cloneAttempts and fetchAttempts are how many clones of, or fetches from, github.com/acme/widgets
-// the volume's git counted in attempts, the file failClones or failFetches returned.
-func cloneAttempts(t *testing.T, attempts string) int { t.Helper(); return counted(t, attempts) }
-func fetchAttempts(t *testing.T, attempts string) int { t.Helper(); return counted(t, attempts) }
-
-func counted(t *testing.T, attempts string) int {
+// fetchAttempts is how many fetches from github.com/acme/widgets the volume's git counted in
+// attempts, the file failFetches returned.
+func fetchAttempts(t *testing.T, attempts string) int {
 	t.Helper()
 	body, err := os.ReadFile(attempts)
 	if err != nil {
-		t.Fatalf("git ran no transfer from GitHub: %v", err)
+		t.Fatalf("git ran no fetch from GitHub: %v", err)
 	}
 	count, err := strconv.Atoi(strings.TrimSpace(string(body)))
 	if err != nil {

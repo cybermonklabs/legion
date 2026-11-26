@@ -130,27 +130,36 @@ func TestAFailureOutsideTheVolumeIsReadFromGitsOutput(t *testing.T) {
 // fatal is a transfer git ended with its fatal status, 128, printing stderr.
 func fatal(stderr string) Result { return Result{ExitCode: 128, Stderr: stderr} }
 
-// failingClone is a runner whose every command — the repository cache's first clone is the only
-// one Fetch runs into a volume that holds no cache yet — takes took of clock's time and then fails
-// with result, or, given less time than that, runs to its timeout and is killed there.
-type failingClone struct {
+// failingFetch is the local runner whose every fetch from GitHub — the repository cache's first
+// fill's transfer into a volume that holds no cache yet, whose read of GitHub's HEAD before it runs
+// as the local runner has it — takes took of clock's time and then fails with result, or, given
+// less time than that, runs to its timeout and is killed there.
+type failingFetch struct {
+	*recordingRunner
 	clock  *testClock
 	took   time.Duration
 	result Result
 
-	attempts []cloneAttempt
+	attempts []fetchAttempt
 }
 
-// cloneAttempt is one clone failingClone ran: when it started, by the clock, and its timeout.
-type cloneAttempt struct {
+// fetchAttempt is one fetch failingFetch ran: when it started, by the clock, and its timeout.
+type fetchAttempt struct {
 	at      time.Time
 	timeout time.Duration
 }
 
-func (r *failingClone) Timeout() time.Duration { return testTimeout }
+// newFailingFetch is failingFetch on clock, failing every fetch with result.
+func newFailingFetch(t *testing.T, clock *testClock, took time.Duration, result Result) *failingFetch {
+	t.Helper()
+	return &failingFetch{recordingRunner: newLocalRunner(t), clock: clock, took: took, result: result}
+}
 
-func (r *failingClone) Run(_ context.Context, command Command) (Result, error) {
-	r.attempts = append(r.attempts, cloneAttempt{at: r.clock.Now(), timeout: command.Timeout})
+func (r *failingFetch) Run(ctx context.Context, command Command) (Result, error) {
+	if command.Argv[0] != "git" || !slices.Contains(command.Argv, "fetch") {
+		return r.recordingRunner.Run(ctx, command)
+	}
+	r.attempts = append(r.attempts, fetchAttempt{at: r.clock.Now(), timeout: command.Timeout})
 	if command.Timeout <= r.took {
 		r.clock.advance(command.Timeout)
 		return Result{ExitCode: -1, TimedOut: true}, nil
@@ -159,14 +168,14 @@ func (r *failingClone) Run(_ context.Context, command Command) (Result, error) {
 	return r.result, nil
 }
 
-// clonesUnderTheBound fails the test unless each of run's clones was given what remained of
+// fetchesUnderTheBound fails the test unless each of run's fetches was given what remained of
 // FetchTimeout from the first one's start, and returns how long the fetch ran by clock.
-func clonesUnderTheBound(t *testing.T, run *failingClone, clock *testClock) time.Duration {
+func fetchesUnderTheBound(t *testing.T, run *failingFetch, clock *testClock) time.Duration {
 	t.Helper()
 	start := run.attempts[0].at
 	for i, attempt := range run.attempts {
 		if want := FetchTimeout - attempt.at.Sub(start); attempt.timeout != want {
-			t.Errorf("clone attempt %d started %s in with timeout %s, want what remained of the bound, %s", i+1, attempt.at.Sub(start), attempt.timeout, want)
+			t.Errorf("fetch attempt %d started %s in with timeout %s, want what remained of the bound, %s", i+1, attempt.at.Sub(start), attempt.timeout, want)
 		}
 	}
 	elapsed := clock.Now().Sub(start)
@@ -176,20 +185,20 @@ func clonesUnderTheBound(t *testing.T, run *failingClone, clock *testClock) time
 	return elapsed
 }
 
-// A clone that keeps failing quickly, as one does through a GitHub outage, is retried once after
+// A fetch that keeps failing quickly, as one does through a GitHub outage, is retried once after
 // each backoff wait and no more: the fifth transient failure ends the fetch, 1 min 50 s in, naming
 // the failure and the retry limit, rather than holding the cache for the whole FetchTimeout. The
 // failure is outside the volume. transferWithRetries holds an issue pod's fill to the same rule.
 func TestFetchStopsAfterItsLastRetry(t *testing.T) {
 	clock := newTestClock()
-	run := &failingClone{clock: clock, result: fatal("fatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 503\n")}
+	run := newFailingFetch(t, clock, 0, fatal("fatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 503\n"))
 	req := fetchRequest(t)
 	req.Clock = clock
 	var logged []string
 	req.Log = func(line string) { logged = append(logged, line) }
 
 	err := Fetch(context.Background(), run, req)
-	want := "clone attempt 5 failed, and the fetch retries a clone at most 4 times"
+	want := "fetch attempt 5 failed, and the fetch retries a fetch at most 4 times"
 	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "returned error: 503") {
 		t.Fatalf("Fetch = %v, want the 503 and %q", err, want)
 	}
@@ -197,23 +206,23 @@ func TestFetchStopsAfterItsLastRetry(t *testing.T) {
 		t.Errorf("Fetch = %v, want a failure outside the volume (ErrOutsideVolume)", err)
 	}
 	if len(run.attempts) != 5 || len(logged) != 4 {
-		t.Fatalf("Fetch cloned %d times and logged %d retries, want 5 and 4", len(run.attempts), len(logged))
+		t.Fatalf("Fetch fetched %d times and logged %d retries, want 5 and 4", len(run.attempts), len(logged))
 	}
 	if !slices.Equal(clock.waits, fetchBackoff) {
 		t.Fatalf("Fetch waited %v, want %v", clock.waits, fetchBackoff)
 	}
-	if elapsed := clonesUnderTheBound(t, run, clock); elapsed != time.Minute+50*time.Second {
+	if elapsed := fetchesUnderTheBound(t, run, clock); elapsed != time.Minute+50*time.Second {
 		t.Errorf("the fetch gave up %s in, want 1m50s", elapsed)
 	}
 }
 
-// A clone whose every attempt runs ten minutes before it breaks, as a slow transfer GitHub cuts
+// A fetch whose every attempt runs ten minutes before it breaks, as a slow transfer GitHub cuts
 // does, is given what remains of FetchTimeout each time, and the third, started 20 min 20 s in
 // with less than ten minutes left, is killed at the bound itself: Fetch never runs past
 // FetchTimeout, and an attempt that ran out of its time is a cause outside the volume.
 func TestFetchKillsTheAttemptThatReachesItsBound(t *testing.T) {
 	clock := newTestClock()
-	run := &failingClone{clock: clock, took: 10 * time.Minute, result: fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\nfatal: early EOF\n")}
+	run := newFailingFetch(t, clock, 10*time.Minute, fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\nfatal: early EOF\n"))
 	req := fetchRequest(t)
 	req.Clock = clock
 
@@ -225,9 +234,9 @@ func TestFetchKillsTheAttemptThatReachesItsBound(t *testing.T) {
 		t.Errorf("Fetch = %v, want an attempt that ran out of its time outside the volume (ErrOutsideVolume)", err)
 	}
 	if len(run.attempts) != 3 {
-		t.Fatalf("Fetch cloned %d times, want 3", len(run.attempts))
+		t.Fatalf("Fetch fetched %d times, want 3", len(run.attempts))
 	}
-	if elapsed := clonesUnderTheBound(t, run, clock); elapsed != FetchTimeout {
+	if elapsed := fetchesUnderTheBound(t, run, clock); elapsed != FetchTimeout {
 		t.Errorf("the fetch gave up %s in, want at its bound, %s", elapsed, FetchTimeout)
 	}
 }
@@ -236,18 +245,18 @@ func TestFetchKillsTheAttemptThatReachesItsBound(t *testing.T) {
 // the bound.
 func TestFetchMakesNoRetryThatWouldStartPastItsBound(t *testing.T) {
 	clock := newTestClock()
-	run := &failingClone{clock: clock, took: FetchTimeout - 3*time.Second,
-		result: fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n")}
+	run := newFailingFetch(t, clock, FetchTimeout-3*time.Second,
+		fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n"))
 	req := fetchRequest(t)
 	req.Clock = clock
 
 	err := Fetch(context.Background(), run, req)
-	want := "clone attempt 1 failed, and a retry in 5s would start past the fetch's 30m0s bound"
+	want := "fetch attempt 1 failed, and a retry in 5s would start past the fetch's 30m0s bound"
 	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "HTTP 408") {
 		t.Fatalf("Fetch = %v, want the 408 and %q", err, want)
 	}
 	if len(run.attempts) != 1 || len(clock.waits) != 0 {
-		t.Fatalf("Fetch cloned %d times and waited %v, want one clone and no wait", len(run.attempts), clock.waits)
+		t.Fatalf("Fetch fetched %d times and waited %v, want one fetch and no wait", len(run.attempts), clock.waits)
 	}
 }
 
@@ -256,26 +265,26 @@ func TestFetchMakesNoRetryThatWouldStartPastItsBound(t *testing.T) {
 func TestFetchStartsNoAttemptOnceAWaitEndsPastItsBound(t *testing.T) {
 	clock := newTestClock()
 	clock.overshoot = 2 * time.Millisecond
-	run := &failingClone{clock: clock, took: FetchTimeout - 5*time.Second - time.Millisecond,
-		result: fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n")}
+	run := newFailingFetch(t, clock, FetchTimeout-5*time.Second-time.Millisecond,
+		fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n"))
 	req := fetchRequest(t)
 	req.Clock = clock
 
 	err := Fetch(context.Background(), run, req)
-	want := "clone attempt 1 failed, and its retry after the 5s wait would start past the fetch's 30m0s bound"
+	want := "fetch attempt 1 failed, and its retry after the 5s wait would start past the fetch's 30m0s bound"
 	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "HTTP 408") {
 		t.Fatalf("Fetch = %v, want the 408 and %q", err, want)
 	}
 	if len(run.attempts) != 1 {
-		t.Fatalf("Fetch cloned %d times, want 1", len(run.attempts))
+		t.Fatalf("Fetch fetched %d times, want 1", len(run.attempts))
 	}
 }
 
-// A permanent failure is Fetch's answer at once: one clone, no wait, no retry logged. GitHub not
+// A permanent failure is Fetch's answer at once: one fetch, no wait, no retry logged. GitHub not
 // finding the repository is outside the volume.
-func TestFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
+func TestFetchFailsAPermanentFetchFailureAtOnce(t *testing.T) {
 	clock := newTestClock()
-	run := &failingClone{clock: clock, result: fatal("remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n")}
+	run := newFailingFetch(t, clock, 0, fatal("remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"))
 	req := fetchRequest(t)
 	req.Clock = clock
 	var logged []string
@@ -289,15 +298,15 @@ func TestFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
 		t.Errorf("Fetch = %v, want a failure outside the volume (ErrOutsideVolume)", err)
 	}
 	if len(run.attempts) != 1 || len(clock.waits) != 0 || len(logged) != 0 {
-		t.Fatalf("Fetch cloned %d times, waited %v and logged %q; want one clone, no wait, nothing logged", len(run.attempts), clock.waits, logged)
+		t.Fatalf("Fetch fetched %d times, waited %v and logged %q; want one fetch, no wait, nothing logged", len(run.attempts), clock.waits, logged)
 	}
 }
 
 // A fetch whose context ends during a backoff wait — its process stopped — ends with it, running
-// no further clone.
+// no further attempt.
 func TestFetchEndsWithItsContextDuringAWait(t *testing.T) {
 	clock := newTestClock()
-	run := &failingClone{clock: clock, result: fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n")}
+	run := newFailingFetch(t, clock, 0, fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n"))
 	req := fetchRequest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	req.Clock = clock
@@ -308,8 +317,68 @@ func TestFetchEndsWithItsContextDuringAWait(t *testing.T) {
 		t.Fatalf("Fetch = %v, want it ended with its context", err)
 	}
 	if len(run.attempts) != 1 {
-		t.Fatalf("Fetch cloned %d times, want 1", len(run.attempts))
+		t.Fatalf("Fetch fetched %d times, want 1", len(run.attempts))
 	}
+}
+
+// The first fill's retry starts from the empty repository the first attempt found: what a failed
+// attempt left in the temporary sibling — a partial pack a transfer cut mid-pack leaves under a
+// temporary name, a lock — is removed and logged before the next attempt, as a clone's retry once
+// started from an empty directory, and the cache holds none of it.
+func TestAFirstFillsRetryStartsWithoutWhatTheFailedAttemptLeft(t *testing.T) {
+	clock := newTestClock()
+	run := &leavesPartial{recordingRunner: newLocalRunner(t)}
+	req := fetchRequest(t)
+	req.Clock = clock
+	var logged []string
+	req.Log = func(line string) { logged = append(logged, line) }
+
+	if err := Fetch(context.Background(), run, req); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(run.left) != 2 {
+		t.Fatalf("the failed attempt left %q, want a partial pack and a lock", run.left)
+	}
+	for _, path := range run.left {
+		if !slices.ContainsFunc(logged, func(line string) bool {
+			return strings.HasPrefix(line, "removed the ") && strings.Contains(line, path+", last written ")
+		}) {
+			t.Errorf("the removal of %s before the retry was not logged: %q", path, logged)
+		}
+	}
+	cache := filepath.Join(req.Root, "acme", "widgets.git")
+	for _, name := range []string{filepath.Join("objects", "pack", "tmp_pack_cut"), "packed-refs.lock"} {
+		if _, err := os.Lstat(filepath.Join(cache, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the cache holds the failed attempt's %s (%v)", name, err)
+		}
+	}
+	if !slices.Equal(clock.waits, fetchBackoff[:1]) {
+		t.Errorf("Fetch waited %v, want one backoff", clock.waits)
+	}
+}
+
+// leavesPartial fails the first fetch from GitHub as a transfer cut mid-pack does, a 502 after
+// writing a partial pack and a lock into the repository it fetches into, and runs every other
+// command, the retry included, as the local runner does.
+type leavesPartial struct {
+	*recordingRunner
+	left []string
+}
+
+func (r *leavesPartial) Run(ctx context.Context, command Command) (Result, error) {
+	if r.left != nil || command.Argv[0] != "git" || !slices.Contains(command.Argv, "fetch") {
+		return r.recordingRunner.Run(ctx, command)
+	}
+	r.left = []string{}
+	gitDir := gitDirOf(command.Argv)
+	for _, name := range []string{filepath.Join("objects", "pack", "tmp_pack_cut"), "packed-refs.lock"} {
+		path := filepath.Join(gitDir, name)
+		if err := os.WriteFile(path, []byte("cut\n"), 0o600); err != nil {
+			return Result{}, err
+		}
+		r.left = append(r.left, path)
+	}
+	return fatal("error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\nfatal: expected flush after ref listing\n"), nil
 }
 
 // A fetch request names the log its retries are told to and the clock they wait on; one without
@@ -581,18 +650,18 @@ func (s *gitHubStandIn) tokensPresented(t *testing.T, token string) {
 	}
 }
 
-// gitHubTransfers are the two transfers from GitHub that transferWithRetries runs a real git for:
-// the repository cache's first clone (Fetch), and an issue pod's fetch into the clone it fills
+// gitHubTransfers are the two fills from GitHub that transferWithRetries runs a real git for: the
+// repository cache's first fill (Fetch), and an issue pod's fetch into the clone it fills
 // (fetchIssuePod), whose failure decides `workspace-init provision`'s exit. Each runs against GitHub
 // as the process's environment reaches it, on token, clock and log, and answers the git directory
-// it filled. before is how many transfers it makes ahead of the one that fetches the pack: the
-// fill's read of GitHub's refs (issuePodDefaults).
+// it filled. before is how many transfers each makes ahead of the one that fetches the pack: its
+// read of GitHub's refs.
 var gitHubTransfers = []struct {
 	name     string
 	before   int
 	transfer func(t *testing.T, ctx context.Context, token func() (string, error), clock Clock, log func(string)) (string, error)
 }{
-	{name: "the repository cache's clone", transfer: func(t *testing.T, ctx context.Context, token func() (string, error), clock Clock, log func(string)) (string, error) {
+	{name: "the repository cache's first fill", before: 1, transfer: func(t *testing.T, ctx context.Context, token func() (string, error), clock Clock, log func(string)) (string, error) {
 		req := fetchRequest(t)
 		req.Token, req.Clock, req.Log = token, clock, log
 		return filepath.Join(req.Root, "acme", "widgets.git"), Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
@@ -784,14 +853,14 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		}
 		presented := github.presented()
 		fresh := slices.Index(presented, "ghs_fresh")
-		if github.attemptCount() != 2 || fresh <= 0 || slices.Contains(presented[:fresh], "ghs_fresh") || slices.Contains(presented[fresh:], "ghs_stale") {
-			t.Fatalf("git presented %q over %d attempts, want the first attempt's token, then the rewritten one alone", presented, github.attemptCount())
+		if github.attemptCount() != 3 || fresh <= 0 || slices.Contains(presented[:fresh], "ghs_fresh") || slices.Contains(presented[fresh:], "ghs_stale") {
+			t.Fatalf("git presented %q over %d transfers, want the stale token on the read of GitHub's HEAD and the first attempt, then the rewritten one alone", presented, github.attemptCount())
 		}
 	})
 	// A read of the token that fails is a cause outside the issue's volume (ErrOutsideVolume):
 	// Fetch's own first read, and a renewal before a retry, of a file removed during the backoff.
 	t.Run("unreadable when the fetch starts", func(t *testing.T) {
-		run := &failingClone{clock: newTestClock()}
+		run := newFailingFetch(t, newTestClock(), 0, Result{})
 		req := fetchRequest(t)
 		req.Token = tokenFrom(filepath.Join(t.TempDir(), "LEGION_PROVISION_TOKEN"))
 		err := Fetch(context.Background(), run, req)
@@ -804,14 +873,14 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 	})
 	t.Run("removed during a retry's backoff", func(t *testing.T) {
 		clock := newTestClock()
-		run := &failingClone{clock: clock, result: fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n")}
+		run := newFailingFetch(t, clock, 0, fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n"))
 		req := fetchRequest(t)
 		file := tokenFile(t, "ghs_stale")
 		req.Token = tokenFrom(file)
 		req.Clock = &removingClock{testClock: clock, file: file}
 
 		err := Fetch(context.Background(), run, req)
-		if err == nil || !strings.Contains(err.Error(), "clone attempt 2: read the provisioning token: ") || !errors.Is(err, ErrOutsideVolume) {
+		if err == nil || !strings.Contains(err.Error(), "fetch attempt 2: read the provisioning token: ") || !errors.Is(err, ErrOutsideVolume) {
 			t.Fatalf("Fetch = %v, want the retry's failed read, outside the volume", err)
 		}
 		if len(run.attempts) != 1 {
@@ -874,12 +943,13 @@ func (c *removingClock) Sleep(ctx context.Context, d time.Duration) error {
 	return c.testClock.Sleep(ctx, d)
 }
 
-// The repository cache's first fetch clones the repository's default branch alone, bare, into a
-// temporary sibling of the cache, with the one-shot credential under FetchTimeout, and reads no git
-// configuration but its own: not the system's, not the image user's, and not what git's `-c`
-// (GIT_CONFIG_PARAMETERS) names in its environment — here each names a template directory, which
-// would plant a file in every repository git creates. Its credential is gone once it returns.
-func TestFetchClonesTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
+// The repository cache's first fill makes an empty bare repository in a temporary sibling of the
+// cache and fetches GitHub's default branch alone into it, with the one-shot credential under
+// FetchTimeout and no tag, then points HEAD at that branch. It reads no git configuration but its
+// own: not the system's, not the image user's, and not what git's `-c` (GIT_CONFIG_PARAMETERS)
+// names in its environment — here each names a template directory, which would plant a file in
+// every repository git creates. Its credential is gone once it returns.
+func TestFetchFillsTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "release/v7.1", "other.txt")
 	template := t.TempDir()
@@ -894,7 +964,7 @@ func TestFetchClonesTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
 	t.Setenv("GIT_CONFIG_SYSTEM", config)
 	t.Setenv("GIT_CONFIG_PARAMETERS", "'init.templatedir'='"+template+"'")
 	req := fetchRequest(t)
-	// The clock stands still, so the clone is given the whole bound.
+	// The clock stands still, so the fetch is given the whole bound it shares with the read before.
 	req.Clock = newTestClock()
 
 	if err := Fetch(context.Background(), run, req); err != nil {
@@ -913,13 +983,51 @@ func TestFetchClonesTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
 	if refs := runSetup(t, cache, "git", "--git-dir="+cache, "for-each-ref", "--format=%(refname)"); refs != "refs/heads/main\n" {
 		t.Errorf("the cache holds %q, want the default branch alone", refs)
 	}
-	clone := findCall(t, run.Calls(), "git", "clone")
-	if want := slices.Concat(isolatedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--single-branch", "--no-tags", "--quiet", "https://github.com/acme/widgets"}); !slices.Equal(clone.Argv[:min(len(want), len(clone.Argv))], want) || len(clone.Argv) != len(want)+1 || !strings.HasPrefix(clone.Argv[len(want)], cache+cloneSuffix) {
-		t.Errorf("Fetch ran %q, want %q into a temporary sibling of %s", clone.Argv, want, cache)
+	if head := strings.TrimSpace(runSetup(t, cache, "git", "--git-dir="+cache, "symbolic-ref", "HEAD")); head != "refs/heads/main" {
+		t.Errorf("the cache's HEAD names %s, want refs/heads/main", head)
 	}
-	assertCredentialedEnvironmentBounded(t, clone, FetchTimeout)
+	initialized := findCall(t, run.Calls(), "git", "init")
+	staging := initialized.Argv[len(initialized.Argv)-1]
+	if want := slices.Concat(isolatedGit, []string{"init", "--bare", "--quiet"}); !slices.Equal(initialized.Argv[:len(initialized.Argv)-1], want) || !strings.HasPrefix(staging, cache+cloneSuffix) {
+		t.Errorf("Fetch ran %q, want %q into a temporary sibling of %s", initialized.Argv, want, cache)
+	}
+	fetch := findCall(t, run.Calls(), "git", "--git-dir="+staging, "fetch")
+	if want := slices.Concat(isolatedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + staging, "fetch", "--no-tags", "--prune", "--quiet", "https://github.com/acme/widgets", "+refs/heads/main:refs/heads/main"}); !slices.Equal(fetch.Argv, want) {
+		t.Errorf("Fetch ran %q, want %q", fetch.Argv, want)
+	}
+	assertCredentialedEnvironmentBounded(t, fetch, FetchTimeout)
 	if entries, err := os.ReadDir(req.CredentialDir); err != nil || len(entries) != 0 {
 		t.Errorf("the one-shot credential outlived Fetch: %v (%v)", entries, err)
+	}
+}
+
+// The repository cache holds the default branch's history and no tag object, so no pod's /tar
+// streams one. A bare clone sends include-tag even with --no-tags, and GitHub's pack then carries
+// every annotated tag that points into the default branch with no ref naming it. The cache's first
+// fill and each refresh fetch the default branch alone with --no-tags, which sends no include-tag:
+// here an annotated tag on main before the first fill, and another on main's next commit before a
+// refresh, reach the cache in neither.
+func TestFetchBringsNoTagObjectIntoTheCache(t *testing.T) {
+	run := newLocalRunner(t)
+	runSetup(t, t.TempDir(), "git", "--git-dir="+run.remote, "tag", "-a", "v1.0", "-m", "a release", "main")
+	req := fetchRequest(t)
+	cache := filepath.Join(req.Root, "acme", "widgets.git")
+	types := func() []string {
+		return strings.Fields(runSetup(t, cache, "git", "--git-dir="+cache, "cat-file", "--batch-all-objects", "--batch-check=%(objecttype)"))
+	}
+	if err := Fetch(context.Background(), run, req); err != nil {
+		t.Fatalf("the first Fetch: %v", err)
+	}
+	if objects := types(); !slices.Contains(objects, "commit") || slices.Contains(objects, "tag") {
+		t.Errorf("after the first fill the cache holds objects of the types %q, want the default branch's history and no tag", objects)
+	}
+	pushRemoteBranch(t, run.remote, "main", "release-two.txt")
+	runSetup(t, t.TempDir(), "git", "--git-dir="+run.remote, "tag", "-a", "v2.0", "-m", "another release", "main")
+	if err := Fetch(context.Background(), run, req); err != nil {
+		t.Fatalf("the refresh: %v", err)
+	}
+	if objects := types(); slices.Contains(objects, "tag") {
+		t.Errorf("after a refresh the cache holds objects of the types %q, want no tag", objects)
 	}
 }
 
@@ -945,8 +1053,8 @@ func TestFetchIntoACacheThatHoldsTheRepositoryFetchesItsDefaultBranch(t *testing
 	}
 	calls := run.Calls()[before:]
 	for _, call := range calls {
-		if commandWith(call.Argv, "git", "clone") {
-			t.Fatalf("the second Fetch cloned again: %q", call.Argv)
+		if commandWith(call.Argv, "git", "init") {
+			t.Fatalf("the second Fetch filled the cache afresh: %q", call.Argv)
 		}
 	}
 	fetch := findCall(t, calls, "git", "--git-dir="+cache, "fetch")
@@ -1167,8 +1275,8 @@ func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
 			}) {
 				t.Errorf("Fetch logged %q, want the planted cache removed and why", logged)
 			}
-			if calls := run.Calls()[before:]; len(calls) == 0 || !commandWith(calls[0].Argv, "git", "clone") {
-				t.Errorf("the Fetch after the plant ran %q, want its first git the clone of a fresh cache, and none in the planted one", calls)
+			if calls := run.Calls()[before:]; len(calls) == 0 || !commandWith(calls[0].Argv, "git", "init", "--bare") {
+				t.Errorf("the Fetch after the plant ran %q, want its first git the init of a fresh cache, and none in the planted one", calls)
 			}
 			if kept != "" {
 				if _, err := os.Lstat(kept); err != nil {
@@ -1216,8 +1324,8 @@ func TestFetchKeepsACacheHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 		t.Errorf("Fetch refused a cache holding only git's own leftovers: %q", logged)
 	}
 	for _, call := range run.Calls()[before:] {
-		if commandWith(call.Argv, "git", "clone") {
-			t.Errorf("Fetch cloned the cache again: %q", call.Argv)
+		if commandWith(call.Argv, "git", "init") {
+			t.Errorf("Fetch filled the cache afresh: %q", call.Argv)
 		}
 	}
 }
@@ -1268,7 +1376,7 @@ func TestFetchKeepsACacheAfterGitGC(t *testing.T) {
 				t.Errorf("Fetch refused a cache after git gc: %q", logged)
 			}
 			for _, call := range run.Calls()[before:] {
-				if commandWith(call.Argv, "git", "clone") {
+				if commandWith(call.Argv, "git", "init") {
 					t.Errorf("Fetch replaced the cache after git gc: %q", call.Argv)
 				}
 			}
@@ -1451,28 +1559,28 @@ func TestFetchRemovesTheLocksAnInterruptedFetchLeftInTheCache(t *testing.T) {
 	}
 }
 
-// A clone that dies mid-transfer leaves nothing at the cache's repository: the clone runs in a
+// A first fill that dies mid-transfer leaves nothing at the cache's repository: the fill runs in a
 // temporary sibling renamed into place once git finished, so a volume that outlives the process
-// never holds a half-cloned repository the next Fetch would take for a whole one and fetch into. A
-// sibling a Fetch killed outright left (no defer ran) is removed by the next one, which clones
-// whole. An issue pod's fill stages its clone the same way (stageBeside).
-func TestFetchLeavesNoHalfClonedRepositoryAtTheCache(t *testing.T) {
+// never holds a half-filled repository the next Fetch would take for a whole one and fetch into. A
+// sibling a Fetch killed outright left (no defer ran) is removed by the next one, which fills the
+// cache whole. An issue pod's fill stages its clone the same way (stageBeside).
+func TestFetchLeavesNoHalfFilledRepositoryAtTheCache(t *testing.T) {
 	req := fetchRequest(t)
 	run := newLocalRunner(t)
-	killed := killedClone{Runner: run}
+	killed := killedFetch{Runner: run}
 	if err := Fetch(context.Background(), &killed, req); err == nil || !strings.Contains(err.Error(), "killed mid-transfer") {
-		t.Fatalf("Fetch = %v, want the killed clone's failure", err)
+		t.Fatalf("Fetch = %v, want the killed fetch's failure", err)
 	}
-	if killed.destination == "" {
-		t.Fatal("the stand-in saw no clone")
+	if killed.gitDir == "" {
+		t.Fatal("the stand-in saw no fetch")
 	}
 	cache := filepath.Join(req.Root, "acme", "widgets.git")
-	if killed.destination == cache {
-		t.Fatalf("Fetch cloned straight into %s", cache)
+	if killed.gitDir == cache {
+		t.Fatalf("Fetch filled %s in place", cache)
 	}
-	for _, path := range []string{cache, killed.destination} {
+	for _, path := range []string{cache, killed.gitDir} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("the killed clone left %s behind (%v)", path, err)
+			t.Errorf("the killed fetch left %s behind (%v)", path, err)
 		}
 	}
 
@@ -1496,22 +1604,33 @@ func TestFetchLeavesNoHalfClonedRepositoryAtTheCache(t *testing.T) {
 	}
 }
 
-// killedClone runs every command through Runner but a `git clone`, which it fails as a clone the
-// kernel killed mid-transfer would leave it: a partial repository at its destination, status 137.
-type killedClone struct {
+// killedFetch runs every command through Runner but a fetch from GitHub, which it fails as a fetch
+// the kernel killed mid-transfer would leave it: a partial pack in the repository it fetched into,
+// status 137.
+type killedFetch struct {
 	Runner
-	destination string
+	gitDir string
 }
 
-func (r *killedClone) Run(ctx context.Context, command Command) (Result, error) {
-	if !commandWith(command.Argv, "git", "clone") {
+func (r *killedFetch) Run(ctx context.Context, command Command) (Result, error) {
+	if command.Argv[0] != "git" || !slices.Contains(command.Argv, "fetch") {
 		return r.Runner.Run(ctx, command)
 	}
-	r.destination = command.Argv[len(command.Argv)-1]
-	if err := os.MkdirAll(filepath.Join(r.destination, "objects"), 0o700); err != nil {
+	r.gitDir = gitDirOf(command.Argv)
+	if err := os.WriteFile(filepath.Join(r.gitDir, "objects", "pack", "tmp_pack_killed"), []byte("PACK half a pack\n"), 0o600); err != nil {
 		return Result{}, err
 	}
 	return Result{ExitCode: 137, Stderr: "killed mid-transfer"}, nil
+}
+
+// gitDirOf is the repository a git command line names with --git-dir.
+func gitDirOf(argv []string) string {
+	for _, arg := range argv {
+		if gitDir, ok := strings.CutPrefix(arg, "--git-dir="); ok {
+			return gitDir
+		}
+	}
+	return ""
 }
 
 // A transfer a signal ended after git printed the provisioning token, as a `fatal: unable to
@@ -2262,7 +2381,7 @@ func fillStep(argv []string) string {
 // core.packedGitWindowSize 32m, core.packedGitLimit 256m, pack.windowMemory 64m and
 // core.deltaBaseCacheLimit 64m, every line of them from the command scope: a fill from a repository
 // cache whose pack came without its index, so it indexes, checks, reads GitHub's refs, fetches the
-// delta and sets the clone's refs; the cache's first Fetch, which clones; and the cache's read of
+// delta and sets the clone's refs; the cache's first Fetch, which fills it; and the cache's read of
 // its head and its repack. The fill's `git init` and its `git config` writes of origin open no
 // pack, and are not held to it. The repack here is given `-c` pairs of a caller's own, which come
 // after the four and win for its command: 64m windows, a 512m limit and 256m of window memory.
