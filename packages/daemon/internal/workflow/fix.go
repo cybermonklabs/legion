@@ -325,7 +325,11 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 	if latest != nil {
 		number = latest.Fix + 1
 	}
-	if _, err := claim.BesideBranch(issue.Key, issue.Generation, w.Task, number, claim.RoleImplementer); err != nil {
+	_, err = claim.BesideBranch(issue.Key, issue.Generation, w.Task, number, claim.RoleImplementer)
+	if err == nil && e.failFixName {
+		err = fmt.Errorf("the seam failFixName names no branch beside fix %d", number)
+	}
+	if err != nil {
 		return e.refuseFixName(ctx, tx, pass, check, failure, row, err)
 	}
 	fix := record.TaskFix{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Fix: number, State: record.FixReading,
