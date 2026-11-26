@@ -539,7 +539,7 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 	case stream.PromptResult:
 		return supervise.StreamPromptResult{Claim: ev.Claim, DeliveryID: ev.DeliveryID,
 			AgentInvoked: ev.AgentInvoked, Error: ev.Error, Retryable: ev.Retryable,
-			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model}, nil
+			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model, Code: ev.Code}, nil
 	case stream.LateRefusal:
 		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Replayed: ev.Replayed,
 			ConnSequence: ev.ConnSequence}, nil

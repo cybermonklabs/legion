@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -101,7 +100,7 @@ func loggedCommandOf(t *testing.T, m *Machine, grantID string) []string {
 // as the airlock's in place of a command, since it starts none.
 func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
 	capture := captureRecords(t)
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	const reason = "publish the docs site"
 	requestID, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN", "SECOND_TOKEN")
@@ -249,7 +248,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 
 	t.Run("a-placeholder-the-airlock-handed-out", func(t *testing.T) {
 		capture := captureRecords(t)
-		m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+		m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 		_, grantID := grantOf(t, m, enr, key, "call the API", "AUTO_TOKEN")
 		first, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 		if err != nil || first.Airlock == nil {
