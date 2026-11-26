@@ -1730,12 +1730,12 @@ func daemonPlan() dispatch.PlanWrite {
 }
 
 // daemonScript is K4's script through the daemon's client: one call of each method of
-// internal/dispatch's HTTPClient, its twelve writes and every read, Whoami among them, on the
+// internal/dispatch's HTTPClient, its thirteen writes and every read, Whoami among them, on the
 // daemon's issue of P. The document UploadArtifact writes is named for the run, as the role
 // scripts' documents are, so each run's upload is a first upload, which names no token. The step
 // record PutStep writes is a fresh one at each run of the script, the first write of its run
-// (daemonStep); PutStepRating rates that same record, a retro's, and PutPlan writes a fresh default
-// plan of the run.
+// (daemonStep); PutStepRating rates that same record, a retro's, PutStepExperiment writes its
+// issue's experiment and variant onto it, and PutPlan writes a fresh default plan of the run.
 func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, run string, refs *daemonRefs, since time.Time) []rigWrite {
 	r.t.Helper()
 	ctx := context.Background()
@@ -1779,6 +1779,9 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, run string
 	stepID, step := uuid.NewString(), daemonStep(issueKey, time.Now().UTC())
 	call("PutStep", false, func() error { return client.PutStep(ctx, issueKey, stepID, step) })
 	call("PutStepRating", false, func() error { return client.PutStepRating(ctx, issueKey, stepID, step, daemonRating) })
+	call("PutStepExperiment", false, func() error {
+		return client.PutStepExperiment(ctx, issueKey, stepID, step, dispatch.StepExperiment{Experiment: "memory", Variant: "off"})
+	})
 	call("PutPlan", false, func() error { return client.PutPlan(ctx, issueKey, uuid.NewString(), daemonPlan()) })
 	call("ReleaseClaim", false, func() error { return client.ReleaseClaim(ctx, issueKey) })
 	call("ArtifactSlugs", true, func() error { _, err := client.ArtifactSlugs(ctx, issueKey); return err })
@@ -1902,9 +1905,9 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 			t.Errorf("with the token of %s, the role's %s = %s, and the proxy recorded no write (%+v); want it sent to Dispatch and accepted", rigP, write.write, write.outcome, write.records)
 		}
 	}
-	// The control's four records rows, and the code each is refused with: only a Legion daemon's
+	// The control's five records rows, and the code each is refused with: only a Legion daemon's
 	// session writes them, and other-project-worker is none.
-	refusedRecords := map[string]string{"PutStep": steprecord.CodeWriter, "PutStepRating": steprecord.CodeWriter, "PutPlan": steprecord.CodeWriter, "PutRoleHolders": "ROLE_HOLDER_FORBIDDEN"}
+	refusedRecords := map[string]string{"PutStep": steprecord.CodeWriter, "PutStepRating": steprecord.CodeWriter, "PutStepExperiment": steprecord.CodeWriter, "PutPlan": steprecord.CodeWriter, "PutRoleHolders": "ROLE_HOLDER_FORBIDDEN"}
 	for _, write := range withQ {
 		if write.read {
 			continue
