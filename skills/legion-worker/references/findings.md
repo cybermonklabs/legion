@@ -18,7 +18,7 @@ Search first (`skill://dispatch-first`). An open issue that tracks the problem g
 
 ## Write by a mention
 
-Hand a defect over on Dispatch: a comment that mentions the role that takes it, its first line `Clear defect from <your role token>`. Dispatch delivers the mention and retries it, so check no liveness first. The controller forwards no message from one agent to another. Mention the controller of the project the repository maps to on that project's report issue, or, where a rule sends the defect to another tree, that tree's root architect on its issue. The steps, the comment's form and what to do with each reply the controller writes are in `skill://legion-worker/references/findings-steps.md#write-by-a-mention`: read them before you write.
+Write on Dispatch: a comment that mentions a role. Dispatch delivers the mention and retries it, so check no liveness first. The controller forwards no message from one agent to another. Mention the controller of the project the repository maps to on that project's report issue, or, where a rule sends the defect to another tree, that tree's root architect on its issue. The steps, the comment's form and what to do with each reply the controller writes are in `skill://legion-worker/references/findings-steps.md#write-by-a-mention`: read them before you write.
 
 ## Another agent that needs an action
 
