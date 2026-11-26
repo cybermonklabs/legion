@@ -819,11 +819,11 @@ func (e *Engine) judgeEachVerifying(ctx context.Context, tx pgx.Tx, issues []rec
 // issue that waits for nothing is not told, and a term that stands no more is not named.
 func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []record.Issue) error {
 	now := e.now()
-	for _, listed := range issues {
-		if listed.Phase != phase.Verifying {
+	for _, live := range issues {
+		if live.Phase != phase.Verifying {
 			continue
 		}
-		issue, err := e.store.Issue(ctx, tx, listed.Key)
+		issue, err := e.store.Issue(ctx, tx, live.Key)
 		if err != nil {
 			return err
 		}
