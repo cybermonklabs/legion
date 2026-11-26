@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,6 +143,49 @@ func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 	// implementer filed the follow-up after it.
 	if classed["INFRA-2"] != ClassInTreeAtDesign || classed["INFRA-3"] != ClassInTreeLater {
 		t.Fatalf("the filings are classed %v, want one at design and one later", classed)
+	}
+}
+
+// TestTheTitleReadsSkipTheLegionDaemonsSession: the Legion daemon writes on its issues as
+// `legion-daemon:<PROJECT>` (its role-holder publications among them), a session that stamps no
+// title, so delivery.ResolveSessionTitles would read it to the end of its own events for nothing:
+// its title can never be a WorkerTitle. Neither title read of the metrics' population, the role
+// events' (readRoleEvents) nor the phase work's (legion.readSessionIssues), hands it that session.
+// The read is made on a store that records each statement it sends, and the control is that the
+// title statement is sent at all, naming a session that does stamp a title.
+func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
+	database := corpus(t)
+	for seq, kind := range []string{"issue.role_holders_changed", "issue.updated"} {
+		if _, err := database.Pool.Exec(t.Context(), `insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+			values ('INFRA-2', $1, $2, '{"kind":"session","id":"legion-daemon:INFRA"}'::jsonb, '{}'::jsonb, false, $3)`,
+			100+seq, kind, after(3)); err != nil {
+			t.Fatalf("seed the daemon's %s: %v", kind, err)
+		}
+	}
+	sent := &storetest.SentStatements{}
+	recorded := storetest.SentStore(t, database, sent)
+	if _, err := Read(t.Context(), recorded.Pool, nil, "INFRA", after(-2), after(24)); err != nil {
+		t.Fatalf("read the population: %v", err)
+	}
+	if blind := sent.Blind(); len(blind) != 0 {
+		t.Fatalf("the recorder could not read %v, so a title read may be unseen", blind)
+	}
+	titleReads := 0
+	for _, statement := range sent.Statements() {
+		if !strings.Contains(statement.SQL, "from unnest($1::text[]) s(id)") {
+			continue
+		}
+		titleReads++
+		ids, _ := statement.Text(0)
+		if strings.Contains(ids, "legion-daemon:") {
+			t.Errorf("a title read names the daemon's session: %q", ids)
+		}
+		if !strings.Contains(ids, "s-Legion implementer · INFRA-2") {
+			t.Errorf("a title read names %q, without the implementer whose title the rules read", ids)
+		}
+	}
+	if titleReads < 2 {
+		t.Fatalf("the read sent %d title reads, want at least the role events' and the phase work's", titleReads)
 	}
 }
 

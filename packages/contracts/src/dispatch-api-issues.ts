@@ -290,11 +290,14 @@ export const IssueReleasedEventPayloadSchema = z
 
 export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloadSchema>;
 
-/** One pair of an issue's role holders as Dispatch stores it: a Legion role, the session that
- *  holds it, and the RFC3339 time Dispatch first stored the pair. */
-const RoleHolderRecordSchema = z
-  .strictObject({ role: z.enum(LEGION_ROLES), session: z.string(), recorded_at: z.string() })
+/** One pair of an issue's role holders as Dispatch stores it (`IssueRoleHolderRecord` of the
+ *  route table, which `dispatch-api-owned.ts` holds this schema to): a Legion role, the session
+ *  that holds it, and the time Dispatch first stored the pair. */
+export const IssueRoleHolderRecordSchema = z
+  .strictObject({ role: z.enum(LEGION_ROLES), session: z.string(), recorded_at: z.iso.datetime() })
   .readonly();
+
+export type IssueRoleHolderRecord = z.output<typeof IssueRoleHolderRecordSchema>;
 
 /**
  * `issue.role_holders_changed`: the Legion daemon's publication of an issue's role holders
@@ -309,8 +312,8 @@ const RoleHolderRecordSchema = z
 export const IssueRoleHoldersChangedEventPayloadSchema = z
   .strictObject({
     key: z.string(),
-    holders: z.array(RoleHolderRecordSchema),
-    previous_holders: z.array(RoleHolderRecordSchema),
+    holders: z.array(IssueRoleHolderRecordSchema),
+    previous_holders: z.array(IssueRoleHolderRecordSchema),
   })
   .readonly();
 

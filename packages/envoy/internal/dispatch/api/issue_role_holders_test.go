@@ -150,13 +150,9 @@ type roleHolderEvent struct {
 		Kind string `json:"kind"`
 		ID   string `json:"id"`
 	} `json:"actor"`
-	Notify    bool      `json:"notify"`
-	CreatedAt time.Time `json:"created_at"`
-	Payload   struct {
-		Key             string                  `json:"key"`
-		Holders         []issueRoleHolderRecord `json:"holders"`
-		PreviousHolders []issueRoleHolderRecord `json:"previous_holders"`
-	} `json:"payload"`
+	Notify    bool                   `json:"notify"`
+	CreatedAt time.Time              `json:"created_at"`
+	Payload   issueRoleHoldersChange `json:"payload"`
 }
 
 // roleHolderEvents reads the issue's issue.role_holders_changed events off its event log, oldest

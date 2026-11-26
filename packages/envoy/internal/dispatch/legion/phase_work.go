@@ -134,6 +134,11 @@ func readSessionIssues(ctx context.Context, pool *store.Pool, issues []string) (
 		if err := rows.Scan(&one.issue, &one.session); err != nil {
 			return nil, nil, fmt.Errorf("scan a session that wrote on an issue: %w", err)
 		}
+		// The daemon's own session stamps no title, so it is no Legion role and its title read
+		// would walk every event it wrote (DaemonSession).
+		if DaemonSession(one.session) {
+			continue
+		}
 		written = append(written, one)
 		sessions[one.session] = struct{}{}
 	}

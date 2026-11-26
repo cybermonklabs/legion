@@ -1,6 +1,10 @@
 package legion
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+)
 
 // session_title.go holds the one reading of a Legion session's title. Both halves of the rule
 // that places an issue in a tree ask it — the read of the issues that carry phase work
@@ -89,6 +93,15 @@ func WorkerTitle(title string) (SessionTitle, bool) {
 func RoleSessionWorks(title, issue string) bool {
 	parsed, ok := WorkerTitle(title)
 	return ok && parsed.Works(issue)
+}
+
+// DaemonSession is whether session is the one the Legion daemon of a project writes as,
+// `legion-daemon:<PROJECT>` (ciphertoken.LegionDaemonSessionPrefix). That session stamps no title,
+// so its title is never a WorkerTitle, and a title read handed it would read it to the end of its
+// own events (delivery.ResolveSessionTitles): both reads of the sessions that wrote on the issues
+// (readSessionIssues, metrics.readRoleEvents) leave it out before their title read.
+func DaemonSession(session string) bool {
+	return strings.HasPrefix(session, ciphertoken.LegionDaemonSessionPrefix)
 }
 
 // OfProject is whether the session belongs to the project: a controller by the project it names
