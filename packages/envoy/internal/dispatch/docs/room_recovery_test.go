@@ -853,24 +853,42 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 	}
 }
 
-// A read holding its request-pool connection does not wait for a failed room's eviction. The API
-// pins each ordinary read (store.PinConnection), the artifact, issue and project /text routes
-// among them, so such a read holds one request-pool connection from its first statement to its
-// end; the eviction it would wait for flushes and compacts the document under its advisory lock
-// on a request-pool connection of its own (PgVersioned.withRoomLock). A pinned reader waiting
-// here waits on the pool its own connection is out of, so with the readers holding it the
-// eviction's acquire runs out its bound and the readers run out their deadlines on a room nobody
-// compacted.
-func TestAPinnedReadOfAFailedRoomDoesNotWaitForItsEviction(t *testing.T) {
+// A pinned read of a failed room gives its request-pool connection back while it waits for the
+// room's eviction, and answers the document once the eviction has run. The API pins each ordinary
+// read (store.PinConnection), the artifact, issue and project /text routes among them, so such a
+// read holds one request-pool connection from its first statement on; the eviction it waits for
+// flushes and compacts the document under its advisory lock on a request-pool connection of its
+// own (PgVersioned.withRoomLock). A reader that kept its connection for the wait would wait on the
+// pool its own connection is out of, and a pool full of such readers would leave the eviction's
+// acquire nothing to take. The eviction is held here until the read waits for it
+// (beforeRecoveryWait): the read then holds no connection, and the request pool has none out;
+// once the eviction is let go, the read answers the document's text.
+func TestAPinnedReadOfAFailedRoomGivesItsConnectionBackWhileItWaitsForTheEviction(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	want, _, err := service.TextWithToken(context.Background(), artifactID)
+	if err != nil {
+		t.Fatalf("read the document before its room fails: %v", err)
+	}
 	hold := make(chan struct{})
 	release := sync.OnceFunc(func() { close(hold) })
 	testcleanup.Add(t, release)
 	service.beforeFailedEviction = func(room string) {
 		if room == artifactID {
 			<-hold
+		}
+	}
+	// steps carries the read's wait for the eviction (beforeRecoveryWait), then its answer.
+	type step struct {
+		waiting bool
+		text    string
+		err     error
+	}
+	steps := make(chan step, 2)
+	service.beforeRecoveryWait = func(room string) {
+		if room == artifactID {
+			steps <- step{waiting: true}
 		}
 	}
 	service.failRoom(artifactID, errors.New("test: the room failed"))
@@ -885,8 +903,22 @@ func TestAPinnedReadOfAFailedRoomDoesNotWaitForItsEviction(t *testing.T) {
 		t.Fatal("the read holds no connection, so nothing here is tested")
 	}
 
-	failsFast(t, "a pinned read of a failed room's text", func() error {
-		_, _, err := service.TextWithToken(ctx, artifactID)
-		return err
-	})
+	go func() {
+		text, _, err := service.TextWithToken(ctx, artifactID)
+		steps <- step{text: text, err: err}
+	}()
+	if got := testwait.Receive(t, "the pinned read to wait for its failed room's eviction", steps); !got.waiting {
+		t.Fatalf("a pinned read of a failed room whose eviction is held = %q (%v), want it waiting for the eviction", got.text, got.err)
+	}
+	if store.ConnectionHeld(ctx) {
+		t.Fatal("a pinned read waiting for its failed room's eviction still holds its connection")
+	}
+	requests := service.store.Pool
+	if !testwait.Holds(recoveryBound, time.Millisecond, func() bool { return requests.Stat().AcquiredConns() == 0 }) {
+		t.Fatalf("the request pool has %d connections out while its only read waits for the eviction, want none", requests.Stat().AcquiredConns())
+	}
+	release()
+	if got := testwait.Receive(t, "the pinned read to answer once the eviction was let go", steps); got.waiting || got.err != nil || got.text != want {
+		t.Fatalf("a pinned read of a failed room once its eviction ran = %q (%v), want %q", got.text, got.err, want)
+	}
 }

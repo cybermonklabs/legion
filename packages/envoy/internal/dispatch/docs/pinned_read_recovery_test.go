@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A read of a document whose room failed is answered with the document once the room recovers,
@@ -25,8 +27,9 @@ import (
 // caller as 503 DOC_SERVICE_UNAVAILABLE, which carries no Retry-After and which the dispatch
 // client does not wait out, so the caller gets no document; and a read that waits while it keeps
 // its pinned connection leaves a full pool of such readers with no connection for the eviction to
-// take, so none of them is answered. The eviction is held here until every reader has made its
-// read, then let go.
+// take, so none of them is answered. The eviction is held here until every reader has been
+// answered or is waiting for the room's recovery (beforeRecoveryWait), then let go: a reader that
+// reached the room only after the eviction ended would be answered whatever a pinned read does.
 func TestPinnedReadsOfAFailedRoomWhoseEvictionIsStillRunningAnswerTheDocument(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
@@ -46,6 +49,15 @@ func TestPinnedReadsOfAFailedRoomWhoseEvictionIsStillRunningAnswerTheDocument(t 
 			<-hold
 		}
 	}
+	// A reader counts once it is answered or once it waits for the room's recovery, a wait that,
+	// with the eviction held, ends only when the test lets the eviction go or the reader's deadline
+	// passes.
+	var waiting, answered atomic.Int64
+	service.beforeRecoveryWait = func(room string) {
+		if room == artifactID {
+			waiting.Add(1)
+		}
+	}
 	service.failRoom(artifactID, errors.New("test: the room failed"))
 
 	type answer struct {
@@ -54,7 +66,6 @@ func TestPinnedReadsOfAFailedRoomWhoseEvictionIsStillRunningAnswerTheDocument(t 
 		took time.Duration
 	}
 	answers := make(chan answer, readers)
-	pinned := make(chan struct{}, readers)
 	for range readers {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -63,20 +74,20 @@ func TestPinnedReadsOfAFailedRoomWhoseEvictionIsStillRunningAnswerTheDocument(t 
 			defer end()
 			var one int
 			if err := service.store.Pool.QueryRow(ctx, `select 1`).Scan(&one); err != nil {
-				pinned <- struct{}{}
+				answered.Add(1)
 				answers <- answer{err: fmt.Errorf("take the read's pinned connection: %w", err)}
 				return
 			}
-			pinned <- struct{}{}
 			started := time.Now()
 			text, _, err := service.TextWithToken(ctx, artifactID)
+			answered.Add(1)
 			answers <- answer{text: text, err: err, took: time.Since(started)}
 		}()
 	}
-	for range readers {
-		<-pinned
-	}
-	time.Sleep(300 * time.Millisecond)
+	testwait.Until(t, "every reader to be answered or waiting for the failed room's recovery", func() (string, bool) {
+		w, a := waiting.Load(), answered.Load()
+		return fmt.Sprintf("%d waiting and %d answered of %d readers", w, a, readers), w+a >= int64(readers)
+	})
 	release()
 
 	var refused, wrong int

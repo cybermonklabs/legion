@@ -458,6 +458,11 @@ type Service struct {
 	// closes the room (evictFailed). Nil outside tests; tests use it to close and reload the room
 	// another way first.
 	beforeFailedEviction func(room string)
+	// beforeRecoveryWait runs each time awaitRoomRecovery is about to wait for a failed room's
+	// eviction, with its caller's pinned connection already given back. Nil outside tests; tests
+	// use it to let a held eviction go only once every reader they started waits for it or has
+	// been answered.
+	beforeRecoveryWait func(room string)
 	// beforeRefusedAppendClose runs on the goroutine the append gate's refusal of an append to a
 	// closed issue's document starts (refuseClosedIssueAppend), with the refused instance's mark
 	// taken and before the close runs. Nil outside tests; tests use it to count the closes that
@@ -3575,17 +3580,24 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 // then reloads the persisted document into a new room state. A room without
 // state has nothing to recover, so this lookup must not allocate one.
 //
-// An operation that holds one of the request pool's connections does not wait: it fails with
-// ErrServiceUnavailable. The eviction flushes and compacts the document under its advisory lock
-// on a request-pool connection of its own (PgVersioned.withRoomLock), so the wait would be a
-// connection holder waiting for a connection, which is what store.ErrNestedAcquire exists to
-// prevent. A transaction holds one, and so does a pinned read (store.PinConnection: every
-// ordinary API read, the /text routes among them) between its statements, which the pool hands
-// to nothing else: twenty-eight such readers waiting here hold every connection the eviction's
-// acquire waits for, so it runs out its bound and they run out their deadlines on a room nobody
-// compacted. The transaction's case is worse still, since its lock may be the one the eviction
-// waits for and Postgres cannot see a wait here to break the cycle. Neither does a read whose
-// context WithoutRecoveryWait marked.
+// The eviction flushes and compacts the document under its advisory lock on a request-pool
+// connection of its own (PgVersioned.withRoomLock), so no caller waits here while it holds one of
+// the request pool's connections: that would be a connection holder waiting for a connection,
+// which is what store.ErrNestedAcquire exists to prevent, and twenty-eight such readers would hold
+// every connection the eviction's acquire waits for, so it would run out its bound and they their
+// deadlines on a room nobody compacted. A pinned read (store.PinConnection: every ordinary API
+// read, the /text routes among them) holds its connection between its statements, so it gives that
+// connection back for the wait (store.LetGoOfPinnedConnection) and holds none while it waits; its
+// next statement takes one again. It keeps its admission unit, which the eviction does not need:
+// the eviction takes its connection from the pool directly, and the wait is short. A pinned read
+// with a call still running on its connection cannot give it back, and fails as a holder does.
+//
+// An operation holding a connection it cannot give back fails with ErrServiceUnavailable instead
+// of waiting: one inside a transaction, and one holding a pooled connection other than its pin
+// (store.HoldsPooledConnection: a cursor, a connection it acquired or marked). The transaction's
+// case is worse still, since its lock may be the one the eviction waits for and Postgres cannot
+// see a wait here to break the cycle. A read whose context WithoutRecoveryWait marked fails the
+// same way, without waiting either.
 //
 // A room's own load never calls this: the eviction it would wait for waits for that load
 // (onLoadDocument).
@@ -3600,7 +3612,12 @@ func (s *Service) awaitRoomRecovery(ctx context.Context, room string) error {
 	if failure == nil {
 		return nil
 	}
-	if ledgerFrom(ctx).inTransaction() || store.ConnectionHeld(ctx) {
+	inTransaction := ledgerFrom(ctx).inTransaction()
+	waits := ctx.Value(withoutRecoveryWait{}) == nil
+	if waits && !inTransaction && !store.HoldsPooledConnection(ctx) {
+		store.LetGoOfPinnedConnection(ctx)
+	}
+	if inTransaction || store.ConnectionHeld(ctx) {
 		// A room that stays failed is otherwise visible only in its callers' 503s, which
 		// reach no server log at all: the refusal is what the server knows about the
 		// failure, so it names the room and the cause it refused for.
@@ -3608,9 +3625,12 @@ func (s *Service) awaitRoomRecovery(ctx context.Context, room string) error {
 			"room", room, "error", failure)
 		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
 	}
-	if ctx.Value(withoutRecoveryWait{}) != nil {
+	if !waits {
 		// The caller logs what it went without, which says more than the room alone.
 		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
+	}
+	if s.beforeRecoveryWait != nil {
+		s.beforeRecoveryWait(room)
 	}
 	select {
 	case <-done:
