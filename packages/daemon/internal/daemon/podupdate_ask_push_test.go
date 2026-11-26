@@ -54,12 +54,13 @@ func updateAskOf(t *testing.T, row record.OutboxRow) record.UpdateAsk {
 //
 // It was run red on the executor that published the row's text after checking only the claim and
 // its round: the tester's topic was published the ask naming B, and the claim was marked asked.
-// A read of the push that fails publishes nothing and marks nothing, and the row answers the
-// read's error, so it keeps its retry.
 //
-// The control, kept: a row whose push is the role's push now, the bound branch B while entry A
-// still runs, is published once and marks the claim, so a lane that read no push, or read the
-// zero push, fails it.
+// The control, kept, on a rig of its own: a read of the push that fails publishes nothing and
+// marks nothing, and the row answers the read's error, so it keeps its retry; the row's next
+// attempt, whose read answers, publishes the ask once and marks the claim, since its push is the
+// role's push now, the bound branch B while entry A still runs. So a lane that read no push, or
+// read the zero push, fails it. The two share one rig because the failed read leaves the claim
+// unasked and the row queued, as the next attempt needs them.
 func TestAnUpdateAskIsPublishedOnlyWhileTheRolesPushIsTheOneItNames(t *testing.T) {
 	t.Parallel()
 	bound := besideBranch(t, claim.RoleTester)
@@ -115,20 +116,10 @@ func TestAnUpdateAskIsPublishedOnlyWhileTheRolesPushIsTheOneItNames(t *testing.T
 			t.Fatal("the tester's claim records no ask after the next ask was published, want it marked")
 		}
 	})
-	t.Run("control: an ask whose push is the role's push now is published once and marks the claim", func(t *testing.T) {
+	t.Run("control: a failed read publishes nothing, and the next attempt publishes the ask whose push is the role's now", func(t *testing.T) {
 		t.Parallel()
 		rig, row := queued(t)
-		rig.runAsk(row)
-		if n := rig.deliveredTo(claim.RoleTester); n != 1 {
-			t.Fatalf("the ask naming %s while entry A still runs bound to it was published %d times, want once", bound, n)
-		}
-		if c := rig.claimOf(claim.RoleTester); c.UpdateTaskedAt == nil {
-			t.Fatal("the tester's claim records no ask after the ask was published, want it marked")
-		}
-	})
-	t.Run("a read of the push that fails publishes nothing and answers the read's error", func(t *testing.T) {
-		t.Parallel()
-		rig, row := queued(t)
+		read := rig.lane.updatePushes
 		down := errors.New("the store did not answer")
 		rig.lane.updatePushes = func(context.Context, string) (map[claim.Role]supervise.UpdatePush, error) { return nil, down }
 		var err error
@@ -138,13 +129,22 @@ func TestAnUpdateAskIsPublishedOnlyWhileTheRolesPushIsTheOneItNames(t *testing.T
 			return !errors.Is(err, wait.ErrWaiting)
 		})
 		if !errors.Is(err, down) {
-			t.Fatalf("the ask whose read of the push failed answers %v, want the read's error, so the row keeps its retry", err)
+			t.Errorf("the ask whose read of the push failed answers %v, want the read's error, so the row keeps its retry", err)
 		}
 		if n := rig.deliveredTo(claim.RoleTester); n != 0 {
-			t.Fatalf("the ask whose read of the push failed was published %d times, want none", n)
+			t.Errorf("the ask whose read of the push failed was published %d times, want none", n)
 		}
 		if c := rig.claimOf(claim.RoleTester); c.UpdateTaskedAt != nil {
-			t.Fatalf("the tester's claim records the ask at %v, want it unasked", c.UpdateTaskedAt)
+			t.Errorf("the tester's claim records the ask at %v after a failed read, want it unasked", c.UpdateTaskedAt)
+		}
+
+		rig.lane.updatePushes = read
+		rig.runAsk(row)
+		if n := rig.deliveredTo(claim.RoleTester); n != 1 {
+			t.Fatalf("the ask naming %s while entry A still runs bound to it was published %d times, want once", bound, n)
+		}
+		if c := rig.claimOf(claim.RoleTester); c.UpdateTaskedAt == nil {
+			t.Fatal("the tester's claim records no ask after the ask was published, want it marked")
 		}
 	})
 }
