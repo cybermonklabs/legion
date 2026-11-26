@@ -830,6 +830,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	w.admission.UseReleasedWakes(func(ctx context.Context, tx pgx.Tx, claims []supervise.Claim) ([]workflow.ReleasedWake, error) {
 		return strandedReleaseWakes(ctx, st, tx, releaseToken, claims, clock().UTC())
 	})
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
 	// The mirror runs before both deciders, and that order is load-bearing (admit.Handlers). The
 	// engine decides whether to start a child and admission whether to admit a root inside this
 	// same transaction, from the mirror's rows, so the row an event carries must already be

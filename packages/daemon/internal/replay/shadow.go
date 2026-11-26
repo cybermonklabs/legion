@@ -52,7 +52,7 @@ type shadow struct {
 	approvalsMoved int
 	// priorities, where set, is the priority Dispatch resolves for each issue, which the copy shows
 	// as each issue's priority in place of its own under a rule with the new P0 start
-	// (record.SlotRule.P0AboveCap), so the daemon's mirror holds it (record.Issue.Priority): each
+	// (record.SlotRule.StartsNow), so the daemon's mirror holds it (record.Issue.Priority): each
 	// issue of the project at the one standing at each write of its payload (showPriority), at the
 	// window's start (showPrioritiesBefore), and at each change of it that no event of the issue
 	// makes (priorityWrite). It is the one place a replay supplies the daemon the resolved

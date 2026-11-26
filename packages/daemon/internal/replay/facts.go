@@ -21,8 +21,8 @@ import (
 // this package's: the mirror and the engine do nothing for it. Admission runs its pass on every
 // replay fact whatever its transaction wrote (ownFact, registered with admit's UsePassFacts),
 // since each stands for a change the replayed daemon made outside the facts the replay applies
-// (a change of the P0 bound, a claim its supervisor settled, a mark or a refusal it kept) and
-// several write no record of the project, so the pass rule would run none for them.
+// (a claim its supervisor settled, a mark or a refusal it kept) and several write no record of the
+// project, so the pass rule would run none for them.
 type replayFact struct{ intake.EntrySweep }
 
 // replayOwn marks a fact of this package (ownFact).
@@ -90,18 +90,6 @@ type HeldSignOff struct {
 // start under a rule whose start may take a cover, and the handler does nothing under any other.
 type FirstBoot struct {
 	replayFact
-}
-
-// P0BoundChanged is a change of R10's P0 bound the window records (Window.P0Bounds), applied at its
-// moment: the daemon makes an admission pass at each change of the bound, so a raise starts the P0
-// issues it lets in at once (cybermonklabs/legion#5488), and the replay makes that pass with this
-// fact, which no handler of the chain reads but admission, whose pass runs under the bound in force
-// from that moment (p0BoundAt). Under a rule that starts no P0 issue outside the cap the pass finds
-// what the one before it found. At the forward merge that brings #5488 the replay applies that
-// change's own fact in its place.
-type P0BoundChanged struct {
-	replayFact
-	Bound int
 }
 
 // replayHandler is the handler a replay puts before the daemon's chain (admit.Handlers) for the
@@ -256,6 +244,7 @@ var FactSources = map[string]FactSource{
 	// ClaimFailed facts: a process can die or fail to start without exhausting the claim's budget.
 	"ClaimFailed":       {Way: FactInjected, From: "each recorded `supervise: claim failed`, at its offset in the segment of the failed claim's issue"},
 	"ProjectResumed":    {Way: FactInjected, From: "each recorded `pause: the project is resumed`, after the replay's own resume of its pause"},
+	"P0BoundChanged":    {Way: FactInjected, From: "each change of R10's P0 bound the window records (Window.P0Bounds), at its moment, as the operator's set of the bound to the change's number; the change in force at the window's start is written into the start state with no pass of its own"},
 	"PullRequestMerged": {Way: FactInjected, From: "a recorded move by pull_request_merged, at the end of its merging segment, or, where the close waited for the issues beneath it, the visit's first recorded `workflow: a merged issue's close waits for the issues beneath it`, at the end of its merging segment, which ends there; on the replay's own pull request record of the issue"},
 
 	// The API's facts that no recorded window holds, each with the act that makes it.

@@ -319,7 +319,7 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 		return err
 	}
 	for _, part := range ws.parts {
-		if !part.rule.OrMain().P0AboveCap || len(rec.MissingAncestors) == 0 {
+		if !part.rule.OrMain().StartsNow || len(rec.MissingAncestors) == 0 {
 			continue
 		}
 		in, err := inputs()
@@ -660,7 +660,7 @@ func ReadRuns(dirs ...string) (Runs, error) {
 					return Runs{}, fmt.Errorf("replay: the part of %s under %s is in both %s and %s", key.window, key.rule, other, dir)
 				}
 				found[key] = dir
-				if ruled, kept := record.SlotRuleNamed(key.rule); kept && ruled.P0AboveCap && len(rec.MissingAncestors) > 0 {
+				if ruled, kept := record.SlotRuleNamed(key.rule); kept && ruled.StartsNow && len(rec.MissingAncestors) > 0 {
 					return Runs{}, fmt.Errorf("replay: the runs hold a part of %s under %s, a rule with the new P0 start, and the window lacks the history of the Dispatch ancestors %s, "+
 						"on which the priority that rule starts, orders and counts by rests; no report reads such a part (spec R10)", key.window, key.rule,
 						strings.Join(rec.MissingAncestors, ", "))

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // WindowFormat is the version of the recorded window's layout this package reads and writes,
@@ -581,8 +582,9 @@ func heldInputs(files map[string]string) map[string]bool {
 // checkSignals refuses a record of the signals no reader could trust: a signal the signals map
 // names that is none of R11's, a span that is empty, spans of one signal out of order or
 // overlapping, a record of the kills with no launcher log, of the provider with no provider
-// record or of the queue with no queue file, and a P0 bound below zero. held says which inputs
-// the window holds, by their kind (inputOf): launcherFile, providerFile and queueDir, a queue file
+// record or of the queue with no queue file, and a P0 bound the daemon's store would refuse
+// (store.ValidP0Bound). held says which inputs the window holds, by their kind (inputOf):
+// launcherFile, providerFile and queueDir, a queue file
 // of any repository. Its refusal names the files by the names window.json gives them.
 func (w Window) checkSignals(held map[string]bool) error {
 	for _, signal := range slices.Sorted(maps.Keys(w.Signals)) {
@@ -607,8 +609,8 @@ func (w Window) checkSignals(held map[string]bool) error {
 		}
 	}
 	for _, bound := range w.P0Bounds {
-		if bound.Bound < 0 {
-			return fmt.Errorf("the P0 bound %d from %s is below zero", bound.Bound, stamp(bound.At))
+		if !store.ValidP0Bound(bound.Bound) {
+			return fmt.Errorf("the P0 bound %d from %s is no bound the daemon holds: a bound is %s", bound.Bound, stamp(bound.At), store.P0BoundRange)
 		}
 	}
 	return nil

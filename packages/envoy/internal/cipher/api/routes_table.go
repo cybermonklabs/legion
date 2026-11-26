@@ -697,12 +697,14 @@ func routes() []apiRoute {
 		// spends no rate-limit bucket, since every page it dresses is read before anyone has
 		// signed in and the bytes are the binary's.
 		{http.MethodGet, "/approve/assets/approve.css", public((*server).approvalStylesheet)},
-		// Report whether the broker can reach its database. From SIGTERM onward it answers 503
-		// SHUTTING_DOWN instead (Deps.Draining) while the process goes on serving every other route,
-		// which is what takes a stopping pod out of its Service's endpoints before it stops
-		// accepting connections. So this is a readiness probe and must never be used as a liveness
-		// probe: a liveness probe on it would have the kubelet kill the container in the middle of
-		// the drain, dropping the requests the pod was draining.
+		// Report whether the broker can reach its database, and, where it runs the proxy, whether
+		// the proxy holds an intermediate to sign with: 503 NO_INTERMEDIATE while it does not
+		// (Deps.ProxyReady). From SIGTERM onward it answers 503 SHUTTING_DOWN instead
+		// (Deps.Draining) while the process goes on serving every other route, which is what takes
+		// a stopping pod out of its Service's endpoints before it stops accepting connections. So
+		// this is a readiness probe and must never be used as a liveness probe: a liveness probe on
+		// it would have the kubelet kill the container in the middle of the drain, dropping the
+		// requests the pod was draining, and kill a pod still asking for its first intermediate.
 		{http.MethodGet, "/healthz", public((*server).healthz)},
 		// Read the NATS writer hold's row: its gen, phase, hold id, reason, who wrote it and when,
 		// and the time the operator signed it with its signature, which the operator's commands

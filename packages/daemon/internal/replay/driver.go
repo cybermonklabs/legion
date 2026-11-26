@@ -417,10 +417,6 @@ func (d *driver) newChain(at time.Time) {
 	d.admission.UseStalledTreeNotice(time.Duration(w.StalledTreeNotice))
 	d.admission.UseWorkerSilence(time.Duration(w.WorkerSilence), time.Duration(w.WorkerBackground))
 	d.admission.UsePassObserver(d.observePass)
-	// R10's P0 bound in force at the moment of each pass, from the window's record of its changes
-	// (p0BoundAt): a rule that starts a P0 issue outside the cap admits under it, and every other
-	// rule reads it not at all.
-	d.admission.UseP0Bound(func() *int { return p0BoundAt(w, d.clock.Instant()) })
 	// R11's signals as the replay reads them (readSignals), which a pass admits below P0 by under a
 	// rule whose mode is not Off and reads not at all under any other.
 	d.admission.UseSignals(d.readSignals)
@@ -465,18 +461,28 @@ func capAt(w Window, at time.Time) int {
 	return limit
 }
 
-// p0BoundAt is R10's P0 bound w's daemon ran with at at: the last change at or before it, nil for
-// no bound where at is before every change or the window records none (Window.P0Bounds). The
-// daemon's bound has no value unless its configuration gives one, and the window records each
-// change from the daemon's line of it, so before the first change no bound stands.
-func p0BoundAt(w Window, at time.Time) *int {
-	var bound *int
+// p0BoundChange is change, a change of R10's P0 bound w's daemon made, as the daemon's store records
+// it (store.P0BoundChange): a set of the bound to the change's number at its moment, by the
+// operator, the one actor that needs no session, since the daemon's line of a change names the bound
+// it set and the window keeps no more of it (Window.P0Bounds). The replay's admission reads the
+// bound in force as the daemon's does (admit's p0BoundAt), with no bound configured, as the
+// window's daemon ran with none until its first change.
+func p0BoundChange(change BoundAt) store.P0BoundChange {
+	return store.P0BoundChange{Mode: store.P0BoundSet, Bound: change.Bound, By: store.PauseActor{Kind: store.PauseByOperator},
+		Reason: "the record's change of the P0 bound", At: change.At}
+}
+
+// p0BoundBefore is the last change of R10's P0 bound w records before at, and whether w records
+// one (Window.P0Bounds): the bound w's daemon ran with at at, where w records a change before it.
+func p0BoundBefore(w Window, at time.Time) (BoundAt, bool) {
+	var last BoundAt
+	found := false
 	for _, change := range w.P0Bounds {
-		if !change.At.After(at) {
-			bound = &change.Bound
+		if change.At.Before(at) {
+			last, found = change, true
 		}
 	}
-	return bound
+	return last, found
 }
 
 // processCap is the admission cap the daemon process running from at served under (capOfProcess),
@@ -936,13 +942,15 @@ func (d *driver) run() error {
 		}
 	}
 	// Each change of R10's P0 bound the window records runs a pass at its moment, as the daemon's
-	// change of the bound does (P0BoundChanged).
+	// change of the bound does: the daemon's own fact of the change (intake.P0BoundChanged), which
+	// admission records and admits under from that pass on (p0BoundChange). The bound in force at
+	// the window's start is the start state's (seed).
 	for _, change := range w.P0Bounds {
 		if change.At.Before(w.From) || !change.At.Before(end) {
 			continue
 		}
 		d.push(&item{at: change.At, class: classAct, rec: change.At, order: lineOrder, run: func() error {
-			_, err := d.apply("replay", d.factID("p0-bound", change.Bound), P0BoundChanged{Bound: change.Bound})
+			_, err := d.apply("replay", d.factID("p0-bound", change.Bound), intake.P0BoundChanged{Change: p0BoundChange(change)})
 			return err
 		}})
 	}
@@ -1136,7 +1144,9 @@ func (d *driver) queuePriorityChanges() {
 // stands in (firstSlotBefore, keepFirstSlot), the start state holding no slot's moment once the
 // slot went back; and under a rule that places it by arrival it keeps each issue's arrival, the
 // record's entry of the run it stands in (arrivalBefore, keepArrival), which no record of the start
-// state carries.
+// state carries. The P0 bound in force at the start, the last change the window records before it
+// (p0BoundBefore), is written as the daemon's store keeps it, with no pass of its own: the start
+// state is what that change's pass left.
 func (d *driver) seed() error {
 	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		seeded := withRanks(d.trace, d.shadow.ranks)
@@ -1144,6 +1154,13 @@ func (d *driver) seed() error {
 		report, err := SeedAndReport(ctx, tx, d.records, d.st, d.engine, seeded, d.window.From)
 		if err != nil {
 			return err
+		}
+		if change, found := p0BoundBefore(d.window, d.window.From); found {
+			bound := p0BoundChange(change)
+			bound.Project = d.window.Project
+			if _, err := store.RecordP0BoundChangeTx(ctx, tx, bound); err != nil {
+				return fmt.Errorf("replay: write the P0 bound in force at the window's start: %w", err)
+			}
 		}
 		d.unplaced = report.Unplaced
 		for number, turns := range report.LeftOut {

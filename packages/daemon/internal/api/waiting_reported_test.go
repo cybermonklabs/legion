@@ -257,8 +257,10 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "slots", "trees", "waiting"}; !slices.Equal(got, want) {
-		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change", got, want)
+	// The projection gives `p0Holders` on every state (the P0 start's entry); `p0Bound` is the daemon's
+	// source's, which this test's source is not.
+	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "p0Holders", "slots", "trees", "waiting"}; !slices.Equal(got, want) {
+		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change, and the P0 holders", got, want)
 	}
 
 	var state api.State

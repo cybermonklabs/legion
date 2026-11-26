@@ -31,7 +31,7 @@ func (a *Admission) UseSignals(read func(ctx context.Context, tx pgx.Tx, at time
 }
 
 // passGate is what one admission pass reads once, before it judges the line, and every judgement
-// of the pass shares: the P0 bound in force (UseP0Bound), the kind of the fact whose pass it is,
+// of the pass shares: the P0 bound in force (p0BoundAt), the kind of the fact whose pass it is,
 // and the signals it admits below P0 by (UseSignals) with whether admission by signals is on.
 type passGate struct {
 	p0Bound   *int
@@ -40,10 +40,14 @@ type passGate struct {
 	snapshot  signals.Snapshot
 }
 
-// gateFor reads the pass's gate for a pass of kind, at the admission's clock, reading the signals
-// through the pass's transaction tx.
+// gateFor reads the pass's gate for a pass of kind, at the admission's clock: the P0 bound and the
+// signals, each through the pass's transaction tx.
 func (a *Admission) gateFor(ctx context.Context, tx pgx.Tx, kind signals.PassKind) (passGate, error) {
-	gate := passGate{p0Bound: a.p0BoundNow(), kind: kind}
+	bound, err := a.p0BoundAt(ctx, tx)
+	if err != nil {
+		return passGate{}, err
+	}
+	gate := passGate{p0Bound: bound, kind: kind}
 	if a.signalRead == nil {
 		return gate, nil
 	}
