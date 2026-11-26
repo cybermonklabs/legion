@@ -161,11 +161,27 @@ type relabelRule struct {
 	regex        *regexp.Regexp
 }
 
+// TestMetricNameSourceLabels holds the boundary between exporter labels the model sees and the
+// target labels Managed Prometheus adds later. Removing metricNameSourceLabels' exact check lets a
+// target label pass and makes this test fail.
+func TestMetricNameSourceLabels(t *testing.T) {
+	require.True(t, metricNameSourceLabels([]any{"__name__"}))
+	require.False(t, metricNameSourceLabels([]any{"job"}))
+	require.False(t, metricNameSourceLabels([]any{"__name__", "job"}))
+}
+
+// metricNameSourceLabels is whether sourceLabels is the one exporter label the model applies.
+func metricNameSourceLabels(sourceLabels any) bool {
+	labels, ok := sourceLabels.([]any)
+	return ok && len(labels) == 1 && labels[0] == "__name__"
+}
+
 // hubMetricRelabeling is the namespace and name of the PodMonitoring the hub registers under m, as
 // <namespace>/<name>, and the metricRelabeling of its one endpoint, none when it has none. It
-// fails the test on a rule applyRelabeling does not apply as Prometheus does: an action other than
-// drop or keep, a field other than action, sourceLabels and regex, or a rule that leaves one of the
-// three unset or its regex empty.
+// accepts only drop and keep rules whose fields are action, sourceLabels and regex, and whose
+// sourceLabels are exactly [__name__]: the model sees exporter labels, not target labels Managed
+// Prometheus adds after scraping. It also refuses a rule that leaves action, sourceLabels or regex
+// unset or its regex empty.
 func hubMetricRelabeling(t *testing.T, m *pulumitest.Mocks) (string, []relabelRule) {
 	t.Helper()
 	podMonitoring := m.One(t, podMonitoringType).Inputs.Mappable()
@@ -189,12 +205,15 @@ func hubMetricRelabeling(t *testing.T, m *pulumitest.Mocks) (string, []relabelRu
 		}
 		action, _ := fields["action"].(string)
 		require.Contains(t, []string{"drop", "keep"}, action, "the test applies drop and keep alone: %v", fields)
-		require.IsType(t, []any{}, fields["sourceLabels"], "the test applies rules that list their sourceLabels: %v", fields)
+		sourceLabels := fields["sourceLabels"]
+		require.True(t, metricNameSourceLabels(sourceLabels),
+			"the model has only the exporter's metric name, not target labels Managed Prometheus adds: %v", fields)
+		labels := stringList(t, sourceLabels)
 		pattern, _ := fields["regex"].(string)
 		require.NotEmpty(t, pattern, "the test applies rules that set a regex: %v", fields)
 		regex, err := regexp.Compile("^(?:" + pattern + ")$")
 		require.NoError(t, err, "the rule's regex compiles as the collectors anchor it: %v", fields)
-		rules = append(rules, relabelRule{drop: action == "drop", sourceLabels: stringList(t, fields["sourceLabels"]), regex: regex})
+		rules = append(rules, relabelRule{drop: action == "drop", sourceLabels: labels, regex: regex})
 	}
 	return name, rules
 }
