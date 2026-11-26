@@ -113,6 +113,9 @@ type idleWakeRig struct {
 	issues []idleRigIssue
 	// daemonLog is where a copy of the daemon's log is kept.
 	daemonLog *os.File
+	// logWriter is where the daemon and its Sandbox runtime write their lines: logs, and the copy
+	// in daemonLog. boot sets it before the daemon starts, and newRuntime reads it.
+	logWriter io.Writer
 	// baseline is how many tasks each role had been given when markPrompts was called, so a
 	// subtest counts the tasks a wake gave and not the phase start the daemon's boot gave.
 	baseline map[string]int
@@ -453,7 +456,8 @@ func (r *idleWakeRig) boot() {
 	// sees a failure the stop itself raised. Taken in the goroutine, it would usually be
 	// registered after r.stopDaemon and so run before it, printing a log that ends where the
 	// shutdown begins, or none at all when the stop is what failed.
-	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	r.logWriter = io.MultiWriter(r.logs, r.logFile())
+	logger := slog.New(slog.NewJSONHandler(r.logWriter, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
 			listen: heldListen, streamListen: heldSocketListen(r.streamSocket, r.cfg.WorkerStreamPort),
@@ -594,7 +598,9 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	r.built.address = address
 	r.built.mu.Unlock()
 	k := *r.cfg.Runtime.Kubernetes
-	opts, err := sandboxOptions(r.cfg, k, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), slog.New(slog.NewJSONHandler(r.logs, nil)))
+	// The runtime's lines go where the daemon's do, so the copy of the log a failure prints holds
+	// them too, such as the line of a start that waits for its slot's gh files.
+	opts, err := sandboxOptions(r.cfg, k, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), slog.New(slog.NewJSONHandler(r.logWriter, nil)))
 	if err != nil {
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
