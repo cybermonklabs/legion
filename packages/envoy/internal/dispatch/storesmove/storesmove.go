@@ -11,7 +11,7 @@
 // not. Migration 20261126000300_stores_moved writes what the move needs that is bounded: its
 // record, stores_moved_seqs, and the supertag nodes priority, step and plan.
 //
-// It runs in four steps, each on the move's own connection (store.Connect), which carries the
+// It runs in five steps, each on the move's own connection (store.Connect), which carries the
 // writer mark every connection of this build carries (store.StoresMovedWriterSetting):
 //
 //   - One runner. It takes the session advisory lock stores-moved and holds it until the move
@@ -29,6 +29,12 @@
 //   - The census before the drop: both directions, counted and digested, for each store apart, under
 //     the swap's locks. On a difference the swap rolls back before any drop, and Move answers a
 //     *DifferenceError naming the store and the first row that differs.
+//   - The analyze. After the swap commits, this runner's connection runs `analyze graph_tuples`,
+//     which fills the extended statistics graph_tuples_kinds
+//     (20261126000700_graph_tuples_kinds_statistics) that the planner estimates the `advances`
+//     tuples by. They hold nothing until an analyze, and leaving it to autovacuum would leave this
+//     build's and the release before's `advances` reads on a 1-row estimate after the move. A
+//     failure ends the boot with an error.
 //
 // The pre-deploy census rehearses the copy and the census before the drop in one transaction that
 // it rolls back (Rehearse, rehearse.go), so a difference stops a deploy before the old pod stops.
@@ -129,7 +135,9 @@ type Result struct {
 // database's four names are views already or gone, on a connection of its own to the database
 // databaseURL names. It answers ErrStopped where Options.StopAfter stopped it, and a
 // *DifferenceError where the census before the drop read a difference, with the four tables and
-// the record standing as they were; every error it answers ends the boot.
+// the record standing as they were; every error it answers ends the boot. Where this runner's swap
+// committed, it ends with `analyze graph_tuples`, so the extended statistics graph_tuples_kinds
+// hold what the planner estimates the `advances` tuples by before the process listens.
 func Move(ctx context.Context, databaseURL string, options Options) (*Result, error) {
 	conn, err := store.Connect(ctx, databaseURL, applicationName)
 	if err != nil {
@@ -174,6 +182,14 @@ func Move(ctx context.Context, databaseURL string, options Options) (*Result, er
 	for _, line := range result.Census.Lines() {
 		slog.Info("dispatch: the census before the drop: " + line)
 	}
+	// The extended statistics object graph_tuples_kinds (20261126000700_graph_tuples_kinds_statistics)
+	// holds nothing until an analyze runs over graph_tuples, and leaving it to autovacuum leaves
+	// this build's and the release before's `advances` reads on a 1-row estimate after the move.
+	analyzeStarted := time.Now()
+	if _, err := conn.Exec(ctx, `analyze graph_tuples`); err != nil {
+		return nil, fmt.Errorf("the stores' move: analyze graph_tuples: %w", err)
+	}
+	slog.Info("dispatch: the stores' move analyzed graph_tuples", "took", time.Since(analyzeStarted).String())
 	slog.Info("dispatch: the move of the priority store and the workflow store into the graph store ended",
 		"copied", result.Copied, "batches", result.Batches, "swap_copied", result.SwapCopied,
 		"swap_attempts", result.SwapAttempts, "took", time.Since(started).String())

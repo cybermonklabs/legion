@@ -64,7 +64,14 @@ import (
 //   - lock table, in any mode: it takes a lock and reads no row. The lock is held to the end of
 //     the migration, whose every other statement must be one of these kinds for it to be exempt,
 //     so the time it is held does not grow with the table either, and the runner's lock_timeout
-//     bounds its wait as it bounds every statement's.
+//     bounds its wait as it bounds every statement's;
+//   - create statistics, of any form: it takes SHARE UPDATE EXCLUSIVE on its table and writes
+//     pg_statistic_ext, reading no row of the table; the statistics themselves are populated only
+//     when a later ANALYZE runs;
+//   - alter statistics … set statistics (AlterStatsStmt): it updates stxstattarget in
+//     pg_statistic_ext alone, taking no table lock and reading no row of any table (ALTER
+//     STATISTICS … RENAME / OWNER TO / SET SCHEMA parse as RenameStmt, AlterOwnerStmt and
+//     AlterObjectSchemaStmt, none of which is admitted here).
 //
 // CREATE TABLE … AS and CREATE MATERIALIZED VIEW parse as CreateTableAsStmt, and SELECT … INTO as
 // SelectStmt: each fills a table with the rows its query reads, and neither node is here.
@@ -90,6 +97,8 @@ var catalogOnlyStatements = map[string]func(c *classifier, node json.RawMessage)
 	"IndexStmt":          (*classifier).catalogOnlyIndex,
 	"ViewStmt":           always("create view"),
 	"LockStmt":           always("lock table"),
+	"CreateStatsStmt":    always("create statistics"),
+	"AlterStatsStmt":     always("alter statistics"),
 }
 
 // classifier is what tableSizeExemption holds while it judges the statements of one migration, in
@@ -779,8 +788,9 @@ func timeoutSetting(name string) bool {
 //     SELECT … INTO is not on the list (selectInto): it creates a table and fills it with the rows
 //     its query reads, as CREATE TABLE … AS does, and the list holds neither form of a table that
 //     a query fills;
-//   - LOCK TABLE, CREATE TRIGGER and CREATE INDEX, none of which makes or changes a type or a
-//     function;
+//   - LOCK TABLE, CREATE TRIGGER, CREATE INDEX, CREATE STATISTICS and ALTER STATISTICS … SET
+//     STATISTICS, none of which makes or changes a type, a function, a cast, a schema or a
+//     setting;
 //   - CREATE TABLE and CREATE VIEW, with or without OR REPLACE, of a name that pg_catalog holds as
 //     the name of no type (catalogTypeName). The new row type can hide a type of its name in a
 //     later schema of the search_path, which the census then reads in its place. But no cast
@@ -882,13 +892,14 @@ func (c *classifier) keepsReadsOn(s statement, setConfig bool) (bool, error) {
 
 // listedKind says whether statement s is of a kind on the keep-on list (keepsReadsOn lists the
 // kinds), as its parse node shows with no catalog read: an INSERT, an UPDATE, a DELETE, a LOCK
-// TABLE, a CREATE TRIGGER, a CREATE INDEX, a CREATE TABLE and a CREATE VIEW, a SELECT without INTO,
-// an ALTER TABLE of a table or an index with no subcommand of CASCADE, a RENAME COLUMN of a table,
-// a DROP INDEX, DROP TRIGGER, DROP FUNCTION, DROP TABLE or DROP VIEW with RESTRICT, and a CREATE
-// FUNCTION or CREATE PROCEDURE in plpgsql or sql. A node it cannot read is off the list.
+// TABLE, a CREATE TRIGGER, a CREATE INDEX, a CREATE STATISTICS, an ALTER STATISTICS … SET
+// STATISTICS, a CREATE TABLE and a CREATE VIEW, a SELECT without INTO, an ALTER TABLE of a table
+// or an index with no subcommand of CASCADE, a RENAME COLUMN of a table, a DROP INDEX, DROP
+// TRIGGER, DROP FUNCTION, DROP TABLE or DROP VIEW with RESTRICT, and a CREATE FUNCTION or CREATE
+// PROCEDURE in plpgsql or sql. A node it cannot read is off the list.
 func (c *classifier) listedKind(s statement) bool {
 	switch s.node {
-	case "InsertStmt", "UpdateStmt", "DeleteStmt", "LockStmt", "CreateTrigStmt", "IndexStmt", "CreateStmt", "ViewStmt":
+	case "InsertStmt", "UpdateStmt", "DeleteStmt", "LockStmt", "CreateTrigStmt", "IndexStmt", "CreateStatsStmt", "AlterStatsStmt", "CreateStmt", "ViewStmt":
 		return true
 	case "SelectStmt":
 		return !selectInto(s.body)
@@ -1516,4 +1527,4 @@ const ddlEventTriggersQuery = `
 	select coalesce(string_agg(evtname, ', ' order by evtname), '')
 	from pg_event_trigger
 	where evtenabled <> 'D' and evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
-		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER', 'DROP INDEX', 'ALTER TABLE', 'CREATE INDEX', 'CREATE TABLE', 'CREATE VIEW', 'DROP TABLE'])`
+		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER', 'DROP INDEX', 'ALTER TABLE', 'CREATE INDEX', 'CREATE TABLE', 'CREATE VIEW', 'DROP TABLE', 'CREATE STATISTICS', 'ALTER STATISTICS'])`

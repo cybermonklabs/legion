@@ -10,6 +10,7 @@ package storesmovetest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -287,4 +288,55 @@ func Write(t testing.TB, db Execer) Fixtures {
 	}, nil, daemon, minute(41))
 	f.Runs, f.Plans = append(f.Runs, f.RunWithNoProject), append(f.Plans, f.PlanWithNoProject)
 	return f
+}
+
+// KindsStatistics is what pg_stats_ext holds for graph_tuples_kinds
+// (20261126000700_graph_tuples_kinds_statistics): whether the object stands, whether an ANALYZE has
+// populated its MCV list, and whether that list holds (issue, advances, priority) and at what
+// frequency.
+type KindsStatistics struct {
+	Stands       bool
+	Analyzed     bool
+	HasAdvances  bool
+	AdvancesFreq float64
+}
+
+// String describes the reading in one phrase, for test logs.
+func (k KindsStatistics) String() string {
+	switch {
+	case !k.Stands:
+		return "graph_tuples_kinds does not stand"
+	case !k.Analyzed:
+		return "graph_tuples_kinds stands, most_common_vals is null"
+	case !k.HasAdvances:
+		return "graph_tuples_kinds stands, most_common_vals is populated without (issue, advances, priority)"
+	default:
+		return fmt.Sprintf("graph_tuples_kinds holds (issue, advances, priority) in most_common_vals at frequency %.6f", k.AdvancesFreq)
+	}
+}
+
+// ReadKindsStatistics reads graph_tuples_kinds from pg_statistic_ext and pg_stats_ext in the
+// current schema.
+func ReadKindsStatistics(t testing.TB, db Execer) KindsStatistics {
+	t.Helper()
+	var got KindsStatistics
+	var freq *float64
+	if err := db.QueryRow(context.Background(), `
+		select
+			exists (select from pg_statistic_ext where stxname = 'graph_tuples_kinds' and stxnamespace = current_schema()::regnamespace),
+			exists (select from pg_stats_ext where statistics_schemaname = current_schema() and statistics_name = 'graph_tuples_kinds' and most_common_vals is not null),
+			(select s.most_common_freqs[i]
+			 from pg_stats_ext s, generate_subscripts(s.most_common_vals, 1) as i
+			 where s.statistics_schemaname = current_schema() and s.statistics_name = 'graph_tuples_kinds'
+			   and s.most_common_vals[i][array_position(s.attnames, 'from_kind')] = 'issue'
+			   and s.most_common_vals[i][array_position(s.attnames, 'kind')] = 'advances'
+			   and s.most_common_vals[i][array_position(s.attnames, 'to_kind')] = 'priority'
+			 limit 1)
+	`).Scan(&got.Stands, &got.Analyzed, &freq); err != nil {
+		t.Fatalf("read graph_tuples_kinds statistics: %v", err)
+	}
+	if freq != nil {
+		got.HasAdvances, got.AdvancesFreq = true, *freq
+	}
+	return got
 }

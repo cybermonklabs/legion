@@ -610,6 +610,14 @@ func TestTheLockAuditAcceptsWhatTheCensusReads(t *testing.T) {
 			first:  "create table things (id integer, kind text); create table others (id integer)",
 			second: "do $$ begin if exists (select 1 from things) then update others set id = 2; end if; end $$",
 		},
+		"create statistics on a table": {
+			first:  "create table things (id integer, kind text)",
+			second: "create statistics if not exists things_id_kind (mcv, dependencies) on id, kind from things",
+		},
+		"alter statistics takes no table lock": {
+			first:  "create table things (id integer, kind text); create statistics things_id_kind (mcv, dependencies) on id, kind from things",
+			second: "alter statistics things_id_kind set statistics 1000",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := auditTwoMigrations(t, tc.first, tc.second); err != nil {

@@ -65,6 +65,10 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"a dropped index if exists":                          {"drop index if exists things_kind;", "drop index"},
 		"a dropped table":                                    {"drop table things;", "drop table"},
 		"a drop beside a created trigger":                    {"drop trigger t_old on things; create trigger t_owed after insert on things for each row execute function owe();", "drop trigger and create trigger"},
+		"create statistics alone":                            {"create statistics if not exists things_kinds (mcv, dependencies) on a, b from things;", "create statistics"},
+		"alter statistics alone":                             {"alter statistics things_kinds set statistics 1000;", "alter statistics"},
+		"create and alter statistics":                        {"create statistics if not exists things_kinds (mcv, dependencies) on a, b from things; alter statistics things_kinds set statistics 1000;", "create statistics and alter statistics"},
+		"rename statistics is not exempt":                    {"alter statistics things_kinds rename to things_kinds_2;", ""},
 
 		"a not-valid check":                         {"alter table things add constraint c check (kind <> '') not valid;", "alter table"},
 		"a dropped check":                           {"alter table things drop constraint things_kind_check;", "alter table"},

@@ -166,8 +166,9 @@ func requireCensusOf(t *testing.T, census *Census, priorityTuples, priorityNodes
 // tuple of the store, among its node's in the order of its old seq, each old node row a node row
 // with the same columns, each run and plan holds its visibility and state as one value tuple each,
 // dated at its made_at, and its project_key, every tuple the move appended stands above the
-// greatest old seq of priority_tuples, the four names are views, the record is gone, and the two
-// triggers stand.
+// greatest old seq of priority_tuples, the four names are views, the record is gone, the two
+// triggers stand, and graph_tuples_kinds holds (issue, advances, priority) in pg_stats_ext's
+// most_common_vals from the move's analyze.
 func TestTheMoveCarriesEveryRowOfTheOldTablesIntoTheStore(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -211,6 +212,11 @@ func TestTheMoveCarriesEveryRowOfTheOldTablesIntoTheStore(t *testing.T) {
 	var state string
 	if err := pool.QueryRow(ctx, `select state from graph_nodes where kind = 'priority' and id = $1`, fixtures.Deleted).Scan(&state); err != nil || state != "gone" {
 		t.Errorf("the deleted priority %s reads state %q (%v), want gone", fixtures.Deleted, state, err)
+	}
+	stats := storesmovetest.ReadKindsStatistics(t, pool)
+	t.Logf("after the move: %s", stats)
+	if !stats.Analyzed || !stats.HasAdvances || stats.AdvancesFreq <= 0 {
+		t.Errorf("after the move: %s; want non-null most_common_vals holding (issue, advances, priority)", stats)
 	}
 }
 

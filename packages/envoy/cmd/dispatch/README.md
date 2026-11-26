@@ -3267,7 +3267,7 @@ The transaction gives `session_authorization`, `role` and `search_path` the valu
 Those tables are:
 
 - the ones its statements name (`pgmigrate.TouchedTables`:
-  the targets of `alter table`, `create index … on`, `drop table`, `truncate`, `create trigger … on`, `drop trigger … on`, `update` with or without an alias, `delete from`, `insert into`, `lock table`, and a foreign key's `references`), read as Postgres's lexer reads the migration:
+  the targets of `alter table`, `create index … on`, `drop table`, `truncate`, `create trigger … on`, `drop trigger … on`, `create statistics … from`, `update` with or without an alias, `delete from`, `insert into`, `lock table`, and a foreign key's `references`), read as Postgres's lexer reads the migration:
   not in its comments, its string literals or the body of a function it defines, and in a `DO` block's body, which it runs;
 
 - the table behind each index it drops or alters;
@@ -3406,6 +3406,12 @@ It refuses:
     The lock lasts to the end of the migration, and the census must admit every other statement of the migration too, so the time the migration holds the lock does not grow with the table either.
     The runner's `lock_timeout` bounds its wait, as it bounds the wait of every statement.
 
+  - `create statistics` and `alter statistics … set statistics`:
+    `create statistics` takes SHARE UPDATE EXCLUSIVE on its table and writes `pg_statistic_ext`, and reads no row of the table.
+    The statistics hold nothing until an `analyze` of the table, which the boot's move runs for `graph_tuples`.
+    `alter statistics … set statistics` updates `stxstattarget` in `pg_statistic_ext` and takes no table lock.
+    `alter statistics … rename to`, `… owner to` and `… set schema` parse as other statements, and the census does not admit them.
+
   The census reads the catalog of the database it judges, in its read-only transaction, for an added column's type, for the cast and the function of its default, and for whether the table of a created index is new.
   No other kind needs a catalog read to be admitted.
   The census reads no catalog to admit a statement of the migrations below, so it admits none of their added columns, `text` included, and none of their created indexes:
@@ -3433,7 +3439,7 @@ It refuses:
 
     - `insert`, `update`, `delete` and `select`, with a `with` or without, but not `select … into`, which creates a table and fills it as `create table … as` does.
 
-    - `lock table`, `create trigger` and `create index`.
+    - `lock table`, `create trigger`, `create index`, `create statistics` and `alter statistics … set statistics`.
 
     - `create table` and `create view`, with or without `or replace`, when `pg_catalog` holds no type of the same name.
       The new row type can hide a type of the same name in a later schema of the `search_path`.
@@ -3493,7 +3499,7 @@ It refuses:
 
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
   The census still reports its table size, skips counting rows above the limit, and checks its holders and census as usual.
-  Neither exception applies while an enabled event trigger on `ddl_command_start`, `ddl_command_end` or `sql_drop`, which every drop fires, carries no command tags or tags naming `CREATE FUNCTION`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `DROP FUNCTION`, `DROP TRIGGER`, `DROP INDEX`, `ALTER TABLE`, `CREATE INDEX`, `CREATE TABLE`, `CREATE VIEW` or `DROP TABLE`, since it runs code of its own, and the size refusal then names it.
+  Neither exception applies while an enabled event trigger on `ddl_command_start`, `ddl_command_end` or `sql_drop`, which every drop fires, carries no command tags or tags naming `CREATE FUNCTION`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `DROP FUNCTION`, `DROP TRIGGER`, `DROP INDEX`, `ALTER TABLE`, `CREATE INDEX`, `CREATE TABLE`, `CREATE VIEW`, `DROP TABLE`, `CREATE STATISTICS` or `ALTER STATISTICS`, since it runs code of its own, and the size refusal then names it.
   A `rename column` fires its event triggers under the tag `ALTER TABLE`, and `lock table`, `set` and `reset` fire no event trigger.
   A trigger whose tags name none of those commands counts for nothing.
   The census reads those event triggers once for the whole database, so an enabled one that counts takes the exemption from every migration, a migration holding no drop included, which is the side that refuses rather than the side that applies.

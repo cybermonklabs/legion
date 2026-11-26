@@ -1,0 +1,43 @@
+-- 20261126000700_graph_tuples_kinds_statistics.up.sql — multivariate statistics over the three
+-- kind columns of graph_tuples (from_kind, kind, to_kind), so the planner estimates the rows of
+-- an `advances` lookup on this build and on the release before through the view priority_tuples.
+--
+-- After dispatch://INFRA-1098's R32 moves the priority store and the workflow store into the graph
+-- store, `advances` tuples (`from_kind = 'issue' and kind = 'advances' and to_kind = 'priority'`)
+-- sit among every other tuple of graph_tuples (about 2,000 of 2.13 million in c-moved-read-cost).
+-- Without extended statistics over the three columns, PostgreSQL multiplies the three equalities
+-- as independent and estimates 1 row, which put `advances_current` on a 1,150,100-row nested-loop
+-- join filter and made unpaged `GET /api/v1/issues?advances=priority-01` 2.24x slower than the
+-- release before on both the new side and the third side.
+--
+-- The statistics are `mcv` and `dependencies`, with the target raised to 1000. At the default
+-- target they fixed the new side's reads alone: `dependencies` does not apply through the
+-- `where from_kind = 'priority' or kind = 'advances'` of the view priority_tuples
+-- (storesmove/swap.go), which the release before reads through, so that side rests on the MCV
+-- list, and the 30,000-row ANALYZE sample often drops the 0.094% combination (issue, advances,
+-- priority) from it. At target 1000 the sample keeps it: all eight reads of c-moved-read-cost
+-- passed on all three sides (measured).
+--
+-- The target also sets the sample every ANALYZE of graph_tuples draws, 300 rows for each unit of
+-- it: 300,000 rows at 1000, where the columns' default target of 100 draws 30,000 (measured on a
+-- 600,000-row table in PostgreSQL 18.7, an analyze's elapsed time went from 0.39 s to 3.37 s). The
+-- boot move's analyze and each later autoanalyze of graph_tuples pay it.
+--
+-- Creating the statistics object populates no statistics until an ANALYZE runs on graph_tuples;
+-- the boot move (storesmove.Move) runs `analyze graph_tuples` once its swap commits, so the
+-- estimates stand before this build or a rollback serves reads. The statistics stay across
+-- releases: this build's own `advances` reads rely on them as well as the release before's.
+--
+-- Locks (measured in pg_locks on PostgreSQL 18.7): CREATE STATISTICS takes SHARE UPDATE EXCLUSIVE
+-- on graph_tuples, writes only pg_statistic_ext and reads no row of graph_tuples; ALTER STATISTICS
+-- SET STATISTICS takes no table lock.
+--
+-- Its version sorts after every migration of this tree and after the daemon's newest,
+-- 20261126000600_decisions_step_gone. It must also sort after 20261126000300_stores_moved: the
+-- census admits that migration's bounded inserts into graph_tuples only where no earlier pending
+-- migration touches graph_tuples with more than bounded writes, and this one, though the census
+-- exempts it as catalog-only work, is neither a plain column nor a concurrent index build, which
+-- are the changes the census reads as leaving a table as it was.
+create statistics if not exists graph_tuples_kinds (mcv, dependencies)
+    on from_kind, kind, to_kind from graph_tuples;
+alter statistics graph_tuples_kinds set statistics 1000;

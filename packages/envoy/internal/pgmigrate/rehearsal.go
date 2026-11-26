@@ -48,8 +48,10 @@ func (s RehearsalStep) String() string {
 //   - an insert of a VALUES list of literal rows the census admits as a bounded write
 //     (boundedInsert, read with no catalog, so a cast or a call is no literal).
 //
-// It skips a concurrent index build (Migration.NonTransactional), which no transaction may run, and
-// a migration of view replacements (create or replace view), which would hold access exclusive on
+// It skips a concurrent index build (Migration.NonTransactional), which no transaction may run, a
+// migration of extended statistics statements alone (create statistics and alter statistics … set
+// statistics), which change no row the move reads and populate nothing until an ANALYZE, and a
+// migration of view replacements (create or replace view), which would hold access exclusive on
 // its view against the serving release's reads, where each of its other statements is an insert,
 // an update or a delete of a table none of tables (TouchedTables), whose rows the change reads
 // nothing of. It refuses every other migration, naming its first statement of another kind, and
@@ -67,7 +69,7 @@ func RehearseOwn(migration Migration, tables []string) (RehearsalStep, string) {
 	// none, which only refuses more.
 	reading := &writeReading{c: &classifier{ctx: context.Background()}}
 	var created []rangeVar
-	applies, replaces, elsewhere := 0, 0, 0
+	applies, replaces, elsewhere, stats := 0, 0, 0, 0
 	for _, s := range statements {
 		var why string
 		switch s.node {
@@ -85,6 +87,8 @@ func RehearseOwn(migration Migration, tables []string) (RehearsalStep, string) {
 				why = "a create view that replaces no view"
 			}
 			replaces++
+		case "CreateStatsStmt", "AlterStatsStmt":
+			stats++
 		case "InsertStmt", "UpdateStmt", "DeleteStmt":
 			if s.node == "InsertStmt" && insertsBounded(reading, s.body) == "" {
 				applies++
@@ -103,6 +107,10 @@ func RehearseOwn(migration Migration, tables []string) (RehearsalStep, string) {
 		}
 	}
 	switch {
+	case stats > 0 && (applies > 0 || replaces > 0 || elsewhere > 0):
+		return RehearsalRefuses, "it holds both extended statistics statements it leaves out and other statements, so the rehearsal can neither run it whole nor leave it out"
+	case stats > 0:
+		return RehearsalSkips, "extended statistics statements, which change no row the rehearsal reads"
 	case replaces > 0 && applies > 0:
 		return RehearsalRefuses, "it holds both statements the rehearsal runs and view replacements it leaves out, so the rehearsal can neither run it whole nor leave it out"
 	case replaces > 0:

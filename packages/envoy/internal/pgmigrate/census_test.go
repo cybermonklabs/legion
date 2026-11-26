@@ -35,6 +35,8 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 		"delete from refs where kind is null;":                                                                                    {"refs"},
 		"insert into user_agent_read (login) select login from users;":                                                            {"user_agent_read"},
 		"lock table asks in access exclusive mode;":                                                                               {"asks"},
+		"create statistics if not exists graph_tuples_kinds (mcv, dependencies) on from_kind, kind, to_kind from graph_tuples;":   {"graph_tuples"},
+		"CREATE STATISTICS public.s ON a, b FROM ONLY \"events\"; alter statistics public.s set statistics 1000;":                 {"events"},
 		"-- alter table commented_out add column x integer;\ncreate table fresh (id integer);":                                    nil,
 		"do $$ begin delete from artifacts where id is null; end $$;":                                                             {"artifacts"},
 		"create table keys (id uuid not null references broadcasts(id), login text);":                                             {"broadcasts"},
@@ -65,6 +67,7 @@ func TestTouchedTablesReadsVerticalTabAsSpace(t *testing.T) {
 		"insert into notes (body) values ('x');",
 		"update comments c set turn = 'human' where true;",
 		"lock table asks in access exclusive mode;",
+		"create statistics if not exists s (mcv, dependencies) on a, b from graph_tuples;",
 	} {
 		want := TouchedTables(sql)
 		if len(want) == 0 {

@@ -53,6 +53,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove/storesmovetest"
 	"github.com/sjawhar/envoy/internal/testbaseline"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -1537,6 +1538,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 		keepMovedCostSeed(t, conn, databaseURL)
 		return
 	}
+	t.Logf("c-moved-read-cost: before the old side is measured: %s", storesmovetest.ReadKindsStatistics(t, conn))
 	counts := holdMovedCostReads(t, base, "old side", reads, nil)
 	old := measureMovedCostSide(t, statements, base, "old side", reads)
 	base.stop(t)
@@ -1560,6 +1562,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	planMovedCostSide(t, conn, proxy, moved, readCostHeadOwed, "new side", reads)
 	head := startReadCostServer(t, client, "this head ("+headCommit+")", headBinary, headCommit, databaseURL, listener)
 	waitMovedCostOwed(t, conn, head, readCostHeadOwed)
+	t.Logf("c-moved-read-cost: before the new side is measured: %s", storesmovetest.ReadKindsStatistics(t, conn))
 	holdMovedCostReads(t, head, "new side", reads, counts)
 	now := measureMovedCostSide(t, statements, head, "new side", reads)
 	head.stop(t)
@@ -1570,6 +1573,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	planMovedCostSide(t, conn, proxy, planned, movedCostBaseOwed, "third side", reads)
 	rollback := startReadCostServer(t, client, baseName(" after the rollback"), baseBinary, baseCommit, databaseURL, listener)
 	waitMovedCostOwed(t, conn, rollback, movedCostBaseOwed)
+	t.Logf("c-moved-read-cost: before the third side is measured: %s", storesmovetest.ReadKindsStatistics(t, conn))
 	holdMovedCostReads(t, rollback, "third side", reads, counts)
 	third := measureMovedCostSide(t, statements, rollback, "third side", reads)
 	rollback.stop(t)

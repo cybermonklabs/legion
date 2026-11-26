@@ -185,6 +185,8 @@ var admittedRows = []admittedRow{
 	// The two lock modes the shipped migrations take.
 	{"lock in access exclusive mode", []string{"lock table big in access exclusive mode"}, "lock table"},
 	{"lock in exclusive mode", []string{"lock table big in exclusive mode"}, "lock table"},
+	{"create statistics", []string{"create statistics if not exists big_kind_pad (mcv, dependencies) on kind, pad from big;"}, "create statistics"},
+	{"create statistics and alter statistics", []string{"create statistics if not exists big_kind_pad (mcv, dependencies) on kind, pad from big; alter statistics big_kind_pad set statistics 1000;"}, "create statistics and alter statistics"},
 	{"rename column", []string{"alter table big rename column spare to spare_renamed"}, "rename column"},
 	{"create table and an index on it", []string{"create table fresh (id int primary key, big_id int references big (id)); create index fresh_big_id on fresh (big_id);"}, "create table and create index"},
 	{"create table like", []string{paired("create table fresh_like (like big including all);")}, "create table and alter table"},
@@ -244,6 +246,7 @@ var admittedRows = []admittedRow{
 	{"after create index, create view, create trigger and lock", []string{"create index big_kind2 on big (kind); create view v_1792 as select id from big; create trigger t_1792 after update on big for each row execute function big_noop(); lock table big in share mode;", addColumn}, "alter table"},
 	{"after alter index and alter table", []string{"alter index big_pad set (fillfactor = 90); alter table big alter column spare set statistics 100;", addColumn}, "alter table"},
 	{"after drops", []string{"drop trigger big_noop on big; drop function spare_fn(); drop index big_pad; drop view big_view; drop table big3;", addColumn}, "alter table"},
+	{"after create statistics and alter statistics", []string{"create statistics if not exists big_kind_pad (mcv, dependencies) on kind, pad from big; alter statistics big_kind_pad set statistics 1000;", addColumn}, "alter table"},
 	{"after a create function", []string{"create function later_fn() returns int language plpgsql as $$ begin return 1; end $$", addColumn}, "alter table"},
 	// lock_timeout and statement_timeout are the two settings whose SET or RESET keeps the reads on
 	// (catalogReadsOff), in a session SET, a RESET and a name written in another case too.
@@ -760,6 +763,8 @@ func TestCensusEventTriggerOnAnAdmittedKindCancelsItsExemption(t *testing.T) {
 		{"CREATE INDEX", "create table et_idx (id int); create index on et_idx (id); " + addColumn},
 		{"CREATE VIEW", "create view et_view as select id from big; " + addColumn},
 		{"DROP TABLE", "drop table big3; " + addColumn},
+		{"CREATE STATISTICS", "create statistics if not exists big_et_stats (mcv, dependencies) on kind, pad from big;"},
+		{"ALTER STATISTICS", "create statistics if not exists big_et_stats (mcv, dependencies) on kind, pad from big; alter statistics big_et_stats set statistics 1000;"},
 	} {
 		trigger := fmt.Sprintf("et_%d", i+1)
 		t.Run(row.tag, func(t *testing.T) {
