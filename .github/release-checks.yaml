@@ -1,0 +1,43 @@
+# Each step of a release workflow (.github/workflows/release*.yaml) that runs a check, with the
+# artifact it checks. A release checks only what it alone builds - the tarball it packs, the image
+# it builds, the notes it renders - before it publishes it; every test of the tree's source runs
+# in a job ci-ok needs, before the merge. .github/scripts/check-test-reach.sh reads this list:
+#
+#   - a release step that runs a test command (`go test`, `bun test`, `playwright test`, a
+#     `*.test.sh` harness, a `bun run` script that comes to one) and is not listed here fails it,
+#     a `go test` over the tree's source above all;
+#   - an entry whose workflow is no release workflow, or whose job or step that workflow does not
+#     hold, fails it;
+#   - an entry whose step runs `go test` fails it where the step's environment holds no variable
+#     an earlier step of its own job built (wrote into $GITHUB_ENV, or named in its `with:` or
+#     run:, as a build step names the image tag it loads): such a test reads the source, not the
+#     artifact.
+#
+# An entry names `workflow` (the file that holds the step), `job` (its id there), `step` (the
+# step's name, else its id, else its `uses:`) and `artifact` (what it checks, and which step
+# built it).
+checks:
+  - workflow: .github/workflows/release.yaml
+    job: claude_envoy_build
+    step: Check the packed tarball names the publishing repository and the release, and holds the build and the skills
+    artifact: the @sjawhar/claude-envoy tarball the job's "Pack plugin" step packed, read back by .github/scripts/release-claude-envoy-check-packed.sh
+  - workflow: .github/workflows/release.yaml
+    job: claude_envoy_build
+    step: Check the packed Codex tarball names the publishing repository and the release, and holds the build and the skills
+    artifact: the Codex plugin tarball the job's "Build and pack the Codex plugin" step packed, read back by .github/scripts/release-codex-envoy-check-packed.sh
+  - workflow: .github/workflows/release-envoy-listener.yaml
+    job: docker
+    step: Container smoke test (testcontainers)
+    artifact: the listener image the job's "Build the listener image the smoke test runs against" step built and loaded under the tag ENVOY_SMOKE_IMAGE, the job's env, names
+  - workflow: .github/workflows/release.yaml
+    job: claude_envoy_names
+    step: ./.github/actions/private-names-packed-plugin
+    artifact: the packed claude-envoy tarball claude_envoy_build uploaded as claude-envoy-tarball, scanned for private names
+  - workflow: .github/workflows/release.yaml
+    job: claude_envoy_names
+    step: ./.github/actions/private-names-release-notes
+    artifact: the changelog entries claude_envoy_build rendered and uploaded as claude-envoy-notes, scanned for private names
+  - workflow: .github/workflows/release-notes-names.yaml
+    job: names
+    step: ./.github/actions/private-names-release-notes
+    artifact: the changelog entries the calling build job rendered and uploaded as the artifact its `artifact` input names, scanned for private names
