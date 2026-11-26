@@ -385,8 +385,9 @@ test("a sleeping view of an ordinary conversation comes back with its fastest wa
 // The clock is the page's own (`watchViewRestore`, installed before the press): the first
 // `pointerdown`, taken in the capture phase before any handler of the press runs, to the first
 // mutation in which that session's view is in front with a turn drawn in it. Nothing of the
-// driver is in the window - a Playwright click's trace snapshots either side of itself are the
-// harness's work, not the page's - and every reading is kept on the result whether or not the
+// driver is in the window - a Playwright click's own round trips, and its trace snapshots where a
+// trace records them (`e2e/playwright.config.ts` records none), are the harness's work, not the
+// page's - and every reading is kept on the result whether or not the
 // row passes, with the three parts it divides into: the re-subscribe, the session's replay
 // arriving, and the view drawing it.
 //
