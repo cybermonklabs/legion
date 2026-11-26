@@ -38,16 +38,24 @@ body: |-
     recorded windows
     (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
     daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
-    does, and the rules of the recorded windows, whose releases came before that order, do not; the
-    replay gives each issue the priority its recorded Dispatch events show. The daemon's own rule
+    does, and the rules of the recorded windows, whose releases came before that order, do not. A
+    rule that starts a P0 issue outside the cap reads the priority Dispatch resolves for each issue,
+    its own or that of the nearest issue above it on its parent chain: the recorded value where an
+    event carries one, else one rebuilt from the window's parent chains. Such a rule is refused on a
+    window that lacks the history of an ancestor a priority rests on, and `collect` reads each
+    ancestor's events, in any project, and names each one it could not read. The daemon's own rule
     and every candidate but `cover` also move a started parent with an open Dispatch child into
     `awaiting_children`, as the daemon does since #4592, and the rules of the recorded windows do
     not; under `cover` such a parent keeps its phase, and its child starts on the parent's slot
-    and holds it for the parent. Among the candidates,
+    and holds it for the parent, the parent's wait counts among the waits, and the record names
+    the slot it gives for that wait `children_wait`. Among the candidates, `keep-past-review` keeps
+    the slot in accepting, retro and merging too, `blockers-first` places each issue that a started
+    issue waits on first, `returned-by-rank` places returned work by its board rank,
     `wait-grace` and `wait-grace-1h` keep a holder's slot through a wait on another issue for its
     first five minutes or its first hour, `returned-by-first-slot`, `rework-first` and
     `rework-first-keep` place returned work first, `arrival-order` places every issue by its
-    arrival, `p0-at-once` starts a P0 issue above the cap, `idle-return-1h` gives back the slot of
+    arrival, `before-p0` starts no issue outside the cap, `p0-at-once` starts a P0 issue outside
+    the cap, `idle-return-1h` gives back the slot of
     a holder that waits on its children or on a person once none of its roles has had a turn for an
     hour, and `p0-idle` joins the last two. `signals` and `signals-backoff` admit below P0 by
     signals, the second with an allowance that falls at each refusal and kill. `run --limit` sets
