@@ -24,6 +24,7 @@ import { useAgentText } from "../../refs/AgentName";
 import {
   PublishedReferenceNames,
   type PublishedReferences,
+  type ReferenceNameReading,
   useKnownReferences,
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
@@ -46,6 +47,7 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
+import { usePublishViewReadings } from "../slots/view-readings";
 import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow, PageRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
@@ -252,18 +254,42 @@ export function DecisionsFilterBody({
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
   // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
-  // one node, so its first placement in the page's reading order names it.
+  // one node, so its first placement in the page's reading order names it. A statement only the
+  // coverage read holds, past the pages of Conversation's read, is one the page's names read was
+  // never asked for: the body publishes the reading of that read's row of it to the names store
+  // (`ShapedStatement.reading`), as a view publishes the blocks only its own tree holds
+  // (`slots/view-readings.ts`), and names it by the same rule, by the row's own address.
   const { lines } = useKnownReferences();
+  const covered = useMemo(() => {
+    const readings = new Map<string, ReferenceNameReading>();
+    const references = new Map<string, string>();
+    for (const part of DECISIONS_PART_ORDER) {
+      for (const entry of parts[part]) {
+        for (const { id, node, reading } of entry.shapes) {
+          if (reading === undefined || node.reference === undefined) continue;
+          readings.set(node.reference, reading);
+          references.set(id, node.reference);
+        }
+      }
+    }
+    return { readings, references };
+  }, [parts]);
+  usePublishViewReadings(covered.readings);
   const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
     const names = new Map<string, string>();
-    for (const node of nodesInOrder(root)) {
-      const reference = node.type === "requirement" ? node.reference : undefined;
-      if (reference === undefined || names.has(node.id)) continue;
+    const name = (id: string, reference: string): void => {
+      if (names.has(id)) return;
       const line = lines.get(reference);
-      if (line !== undefined) names.set(node.id, chipName(parseNodeReference(reference), line));
+      if (line !== undefined) names.set(id, chipName(parseNodeReference(reference), line));
+    };
+    for (const node of nodesInOrder(root)) {
+      if (node.type === "requirement" && node.reference !== undefined) {
+        name(node.id, node.reference);
+      }
     }
+    for (const [id, reference] of covered.references) name(id, reference);
     return names;
-  }, [lines, root]);
+  }, [covered, lines, root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);

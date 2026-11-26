@@ -883,8 +883,14 @@ export interface PresetSignal {
    *  the Contents list holds, as the prototype's signal counts them. */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
-   *  the checks that failed, the decisions waiting for the reader's review. */
-  readonly flag?: { readonly count: number; readonly word: keyof typeof FILTER_SIGNAL_WORDS };
+   *  the checks that failed, the decisions waiting for the reader's review. The decisions' flag
+   *  is a count over the read Decisions' count is read from, so it carries "+" exactly where
+   *  that count does (`more`, R15); the failing checks' flag carries none. */
+  readonly flag?: {
+    readonly count: number;
+    readonly more?: true;
+    readonly word: keyof typeof FILTER_SIGNAL_WORDS;
+  };
   /** Whether the read the count is read from holds nodes no page read yet holds, so the count is
    *  of the nodes loaded and carries "+" (R15, `TreeNode.moreToRead`). */
   readonly more?: true;
@@ -911,7 +917,8 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
  *  `useDecisionsTree`): the one its own view read builds once the page holds that read, which
  *  holds every question and decision whatever page of the tree read the page holds, so its count
  *  and its flag are that read's, with "+" only where it names a next page itself; and `root`
- *  until then, with "+" while the tree read names one (R15). */
+ *  until then, with "+" while the tree read names one (R15). Its flag of what waits for review
+ *  is a count over the same read, and carries the same "+". */
 export function filterSignals(
   root: TreeNode,
   query: string,
@@ -954,11 +961,12 @@ export function filterSignals(
   // Each ask and each decision is one entry of the count: a person's decision is the answered
   // ask itself (`decision-nodes.ts`' `decisionNodes`), so no decision node restates an answer,
   // and a decision under an answered question is an agent's own that settles it.
+  const decisionsMore = more(decisionsRoot === root ? undefined : root.views?.decisions);
   return {
     decisions: {
       count: decisions.matches,
-      ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
-      ...more(decisionsRoot === root ? undefined : root.views?.decisions),
+      ...(toReview === 0 ? {} : { flag: { count: toReview, ...decisionsMore, word: "to_review" } }),
+      ...decisionsMore,
     },
     plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },
     spec: { count: count("spec"), ...more(root.views?.spec) },

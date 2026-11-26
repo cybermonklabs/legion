@@ -1,5 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 
+import { displayTree } from "../../../__tests__/display-trees";
 import type { Actor, DecisionLink, DisplayTree, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
@@ -8,7 +9,7 @@ import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
-import { coverageStatements, nodeIdOf as issueNodeIdOf } from "../tree-drafts";
+import { coverageStatementOf, nodeIdOf as issueNodeIdOf } from "../tree-drafts";
 import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { changesOf } from "./decisions-entries";
@@ -1058,9 +1059,14 @@ test("an overtaken decision stays in its part and is not in waitingOrder", () =>
 // coverage read, which is no paged read, says which addresses name one, by the rule the review
 // list is read by everywhere (`coverageStatements`). Conversation's read is paged, so the tree
 // may hold no node of the statement a waiting decision is tied to: the decision stands in the
-// review list all the same, not at the foot, and its row draws no line for the statement.
-test("a waiting decision whose tied statement only the coverage read holds stands in the review list", () => {
+// review list all the same, not at the foot, and its row draws the statement's line from the
+// coverage read's row of it (the architect, 13:39Z): its first line, from the server's reading
+// of its words where the read sent one, at the row's own address, named by the reading the body
+// publishes for it.
+test("a waiting decision whose tied statement only the coverage read holds stands in the review list and draws that statement from the coverage row", () => {
   const made = [decision("waits", { decision: { links: [shaped(specRef("s-late"))] } })];
+  const tree = displayTree("The read's words for s-late. And more.");
+  if (tree === undefined) throw new Error("the markdown engine has not loaded");
   const coverage: IssueCoverage = {
     gaps: [],
     has_plan: false,
@@ -1073,22 +1079,57 @@ test("a waiting decision whose tied statement only the coverage read holds stand
         plan_tasks: 0,
         ref: specRef("s-late"),
         text: "The page draws s-late.",
+        text_tree: tree,
       },
     ],
     spec_artifact_id: SPEC_DOCUMENT.id,
   };
   const parts = decisionsParts({
     asks: [],
+    coverageStatement: coverageStatementOf(issueDetails(), coverage),
     decisions: decisionsOf(made),
-    isCoverageStatement: coverageStatements(issueDetails(), coverage),
     issueKey: KEY,
     nodeIdOf,
     reader: READER,
     root: issueTree([decisionNode("waits")]),
   });
   expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
-  expect(parts.review[0]).toMatchObject({ shapes: [], standing: "waiting_review" });
+  expect(parts.review[0]).toMatchObject({ standing: "waiting_review" });
+  expect(
+    parts.review[0]?.shapes.map(({ id, node, path, reading, stale }) => ({
+      id,
+      line: parentLinkWords(node),
+      path,
+      reading,
+      reference: node.reference,
+      stale,
+    }))
+  ).toEqual([
+    {
+      id: statement("s-late").id,
+      line: "The read's words for s-late.",
+      path: `/issues/${KEY}#b-s-late`,
+      reading: { fallback: NODE_TYPE_NAMES.requirement, tree },
+      reference: specRef("s-late"),
+      stale: false,
+    },
+  ]);
   expect(waitingOrder(parts)).toEqual([D("waits")]);
+
+  // A statement the tree holds is drawn from its node, as before, and named by the page's names
+  // read: the model gives it no reading of its own.
+  const held = decisionsParts({
+    asks: [],
+    coverageStatement: coverageStatementOf(issueDetails(), coverage),
+    decisions: decisionsOf(made),
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root: issueTree([statement("s-late"), decisionNode("waits")]),
+  });
+  expect(
+    held.review[0]?.shapes.map(({ node, reading }) => ({ line: parentLinkWords(node), reading }))
+  ).toEqual([{ line: "The page draws s-late.", reading: undefined }]);
 });
 
 // The tree draws from the reads that have answered: before the decisions view and the asks

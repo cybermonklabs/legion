@@ -446,10 +446,12 @@ test("each filter's signal is its count, with what of it asks something of the r
 // while the read it is read from names a next page, since the page's `remaining` is not split by
 // filter: a count read off the tree by the outline read's mark on the issue, and a held view's
 // count, and the root the view draws, by that view's own read, whatever the outline read says.
+// Decisions' flag of what waits for review is a count over the same read as its count, and
+// carries the same "+" (INFRA-1196's architect, 13:39Z); the failing checks' flag carries none.
 // Once no page is left, no count carries it.
 test("a count carries + while a cursor remains", () => {
   expect(filterSignals({ ...issue(), moreToRead: true }, "")).toEqual({
-    decisions: { count: 4, flag: { count: 1, word: "to_review" }, more: true },
+    decisions: { count: 4, flag: { count: 1, more: true, word: "to_review" }, more: true },
     plan: { count: 2, more: true, unit: "steps" },
     spec: { count: 2, more: true },
     verification: { count: 1, flag: { count: 1, word: "failing" }, more: true },

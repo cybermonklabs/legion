@@ -9,7 +9,12 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { ApiError, api } from "../../../api/client";
-import { conversationTreeKey, issueAskThreadsQuery, issueTreeKey } from "../../../api/queries";
+import {
+  conversationTreeKey,
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueTreeKey,
+} from "../../../api/queries";
 import type { Actor, AuthenticatedUser, Comment, Decision, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
@@ -2699,6 +2704,66 @@ test("each statement on the informs line is named within 32 characters", () => {
   expect(words(rowOf(short, D("first")).querySelector("[data-decision-statement] a"))).toBe(
     "Rows stand alone."
   );
+});
+
+// INFRA-1196's architect, 13:39Z: "The 'informs' line past Conversation's pages: draw it from the
+// coverage read's statement row (its first line and address), as the part already reads the tie
+// there, so the row says which statement it informs". Here the tree, built from Conversation's
+// read, holds the statement s1 and none of s-late, which only the coverage read holds, and the
+// page's names read was asked for s1 alone. Until that read answers, the decision tied to both
+// informs s1 alone; once it holds s-late, the row draws s-late beside s1 by the same rule: the
+// first line of its words, from the server's reading of them that the coverage read sends
+// (`text_tree`), cut as a chip's are, and a link to the statement's own address.
+test("a decision tied to a statement only the coverage read holds draws that statement on its informs line from the coverage row", async () => {
+  const tree = displayTree("Rows **stand** alone. Each row draws one node of the tree.");
+  if (tree === undefined) throw new Error("the markdown engine has not loaded");
+  const view = renderBody({
+    children: [statement("s1"), decisionNode("first")],
+    made: [
+      decision("first", {
+        decision: { links: [shaped(specRef("s1")), shaped(specRef("s-late"))] },
+      }),
+    ],
+  });
+  const informs = () =>
+    [...rowOf(view, D("first")).querySelectorAll("[data-decision-informs] a")].map((link) => [
+      link.closest("[data-decision-statement]")?.getAttribute("data-decision-statement"),
+      link.textContent,
+      link.getAttribute("href"),
+    ]);
+  try {
+    expect(informs(), "the row named a statement no read holds").toEqual([
+      [statement("s1").id, "The page draws s1.", `/issues/${KEY}#b-s1`],
+    ]);
+    await act(async () => {
+      view.client.setQueryData(issueCoverageQuery(KEY).queryKey, {
+        gaps: [],
+        has_plan: false,
+        issue: KEY,
+        requirements: [
+          {
+            block_id: "s-late",
+            checks: 0,
+            gaps: [],
+            plan_tasks: 0,
+            ref: specRef("s-late"),
+            text: "The stored words of s-late.",
+            text_tree: tree,
+          },
+        ],
+        spec_artifact_id: SPEC_DOCUMENT.id,
+      });
+    });
+    await waitFor(() =>
+      expect(informs(), "the row's informs line once the coverage read holds s-late").toEqual([
+        [statement("s1").id, "The page draws s1.", `/issues/${KEY}#b-s1`],
+        [statement("s-late").id, "Rows stand alone.", `/issues/${KEY}#b-s-late`],
+      ])
+    );
+    expect(rowsOfPart(view, "review")).toEqual([D("first")]);
+  } finally {
+    view.unmount();
+  }
 });
 
 // R8 over an entry's words: the body hands its rows what the page publishes of its batched names

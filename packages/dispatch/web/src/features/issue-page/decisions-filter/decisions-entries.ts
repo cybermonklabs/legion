@@ -8,7 +8,7 @@ import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nod
 import { type ChangeComment, decisionNodeChanges, deletedPostIds } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeRead } from "../spec-filter/tree-read";
-import { coverageStatements, treeContext } from "../tree-drafts";
+import { coverageStatementOf, treeContext } from "../tree-drafts";
 import { holdsPlanTask } from "../tree-read/tree-nodes";
 import { outlineQuery, type TreeAnswer, viewQuery } from "../tree-read/tree-read";
 import { issueCommentsQuery, issueMessagesQuery, viewTree } from "../useIssueTree";
@@ -40,8 +40,9 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * holds it, so the tree waits for that read to answer. Which address names a statement is the
  * coverage read's too, which is no paged read: a tie to a statement past the pages of
  * Conversation's read decides a decision's part as one to a statement the tree holds
- * (`decisionsParts`' `isCoverageStatement`, by the rule the review list is read by everywhere,
- * `tree-drafts.ts`' `coverageStatements`), though the row draws no line for it.
+ * (`decisionsParts`' `coverageStatement`, by the rule the review list is read by everywhere,
+ * `tree-drafts.ts`' `coverageStatements`), and the row draws its line for that statement from
+ * the coverage read's row of it: its first line, at its own address.
  *
  * The page reads the view the first time the filter is on in a load (`ViewReadProvider`). A Keep
  * or a Change drops every view the page holds (`DecisionActions.tsx`), and every change of the
@@ -215,9 +216,10 @@ export function useDecisionsEntries({
   // The statements the coverage read holds, watched the same way: the page's tree reads it under
   // this key. A tie names a statement by the rule the review list is read by everywhere
   // (`coverageStatements`), beside the tree's own requirement nodes, so a statement past the
-  // pages of Conversation's read the page holds decides a decision's part all the same.
+  // pages of Conversation's read the page holds decides a decision's part all the same, and the
+  // row draws it from the read's row of it (`coverageStatementOf`).
   const coverage = useQuery(treeRead(issueCoverageQuery(issue.key))).data;
-  const isCoverageStatement = useMemo(() => coverageStatements(issue, coverage), [coverage, issue]);
+  const coverageStatement = useMemo(() => coverageStatementOf(issue, coverage), [coverage, issue]);
   // Which Change a decision waits on is the tree read's (see above): the view knows what the
   // issue holds once that read has answered, and the asks read too.
   const readsHeld = tree !== undefined && asks !== undefined;
@@ -296,8 +298,8 @@ export function useDecisionsEntries({
     const model = decisionsParts({
       asks,
       changes,
+      coverageStatement,
       decisions,
-      isCoverageStatement,
       issueKey: issue.key,
       nodeIdOf,
       reader,
@@ -312,9 +314,9 @@ export function useDecisionsEntries({
   }, [
     asks,
     changes,
+    coverageStatement,
     decisions,
     decisionsView,
-    isCoverageStatement,
     issue.key,
     nodeIdOf,
     reader,
