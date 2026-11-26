@@ -4861,7 +4861,7 @@ describe("executeDispatchTool", () => {
       project_scope: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
-    expect(result.text).toContain("It may write project INFRA and no other.");
+    expect(result.text).toContain("Its token names project INFRA.");
     expect(result.text).not.toContain("which is not this host session");
   });
 
@@ -4898,7 +4898,7 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain(
       "Your credential names session ses_from_the_broker, which is not this host session (session-1): Dispatch records every write you make as ses_from_the_broker."
     );
-    expect(result.text).not.toContain("may write project");
+    expect(result.text).not.toContain("Its token names project");
   });
 
   test("dispatch_whoami reads an omitted session as an older Dispatch, not as none", async () => {
@@ -5053,7 +5053,7 @@ describe("executeDispatchTool", () => {
       false,
       [
         "Session session-1 runs as service example-ns/example-job and no person, and writes as that service",
-        "It may write project EXAMPLE and no other.",
+        "Its token names project EXAMPLE.",
       ],
       ["agent-secrets login", "refuses every write", "every public project"],
     ],
@@ -5069,7 +5069,7 @@ describe("executeDispatchTool", () => {
         "Session session-1 runs as service example-org/example-repo/.github/workflows/release.yaml@refs/heads/main and no person, and writes as that service",
         "It names no one project, so it may write wherever a token that names no project may.",
       ],
-      ["agent-secrets login", "refuses every write", "may write project", "private projects"],
+      ["agent-secrets login", "refuses every write", "Its token names project", "private projects"],
     ],
     [
       "a machine's person-scoped token is refused every write and names the sign-in",

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -70,6 +71,10 @@ type goingCapability struct {
 
 // createGoingRequest answers POST /api/v1/going/requests: the question createGoingRequestFrom
 // records and answers, for the asker goingAsker admits, its body read off the request.
+//
+// A credential that names one project asks of any project, and of every project at once. Such a
+// credential is answered 404 PROJECT_NOT_FOUND, before anything is recorded, for a project that
+// does not exist and for a private project that it does not name (errProjectNotFound).
 func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.goingAsker(w, r)
 	if !ok {
@@ -138,13 +143,23 @@ func (s *server) createGoingRequestFrom(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	// The project comes from the body, not from the address, so this row is classed
-	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves
-	// createIssueFrom's (issue_create.go). It runs before the row is written: a credential that
-	// may write one project asks only of that project, and asking of every project is asking
-	// outside it.
-	if covers, scoped := s.callerProject(r); scoped && covers != project {
-		refuseWriteOutsideProjectScope(w, r, covers, project)
-		return
+	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssueFrom's
+	// (issue_create.go). It runs before the row is written. A credential that names one project
+	// asks of every project that access.CredentialCovers covers, and of all projects at once,
+	// which the empty project names. The one exception is a private project it does not name.
+	// Such a caller is answered 404 PROJECT_NOT_FOUND for that project, and for a project that
+	// does not exist, with one body for both, so it cannot tell the two apart. A credential that
+	// names no project is answered as before: its question of a project no row holds is recorded.
+	if covers, scoped := s.callerProject(r); scoped && project != "" {
+		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, project)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		if !found || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private) {
+			s.writeHandlerError(w, r, errProjectNotFound())
+			return
+		}
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the

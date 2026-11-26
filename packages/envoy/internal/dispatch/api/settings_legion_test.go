@@ -144,7 +144,7 @@ func TestAnUnknownProjectAndABadStateURLAreRefused(t *testing.T) {
 }
 
 // TestALegionSettingIsRefusedToAProjectScopedToken: pointing Dispatch at a host belongs to the
-// deployment, so a credential that may write one project is refused both writes by name, though
+// deployment, so a credential that names one project is refused both writes by name, though
 // the path names that very project.
 func TestALegionSettingIsRefusedToAProjectScopedToken(t *testing.T) {
 	t.Parallel()

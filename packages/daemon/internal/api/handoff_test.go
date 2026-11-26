@@ -157,7 +157,7 @@ func newHandoffHarness(t *testing.T, github *handoffGitHub, grants *credential.G
 	h.handoffs = &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: grants, Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: true,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,

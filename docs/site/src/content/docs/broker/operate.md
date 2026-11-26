@@ -776,8 +776,11 @@ setting says. A roll serves the previous release beside this one against one dat
 
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
-tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
-no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write. An
+tokens write as one person. A token of an entry that names a project names that project, and
+writes each object of another project that a token naming no project may write, except in a private
+project it does not name; a write that belongs to the deployment is refused it
+(`403 PROJECT_SCOPE_DEPLOYMENT`). A token of an entry that names no project
+(`<service account>==<person>`) writes wherever Dispatch's own rules let that person write. An
 entry may name neither a person nor a project (`<service account>==`, or
 `<service account>===<session>` to fix its session): its tokens name no person and no project and
 name the account as their service, so they act as the account itself, write wherever Dispatch's own
@@ -789,7 +792,7 @@ project's Legion daemon URL (`PUT` and `DELETE /api/v1/projects/{key}/legion/dae
 repository (`PUT /api/v1/projects/{key}/default-repository`), and the delivery session groups
 (`POST`, `PATCH` and `DELETE /api/v1/delivery/session-groups`). The broker refuses to start on an
 entry that names a project and no person: an entry that names a project names its person, so no
-account entry's token held to a project is personless. A broker of a build older than the entry
+account entry's token that names a project is personless. A broker of a build older than the entry
 naming no person refuses to start on one, and an Envoy listener or a Dispatch of a build older than
 it answers such a token `401`, so deploy the broker, Dispatch and every Envoy listener before you
 write one. For the same reason, before you roll the broker, Dispatch or an Envoy listener back to a
@@ -841,18 +844,20 @@ projects. The token the exchange mints for a job entry names the entry's identit
 (the account, or `<repository>/<workflow path>@<ref>` for a workflow) and no person, holds no OAuth
 scope, so a route that needs `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED` before
 Dispatch's project check runs, and carries the entry's projects whatever the request names: under
-the project scope `named` its one project, for which that check judges the token as it judges a
-person's `named` token for that project (a write to another project is `403 PROJECT_SCOPE` for
-both until dispatch://INFRA-4799 changes that), or under the project scope `public` its private
+the project scope `named` its one project, or under the project scope `public` its private
 projects, beside which it reaches every public project. A request may name no project or only
 projects of the entry, and the broker refuses one that names any other, a public project's key
 under `public` included, since it cannot tell a public project's key from a key no project holds.
 The broker asks Dispatch nothing for such a token: the entry chose its projects. Dispatch records
-each write of the token under its session, for its service and under no person. At this release
-Dispatch does not read a `public` token's list, so such a token writes wherever a token that
-names no project may. An entry that fixes no session takes the session the trade names, and the
-broker refuses a trade that names none; a daemon may register a pod of a job account whose entry
-fixes none (above).
+each write of the token under its session, for its service and under no person. Dispatch's
+project check judges a `named` token as it judges a person's `named` token for the same project:
+it writes another project's objects as a token that names no project does, and an object of a
+private project that the entry does not name gets the answer of an object that does not exist. A
+write that belongs to the deployment, such as a project create, is `403 PROJECT_SCOPE_DEPLOYMENT`
+for both. At this release Dispatch does not read a `public` token's list, so such a token writes
+wherever a token that names no project may. An entry that fixes no session takes the session the
+trade names, and the broker refuses a trade that names none; a daemon may register a pod of a job
+account whose entry fixes none (above).
 
 The broker refuses to start, naming the entry, on an entry of either setting not of its form or
 with a blank field, a pod account that is not `system:serviceaccount:<namespace>:<name>` or is a

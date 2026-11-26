@@ -126,18 +126,21 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   } else {
     acting = `Session ${session} runs under the shared token: ${unowned}`;
   }
-  // A job's public token and an exchange entry's token naming its account name no one project,
-  // and Dispatch holds them to none: a job entry's list of private projects limits none of its
-  // writes at this release. A read-only credential writes no project at all.
-  const writable = readOnly
+  // A token that names a project also writes other projects' objects, as a credential that
+  // names none does, except in a private project it does not name. So the line names the
+  // project and claims no limit on what the token writes. A job's public token and an exchange
+  // entry's token naming its account name no one project, and Dispatch holds them to none: a
+  // job entry's list of private projects limits none of its writes at this release. A read-only
+  // credential's line names none, as it names no write.
+  const projectSentence = readOnly
     ? ""
     : project !== null
-      ? ` It may write project ${project} and no other.`
+      ? ` Its token names project ${project}.`
       : writesAsService
         ? " It names no one project, so it may write wherever a token that names no project may."
         : "";
   return {
-    text: acting + elsewhere + writable,
+    text: acting + elsewhere + projectSentence,
     details: { session, owner, service, project, project_scope: projectScope },
   };
 }

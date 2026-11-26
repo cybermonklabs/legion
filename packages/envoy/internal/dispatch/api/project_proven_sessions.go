@@ -14,7 +14,8 @@ import (
 // (refuseSpecWriter, spec_writer.go), where an architect's write of an issue's spec or
 // Verification document then passes only on a credential that proves the architect's session,
 // and the role-holder publication (putIssueRoleHoldersFrom), which then passes only on a
-// credential that proves legion-daemon:<project>.
+// credential that proves legion-daemon:<project>, or legion-daemon:<P> of another project's
+// daemon on a broker token that names P (isIssueDaemon).
 //
 // The two writes are not alike, on purpose. Turning the setting on makes a check stronger, so any
 // credential that may write the project's issues may turn it on: PUT

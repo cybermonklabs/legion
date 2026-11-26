@@ -76,7 +76,7 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 // loadProject reads the project row, every column model.Project carries but the open-ask count,
 // which only the project list reads. A project.updated event carries what this answers, so its
 // payload is the whole row a reader of the project list sees. An unknown key is 404
-// PROJECT_NOT_FOUND.
+// PROJECT_NOT_FOUND (errProjectNotFound).
 func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.Project, error) {
 	var project model.Project
 	if err := q.QueryRow(ctx, `
@@ -95,6 +95,14 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 		return model.Project{}, err
 	}
 	return project, nil
+}
+
+// errProjectNotFound is the 404 PROJECT_NOT_FOUND of a project key that no project holds, which
+// the project routes answer (loadProject). The going POST answers it too, to a caller whose
+// credential names one project, for a private project that the credential does not name
+// (createGoingRequest), so the two answers are one.
+func errProjectNotFound() error {
+	return errorf(apicode.ProjectNotFound, "project not found")
 }
 
 // requireOpenOwner locks the owner before its collaboration rows are changed.
