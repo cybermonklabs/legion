@@ -16,4 +16,6 @@ GATE = harness("ci_router_outputs_test", "Test the router outputs' label terms",
     (f"{SCRIPTS}/ci_workflow_rules.py", "the rules check-ci-filters.sh imports"),
     (f"{SCRIPTS}/workflow_paths.py", "the path model the engine imports"),
     (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader the engine imports"),
+    (f"{SCRIPTS}/ci_ts_listing.py", "check-ci-filters.sh's generate mode imports it and starts the listings"),
+    (f"{SCRIPTS}/ci_ts_programs.py", "ci_ts_listing.start() reads the pairs it lists"),
 ])

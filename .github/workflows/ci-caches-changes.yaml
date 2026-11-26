@@ -1,0 +1,130 @@
+name: CI caches (changes job)
+
+# Fills, on every push to main, the two cache entries ci.yaml's changes job restores: changes-git,
+# this commit's `.git` one commit deep, which the job's checkout fetches only its own commit's
+# additions to, and ci-filters, this commit's filters, which its generation reads in place of
+# generating the base tree when a run is measured against this commit. A workflow of its own, beside
+# ci-caches.yaml, so that each commit's entries land about 40 s after a runner picks the fill up:
+# ci-caches.yaml runs one at a time and a newer push replaces its waiting run, so an entry there
+# would wait for the Go fills of the push before it and a replaced commit would never get one. Rule 11 of
+# check-ci-filters.sh holds this file's saves to ci.yaml's restores as it holds ci-caches.yaml's.
+# why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One run per commit, each in a group of its own, and none cancelled: a cancelled run saves
+# nothing, and the entry is keyed on its commit, so a later commit's run fills nothing for it. A
+# dispatch of a commit that a push's run is filling waits for that run.
+concurrency:
+  group: ci-caches-changes-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # On ubuntu-24.04-arm, the changes job's runner: go list answers for the machine's own platform,
+  # and the keys carry the architecture. changes-git is kept under refs/ci-cache/main, a ref
+  # actions/checkout leaves, so the reader's fetch offers this commit and is sent only what its own
+  # adds. ci-filters' lookup key is the changes job's restore key word for word, its base step here
+  # naming this commit as the base step there names a run's base.
+  fill:
+    runs-on: ubuntu-24.04-arm
+    # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the 15 minutes main's #5649 gave
+    # this job, plus its slowest retried step alone, the setup-bun step's two `ci_tools_fetch`
+    # calls, 2 x 1708 = 3416 s, above the workspace install's 5 x 180 + 150 = 1050 s and the Go
+    # install's 675 s. 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
+    outputs:
+      changes-git: ${{ steps.saved.outputs.key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: git update-ref refs/ci-cache/main HEAD
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .git
+          key: changes-git-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+      - id: saved
+        env:
+          KEY: changes-git-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+        run: echo "key=$KEY" >>"$GITHUB_OUTPUT"
+      - id: base
+        run: echo "sha=$GITHUB_SHA" >>"$GITHUB_OUTPUT"
+      - id: ci-filters
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-filters-base
+          key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
+          lookup-only: true
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, go-install-archive.sh's two fetches: the listing,
+        # 5 x 15 + 150 = 225 s, and the archive, 5 x 60 + 150 = 450 s. 225 + 450 = 675 s -> 12 min.
+        timeout-minutes: 12
+        run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+        # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
+        timeout-minutes: 57
+        uses: ./.github/actions/setup-bun
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        if: steps.ci-filters.outputs.cache-hit != 'true'
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-filters-base"
+          .github/scripts/check-ci-filters.sh generate "$RUNNER_TEMP/ci-filters-base/ci-filters.yaml"
+          rm "$RUNNER_TEMP/ci-filters-base/ci-filters.yaml.inputs"
+          git rev-parse --verify "HEAD^{commit}" >"$RUNNER_TEMP/ci-filters-base/commit"
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-filters-base
+          key: ${{ steps.ci-filters.outputs.cache-primary-key }}
+
+  # The changes-git entries of this ref created before the one the fill saved, deleted once it has
+  # saved, so one 96 MB entry stays. Runs of two commits can overlap here, so the entry that stays is
+  # the one saved last, whichever commit it is: the one the changes job's restore picks, as it takes
+  # the newest entry by prefix. A job of its own, so the token that may delete caches is in no job
+  # that builds code; it runs when the fill failed after its save too.
+  # why: .github/ci-notes/ci-caches.md#which-changes-git-entry-stays
+  # Budget (the Budgets note of .github/ci-budgets.md): 300 s, the 5 minutes main's #5649 gave
+  # this job, plus its one retried step, 300 + 3 x 300 = 1200 s. 300 + 1200 = 1500 s -> 26 min,
+  # the whole minute above a sum that is itself a whole number of minutes.
+  superseded:
+    needs: fill
+    if: ${{ !cancelled() && needs.fill.outputs.changes-git != '' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 26
+    env:
+      JOB_TIMEOUT_MINUTES: 26 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      actions: write
+    steps:
+      # For .github/scripts/cache-superseded.sh and the ci-retry.sh and gh-read.sh it sources: this
+      # repository is public, so the checkout needs no scope beyond the one the deletes need.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Delete this ref's changes-git entries created before the new one
+        # Its own retry arithmetic, which is cache-superseded.sh's: the list and the three deletes
+        # a run makes at most, 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that
+        # is itself a whole number of minutes.
+        timeout-minutes: 21
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEEP: ${{ needs.fill.outputs.changes-git }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        run: .github/scripts/cache-superseded.sh commit changes-git

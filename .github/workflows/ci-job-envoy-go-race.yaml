@@ -91,15 +91,17 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # why: .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test
+      # go-envoy-race, restored only: the race objects of this lane's packages and the modules
+      # they need, which ci-caches.yaml's envoy-race job builds on every push to main.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
       # The module the race step builds, downloaded once and retried before it (ci-budgets.md's
       # Retries note; the retried unit is the download, never the build and never the test).
       # 180 s per attempt, as that note derives. It runs after the restore above, so it fetches

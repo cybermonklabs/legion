@@ -80,15 +80,16 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # why: .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test
+      # go-envoy-race, restored only, as envoy-go-race restores it.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
       # As envoy-go-race's download step: 180 s per attempt, 1.6 times the 113 s of the slowest
       # cold run measured (packages/envoy/infra; packages/envoy 77 s), after the same restore.
       - name: Download the Go modules this job builds

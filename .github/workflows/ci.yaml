@@ -110,8 +110,8 @@ jobs:
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/ci.md#the-changes-jobs-budget
-    # 2040 + 3416 = 5456 s -> 91 min.
-    timeout-minutes: 91
+    # 2400 + 3416 = 5816 s -> 97 min.
+    timeout-minutes: 97
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
       # and .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
@@ -210,20 +210,26 @@ jobs:
         run: |
           [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && { [ "$IS_MAIN" = true ] || [ "$EVERY_JOB" = true ] || [[ $GITHUB_REF != refs/heads/* ]]; } && v=true || v=
           echo "every_job=$v" >> "$GITHUB_OUTPUT"
+      # Main's objects, one commit deep, as a push to main left them: the checkout then fetches only
+      # what this run's commit adds to them.
+      # why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 3
+        with:
+          path: .git
+          key: changes-git-${{ runner.os }}-${{ runner.arch }}
       # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 3
         with:
           persist-credentials: false
       # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs (no Go cache)
-      - continue-on-error: true
-        timeout-minutes: 3
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/daemon/go.mod
-          go-download-base-url: https://go.dev/dl
-          token: ''
-          cache: false
+      - name: Install the Go packages/daemon/go.mod names
+        continue-on-error: true
+        # Its own retry arithmetic, go-install-archive.sh's two fetches: the listing,
+        # 5 x 15 + 150 = 225 s, and the archive, 5 x 60 + 150 = 450 s. 225 + 450 = 675 s -> 12 min.
+        timeout-minutes: 12
+        run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
       # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - name: Setup Bun
@@ -246,6 +252,15 @@ jobs:
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      # The base's filters as the push of that commit to main computed them, which the generation
+      # reads rather than generating the base tree again.
+      # why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
+      - if: github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 3
+        with:
+          path: ${{ runner.temp }}/ci-filters-base
+          key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
       # why: .github/ci-notes/ci.md#the-changes-jobs-budget
       # 315 + 65 + 1050 = 1430 s -> 24 min.
       - name: Compute every filter from what each job reads
@@ -253,6 +268,7 @@ jobs:
         timeout-minutes: 24
         env:
           CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
+          CI_FILTERS_BASE_COMPUTED: ${{ runner.temp }}/ci-filters-base
         run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
       - name: Keep the filters this run computed
         timeout-minutes: 3

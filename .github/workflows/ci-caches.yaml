@@ -1,10 +1,14 @@
 name: CI caches
 
 # Fills, on every push to main, the Actions caches ci.yaml's jobs restore, so a pull request or a
-# merge group finds them warm: six Go families, the architecture-check and spec-check actions'
+# merge group finds them warm: seven Go families, the architecture-check and spec-check actions'
 # families, elan, bun and the two builds dispatch-two-builds compares against, which a release's
-# dispatch fills again (`only: dispatch-builds`, below). go-docs is docs-pages.yaml's.
+# dispatch fills again (`only: dispatch-builds`, below). go-docs is docs-pages.yaml's, and the
+# changes job's two entries are ci-caches-changes.yaml's, which runs once per commit rather than
+# one run at a time.
 # why: .github/ci-notes/ci-caches.md#what-this-workflow-fills-and-why-it-runs-on-a-push-to-main
+# Which jobs read each Go family, why its key carries the architecture, and which runners fill it:
+# why: .github/ci-notes/ci-caches.md#the-go-families-their-readers-and-their-runners
 # Each fill keeps in the build cache only what its own build used
 # (.github/scripts/go-cache-working-set.sh).
 # why: .github/ci-notes/ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used
@@ -439,6 +443,81 @@ jobs:
           KEY: ${{ steps.go-envoy-test.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-test-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
+  # go-envoy-race: the race build of every leg of envoy's race lane (ci_job_reads.py's
+  # ENVOY_RACE_LANE), on ubuntu-24.04-arm, its runner, and the program pg-connection-ceiling.sh
+  # runs in those jobs.
+  # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
+  envoy-race:
+    if: inputs.only != 'dispatch-builds'
+    runs-on: ubuntu-24.04-arm
+    # Budget (the Budgets note of .github/ci-budgets.md): 1200 s, the 20 minutes main's #5662
+    # wrote for it against a cold run of the race build 143 s, modules 7 s and the sizing program
+    # 15 s (probe run 45779631560), plus its one retried step, the Go module download below,
+    # 5 x 180 + 150 = 1050 s. 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 38
+    outputs:
+      go-envoy-race-arm64: ${{ steps.saved.outputs.go-envoy-race-arm64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - id: go-envoy-race
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      # The modules the builds below compile, downloaded once and retried before them, after the
+      # restore, which would otherwise unpack over what the download wrote.
+      # why: .github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-envoy-race-working-set"
+
+      # The lane's packages in ENVOY_RACE_LANE's order (check-ci-filters.sh holds this line to
+      # it), each test binary built and started as the lane's go test does, running no test.
+      - name: Build what the envoy race lane builds
+        run: |
+          go test -count=1 -race -run '^$' ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/ ./internal/dispatch/api/ ./internal/dispatch/docs/
+          go run ./internal/dispatch/store/cmd/connections
+        working-directory: packages/envoy
+
+      - name: Delete the build cache's entries the builds did not use
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-race-working-set"
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}
+
+      - name: Name the key this job saved by its architecture
+        id: saved
+        env:
+          KEY: ${{ steps.go-envoy-race.outputs.cache-primary-key }}-${{ github.sha }}
+        run: echo "go-envoy-race-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
+
   # go-envoy-darwin-vet: what envoy-go-build's "Vet envoy for darwin, its tagged tests included"
   # compiles, the standard library and every package the envoy module builds for darwin/arm64, in
   # a build cache directory of its own, the GOCACHE that step's env names, so neither this entry
@@ -539,15 +618,15 @@ jobs:
           KEY: ${{ steps.go-envoy-darwin-vet.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-darwin-vet-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
-  # The entries of go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet that the
-  # fills above replaced, deleted once each fill has saved its new one, three a leg at most, each
-  # read and each delete through the one retry at 30 s an attempt.
+  # The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-race and
+  # go-envoy-darwin-vet that the fills above replaced, deleted once each fill has saved its new
+  # one, three a leg at most, each read and each delete through the one retry at 30 s an attempt.
   # why: .github/ci-notes/ci-caches.md#the-refill-superseded-job
   # Budget (the Budgets note of .github/ci-budgets.md): 300 s, the 5 minutes this job carried,
   # plus its one retried step, 300 + 3 x 300 = 1200 s. 300 + 1200 = 1500 s -> 26 min, the whole
   # minute above a sum that is itself a whole number of minutes.
   refill-superseded:
-    needs: [daemon, notices, envoy, envoy-test, envoy-darwin-vet]
+    needs: [daemon, notices, envoy, envoy-test, envoy-race, envoy-darwin-vet]
     if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
     strategy:
       fail-fast: false
@@ -560,6 +639,7 @@ jobs:
           - { job: envoy, family: go-envoy, arch: arm64 }
           - { job: envoy-test, family: go-envoy-test, arch: x64 }
           - { job: envoy-test, family: go-envoy-test, arch: arm64 }
+          - { job: envoy-race, family: go-envoy-race, arch: arm64 }
           - { job: envoy-darwin-vet, family: go-envoy-darwin-vet, arch: x64 }
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 26
@@ -568,8 +648,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For the helpers of .github/scripts the step sources, alone: this repository is public, so
-      # the checkout needs no scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the ci-retry.sh and gh-read.sh it sources: this
+      # repository is public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs[matrix.job].outputs[format('{0}-{1}', matrix.family, matrix.arch)] != ''
         with:
@@ -577,9 +657,9 @@ jobs:
           persist-credentials: false
       - name: Delete this ref's entries of the family that the new one supersedes
         if: needs[matrix.job].outputs[format('{0}-{1}', matrix.family, matrix.arch)] != ''
-        # Its own retry arithmetic: the list and the three deletes a run makes at most,
-        # 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that is itself a whole
-        # number of minutes.
+        # Its own retry arithmetic, which is cache-superseded.sh's: the list and the three deletes
+        # a run makes at most, 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that
+        # is itself a whole number of minutes.
         timeout-minutes: 21
         env:
           GH_TOKEN: ${{ github.token }}
@@ -589,46 +669,7 @@ jobs:
           SHA: ${{ github.sha }}
           REF: ${{ github.ref }}
           STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
-        run: |
-          set -euo pipefail
-          # Each call is a ladder run through gh_wait_reset, which waits out a spent API budget
-          # only when the wait and one more ladder fit within this step's limit and the job's,
-          # and fails by name otherwise.
-          . .github/scripts/ci-retry.sh
-          source .github/scripts/gh-read.sh
-          # The readers' key: the saved one without the commit the fill put at its end.
-          base=${KEEP%"-$SHA"}
-          if [ "$base-$SHA" != "$KEEP" ]; then
-            echo "::error::the $FAMILY key this leg saved does not end in this run's commit, so nothing is deleted" >&2
-            exit 1
-          fi
-          # Newest first, by GitHub's own creation order, so the new entry is among the entries
-          # read however many older ones a failed run left behind.
-          entries=$(gh_wait_reset retry_fetch "this ref's $FAMILY entries" 30 -- \
-            gh cache list --ref "$REF" --key "$base" --sort created_at --order desc --limit 100 --json id,key,ref)
-          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new $FAMILY entry is not among this ref's entries, so none is deleted" >&2
-            exit 0
-          fi
-          superseded=$(jq -r --arg keep "$KEEP" --arg base "$base" --arg ref "$REF" \
-            '.[] | select(.ref == $ref and .key != $keep and (.key == $base or (.key | startswith($base + "-")))) | .id' <<<"$entries")
-          ids=()
-          [ -z "$superseded" ] || mapfile -t ids <<<"$superseded"
-          # Three at most, newest first: the job's comment says why three.
-          for slot in 1 2 3; do
-            [ "$slot" -le "${#ids[@]}" ] || break
-            id=${ids[$((slot - 1))]}
-            if ! [[ $id =~ ^[0-9]+$ ]]; then
-              echo "::error::the cache list gave an id that is not a number, so nothing more is deleted" >&2
-              exit 1
-            fi
-            echo "Deleting $FAMILY entry $id, which the new entry supersedes"
-            gh_wait_reset retry_fetch "the deletion of $FAMILY entry $id" 30 -- \
-              gh cache delete "$id"
-          done
-          if [ "${#ids[@]}" -gt 3 ]; then
-            echo "::warning::$((${#ids[@]} - 3)) more of this ref's $FAMILY entries the new one supersedes stay for the next fill to delete: a run deletes three at most" >&2
-          fi
+        run: .github/scripts/cache-superseded.sh commit "$FAMILY"
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/architecture-check, run as ci.yaml's envoy-go-build runs it: the action
@@ -792,11 +833,11 @@ jobs:
           key: ${{ steps.go-envoy-infra.outputs.cache-primary-key }}
 
   # The go-envoy-infra entries the fill above superseded, deleted once it has saved the new one,
-  # each read and each delete through the one retry at 30 s an attempt.
+  # three a leg at most, each read and each delete through the one retry at 30 s an attempt.
   # why: .github/ci-notes/ci-caches.md#the-envoy-infra-superseded-job
   # Budget (the Budgets note of .github/ci-budgets.md): 300 s, the 5 minutes this job carried,
-  # plus its one retried step, 600 s. 300 + 600 = 900 s -> 16 min, the whole minute above a sum
-  # that is itself a whole number of minutes.
+  # plus its one retried step, 300 + 3 x 300 = 1200 s. 300 + 1200 = 1500 s -> 26 min, the whole
+  # minute above a sum that is itself a whole number of minutes.
   envoy-infra-superseded:
     needs: envoy-infra
     if: needs.envoy-infra.outputs.filled-x64 == 'true' || needs.envoy-infra.outputs.filled-arm64 == 'true'
@@ -805,16 +846,16 @@ jobs:
       matrix:
         arch: [x64, arm64]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 16
+    timeout-minutes: 26
     env:
-      JOB_TIMEOUT_MINUTES: 16 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 26 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
       contents: read
     steps:
-      # For the helpers of .github/scripts the step sources, alone: this repository is public, so
-      # the checkout needs no scope beyond the one the deletes need, and it leaves no credential
-      # behind.
+      # For .github/scripts/cache-superseded.sh and the ci-retry.sh and gh-read.sh it sources: this
+      # repository is public, so the checkout needs no scope beyond the one the deletes need, and
+      # it leaves no credential behind.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
         with:
@@ -822,42 +863,17 @@ jobs:
           persist-credentials: false
       - name: Delete this ref's go-envoy-infra entries the new one supersedes
         if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
-        # Its own retry arithmetic: the list and the one delete a common run makes,
-        # 300 + 300 = 600 s -> 11 min, the whole minute above a sum that is itself a whole number
-        # of minutes.
-        timeout-minutes: 11
+        # Its own retry arithmetic, which is cache-superseded.sh's: the list and the three deletes
+        # a run makes at most, 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that
+        # is itself a whole number of minutes.
+        timeout-minutes: 21
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           KEEP: ${{ needs.envoy-infra.outputs[format('key-{0}', matrix.arch)] }}
           REF: ${{ github.ref }}
-          STEP_TIMEOUT_MINUTES: 11 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
-        run: |
-          set -euo pipefail
-          # Each call is a ladder run through gh_wait_reset, which waits out a spent API budget
-          # only when the wait and one more ladder fit within this step's limit and the job's,
-          # and fails by name otherwise.
-          . .github/scripts/ci-retry.sh
-          source .github/scripts/gh-read.sh
-          entries=$(gh_wait_reset retry_fetch "this ref's go-envoy-infra entries" 30 -- \
-            gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
-          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted" >&2
-            exit 0
-          fi
-          jq -r --arg keep "$KEEP" --arg ref "$REF" \
-            'def base: gsub("-[0-9a-f]{64}"; "");
-             .[] | select(.ref == $ref and (.key | startswith("go-envoy-infra-")) and .key != $keep
-                          and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
-            while read -r id; do
-              if ! [[ $id =~ ^[0-9]+$ ]]; then
-                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted" >&2
-                exit 1
-              fi
-              echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
-              gh_wait_reset retry_fetch "the deletion of go-envoy-infra entry $id" 30 -- \
-                gh cache delete "$id"
-            done
+          STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        run: .github/scripts/cache-superseded.sh hash go-envoy-infra
 
   # The two builds ci.yaml's dispatch-two-builds job runs the tree against, the previous release's
   # and the pinned first-rollout release's, which that job restores and never saves: this job
@@ -987,8 +1003,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For the helpers of .github/scripts the step sources, alone: this repository is public, so
-      # the checkout needs no scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the ci-retry.sh and gh-read.sh it sources: this
+      # repository is public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.dispatch-builds.outputs[matrix.build] != ''
         with:
@@ -996,9 +1012,9 @@ jobs:
           persist-credentials: false
       - name: Delete this Dispatch build's entries older than main's, and every other ref's
         if: needs.dispatch-builds.outputs[matrix.build] != ''
-        # Its own retry arithmetic: the list and the three deletes a run makes at most,
-        # 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that is itself a whole
-        # number of minutes.
+        # Its own retry arithmetic, which is cache-superseded.sh's: the list and the three deletes
+        # a run makes at most, 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that
+        # is itself a whole number of minutes.
         timeout-minutes: 21
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1006,49 +1022,7 @@ jobs:
           KEEP: ${{ needs.dispatch-builds.outputs[matrix.build] }}
           REF: ${{ github.ref }}
           STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
-        run: |
-          set -euo pipefail
-          # Each call is a ladder run through gh_wait_reset, which waits out a spent API budget
-          # only when the wait and one more ladder fit within this step's limit and the job's,
-          # and fails by name otherwise.
-          . .github/scripts/ci-retry.sh
-          source .github/scripts/gh-read.sh
-          if ! [[ $KEEP =~ ^dispatch-(previous|first-rollout)-build-[A-Za-z0-9]+-[A-Za-z0-9]+-[0-9a-f]{64}-[0-9a-f]{40}$ ]]; then
-            echo "::error::the kept key does not have the shape dispatch-builds gives it, so nothing is deleted" >&2
-            exit 1
-          fi
-          # The build, OS and architecture: the key without its script hash and commit.
-          prefix=${KEEP%-*}
-          prefix=${prefix%-*}-
-          # Every ref's entries, newest first by GitHub's creation order; gh pages past 100 up to
-          # the limit, far above what one build holds.
-          entries=$(gh_wait_reset retry_fetch "every ref's entries of $prefix" 30 -- \
-            gh cache list --key "$prefix" --sort created_at --order desc --limit 1000 --json id,key,ref)
-          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::main holds no entry under $KEEP, so none is deleted" >&2
-            exit 0
-          fi
-          superseded=$(jq -r --arg keep "$KEEP" --arg ref "$REF" --arg prefix "$prefix" \
-            '(map(.key == $keep and .ref == $ref) | index(true)) as $kept
-             | to_entries[] | .key as $at | .value
-             | select((.key | startswith($prefix)) and (.ref != $ref or $at > $kept)) | .id' <<<"$entries")
-          ids=()
-          [ -z "$superseded" ] || mapfile -t ids <<<"$superseded"
-          # Three at most, newest first: the job's comment says why three.
-          for slot in 1 2 3; do
-            [ "$slot" -le "${#ids[@]}" ] || break
-            id=${ids[$((slot - 1))]}
-            if ! [[ $id =~ ^[0-9]+$ ]]; then
-              echo "::error::the cache list gave an id that is not a number, so nothing more is deleted" >&2
-              exit 1
-            fi
-            echo "Deleting entry $id of $prefix, which this repository keeps no more"
-            gh_wait_reset retry_fetch "the deletion of entry $id of $prefix" 30 -- \
-              gh cache delete "$id"
-          done
-          if [ "${#ids[@]}" -gt 3 ]; then
-            echo "::warning::$((${#ids[@]} - 3)) more entries of $prefix this repository keeps no more stay for the next run to delete: a run deletes three at most" >&2
-          fi
+        run: .github/scripts/cache-superseded.sh build
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
   # needs. No setup-go and no Go family: the key is the runner's architecture, since elan and the

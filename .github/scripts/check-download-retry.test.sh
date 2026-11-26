@@ -287,24 +287,6 @@ jobs:
               gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
           done <<<"$tokens"
 YAML
-  # The loop over the go-envoy-infra entries a fill supersedes, main's #4253's step, which the
-  # merge of main 6ef60ff0 priced with a DECLARED_LOOPS entry of its own: that entry matches
-  # nothing in a tree without the step, so every fixture carries it, as it carries the others.
-  cat > "$root/.github/workflows/ci-caches.yaml" <<'YAML'
-name: CI caches
-on: [push]
-jobs:
-  envoy-infra-prune:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Delete this ref's go-envoy-infra entries the new one supersedes
-        timeout-minutes: 6
-        run: |
-          . .github/scripts/ci-retry.sh
-          while read -r id; do
-            retry_fetch "the deletion of go-envoy-infra entry $id" 30 -- gh cache delete "$id"
-          done <<<"$ids"
-YAML
   # check-pr-text.sh's three loops that hold a `gh api` read, each of which a DECLARED_LOOPS entry
   # names by its first line: `while :; do` (main's #4956 made it the GraphQL rounds; this fixture
   # keeps a page loop under that first line) and the two main's #4256 added. Every fixture

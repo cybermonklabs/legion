@@ -5540,16 +5540,6 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "prints one line on standard output, `dispatch <sha>`, naming the head "
                        "when it reached main untested, so the loop over its acts runs this "
                        "call once. 1 x (5 x 30 + 150) = 300 s"),
-    DeclaredArithmetic(".github/workflows/ci-caches.yaml",
-                       "Delete this ref's go-envoy-infra entries the new one supersedes",
-                       "gh cache delete", 300,
-                       "one delete per entry of this ref the new go-envoy-infra entry "
-                       "supersedes, and a fill supersedes the one entry the fill before it "
-                       "saved, so a common run deletes one: 1 x (5 x 30 + 150) = 300 s. The "
-                       "`while read` over the ids jq selects is no count this check can make, "
-                       "and the step's own comment derives its budget from that one ladder "
-                       "beside the list's (main's #4253 added the step; dispatch://INFRA-1545, "
-                       "round 38)"),
     # A script site is read with no job and no step, so these entries name no step: the call at
     # the `for path in scripts:` loop below passes step="-". check-pr-text.sh's three `gh api`
     # loops each name their loop, since one file and one verb hold all three.

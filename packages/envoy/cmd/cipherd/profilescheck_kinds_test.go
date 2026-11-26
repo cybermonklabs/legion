@@ -24,6 +24,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -215,6 +216,45 @@ func TestProfilesCheckKeepsEveryProxiedNameOfTheMoveBehindTheProxy(t *testing.T)
 	}
 	if got := linesWith(stdout, "hosts \""); !slices.Equal(got, wantHosts) {
 		t.Errorf("the move lists the hosts added %q, want %q", got, wantHosts)
+	}
+}
+
+// TestProfilesCheckServesTheFileOfProxyBlocks: the deployment's file in proxy blocks, which
+// declares no kind, is one the broker serves (policy.ParseProfiles), so the check a pull request
+// against it runs, --against its own base copy, exits 0 with nothing on stderr: the file is valid,
+// declares no kind, nothing changed, and nothing widens among what it compared, which is every name
+// behind a block, since each is behind its block under both files. It writes no UNKNOWN: a file
+// that declares no kind has no kind a source's tag could name. The control that the run reads
+// blocks at all is the fixture itself, which holds the 18 blocks proxiedOnMain lists.
+func TestProfilesCheckServesTheFileOfProxyBlocks(t *testing.T) {
+	var file jsonObject
+	decodeFixture(t, proxyBlocksFixture, &file)
+	blocks := 0
+	for _, p := range file["profiles"].([]any) {
+		if _, held := p.(jsonObject)["proxy"].(jsonObject); held {
+			blocks++
+		}
+	}
+	if blocks != len(proxiedOnMain) {
+		t.Fatalf("the fixture holds %d proxy blocks, want the %d names proxiedOnMain lists", blocks, len(proxiedOnMain))
+	}
+	code, stdout, stderr := runCheck(t, proxyBlocksFixture, "--against", proxyBlocksFixture)
+	if code != 0 || stderr != "" {
+		t.Fatalf("the file of proxy blocks against itself = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("profiles check: %s is valid: %d profiles and 0 kinds", proxyBlocksFixture, len(file["profiles"].([]any))),
+		"profiles check: nothing changed",
+		"widens: none",
+	} {
+		if !slices.Contains(strings.Split(stdout, "\n"), want) {
+			t.Errorf("the report has no line %q:\n%s", want, stdout)
+		}
+	}
+	for _, absent := range []string{"UNKNOWN", "not compared"} {
+		if strings.Contains(stdout, absent) {
+			t.Errorf("the report of a file of no kinds writes %q:\n%s", absent, stdout)
+		}
 	}
 }
 
