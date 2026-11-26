@@ -9,11 +9,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// Every database this harness hands a test runs with JIT off, as production's does, and the
-// setting is the database's own (pg_settings.source 'database'), not the server's: a server whose
-// own jit were off would answer off from its default, and the source tells the two apart. Clone's
-// database answers it, and so does testdb.Database's. Each is read through a pool, since Clone's
-// URL carries the pool keys only a pgx pool reads.
+// Every database this harness hands a test runs with JIT off, and the setting is the database's
+// own (pg_settings.source 'database'), not the server's: a server whose own jit were off would
+// answer off from its default, and the source tells the two apart. Clone's database answers it,
+// and so does testdb.Database's, each read through a pool, since Clone's URL carries the pool keys
+// only a pgx pool reads. The template refuses connections, so its own setting is read from the
+// server's catalog (pg_db_role_setting), where WithoutJIT writes it.
 func TestEveryDatabaseRunsWithoutJIT(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -34,5 +35,21 @@ func TestEveryDatabaseRunsWithoutJIT(t *testing.T) {
 		if setting != "off" || source != "database" {
 			t.Errorf("%s runs with jit = %s, from the %s; want off, set on the database", what, setting, source)
 		}
+	}
+	admin, err := pgxpool.New(ctx, Clone(t, "legion_testpg_jit"))
+	if err != nil {
+		t.Fatalf("open a pool on a clone: %v", err)
+	}
+	defer admin.Close()
+	var templateOff bool
+	if err := admin.QueryRow(ctx, `
+		select coalesce(bool_or(setting = 'jit=off'), false)
+		from pg_database d
+		join pg_db_role_setting s on s.setdatabase = d.oid and s.setrole = 0, unnest(s.setconfig) setting
+		where d.datname = $1`, shared.template).Scan(&templateOff); err != nil {
+		t.Fatalf("read the settings of the template %s: %v", shared.template, err)
+	}
+	if !templateOff {
+		t.Errorf("the template %s holds no jit = off of its own (pg_db_role_setting); want the one WithoutJIT writes", shared.template)
 	}
 }

@@ -137,14 +137,17 @@ func create(dsn, prefix string) (string, func() error, error) {
 }
 
 // WithoutJIT is the statement that turns JIT off for every session that connects to the database
-// name from then on, as production's database runs every statement: Cloud SQL does not support
-// PostgreSQL's LLVM JIT, and CI's Postgres image runs with it on. Under jit = on a statement whose
-// estimate passes jit_above_cost compiles before it runs, which production never pays (in envoy's
-// internal/dispatch/refs it was 445-475 ms of each 453-564 ms run of one statement,
-// dispatch://INFRA-1075). The setting is the database's, so it reaches every pool and process a
-// test opens there, and it goes with the database: no setting of the server changes. A clone does
-// not copy its template's settings, so every database here takes it when it is made (create,
-// testpg's template and Clone).
+// name from then on. The daemon's database is the one its operator names: a Kubernetes
+// deployment's session store is Cloud SQL (docs/kubernetes.md, session_store: cloudsql-iam), which
+// lists LLVM JIT compilation among the features it does not support
+// (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"), and a box's is
+// whatever postgres_dsn names, whose jit a test cannot know. CI's Postgres image runs with jit =
+// on, under which a statement whose estimate passes jit_above_cost compiles before it runs, so a
+// test's time would hold compilation that a Cloud SQL store never pays. The setting is the
+// database's, so it reaches every pool and process a test opens there, and it goes with the
+// database: no setting of the server changes. A clone does not copy its template's settings, so
+// every database here takes it when it is made (create, testpg's template and Clone; docs/testing.md,
+// "A database a Go test creates").
 func WithoutJIT(name string) string {
 	return "alter database " + name + " set jit = off"
 }
