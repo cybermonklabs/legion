@@ -748,9 +748,12 @@ AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # Go's cleanup detector: at each collection the runtime reports a cleanup or a finalizer whose
 # closure or argument reaches the object it is attached to. internal/dispatch/docs is the only
 # package of the repository that registers a cleanup (runtime.AddCleanup in roomcursor.go and
-# tree.go), so every run of its tests runs under it: envoy-go-race-docs' race run below, and the
-# plain run of what the race build cannot run (race_impossible_script), and no job runs the
-# package a third time for the detector alone.
+# tree.go), so every run of its untagged tests runs under it: envoy-go-race-docs' race run below,
+# and the plain run of what the race build cannot run (race_impossible_script), and no job runs
+# those a third time for the detector alone. The memory step's run of the package's `memory`
+# tests (MEMORY_SCRIPT) runs without it: the one test that tag adds there,
+# TestThePassLockTimeGrowsLinearlyWithTheRoom, holds a pass's lock time to a ratio between two
+# room sizes, and the detector adds its own work to each collection inside the times it compares.
 CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
 CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
