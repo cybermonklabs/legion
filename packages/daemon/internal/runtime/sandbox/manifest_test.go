@@ -1447,8 +1447,8 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"bad project":               {func(o *Options) { o.Project = "s4a run" }, "is not a label value"},
 		"url no bearer":             {func(o *Options) { o.DispatchURL = "https://dispatch.internal" }, "configured together"},
 		"bearer no url":             {func(o *Options) { o.Dispatch.Bearer = "dispatch-bearer" }, "configured together"},
-		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool is the runtime's"},
-		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool is the runtime's"},
+		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool"},
+		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool"},
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
 		"no gh credential":          {func(o *Options) { o.GitHubCredential = nil }, "no github credential function"},
 		"no gh dirs":                {func(o *Options) { o.GitHubDirs = nil }, "no github directories function"},
@@ -2400,6 +2400,81 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 			}
 			if got := pod["tolerations"]; !reflect.DeepEqual(got, tolerations) {
 				t.Errorf("the pod tolerates %v, want exactly %v", got, tolerations)
+			}
+		})
+	}
+}
+
+// No pod the runtime builds carries the Legion pool's placement: its node selector has no
+// legion.dev/pool key and none of its tolerations is of that key, so a Legion pod runs on the
+// cluster's general nodes. Beside any legion.dev/pool entry, a gVisor pod's selector and
+// tolerations are the operator's scheduling exactly as configured, and a microVM pod's are those
+// and its ComputeClass's label and the toleration of the taint GKE puts on that class's nodes,
+// and nothing else. Each pod runs under its sandbox's RuntimeClass, gVisor's or the microVM one.
+// The pods are an issue's, fresh and resumed, the controller's of a gVisor project, a repository
+// cache's, the image probe's, an issue's whose issue runs in a microVM and the controller's of a
+// microVM project, each built under no scheduling at all and under an operator's selector and
+// toleration of keys other than the pool's.
+func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
+	t.Parallel()
+	// poolLabel is the Legion pool's node label and the key of its taint, written out so the test
+	// holds this key and not whatever the runtime's constant names.
+	const poolLabel = "legion.dev/pool"
+	resume := workerSpec(t)
+	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", resumeSession
+	block := testMicroVM()
+	dedicated := corev1.Toleration{Key: "example.com/dedicated", Operator: corev1.TolerationOpEqual, Value: "builds", Effect: corev1.TaintEffectNoSchedule}
+	for name, scheduling := range map[string]Scheduling{
+		"no scheduling":             {},
+		"the operator's scheduling": {NodeSelector: map[string]string{"kubernetes.io/arch": "amd64"}, Tolerations: []corev1.Toleration{dedicated}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			configured := func(o *Options) { o.Scheduling = scheduling }
+			gVisor := sandboxRuntime(t, SandboxConfig{}, configured)
+			microVM := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block}, configured)
+			probe := gVisor.probeManifest(probeSandboxName, ImageProbe{Contract: 3, RoleReferences: testRoleReferences}, time.Now())
+			for what, tc := range map[string]struct {
+				pod corev1.PodSpec
+				// class is the ComputeClass a microVM pod runs on, and "" for a gVisor pod.
+				class string
+			}{
+				"a fresh issue pod":                         {podOf(t, gVisor, rootSpec(t)), ""},
+				"a resumed issue pod":                       {podOf(t, gVisor, resume), ""},
+				"the controller's pod of a gVisor project":  {podOf(t, gVisor, controllerSpec(t)), ""},
+				"a repository cache pod":                    {gVisor.cacheManifest(cacheRepo).Spec.PodTemplate.Spec, ""},
+				"the image probe pod":                       {probe.Spec.PodTemplate.Spec, ""},
+				"a microVM issue pod":                       {podOf(t, microVM, rootSpec(t)), block.ComputeClass},
+				"the controller's pod of a microVM project": {podOf(t, microVM, controllerSpec(t)), block.ComputeClass},
+			} {
+				t.Run(what, func(t *testing.T) {
+					if value, ok := tc.pod.NodeSelector[poolLabel]; ok {
+						t.Errorf("the pod selects the Legion pool's label %s=%q, want no %s key in its node selector", poolLabel, value, poolLabel)
+					}
+					for _, toleration := range tc.pod.Tolerations {
+						if toleration.Key == poolLabel {
+							t.Errorf("the pod tolerates the Legion pool's taint %+v, want no toleration of %s", toleration, poolLabel)
+						}
+					}
+					selector := maps.Clone(tc.pod.NodeSelector)
+					delete(selector, poolLabel)
+					tolerations := slices.DeleteFunc(slices.Clone(tc.pod.Tolerations), func(toleration corev1.Toleration) bool { return toleration.Key == poolLabel })
+					wantSelector, wantTolerations, runtimeClass := map[string]string{}, slices.Clone(scheduling.Tolerations), gvisor
+					maps.Copy(wantSelector, scheduling.NodeSelector)
+					if tc.class != "" {
+						wantSelector[computeClassKey] = tc.class
+						wantTolerations = append(wantTolerations, computeClassToleration(tc.class))
+						runtimeClass = microVMRuntimeClass
+					}
+					if !maps.Equal(selector, wantSelector) {
+						t.Errorf("less any %s key, the pod selects %v, want exactly %v", poolLabel, selector, wantSelector)
+					}
+					if !slices.Equal(tolerations, wantTolerations) {
+						t.Errorf("less any toleration of %s, the pod tolerates %+v, want exactly %+v", poolLabel, tolerations, wantTolerations)
+					}
+					if got := tc.pod.RuntimeClassName; got == nil || *got != runtimeClass {
+						t.Errorf("the pod runs under the RuntimeClass %s, want %s", runtimeClassText(got), runtimeClass)
+					}
+				})
 			}
 		})
 	}

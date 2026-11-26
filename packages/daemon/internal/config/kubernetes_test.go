@@ -212,6 +212,26 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 	}
 }
 
+// A scheduling block that selects one node label and tolerates one taint, neither of them the
+// Legion pool's, loads, and settles to that selector and that toleration as the file writes them.
+func TestLoadForValidationReadsASchedulingBlockAsWritten(t *testing.T) {
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+`    scheduling:
+      node_selector: {kubernetes.io/arch: amd64}
+      tolerations:
+        - {key: example.com/dedicated, operator: Equal, value: builds, effect: NoSchedule}
+`), noEnv)
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	want := Scheduling{
+		NodeSelector: map[string]string{"kubernetes.io/arch": "amd64"},
+		Tolerations:  []Toleration{{Key: "example.com/dedicated", Operator: "Equal", Value: "builds", Effect: "NoSchedule"}},
+	}
+	if got := cfg.Runtime.Kubernetes.Scheduling; !reflect.DeepEqual(got, want) {
+		t.Errorf("scheduling = %#v, want %#v", got, want)
+	}
+}
+
 // A share's source is read-only exactly when no volume_mounts entry mounts it writable, for a claim
 // and an NFS export alike, and for a share mounted twice, once of each kind: the kubelet changes
 // ownership on, and the node mounts `-o ro`, only by the source's readOnly. A ConfigMap's source is
@@ -815,6 +835,9 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		name string
 		body string
 		want string
+		// contains is set where want is a part of the refusal and not all of it: the refusal must
+		// hold want, and its other words are free.
+		contains bool
 	}{
 		{
 			name: "the kubernetes scalar with no block",
@@ -1002,9 +1025,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "runtime.kubernetes.scheduling.node_selector must be a mapping of strings",
 		},
 		{
-			name: "node_selector setting the Legion pool",
-			body: kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
-			want: "runtime.kubernetes.scheduling.node_selector must not set legion.dev/pool: the runtime selects the Legion pool itself, and the cluster's admission policy requires its value",
+			name:     "node_selector setting the Legion pool",
+			body:     kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
+			want:     "legion.dev/pool",
+			contains: true,
 		},
 		{
 			name: "tolerations not an array",
@@ -1751,7 +1775,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			if err == nil {
 				t.Fatalf("LoadForValidation succeeded, want %q", tc.want)
 			}
-			if err.Error() != tc.want {
+			switch {
+			case tc.contains && !strings.Contains(err.Error(), tc.want):
+				t.Errorf("LoadForValidation error =\n%q\nwant one holding\n%q", err.Error(), tc.want)
+			case !tc.contains && err.Error() != tc.want:
 				t.Errorf("LoadForValidation error =\n%q\nwant\n%q", err.Error(), tc.want)
 			}
 		})
