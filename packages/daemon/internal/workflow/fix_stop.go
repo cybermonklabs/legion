@@ -47,7 +47,7 @@ func (e *Engine) dropFixWay(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		runs.deleteAfterOldRuns[runAt{issue: issue.Key, generation: issue.Generation, place: record.StepPlace{Task: w.Task}}] = issue
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil || fix.Way != 0 {
+	if err != nil || fix == nil || fix.Way != 0 || fix.State != record.FixRunning {
 		return err
 	}
 	fix.Way = wayNone
