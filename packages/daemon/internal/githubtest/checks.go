@@ -325,8 +325,8 @@ func (c *Checks) checkRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.mu.Lock()
-	left := checkRunsFiltered(c.runs[repo+"@"+sha], asked.filter)
-	served := checkRunsPage(left, asked.perPage, asked.page)
+	left := slices.Clone(c.runs[repo+"@"+sha])
+	served := left
 	c.reads = append(c.reads, CheckRunsRead{At: time.Now(), Repo: repo, SHA: sha,
 		Filter: asked.filter, PerPage: asked.perPage, Page: asked.page, Runs: served})
 	c.mu.Unlock()
