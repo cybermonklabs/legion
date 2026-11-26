@@ -5518,6 +5518,10 @@ test("an ask withdrawn while the reader types its answer in the Inbox's list tak
     if (surface === "page at 390x664") {
       await page.setViewportSize({ height: 664, width: 390 });
       await page.goto("/");
+      // Below 1280 px the Inbox draws a row's card only in that row's reading view, so the reader
+      // opens the question's row and answers it there.
+      await selectRow(page, withdrawn);
+      root = readingView(page);
     } else {
       await page.setViewportSize({ height: 900, width: 1440 });
       await page.goto("/settings");
