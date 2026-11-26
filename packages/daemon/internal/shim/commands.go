@@ -133,24 +133,28 @@ type openedWorkspace struct {
 // request's commands at once. env is the environment the request's commands run with: the shim's
 // own (s.cfg.Env) for the read, and for the adoption that environment with the requested identity
 // added (JJ_USER, JJ_EMAIL). verb is what the caller does to the workspace ("read", "adopt"). The
-// project release's read of unpushed work (readUnpushed) does not go through it: it refuses a shim
-// with no LEGION_WORKSPACE in words of its own, and opens the workspace with openWorkspaceAt
-// through ReadUnpushed, which a test's stand-in agent runs on a workspace of its own.
+// commands start through the shim's guard (s.children.Starter), so the shim's reaper leaves their
+// exits to them. The project release's read of unpushed work (readUnpushed) does not go through
+// it: it refuses a shim with no LEGION_WORKSPACE in words of its own, and opens the workspace with
+// openWorkspaceAt through ReadUnpushed, which a test's stand-in agent runs on a workspace of its
+// own.
 func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {
 		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: LEGION_WORKSPACE is not set; no workspace to %s", verb)
 	}
-	return openWorkspaceAt(s.commands, dir, verb, env, budget)
+	start := s.children.Starter()
+	return openWorkspaceAt(s.commands, start, dir, verb, env, budget)
 }
 
 // openWorkspaceAt opens the workspace at dir for one request's commands: with the jj of PATH,
 // which the pane's or pod's own shell runs, since no runtime pins it on a pane or a pod, the
-// environment env, and the budget as a bound on ctx rather than a context of its own, so the end of
-// ctx ends the request's commands at once and a command that outlives the budget is still reported
-// as a timeout. The caller calls done once its commands have run. A PATH with no jj is refused with
-// "no jj to <verb> the workspace with", verb being what the caller does to the workspace.
-func openWorkspaceAt(ctx context.Context, dir, verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
+// environment env, each command started by start (a shim's guard, procgroup.NoReaper outside a
+// shim), and the budget as a bound on ctx rather than a context of its own, so the end of ctx ends
+// the request's commands at once and a command that outlives the budget is still reported as a
+// timeout. The caller calls done once its commands have run. A PATH with no jj is refused with "no
+// jj to <verb> the workspace with", verb being what the caller does to the workspace.
+func openWorkspaceAt(ctx context.Context, start procgroup.Starter, dir, verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
 		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to %s the workspace with", os.Getenv("PATH"), verb)
@@ -158,7 +162,7 @@ func openWorkspaceAt(ctx context.Context, dir, verb string, env []string, budget
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	started := time.Now()
 	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, stdin, args)
+		return workspace.RunCommand(ctx, start, budget, started, env, dir, stdin, args)
 	}
 	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
 }

@@ -275,12 +275,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			t.Fatalf("force reconnect: %v", err)
 		}
 		proxy.Restore()
-		var got error
-		select {
-		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the takeover record write interrupted by reconnect did not return")
-		}
+		got := testwait.Receive(t, "the takeover record write interrupted by reconnect to return", answered)
 		if got != nil {
 			t.Fatalf("a takeover record write the stream stored before the reconnect = %v, want nil: the subject holds the record", got)
 		}

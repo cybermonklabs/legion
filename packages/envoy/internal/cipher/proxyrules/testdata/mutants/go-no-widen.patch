@@ -1,0 +1,18 @@
+# go-no-widen: check skips the kind's allow for a name whose profile has an allow of its own,
+# so a profile row the kind does not allow widens the kind. The Go twin of lean-no-widen.
+# Caught by the comparison fuzz test: the model still answers "not allowed by rule" for a
+# request the profile allows and the kind does not. Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -703,7 +703,9 @@
+ 		return nil, "path has a parameter on a dot segment"
+ 	case listed && hasDoubleEncoding(r.Path):
+ 		return nil, "path has a double-encoded character"
+-	case !allowOK(k.Allow, r):
++	// MUTANT: a name whose profile has an allow of its own skips its kind's allow, so a
++	// profile row the kind does not allow widens the kind.
++	case b.Allow == nil && !allowOK(k.Allow, r):
+ 		return nil, "not allowed by rule"
+ 	case !allowOK(b.Allow, r):
+ 		return nil, "not allowed by the profile's rule"

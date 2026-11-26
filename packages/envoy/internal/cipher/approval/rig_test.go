@@ -74,9 +74,10 @@ type rig struct {
 // rigSetup is what a test changes of the broker newRig wires: secrets served beside the four
 // every rig serves, the client of Dispatch's project access the request machine and the
 // enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), a profiles
-// file ("" for none), whose proxy blocks the request machine holds in force, and the group reader
-// every decision site asks (nil for none). A rig holding a client serves a secret tagged with a
-// project, as cmd/cipherd's does (Loader.ProjectChecks).
+// file ("" for none), whose kinds the request machine reads from the live policy as cmd/cipherd's
+// does (requests.Machine.AirlockRules), and the group reader every decision site asks (nil for
+// none). A rig holding a client serves a secret tagged with a project, as cmd/cipherd's does
+// (Loader.ProjectChecks).
 type rigSetup struct {
 	secrets  []secrets.LocalSecret
 	projects projectaccess.Access
@@ -129,12 +130,9 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
 		Groups: setup.groups,
 	}
-	if setup.profiles != "" {
-		reqMachine.Airlock = loader.Profiles.ProxyRules()
-	}
-	// After the airlock rules, as cmd/cipherd orders them: the verifier holds the judge's rules
-	// (requests.NewChainVerifier) from the rules it is given.
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	// As cmd/cipherd builds it: the verifier holds a judge's approvals to the judge tags of the
+	// live policy the machine holds (requests.NewChainVerifier).
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
 	reqMachine.Chain.Groups = setup.groups
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{

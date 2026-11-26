@@ -204,7 +204,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		// the machine reads as that issuer's name against the entry of the pod's account.
 		Issuers: podIssuers,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,

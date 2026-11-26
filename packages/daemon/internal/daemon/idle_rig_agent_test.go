@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	workershim "github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -1290,7 +1291,7 @@ func (p *idleRigRoleProcess) readUnpushed(read shimwire.ReadUnpushed) error {
 	case err != nil:
 		answer.OK, answer.Error = false, err.Error()
 	case ok:
-		work, err := workershim.ReadUnpushed(context.Background(), ws.Dir, ws.Env, read)
+		work, err := workershim.ReadUnpushed(context.Background(), procgroup.NoReaper, ws.Dir, ws.Env, read)
 		if err != nil {
 			answer.OK, answer.Error = false, err.Error()
 		} else {

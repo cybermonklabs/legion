@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -291,7 +292,7 @@ func requireUnpushed(t *testing.T, home, ws string, env []string, request shimwi
 		t.Fatalf("the shim answered %#v, want %d unpushed commits and a working copy changed=%v", got, want.Commits, want.WorkingCopyChanged)
 	}
 	// The read a test's stand-in agent answers with is the shim's own.
-	if direct, err := shim.ReadUnpushed(context.Background(), ws, env, request); err != nil || direct != want {
+	if direct, err := shim.ReadUnpushed(context.Background(), procgroup.NoReaper, ws, env, request); err != nil || direct != want {
 		t.Fatalf("shim.ReadUnpushed = %#v, %v; want %#v", direct, err, want)
 	}
 	if calls := gitRecord(t, record); calls != "" {

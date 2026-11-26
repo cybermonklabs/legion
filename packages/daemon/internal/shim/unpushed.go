@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -118,14 +119,16 @@ type Unpushed struct {
 // names go into the revset. Its first jj runs without --ignore-working-copy, so jj snapshots the
 // working copy before it reads whether the working copy holds a change: a change not yet
 // snapshotted is unpushed work too. The count after it is --ignore-working-copy, so both facts
-// describe one state of the workspace. Both commands run in dir itself (workspace.RunCommand). It
-// is exported for a test's stand-in agent, which answers the daemon's read-unpushed on a workspace
-// of its own as this shim does.
-func ReadUnpushed(ctx context.Context, dir string, env []string, request shimwire.ReadUnpushed) (Unpushed, error) {
+// describe one state of the workspace. Both commands run in dir itself (workspace.RunCommand),
+// each started by start: the shim's guard (s.children.Starter) for the shim's own read, so the
+// shim's reaper leaves their exits to them. It is exported for a test's stand-in agent, which
+// answers the daemon's read-unpushed on a workspace of its own as this shim does, outside any
+// shim, with procgroup.NoReaper.
+func ReadUnpushed(ctx context.Context, start procgroup.Starter, dir string, env []string, request shimwire.ReadUnpushed) (Unpushed, error) {
 	if err := request.Validate(); err != nil {
 		return Unpushed{}, err
 	}
-	opened, done, err := openWorkspaceAt(ctx, dir, "read", env, time.Duration(request.TimeoutMs)*time.Millisecond)
+	opened, done, err := openWorkspaceAt(ctx, start, dir, "read", env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
 		return Unpushed{}, err
 	}
@@ -159,7 +162,7 @@ func (s *shim) readUnpushed(request shimwire.ReadUnpushed) {
 		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else if dir := envValue(s.cfg.Env, "LEGION_WORKSPACE"); dir == "" {
 		result.OK, result.Error = false, "worker-shim: LEGION_WORKSPACE is not set; no workspace to read for unpushed work"
-	} else if read, err := ReadUnpushed(s.commands, dir, s.cfg.Env, request); err != nil {
+	} else if read, err := ReadUnpushed(s.commands, s.children.Starter(), dir, s.cfg.Env, request); err != nil {
 		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else {
 		result.Commits, result.WorkingCopyChanged = read.Commits, read.WorkingCopyChanged

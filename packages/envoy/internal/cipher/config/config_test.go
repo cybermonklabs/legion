@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -442,7 +444,7 @@ func TestLoadRefusesTheAirlockRulesFileSetting(t *testing.T) {
 }
 
 // airlockEnv is validEnv with the airlock in force: a profiles file and the three settings the
-// proxy of its proxy blocks cannot run without.
+// proxy of its kinds and dpop blocks cannot run without.
 func airlockEnv() map[string]string {
 	e := validEnv()
 	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
@@ -452,15 +454,38 @@ func airlockEnv() map[string]string {
 	return e
 }
 
-// TestTheAirlocksProxySettingsAreRequiredForAProxyBlock: a broker whose profiles hold a proxy
-// block but that cannot proxy would hold back every name such a block names and release nothing
-// in its place, so each missing setting refuses the boot by name, beside the profiles whose proxy
-// blocks need it. A profiles file is not a proxy block: Load takes one with none of the settings,
-// and RequireAirlock of profiles with no proxy block - a deployment that serves GitHub Apps and
-// runs no airlock - asks for none of them. With no profiles file there is no proxy and the four
-// are ignored, whatever they say.
-func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
-	proxied := []string{"DEEL_API_KEY", "STORED_TOKEN_READ"}
+// subjectsFile is a profiles file of two kinds, github and slack, a profile behind github by its
+// proxy string, and two dpop blocks, TEST_MINTED_TOKEN and then APPROVE_TOKEN, out of name order,
+// so a list of its subjects in the file's order is told from one in name order.
+const subjectsFile = `{"kinds": [` +
+	`{"name": "github", "hosts": ["api.github.com"], "ways": ["swap", "mint"]}, ` +
+	`{"name": "slack", "hosts": ["slack.com"], "ways": ["swap"]}], ` +
+	`"profiles": [` +
+	`{"name": "GITHUB_READ", "source": "GITHUB_PAT", "proxy": "github"}, ` +
+	`{"name": "TEST_MINTED_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}, ` +
+	`{"name": "APPROVE_TOKEN", "proxy": {"hosts": ["approve.test"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/approve/"}]}}]}`
+
+// fileRules is the file's own part of the airlock's rules as the boot reads it: its kinds and its
+// dpop blocks (policy.Profiles.FileRules).
+func fileRules(t *testing.T, file string) proxyrules.Rules {
+	t.Helper()
+	profiles, err := policy.ParseProfiles([]byte(file))
+	if err != nil {
+		t.Fatalf("ParseProfiles: %v", err)
+	}
+	return profiles.FileRules()
+}
+
+// TestTheAirlocksProxySettingsAreRequiredForAKindOrADPoPBlock: a broker whose profiles file
+// declares a kind or holds a dpop block but that cannot proxy would hold back every name a proxy
+// tag puts behind such a kind, or the dpop block names, and release nothing in its place, so each
+// missing setting refuses the boot by name, beside each kind and dpop block that needs it
+// (AirlockSubjects). A profiles file is not a kind: Load takes one with none of the settings, and
+// RequireAirlock of a file of neither - a deployment that serves GitHub Apps and runs no airlock -
+// asks for none of them. With no profiles file there is no proxy and the four are ignored,
+// whatever they say.
+func TestTheAirlocksProxySettingsAreRequiredForAKindOrADPoPBlock(t *testing.T) {
+	proxied := AirlockSubjects(fileRules(t, subjectsFile))
 	cfg, err := Load(env(airlockEnv()))
 	if err != nil {
 		t.Fatalf("Load with the airlock fully configured: %v", err)
@@ -473,22 +498,24 @@ func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
 		delete(e, missing)
 		cfg, err := Load(env(e))
 		if err != nil {
-			t.Fatalf("Load without %s = %v; want it taken, since a profiles file need not hold a proxy block", missing, err)
+			t.Fatalf("Load without %s = %v; want it taken, since a profiles file need not declare a kind", missing, err)
 		}
 		err = cfg.RequireAirlock(proxied)
-		if err == nil || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || !strings.Contains(err.Error(), "DEEL_API_KEY, STORED_TOKEN_READ") || !strings.Contains(err.Error(), "missing "+missing) {
-			t.Errorf("RequireAirlock without %s = %v; want a refusal naming the profiles file, the profiles with a proxy block and the missing setting", missing, err)
+		const declares = "BROKER_PROFILES_FILE declares kind github, kind slack, dpop block TEST_MINTED_TOKEN, dpop block APPROVE_TOKEN, so the broker runs the airlock's proxy for them"
+		if err == nil || !strings.Contains(err.Error(), declares) || !strings.Contains(err.Error(), "missing "+missing) {
+			t.Errorf("RequireAirlock without %s = %v; want a refusal that says %q and names the missing setting", missing, err, declares)
 		}
 	}
 
-	// A profiles file whose profiles hold no proxy block, with none of the proxy's settings.
+	// A profiles file that declares no kind and holds no dpop block, with none of the proxy's
+	// settings.
 	e := validEnv()
 	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
 	if cfg, err = Load(env(e)); err != nil {
 		t.Fatalf("Load with a profiles file and none of the proxy's settings: %v", err)
 	}
 	if err := cfg.RequireAirlock(nil); err != nil {
-		t.Fatalf("RequireAirlock of profiles with no proxy block and none of the proxy's settings: %v; want nil", err)
+		t.Fatalf("RequireAirlock of a file of no kind and no dpop block, with none of the proxy's settings: %v; want nil", err)
 	}
 
 	// No profiles file: the same configuration minus the file, and minus every proxy setting, is
@@ -513,6 +540,64 @@ func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
 	}
 	if cfg.AirlockListenAddr != "127.0.0.1:13381" || cfg.AirlockIdleSeconds != 300 {
 		t.Errorf("default airlock listen addr = %q and idle = %d; want 127.0.0.1:13381 and 300", cfg.AirlockListenAddr, cfg.AirlockIdleSeconds)
+	}
+}
+
+// TestAirlockSubjectsNamesEachKindAndEachDPoPBlock: what of a profiles file puts a credential
+// behind the proxy is each kind it declares, whether or not a secret is tagged with it yet, since
+// a proxy tag set at runtime puts a name behind it with no new boot, and each dpop block; a profile
+// behind a kind adds no subject of its own. Kinds come first, then dpop blocks, each in the file's
+// order. A file of either alone needs the proxy, so RequireAirlock refuses it with none of the
+// proxy's settings, and a file of neither answers nil, which needs none.
+func TestAirlockSubjectsNamesEachKindAndEachDPoPBlock(t *testing.T) {
+	e := validEnv()
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
+	bare, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a profiles file and none of the proxy's settings: %v", err)
+	}
+	for _, c := range []struct {
+		name, file string
+		want       []string
+	}{
+		{"kinds, a profile behind one and dpop blocks", subjectsFile, []string{"kind github", "kind slack", "dpop block TEST_MINTED_TOKEN", "dpop block APPROVE_TOKEN"}},
+		{"a kind no profile names", `{"kinds": [{"name": "example", "hosts": ["api.example.com"], "ways": ["swap"]}], "profiles": []}`, []string{"kind example"}},
+		{"a dpop block alone", `{"profiles": [{"name": "APPROVE_TOKEN", "proxy": {"hosts": ["approve.test"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/approve/"}]}}]}`, []string{"dpop block APPROVE_TOKEN"}},
+		{"a GitHub App's profile alone", `{"profiles": [{"name": "APP_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}]}`, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := AirlockSubjects(fileRules(t, c.file))
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("AirlockSubjects = %q; want %q", got, c.want)
+			}
+			err := bare.RequireAirlock(got)
+			if c.want == nil && err != nil {
+				t.Fatalf("RequireAirlock of a file of neither kinds nor dpop blocks, with none of the proxy's settings: %v; want nil", err)
+			}
+			if c.want != nil && (err == nil || !strings.Contains(err.Error(), "declares "+strings.Join(c.want, ", ")+",")) {
+				t.Fatalf("RequireAirlock with none of the proxy's settings = %v; want a refusal naming %q", err, c.want)
+			}
+		})
+	}
+}
+
+// TestMintedEntryRulesReadsTheFilesDPoPBlocksAndKinds: the boot's dpop block checks read the
+// profiles file's own rules (policy.Profiles.FileRules), where each dpop block is an inline
+// binding of way dpop: a file whose kinds bind other hosts passes, and one with a kind that binds
+// a dpop block's host, exactly or by a "*." name, is refused naming the kind, the host and the
+// block, since a request a proxy tag sends to that host would then go out of the minted grant's
+// allow list.
+func TestMintedEntryRulesReadsTheFilesDPoPBlocksAndKinds(t *testing.T) {
+	if err := MintedEntryRules(fileRules(t, subjectsFile)); err != nil {
+		t.Fatalf("MintedEntryRules of a file whose kinds bind no dpop block's host: %v", err)
+	}
+	const block = `{"name": "TEST_MINTED_TOKEN", "proxy": {"hosts": ["dispatch.test"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}`
+	for _, host := range []string{"dispatch.test", "*.test"} {
+		file := `{"kinds": [{"name": "dispatch", "hosts": ["api.example.com", "` + host + `"], "ways": ["swap"]}], "profiles": [` + block + `]}`
+		err := MintedEntryRules(fileRules(t, file))
+		if err == nil || !strings.Contains(err.Error(), "the kind dispatch") || !strings.Contains(err.Error(), "binds dispatch.test") || !strings.Contains(err.Error(), "TEST_MINTED_TOKEN") {
+			t.Errorf("MintedEntryRules of a file whose kind binds %s = %v; want a refusal naming the kind dispatch, the host dispatch.test and TEST_MINTED_TOKEN", host, err)
+		}
 	}
 }
 
@@ -632,11 +717,11 @@ func TestLoadRefusesAClusterRangeItCannotRead(t *testing.T) {
 }
 
 // TestTheClusterRangesMustHoldTheKubernetesServiceAddress: in a cluster, which Kubernetes says by
-// setting KUBERNETES_SERVICE_HOST in every container, a broker whose profiles hold a proxy block
-// refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes
-// Service's ClusterIP, so a deployment that forgot the setting or gave the wrong range cannot pass
-// silently. Each refusal names both variables. Outside a cluster, and in a cluster with no proxy
-// block, whether or not there is a profiles file, the setting is optional.
+// setting KUBERNETES_SERVICE_HOST in every container, a broker whose profiles file declares a kind
+// or holds a dpop block refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address,
+// the kubernetes Service's ClusterIP, so a deployment that forgot the setting or gave the wrong
+// range cannot pass silently. Each refusal names both variables. Outside a cluster, and in a
+// cluster with neither, whether or not there is a profiles file, the setting is optional.
 func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 	// requireAirlock loads e, which must load, and answers RequireAirlock of proxied over it.
 	requireAirlock := func(t *testing.T, e map[string]string, proxied []string) error {
@@ -647,7 +732,7 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 		}
 		return cfg.RequireAirlock(proxied)
 	}
-	proxied := []string{"DEEL_API_KEY"}
+	proxied := []string{"kind example"}
 	for _, row := range []struct{ name, host, ranges, want string }{
 		{"the setting missing", "34.118.224.1", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
 		{"a KUBERNETES_SERVICE_HOST that is not an address", "kubernetes.default.svc", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST is not an IP address"},
@@ -704,11 +789,11 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			t.Fatalf("RequireAirlock with no profiles file in a cluster: %v", err)
 		}
 	})
-	t.Run("starts in a cluster with a profiles file that holds no proxy block and no ranges", func(t *testing.T) {
+	t.Run("starts in a cluster with a profiles file of no kind and no dpop block, and no ranges", func(t *testing.T) {
 		e := airlockEnv()
 		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
 		if err := requireAirlock(t, e, nil); err != nil {
-			t.Fatalf("RequireAirlock of profiles with no proxy block in a cluster: %v", err)
+			t.Fatalf("RequireAirlock of a file of no kind and no dpop block in a cluster: %v", err)
 		}
 	})
 }
@@ -3555,19 +3640,21 @@ func TestLoadRefusesAnySignInSwitchButOff(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlocksTestOnlySettings pins each of the nine settings the broker's local
-// stack configures with: the airlock's eight — the two minter bases, the addresses the proxy
-// may dial although they are loopback, the extra upstream roots, where a name resolves to, the
-// token authority the azure exchange is held to, and its two negative-control switches — and
-// the judge's one, the switch that turns its checks before the model off. Each is read as it is
-// given and is empty or off when unset. The refusal of each on a production start is
-// cmd/cipherd's, which has its own rows.
+// TestLoadReadsTheAirlocksTestOnlySettings pins each of the eleven settings the broker's local
+// stack configures with: the airlock's ten — the four minter stand-ins (GitHub's and Google's
+// bases, Anthropic's token exchange and IAM's generateIdToken, where an anthropic-federation
+// secret's identity token is read), the addresses the proxy may dial although they are loopback,
+// the extra upstream roots, where a name resolves to, the token authority the azure exchange is
+// held to, and its two negative-control switches — and the judge's one, the switch that turns its
+// checks before the model off. Each is read as it is given and is empty or off when unset. The
+// refusal of each on a production start is cmd/cipherd's, which has its own rows.
 func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.AirlockTestGitHubAPIBase != "" || cfg.AirlockTestGoogleTokenURL != "" || cfg.AirlockTestUpstreamCAFile != "" ||
+		cfg.AirlockTestAnthropicTokenURL != "" || cfg.AirlockTestIAMCredentialsURL != "" ||
 		len(cfg.AirlockTestDialAllow) != 0 || len(cfg.AirlockTestResolve) != 0 || cfg.AirlockTestKeepValues || cfg.AirlockTestNoKind ||
 		cfg.AirlockTestAzureAuthority != "" ||
 		cfg.JudgeTestSkipChecks {
@@ -3577,6 +3664,8 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	e := validEnv()
 	e["BROKER_AIRLOCK_TEST_GITHUB_API_BASE"] = "http://127.0.0.1:18080"
 	e["BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL"] = "http://127.0.0.1:18081/token"
+	e["BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL"] = " http://127.0.0.1:18082/v1/oauth/token "
+	e["BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL"] = "http://127.0.0.1:18083"
 	e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = "s.airlock.test:443 t.airlock.test:8443"
 	e["BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE"] = "/run/airlock/ca.crt"
 	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.1 login.microsoftonline.com=127.0.0.2"
@@ -3590,6 +3679,9 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	}
 	if cfg.AirlockTestGitHubAPIBase != "http://127.0.0.1:18080" || cfg.AirlockTestGoogleTokenURL != "http://127.0.0.1:18081/token" {
 		t.Errorf("the minter bases read %q and %q; want the two the environment named", cfg.AirlockTestGitHubAPIBase, cfg.AirlockTestGoogleTokenURL)
+	}
+	if cfg.AirlockTestAnthropicTokenURL != "http://127.0.0.1:18082/v1/oauth/token" || cfg.AirlockTestIAMCredentialsURL != "http://127.0.0.1:18083" {
+		t.Errorf("the anthropic-federation minter's stand-ins read %q and %q; want the two the environment named, trimmed", cfg.AirlockTestAnthropicTokenURL, cfg.AirlockTestIAMCredentialsURL)
 	}
 	if cfg.AirlockTestUpstreamCAFile != "/run/airlock/ca.crt" {
 		t.Errorf("the upstream roots file reads %q; want /run/airlock/ca.crt", cfg.AirlockTestUpstreamCAFile)

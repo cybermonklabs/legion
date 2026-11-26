@@ -24,11 +24,11 @@ body: |-
   names none takes the first issuer of the list alone, so an existing entry keeps its meaning while
   the cluster the broker trusted before stays first in the list. A listed account's token from
   another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's credential records the issuer whose
-  token made it (migration 0045), and it stops working once the account's entry no longer names
+  token made it (migration 0046), and it stops working once the account's entry no longer names
   that issuer.
   When you change `BROKER_K8S_OIDC_ISSUER` from one URL to named entries, list the cluster the
   broker trusted before first: an entry that names no issuer takes the first issuer, and a token
-  login's credential or a pod's enrollment recorded before migration 0045 reads as the first
+  login's credential or a pod's enrollment recorded before migration 0046 reads as the first
   issuer's.
   A `BROKER_POD_OPERATORS` entry names an account and no issuer: the pod of a mapped account logs
   in only with a token of an issuer its `BROKER_SERVICE_LOGINS` entry names, and its token of
@@ -74,7 +74,7 @@ body: |-
   A service's pod names the private project its account's `BROKER_EXCHANGE_ACCOUNTS` entry maps
   only while that entry names the issuer whose token enrolled the pod: only then is it released
   that project's secrets, and only then are its requests that project's. A pod's enrollment
-  records that issuer (migration 0045). A pod enrolled before this release records none and counts
+  records that issuer (migration 0046). A pod enrolled before this release records none and counts
   as the first issuer's, and a pod enrolled with a token of another issuer, or of an issuer
   `BROKER_K8S_OIDC_ISSUER` no longer names, names no project.
   A read entry of `BROKER_EXCHANGE_READ_ACCOUNTS` names its issuers the same way, in a fourth
