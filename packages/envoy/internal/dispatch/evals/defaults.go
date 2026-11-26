@@ -22,11 +22,13 @@ import (
 // until the refresher's page that reads it publishes it, and that page's commit makes visible, with
 // the new defaults, the marks of the stored cuts it moves, the project's own rows ("") among them,
 // each naming the evals whose rows it moved there, and the first paint of each folded under them
-// (figures.go). So a read in one snapshot answers the old defaults whole, their figures among
-// them, or the new ones whole: a read of a cut the move marked from the stored figures of its
-// first paint, a read of an older range from the day rows of the evals the mark names until the
-// stored rows it reads of them are folded again (refoldStaleCuts), and every other eval of the cut
-// from its stored figures, whose rows the move did not move. A default moves more than its own project's
+// where its mark names no logged eval (figures.go, foldMarkedFirstPaints). So a read in one
+// snapshot answers the old defaults whole, their figures among them, or the new ones whole: a read
+// of a first paint of a cut the move marked from the stored figures of its first paint once that is
+// folded, in the commit or in the first batch of the pass's refold, and from the day rows of the
+// evals the mark names before; a read of an older range from those day rows until the stored rows
+// it reads of them are folded again (refoldStaleCuts); and every other eval of the cut from its
+// stored figures, whose rows the move did not move. A default moves more than its own project's
 // reads: a pull request whose issue is held through a project's default repository (a condition of
 // its attribution list, delivery_days.go) counts for that project while its default is the pull
 // request's repository and for the repository's other readers otherwise, so the move moves what
@@ -34,10 +36,38 @@ import (
 // written whatever the defaults are, its zero rows from its own first input day on, and the
 // published defaults decide who reads them (eval_project_owners).
 
+// The eval tables' lock order. A transaction that takes locks of more than one of these steps
+// takes them in this order, and those of one step in the order the step gives, so two writers wait
+// for each other in turn and never in a cycle:
+//
+//  1. The eval locks (lockEvals), one for each key in the order of the keys, before any row lock:
+//     the readings and register writes, the seed, the zero fill, and each fold of a logged eval's
+//     stored figures in a transaction of its own (lockLogged). The commit of a refresher's page
+//     takes none (foldMarkedFirstPaints).
+//  2. eval_days: its rows, in the byte order of their keys (writeDays); or, in the boot's rename
+//     pass, the whole table in share row exclusive mode, before any other lock of the pass's line
+//     of the eval tables (store's repoRenameLines).
+//  3. eval_day_owners: the change trigger of eval_days writes a key's row in the statement that
+//     writes the key's day rows (migration 20261117100014), a rebuild's stage writes rows with no
+//     day row (recordOwners), and the rename pass writes them behind eval_days' lock.
+//  4. eval_day_members and eval_days_owed, in either order: only the refresher, whose lease runs
+//     one pass at a time, and the rename pass, behind eval_days' lock, write them.
+//  5. The stored figures (eval_range_figures, eval_day_figures).
+//  6. eval_days_defaults, in the byte order of its keys, each row a transaction moves locked before
+//     it writes any: publishDefaults locks every published row (readPublishedDefaults), and the
+//     rename pass's markRenamedCuts those of the old name.
+//  7. eval_figure_cuts_stale, in the byte order of its keys (markStaleCuts, markRenamedCuts).
+//
+// The commit of a move folds the first paints it folds (5) after the marks it writes (7), where a
+// batch of a stale cut's refold folds (5) before it records with its mark where it stands (7):
+// every writer of both is the refresher, whose lease runs one pass at a time, and of the others the
+// readings writes take stored figures and no mark, and the rename pass marks and no stored figure.
+
 // defaultsMove is what a page publishes of the projects' default repositories (syncDefaults):
 // every project's default repository as it stands (live, by project), the projects whose published
 // default it moves (moved, in key order), and the project whose published default is the deploy
-// repository (judging, the delivery views' judge, DeployRepoEvals) before and after it, "" for none.
+// repository the delivery settings name (judging, the delivery views' judge: the delivery routes
+// read DeployRepoEvals of that repository) before and after it, "" for none.
 type defaultsMove struct {
 	live              map[string]string
 	moved             []string
@@ -47,7 +77,10 @@ type defaultsMove struct {
 
 // syncDefaults reads the projects' default repositories and the published ones, and where they
 // differ records in w what the page's commit publishes (publishDefaults). One statement, which
-// reads every project's row: a few dozen at most.
+// reads every project's row, a few dozen at most, and the deploy repository of the delivery
+// settings, the one the delivery routes judge their views by (delivery_settings.deploy_repo), not
+// the one the day rows stand built under (DeployRepoIn), which lags it until the refresher's
+// rewrite of a settings change commits.
 func (r *refresh) syncDefaults(ctx context.Context, w *pageWork) error {
 	pool := r.store.database.Pool
 	live, published := map[string]string{}, map[string]string{}
@@ -55,16 +88,21 @@ func (r *refresh) syncDefaults(ctx context.Context, w *pageWork) error {
 		select 'live', key, default_repo from projects where default_repo is not null
 		union all
 		select 'published', project_key, repo from eval_days_defaults
+		union all
+		select 'deploy', '', deploy_repo from delivery_settings where singleton
 	`)
 	if err != nil {
 		return fmt.Errorf("read the projects' default repositories: %w", err)
 	}
-	var side, project, repo string
+	var side, project, repo, deployRepo string
 	if _, err := pgx.ForEachRow(rows, []any{&side, &project, &repo}, func() error {
-		if side == "live" {
+		switch side {
+		case "live":
 			live[project] = repo
-		} else {
+		case "published":
 			published[project] = repo
+		default:
+			deployRepo = repo
 		}
 		return nil
 	}); err != nil {
@@ -85,10 +123,6 @@ func (r *refresh) syncDefaults(ctx context.Context, w *pageWork) error {
 		return nil
 	}
 	slices.Sort(moved)
-	deployRepo, err := DeployRepoIn(ctx, pool)
-	if err != nil {
-		return err
-	}
 	w.defaults = &defaultsMove{
 		live: live, moved: moved, deployRepo: deployRepo,
 		judgingWas: judgingProject(published, deployRepo), judge: judgingProject(live, deployRepo),
@@ -113,32 +147,37 @@ func judgingProject(defaults map[string]string, deployRepo string) string {
 }
 
 // publishDefaults publishes, in tx, the page's commit, the default repositories move holds: every
-// project's published default replaced by the one it stands at; then, for each project the move
-// moves, one eval_days change of no eval (delivery.EvalDaysWrittenByDefaults), which marks its
-// evals views; each cut the move moves rows into or out of marked stale, naming the evals whose
-// rows it moved (staleMarksOf, markStaleCuts); the first paint of each cut it marks folded under
-// the new defaults (foldMarkedFirstPaints), the one call that folds stored figures in the commit;
-// and, where the project judging the delivery views moved, one more change
-// (delivery.JudgingMoved), which marks those views. The projects it moves are those whose own
-// default it moves, and every project whose owner keys (eval_project_owners, with whether it reads
-// each through the repository) the new defaults move, read in tx before and after the write: a
-// default move moves the readers of every key a list of which holds a condition of the moved
-// project, whatever their own defaults. The cuts it moves of a project are those of its old and
-// its new published default, whose cut holds its own rows stored under legionfacts.DefaultRepo
-// (cutOf), where its own default moves, and, for each owner key it gains, loses or reads otherwise
-// through the repository, that of the key's repository and the project's own rows (""), each of
-// which folds the key's rows (noteMovedCuts). It folds the history of none of them: on the farm at
-// ten times INFRA's rate, Postgres just restarted, the fold of the project's own rows over every
-// day of its delivery evals that the commit made before took 3.45 s of the 3.9 s from the PUT to
-// the commit, past R14's 2 s, and at INFRA's size the two defaults' cuts hold about 290,000 range
-// rows. Of those cuts the marks name the evals that hold its rows under legionfacts.DefaultRepo, 6
-// of INFRA's 40, and those of the owner keys it gains or loses, and every other eval's stored
-// figures of them stand, read as they are meanwhile. Every write of the commit lands together, so a
-// read answers the old defaults and figures or the new ones, a first paint of a cut the move marked
-// from its stored figures either way. The refresher's pass whose page commits the move folds the
-// rest of the marked evals of each cut again once its pages are done, newest end day first, batch
-// after batch, each in a short transaction of its own (refoldStaleCuts). It answers what the
-// commit marked and folded, which the page logs once it commits (movePublished.log).
+// project's published default replaced by the one it stands at, every published row locked first
+// in the byte order of its key (readPublishedDefaults); then, for each project the move moves, one
+// eval_days change of no eval (delivery.EvalDaysWrittenByDefaults), which marks its evals views;
+// each cut the move moves rows into or out of marked stale, naming the evals whose rows it moved
+// (staleMarksOf, markStaleCuts); the first paint of each cut it marks whose mark names no logged
+// eval folded under the new defaults (foldMarkedFirstPaints); and, where the project judging the
+// delivery views moved, one more change (delivery.JudgingMoved), which marks those views. It takes
+// the defaults' locks and then the marks', and no eval lock, in the eval tables' lock order. The
+// projects it moves are those whose own default it moves, and every project whose owner keys
+// (eval_project_owners, with whether it reads each through the repository) the new defaults move,
+// read in tx before and after the write: a default move moves the readers of every key a list of
+// which holds a condition of the moved project, whatever their own defaults. The cuts it moves of
+// a project are those of its old and its new published default, whose cut holds its own rows
+// stored under legionfacts.DefaultRepo (cutOf), where its own default moves, and, for each owner
+// key it gains, loses or reads otherwise through the repository, that of the key's repository and
+// the project's own rows (""), each of which folds the key's rows (noteMovedCuts). It folds the
+// history of none of them: on the farm at ten times INFRA's rate, Postgres just restarted, the fold
+// of the project's own rows over every day of its delivery evals that the commit made before took
+// 3.45 s of the 3.9 s from the PUT to the commit, past R14's 2 s, and at INFRA's size the two
+// defaults' cuts hold about 290,000 range rows. Of those cuts the marks name the evals that hold
+// its rows under legionfacts.DefaultRepo, 6 of INFRA's 40, and those of the owner keys it gains or
+// loses, and every other eval's stored figures of them stand, read as they are meanwhile. Every
+// write of the commit lands together, so a read answers the old defaults and figures or the new
+// ones, a first paint of a cut the move marked from its stored figures either way where the commit
+// folded it, and from the day rows of the evals its mark names where the commit left it owed. The
+// refresher's pass whose page commits the move folds each marked cut again once the work of the
+// pass before its refold is done, its pages, and, in a pass that builds the gap's batch of the
+// walks, that batch and the figures walk's too (refresh): first each first paint the commit left
+// owed, and then the rest of the marked evals, newest end day first, batch after batch, each in a
+// short transaction of its own (refoldStaleCuts). It answers what the commit marked and folded,
+// which the page logs once it commits (movePublished.log).
 func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *defaultsMove) (movePublished, error) {
 	projects := slices.AppendSeq(make([]string, 0, len(move.live)), maps.Keys(move.live))
 	slices.Sort(projects)
@@ -226,49 +265,43 @@ type movePublished struct {
 }
 
 // log logs the commit of a move, whose transaction began at began and committed at committed, as a
-// batch of a stale cut's refold logs: beside the counts, how long the first-paint folds took, how
-// long the transaction took, and how long it held the locks of the logged evals they fold, from
-// their one take (foldMarkedFirstPaints) to the commit, 0 where they took none.
+// batch of a stale cut's refold logs: beside the counts, how long the first-paint folds took and
+// how long the transaction took.
 func (p movePublished) log(began, committed time.Time) {
-	held := heldUntil(p.paints.locked, committed)
 	slog.Info("dispatch: the eval day-row refresher published a move of the default repositories", "projects", p.projects, "cuts_marked", p.cuts,
 		"evals", p.evals, "first_paints", p.paints.folded, "first_paint_ms", p.paints.took.Milliseconds(),
-		"transaction_ms", committed.Sub(began).Milliseconds(), "locks_held_ms", held.Milliseconds())
+		"transaction_ms", committed.Sub(began).Milliseconds())
 }
 
 // markedPaints is what a fold of the first paints of the cuts a move marked did
-// (foldMarkedFirstPaints): how many it folded, how long it took, and when it took the locks of the
-// logged evals it folds, the zero time where it took none.
+// (foldMarkedFirstPaints): how many it folded and how long it took.
 type markedPaints struct {
 	folded int
 	took   time.Duration
-	locked time.Time
 }
 
 // foldMarkedFirstPaints folds, in tx, as build, the first paint of each of cuts, in their order, the
 // cuts the commit of a move of the default repositories marked stale in tx (publishDefaults), whose
 // marks are marks, those markStaleCuts wrote (a cut it left has none): each whose mark owes one, of
-// a project whose figures are folded (readFigureScope), is folded under the new defaults and
-// recorded with its mark (foldFirstPaintOf), so a first paint of each reads the stored figures from
-// the move's commit on. It reads every such cut's evals first, each project's in one read of the
-// evals the marks of all its owed cuts name (owedEvals), of which each cut takes those its mark
-// names (entriesNamed), and then takes the locks of the logged evals of all of them in one take
-// (lockLogged, lockEvals: each lock once, in the order of its key) before the first fold, the one
-// order every writer of an eval's rows takes eval locks in, so the commit waits on a writer that
-// holds one of them rather than holding one and waiting for another, whichever cuts the move marks
-// and whatever evals their marks name; the folds take none of them again. It is the one place the
-// commit folds stored figures: a fold of them after the commit, in a transaction of its own, is
-// FoldFirstPaint of each cut.
+// a project whose figures are folded (readFigureScope), and whose evals the mark names are all
+// computed, is folded under the new defaults and recorded with its mark (foldFirstPaintOf), so a
+// first paint of it reads the stored figures from the move's commit on. It reads each project's
+// evals once, those the marks of all its owed cuts name (owedEvals), of which each cut takes those
+// its mark names (entriesNamed). It takes no eval lock: the commit has locked rows by then, and the
+// eval tables' lock order puts the eval locks before every row lock, while a computed eval's rows
+// are the refresher's alone, whose lease runs one pass at a time. So a cut whose mark names a
+// logged eval, whose rows its readings writes and its zero fill write too, is left with its first
+// paint owed, and the commit never waits for such a writer while it holds the rows it wrote: the
+// pass's refold folds that first paint before any other batch, in a transaction of its own that
+// takes the logged evals' locks before any row lock (refoldStaleCuts, FoldFirstPaint), and a read
+// of the cut folds the day rows of the evals its mark names until then. A mark names a logged eval
+// where it names every eval, such as a rename's (store.markRenamedCuts) that the move marks again,
+// or where the eval's readings name legionfacts.DefaultRepo as their repository, a row staleMarksOf
+// reads. Beside the stored figures of the days the page's spans wrote (writeSpans), it is the one
+// fold of stored figures in the commit.
 func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []staleCut, marks map[staleCut]cutMark) (markedPaints, error) {
 	began := time.Now()
-	type owed struct {
-		cut     staleCut
-		mark    cutMark
-		scope   figureScope
-		entries []Entry
-	}
-	var folds []owed
-	var logged []Entry
+	var paints markedPaints
 	scopeOf := figureScopeReader(ctx, tx, build)
 	read := map[string][]Entry{}
 	for _, cut := range cuts {
@@ -288,16 +321,10 @@ func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []
 			read[cut.project] = entries
 		}
 		entries = entriesNamed(entries, mark.evals)
-		folds = append(folds, owed{cut: cut, mark: mark, scope: *scope, entries: entries})
-		logged = append(logged, entries...)
-	}
-	locked, err := lockLogged(ctx, tx, logged)
-	if err != nil {
-		return markedPaints{}, err
-	}
-	paints := markedPaints{locked: locked}
-	for _, one := range folds {
-		if _, err := foldFirstPaintOf(ctx, tx, one.scope, one.cut, one.mark, one.entries); err != nil {
+		if slices.ContainsFunc(entries, func(entry Entry) bool { return !entry.Definition.Computed() }) {
+			continue
+		}
+		if _, err := foldFirstPaintOf(ctx, tx, *scope, cut, mark, entries); err != nil {
 			return markedPaints{}, err
 		}
 		paints.folded++
@@ -308,7 +335,8 @@ func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []
 
 // owedEvals is every eval named by the mark (in marks) of each cut of cuts that is of scope's
 // project and owes a first paint under scope (cutMark.owesFirstPaint), nil where one of those marks
-// names every eval: the evals of the project whose first paints foldMarkedFirstPaints folds.
+// names every eval: the evals of the project foldMarkedFirstPaints reads for the first paints it
+// folds.
 func owedEvals(cuts []staleCut, marks map[staleCut]cutMark, scope figureScope) []string {
 	evals := []string{}
 	for _, cut := range cuts {
@@ -489,9 +517,11 @@ const ownerEvalsQuery = `
 `
 
 // readPublishedDefaults reads in q every project's published default repository, by project: a
-// project that publishes none is in none.
+// project that publishes none is in none. It reads them for update, in the byte order of their
+// keys, so in a transaction it holds the lock of every published row from then on, before the
+// transaction writes one: publishDefaults' place for them in the eval tables' lock order.
 func readPublishedDefaults(ctx context.Context, q delivery.Querier) (map[string]string, error) {
-	rows, err := q.Query(ctx, `select project_key, repo from eval_days_defaults`)
+	rows, err := q.Query(ctx, `select project_key, repo from eval_days_defaults order by project_key collate "C" for update`)
 	if err != nil {
 		return nil, fmt.Errorf("read the published default repositories: %w", err)
 	}

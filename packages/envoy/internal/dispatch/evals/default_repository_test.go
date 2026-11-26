@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -17,7 +18,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The attribution of what a repository holds to the projects whose default repository it is
@@ -74,12 +77,14 @@ func (r *refresherRig) readTallies(t *testing.T, project string, series map[stri
 
 // One day in acme/alpha, the deploy repository and the default repository of both ALPHA and BETA:
 // deploy X ships PR1 (ALPHA-1's) and PR2 (no issue), deploy Y ships PR3 (no issue), and deploy Z
-// ships only PR4 (ALPHA-1's). deploy-frequency counts X, Y and Z for ALPHA (X and Z through
+// ships only PR4 (ALPHA-1's). deploy-frequency should count X, Y and Z for ALPHA (X and Z through
 // ALPHA-1, Y through the default repository) and X and Y for BETA (each through the default
-// repository: X ships PR2, and BETA is no project of X's issues), each deploy once in each; and
-// production-deploy counts each deploy's production job once for each project that counts its
-// deploy. Red under the rule that counts a row with no issue for no project: ALPHA counts X and Z
-// and BETA nothing.
+// repository: X ships PR2, and BETA is no project of X's issues), each deploy once in each, and
+// production-deploy each deploy's production job once for each project that counts its deploy.
+// The read the test makes tells only how many deploys each project counts and how many of them
+// came through a default repository: each of the two evals counts three for ALPHA, one of them
+// through the default repository, and two for BETA, both through it. Red under the rule that
+// counts a row with no issue for no project: ALPHA counts X and Z and BETA nothing.
 func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -229,12 +234,13 @@ func seedPierAndQuay(t *testing.T, r *refresherRig) time.Time {
 // with no day row written (dispatch://INFRA-2916, R15 and R14), over seedPierAndQuay's history:
 // no issue is held for the pull request, and QUAY counts it, the deploy run that ships it and its
 // PR-checks run through the repository, and PIER counts none of them. Once PIER's default moves to
-// acme/quay and a page publishes it, PIER-1 resolves to acme/quay: PIER counts all three through
-// its issue (via 0) and QUAY none, no day row or member is written by the move, and each project's
-// eval list read of every offered range answers the fold of its day rows, as do the stored
-// figures. The move back restores the first answer the same way. Red where the day rows follow
-// delivery_pull_requests.issue_key alone, which the move leaves null: PIER then reads the
-// repository's rows as QUAY does, through the repository.
+// acme/quay, PIER-1 resolves to acme/quay: right after the page that publishes the move (pageAlone),
+// and again once the refresher settles, PIER counts all three through its issue (via 0) and QUAY
+// none, and each project's eval list read of every offered range answers the fold of its day rows;
+// once it settles, no day row or member was written by the move, and the stored figures answer
+// some of those reads and are the fold of the rows that stand. The move back restores the first
+// answer the same way. Red where the day rows follow delivery_pull_requests.issue_key alone, which
+// the move leaves null: PIER then reads the repository's rows as QUAY does, through the repository.
 func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -259,8 +265,11 @@ func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t 
 	}
 	// check reads both projects' tallies of the day against want (each of series counted once, by
 	// the project that counts the pull request, through the repository where via), and each
-	// project's eval list read of every offered range against the fold of its day rows.
-	check := func(what, counting string, via int) {
+	// project's eval list read of every offered range against the fold of its day rows; and, where
+	// the refresher has settled, that the stored figures answer some of those reads and are the fold
+	// of the rows that stand: right after the page that publishes a move, the cuts its commit marked
+	// stale are not folded again yet.
+	check := func(what, counting string, via int, settled bool) {
 		t.Helper()
 		for _, project := range []string{"PIER", "QUAY"} {
 			got, rows := r.readTallies(t, project, series, day)
@@ -285,13 +294,15 @@ func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t 
 					}
 				}
 			}
-			if fromFigures == 0 {
+			if settled && fromFigures == 0 {
 				t.Errorf("%s: the stored figures answered none of %s's evals over the offered ranges", what, project)
 			}
 		}
-		expectTruth(t, what, r.storedFigures(t), r.truthFigures(t))
+		if settled {
+			expectTruth(t, what, r.storedFigures(t), r.truthFigures(t))
+		}
 	}
-	check("before the move", "QUAY", 1)
+	check("before the move", "QUAY", 1, true)
 
 	show := func(xmin string) string { return "written by " + xmin }
 	for _, move := range []struct {
@@ -303,17 +314,19 @@ func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t 
 	} {
 		rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
 		r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, move.repo)
-		r.settle(t)
+		r.pageAlone(t)
 		if published, err := PublishedDefaultIn(ctx, pool, "PIER"); err != nil || published != move.repo {
 			t.Fatalf("%s: PIER publishes %q as its default (%v), want %s", move.name, published, err, move.repo)
 		}
+		check(move.name+", right after the page that published it", move.counting, move.via, false)
+		r.settle(t)
 		if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
 			t.Errorf("%s: the move wrote day rows, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
 		}
 		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
 			t.Errorf("%s: the move wrote members, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
 		}
-		check(move.name, move.counting, move.via)
+		check(move.name, move.counting, move.via, true)
 	}
 }
 
@@ -572,6 +585,44 @@ func pastShapes() []readShape {
 	}
 }
 
+// figureXmins reads the transaction that last wrote each stored figure, by the row's key, for
+// refresherRig.xmins.
+const figureXmins = `
+	select concat_ws(' ', 'range', project_key, repo, days, end_day, eval_id, deploy_repo), xmin::text from eval_range_figures
+	union all
+	select concat_ws(' ', 'day', project_key, repo, day, eval_id, deploy_repo), xmin::text from eval_day_figures`
+
+// expectOneCommit checks that a page's publishing of a move of project's default repository wrote
+// the project's published default, every stale mark and every stored figure written since figures
+// (figureXmins, read before the move) in the transaction that moved the refresher's change cursor:
+// the page's one commit (commitPage), so a read sees all of them or none. It answers how many stored
+// figures that transaction wrote.
+func (r *refresherRig) expectOneCommit(t *testing.T, what, project string, figures map[string]string) int {
+	t.Helper()
+	commit := r.xmins(t, `select name, xmin::text from eval_days_cursor where name = '`+changesCursor+`'`)[changesCursor]
+	if commit == "" {
+		t.Fatalf("%s: no page moved the refresher's change cursor", what)
+	}
+	for name, xmin := range r.xmins(t, `select 'the published default of ' || project_key, xmin::text from eval_days_defaults where project_key = '`+project+`'
+		union all
+		select 'the mark of ' || project_key || '''s cut ' || quote_literal(repo), xmin::text from eval_figure_cuts_stale`) {
+		if xmin != commit {
+			t.Errorf("%s: %s was written by transaction %s, and the page's commit is %s", what, name, xmin, commit)
+		}
+	}
+	written := 0
+	for name, xmin := range r.xmins(t, figureXmins) {
+		if figures[name] == xmin {
+			continue
+		}
+		written++
+		if xmin != commit {
+			t.Errorf("%s: the stored figure %s was written by transaction %s, and the page's commit is %s", what, name, xmin, commit)
+		}
+	}
+	return written
+}
+
 // TestADefaultMoveMarksOnlyTheCutsItTouches: over seedPierAndQuay's history, with a logged eval of
 // PIER and one of QUAY whose readings of acme/web are rows of each project's cut of it, PIER's
 // default moves to acme/quay and a pass's pages publish it, the pass stopping before the rest of
@@ -579,6 +630,8 @@ func pastShapes() []readShape {
 // stale the cuts the move moves rows of and no other, each naming the evals whose rows it moved
 // there (marksOfMove), with its first paint folded in the same commit: PIER's and QUAY's acme/quay
 // and own rows (""), whose owner keys of acme/quay#1 and the runs of it PIER gains and QUAY loses.
+// The published default, every mark and every stored figure the move wrote are of the transaction
+// that moved the refresher's change cursor (expectOneCommit), and it wrote some figures.
 // PIER's old default's cut, acme/pier, holds no row the move moves (PIER holds none under
 // ':default', and acme/pier no owner key), so no mark holds it. Every stored figure the move leaves
 // other than the fold of the rows that stand is of an eval a mark names in its cut. Right after it,
@@ -590,8 +643,9 @@ func pastShapes() []readShape {
 // cut is stated from the stored figures again, with the bytes it was stated in while the cut was
 // stale, and the stored figures are the fold of the rows that stand. Red where a move marks every
 // cut of the projects it moves, or none of them, the own rows among them, or names fewer evals than
-// its moved rows hold; and where a read of a stale cut reads the stored figures of an eval its mark
-// names that the mark's generation has not folded, or of none of its evals.
+// its moved rows hold; where a read of a stale cut reads the stored figures of an eval its mark
+// names that the mark's generation has not folded, or of none of its evals; and where the defaults,
+// the marks or the first paints land in a transaction of their own.
 func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -609,8 +663,12 @@ func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	figures := r.xmins(t, figureXmins)
 	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
 	r.pageAlone(t)
+	if written := r.expectOneCommit(t, "the page that published PIER's move to "+quayRepo, "PIER", figures); written == 0 {
+		t.Errorf("the page that published PIER's move to %s wrote no stored figure, and the check needs the first paints its commit folds", quayRepo)
+	}
 	after, err := readOwnerPairs(ctx, pool)
 	if err != nil {
 		t.Fatal(err)
@@ -1177,6 +1235,224 @@ func TestClearingTheLastDefaultRepositoryIsPublishedOnce(t *testing.T) {
 	}
 	if logged := published(seq); logged != 0 {
 		t.Errorf("the three passes after the clear was published logged %d defaults changes, want none: the clear is published again", logged)
+	}
+}
+
+// A commit of a move of the default repositories locks every published default before it writes
+// one, in the byte order of their keys (readPublishedDefaults), as the boot's rename pass locks
+// those it moves (store's markRenamedCuts): the order the eval tables' lock order gives them.
+// ALPHA's published default moves and BRAVO's is cleared, and a transaction holds ALPHA's row, as
+// a rename pass that reached it would: the commit waits for it holding no lock of BRAVO's, and,
+// once let on, publishes ALPHA's move and BRAVO's clear. Red where the commit deletes the defaults
+// no project holds before it takes the rest in the order of their keys: it then holds BRAVO's row
+// while it waits for ALPHA's, the other way round from the rename pass, and the two deadlock where
+// the pass holds ALPHA's and waits for BRAVO's.
+func TestAMoveLocksThePublishedDefaultsInTheOrderOfTheirKeys(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, default_repo)
+		values ('ALPHA', 'Alpha', 'alice', 'acme/next'), ('BRAVO', 'Bravo', 'alice', null)`)
+	r.exec(t, "publish the defaults before the move", `insert into eval_days_defaults (project_key, repo) values ('ALPHA', 'acme/alpha'), ('BRAVO', 'acme/bravo')`)
+	work := &pageWork{}
+	if err := r.registry.newRefresh(r.build, r.now, r.batch).syncDefaults(ctx, work); err != nil || work.defaults == nil {
+		t.Fatalf("the page reads no move of the defaults (%v)", err)
+	}
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the hold of ALPHA's published default: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `select from eval_days_defaults where project_key = 'ALPHA' for update`); err != nil {
+		t.Fatalf("hold ALPHA's published default: %v", err)
+	}
+	committed := make(chan error, 1)
+	go func() {
+		committed <- pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			_, err := publishDefaults(ctx, tx, r.build, work.defaults)
+			return err
+		})
+	}()
+	testwait.Until(t, "the commit of the move to wait for ALPHA's published default", func() (int, bool) {
+		select {
+		case err := <-committed:
+			t.Fatalf("the commit of the move answered (%v) while ALPHA's published default was held, want it to wait for it", err)
+		default:
+		}
+		waiting, err := storetest.LockWaiters(ctx, holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waiting, waiting > 0
+	})
+	probe, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the probe of BRAVO's published default: %v", err)
+	}
+	_, err = probe.Exec(ctx, `select from eval_days_defaults where project_key = 'BRAVO' for update nowait`)
+	_ = probe.Rollback(ctx)
+	if err != nil {
+		t.Errorf("while the commit of the move waited for ALPHA's published default, a lock of BRAVO's answered %v; want it free, the commit holding no row of a later key", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("let the commit of the move on: %v", err)
+	}
+	if err := testwait.Receive(t, "the commit of the move", committed); err != nil {
+		t.Fatalf("the commit of the move: %v", err)
+	}
+	for project, want := range map[string]string{"ALPHA": "acme/next", "BRAVO": ""} {
+		if published, err := PublishedDefaultIn(ctx, pool, project); err != nil || published != want {
+			t.Errorf("after the commit of the move %s publishes %q as its default (%v), want %q", project, published, err, want)
+		}
+	}
+}
+
+// The commit of a move of the default repositories takes no eval lock, whose place in the eval
+// tables' lock order is before every row lock, so it never waits for a readings write while it
+// holds the rows it wrote (foldMarkedFirstPaints). Over seedPierAndQuay's history, with a logged
+// eval of PIER (logReviews), PIER's own cut ("") holds a mark that names every eval, its first
+// paint folded, as the boot's rename pass and its fold leave a cut (store's markRenamedCuts), and
+// PIER's default moves to acme/quay, which marks that cut again, still for every eval, the logged
+// one among them. A transaction holds the logged eval's lock, as a readings write of it does, and a
+// pass a wake runs publishes the move: the pass waits for the lock once the move is published, the
+// first paint of PIER's own cut left owed by the commit and that of every other cut the move marked
+// folded in it, in a transaction that holds no transaction id, no row locked before the eval's
+// lock. Let go, the pass folds every marked cut to its end. Red where the commit folds the first
+// paints of the logged evals under their locks: the pass then waits in the commit, the move
+// unpublished and the commit's rows written.
+func TestTheCommitOfAMoveTakesNoEvalLock(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	day := seedPierAndQuay(t, r)
+	r.logReviews(t, "PIER", day, webRepo)
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	own := staleCut{project: "PIER"}
+	r.exec(t, "mark PIER's own cut for every eval, its first paint folded", `
+		insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals) values ('PIER', '', 1, $1, null, null)`, through)
+	logged := EvalID("PIER", "review-latency")
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the hold of %s's lock: %v", logged, err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `select pg_advisory_xact_lock(hashtext('eval:' || $1))`, logged); err != nil {
+		t.Fatalf("hold %s's lock: %v", logged, err)
+	}
+	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
+	if _, err := r.horizon.Await(ctx); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	passed := make(chan error, 1)
+	go func() {
+		_, _, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
+			refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, nil)
+		passed <- err
+	}()
+	// waiting is the backend that waits for the held eval lock, and whether it holds a transaction
+	// id, a row it wrote, while it waits.
+	type waiting struct {
+		pid uint32
+		xid bool
+	}
+	waiter := testwait.Until(t, "the pass to wait for "+logged+"'s lock", func() (waiting, bool) {
+		select {
+		case err := <-passed:
+			t.Fatalf("the pass answered (%v) while %s's lock was held, want it to wait for the lock to fold the first paint of PIER's own cut", err, logged)
+		default:
+		}
+		var w waiting
+		if err := holder.QueryRow(ctx, `
+			select coalesce((select pid from pg_locks where locktype = 'advisory' and not granted and pg_backend_pid() = any(pg_blocking_pids(pid)) limit 1), 0)
+		`).Scan(&w.pid); err != nil {
+			t.Fatalf("read the waits for %s's lock: %v", logged, err)
+		}
+		if w.pid == 0 {
+			return w, false
+		}
+		if err := holder.QueryRow(ctx, `select exists (select 1 from pg_locks where pid = $1 and locktype = 'transactionid' and granted)`, w.pid).Scan(&w.xid); err != nil {
+			t.Fatalf("read the transaction id of the wait for %s's lock: %v", logged, err)
+		}
+		return w, true
+	})
+	if published, err := PublishedDefaultIn(ctx, pool, "PIER"); err != nil || published != quayRepo {
+		t.Errorf("while the pass waits for %s's lock PIER publishes %q as its default (%v), want %s: the commit of the move waits for the lock", logged, published, err, quayRepo)
+	}
+	if waiter.xid {
+		t.Errorf("the pass waits for %s's lock holding a transaction id, a row it locked before the eval's lock", logged)
+	}
+	for cut, mark := range r.staleMarks(t) {
+		owed := cut == own
+		if owed && (mark.generation != 2 || mark.ready != nil || mark.evals != nil) || !owed && (mark.ready == nil || !mark.ready.Equal(through)) {
+			t.Errorf("while the pass waits for %s's lock %s's cut %q is marked at %s, want its first paint owed %t", logged, cut.project, cut.repo, mark, owed)
+		}
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("let go of %s's lock: %v", logged, err)
+	}
+	if err := testwait.Receive(t, "the pass", passed); err != nil {
+		t.Fatalf("the pass: %v", err)
+	}
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the pass left the cuts %v marked, want every marked cut folded to its end", marks)
+	}
+	expectTruth(t, "once the pass folded every marked cut", r.storedFigures(t), r.truthFigures(t))
+}
+
+// The project whose evals judge the delivery views (judgingProject) is the one whose published
+// default is the deploy repository the delivery settings name, the one the delivery routes read
+// the judging evals of (DeployRepoEvals of delivery_settings.deploy_repo), whichever deploy
+// repository the day rows stand built under (eval_days_settings, which lags the settings until the
+// refresher's rewrite of a settings change commits). The settings name acme/next while the rows
+// stand built under acme/before, and ALPHA, which publishes no default yet, holds acme/next as its
+// own: the page reads ALPHA as the judge the move moves to, and its commit logs the one change that
+// marks the delivery views those evals judge (delivery.JudgingMoved). Red where the page judges by
+// the repository the rows stand built under: it then moves no judge, and logs no such change.
+func TestAMoveJudgesByTheDeployRepositoryTheDeliverySettingsName(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+		DeployRepo: "acme/next", DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{"production / apply"},
+		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{},
+	}, model.Actor{Kind: "system", ID: "default-repository-test"}); err != nil {
+		t.Fatalf("write the delivery settings: %v", err)
+	}
+	r.exec(t, "stand the rows built under another deploy repository", `
+		insert into eval_days_settings (production_job_names, deploy_repo) values ('{production / apply}', 'acme/before')`)
+	r.exec(t, "give ALPHA the settings' deploy repository as its default", `
+		insert into projects (key, name, default_assignee, default_repo) values ('ALPHA', 'Alpha', 'alice', 'acme/next')`)
+	work := &pageWork{}
+	if err := r.registry.newRefresh(r.build, r.now, r.batch).syncDefaults(ctx, work); err != nil || work.defaults == nil {
+		t.Fatalf("the page reads no move of the defaults (%v)", err)
+	}
+	if work.defaults.judgingWas != "" || work.defaults.judge != "ALPHA" {
+		t.Errorf("the move moves the judge from %q to %q, want from none to ALPHA", work.defaults.judgingWas, work.defaults.judge)
+	}
+	seq := r.latestSeq(t)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		_, err := publishDefaults(ctx, tx, r.build, work.defaults)
+		return err
+	}); err != nil {
+		t.Fatalf("commit the move: %v", err)
+	}
+	if _, err := delivery.DrainPending(ctx, pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	changes, err := delivery.ChangesSince(ctx, pool, seq, 100000)
+	if err != nil {
+		t.Fatalf("read the delivery changes after %d: %v", seq, err)
+	}
+	judged := 0
+	for _, change := range changes {
+		if delivery.JudgingMoved(change) {
+			judged++
+		}
+	}
+	if judged != 1 {
+		t.Errorf("the commit of the move logged %d changes that mark the delivery views its judge's evals judge, want one", judged)
 	}
 }
 
