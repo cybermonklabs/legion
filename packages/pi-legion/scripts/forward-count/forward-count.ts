@@ -1079,7 +1079,7 @@ async function collect(args: CollectArgs): Promise<void> {
       continue;
     }
     process.stderr.write(`${project}: ${issues.length} issues updated since ${args.from}\n`);
-    let passed = 0;
+    const newestStep = new Map<string, { ended: number; passed: boolean }>();
     const found: { issue: string; record: StepRecord; task: string; steps: StepRecord[] }[] = [];
     const reads = await mapLimit(issues, 8, async (issue) => {
       try {
@@ -1096,12 +1096,16 @@ async function collect(args: CollectArgs): Promise<void> {
           if (record.kind !== "retro" && record.kind !== "merge") continue;
           const ended = timeOf(record.ended_at);
           if (ended === null || ended < windowFrom || ended >= windowTo) continue;
-          if (record.result === "passed") passed++;
+          const previous = newestStep.get(read.issue);
+          if (previous === undefined || ended > previous.ended)
+            newestStep.set(read.issue, { ended, passed: record.result === "passed" });
           if (record.result !== "failed") continue;
           found.push({ issue: read.issue, record, task: task.task, steps: task.steps });
         }
       }
     }
+    let passed = 0;
+    for (const step of newestStep.values()) if (step.passed) passed++;
     lastStepsPassed.push({ project, count: passed });
     process.stderr.write(`${project}: ${found.length} returns of the retro and the merge in the window\n`);
     // Each return reads at most one head and one timeline from GitHub, whose budget every
