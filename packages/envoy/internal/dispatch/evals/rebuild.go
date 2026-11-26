@@ -23,8 +23,9 @@ import (
 // the rows stand built under that are not recorded each rebuild the served families
 // (eval_days_serving) aside and make what moved visible in one short commit. A family no rows are
 // served of yet, a database's or a project's first seen, has nothing to keep serving: its walk
-// builds it in the open, a day a commit, each day readable once written and "no data" before, and
-// its serving record follows the walk (recordWalkIn).
+// builds it in the open, one day of every key a commit that moves its serving record past it
+// (walkWrite, recordWalkIn), each day and every window through it readable once written and "no
+// data" before (Built.Withhold).
 //
 //   - The stored rows keep serving through the rebuild. A rebuild walks each family's days as a
 //     walk does (walkDays, with the walk's own builders and first input days), a batch a pass, and

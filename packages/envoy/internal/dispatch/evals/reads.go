@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // Entry is one eval as the registry read answers it: its newest definition and the newest
@@ -260,6 +262,93 @@ func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deplo
 		return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
 	}
 	return firsts, nil
+}
+
+// Built is how far the stored rows of each family of computed evals are whole through, as one
+// answer reads them (BuiltIn), and that answer's UTC day, today: the rule each read of a computed
+// eval's window and compare range states its values by (Withhold), until a day row is built its
+// windows reading "no data" (R12). A walk builds its family's days in day order, each day of every
+// key a project reads in one commit that moves the family's serving record (eval_days_serving)
+// past it (refresh.walkWrite), and a rebuild's flip moves the record in the commit that makes its
+// rows visible, never back, so a family a rebuild rebuilds keeps serving. A day on or after the
+// record is one the stored rows are not whole through: a family's first walk has not reached it,
+// or a walk a stopped server left behind has not caught up to it, and a window that holds it would
+// fold the days the walk has built as if they were all of the window's. A family no walk has
+// built a day of and no rebuild has flipped is whole through no day.
+type Built struct {
+	today time.Time
+	next  map[walkKey]time.Time
+}
+
+// builtWalk is the walk whose serving record says how far definition's day rows are whole through:
+// the delivery walk's for a computed delivery or CI eval (deliveryDaySlugs), its project's Legion
+// walk's for a computed Legion eval (legionDaySlugs), and false for every other eval. No walk
+// builds the rows of those: a logged eval's readings write writes its rows, and the zero rows they
+// leave owed through today, in its own transaction (writeLoggedZeros), and the daily fill writes
+// each new day's zero row in the pass the UTC midnight starts; unowned-p0's one row of a day is
+// written on that day alone (WriteUnownedP0Day); change-fail-rate and failed-deploy-recovery get
+// no rows at all. So no day of theirs waits for a later write to build it from input it holds.
+func builtWalk(definition Definition) (walkKey, bool) {
+	switch {
+	case !definition.Computed():
+		return walkKey{}, false
+	case slices.Contains(deliveryDaySlugs, definition.Slug):
+		return walkKey{family: walkDelivery}, true
+	case slices.Contains(legionDaySlugs, definition.Slug):
+		return walkKey{family: walkLegion, project: definition.ProjectKey}, true
+	}
+	return walkKey{}, false
+}
+
+// BuiltIn reads in q the serving records (eval_days_serving) of the families whose rows entries'
+// computed evals fold (builtWalk), as of now's UTC day: the delivery rows' record and each Legion
+// project's, in one statement by the table's key, which holds a row for each family a walk or a
+// rebuild has built; and none where no entry is such an eval. It runs in the snapshot the
+// answer's rows are read in (BeginSnapshot), so the records and the rows are one moment.
+func BuiltIn(ctx context.Context, q delivery.Querier, entries []Entry, now time.Time) (Built, error) {
+	built := Built{today: measures.Midnight(now), next: map[walkKey]time.Time{}}
+	walked := false
+	var legion []string
+	for _, entry := range entries {
+		key, held := builtWalk(entry.Definition)
+		walked = walked || held
+		if held && key.family == walkLegion && !slices.Contains(legion, key.project) {
+			legion = append(legion, key.project)
+		}
+	}
+	if !walked {
+		return built, nil
+	}
+	rows, err := q.Query(ctx, `
+		select family, project_key, next_day from eval_days_serving
+		where (family = $1 and project_key = '') or (family = $2 and project_key = any($3::text[]))
+	`, walkDelivery, walkLegion, legion)
+	if err != nil {
+		return Built{}, fmt.Errorf("read how far the day rows of %d evals are built: %w", len(entries), err)
+	}
+	var key walkKey
+	var next time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &next}, func() error {
+		built.next[key] = measures.Midnight(next)
+		return nil
+	}); err != nil {
+		return Built{}, fmt.Errorf("read how far the day rows of %d evals are built: %w", len(entries), err)
+	}
+	return built, nil
+}
+
+// unbuilt reports whether of holds a day before b's today that the rows of key's family are not
+// whole through: a UTC date d, From's date <= d < To's date (DayWindowIn's days), before today and
+// on or after the family's serving record, any day where it has none.
+func (b Built) unbuilt(key walkKey, of Range) bool {
+	from, to := measures.Midnight(of.From), measures.Midnight(of.To)
+	if next := b.next[key]; next.After(from) {
+		from = next
+	}
+	if b.today.Before(to) {
+		to = b.today
+	}
+	return from.Before(to)
 }
 
 // EvalDaysIn reads in q every day row of definition's eval on the days of window, listed or not

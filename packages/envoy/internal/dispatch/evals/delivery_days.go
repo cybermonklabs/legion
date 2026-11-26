@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -133,7 +134,8 @@ const (
 	SlugUnownedP0               = "unowned-p0"
 )
 
-// SeriesUnownedP0 is unowned-p0's one series: the open P0 issues with no owner, folded by `last`.
+// SeriesUnownedP0 is unowned-p0's one series: the open P0 issues with no owner, the count of the
+// newest day's rows (unownedP0Statistics).
 const SeriesUnownedP0 = "issues"
 
 // deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval whose rows a day
@@ -1035,57 +1037,150 @@ func viaOnly(runs []delivery.DeliveryRun, via []bool) []delivery.DeliveryRun {
 	return kept
 }
 
-// WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its
-// open P0 issues with no owner now (delivery.CountUnownedP0, the rule delivery.ListUnownedP0 lists
-// by, read through the issues_open_p0 index) as the row's one value and its last_value, last_at
-// the moment the count last moved, so the day's row is the count at its last refresh and the
-// `last` fold of a window reads its newest day's. A write that counts what the row holds keeps
-// the row's time, so it rewrites nothing and logs no change: the refresher writes the row on every
-// change that can move the count, most of which move nothing. builtBy is the running build. Its
-// change row waits in the change log's outbox, so the transaction takes no change log lock, and is
-// moved into the log once it has committed (drainChanges), as every writer of the day rows does;
-// and its transaction folds again the stored figures of the day where its row moved and builtBy
-// writes them (figures.go).
+// WriteUnownedP0Day writes project's unowned-p0 rows of the UTC day day is on: its open P0 issues
+// with no owner now (delivery.ListUnownedP0, read through the issues_open_p0 index), counted in
+// the project's own row and in a row of each repository they resolve to, by the rule the
+// Legion day rows cut an issue by (legionfacts.ReadRepos: its own repository, else an ancestor's,
+// else legionfacts.DefaultRepo, which stands for the project's published default repository); and
+// a row of 0 for each repository whose newest row at or before the day counts an issue and which
+// counts none now, so a read of that repository never reads a count that went away. A repository
+// whose newest row is 0 gets no row, and a window that holds no row of it reads "no data" (R12).
+// Each row's count is its n, sum, max and last value, so the repositories' rows add up to the
+// project's, n and sum alike, and a read of repositories folds the newest day's rows it reads
+// (unownedP0Statistics). An issue whose parent chain the walk could not finish resolves to none and
+// is counted in the project's row alone, as in the Legion rows. A day written before the rows were
+// kept by repository holds the project's row alone, with n 1: a read filtered by repositories
+// finds no row of that day, so a window of such days alone reads "no data" (R12), and a window
+// that holds later days too reads the newest of those.
+//
+// Each row's last_at is the moment its count last moved, so the day's rows are the counts at its
+// last refresh. A write that counts what a row holds keeps that row's time, so it rewrites nothing
+// and logs no change: the refresher writes the rows on every change that can move a count, most of
+// which move nothing. builtBy is the running build. Its change row waits in the change log's
+// outbox, so the transaction takes no change log lock, and is moved into the log once it has
+// committed (drainChanges), as every writer of the day rows does; and its transaction folds again
+// the stored figures of the day where its rows moved and builtBy writes them (figures.go).
 func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.Time, builtBy string) error {
-	unowned, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
+	pool := s.database.Pool
+	issues, err := delivery.ListUnownedP0(ctx, pool, project)
 	if err != nil {
-		return fmt.Errorf("count the unowned P0 issues of %s: %w", project, err)
+		return fmt.Errorf("list the unowned P0 issues of %s: %w", project, err)
 	}
-	tx, err := s.database.Pool.Begin(ctx)
+	keys := make([]string, len(issues))
+	for index, issue := range issues {
+		keys[index] = issue.Key
+	}
+	repos, err := legionfacts.ReadRepos(ctx, pool, keys)
 	if err != nil {
-		return fmt.Errorf("begin the unowned-p0 row of %s: %w", project, err)
+		return fmt.Errorf("the unowned P0 issues of %s: %w", project, err)
+	}
+	// counts is each row's count, by its repository, "" for the project's own.
+	counts := map[string]int{"": len(keys)}
+	for _, key := range keys {
+		if repo := repos[key]; repo != "" {
+			counts[repo]++
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the unowned-p0 rows of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
 	evalID, date := EvalID(project, SlugUnownedP0), measures.Midnight(day)
-	var now time.Time
-	var stored *float64
-	var storedAt *time.Time
-	if err := tx.QueryRow(ctx, `
-		select now(), stored.last_value, stored.last_at
+	// newest is each repository's newest row at or before the day, the project's among them, read
+	// over the primary key's range of the eval's series.
+	type newestRow struct {
+		day   time.Time
+		value float64
+		at    time.Time
+	}
+	newest := map[string]newestRow{}
+	rows, err := tx.Query(ctx, `
+		select now(), stored.repo, stored.day, stored.last_value, stored.last_at
 		from (select 1) as one
-		left join eval_days stored on stored.project_key = $1 and stored.eval_id = $2 and stored.writer = $5
-			and stored.series = $3 and stored.repo = '' and stored.day = $4
-	`, project, evalID, SeriesUnownedP0, date, writerComputation).Scan(&now, &stored, &storedAt); err != nil {
-		return fmt.Errorf("read the unowned-p0 row of %s: %w", project, err)
+		left join lateral (
+			select distinct on (repo) repo, day, last_value, last_at from eval_days
+			where project_key = $1 and eval_id = $2 and writer = $3 and deploy_repo = '' and series = $4 and day <= $5
+			order by repo, day desc
+		) stored on true
+	`, project, evalID, writerComputation, SeriesUnownedP0, date)
+	if err != nil {
+		return fmt.Errorf("read the unowned-p0 rows of %s: %w", project, err)
 	}
-	count, at := float64(unowned), now.UTC()
-	if stored != nil && *stored == count && storedAt != nil {
-		at = storedAt.UTC()
+	var now time.Time
+	var repo *string
+	var storedDay, storedAt *time.Time
+	var stored *float64
+	if _, err := pgx.ForEachRow(rows, []any{&now, &repo, &storedDay, &stored, &storedAt}, func() error {
+		if repo != nil && stored != nil && storedAt != nil {
+			newest[*repo] = newestRow{day: storedDay.UTC(), value: *stored, at: storedAt.UTC()}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("read the unowned-p0 rows of %s: %w", project, err)
 	}
-	row := DayRow{
-		ProjectKey: project, EvalID: evalID, Listed: true, DayPart: measures.DayPart{
-			Series: SeriesUnownedP0, Day: date, N: 1, Sum: &count, Max: &count, LastValue: &count, LastAt: &at,
-		},
+	written := make([]DayRow, 0, len(counts)+len(newest))
+	write := func(repo string, n int) {
+		count, at := float64(n), now.UTC()
+		if last, held := newest[repo]; held && last.day.Equal(date) && last.value == count {
+			at = last.at
+		}
+		written = append(written, DayRow{ProjectKey: project, EvalID: evalID, Repo: repo, Listed: true, DayPart: measures.DayPart{
+			Series: SeriesUnownedP0, Day: date, N: n, Sum: &count, Max: &count, LastValue: &count, LastAt: &at,
+		}})
 	}
-	if err := upsertDays(ctx, tx, []DayRow{row}, builtBy); err != nil {
+	for repo, n := range counts {
+		write(repo, n)
+	}
+	for repo, last := range newest {
+		if _, counted := counts[repo]; !counted && last.value > 0 {
+			write(repo, 0)
+		}
+	}
+	if err := upsertDays(ctx, tx, written, builtBy); err != nil {
 		return err
 	}
 	if err := foldFiguresInTx(ctx, tx, builtBy, map[string]map[string]daySpan{project: {evalID: {first: date, last: date}}}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the unowned-p0 row of %s: %w", project, err)
+		return fmt.Errorf("commit the unowned-p0 rows of %s: %w", project, err)
 	}
 	s.drainChanges(ctx)
 	return nil
+}
+
+// unownedP0Statistics is unowned-p0's fold of parts, its day rows of a range (computedSources):
+// value, the count of the newest day that holds a row, the sum of that day's last values; and n,
+// the sum of the rows' n, the issues they count. A day of one cut can hold several rows, each the
+// count of its own issues: the published default repository's cut reads that repository's row and
+// the project's row stored under legionfacts.DefaultRepo (repoCut, cutOf), and a read of several
+// repositories each one's, so that day's count is their sum, as the project's own row is the sum
+// of its repositories' (WriteUnownedP0Day). Every figure is nil where parts hold no row of the
+// series.
+func unownedP0Statistics(parts []measures.DayPart, _ Range) Statistics {
+	stats := blank("value", "n")
+	n, held, counted := 0, false, false
+	var newest time.Time
+	var value float64
+	for _, part := range parts {
+		if part.Series != SeriesUnownedP0 {
+			continue
+		}
+		n, held = n+part.N, true
+		switch {
+		case part.LastValue == nil:
+		case !counted || part.Day.After(newest):
+			newest, value, counted = part.Day, *part.LastValue, true
+		case part.Day.Equal(newest):
+			value += *part.LastValue
+		}
+	}
+	if held {
+		stats["n"] = new(float64(n))
+	}
+	if counted {
+		stats["value"] = new(value)
+	}
+	return stats
 }

@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -580,7 +581,8 @@ func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
 
 // TestTheUnownedP0RowIsTheCountAtItsLastWrite: WriteUnownedP0Day writes the project's count of open
 // P0 issues with no claim and no route as the day row's last value, at the write's time; a second
-// write after one more such issue opens moves the value and the time.
+// write after one more such issue opens moves the value and the time; and a third write, which
+// finds the count it stored, leaves the row as it was, its time and the moment it was written.
 func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -621,8 +623,127 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 	if second.LastValue == nil || *second.LastValue != 2 || second.LastAt == nil || !second.LastAt.After(*first.LastAt) {
 		t.Fatalf("the rewritten row = last_value %s at %v, want 2 after %v", showValue(second.LastValue), second.LastAt, first.LastAt)
 	}
-	t.Logf("unowned-p0 of EVAL on %s: %g at %s, then %g at %s", attributionDay.Format(time.DateOnly),
+	if err := r.registry.WriteUnownedP0Day(ctx, "EVAL", attributionDay, testBuild); err != nil {
+		t.Fatalf("write the unowned-p0 row a third time: %v", err)
+	}
+	third := r.day(t, EvalID("EVAL", SlugUnownedP0), SeriesUnownedP0, "", attributionDay)
+	if third.LastValue == nil || *third.LastValue != 2 || third.LastAt == nil || !third.LastAt.Equal(*second.LastAt) || !third.UpdatedAt.Equal(second.UpdatedAt) {
+		t.Fatalf("the row written again with the count unchanged = last_value %s at %v, updated at %s; want 2 at %v, updated at %s, as the second write left it",
+			showValue(third.LastValue), third.LastAt, third.UpdatedAt.Format(time.RFC3339Nano), second.LastAt, second.UpdatedAt.Format(time.RFC3339Nano))
+	}
+	t.Logf("unowned-p0 of EVAL on %s: %g at %s, then %g at %s, kept by the third write", attributionDay.Format(time.DateOnly),
 		*first.LastValue, first.LastAt.Format(time.RFC3339Nano), *second.LastValue, second.LastAt.Format(time.RFC3339Nano))
+}
+
+// unownedP0Facts is project's unowned-p0 rows of day, one `<repo> n=… sum=… last=…` each, repo
+// "all" for the project's own row, in order.
+func unownedP0Facts(t *testing.T, r rig, project string, day time.Time) []string {
+	t.Helper()
+	var facts []string
+	for _, row := range r.stored(t, project) {
+		if row.EvalID == EvalID(project, SlugUnownedP0) && row.Day.Equal(day) {
+			facts = append(facts, fmt.Sprintf("%s n=%d sum=%s last=%s", cmp.Or(row.Repo, "all"), row.N, showValue(row.Sum), showValue(row.LastValue)))
+		}
+	}
+	slices.Sort(facts)
+	return facts
+}
+
+// TestTheUnownedP0RowsPartitionTheCountByRepository: beside the project's row, WriteUnownedP0Day
+// writes a row for each repository its open P0 issues with no owner resolve to (the rule the
+// Legion rows cut an issue by, legionfacts.ReadRepos): an issue's own repository, its parent's,
+// and legionfacts.DefaultRepo for one whose chain names none. Each row's count is its n, sum and
+// last value, so the repositories' rows add up to the project's. A claim that leaves a repository
+// with no such issue writes that repository a row of 0 for the day, so a read of it never reads
+// the count that went away; the next day, whose write finds that row's 0 the repository's newest,
+// writes it none.
+func TestTheUnownedP0RowsPartitionTheCountByRepository(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	actor := `{"kind":"system","id":"p0-test"}`
+	insert := func(number, priority int, repo, parent string, claimed bool) {
+		t.Helper()
+		var claimedBy, claimedAt any
+		if claimed {
+			claimedBy, claimedAt = actor, attributionDay
+		}
+		if _, err := r.database.Pool.Exec(ctx, `
+			insert into issues (key, project_key, number, title, status, rank, priority, repo, parent_key, created_by, created_at, claimed_by, claimed_at)
+			values ($1, 'EVAL', $2, 'Incident', 'triage', $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, $10)
+		`, fmt.Sprintf("EVAL-%d", number), number, fmt.Sprintf("%08d", number), priority, repo, parent, actor, attributionDay, claimedBy, claimedAt); err != nil {
+			t.Fatalf("write issue %d: %v", number, err)
+		}
+	}
+	insert(1, 0, "acme/web", "", false)
+	insert(2, 2, "acme/api", "", false)
+	insert(3, 0, "", "EVAL-2", false)
+	insert(4, 0, "", "", false)
+	insert(5, 0, "", "", false)
+	insert(6, 0, "acme/web", "", true)
+	write := func(day time.Time) {
+		t.Helper()
+		if err := r.registry.WriteUnownedP0Day(ctx, "EVAL", day, testBuild); err != nil {
+			t.Fatalf("write the unowned-p0 rows of %s: %v", day.Format(time.DateOnly), err)
+		}
+	}
+	expect := func(what string, day time.Time, want ...string) {
+		t.Helper()
+		if got := unownedP0Facts(t, r, "EVAL", day); !slices.Equal(got, want) {
+			t.Errorf("%s, the unowned-p0 rows of %s are\n\t%s\nwant\n\t%s", what, day.Format(time.DateOnly), strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+		}
+	}
+
+	// EVAL-1 in its own repository, EVAL-3 in its parent's, EVAL-4 and EVAL-5 in none; EVAL-2 is
+	// no P0 and EVAL-6 is claimed.
+	write(attributionDay)
+	expect("with four issues counted", attributionDay,
+		":default n=2 sum=2 last=2", "acme/api n=1 sum=1 last=1", "acme/web n=1 sum=1 last=1", "all n=4 sum=4 last=4")
+
+	if _, err := r.database.Pool.Exec(ctx, `update issues set claimed_by = $1, claimed_at = $2 where key = 'EVAL-1'`, actor, attributionDay); err != nil {
+		t.Fatalf("claim EVAL-1: %v", err)
+	}
+	write(attributionDay)
+	expect("once EVAL-1 is claimed", attributionDay,
+		":default n=2 sum=2 last=2", "acme/api n=1 sum=1 last=1", "acme/web n=0 sum=0 last=0", "all n=3 sum=3 last=3")
+
+	next := attributionDay.AddDate(0, 0, 1)
+	write(next)
+	expect("on the next day", next, ":default n=2 sum=2 last=2", "acme/api n=1 sum=1 last=1", "all n=3 sum=3 last=3")
+}
+
+// TestAMoveAboveAnUnownedP0IssueMovesItsCount: a write that moves the parent or the repository of
+// an issue that is no P0 moves the repository each unowned P0 issue below it resolves to, and so
+// the repository it is counted under: the pass that reads the write's event writes the project's
+// unowned-p0 rows of today again. EVAL-2, an unowned P0 issue below EVAL-1, which names no
+// repository, is counted under legionfacts.DefaultRepo; then EVAL-1 moves below EVAL-3, of
+// acme/api, and then gets acme/web as its own.
+func TestAMoveAboveAnUnownedP0IssueMovesItsCount(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.exec(t, "the issues", `
+		insert into issues (key, project_key, number, title, status, rank, priority, repo, parent_key, created_by)
+		values ('EVAL-3', 'EVAL', 3, 'A service', 'in_progress', '00000003', 2, 'acme/api', null, '{"kind":"user","id":"alice"}'),
+			('EVAL-1', 'EVAL', 1, 'A project', 'in_progress', '00000001', 2, null, null, '{"kind":"user","id":"alice"}'),
+			('EVAL-2', 'EVAL', 2, 'Broken', 'triage', '00000002', 0, null, 'EVAL-1', '{"kind":"user","id":"alice"}')`)
+	r.settle(t)
+	expect := func(what string, want ...string) {
+		t.Helper()
+		if got := unownedP0Facts(t, r.rig, "EVAL", refresherToday); !slices.Equal(got, want) {
+			t.Errorf("%s, the unowned-p0 rows of today are\n\t%s\nwant\n\t%s", what, strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+		}
+	}
+	expect("before the moves", ":default n=1 sum=1 last=1", "all n=1 sum=1 last=1")
+
+	r.exec(t, "move EVAL-1 below EVAL-3", `update issues set parent_key = 'EVAL-3' where key = 'EVAL-1'`)
+	r.writeIssueEvent(t, "EVAL-1", "issue.updated", `{"key":"EVAL-1","priority":2,"status":"in_progress","changed":["parent"]}`)
+	r.pass(t)
+	expect("once EVAL-1 is below EVAL-3", ":default n=0 sum=0 last=0", "acme/api n=1 sum=1 last=1", "all n=1 sum=1 last=1")
+
+	r.exec(t, "give EVAL-1 a repository", `update issues set repo = 'acme/web' where key = 'EVAL-1'`)
+	r.writeIssueEvent(t, "EVAL-1", "issue.updated", `{"key":"EVAL-1","priority":2,"status":"in_progress","changed":["repo"]}`)
+	r.pass(t)
+	expect("once EVAL-1 names acme/web", ":default n=0 sum=0 last=0", "acme/api n=0 sum=0 last=0", "acme/web n=1 sum=1 last=1", "all n=1 sum=1 last=1")
 }
 
 // TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce: each statement that finds what a day no

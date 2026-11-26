@@ -53,11 +53,9 @@ var computedSources = map[string]computedSource{
 	SourceFoldChangeFailureRate: {changeFailureRateStatistics, stated("rate")},
 	SourceFoldTimeToRestore:     {oneSeries(measures.SeriesMinutes, timeToRestoreStatistics), stated("median")},
 	SourceFoldTiming:            {oneSeries(measures.SeriesMinutes, timingStatistics), stated("median")},
-	// unowned-p0's day row is the count at the day's last refresh, which delivery.CountUnownedP0
-	// counts by delivery.ListUnownedP0's rule; a window reads its newest day's, the `last` fold.
-	SourceListUnownedP0: {oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
-		return aggStatistics(AggLast, parts, SeriesUnownedP0)
-	}), stated("value")},
+	// unowned-p0's day rows are the counts at the day's last refresh, the project's and each
+	// repository's (WriteUnownedP0Day); a window reads its newest day's, the sum of that day's rows.
+	SourceListUnownedP0: {oneSeries(SeriesUnownedP0, unownedP0Statistics), stated("value")},
 	SourceFoldWorkTime:  {byCut(metrics.FoldWorkTime, workTimeStatistics), stated("median")},
 	SourceFoldPhaseTime: {byCut(metrics.FoldPhaseTime, phaseTimeStatistics), stated("median_per_issue")},
 	SourceFoldIdleTime:  {byCut(metrics.FoldIdleTime, idleTimeStatistics), stated("median")},
@@ -298,6 +296,41 @@ func changeOf(window, compare Statistics) Statistics {
 		}
 	}
 	return change
+}
+
+// Withhold is values, the listed series of definition's eval with their values over window and
+// compare (nil for none) as SeriesValuesOf or StoredFigures.SeriesValues states them, under b's
+// rule (Built), changed in place: a range that holds a day before b's today that the stored rows
+// of the eval's family are not whole through answers no value, every statistic null as a range
+// that starts before its series' first day answers, and the change from the compare range with it;
+// each day's own value (the per-day array), data_since and the via-repository count stand. Today is
+// none of those days: at each UTC midnight the pass the midnight starts writes the new day's rows,
+// and a read in the moments before it answers the days before it. An eval no walk builds the rows
+// of (builtWalk) is answered as it is. Every read that states an eval's values over a range states
+// them through it, whether from the day rows or from the stored figures: the list read, the one
+// eval's read, the read across projects and the evals live view (api's evalValues.items).
+func (b Built) Withhold(definition Definition, values []SeriesValues, window Range, compare *Range) []SeriesValues {
+	key, walked := builtWalk(definition)
+	if !walked {
+		return values
+	}
+	windowed, compared := b.unbuilt(key, window), compare != nil && b.unbuilt(key, *compare)
+	if !windowed && !compared {
+		return values
+	}
+	for index := range values {
+		value := &values[index]
+		if windowed {
+			value.Window = noData(value.Window)
+		}
+		if compare != nil {
+			if compared {
+				value.Compare = noData(value.Compare)
+			}
+			value.Change = changeOf(value.Window, value.Compare)
+		}
+	}
+	return values
 }
 
 // WindowStatistics is each of series' statistics over the window, by series name: what the eval's

@@ -22,8 +22,9 @@ import (
 // and its fill of the logged evals' zero rows (fillLoggedZeros).
 
 // eventPage is what one page of the event log names: where the events cursor now stands, whether
-// the page was full, the projects whose count of unowned P0 issues an event can have moved, and
-// the issues whose repository or parent an event moved.
+// the page was full, the projects whose unowned-p0 rows (the count of unowned P0 issues, and its
+// repositories' counts) an event can have moved, and the issues whose repository or parent an
+// event moved.
 type eventPage struct {
 	position   int64
 	full       bool
@@ -47,7 +48,10 @@ var refresherEventTypes = []string{"issue.created", "issue.updated", "issue.clos
 // whose `changed` names its priority, status or route - and the issue is a P0 now or its priority
 // moved, which may have made it one or taken it off: the project's row of today is then written
 // again. An event whose `changed` names the repository or the parent moves the repository every
-// issue below it resolves to.
+// issue below it resolves to, and so the repository an unowned P0 issue below it is counted under
+// (WriteUnownedP0Day): the project's rows of today are then written again where it holds such an
+// issue now (delivery.CountUnownedP0), since a project that holds none has every repository's
+// count at 0 already, from the write that followed the event that took its last one off.
 func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limit int) (eventPage, error) {
 	page := eventPage{position: after}
 	if safe <= after {
@@ -69,7 +73,7 @@ func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limi
 	if err != nil {
 		return eventPage{}, fmt.Errorf("read the events after %d: %w", after, err)
 	}
-	unowned, reparented := map[string]bool{}, map[string]bool{}
+	unowned, reparented, movedIn := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	count := 0
 	var id int64
 	var project, issue string
@@ -81,11 +85,23 @@ func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limi
 			unowned[project] = true
 		}
 		if moved {
-			reparented[issue] = true
+			reparented[issue], movedIn[project] = true, true
 		}
 		return nil
 	}); err != nil {
 		return eventPage{}, fmt.Errorf("read the events after %d: %w", after, err)
+	}
+	for project := range movedIn {
+		if unowned[project] {
+			continue
+		}
+		held, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
+		if err != nil {
+			return eventPage{}, fmt.Errorf("count the unowned P0 issues of %s: %w", project, err)
+		}
+		if held > 0 {
+			unowned[project] = true
+		}
 	}
 	page.full = count == limit
 	if !page.full {

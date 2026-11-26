@@ -79,15 +79,15 @@ func leaveAttributionInputsUnread(t *testing.T, pool *store.Pool) {
 	}
 }
 
-// storedDayRows reads every eval_days row of project but its unowned-p0 row of today (which the
-// refresher writes for every project), listed or not, every repository's, in key order: the rows
-// the partition is checked over, and the unlisted job series DayWindowIn leaves out.
+// storedDayRows reads every eval_days row of project, listed or not, every repository's, in key
+// order: the rows the partition is checked over, the unowned-p0 rows of each repository among them,
+// and the unlisted job series DayWindowIn leaves out.
 func storedDayRows(t *testing.T, pool *store.Pool, project string) []evals.DayRow {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `
 		select eval_id, series, repo, day, listed, n, sum, num, den, max, samples, counts, via_repository
-		from eval_days where project_key = $1 and eval_id <> $2 order by eval_id, series, repo, day
-	`, project, evals.EvalID(project, evals.SlugUnownedP0))
+		from eval_days where project_key = $1 order by eval_id, series, repo, day
+	`, project)
 	if err != nil {
 		t.Fatalf("read the day rows of %s: %v", project, err)
 	}
@@ -544,8 +544,22 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 			t.Fatalf("%s holds a day row (%s on %s), want none: no failure source exists", row.EvalID, row.Series, row.Day.Format(time.DateOnly))
 		}
 	}
-	if other := storedDayRows(t, database.Pool, fixture.SecondProject); len(other) != 0 {
-		t.Fatalf("%s holds %d day rows, want none: no row of this history counts for it", fixture.SecondProject, len(other))
+	// The refresher writes every project's unowned-p0 row of today, which counts none of the
+	// second project's issues: this history holds no open P0 issue of it.
+	for _, row := range storedDayRows(t, database.Pool, fixture.SecondProject) {
+		if row.EvalID != evals.EvalID(fixture.SecondProject, evals.SlugUnownedP0) || row.Repo != "" || row.N != 0 {
+			t.Errorf("%s holds a day row of %s %s in %q on %s, n %d; want its unowned-p0 row of 0 alone: no row of this history counts for it",
+				fixture.SecondProject, row.EvalID, row.Series, row.Repo, row.Day.Format(time.DateOnly), row.N)
+		}
+	}
+	unownedRepoRows := 0
+	for _, row := range stored {
+		if row.EvalID == evals.EvalID(fixture.Project, evals.SlugUnownedP0) && row.Repo != "" {
+			unownedRepoRows++
+		}
+	}
+	if unownedRepoRows == 0 {
+		t.Errorf("%s holds no repository's unowned-p0 row beside its %d open P0 issues with no owner, so the partition checks none", fixture.Project, len(fixture.UnownedP0))
 	}
 	seriesDays, repositoryRows := checkDayRowPartition(t, stored)
 	written := map[time.Time]bool{}

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -317,4 +318,93 @@ func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
 		t.Errorf("after the commit the items list run %d as a deploy that reached production", runID)
 	}
 	t.Logf("the answer the commit landed in is the %d bytes of the answer before it; the next answer moved run %d", len(before), runID)
+}
+
+// TestTheUnownedP0CountAndItsIssuesFollowTheRepositoryFilter: unowned-p0's rows of a day are
+// written for each repository its open P0 issues with no owner resolve to
+// (evals.Store.WriteUnownedP0Day), beside the project's, so the eval's read and its items read
+// filtered by repositories answer their count and their issues: the published default
+// repository's, its own issues and those whose chain names no repository (stored under
+// legionfacts.DefaultRepo), as every count's cut of it does; another's, its own issues and those
+// below an issue of it; two repositories, both; one no issue resolves to, no data and no issue; and
+// no filter, the project's. The repositories' rows partition the project's (checkDayRowPartition).
+func TestTheUnownedP0CountAndItsIssuesFollowTheRepositoryFilter(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	createTestProject(t, handler, "EVL")
+	ctx := t.Context()
+	exec := func(what, statement string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, statement, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	exec("give EVL a default repository", `update projects set default_repo = 'acme/web' where key = 'EVL'`)
+	exec("publish it", `insert into eval_days_defaults (project_key, repo) values ('EVL', 'acme/web')`)
+	actor := `{"kind":"user","id":"alice"}`
+	for _, issue := range []struct {
+		number, priority int
+		repo, parent     string
+		claimed          bool
+	}{
+		{1, 0, "acme/web", "", false},
+		{2, 0, "acme/api", "", false},
+		{3, 2, "acme/api", "", false}, // no P0
+		{4, 0, "", "EVL-3", false},    // acme/api, its parent's
+		{5, 0, "", "", false},         // no repository: the published default's
+		{6, 0, "", "", false},
+		{7, 0, "acme/api", "", true}, // claimed
+	} {
+		var claimedBy any
+		if issue.claimed {
+			claimedBy = actor
+		}
+		exec(fmt.Sprintf("write EVL-%d", issue.number), `
+			insert into issues (key, project_key, number, title, status, rank, priority, repo, parent_key, created_by, claimed_by, claimed_at)
+			values ($1, 'EVL', $2, 'Incident', 'triage', $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, case when $8::jsonb is null then null else now() end)
+		`, fmt.Sprintf("EVL-%d", issue.number), issue.number, fmt.Sprintf("U%03d", issue.number), issue.priority, issue.repo, issue.parent, actor, claimedBy)
+	}
+	today := measures.Midnight(time.Now())
+	if err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).WriteUnownedP0Day(ctx, "EVL", today, testServerBuild); err != nil {
+		t.Fatalf("write EVL's unowned-p0 rows of today: %v", err)
+	}
+	stated := func(value *float64) string {
+		if value == nil {
+			return "no data"
+		}
+		return fmt.Sprint(*value)
+	}
+	for _, read := range []struct {
+		repos  []string
+		want   string
+		issues []string
+	}{
+		{nil, "value 5, n 5", []string{"EVL-1", "EVL-2", "EVL-4", "EVL-5", "EVL-6"}},
+		{[]string{"acme/web"}, "value 3, n 3", []string{"EVL-1", "EVL-5", "EVL-6"}},
+		{[]string{"acme/api"}, "value 2, n 2", []string{"EVL-2", "EVL-4"}},
+		{[]string{"acme/web", "acme/api"}, "value 5, n 5", []string{"EVL-1", "EVL-2", "EVL-4", "EVL-5", "EVL-6"}},
+		{[]string{"acme/other"}, "value no data, n no data", []string{}},
+	} {
+		query := url.Values{"from": {today.Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}, "repo": read.repos}
+		detail := evalGet[evalDetailResponse](t, handler, "/api/v1/projects/EVL/evals/"+evals.SlugUnownedP0+"?"+query.Encode())
+		window := seriesValues(t, detail.Items[0], evals.SeriesUnownedP0).Window
+		if got := "value " + stated(window["value"]) + ", n " + stated(window["n"]); got != read.want {
+			t.Errorf("the read with repo %v answers %s, want %s", read.repos, got, read.want)
+		}
+		query.Set("row_kind", evalRowIssue)
+		items := evalGet[evalItemsResponse](t, handler, evalItemsPath("EVL", evals.SlugUnownedP0)+"?"+query.Encode())
+		keys := []string{}
+		for _, row := range items.Items {
+			keys = append(keys, row.RowKey)
+		}
+		slices.Sort(keys)
+		if !slices.Equal(keys, read.issues) || items.Total != len(read.issues) {
+			t.Errorf("the items read with repo %v answers %v of %d, want %v", read.repos, keys, items.Total, read.issues)
+		}
+	}
+	seriesDays, repositoryRows := checkDayRowPartition(t, storedDayRows(t, database.Pool, "EVL"))
+	if repositoryRows == 0 {
+		t.Errorf("EVL holds no repository's day row over %d series days, so the partition checked none", seriesDays)
+	}
+	t.Logf("the partition holds over %d series days of EVL, %d repository rows", seriesDays, repositoryRows)
 }

@@ -300,3 +300,222 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 	largestBytes, what := largestStatement(sent)
 	t.Logf("%d statements, %d of the day rows; the largest %d bytes of parameters (%s), of %d", len(sent), windows, largestBytes, what, statementBytes)
 }
+
+// listedValues is each of project's evals' values over window and compare (nil for none) as the
+// eval list's read states them from the day rows as of now (api's readEvalValues and
+// evalValues.items: FirstDaysIn, BuiltIn, DayWindowIn, SeriesValuesOf and Built.Withhold), and the
+// fold of the same rows with no rule of how far they are built (folded), by eval id; and the evals.
+func (r *refresherRig) listedValues(t *testing.T, project string, window Range, compare *Range, now time.Time) (stated, folded map[string][]SeriesValues, entries []Entry) {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	page, err := r.registry.Current(ctx, []string{project}, "", 200, 0)
+	if err != nil {
+		t.Fatalf("read %s's evals: %v", project, err)
+	}
+	deployRepo, err := DeployRepoIn(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firsts, err := FirstDaysIn(ctx, pool, page.Items, deployRepo)
+	if err != nil {
+		t.Fatalf("read the first days of %s's evals: %v", project, err)
+	}
+	built, err := BuiltIn(ctx, pool, page.Items, now)
+	if err != nil {
+		t.Fatalf("read how far %s's day rows are built: %v", project, err)
+	}
+	rows, err := DayWindowIn(ctx, pool, []string{project}, page.Items, deployRepo, nil, window, compare)
+	if err != nil {
+		t.Fatalf("read %s's day rows of %s: %v", project, daysText(window), err)
+	}
+	byEval := map[string][]WindowRow{}
+	for _, row := range rows {
+		byEval[row.EvalID] = append(byEval[row.EvalID], row)
+	}
+	stated, folded = map[string][]SeriesValues{}, map[string][]SeriesValues{}
+	for _, entry := range page.Items {
+		id := entry.Definition.EvalID
+		folded[id] = SeriesValuesOf(entry, slices.Clone(byEval[id]), firsts[id], window, compare)
+		stated[id] = built.Withhold(entry.Definition, SeriesValuesOf(entry, slices.Clone(byEval[id]), firsts[id], window, compare), window, compare)
+	}
+	return stated, folded, page.Items
+}
+
+// statedPart is one part of values (window, compare, change, or the days before day of the
+// per-day arrays) encoded, series by series, for a comparison of two reads.
+func statedPart(t *testing.T, values []SeriesValues, part string, before time.Time) string {
+	t.Helper()
+	held := map[string]any{}
+	for _, one := range values {
+		switch part {
+		case "window":
+			held[one.Series.Series] = one.Window
+		case "compare":
+			held[one.Series.Series] = one.Compare
+		case "change":
+			held[one.Series.Series] = one.Change
+		case "days":
+			var days []DayPoint
+			for _, point := range one.Days {
+				if point.Day < before.Format(time.DateOnly) {
+					days = append(days, point)
+				}
+			}
+			held[one.Series.Series] = days
+		}
+	}
+	encoded, err := json.Marshal(held)
+	if err != nil {
+		t.Fatalf("encode the %s of the values: %v", part, err)
+	}
+	return string(encoded)
+}
+
+// noValue reports whether every statistic of the part (window, compare or change) of values is
+// null: a range that reads "no data".
+func noValue(values []SeriesValues, part string) bool {
+	for _, one := range values {
+		stats := one.Window
+		switch part {
+		case "compare":
+			stats = one.Compare
+		case "change":
+			stats = one.Change
+		}
+		for _, value := range stats {
+			if value != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// TestAWindowTheWalkHasNotBuiltReadsNoDataUntilItHas (R12, dispatch://INFRA-2916's k12): over the
+// delivery and Legion histories, a first walk of one day a pass stops after its first pass, its
+// days built through the day before each family's serving record (eval_days_serving), which is
+// days before today. Read as the eval list reads them as of today (listedValues), for every
+// computed eval of each family: a window of the built day answers the values it answers once the
+// walk has ended; a window of three days that runs past it answers no value, while its built day's
+// own values are the settled ones; a compare range does the same against either window, the change
+// with no value where either range has none; and once the walk has ended each of those reads
+// answers the fold of its rows, a value among them, nothing withheld. Read as of the day of the
+// record itself, a window that holds only that day, today, past the built day answers its values.
+// Red where a read folds the built days of a window that holds days the walk has not built.
+func TestAWindowTheWalkHasNotBuiltReadsNoDataUntilItHas(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	deliveries, legion := r.seedHistories(t)
+	r.leaveInputsUnread(t)
+	r.batch = 1
+	r.pass(t)
+	type read struct {
+		name               string
+		window             Range
+		compare            *Range
+		windowed, compared bool
+	}
+	type family struct {
+		walk, project, walked string
+		next                  time.Time
+		reads                 []read
+		before                []map[string][]SeriesValues
+		evals                 []Entry
+	}
+	families := []*family{{walk: walkDelivery, project: deliveries.Project}, {walk: walkLegion, project: legion.Project, walked: legion.Project}}
+	for _, one := range families {
+		next, _ := r.rebuildNext(t, one.walk, one.walked)
+		if next == nil || !next.AddDate(0, 0, 1).Before(refresherToday) {
+			t.Fatalf("the %s walk stands at %v after its first pass, and the check needs two days before today past it", one.walk, next)
+		}
+		if served := r.count(t, `select count(*) from eval_days_serving where family = $1 and project_key = $2 and next_day = $3`, one.walk, one.walked, *next); served != 1 {
+			t.Fatalf("the %s rows are served through %d records at their walk's day %s, and the check needs one", one.walk, served, next.Format(time.DateOnly))
+		}
+		one.next = *next
+		inside := Range{From: next.AddDate(0, 0, -1), To: *next}
+		past := Range{From: next.AddDate(0, 0, -1), To: next.AddDate(0, 0, 2)}
+		one.reads = []read{
+			{name: "the built days", window: inside},
+			{name: "a window past the built days", window: past, windowed: true},
+			{name: "the built days against a compare range past them", window: inside, compare: &past, compared: true},
+			{name: "a window past the built days against the built days", window: past, compare: &inside, windowed: true},
+		}
+		for _, shape := range one.reads {
+			stated, _, entries := r.listedValues(t, one.project, shape.window, shape.compare, r.now)
+			one.before = append(one.before, stated)
+			one.evals = entries
+		}
+		// Read as of the record's day, the window's last day is today.
+		stated, folded, _ := r.listedValues(t, one.project, Range{From: next.AddDate(0, 0, -1), To: next.AddDate(0, 0, 1)}, nil, next.Add(12*time.Hour))
+		valued := false
+		for _, entry := range one.evals {
+			if key, walked := builtWalk(entry.Definition); !walked || key.family != one.walk {
+				continue
+			}
+			id := entry.Definition.EvalID
+			if got, want := statedPart(t, stated[id], "window", one.next), statedPart(t, folded[id], "window", one.next); got != want {
+				t.Errorf("as of %s, %s's window of the built days and today answers %s, want its rows' fold %s", one.next.Format(time.DateOnly), id, got, want)
+			}
+			valued = valued || !noValue(stated[id], "window")
+		}
+		if !valued {
+			t.Errorf("as of %s, no %s eval of %s states a value over the built days and today, and the check needs one", one.next.Format(time.DateOnly), one.walk, one.project)
+		}
+	}
+
+	r.settle(t)
+	for _, one := range families {
+		checked, valued := 0, false
+		for index, shape := range one.reads {
+			settled, folded, _ := r.listedValues(t, one.project, shape.window, shape.compare, r.now)
+			for _, entry := range one.evals {
+				if key, walked := builtWalk(entry.Definition); !walked || key.family != one.walk {
+					continue
+				}
+				checked++
+				id := entry.Definition.EvalID
+				before, after := one.before[index][id], settled[id]
+				what := fmt.Sprintf("%s's %s (%s", id, shape.name, daysText(shape.window))
+				if shape.compare != nil {
+					what += " against " + daysText(*shape.compare)
+				}
+				what += ")"
+				for _, part := range []string{"window", "compare", "change"} {
+					if got, want := statedPart(t, after, part, one.next), statedPart(t, folded[id], part, one.next); got != want {
+						t.Errorf("once the walk ended, %s answers the %s %s, want its rows' fold %s", what, part, got, want)
+					}
+				}
+				if !noValue(after, "window") {
+					valued = true
+				}
+				if shape.windowed {
+					if !noValue(before, "window") {
+						t.Errorf("before the walk built %s, %s answers the window %s, want no value", one.next.Format(time.DateOnly), what, statedPart(t, before, "window", one.next))
+					}
+				} else if got, want := statedPart(t, before, "window", one.next), statedPart(t, after, "window", one.next); got != want {
+					t.Errorf("before the walk built %s, %s answers the window %s, want the settled %s", one.next.Format(time.DateOnly), what, got, want)
+				}
+				if shape.compare != nil {
+					if shape.compared {
+						if !noValue(before, "compare") {
+							t.Errorf("before the walk built %s, %s answers the compare range %s, want no value", one.next.Format(time.DateOnly), what, statedPart(t, before, "compare", one.next))
+						}
+					} else if got, want := statedPart(t, before, "compare", one.next), statedPart(t, after, "compare", one.next); got != want {
+						t.Errorf("before the walk built %s, %s answers the compare range %s, want the settled %s", one.next.Format(time.DateOnly), what, got, want)
+					}
+					if (shape.windowed || shape.compared) && !noValue(before, "change") {
+						t.Errorf("before the walk built %s, %s answers the change %s, want no value", one.next.Format(time.DateOnly), what, statedPart(t, before, "change", one.next))
+					}
+				}
+				if got, want := statedPart(t, before, "days", one.next), statedPart(t, after, "days", one.next); got != want {
+					t.Errorf("before the walk built %s, %s answers the days before it %s, want the settled %s", one.next.Format(time.DateOnly), what, got, want)
+				}
+			}
+		}
+		if checked == 0 || !valued {
+			t.Fatalf("%d reads of %s's %s evals, a value among them %t, and the check needs a value", checked, one.project, one.walk, valued)
+		}
+		t.Logf("%s: the first pass built %s's days through %s; %d reads of its %s evals checked", one.walk, one.project,
+			one.next.AddDate(0, 0, -1).Format(time.DateOnly), checked, one.walk)
+	}
+}
