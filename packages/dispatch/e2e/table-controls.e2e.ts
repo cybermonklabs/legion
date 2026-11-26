@@ -90,6 +90,7 @@ import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filte
 import {
   askCard,
   askControls,
+  backToList,
   inboxList,
   inboxPane,
   inboxRow,
@@ -98,7 +99,7 @@ import {
   selectedRow,
   selectRow,
 } from "./inbox-pane";
-import { asSession, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
+import { asSession, isThreadRow, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import {
   bandHeadings,
   bandLabel,
@@ -4413,18 +4414,37 @@ test.describe("R8's rows and cards", () => {
       changed.push(...found);
     }
 
+    // Below the reading column's width the Inbox lists short rows and draws a question's card
+    // only in the reading view its row opens (INFRA-5200), so each question the list draws is
+    // opened in turn and its card's "Asked of" line read there. A thread's row opens no card.
     await page.setViewportSize({ height: 768, width: 1024 });
     await page.goto("/?assignee=everyone");
-    const handOns = main.locator("[data-ask-hand-on]");
-    await expect(handOns.first(), "the Inbox draws no ask card at 1024x768").toBeVisible();
-    const askedOf = await handOns.evaluateAll((wrappers) =>
-      wrappers
-        .filter((wrapper) => wrapper.getClientRects().length > 0)
-        .map(
+    const rows = inboxList(page).locator("[data-inbox-row]");
+    /** The questions the list draws, by their rows' ids, in the list's order. */
+    const listedAsks = async () =>
+      (
+        await rows.evaluateAll((nodes) =>
+          nodes
+            .filter((node) => node.getClientRects().length > 0)
+            .map((node) => node.getAttribute("data-inbox-row") ?? "")
+        )
+      ).filter((id) => id !== "" && !isThreadRow(id));
+    await expect
+      .poll(async () => (await listedAsks()).length, {
+        message: "the Inbox draws no ask card at 1024x768",
+      })
+      .toBeGreaterThan(0);
+    const askedOf: number[] = [];
+    for (const ask of await listedAsks()) {
+      const handOn = (await askCard(page, ask)).locator("[data-ask-hand-on]");
+      await expect(handOn, `the Inbox's card of ${ask} draws no "Asked of" line`).toBeVisible();
+      askedOf.push(
+        await handOn.evaluate(
           (wrapper) =>
             Math.round((wrapper.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
         )
-    );
+      );
+    }
     /** Each line read at 1024x768: what it is, its height now, the height it is held to, and
      *  where that height was read. */
     const lines: [line: string, height: number, held: number, from: string][] = askedOf.map(
@@ -6138,13 +6158,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
   const [repositoryWord, repositoryLeft, repositoryPicked] =
     step === 0 ? ["acme/gadgets", [], /^acme\/gadgets$/] : ["inh", ["Inherit"], /^acme\/widgets$/];
-  // The Inbox's two Snoozes. With the reading column a row's Snooze is in the column's head, for
-  // the row the column shows; without it, in the row itself.
+  // The Inbox's two Snoozes. A row's Snooze is in the head of the pane its row opens, for the
+  // row picked: the reading column's, or below its width the reading view's (INFRA-5200).
   const snoozed = seed.snoozes[step] ?? { after: "", bulk: "", row: "" };
-  const rowSnooze = listTrigger(
-    hasReadingPane(page) ? inboxPane(page) : inboxRow(page, snoozed.row),
-    /^Snooze /
-  );
+  const rowSnooze = listTrigger(inboxPane(page), /^Snooze /);
   const bulkSnooze = listTrigger(
     page.getByRole("toolbar", { name: "Selected rows" }),
     "Snooze selected asks"
@@ -6152,15 +6169,25 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   /** Where a reader reads what a Snooze did: how many rows the Inbox's Later band holds, in the
    *  band's own words, `Later (0)` while there is no band. Which of the two the Inbox shows is
    *  read once its list has settled on one of them (`settledState`): the band, or the list drawn
-   *  with no band in it. */
+   *  with no band in it. Below the reading column's width a row's Snooze is picked in the reading
+   *  view, which stands in the list's place and keeps the list mounted and hidden until the
+   *  reader goes back to it: while the view shows, the band is read in that hidden list, the
+   *  count the reader finds there on going back. The list was drawn before the view opened from
+   *  it, and a Snooze's pick is read by a poll, so one read of it is the answer. */
   const later = async () => {
     const band = page.getByRole("button", { name: /^Later \(\d+\)/ });
     const shown = await settledState("the Inbox's Later band", [
       ["band", band],
       ["no band", inboxList(page).filter({ hasNot: band })],
+      ["reading view", readingView(page)],
     ]);
     if (shown === "no band") return "Later (0)";
-    return /Later \(\d+\)/.exec((await band.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
+    const read =
+      shown === "band"
+        ? band
+        : inboxList(page).getByRole("button", { includeHidden: true, name: /^Later \(\d+\)/ });
+    if ((await read.count()) === 0) return "Later (0)";
+    return /Later \(\d+\)/.exec((await read.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
   };
   // Each Snooze pick defers one more question, two at each width, so Later counts one more.
   const laterAfter = (picks: number) => new RegExp(`^Later \\(${2 * step + picks}\\)$`);
@@ -6170,15 +6197,13 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const [sizeWord, sizeOption] = step === 0 ? ["250", "250 per page"] : ["100", "100 per page"];
   // The priority of the width's own issue, which the List's row, the Board's card and the
   // Inbox's question pick in turn: P3 to P1, P1 to P2, then P2 to P0. The Inbox draws a
-  // question's priority in the reading column's head, for the row the column shows, and without
-  // the column in the row itself.
+  // question's priority in the head of the pane its row opens, for the row picked: the reading
+  // column's, or below its width the reading view's.
   const prioritized = seed.priorities[step] ?? { ask: "", issue: "" };
   const priorityOf = (scope: Locator) => listTrigger(scope, `Priority of ${prioritized.issue}`);
   const listPriority = priorityOf(main.locator(`[data-issue-row="${prioritized.issue}"]`));
   const cardPriority = priorityOf(main.locator(`[data-board-card="${prioritized.issue}"]`));
-  const inboxPriority = priorityOf(
-    hasReadingPane(page) ? inboxPane(page) : inboxRow(page, prioritized.ask)
-  );
+  const inboxPriority = priorityOf(inboxPane(page));
   // The Delivery page over the fixture's custom range, so the Window starts on Custom range….
   const deliveryPage = `/delivery?${DELIVERY_WINDOW}&mode=list`;
   const deliveryWindow = listTrigger(main, "Window");
@@ -6277,8 +6302,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     },
     {
       // Every person's questions, so the question stays listed once it waits on bob. Its list is
-      // on its card: the reading column's, for the row selected, or the row's own where the
-      // Inbox is too narrow for that column.
+      // on its card, in the pane its row opens: the reading column's, or below its width the
+      // reading view's.
       name: "the Inbox's Hand this question to",
       reach: async () => {
         await page.goto("/?assignee=everyone");
@@ -6291,8 +6316,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       picked: /^Asked of bob$/,
     },
     {
-      // The reader's own questions, newest first. With the reading column the row's question is
-      // selected first, so the column's head draws its Snooze.
+      // The reader's own questions, newest first. The row's question is picked first, so the
+      // head of its pane draws its Snooze.
       name: "the Inbox's Snooze of a row",
       reach: async () => {
         await page.goto("/");
@@ -6305,13 +6330,17 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: ["Tomorrow"],
       picked: laterAfter(1),
       // The pick takes the row away once its write lands. With the reading column the focus goes
-      // to the column's own stop; without it no hand-off of the Inbox's own lands the focus the
-      // row took with it, so the row reads none.
+      // to the column's own stop; below its width the pick is the reading view's, which reads the
+      // next row once the write lands, and the row reads no focus after it.
       focusAfterPick: hasReadingPane(page) ? paneScroller(page) : null,
     },
     {
+      // The marks the bar acts on are put on the list's rows. Below the reading column's width
+      // the row's Snooze above was picked in the reading view, which stays open on the next row
+      // in the list's place, so the reader goes back to the list first.
       name: "the Inbox's Snooze selected asks",
       reach: async () => {
+        await backToList(page);
         await inboxRow(page, snoozed.bulk).getByRole("checkbox").first().check();
       },
       trigger: bulkSnooze,
@@ -6324,8 +6353,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       focusAfterPick: inboxRow(page, snoozed.after).getByRole("checkbox").first(),
     },
     {
-      // The reader's own questions; with the reading column the question is selected first, so
-      // the column's head draws its priority.
+      // The reader's own questions; the question is picked first, so the head of its pane draws
+      // its priority.
       name: "the Inbox's Priority of a question",
       reach: async () => {
         await page.goto("/");
@@ -6544,10 +6573,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // Keyboard shortcuts, since a character typed on a closed trigger is the list's search
 // (`MultiSelect`), and Enter picks the option the word left - the trigger shows it with the focus
 // back on it, or where the pick takes the trigger away the panel hands the focus on. A Snooze's
-// pick shows in the Inbox's Later band, which holds one more row once the write lands. The
-// selection bar's Snooze hands the focus to the mark of the row now at the deferred row's place,
-// and a row's Snooze, with the reading column drawn, to the column's own stop; at 390, where it is
-// not, no hand-off of the Inbox's own lands the focus a row's Snooze took, and the row reads none.
+// pick shows in the Inbox's Later band, which holds one more row once the write lands; at 390 a
+// row's Snooze is picked in the reading view (INFRA-5200), which hides the list, and the band is
+// read in the list it keeps mounted. The selection bar's Snooze, whose marks are put on the
+// list's rows, hands the focus to the mark of the row now at the deferred row's place, and a
+// row's Snooze, with the reading column drawn, to the column's own stop; at 390 the row reads none.
 // A list that holds no text box is named and the row goes on, so one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the

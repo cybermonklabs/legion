@@ -307,7 +307,7 @@ test("on a phone a thread is marked from its short row, and replied to and dismi
 
     // The mark is the row's own: it opens nothing.
     await agentRow.getByRole("checkbox").click();
-    await expect(page.getByRole("group", { name: "Selected rows" })).toContainText("1 selected");
+    await expect(page.getByRole("toolbar", { name: "Selected rows" })).toContainText("1 selected");
     await expect(readingView(page)).toHaveCount(0);
 
     await selectRow(page, replyRowId(seeded.reply));
