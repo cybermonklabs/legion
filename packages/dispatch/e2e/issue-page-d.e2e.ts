@@ -503,8 +503,8 @@ test("the view row's controls are toggles with an address each, one line at ever
     await gotoIssue(page, `/issues/${key}`);
 
     // The toolbar Filters: the toggles of the view row's one list, in its order, each named by
-    // its view's word alone and described by its signal, whose count is the seed's; Graph, the
-    // last, draws no count.
+    // its view's word alone. The filters are described by their signals, with the seed's counts;
+    // Conversation and Graph, the last, draw no count.
     await expect(presetToolbar(page), "no toolbar named Filters holds the controls").toHaveCount(1);
     await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
     expect(
@@ -520,6 +520,7 @@ test("the view row's controls are toggles with an address each, one line at ever
         "aria-pressed",
         preset === "conversation" ? "true" : "false"
       );
+      if (preset === "conversation") continue;
       if (preset === "graph") {
         await expect(presetCount(page, preset), "Graph draws a count").toHaveCount(0);
         continue;
@@ -530,6 +531,8 @@ test("the view row's controls are toggles with an address each, one line at ever
         `${PRESET_NAMES[preset]} is not described by its count`
       ).toHaveAccessibleDescription(new RegExp(`^${SEEDED_COUNTS[preset]}\\b`));
     }
+    await expect(presetCount(page, "conversation"), "Conversation drew a count").toHaveCount(0);
+    await expect(presetToggle(page, "conversation")).toHaveAccessibleDescription("");
 
     // A press turns a view on and the others off, a second press turns it off, and each state
     // is its own address.

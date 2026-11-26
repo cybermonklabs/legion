@@ -1,11 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
-import { createElement, type ReactNode } from "react";
 
 import { decisionsFromTree } from "../../../api/decisions-tree";
 import type { CheckBlock, Decision } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { ReferenceNamesProvider } from "../../refs/reference-names";
 import {
   DECISIONS_SLUG,
   issueTree,
@@ -16,9 +14,9 @@ import {
 } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
-import { useReferenceNames } from "../one-line";
+import { type LineNames, useIssueNames } from "../one-line";
 import { presetView } from "../presets";
-import { Publisher, publishedTree } from "../projection-fixture";
+import { publishingNames } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
 import { treeNode } from "../tree-read/tree-fixtures";
@@ -51,7 +49,7 @@ import {
  */
 
 /** How this issue addresses a node, which is how a tie finds the statement it names. Only the
- *  context's addresses are read here and no chip's name. */
+ *  context's addresses are read here. */
 const { nodeIdOf } = treeContext({ issue: issueDetails() });
 
 // A chip is named from the reading the page published for it, which the store projects.
@@ -59,24 +57,40 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-/** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
- *  is an issue, and else by its short form (`shortForm`). */
-const NO_NAMES = (): undefined => undefined;
+/** What a page that published `lines`, the line a chip names each block by, and no other name
+ *  names a plain line's references by (`useIssueNames`): a reference with no line reads as its
+ *  author wrote it. */
+function lineNamesOf(lines: ReadonlyMap<string, string> = new Map()): LineNames {
+  return {
+    ambiguous: new Set(),
+    author: () => "",
+    deleted: new Map(),
+    edited: new Set(),
+    issue: KEY,
+    issues: [],
+    lines,
+    names: new Map(),
+  };
+}
+
+/** A page that has published no name, so `referenceStandIns` names a reference as its author
+ *  wrote it. */
+const NO_NAMES = lineNamesOf();
 
 /** The Spec filter's body over `tree`, as the page reads it once the asks read holds its answer;
- *  `nameOf` is how the page names a reference a plain line cites (`useReferenceNames`). */
+ *  `lineNames` is what a reference a plain line cites is named by (`useIssueNames`). */
 function bodyOf(
   tree: TreeNode,
   made: readonly Decision[] = [],
   reader: string | undefined = READER,
   checks: readonly CheckBlock[] = [],
-  nameOf: (reference: string) => string | undefined = NO_NAMES
+  lineNames: LineNames = NO_NAMES
 ): readonly SpecGroup[] {
   return specDecidedBy({
     asksHeld: true,
     checks,
     decisions: decisionsRead(made),
-    nameOf,
+    lineNames,
     nodeIdOf,
     reader,
     root: tree,
@@ -249,7 +263,7 @@ test("the decisions read from the tree's Decisions view stand beside the stateme
     asksHeld: true,
     checks: [],
     decisions: read,
-    nameOf: NO_NAMES,
+    lineNames: NO_NAMES,
     nodeIdOf,
     reader: READER,
     root: tree,
@@ -317,7 +331,7 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
 
 // R5: an agent's decision is quoted on the
 // because line by its first line, by R1's one-line rule, and that rule cuts a node's line from
-// its reading's first block (`lineWords`, which the page's every other one-line place reads). A
+// its reading's first block (`lineWordsRaw`, as the page's every other one-line place reads). A
 // decision's reading opens with its own `##` heading, and the whole reading joins that heading
 // and the paragraph under it with one space, so a quote cut from it runs the two together into
 // a line nobody wrote (seen on a running build at 8caa4357: "Keep every address the old page
@@ -357,11 +371,25 @@ test("a reference named in an agent's quote ends no sentence at its name's label
     [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text })],
     READER,
     [],
-    (reference) => (reference === cited ? "R2. Every address…" : undefined)
+    lineNamesOf(new Map([[cited, "R2. Every address…"]]))
   );
   expect(groups[0]?.runs[0]?.decision?.quote).toBe(
     "Keep every address, as R2. Every address… says."
   );
+});
+
+// R5 and R8: a reference the page published no name for - another issue's comment it has not
+// answered for, or answered is gone - is quoted as the words its author wrote, as the cell's own
+// words draw it, and never as its short form ("OTHER-1 comment").
+test("an agent's quote draws a reference the page published no name for as written, never as its short form", () => {
+  const gone = "dispatch://OTHER-1/comment/0f8e2c3a-6b1d-4e5f-9a7c-2d3e4f5a6b7c";
+  const text = `Keep it as ${gone} says. Then more follows.`;
+  const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text })]), [
+    decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text }),
+  ]);
+  const quote = groups[0]?.runs[0]?.decision?.quote;
+  expect(quote).toBe(`Keep it as ${gone} says.`);
+  expect(quote).not.toContain("OTHER-1 comment");
 });
 
 // R5: every decision after the first that shaped a statement is named after "informed by" on
@@ -383,23 +411,24 @@ test("a statement informed by two decisions names the second by its words within
     ],
     READER,
     [],
-    (reference) => (reference === cited ? "the second statement" : undefined)
+    lineNamesOf(new Map([[cited, "the second statement"]]))
   );
   const informed = groups[0]?.runs[0]?.statements[0]?.alsoShapedBy ?? [];
   expect(informed.map((one) => one.id)).toEqual(["decisions-md#b-d2"]);
   expect(informed[0]?.quote).toBe(
     "Name each tie by the second statement and never by its address."
   );
-  // The name does not fit in a chip's 32 characters, so the cut falls at the word before it and
-  // never inside it: the line is cut with the reference unnamed, and named after the cut.
+  // The name does not fit in a chip's 32 characters. Each word of it is a token of its own, so
+  // the cut falls at the last space inside the chip's room, between two of the name's words, and
+  // never inside one: the line is cut with the reference unnamed, and named after the cut.
   const named = informed[0]?.chip ?? "";
-  expect(named).toBe("Name each tie by…");
+  expect(named).toBe("Name each tie by the second…");
   expect(named.length).toBeLessThanOrEqual(CHIP_LIMIT);
 });
 
 // R5: the name a statement's line gives another decision is cut at a chip's length before the
-// references it cites are named, as every one-line place cuts one, so no cut falls inside a
-// name: a first line whose name runs past the limit is cut at the word before that name.
+// references it cites are named, as every one-line place cuts one, so no cut falls inside a word
+// of a name: a first line whose name runs past the limit is cut at a word inside that name.
 test("the name of a decision that informed a statement is cut before its references are named", () => {
   const cited = statementRef("r2");
   const words = `See ${cited} as the reader reads it.`;
@@ -416,11 +445,11 @@ test("the name of a decision that informed a statement is cut before its referen
     ],
     READER,
     [],
-    (reference) => (reference === cited ? "R2. Every address is drawn by…" : undefined)
+    lineNamesOf(new Map([[cited, "R2. Every address is drawn by…"]]))
   );
   const informed = groups[0]?.runs[0]?.statements[0]?.alsoShapedBy[0];
   expect(informed?.quote).toBe("See R2. Every address is drawn by… as the reader reads it.");
-  expect(informed?.chip).toBe("See…");
+  expect(informed?.chip).toBe("See R2. Every address is drawn…");
 });
 
 // R5: a replaced decision draws no line, so the statement it shaped stands with none.
@@ -461,7 +490,7 @@ test("a person's decision that waits on the asks read still heads its run, and n
       }),
       decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r2"))] }),
     ]),
-    nameOf: NO_NAMES,
+    lineNames: NO_NAMES,
     nodeIdOf,
     reader: READER,
     root: tree,
@@ -526,8 +555,8 @@ test("every other decision that shaped a statement is named after the first", ()
 });
 
 // R5: "The line is drawn whether or not" other decisions apply: the answered question a
-// statement hangs under heads its run, so its parent line and its decision line stay one, and a
-// decision whose tie names the statement is named after it, not in its place.
+// statement hangs under heads its run, and a decision whose tie names the statement is named
+// after it, not in its place.
 test("a statement under an answered question keeps that answer when a tie names it too", () => {
   const groups = bodyOf(
     issueTree([
@@ -570,10 +599,10 @@ test("a person's answer that cites a block carries its whole text for the focus,
       chips: [{ answered: true, gone: false, reading: { words: "the one-line rule" }, ref: cited }],
     }),
   ]);
-  const published = publishedTree(tree);
-  const wrapper = ({ children }: { children: ReactNode }) =>
-    createElement(ReferenceNamesProvider, null, createElement(Publisher, { published }), children);
-  const names = renderHook(() => useReferenceNames(tree, nodeIdOf), { wrapper });
+  // The page publishes the chip's name to the names store, which `useIssueNames` reads.
+  const names = renderHook(() => useIssueNames(KEY), {
+    wrapper: publishingNames(new Map([[cited, "the one-line rule"]])),
+  });
   try {
     const made = bodyOf(tree, [], READER, [], names.result.current)[0]?.runs[0]?.decision;
     expect(made?.quote).toBe("Keep it as the one-line rule says.");
@@ -659,7 +688,7 @@ test("a row the filter kept that is no statement is in no run", () => {
     asksHeld: true,
     checks: [],
     decisions: decisionsRead([]),
-    nameOf: NO_NAMES,
+    lineNames: NO_NAMES,
     nodeIdOf,
     reader: READER,
     root: tree,
@@ -817,8 +846,7 @@ test("a first sentence runs past an abbreviation that 1 follows, and a list of t
 });
 
 /** The page's name for the statement r2, which opens with its label ("R2."). */
-const LABELLED = (reference: string) =>
-  reference === statementRef("r2") ? "R2. Every address…" : undefined;
+const LABELLED = lineNamesOf(new Map([[statementRef("r2"), "R2. Every address…"]]));
 
 // R5 with the tester's F20: a person's quote is the first sentence they wrote, cut with each
 // reference in it still unnamed, so a name that opens with its label ends no sentence of theirs.
@@ -867,7 +895,7 @@ test("a person's answer written as a bulleted list is quoted by its first item a
   expect(groups[0]?.runs[0]?.decision?.quote).toBe("keep it");
 });
 
-// R1 and R5: the question line is the question's one line, cut from its first block's words
+// R1 and R5: the question is given by its first sentence, cut from its first block's words
 // (`lineWordsRaw`) with each reference unnamed: a second block never runs into it, and a name's
 // label ends none of it.
 test("a question line is its first block's line, cut before the reference in it is named", () => {
@@ -877,6 +905,102 @@ test("a question line is its first block's line, cut before the reference in it 
   };
   const groups = bodyOf(issueTree([ask]), [], READER, [], LABELLED);
   expect(groups[0]?.runs[0]?.decision?.question).toBe("Does R2. Every address… keep its address");
+});
+
+// R5: the question an answer answers is given by its first sentence whole, ending at its first
+// sentence end as the answer's quote does, with no limit of characters: R1's 100-character cut
+// is a row's first line, and no cut of the question the cell and the because line give, also
+// where the statement hangs under that question.
+test("a question is given by its first sentence whole, past 100 characters", () => {
+  const first =
+    "Should the Spec view draw every statement of the spec whole, with each of its words, rather than cut it at six lines?";
+  expect(first.length).toBeGreaterThan(100);
+  const text = `${first} Then a second sentence follows it.`;
+  const groups = bodyOf(
+    issueTree([
+      { ...answeredAsk("ask-1", { text: "Keep it whole." }, [statement("r1")]), text },
+      { ...answeredAsk("ask-2", { text: "Keep it whole." }), text },
+      statement("r2"),
+    ]),
+    [
+      decision({
+        asks: ["ask-2"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r2"))],
+      }),
+    ]
+  );
+  expect(groups.map((group) => group.runs[0]?.decision?.question)).toEqual([first, first]);
+});
+
+// R5: where a statement's words changed after the tie that names the decision its run is headed
+// by, it carries Changed since: the tie's far end's `changed_at` is later than the tie's
+// `created_at`, read as the instants they name, and a time that cannot be read is no change. A
+// decision that names a statement in two of its blocks holds two ties to it, and the statement
+// changed since that decision only where it changed after both. Only the head's tie decides it,
+// never that of a decision that only informed the statement, and the answered question a
+// statement hangs under has no tie, so a run it heads never says it.
+test("a statement changed after the tie of the decision heading its run, and only that tie, carries Changed since", () => {
+  const tie = (block: string, created: string, changed: string | null) => {
+    const made = shaped(statementRef(block));
+    return { ...made, created_at: created, to: { ...made.to, changed_at: changed } };
+  };
+  const before = "2026-11-14T09:00:00Z";
+  const tied = "2026-11-14T10:00:00Z";
+  const after = "2026-11-14T11:00:00Z";
+  const later = "2026-11-14T12:00:00Z";
+  const groups = bodyOf(
+    issueTree([
+      answeredAsk("ask-1", { text: "Keep it whole." }, [statement("r6")]),
+      ...["r1", "r2", "r3", "r4", "r5", "r7"].map((block) => statement(block)),
+      ...["d1", "d2", "d3", "d4"].map((block) => decisionNode(block)),
+    ]),
+    [
+      decision({
+        block_id: "d1",
+        kind: "agent",
+        links: [
+          tie("r1", tied, after),
+          tie("r2", tied, before),
+          tie("r3", "yesterday", after),
+          tie("r4", tied, "not a time"),
+          // Named in two of its blocks: changed after the first tie and before the second.
+          tie("r5", tied, after),
+          { ...tie("r5", later, after), from_block: "d1-again" },
+          tie("r7", tied, null),
+        ],
+      }),
+      // A decision that only informs r2, which changed after this decision's tie to it.
+      decision({ block_id: "d2", kind: "agent", links: [tie("r2", tied, after)] }),
+      // An agent's decision that only informs r6, which changed after its tie, under the
+      // answered question that heads r6's run.
+      decision({ block_id: "d3", kind: "agent", links: [tie("r6", tied, after)] }),
+      // The person's own decision for the question r6 hangs under, changed after its tie.
+      decision({
+        asks: ["ask-1"],
+        block_id: "d4",
+        kind: "person",
+        links: [tie("r6", tied, after)],
+      }),
+    ]
+  );
+  const changed = Object.fromEntries(
+    groups.flatMap((group) =>
+      group.runs.flatMap((run) =>
+        run.statements.map((one) => [one.node.id.replace("spec#b-", ""), one.changedSince])
+      )
+    )
+  );
+  expect(changed).toEqual({
+    r1: true,
+    r2: false,
+    r3: false,
+    r4: false,
+    r5: false,
+    r6: false,
+    r7: false,
+  });
 });
 
 // Review thread 4592007145: `presets.ts` cuts a parent's line by R1's rule with each reference

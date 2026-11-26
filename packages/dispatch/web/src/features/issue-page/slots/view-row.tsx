@@ -6,7 +6,6 @@ import { primarySpec } from "../../../api/issue-cache";
 import { TREE_FILTERS, whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
-import { contentsEntries } from "../contents-entries";
 import { CONTENTS_PANE_QUERY, drawsContents, OutlineSheet, PAGE_INSET } from "../contents-frame";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
@@ -14,24 +13,24 @@ import { issueAddress } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import { useOutlineReads } from "../outline-reads";
 import type { Preset } from "../page-words";
-import { filterSignals, type PresetSignal, presetView } from "../presets";
+import { type Filter, filterSignals, type PresetSignal } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
- * The view row (R2, R11): the view controls and Keys (`IssuePresets.tsx`), each control's signal
- * read off the issue's one tree, and below 1024 px, in Conversation, each filter and Graph (R13),
- * the Outline control beside the one control (`contents-frame.tsx`'s `drawsContents`). It binds
- * the views' chords (`useIssueKeymap.ts`). The signals are drawn only once every read the tree
- * is built from holds its answer (`useOutlineReads`'s `readsHeld`) and the reader's login has
- * answered, which Conversation's count is read for: until then the tree lacks the nodes of a
- * read still out or failed, or Conversation counts no thread as the reader's, and a count read
- * then - a `0`, or a number short of the real one - would read as the real count, so the
- * controls draw none. Under a words filter (`?q=`) they wait on the names too (`namesHeld`): a
- * plan task's or a callout's words come from the names alone, so a count read before they are
- * held finds none of those nodes. With no filter on a count reads no words, and does not wait
- * on the names. A filter loaded cold with no outline read draws its own count from its view
- * answer alone (`viewRowSignals`).
+ * The view row (R2, R11): Conversation with no count, the four filter controls with signals
+ * from the issue's tree, Graph with no count, and Keys (`IssuePresets.tsx`). Below 1024 px, in
+ * Conversation, each filter and Graph (R13), the Outline control stands beside the one control
+ * (`contents-frame.tsx`'s `drawsContents`). The row binds the views' chords
+ * (`useIssueKeymap.ts`).
+ *
+ * Signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves nodes
+ * missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
+ * decision `waiting` until the login answers, so the Decisions flag would omit decisions that
+ * need review. Under a words filter (`?q=`) signals wait for the names (`namesHeld`), since
+ * the names supply the words of plan tasks and callouts. Without a words filter the counts
+ * do not depend on the names. A filter loaded cold with no outline read draws its own count
+ * from its view answer alone (`viewRowSignals`).
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
@@ -44,8 +43,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
-  // Who the reader is, which Conversation's count is read for: a thread is counted where the
-  // reader began it.
+  // Decisions' flag counts the decisions marked `waiting` for the reader.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // What each control draws after its name (`viewRowSignals`).
   const signals = useMemo(
@@ -82,12 +80,11 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
 }
 
 /**
- * What each control of the view row draws after its name: a view's count of its main kind and
- * what of it asks something of the reader, and for Conversation how many entries the Contents
- * list holds, as the prototype's signal counts its branches. Each follows the words filter
- * (`filter`, `?q=`), and carries "+" while the read it is read from holds nodes no page read yet
- * holds (R15). None while the reads (`readsHeld`) or the reader's login (`viewer`) do not hold,
- * nor under a words filter while the names do not (`namesHeld`).
+ * What each control of the view row draws after its name: a filter's count of its main kind and
+ * what of it asks something of the reader, and nothing for Conversation or Graph. Each follows
+ * the words filter (`filter`, `?q=`), and carries "+" while the read it is read from holds nodes
+ * no page read yet holds (R15). None while the reads (`readsHeld`) or the reader's login
+ * (`viewer`) do not hold, nor under a words filter while the names do not (`namesHeld`).
  *
  * A filter loaded cold with no outline read - Spec below 1024 px, which sends none until the
  * Outline sheet opens (R13) - never holds the outline's reads, and its count is its own view
@@ -108,24 +105,13 @@ export function viewRowSignals({
   readsHeld: boolean;
   root: TreeNode;
   viewer: string | undefined;
-}): Readonly<Record<Preset, PresetSignal | undefined>> | undefined {
+}): Readonly<Record<Filter, PresetSignal | undefined>> | undefined {
   if (!namesHeld && filter !== "") return undefined;
-  if (readsHeld && viewer !== undefined) {
-    return {
-      ...filterSignals(root, filter),
-      conversation: {
-        count: contentsEntries(presetView(root, "conversation", filter).root, viewer),
-        ...(root.moreToRead === true ? { more: true as const } : {}),
-      },
-      graph: undefined,
-    };
-  }
+  if (readsHeld && viewer !== undefined) return filterSignals(root, filter);
   const cold = TREE_FILTERS.find((one) => one === preset);
   if (cold === undefined || root.views?.[cold] === undefined) return undefined;
   return {
-    conversation: undefined,
     decisions: undefined,
-    graph: undefined,
     plan: undefined,
     spec: undefined,
     verification: undefined,

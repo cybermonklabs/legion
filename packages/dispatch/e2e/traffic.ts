@@ -1,5 +1,13 @@
 import { expect, type Page, type Request } from "@playwright/test";
 
+/** Whether a request is the page's live socket: its path starts with `/ws/`. The socket stays open
+ *  for the page's whole life and is no read of the page, so no watcher of a page's requests holds
+ *  it in flight. In a CI trace the upgrade of a load's `GET /ws/live` (status 101) was reported as
+ *  a request that stayed open 29,998.5 ms, though every read had answered within 0.5 s. */
+export function isLiveSocket(url: URL): boolean {
+  return url.pathname.startsWith("/ws/");
+}
+
 /** One request under `/api/`, as `watchApiRequests` counts it. */
 export interface ApiRequest {
   readonly method: string;
@@ -21,14 +29,13 @@ export interface RouteCount {
 export interface ApiRequests {
   /** The count per route, most sent first and then by route, so two runs print one order. */
   byRoute(): readonly RouteCount[];
-  /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
-   *  only the ones counted here. This is how the recorded baseline measures one load
+  /** Whether nothing has been in flight for `ms` - every request the page makes but the live
+   *  socket's upgrade (`isLiveSocket`), not only the ones counted here. This is how the recorded
+   *  baseline measures one load
    *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
-   *  that waits on another read's answer has been sent. The event feed rides the page's live
-   *  socket (`/ws/live`), which Playwright reports as a websocket and never as a request, so
-   *  it holds nothing in flight. */
+   *  that waits on another read's answer has been sent. */
   quietFor(ms: number): boolean;
   /** Every request since the last `reset`, in the order the page sent them. */
   readonly requests: readonly ApiRequest[];
@@ -69,9 +76,9 @@ export function watchApiRequests(page: Page): ApiRequests {
   // The request of a new document the main frame is loading, until that document commits.
   let loading: Request | undefined;
   page.on("request", (request) => {
-    inFlight.add(request);
     if (request.isNavigationRequest() && request.frame() === page.mainFrame()) loading = request;
     const url = new URL(request.url());
+    if (!isLiveSocket(url)) inFlight.add(request);
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
       method: request.method(),

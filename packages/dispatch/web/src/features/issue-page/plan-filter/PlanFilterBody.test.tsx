@@ -25,14 +25,9 @@ import { buildIssuePath, type IssueRoute } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
+import { firstLineOf } from "../first-line";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
-import {
-  firstLineOf,
-  type IssueTreeReads,
-  type NodeChip,
-  type ParentLine,
-  type TreeNode,
-} from "../issue-tree";
+import type { IssueTreeReads, NodeChip, ParentLine, TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { FirstLine } from "../node-line";
 import { NO_FAILED_READS } from "../outline-reads";
