@@ -115,21 +115,25 @@ const MINT_SCOPES: readonly TokenScope<DispatchTokenScope>[] = [
   READ_ONLY,
 ];
 
-/** What a row and the mint form offer until Dispatch says the person at the browser holds `p0`
- *  (`offersP0` in `AgentTokensSection`): the lists above without Set P0. A build before p0 knows
- *  no such word, and a credential gives no scope it does not hold itself, so a box drawn before
- *  then would be a refusal waiting to happen. */
-const WRITING_SCOPES_WITHOUT_P0: readonly TokenScope<DispatchScope>[] = [ACT_AS_YOU, APPROVE];
+/** `offered` without Set P0: what a row and the mint form offer until Dispatch says the person at
+ *  the browser holds `p0` (`offersP0` in `AgentTokensSection`). A build before p0 knows no such
+ *  word, and a credential gives no scope it does not hold itself, so a box drawn before then would
+ *  be a refusal waiting to happen. */
+function withoutSetP0<Id extends DispatchTokenScope>(
+  offered: readonly TokenScope<Id>[]
+): readonly TokenScope<Id>[] {
+  return offered.filter(({ id }) => id !== "p0");
+}
 
-const MINT_SCOPES_WITHOUT_P0: readonly TokenScope<DispatchTokenScope>[] = [
-  ACT_AS_YOU,
-  APPROVE,
-  READ_ONLY,
-];
+const WRITING_SCOPES_WITHOUT_P0 = withoutSetP0(WRITING_SCOPES);
+
+const MINT_SCOPES_WITHOUT_P0 = withoutSetP0(MINT_SCOPES);
 
 /** What a new token holds unless the reader changes it: every scope but `p0`, as a mint that
  *  names none gives. The reader ticks Set P0 for a token that is to hold it. */
-const NEW_TOKEN_SCOPES: readonly DispatchTokenScope[] = ["person", "approve"];
+const NEW_TOKEN_SCOPES: readonly DispatchTokenScope[] = DISPATCH_SCOPES.filter(
+  (scope) => scope !== "p0"
+);
 
 /** The words a token holds, `p0` and `read` among them. The route table carries them as plain
  *  strings; `DISPATCH_TOKEN_SCOPES` is the closed list each is one of, so a word this build does

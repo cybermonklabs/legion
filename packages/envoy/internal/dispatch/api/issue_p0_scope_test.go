@@ -2,7 +2,7 @@
 // issue's own priority 0 (P0) needs a credential that holds the p0 scope (model.ScopeP0). A
 // priority of 0 on a new issue, or on an issue whose own priority is another or none, from any
 // other credential is refused 403 OAUTH_SCOPE_REQUIRED with the challenge naming p0, before every
-// other refusal of the write, and the write writes nothing of its request. A write that keeps P0,
+// refusal that reads the issue, and the write writes nothing of its request. A write that keeps P0,
 // lowers it, clears it or sets 1 to 3 needs no scope. The issue's own priority decides, never the
 // one it inherits.
 //
@@ -93,27 +93,11 @@ func p0Inventory(t *testing.T, rig *legionStatusRig) []p0Credential {
 		{p0TokenAll, []string{model.ScopePerson, model.ScopeApprove, model.ScopeP0}, p0Written},
 	} {
 		inventory = append(inventory, p0Credential{
-			legionCredential: legionCredential{name: token.name, send: rig.personalBearer(personalTokenHolding(t, rig.database, token.scopes...))},
+			legionCredential: legionCredential{name: token.name, send: rig.bearer(personalTokenHolding(t, rig.database, token.scopes...), sessionActor())},
 			p0:               token.verdict,
 		})
 	}
 	return inventory
-}
-
-// personalBearer sends a request with token, a personal token's plaintext, as its bearer. A
-// personal token proves no session of its own, so the request's body names one in its actor
-// where it names none, as the inventory's other bearers do (newLegionStatusRigOn).
-func (rig *legionStatusRig) personalBearer(token string) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
-	return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
-		named := maps.Clone(body)
-		if named == nil {
-			named = map[string]any{}
-		}
-		if _, ok := named["actor"]; !ok {
-			named["actor"] = sessionActor()
-		}
-		return rig.serve(brokerRequest(t, method, path, named, "Bearer "+token, ""))
-	}
 }
 
 // personIssue makes, as the rig's person at a browser, an issue of brokerTestProject with a new

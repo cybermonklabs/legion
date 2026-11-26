@@ -240,8 +240,8 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 
 // codeTokenScopesInput refuses a set no token may hold: a word that is no scope this deployment
 // knows, approve without person, which agent_tokens' own check refuses as well, or read beside
-// approve or p0, which agent_read_tokens' own check refuses for approve and tokenScopes for p0. It
-// also refuses any change of a token to or from read only (updateAgentTokenScopes).
+// approve or p0, which agent_read_tokens' own check refuses as well. It also refuses any change of
+// a token to or from read only (updateAgentTokenScopes).
 const codeTokenScopesInput = "TOKEN_SCOPES_INPUT"
 
 // tokenWords is every word a personal token's scopes may hold: the scopes a credential acts under
@@ -300,30 +300,30 @@ func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string) 
 	return scopes, true
 }
 
+// withoutP0 is scopes less p0, which a person gives a token only by naming it: the set a mint that
+// names no scopes gives. It answers scopes itself where it holds no p0, so only a set holding p0
+// allocates.
+func withoutP0(scopes []string) []string {
+	if !slices.Contains(scopes, model.ScopeP0) {
+		return scopes
+	}
+	return slices.DeleteFunc(slices.Clone(scopes), func(scope string) bool { return scope == model.ScopeP0 })
+}
+
 // mintDefaultScopes is the set a mint that names no scopes gives when a browser makes it: every
-// scope a person's own credential holds but p0 (model.Scopes), which a person gives a token only
-// by naming it. Every such mint shares this one slice, so none allocates; nothing writes it.
-var mintDefaultScopes = []string{model.ScopePerson, model.ScopeApprove}
+// scope a person's own credential holds (model.Scopes) but p0. Every such mint shares this one
+// slice, so none allocates; nothing writes it.
+var mintDefaultScopes = withoutP0(model.Scopes)
 
 // callerScopes is the set a mint that names no scopes gives: every scope the caller's own
 // credential holds but p0. That is the scopes actingPerson copied onto Act for a token that acted
-// for its person, less p0, and person and approve for a browser, whose cookie names no agent
-// because the person themselves acted. A token that holds p0 allocates its set, and every other
-// caller allocates none.
+// for its person, less p0, and mintDefaultScopes for a browser, whose cookie names no agent
+// because the person themselves acted.
 func callerScopes(actor model.Actor) []string {
 	if actor.Act == nil {
 		return mintDefaultScopes
 	}
-	if !slices.Contains(actor.Act.Scopes, model.ScopeP0) {
-		return actor.Act.Scopes
-	}
-	scopes := make([]string, 0, len(actor.Act.Scopes)-1)
-	for _, scope := range actor.Act.Scopes {
-		if scope != model.ScopeP0 {
-			scopes = append(scopes, scope)
-		}
-	}
-	return scopes
+	return withoutP0(actor.Act.Scopes)
 }
 
 // revokeAgentToken is DELETE /api/v1/me/agent-tokens/{id}: it revokes one of the caller's tokens,
