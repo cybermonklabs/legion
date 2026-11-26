@@ -14,8 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -118,8 +118,8 @@ printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 // and an empty Jujutsu config home.
 type issueVolume struct {
 	root, token, jjLog, credentialLog, codegraphLog, realJJ, tmp, bin string
-	defaultBranch                                                   string
-	env                                                             map[string]string
+	defaultBranch                                                     string
+	env                                                               map[string]string
 }
 
 func newIssueVolume(t *testing.T) *issueVolume {
@@ -213,6 +213,10 @@ func printedBytes(t *testing.T, value string) int64 {
 
 // narrowedCacheTarServer serves the default-branch-only tar a current repository cache publishes.
 func (v *issueVolume) narrowedCacheTarServer(t *testing.T) (string, int) {
+	return v.narrowedCacheTarServerAfterFirstHealth(t, nil)
+}
+
+func (v *issueVolume) narrowedCacheTarServerAfterFirstHealth(t *testing.T, after func()) (string, int) {
 	t.Helper()
 	cache := filepath.Join(t.TempDir(), "widgets.git")
 	if output, err := v.runner(t).Try(filepath.Dir(cache), v.env["WINIT_REAL_GIT"], "clone", "--bare", "--single-branch", "--no-tags", "--quiet", "--no-local", v.env["WINIT_REMOTE"], cache); err != nil {
@@ -265,10 +269,17 @@ func (v *issueVolume) narrowedCacheTarServer(t *testing.T) (string, int) {
 		t.Fatal(err)
 	}
 	body := stream.Bytes()
+	waited := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(workspace.CacheRepositoryHeader, winitRepo)
 		switch r.URL.Path {
 		case "/healthz":
+			if !waited && after != nil {
+				waited = true
+				after()
+				_, _ = w.Write([]byte(`{"ready":true}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"ready":true,"defaultBranchOnly":true}`))
 		case "/tar":
 			if r.Header.Get("Authorization") != "Bearer "+cmdCacheToken {
@@ -1426,5 +1437,71 @@ func TestWorkspaceInitProvisionStreamsANarrowedRepositoryCache(t *testing.T) {
 		if err := command.Run(); err == nil {
 			t.Errorf("clone retains object %s outside the cache default and issue delta", object)
 		}
+	}
+}
+
+// A cache wait must not leave the GitHub transfer holding the token that provision read before the
+// wait. The first health answer is intentionally from an earlier cache release, without its narrow
+// capability; it rewrites the mounted token before the next ready answer.
+func TestWorkspaceInitProvisionRenewsTheTokenAfterWaitingForTheCache(t *testing.T) {
+	v := newIssueVolume(t).withRemote(t, "main")
+	const (
+		oldToken = "ghs_before_cache_wait"
+		newToken = "ghs_after_cache_wait"
+	)
+	if err := os.WriteFile(v.token, []byte(oldToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache, _ := v.narrowedCacheTarServerAfterFirstHealth(t, func() {
+		if err := os.WriteFile(v.token, []byte(newToken+"\n"), 0o600); err != nil {
+			panic(err)
+		}
+	})
+	v.provisionEnv(t)
+	t.Setenv(cacheURLEnv, cache)
+	t.Setenv(repocache.CacheTokenFileEnv, writeCacheToken(t, cmdCacheToken))
+
+	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	credential, err := os.ReadFile(v.credentialLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(credential), oldToken) || !strings.Contains(string(credential), newToken) {
+		t.Fatalf("GitHub credentials %q, want only the token minted after the cache wait", credential)
+	}
+	if strings.Contains(stdout+stderr, oldToken) {
+		t.Fatalf("output exposed the token read before the cache wait: stdout %q stderr %q", stdout, stderr)
+	}
+}
+
+// Admission may record a default branch after GitHub changed its HEAD. When both branches remain,
+// the issue starts at its recorded default and Jujutsu tracks that remote bookmark as well as the
+// current default.
+func TestWorkspaceInitProvisionTracksTheRecordedDefaultAfterGitHubChangesHead(t *testing.T) {
+	v := newIssueVolume(t).withRemote(t, "main")
+	remote := v.env["WINIT_REMOTE"]
+	v.commitAddingAFile(t, remote, "refs/heads/main", "refs/heads/release", "release.txt", "release\n")
+	release := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/release")
+	v.provisionEnv(t)
+
+	args := v.args("LEGION-42")
+	for index, value := range args {
+		if value == v.defaultBranch {
+			args[index] = "release"
+		}
+	}
+	code, _, stderr := runWorkspaceInitHere(args)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	workspaceDir := v.workspace("LEGION-42")
+	if parent := v.jj(t, "log", "-r", "@-", "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", workspaceDir); parent != release {
+		t.Fatalf("workspace parent %s, want recorded release default %s", parent, release)
+	}
+	if tracked := v.jj(t, "bookmark", "list", "--tracked", "exact:release", "-T", `name ++ "@" ++ remote ++ "\n"`, "--ignore-working-copy", "-R", v.clone()); !strings.Contains(tracked, "release@origin") {
+		t.Fatalf("tracked release bookmarks %q, want release@origin", tracked)
 	}
 }

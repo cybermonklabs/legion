@@ -337,7 +337,6 @@ func commitOf(t *testing.T, dir, rev string) string {
 	return strings.TrimSpace(runSetup(t, dir, "jj", "log", "-r", rev, "--no-graph", "-T", "commit_id", "--ignore-working-copy"))
 }
 
-
 // pushRemoteBranch pushes one commit adding file to branch on the bare remote, from a clone of its
 // own: on top of the branch when the remote has it, on the remote's default branch otherwise. It
 // returns the commit's id.
