@@ -608,21 +608,31 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 // any SIGKILL, which would have ended it by the signal instead.
 //
 // The row also reads that the grace ended once the group was gone, not at the end of its span
-// (StopGrace): the run must end within half the grace after the stop. A run that ended later is
-// judged only where the row's own watch saw the group gone within a quarter of the grace
+// (StopGrace): the run must end within half the grace after the stop. A run that ended later
+// fails where the row's own watch saw the group gone within a quarter of the grace
 // (watchGroupGone). That run then went on for more than a quarter of the grace with nothing left
-// in its group to stop, so the grace did not end with the group, and the row fails. The quarter
-// is the run's own path from the group's end to Wait's return (the stop's next poll, Cancel's
-// return, the hand-off to the row), which starts no process. Where the group went later, a loaded
-// machine that held up the child's own exit cannot be told from a grace that outlived the group,
-// so that run is not judged, and the row runs again, until a run of the right order comes, within
-// a minute.
+// in its group to stop, so the grace did not end with the group. The quarter is the run's own
+// path from the group's end to Wait's return (the stop's next poll, Cancel's return, the hand-off
+// to the row), which starts no process. Where the group went later, the child's own marks tell
+// why: it writes a beat on every turn of its loop and a mark first thing in its SIGTERM trap, and
+// the kernel stamps each with the time it was written. A beat more than a quarter of the grace
+// after Cancel began is a child still running with no SIGTERM taken, so Cancel sent its SIGTERM
+// late, and the row fails. A trap within a quarter of the grace after Cancel began, where os/exec
+// began Cancel within a quarter of the grace after the stop, leaves nothing a loaded machine held
+// to account for the late end, and the row fails as well. A run is not judged only where the trap
+// came later than that with the child's last beat inside the quarter (the machine held the child
+// between its last beat and its trap), or where os/exec began Cancel more than a quarter of the
+// grace after the stop; the row runs again until a run of the right order comes, within a minute.
 func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 	until, within := rerunWithin(t)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		ready, lock := filepath.Join(dir, "ready"), filepath.Join(dir, "index.lock")
-		child := startChild(t, `: >"$2"; trap 'rm -f "$2"; exit 0' TERM; : >"$1"; `+childLives, ready, lock)
+		// $3 is the mark the child's trap writes first, and $4 the beat it writes on every turn of its
+		// loop: once the trap has run, no beat follows.
+		termed, beat := filepath.Join(dir, "termed"), filepath.Join(dir, "beat")
+		child := startChild(t, `: >"$2"; trap 'echo term >"$3"; rm -f "$2"; exit 0' TERM; : >"$1"; while :; do echo beat >"$4"; sleep 0.05; done`,
+			ready, lock, termed, beat)
 		group := watchGroupGone(child.cmd.Process.Pid)
 
 		stopped := time.Now()
@@ -649,15 +659,31 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 			t.Errorf("run %d: the run ended %s after the stop, past half the %s grace, though its group was gone %s after it, within a quarter of the grace: a group that leaves on its SIGTERM must end the grace, not sit out its span (Run = %v)", runs, took, StopGrace, gone.Sub(stopped), err)
 			return
 		}
-		went := "was not seen gone while the run lasted"
-		if seen {
-			went = fmt.Sprintf("was seen gone %s after the stop", gone.Sub(stopped))
+		began, begun := child.began()
+		trapped, trapErr := os.Stat(termed)
+		if !begun || trapErr != nil {
+			t.Errorf("run %d: the run ended %s after the stop, past half the %s grace, and the row cannot read when the stop began (Cancel began: %t) or when the child took its SIGTERM (%v) (Run = %v)", runs, took, StopGrace, begun, trapErr, err)
+			return
+		}
+		cancelAt, trapAt := began.Sub(stopped), trapped.ModTime().Sub(began)
+		last := "wrote no beat"
+		if info, statErr := os.Stat(beat); statErr == nil {
+			beatAt := info.ModTime().Sub(began)
+			if beatAt > StopGrace/4 {
+				t.Errorf("run %d: the run ended %s after the stop, past half the %s grace, and the child wrote a beat %s after Cancel began, past a quarter of the grace, with no SIGTERM taken: Cancel must send its SIGTERM as it begins, not later (Run = %v)", runs, took, StopGrace, beatAt, err)
+				return
+			}
+			last = fmt.Sprintf("wrote its last beat %s after Cancel began", beatAt)
+		}
+		if cancelAt <= StopGrace/4 && trapAt <= StopGrace/4 {
+			t.Errorf("run %d: the run ended %s after the stop, past half the %s grace, though os/exec began Cancel %s after the stop and the child took its SIGTERM %s after that, each within a quarter of the grace: a child that leaves on its SIGTERM must end the grace, not sit out its span (Run = %v)", runs, took, StopGrace, cancelAt, trapAt, err)
+			return
 		}
 		if time.Now().Before(until) {
-			t.Logf("run %d is not judged: it ended %s after the stop, past half the %s grace, and its group %s, not within a quarter of the grace", runs, took, StopGrace, went)
+			t.Logf("run %d is not judged: it ended %s after the stop, past half the %s grace; os/exec began Cancel %s after the stop, and the child %s and took its SIGTERM %s after Cancel began", runs, took, StopGrace, cancelAt, last, trapAt)
 			continue
 		}
-		t.Fatalf("no run of the right order in %d runs over %s: the last ended %s after the stop, past half the %s grace, and its group %s, not within a quarter of the grace", runs, within, took, StopGrace, went)
+		t.Fatalf("no run of the right order in %d runs over %s: the last ended %s after the stop, past half the %s grace; os/exec began Cancel %s after the stop, and the child %s and took its SIGTERM %s after Cancel began", runs, within, took, StopGrace, cancelAt, last, trapAt)
 	}
 }
 
