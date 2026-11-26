@@ -465,7 +465,7 @@ func TestACallbacksErrorEndsTheRunAndIsReturnedWithTheResultSoFar(t *testing.T) 
 			}
 			var want Usage
 			for _, step := range result.Steps {
-				want = sum(want, step.Usage)
+				want = SumUsage(want, step.Usage)
 			}
 			if result.Usage != want {
 				t.Errorf("the result's usage is %+v, want the finished steps' %+v", result.Usage, want)

@@ -126,6 +126,8 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/subreaper
+      - internal/startwalk
       - internal/sharedloop
   # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
   # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon runs in three

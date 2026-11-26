@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"maps"
 	"net/http"
@@ -507,7 +508,7 @@ func (w *driveWorld) pairs() [][2]driveSend {
 	}
 }
 
-// driveTally counts what the read drive saw, for its log line.
+// driveTally counts what one world of the read drive saw, for its log line.
 type driveTally struct {
 	rows, windows, statements int
 	writes                    map[string]int
@@ -518,7 +519,7 @@ type driveTally struct {
 var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 
 // TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter: every read row of the table
-// (readWritesNothing), sent on one seeded store (newDriveWorld) by two pairs of credentials, each
+// (readWritesNothing), sent on a seeded store (newDriveWorld) by two pairs of credentials, each
 // a read-only credential and its writer: the golden file's answer of a machine login's narrowed
 // token (read-person, P, session S) and the same answer with the project scope person and no
 // read; and P's personal token holding read and person, and P's holding person. In each pair the
@@ -539,13 +540,18 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // whose answer describes the credential (whoami), whose credential's members are held to the
 // read-only credential's own answer.
 //
-// Before the first row a calibration window, GET /api/v1/limits under the deployment's shared
-// token, which writes nothing, must hold no write at all: no duty of the rig writes while a row
-// is driven. Then the pre-check must see, each in its own window, one insert into text_trees
-// (the first read of a version no other test has shown), one upsert of route_roster on the
-// server's own context (a read of a stale roster), and the term statistics refresh a related
-// read starts on the server's own context, so a tracer that sees nothing, or sees the request's
-// own context alone, fails before any row.
+// The rows are dealt, in the table's order, to as many worlds as go test runs tests at once
+// (driveWorldsFor), each a seeded store, a server and a tracer of its own (newDriveWorld). The
+// worlds run at once and each sends its rows one after another, so a window reads its own world's
+// pool alone and holds no statement of a row another world sends beside it.
+//
+// In each world, before its first row, a calibration window, GET /api/v1/limits under the
+// deployment's shared token, which writes nothing, must hold no write at all: no duty of the rig
+// writes while a row is driven. Then the pre-check must see, each in its own window, one insert
+// into text_trees (the first read of a version no other test or world has shown), one upsert of
+// route_roster on the server's own context (a read of a stale roster), and the term statistics
+// refresh a related read starts on the server's own context, so a tracer that sees nothing, or
+// sees the request's own context alone, fails before any row.
 //
 // DISPATCH_READ_DRIVE_ROWS narrows the run to the rows it names, separated by commas (each
 // "GET <pattern>", as readClasses keys it); unset, every read row runs, which takes minutes,
@@ -553,25 +559,51 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
 	// Not parallel: it holds every window and every personal pair to a wall-clock bound
-	// (driveWindowLimit, agentTokenUse's minute) for minutes, and run among this package's parallel
-	// tests on CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
-	// missed its 3 s beside it (envoy-go-race-api job 137929719893).
+	// (driveWindowLimit, agentTokenUse's minute), and run among this package's parallel tests on
+	// CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
+	// missed its 3 s beside it (envoy-go-race-api job 137929719893). Its rows run at once among
+	// themselves, each world on its own, while the package's parallel tests wait for the serial
+	// ones to end.
 	rows, drives := drivenRows(t, readWritesNothing)
-	world := newDriveWorld(t)
-	world.calibrate(t)
-	world.precheck(t)
-	tally := driveTally{writes: map[string]int{}}
-	for _, name := range rows {
-		t.Run(name, func(t *testing.T) {
-			world.driveRead(t, name, drives[name], &tally)
-		})
-	}
-	writes := make([]string, 0, len(tally.writes))
-	for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
-		writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
-	}
-	t.Logf("drove %d read rows in %d read-only windows holding %d statements; their writes: %s; the rows whose read-only request stored a tree: %v",
-		tally.rows, tally.windows, tally.statements, strings.Join(writes, ", "), tally.treesStored)
+	worlds := driveWorldsFor(len(rows))
+	// The worlds run inside one subtest, which ends only once every world has: go test stops a
+	// test's clock when its function returns, before its parallel subtests start, so worlds run
+	// straight under the test would leave its time (go test -json's Elapsed, which CI's legs are
+	// dealt by) near zero.
+	t.Run("worlds", func(t *testing.T) {
+		for first := range worlds {
+			t.Run(fmt.Sprintf("world %d of %d", first+1, worlds), func(t *testing.T) {
+				t.Parallel()
+				world := newDriveWorld(t)
+				world.calibrate(t)
+				world.precheck(t)
+				tally := driveTally{writes: map[string]int{}}
+				for at := first; at < len(rows); at += worlds {
+					name := rows[at]
+					t.Run(name, func(t *testing.T) {
+						world.driveRead(t, name, drives[name], &tally)
+					})
+				}
+				writes := make([]string, 0, len(tally.writes))
+				for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
+					writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
+				}
+				t.Logf("drove %d read rows in %d read-only windows holding %d statements; their writes: %s; the rows whose read-only request stored a tree: %v",
+					tally.rows, tally.windows, tally.statements, strings.Join(writes, ", "), tally.treesStored)
+			})
+		}
+	})
+}
+
+// driveWorldsFor is how many worlds the read drive deals its rows to: one for each test go test
+// runs at once (-parallel), and never more than there are rows. A row is mostly its two pairs'
+// fixed waits, 5 s at least (each read-only window open driveWindowAfterAnswer after its answer,
+// each writer's request followed by driveWindowQuiet): in envoy-go-race-api job 139402324284 its
+// 114 rows took 5.05 to 5.76 s each, 582 s of the test's 595 s, one after another on one world.
+// Rows on worlds of their own wait at the same time.
+func driveWorldsFor(rows int) int {
+	parallel, _ := flag.Lookup("test.parallel").Value.(flag.Getter).Get().(int)
+	return max(1, min(rows, parallel))
 }
 
 // calibrate is the calibration row: GET /api/v1/limits under the deployment's shared token, whose

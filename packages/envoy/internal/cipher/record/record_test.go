@@ -881,8 +881,8 @@ func TestNoJudgeActorDecidesARecordAsAPerson(t *testing.T) {
 
 // TestMayJudgeAdmitsBoundedJudgeKeys pins the conditions a record must meet before the judge's
 // grant of it is admitted, and which one each refusal names: agent secrets alone, each key the
-// judge decided a key the rules give the judge seconds of, and a lifetime within every one of
-// those seconds (a record with none is bounded by nothing and is refused, one asking for exactly
+// judge decided a key whose judge tag gives the judge seconds of it, and a lifetime within every
+// one of those seconds (a record with none is bounded by nothing and is refused, one asking for exactly
 // the bound is admitted). A key the request needed no decision for — one its session gets at once
 // — is no key the judge decided, and no bound of the judge's holds it; a record whose keys needed
 // no decision at all is no record the judge decided. A nil decided is every key decided. The
@@ -954,9 +954,9 @@ func TestMayJudgeAdmitsBoundedJudgeKeys(t *testing.T) {
 			want: `past the 300`,
 		},
 		{
-			name: "a judge key beside a key the rules give the judge nothing of",
+			name: "a judge key beside a key carrying no judge tag",
 			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("OTHER_KEY")}, reason), judgeSeconds: judged,
-			want: `decide nothing for "OTHER_KEY"`,
+			want: `"OTHER_KEY" carries no judge tag`,
 		},
 		{
 			name: "a machine login, not an agent secret",
@@ -975,9 +975,9 @@ func TestMayJudgeAdmitsBoundedJudgeKeys(t *testing.T) {
 			want: "past the 900",
 		},
 		{
-			name: "a secret the rules give the judge no bound for",
+			name: "a secret carrying no judge tag",
 			body: body(new(300)), obj: object([]AuthorizationDetail{secret("OTHER_KEY")}, reason), judgeSeconds: judged,
-			want: `decide nothing for "OTHER_KEY"`,
+			want: `"OTHER_KEY" carries no judge tag`,
 		},
 		{
 			name: "no bound to ask at all",
@@ -1011,8 +1011,8 @@ const judgeModel = "claude-opus-5"
 // TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound pins the arm ChainVerifier.Verify
 // takes for an approval the model judge made: the event's actor chooses it, and MayJudge, over
 // the verifier's own JudgeSeconds, decides it. A judged approval of a bounded judge key verifies,
-// whatever its reason names; one beside a key the rules give the judge nothing of, one past the
-// entry's judge, and one against a verifier left no bound at all are each ErrChainBroken naming
+// whatever its reason names; one beside a key carrying no judge tag, one past the key's judge
+// tag, and one against a verifier left no bound at all are each ErrChainBroken naming
 // the model and the reason MayJudge gave. A judged event whose row also carries a login is still
 // the judge's, so no login written beside it can buy a record MayJudge refuses. The person's arm
 // is untouched: the approver's own approval verifies and another login's does not.
@@ -1072,12 +1072,12 @@ func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T)
 			body: stored(one, issue, 300), event: byJudge, judgeSeconds: judged,
 		},
 		{
-			name: "the judge, on a secret beside one the rules give it nothing of",
+			name: "the judge, on a secret beside one carrying no judge tag",
 			body: stored(two, issue, 300), event: byJudge, judgeSeconds: judged,
-			want: `decide nothing for "SLACK_MCP_XOXP_TOKEN"`,
+			want: `"SLACK_MCP_XOXP_TOKEN" carries no judge tag`,
 		},
 		{
-			name: "the judge, past the entry's judge",
+			name: "the judge, past the key's judge tag",
 			body: stored(one, issue, 901), event: byJudge, judgeSeconds: judged,
 			want: "past the 900",
 		},
@@ -1094,7 +1094,7 @@ func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T)
 			name: "the judge, on a row that also names the approver as its login",
 			body: stored(two, issue, 300), judgeSeconds: judged,
 			event: TerminalEvent{Event: "approved", Login: "sjawhar", Actor: JudgeActor(judgeModel)},
-			want:  `decide nothing for "SLACK_MCP_XOXP_TOKEN"`,
+			want:  `"SLACK_MCP_XOXP_TOKEN" carries no judge tag`,
 		},
 		{
 			name: "the record's own approver",

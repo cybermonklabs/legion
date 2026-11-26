@@ -514,7 +514,7 @@ func (r *run) result() Result {
 	defer r.mu.Unlock()
 	result := Result{Text: r.text, Steps: slices.Clone(r.steps)}
 	for _, step := range r.steps {
-		result.Usage = sum(result.Usage, step.Usage)
+		result.Usage = SumUsage(result.Usage, step.Usage)
 	}
 	return result
 }
@@ -759,8 +759,8 @@ func reasoningApart(raw json.RawMessage) int {
 	return 0
 }
 
-// sum is two usages added, their costs included; the sum is metered where either side is.
-func sum(a, b Usage) Usage {
+// SumUsage is two usages added, their costs included; the sum is metered where either side is.
+func SumUsage(a, b Usage) Usage {
 	return Usage{
 		Input: a.Input + b.Input, Output: a.Output + b.Output,
 		CacheWrite: a.CacheWrite + b.CacheWrite, CacheRead: a.CacheRead + b.CacheRead,
