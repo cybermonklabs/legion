@@ -138,12 +138,13 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// (refreshGitHubCredential). The roles are the ones the pod was built with (builtRoles), and
 		// of those a slot in which no stored claim runs is refreshed only where its role is still
 		// configured: a newly added role has no Secret in an old pod, and a dropped role's GitHub
-		// lease should expire without another mint. A slot of an agent of the plan whose name is no
-		// role of the runtime, and in which no stored claim runs yet, names no App to render it for
-		// (slotAppRole refuses it), and runs nothing that reads it: its claim's first launch writes
-		// it for that claim's role before its child starts (writeLaunchCredential). The walk passes
-		// over such a slot here, which saves the warning a refused refresh of it would log at every
-		// tick. A slot in which a stored claim runs is refreshed whatever its name.
+		// lease should expire without another mint. So the slot of an agent of the plan whose name
+		// is no role (`implementer-2`) is passed over while no stored claim runs in it: its name
+		// names no App (slotAppRole refuses it, and a refused refresh would log a warning at every
+		// tick), and nothing in it reads its files before a claim's launch writes them for that
+		// claim's role (writeLaunchCredential). Until a claim of its agent has run there, it holds
+		// the App of the agent's first step, which the pod's build wrote (gitHubBundles). A slot in
+		// which a stored claim runs is refreshed whatever its name.
 		repo, named := fetchRepository(pod)
 		configuredRoles := kind.roles(r)
 		for _, role := range builtRoles(pod.Spec) {
