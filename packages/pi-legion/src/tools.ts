@@ -1,11 +1,15 @@
 import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LEGION_PHASES,
+  type LEGION_SIGNAL_ACTIONS,
+  LEGION_SIGNAL_PARTS,
+  LEGION_SIGNALS,
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
   type LegionPhase,
   LegionPlanRegisterRequest,
+  LegionProjectSignalsRequest,
   type LegionState,
 } from "@legion/contracts/legion-api";
 import {
@@ -477,11 +481,11 @@ function toolSchema(pi: PiApi): unknown {
     // The series a change of a limit names, as every surface of admission by signals names it:
     // the signal, and for the provider its part.
     signal: z
-      .enum(["idle", "queue", "provider", "kills", "approvals"])
+      .enum(LEGION_SIGNALS)
       .describe("set_signal_limit's and clear_signal_limit's signal")
       .optional(),
     part: z
-      .enum(["headroom", "refusals"])
+      .enum(LEGION_SIGNAL_PARTS)
       .describe(
         "The provider's part for set_signal_limit and clear_signal_limit; no other signal takes one"
       )
@@ -506,33 +510,43 @@ function requiredString(
 
 /** The action of each of the controller's four changes of admission by signals, as the daemon's
  * route takes it (`LegionProjectSignalsRequest`). */
-const SIGNAL_ACTIONS: Readonly<Record<string, "on" | "off" | "set-limit" | "clear-limit">> = {
+const SIGNAL_ACTIONS: Readonly<Partial<Record<string, (typeof LEGION_SIGNAL_ACTIONS)[number]>>> = {
   signals_on: "on",
   signals_off: "off",
   set_signal_limit: "set-limit",
   clear_signal_limit: "clear-limit",
 };
 
-/** A change of admission by signals as the daemon client sends it, its grant left to the caller. */
+/** The daemon client's request, with the grant omitted so the tool can validate before minting. */
+const signalChangeRequest = LegionProjectSignalsRequest.omit({ grantId: true });
 type SignalChange = Omit<Parameters<LegionDaemonClient["projectSignals"]>[0], "grantId">;
 
-/** The change `operation` asks the daemon for: the person's cited word in `reason`, which each
- * requires, and for a limit its signal, the provider's part where it names one, and for a limit set
- * the limit. The tool's schema holds the signal and the part to their names; the daemon checks the
- * limit's range and refuses one outside it with its reason, so this checks only that each is there. */
+/** Checks required fields and validates their wire shape before the controller mints a grant. */
 function signalChange(
   parameters: Record<string, unknown>,
   operation: string,
   action: SignalChange["action"]
 ): SignalChange {
   const reason = requiredString(parameters, operation, "reason");
-  if (action === "on" || action === "off") return { action, reason };
-  const signal = requiredString(parameters, operation, "signal") as SignalChange["signal"];
-  const part = parameters.part as SignalChange["part"];
-  if (action === "clear-limit") return { action, signal, part, reason };
-  const limit = parameters.limit;
-  if (typeof limit !== "number") throw new Error(`${operation} requires limit`);
-  return { action, signal, part, limit, reason };
+  const change: Record<string, unknown> = { action, reason };
+  if (action === "set-limit" || action === "clear-limit") {
+    change.signal = requiredString(parameters, operation, "signal");
+    if (parameters.part !== undefined) change.part = parameters.part;
+  }
+  if (action === "set-limit") {
+    if (typeof parameters.limit !== "number") throw new Error(`${operation} requires limit`);
+    change.limit = parameters.limit;
+  }
+  const parsed = signalChangeRequest.safeParse(change);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(
+      issue === undefined
+        ? `${operation}: invalid request`
+        : `${operation}: invalid ${issue.path.join(".") || "request"}: ${issue.message}`
+    );
+  }
+  return parsed.data;
 }
 
 /** A whole number from 1: a give-up's record id, a stream sequence or a gate's version. */
@@ -783,11 +797,12 @@ export function createLegionTool(deps: {
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
         "since each would start a turn. " +
-        "signals_on and signals_off (reason) turn admission by signals on or off, and set_signal_limit (signal, part " +
-        "for provider, limit, reason) and clear_signal_limit (signal, part, reason) set or clear one signal's limit. " +
-        "Make each only on a person's cited word, and cite it in reason; never choose a change yourself. The answer is " +
-        "changed, whether the change moved the setting, and settings, as they stand. The daemon refuses a limit outside " +
-        "its signal's range, a name of no signal and a blank reason (SIGNAL_SETTING_INVALID), changing nothing. " +
+        "Use signals_on or signals_off with a reason to turn admission by signals on or off. " +
+        "Use set_signal_limit or clear_signal_limit to set or clear a limit. Name the signal and, for provider, its part. " +
+        "Make a change only on a person's word. Cite their word in reason. Do not choose a change yourself. " +
+        "The tool refuses missing fields, blank reasons, unknown signal or part names, and limits that are not positive numbers. " +
+        "The daemon checks which part the signal takes and whether the limit is in range (SIGNAL_SETTING_INVALID). " +
+        "The answer gives changed (whether the setting changed) and the current settings. " +
         "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
         "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
         "live delivery takes and publishes nothing to the stream, so replay once the fix for a record's last error runs in " +

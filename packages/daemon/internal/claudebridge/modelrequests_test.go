@@ -26,6 +26,13 @@ import (
 type windowClock struct {
 	mu      sync.Mutex
 	waiting []chan time.Time
+	at      time.Time
+}
+
+func (c *windowClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
 }
 
 func (c *windowClock) After(d time.Duration) <-chan time.Time {
@@ -42,8 +49,9 @@ func (c *windowClock) After(d time.Duration) <-chan time.Time {
 func (c *windowClock) fire() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.at = c.at.Add(requestWindow)
 	for _, fires := range c.waiting {
-		fires <- time.Unix(0, 0).Add(requestWindow)
+		fires <- c.at
 	}
 	fired := len(c.waiting)
 	c.waiting = nil
@@ -64,7 +72,8 @@ type requestsRig struct {
 func newRequestsRig(t *testing.T, env []string) *requestsRig {
 	t.Helper()
 	r := &requestsRig{
-		clock:    &windowClock{},
+		// Place the reporting clock at the earliest recorded stream so replays retain their dates.
+		clock:    &windowClock{at: time.Date(2026, time.October, 30, 9, 1, 26, 0, time.UTC)},
 		requests: make(chan claim.ModelRequestsRequest, 16),
 		outcomes: make(chan claim.TurnOutcomeRequest, 16),
 		started:  time.Now(),
@@ -258,13 +267,13 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 		"LEGION_SIGNAL_PROVIDER_REFUSAL=" + classes.Patterns.Provider,
 	}
 
-	// A turn runs on with requests ended in it: the window of the first sends every request the
-	// stream has ended, each with the moment its last line was written and its fresh input plus
-	// its cache writes, and the request still streaming waits.
+	// The window sends every answer seen so far, including the last one whose result has not
+	// arrived. The result must not send any of those IDs twice.
 	t.Run("partial", func(t *testing.T) {
 		r := newRequestsRig(t, patterns)
 		r.prompt("p1", "replay subagent-turn.jsonl")
 		r.expect("agent_start", nil)
+		r.untilAnswer()
 		r.untilAnswer()
 		r.noReport()
 		if fired := r.clock.fire(); fired != 1 {
@@ -273,12 +282,11 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 		compareRows(t, "the window's report", r.rows(r.reported()), []requestRow{
 			{session: capturedSession, model: capturedModel, endedAt: "2026-11-26T05:13:16.266Z", uncached: "49"},
 			{session: capturedSubagent, model: capturedModel, endedAt: "2026-11-26T05:13:16.34Z", uncached: "49"},
+			{session: capturedSession, model: capturedModel, endedAt: "2026-11-26T05:13:16.441Z", uncached: "49"},
 		})
 		r.open()
 		r.untilTurnEnds()
-		compareRows(t, "the turn end's report", r.rows(r.reported()), []requestRow{
-			{session: capturedSession, model: capturedModel, endedAt: "2026-11-26T05:13:16.441Z", uncached: "49"},
-		})
+		r.noReport()
 	})
 
 	// The turn ends before the window: every request goes at once, the window the first armed

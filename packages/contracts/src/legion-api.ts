@@ -2522,6 +2522,10 @@ export const LegionProjectResumeRequest = z.strictObject({
   grantId: nonEmptyString,
 });
 
+export const LEGION_SIGNALS = ["idle", "queue", "provider", "kills", "approvals"] as const;
+export const LEGION_SIGNAL_PARTS = ["headroom", "refusals"] as const;
+export const LEGION_SIGNAL_ACTIONS = ["on", "off", "set-limit", "clear-limit"] as const;
+
 /** `api.ProjectSignalsRequest`, the controller's change of admission by signals on a person's cited
  * word: its grant, the `action` (`on`, `off`, `set-limit`, `clear-limit`), for a limit the series
  * by its `signal` and, for the provider, its `part`, the `limit` to set, and the person's cited
@@ -2531,9 +2535,9 @@ export const LegionProjectResumeRequest = z.strictObject({
  * changing nothing. */
 export const LegionProjectSignalsRequest = z.strictObject({
   grantId: nonEmptyString,
-  action: z.enum(["on", "off", "set-limit", "clear-limit"]),
-  signal: z.enum(["idle", "queue", "provider", "kills", "approvals"]).optional(),
-  part: z.enum(["headroom", "refusals"]).optional(),
+  action: z.enum(LEGION_SIGNAL_ACTIONS),
+  signal: z.enum(LEGION_SIGNALS).optional(),
+  part: z.enum(LEGION_SIGNAL_PARTS).optional(),
   limit: z.number().positive().optional(),
   reason: nonEmptyString,
 });

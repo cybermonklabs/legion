@@ -2310,6 +2310,17 @@ test("the controller changes admission by signals on a person's cited word and r
     });
   }
   expect(posted).toHaveLength(changes.length);
+  for (const parameters of [
+    { op: "set_signal_limit", signal: "kills", limit: 0, reason },
+    { op: "set_signal_limit", signal: "kills", limit: -1, reason },
+    { op: "set_signal_limit", signal: "unknown", limit: 1, reason },
+    { op: "clear_signal_limit", signal: "provider", part: "unknown", reason },
+  ]) {
+    const refused = await run(parameters);
+    expect(refused.isError).toBe(true);
+    expect(minted).toHaveLength(changes.length);
+    expect(posted).toHaveLength(changes.length);
+  }
 
   for (const active of [claimSession("implementer"), claimSession("architect")]) {
     const refused = await toolFor(active).execute(

@@ -1,14 +1,11 @@
 package claudebridge
 
 import (
-	"bytes"
 	"cmp"
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -31,9 +28,10 @@ const requestWindow = 15 * time.Second
 // requests go again under the same ids.
 const requestReportTimeout = 10 * time.Second
 
-// refusedStatus is the HTTP status a limit refuses a model request with. A failure of any other
-// status — an overloaded provider's 529 among them — is no limit's refusal, and is not reported.
-const refusedStatus = 429
+// requestKeepWindow bounds the age of a report: the daemon reads an hour of request history.
+const requestKeepWindow = time.Hour
+
+var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the report's bound of %s", requestReportTimeout)
 
 // modelRequests is the bridge as the Claude Code backend's producer of model requests (POST
 // /legion/v1/claims/model-requests): each request Claude Code made for the role's session or for
@@ -45,11 +43,9 @@ const refusedStatus = 429
 // against an Anthropic-shaped stand-in (testdata/subagent-turn.jsonl, testdata/api-retry-answered.jsonl)
 // and on 2.1.310 (testdata/api-error-429.jsonl, testdata/background-turn.jsonl):
 //
-//   - an answered request is one or more `assistant` lines with the same `message.id`, one for each
-//     block of its content, each carrying the request's `message.usage` and the moment that block
-//     was written (`timestamp`). The request ended with its last line, which is the line before
-//     the first line that is not one of its own, so a request is closed there (read) and counted
-//     once, by its id, however many lines it took;
+//   - an answered request is one or more `assistant` lines with the same `message.id`, one for
+//     each content block. Each carries the request's `usage` and the time the block was written.
+//     The bridge counts it once by its id, closing it on the next unrelated line or at the window;
 //   - a subagent's lines are the same, with `parent_tool_use_id` naming the Task call and
 //     `agent_id` the subagent, which is the session reported for them; the role's own lines carry
 //     `parent_tool_use_id` null and the session's id;
@@ -64,62 +60,35 @@ const refusedStatus = 429
 // session's `init` line names. Uncached input is `input_tokens + cache_creation_input_tokens`,
 // never the cache reads; a refused attempt counts none the stream names.
 //
-// One pending batch: the first request pending arms a window of requestWindow, which a request
-// that joins it moves nothing of; every `result`, the turn's end among them, sends what is pending
-// at once and drops the window; requests that end while a report is on its way wait for a report
-// of their own; and a request the daemon's answer does not name as held goes again under the same
-// id once a window has passed, while a report the daemon refuses (a 4xx) is dropped with a line,
-// as a turn outcome's is. Every report names the launch's boot token alone, as the turn outcome
-// does: the bridge holds no other credential. Nothing of the bridge's loop waits on a report.
+// The first request arms a window of requestWindow. A result sends any pending requests now.
+// Overflow drains on an answer that keeps at least one request. Otherwise a failed or incomplete
+// report can retry at the next window or result; only IDs the daemon did not keep go again.
+// Requests past the keep window and reports the daemon refuses (a 4xx) are dropped with a line.
+// Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
 type modelRequests struct {
-	url        string
-	bootToken  string
-	generation uint64
-	client     *http.Client
-	clock      Clock
-	log        *log.Logger
+	*daemonPoster
 	// own and provider are the project's two refusal patterns, nil where the launch set none.
 	own, provider *regexp.Regexp
 
-	// The rest above mu is the loop's alone: the request whose lines are being read, the ids
-	// counted already, and the model the session's init line names.
+	mu      sync.Mutex
 	open    *claim.ModelRequest
 	counted map[string]bool
 	model   string
-
-	mu sync.Mutex
-	// pending is every request no report has carried to a daemon that holds it; sending is a
-	// report on its way; due is a send that fell due meanwhile, made once it is answered.
+	// pending holds requests until they are kept or dropped. due records a window or result
+	// that called for another send while one was underway.
 	pending []claim.ModelRequest
 	sending bool
 	due     bool
-	// window is the number of the window armed, 0 where none is: a firing whose number is not it
-	// is one dropped since.
+	// A firing with a different window number was canceled by a result.
 	window, windows uint64
 }
 
-// startModelRequests is the reporter for cfg, or nil when the pane names no daemon, boot token
-// file or generation, as startTurnReports is: a bridge run by hand reports to nobody.
-func startModelRequests(cfg Config, logger *log.Logger) *modelRequests {
-	if cfg.DaemonURL == "" || cfg.BootTokenFile == "" || cfg.Generation == 0 {
-		logger.Printf("reporting no model requests: this pane names %s", missingReportInputs(cfg))
-		return nil
-	}
-	token, err := os.ReadFile(cfg.BootTokenFile)
-	if err != nil {
-		logger.Printf("reporting no model requests: the boot token the daemon would recognise this claim by could not be read: %v", err)
-		return nil
-	}
+func startModelRequests(cfg Config, poster *daemonPoster) *modelRequests {
 	return &modelRequests{
-		url:        strings.TrimSuffix(cfg.DaemonURL, "/") + "/legion/v1/claims/model-requests",
-		bootToken:  strings.TrimSpace(string(token)),
-		generation: cfg.Generation,
-		client:     &http.Client{},
-		clock:      cfg.clock(),
-		log:        logger,
-		own:        refusalPattern(runtime.OwnRefusalVariable, cfg.OwnRefusal, logger),
-		provider:   refusalPattern(runtime.ProviderRefusalVariable, cfg.ProviderRefusal, logger),
-		counted:    map[string]bool{},
+		daemonPoster: poster,
+		own:          refusalPattern(runtime.OwnRefusalVariable, cfg.OwnRefusal, poster.log),
+		provider:     refusalPattern(runtime.ProviderRefusalVariable, cfg.ProviderRefusal, poster.log),
+		counted:      map[string]bool{},
 	}
 }
 
@@ -171,6 +140,8 @@ func (r *modelRequests) read(line streamLine) {
 	if r == nil {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	switch {
 	case line.kind == "assistant":
 		r.assistant(line)
@@ -179,40 +150,34 @@ func (r *modelRequests) read(line streamLine) {
 		if line.model != "" {
 			r.model = line.model
 		}
-	case line.kind == "system" && line.subtype == "api_retry" && line.errorStatus == refusedStatus:
-		r.close()
+	case line.kind == "system" && line.subtype == "api_retry" && line.errorStatus == http.StatusTooManyRequests:
+		r.closeLocked()
 		r.refused(line, "", claim.RefusalUnknown)
 		return
 	}
-	r.close()
+	r.closeLocked()
 	if line.kind == "result" {
-		r.flush()
+		r.window = 0
+		r.sendLocked()
 	}
 }
 
-// assistant reads one assistant line: a line of the request open, the first line of the next, or
-// a synthetic answer, which is the last attempt of a refused request.
+// assistant reads the request's metadata, or the refusal text of a synthetic answer.
+// The caller holds r.mu.
 func (r *modelRequests) assistant(line streamLine) {
 	var m struct {
-		ID      string         `json:"id"`
-		Model   string         `json:"model"`
-		Content []contentBlock `json:"content"`
-		Usage   *struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+		Usage *struct {
 			Input      int64 `json:"input_tokens"`
 			CacheWrite int64 `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 	}
 	_ = json.Unmarshal(line.message, &m)
 	if m.Model == shimwire.SyntheticModel {
-		r.close()
-		if line.apiErrorStatus == refusedStatus {
-			var texts []string
-			for _, block := range m.Content {
-				if block.Type == "text" {
-					texts = append(texts, block.Text)
-				}
-			}
-			r.refused(line, m.ID, r.classOf(strings.Join(texts, "\n")))
+		r.closeLocked()
+		if line.apiErrorStatus == http.StatusTooManyRequests {
+			r.refused(line, m.ID, r.classOf(textOf(blocksOf(line.message))))
 		}
 		return
 	}
@@ -220,7 +185,7 @@ func (r *modelRequests) assistant(line streamLine) {
 		r.open.EndedAt = endOf(line)
 		return
 	}
-	r.close()
+	r.closeLocked()
 	if m.ID == "" || m.Model == "" || r.counted[m.ID] {
 		return
 	}
@@ -229,22 +194,23 @@ func (r *modelRequests) assistant(line streamLine) {
 		request.UncachedInputTokens = new(m.Usage.Input + m.Usage.CacheWrite)
 	}
 	r.open = request
+	r.armLocked()
 }
 
-// close counts the request whose lines were being read, which has ended, and queues its report.
-func (r *modelRequests) close() {
+// closeLocked queues the open request, which already armed a window when it opened.
+func (r *modelRequests) closeLocked() {
 	if r.open == nil {
 		return
 	}
 	request := *r.open
 	r.open = nil
 	r.counted[request.ID] = true
-	r.enqueue(request)
+	r.pending = append(r.pending, request)
 }
 
 // refused queues the report of one refused attempt, under the line's own id (`uuid`), else the
 // synthetic answer's message id, else one of the bridge's own: a refused attempt is one line, and
-// counts once.
+// counts once. The caller holds r.mu.
 func (r *modelRequests) refused(line streamLine, messageID string, class claim.RefusalClass) {
 	model := r.model
 	if model == "" {
@@ -257,7 +223,8 @@ func (r *modelRequests) refused(line streamLine, messageID string, class claim.R
 		return
 	}
 	r.counted[id] = true
-	r.enqueue(claim.ModelRequest{ID: id, Session: sessionOfLine(line), Model: model, EndedAt: at, Refusal: class})
+	r.pending = append(r.pending, claim.ModelRequest{ID: id, Session: sessionOfLine(line), Model: model, EndedAt: at, Refusal: class})
+	r.armLocked()
 }
 
 // sessionOfLine is the session a line's request ran in: the subagent's where the line serves a
@@ -278,17 +245,9 @@ func endOf(line streamLine) time.Time {
 	return time.Now().UTC()
 }
 
-// enqueue adds request to the pending batch, arming the window if none is.
-func (r *modelRequests) enqueue(request claim.ModelRequest) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pending = append(r.pending, request)
-	r.armLocked()
-}
-
 // armLocked arms a window for what is pending, if none is armed. The caller holds r.mu.
 func (r *modelRequests) armLocked() {
-	if r.window != 0 || len(r.pending) == 0 {
+	if r.window != 0 || (len(r.pending) == 0 && r.open == nil) {
 		return
 	}
 	r.windows++
@@ -300,56 +259,65 @@ func (r *modelRequests) armLocked() {
 		defer r.mu.Unlock()
 		if r.window == window {
 			r.window = 0
+			r.closeLocked()
 			r.sendLocked()
 		}
 	}()
 }
 
-// flush sends what is pending now and drops the window.
-func (r *modelRequests) flush() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.window = 0
-	r.sendLocked()
-}
-
 // sendLocked sends the oldest pending requests, up to claim.MaxModelRequests, unless a report is
 // on its way, in which case they go once it is answered. The caller holds r.mu.
 func (r *modelRequests) sendLocked() {
+	if len(r.pending) == 0 {
+		return
+	}
 	if r.sending {
 		r.due = true
 		return
 	}
+	cutoff := r.clock.Now().Add(-requestKeepWindow)
+	r.pending = slices.DeleteFunc(r.pending, func(request claim.ModelRequest) bool {
+		if !request.EndedAt.Before(cutoff) {
+			return false
+		}
+		r.log.Printf("dropped model request %q ended at %s: past the daemon's keep window", request.ID, request.EndedAt)
+		return true
+	})
 	if len(r.pending) == 0 {
 		return
 	}
 	n := min(len(r.pending), claim.MaxModelRequests)
 	batch := slices.Clone(r.pending[:n])
 	r.pending = slices.Delete(r.pending, 0, n)
-	r.sending, r.window = true, 0
-	go r.post(batch)
+	r.sending = true
+	go r.post(batch, len(r.pending) != 0)
 }
 
 // post makes one report and puts back every request of it the daemon did not say it holds, under
 // the same id.
-func (r *modelRequests) post(batch []claim.ModelRequest) {
+func (r *modelRequests) post(batch []claim.ModelRequest, overflow bool) {
 	kept, retry := r.call(batch)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sending = false
+	progress := false
 	if retry {
 		var unheld []claim.ModelRequest
 		for _, request := range batch {
-			if !slices.Contains(kept, request.ID) {
+			if _, ok := kept[request.ID]; ok {
+				progress = true
+			} else {
 				unheld = append(unheld, request)
 			}
 		}
-		r.pending = append(unheld, r.pending...)
+		if len(unheld) != 0 {
+			r.pending = append(unheld, r.pending...)
+		}
 	}
-	if r.due || len(r.pending) > claim.MaxModelRequests {
+	// Overflow is not itself permission to retry a failed batch without waiting.
+	if r.due || (progress && (overflow || len(r.pending) > claim.MaxModelRequests)) {
 		r.due = false
 		r.sendLocked()
-		return
 	}
 	r.armLocked()
 }
@@ -358,7 +326,7 @@ func (r *modelRequests) post(batch []claim.ModelRequest) {
 // report the daemon refused, which no retry passes. Every batch says that its host reports each
 // 429 its HTTP transport retries, since Claude Code writes an `api_retry` line for each such
 // attempt and the bridge reports each as a refused request of its own (refused).
-func (r *modelRequests) call(batch []claim.ModelRequest) ([]string, bool) {
+func (r *modelRequests) call(batch []claim.ModelRequest) (map[string]struct{}, bool) {
 	body, err := json.Marshal(claim.ModelRequestsRequest{
 		BootCaller:              claim.BootCaller{BootToken: r.bootToken},
 		Generation:              r.generation,
@@ -369,43 +337,32 @@ func (r *modelRequests) call(batch []claim.ModelRequest) ([]string, bool) {
 		r.log.Printf("could not encode a report of %d model requests: %v", len(batch), err)
 		return nil, false
 	}
-	ctx, cancel := context.WithCancelCause(context.Background())
-	defer cancel(nil)
-	go func() {
-		select {
-		case <-r.clock.After(requestReportTimeout):
-			cancel(fmt.Errorf("the daemon gave no answer within the report's bound of %s", requestReportTimeout))
-		case <-ctx.Done():
-		}
-	}()
-	post, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
-	if err != nil {
+	// The answer echoes IDs from this JSON body and no other request fields, so even a full
+	// batch of long IDs fits inside the body size. Keep room for ordinary refusals too.
+	bound := max(int64(len(body)), int64(maxAnswerBytes))
+	response, attempted, err := r.postJSON("/legion/v1/claims/model-requests", body, requestReportTimeout, errRequestReportTimeout, bound)
+	switch {
+	case !attempted:
 		r.log.Printf("could not report %d model requests: %v", len(batch), err)
 		return nil, false
-	}
-	post.Header.Set("Content-Type", "application/json")
-	response, err := r.client.Do(post)
-	if err != nil {
-		if cause := context.Cause(ctx); cause != nil {
-			err = fmt.Errorf("%w (%v)", cause, err)
-		}
+	case response.statusCode == 0:
 		r.log.Printf("could not report %d model requests; they go again: %v", len(batch), err)
 		return nil, true
-	}
-	defer func() { _ = response.Body.Close() }()
-	answer, err := readAnswer(response)
-	switch {
-	case response.StatusCode/100 == 4:
-		r.log.Printf("the daemon refused a report of %d model requests; they go unreported: %s %s", len(batch), response.Status, strings.TrimSpace(string(answer)))
+	case response.statusCode/100 == 4:
+		r.log.Printf("the daemon refused a report of %d model requests; they go unreported: %s %s", len(batch), response.status, strings.TrimSpace(string(response.body)))
 		return nil, false
-	case response.StatusCode/100 != 2 || err != nil:
-		r.log.Printf("the daemon did not take a report of %d model requests; they go again: %s %s", len(batch), response.Status, strings.TrimSpace(string(answer)))
+	case response.statusCode/100 != 2 || err != nil:
+		r.log.Printf("the daemon did not take a report of %d model requests; they go again: %s %s", len(batch), response.status, strings.TrimSpace(string(response.body)))
 		return nil, true
 	}
 	var decoded claim.ModelRequestsResponse
-	if err := json.Unmarshal(answer, &decoded); err != nil {
+	if err := json.Unmarshal(response.body, &decoded); err != nil {
 		r.log.Printf("the daemon's answer to a report of %d model requests could not be read; they go again: %v", len(batch), err)
 		return nil, true
 	}
-	return decoded.Kept, true
+	kept := make(map[string]struct{}, len(decoded.Kept))
+	for _, id := range decoded.Kept {
+		kept[id] = struct{}{}
+	}
+	return kept, true
 }

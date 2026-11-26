@@ -168,7 +168,7 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 		running.Add(1)
 		go func() {
 			defer running.Done()
-			m.sendMemoryKillsUntil(ctx)
+			m.killReportQueue.sendUntil(ctx, m.sendMemoryKills)
 		}()
 	}
 	if noRole != nil {
@@ -555,54 +555,53 @@ func ancestorRole(t *memoryguard.Table, p *memoryguard.Process, byInit map[int]s
 	return "", false
 }
 
-// queueMemoryKill takes the guard's report of one of this role's processes it ended and wakes
-// this role's sender, which writes it once a connection can carry it (sendMemoryKills). It is the
-// guard's sink and runs on the guard's loop, so it waits on no connection: it only queues. A role
-// already holding maxWaitingMemoryKills reports drops the oldest, with a line, or the next oldest
-// while the oldest is being written: that write may yet succeed, and a line saying the report was
-// dropped would then be false.
+// queueMemoryKill queues a role's report without waiting for its connection.
 func (m *manager) queueMemoryKill(report shimwire.LauncherMemoryKill) {
-	m.mu.Lock()
-	waiting, dropped := roomForReport(m.memoryKills, m.memorySending)
-	m.memoryKills = append(waiting, report)
-	m.mu.Unlock()
-	if dropped != nil {
-		m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=%d reports already wait for a connection, the most a role keeps",
-			dropped.Sequence, dropped.PID, maxWaitingMemoryKills)
+	m.offer(&m.mu, &m.memoryKills, report, m.logf,
+		"launcher: memory guard: report dropped sequence=%d pid=%d reason=%d reports already wait for a connection, the most a role keeps")
+}
+
+// killReportQueue serializes sends and protects the in-flight head from overflow. Each caller
+// supplies the pending slice and its lock. A role uses the same lock for the queue and its carrier.
+type killReportQueue struct {
+	memoryWake chan struct{}
+	send       sync.Mutex
+	sending    uint64
+}
+
+// offer never waits for a connection. It drops the oldest report if full, or the next oldest
+// while a write of the head is underway: that write may still succeed.
+func (q *killReportQueue) offer(mu *sync.Mutex, pending *[]shimwire.LauncherMemoryKill, report shimwire.LauncherMemoryKill, logf func(string, ...any), full string) {
+	mu.Lock()
+	var dropped shimwire.LauncherMemoryKill
+	fullQueue := len(*pending) >= maxWaitingMemoryKills
+	if fullQueue {
+		i := 0
+		if (*pending)[0].Sequence == q.sending {
+			i = 1
+		}
+		dropped = (*pending)[i]
+		*pending = slices.Delete(*pending, i, i+1)
+	}
+	*pending = append(*pending, report)
+	mu.Unlock()
+	if fullQueue {
+		logf(full, dropped.Sequence, dropped.PID, maxWaitingMemoryKills)
 	}
 	select {
-	case m.memoryWake <- struct{}{}:
+	case q.memoryWake <- struct{}{}:
 	default:
 	}
 }
 
-// roomForReport is waiting, reports that wait for a connection oldest first, with room for one
-// more: where it already holds maxWaitingMemoryKills it drops the oldest, or the next oldest where
-// the oldest is the one whose sequence is sending, being written, and answers the one it dropped.
-// It is the one bound of both queues of reports, a role's (queueMemoryKill) and the pod's of no
-// role (noRoleReports.queue), each of which calls it under its own lock.
-func roomForReport(waiting []shimwire.LauncherMemoryKill, sending uint64) ([]shimwire.LauncherMemoryKill, *shimwire.LauncherMemoryKill) {
-	if len(waiting) < maxWaitingMemoryKills {
-		return waiting, nil
-	}
-	i := 0
-	if waiting[0].Sequence == sending {
-		i = 1
-	}
-	dropped := waiting[i]
-	return slices.Delete(waiting, i, i+1), &dropped
-}
-
-// sendMemoryKillsUntil is this role's sender of the guard's reports: it sends what waits each time
-// the guard queues a report, until ctx ends. A connection that comes up later sends what waited
-// for it itself (openMemoryReports).
-func (m *manager) sendMemoryKillsUntil(ctx context.Context) {
+// sendUntil sends when the watch queues a report. A new connection also calls the sender directly.
+func (q *killReportQueue) sendUntil(ctx context.Context, send func()) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-m.memoryWake:
-			m.sendMemoryKills()
+		case <-q.memoryWake:
+			send()
 		}
 	}
 }
@@ -628,54 +627,20 @@ func (m *manager) openMemoryReports(writer *shimwire.Writer, carried, noRole boo
 	}
 }
 
-// sendMemoryKills writes the reports waiting on this role's connection, oldest first, one at a
-// time. The writer is taken under the manager's lock and written outside it, as state writes its
-// own, and shimwire.Writer writes each frame whole under a lock of its own, so a report never
-// interleaves with a command's answer. A report leaves the queue only once it is
-// written, and stays at the queue's head while it is being written, since queueMemoryKill never
-// drops the report memorySending names; a write that fails leaves it, and the rest, for the next
-// connection. memorySend holds one send at a time, so serve's send at a connection's start and the
-// sender's never write one report twice or two out of order.
+// sendMemoryKills selects the role's carrier. Older acknowledgements do not carry kill reports.
 func (m *manager) sendMemoryKills() {
-	m.memorySend.Lock()
-	defer m.memorySend.Unlock()
-	for {
-		m.mu.Lock()
-		writer, carried := m.reportWriter, m.reportsCarried
-		if writer == nil || len(m.memoryKills) == 0 {
-			m.mu.Unlock()
-			return
+	carrier := func() (*shimwire.Writer, string) {
+		if m.reportWriter == nil || m.reportsCarried {
+			return m.reportWriter, ""
 		}
-		if !carried {
-			dropped := m.memoryKills
-			m.memoryKills = nil
-			m.mu.Unlock()
-			member := "memory guard settings"
-			if m.cfg.runsGuest() {
-				member = "kernelKills"
-			}
-			for _, report := range dropped {
-				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=this connection's acknowledgement carries no %s, so the daemon behind it may not know the report",
-					report.Sequence, report.PID, member)
-			}
-			return
+		if m.cfg.runsGuest() {
+			return nil, "this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
 		}
-		report := m.memoryKills[0]
-		m.memorySending = report.Sequence
-		m.mu.Unlock()
-		err := writer.WriteFrame(report)
-		m.mu.Lock()
-		m.memorySending = 0
-		if err == nil {
-			m.memoryKills = slices.Delete(m.memoryKills, 0, 1)
-		}
-		m.mu.Unlock()
-		if err != nil {
-			m.logf("launcher: memory guard: report unsent sequence=%d pid=%d reason=%v; the next connection carries it",
-				report.Sequence, report.PID, err)
-			return
-		}
+		return nil, "this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
 	}
+	m.killReportQueue.sendWaiting(&m.mu, &m.memoryKills, carrier, m.logf,
+		"launcher: memory guard: report dropped sequence=%d pid=%d reason=%s",
+		"launcher: memory guard: report unsent sequence=%d pid=%d reason=%v; the next connection carries it")
 }
 
 // noRoleReports is an issue pod's one queue of the reports of the processes of no role its watch
@@ -697,26 +662,24 @@ func (m *manager) sendMemoryKills() {
 // waiting then is dropped with the launcher's own line rather than kept for a daemon that may
 // never come; the `ended` line in the pod's log stays.
 //
-// Its lines are the launcher's own (logf), behind no role's prefix, as the watch's lines of the
-// pod are. kills is guarded by mu, and sending is the sequence of the oldest report while it is
-// being written, 0 while none is, as a role's memorySending is; send holds one send at a time, so
-// the queue's sender (sendUntil) and a connection's start (openMemoryReports) never write one
-// report twice or two out of order. mu is taken before any manager's, and no manager's is held
-// while mu is taken.
+// Its lines are the launcher's own, behind no role's prefix. The queue locks before the managers
+// when it looks for a carrier. A manager never calls its sender under the manager's lock.
 type noRoleReports struct {
+	killReportQueue
 	managers []*manager
 	logf     func(format string, args ...any)
-	wake     chan struct{}
-	send     sync.Mutex
 	mu       sync.Mutex
 	kills    []shimwire.LauncherMemoryKill
-	sending  uint64
 }
 
 // newNoRoleReports is the queue of the reports of no role of the pod whose roles managers serve,
 // in the order of the pod's role list, with its lines written through logf.
 func newNoRoleReports(managers []*manager, logf func(format string, args ...any)) *noRoleReports {
-	return &noRoleReports{managers: managers, logf: logf, wake: make(chan struct{}, 1)}
+	return &noRoleReports{
+		killReportQueue: killReportQueue{memoryWake: make(chan struct{}, 1)},
+		managers:        managers,
+		logf:            logf,
+	}
 }
 
 // queue takes the watch's report of a process of no role it stopped, marks it so, and wakes the
@@ -724,38 +687,17 @@ func newNoRoleReports(managers []*manager, logf func(format string, args ...any)
 // waits on no connection: it only queues.
 func (q *noRoleReports) queue(report shimwire.LauncherMemoryKill) {
 	report.NoRole = true
-	q.mu.Lock()
-	waiting, dropped := roomForReport(q.kills, q.sending)
-	q.kills = append(waiting, report)
-	q.mu.Unlock()
-	if dropped != nil {
-		q.logf("launcher: memory guard: report dropped sequence=%d pid=%d role=none reason=%d reports of no role already wait for a connection, the most the pod keeps",
-			dropped.Sequence, dropped.PID, maxWaitingMemoryKills)
-	}
-	select {
-	case q.wake <- struct{}{}:
-	default:
-	}
+	q.offer(&q.mu, &q.kills, report, q.logf,
+		"launcher: memory guard: report dropped sequence=%d pid=%d role=none reason=%d reports of no role already wait for a connection, the most the pod keeps")
 }
 
-// sendUntil is the queue's sender: it sends what waits each time the watch queues a report, until
-// ctx ends. A connection that can carry the reports and comes up later sends what waited for it
-// itself (openMemoryReports).
 func (q *noRoleReports) sendUntil(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-q.wake:
-			q.sendWaiting()
-		}
-	}
+	q.killReportQueue.sendUntil(ctx, q.sendWaiting)
 }
 
-// carrier is the connection the reports of no role go on: the writer of the first role whose
-// connection is up and whose acknowledgement carried noRoleKills, nil where none is, and whether
-// any role's connection is up at all. Its caller holds q.mu.
-func (q *noRoleReports) carrier() (*shimwire.Writer, bool) {
+// carrier returns the first connection that knows reports of no role, or a reason to drop the
+// reports if connections are up but none know them. With no connections it returns no reason.
+func (q *noRoleReports) carrier() (*shimwire.Writer, string) {
 	up := false
 	for _, m := range q.managers {
 		m.mu.Lock()
@@ -765,54 +707,59 @@ func (q *noRoleReports) carrier() (*shimwire.Writer, bool) {
 			continue
 		}
 		if noRole {
-			return writer, true
+			return writer, ""
 		}
 		up = true
 	}
-	return nil, up
+	if up {
+		return nil, "no connection's acknowledgement says the daemon behind it knows a report of a process of no role (noRoleKills)"
+	}
+	return nil, ""
 }
 
-// sendWaiting writes the waiting reports, oldest first, one at a time, on the connection carrier
-// names, or drops them all with a line where connections are up and none can carry them. A report
-// leaves the queue only once it is written, as a role's does (sendMemoryKills), and a write that
-// fails leaves it, and the rest, for the next send.
 func (q *noRoleReports) sendWaiting() {
+	q.killReportQueue.sendWaiting(&q.mu, &q.kills, q.carrier, q.logf,
+		"launcher: memory guard: report dropped sequence=%d pid=%d role=none reason=%s",
+		"launcher: memory guard: report unsent sequence=%d pid=%d role=none reason=%v; the next connection that can carry it does")
+}
+
+// sendWaiting selects the carrier under the queue's lock and writes outside it. A failed write
+// leaves the head for the next connection. A missing carrier with a reason drops each report.
+func (q *killReportQueue) sendWaiting(mu *sync.Mutex, pending *[]shimwire.LauncherMemoryKill, carrier func() (*shimwire.Writer, string), logf func(string, ...any), unsupported, unsent string) {
 	q.send.Lock()
 	defer q.send.Unlock()
 	for {
-		q.mu.Lock()
-		if len(q.kills) == 0 {
-			q.mu.Unlock()
+		mu.Lock()
+		if len(*pending) == 0 {
+			mu.Unlock()
 			return
 		}
-		writer, up := q.carrier()
+		writer, reason := carrier()
 		if writer == nil {
-			if !up {
-				q.mu.Unlock()
+			if reason == "" {
+				mu.Unlock()
 				return
 			}
-			dropped := q.kills
-			q.kills = nil
-			q.mu.Unlock()
+			dropped := *pending
+			*pending = nil
+			mu.Unlock()
 			for _, report := range dropped {
-				q.logf("launcher: memory guard: report dropped sequence=%d pid=%d role=none reason=no connection's acknowledgement says the daemon behind it knows a report of a process of no role (noRoleKills)",
-					report.Sequence, report.PID)
+				logf(unsupported, report.Sequence, report.PID, reason)
 			}
 			return
 		}
-		report := q.kills[0]
+		report := (*pending)[0]
 		q.sending = report.Sequence
-		q.mu.Unlock()
+		mu.Unlock()
 		err := writer.WriteFrame(report)
-		q.mu.Lock()
+		mu.Lock()
 		q.sending = 0
 		if err == nil {
-			q.kills = slices.Delete(q.kills, 0, 1)
+			*pending = slices.Delete(*pending, 0, 1)
 		}
-		q.mu.Unlock()
+		mu.Unlock()
 		if err != nil {
-			q.logf("launcher: memory guard: report unsent sequence=%d pid=%d role=none reason=%v; the next connection that can carry it does",
-				report.Sequence, report.PID, err)
+			logf(unsent, report.Sequence, report.PID, err)
 			return
 		}
 	}

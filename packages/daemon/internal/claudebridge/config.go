@@ -83,9 +83,9 @@ type Config struct {
 	Clock Clock
 }
 
-// Clock hands out the bridge's stop timers: After answers a channel that receives once d has
-// passed on the clock.
+// Clock measures report age and supplies the bridge's timers.
 type Clock interface {
+	Now() time.Time
 	After(d time.Duration) <-chan time.Time
 }
 
@@ -93,6 +93,7 @@ type Clock interface {
 type wallClock struct{}
 
 func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+func (wallClock) Now() time.Time                         { return time.Now() }
 
 // clock is cfg's Clock, the wall clock where it names none.
 func (cfg Config) clock() Clock {

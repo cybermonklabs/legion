@@ -6,6 +6,7 @@ import {
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "@legion/pi-shared/daemon-client";
+import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
 
 /**
@@ -25,9 +26,9 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * refused with HTTP 429 that the session retries itself ends in its own `message_end` too —
  * `stopReason: "error"`, `errorStatus: 429`, the provider's text in `errorMessage`, every usage
  * member 0 — before the host's `auto_retry_start`, and its retry ends in a `message_end` of its
- * own. A `task` subagent's requests reach this same extension instance with
- * `context.agent.kind === "sub"` and the subagent's own session id, and no second instance saw
- * them. A 429 the transport retries itself (the Anthropic provider's own loop,
+ * own. A `task` subagent loads its own extension instance. The `message_end` hook identifies
+ * subagent events by their context and reports them under the pane's credential, if available.
+ * A 429 the transport retries itself (the Anthropic provider's own loop,
  * `packages/ai/src/providers/anthropic.ts:3787-3810`, which no `x-should-retry: false` stops)
  * reaches no extension at all: `message_end` comes once, for the attempt that was answered, and
  * `after_provider_response` fires only for a response whose headers came with a 2xx
@@ -52,10 +53,10 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * for its end plus `MODEL_REQUEST_REPORT_BOUND_MS`; a request that joins the batch moves no
  * deadline. The turn's end (`agent_end`) sends what is pending at once and drops the timer.
  * Requests that end while a report is on its way wait for a report of their own. A request the
- * daemon's answer does not name as held is sent again under the same id, no sooner than the bound
- * after that answer; an id names one request for ever (`newId`). A report the daemon refuses (a
- * 4xx) will not pass on a retry and is dropped with a warning, as the turn outcome's is. Nothing
- * of the session waits on any of it: the hooks return at once.
+ * daemon's answer does not name as held goes again under the same id. A failed call waits a
+ * window before the next send. A request older than an hour is dropped with a warning.
+ * A report the daemon refuses (a 4xx) is dropped with a warning, as a turn outcome's is.
+ * Nothing of the session waits on any of it: the hooks return at once.
  *
  * The turn's outcome report (`./turn-outcome`) is a separate route and is unchanged by this one.
  * Claude Code's half is `packages/daemon/internal/claudebridge/modelrequests.go`.
@@ -64,6 +65,9 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
 /** How long after a request's end its report may wait: a quarter of the minute the headroom reads,
  * so a session sends at most four reports a minute (spec, "The model requests"). */
 export const MODEL_REQUEST_REPORT_BOUND_MS = 15_000;
+
+/** Requests older than the daemon's hour of history are not useful on a retry. */
+const MODEL_REQUEST_KEEP_MS = 60 * 60_000;
 
 /** The launch environment's names of the project's two refusal patterns
  * (`runtime.OwnRefusalVariable`, `runtime.ProviderRefusalVariable` in the daemon). */
@@ -74,12 +78,10 @@ const PROVIDER_REFUSAL_VARIABLE = "LEGION_SIGNAL_PROVIDER_REFUSAL";
 const REFUSED_STATUS = 429;
 
 /** The claim a request is reported under: a role's registration, or the controller's. */
-export interface ModelRequestCredential {
-  readonly claimToken: string;
-  readonly sessionID: string;
-  readonly secret: string;
-  readonly generation: number;
-}
+export type ModelRequestCredential = Pick<
+  ClaimCapability,
+  "claimToken" | "sessionID" | "secret" | "generation"
+>;
 
 /** The project's two refusal patterns, each absent where the launch set none. */
 export interface RefusalPatterns {
@@ -199,6 +201,7 @@ interface Pending {
   readonly owner: ModelRequestCredential;
   readonly request: LegionModelRequestBody;
   due: number;
+  retried?: boolean;
 }
 
 /** Whether `message` is an assistant message, the one kind that ends a request. */
@@ -222,12 +225,15 @@ export function createModelRequestsReporter(
   let pending: Pending[] = [];
   let sending: Promise<void> | undefined;
   let cancelTimer: (() => void) | undefined;
-  /** A send fell due while another was on its way: it goes as soon as that one is answered. */
+  let retryAt = 0;
+  /** A send fell due while another was on its way. It goes at once if the daemon answered. */
   let due = false;
 
   const arm = (): void => {
     if (cancelTimer !== undefined || pending.length === 0) return;
-    const at = Math.min(...pending.map((entry) => entry.due));
+    const first = earliestPending();
+    if (first === undefined) return;
+    const at = Math.max(first.due, retryAt);
     cancelTimer = deps.schedule(
       () => {
         cancelTimer = undefined;
@@ -248,17 +254,41 @@ export function createModelRequestsReporter(
     a.secret === b.secret &&
     a.generation === b.generation;
 
+  const earliestPending = (): Pending | undefined => {
+    let first: Pending | undefined;
+    for (const entry of pending) {
+      if (first === undefined || entry.due < first.due) first = entry;
+    }
+    return first;
+  };
+
   const send = (): void => {
     if (sending !== undefined) {
       due = true;
       return;
     }
-    const first = pending[0];
-    if (first === undefined) return;
+    const now = deps.now();
+    if (now < retryAt) {
+      arm();
+      return;
+    }
     disarm();
-    const batch: Pending[] = [];
+    const cutoff = now - MODEL_REQUEST_KEEP_MS;
+    pending = pending.filter(({ owner, request }) => {
+      if (Date.parse(request.endedAt) >= cutoff) return true;
+      deps.log.warn("legion: dropped a model request past the daemon's keep window", {
+        claimToken: owner.claimToken,
+        id: request.id,
+        endedAt: request.endedAt,
+      });
+      return false;
+    });
+    const first = earliestPending();
+    if (first === undefined) return;
+    const batch: Pending[] = [first];
     const rest: Pending[] = [];
     for (const entry of pending) {
+      if (entry === first) continue;
       if (batch.length < LEGION_MAX_MODEL_REQUESTS && sameOwner(entry.owner, first.owner)) {
         batch.push(entry);
       } else {
@@ -266,19 +296,32 @@ export function createModelRequestsReporter(
       }
     }
     pending = rest;
-    sending = post(first.owner, batch).finally(() => {
+    sending = post(first.owner, batch).then((answered) => {
       sending = undefined;
-      if (due || pending.some((entry) => !sameOwner(entry.owner, first.owner))) {
-        due = false;
-        send();
-        return;
+      const wasDue = due;
+      due = false;
+      if (!answered) {
+        retryAt = deps.now() + MODEL_REQUEST_REPORT_BOUND_MS;
+        disarm();
+      } else {
+        const next = earliestPending();
+        if (
+          wasDue ||
+          (next !== undefined && !next.retried && !sameOwner(next.owner, first.owner))
+        ) {
+          send();
+          return;
+        }
       }
       arm();
     });
   };
 
-  const post = async (owner: ModelRequestCredential, batch: readonly Pending[]): Promise<void> => {
-    let kept: ReadonlySet<string> = new Set();
+  const post = async (
+    owner: ModelRequestCredential,
+    batch: readonly Pending[]
+  ): Promise<boolean> => {
+    let kept: ReadonlySet<string> | undefined;
     try {
       const answer = await retryWhileDaemonRestarts("claims/model-requests", () =>
         deps.daemon().modelRequests({
@@ -305,7 +348,7 @@ export function createModelRequestsReporter(
           requests: batch.length,
           error: messageFor(error),
         });
-        return;
+        return true;
       }
       deps.log.warn("legion: a report of model requests did not reach the daemon; it goes again", {
         claimToken: owner.claimToken,
@@ -314,9 +357,13 @@ export function createModelRequestsReporter(
       });
     }
     const again = deps.now() + MODEL_REQUEST_REPORT_BOUND_MS;
-    const unheld = batch.filter((entry) => !kept.has(entry.request.id));
-    for (const entry of unheld) entry.due = again;
+    const unheld = batch.filter((entry) => kept?.has(entry.request.id) !== true);
+    for (const entry of unheld) {
+      entry.due = again;
+      entry.retried = true;
+    }
     pending = [...unheld, ...pending];
+    return kept !== undefined;
   };
 
   return {

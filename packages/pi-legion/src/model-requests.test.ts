@@ -332,6 +332,48 @@ test("retry and next batch", async () => {
   expect(batches()).toHaveLength(sent.length);
 });
 
+test("a failed batch waits before retrying and the earliest deadline goes next", async () => {
+  const { reporter, batches, advance, now } = rig({
+    credential: (session) => (session === ROLE_SESSION ? implementer : controller),
+    answer: (body, attempt) =>
+      attempt <= 2
+        ? new Response("unavailable", { status: 500 })
+        : Response.json({ kept: (body.requests as { id: string }[]).map(({ id }) => id) }),
+  });
+  reporter.messageEnded(role, answered(now() - 1));
+  reporter.messageEnded({ session: CONTROLLER_SESSION, subagent: false }, answered(now() - 2));
+  reporter.turnEnded();
+  await reporter.settled();
+  const sessions = () => batches().map((batch) => batch.sessionId);
+  expect(sessions()).toEqual([CONTROLLER_SESSION]);
+
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS - 1);
+  expect(sessions()).toEqual([CONTROLLER_SESSION]);
+  await advance(1);
+  expect(sessions()).toEqual([CONTROLLER_SESSION, ROLE_SESSION]);
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS);
+  expect(sessions()).toEqual([CONTROLLER_SESSION, ROLE_SESSION, CONTROLLER_SESSION, ROLE_SESSION]);
+});
+
+test("an unanswered request expires without blocking fresh requests", async () => {
+  const { reporter, batches, advance, now, warned } = rig({
+    answer: (body, attempt) =>
+      attempt === 1
+        ? Response.json({ kept: [] })
+        : Response.json({ kept: (body.requests as { id: string }[]).map(({ id }) => id) }),
+  });
+  reporter.messageEnded(role, answered(now() - 60 * 60_000 + 1));
+  reporter.turnEnded();
+  await reporter.settled();
+  reporter.messageEnded(role, answered(now()));
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS);
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS);
+  expect(
+    batches().map((batch) => (batch.requests as { id: string }[]).map(({ id }) => id))
+  ).toEqual([["req-1"], ["req-2"]]);
+  expect(warned).toEqual(["legion: dropped a model request past the daemon's keep window"]);
+});
+
 // Each kind of request the pinned host ends: an answered one, one refused by each limit or by one
 // its text does not name, one whose text both patterns match, one that read the cache, and one on
 // a model the project's limit does not count, which is still reported (the daemon selects).

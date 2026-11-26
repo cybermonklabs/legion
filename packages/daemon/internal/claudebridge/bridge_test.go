@@ -47,6 +47,8 @@ const fakeClaudeGateDeadlineEnv = "FAKE_CLAUDE_GATE_DEADLINE"
 // allows, and a hold of the bridge's on this clock that would pass the ceiling never ends. The
 // bridge has no wall-clock wait of its own to race the clock (TestTheBridgeWaitsOnlyOnItsClock).
 type stopClock struct {
+	// The reporting age check uses wall time when this clock only controls stop timers.
+	wallClock
 	mu      sync.Mutex
 	raised  bool
 	now     time.Duration // the clock's time since raise

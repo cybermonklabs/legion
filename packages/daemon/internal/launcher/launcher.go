@@ -728,18 +728,13 @@ type manager struct {
 	// behind it knows the report: guard settings for a gVisor pod's launcher, KernelKills for a
 	// microVM pod's (serve, openMemoryReports); reportsNoRole is whether it says, beside that, that
 	// the daemon knows a report of a process of no role (NoRoleKills), which makes the connection
-	// one the pod's reports of no role may go on (noRoleReports). memorySending is the sequence of
-	// the oldest report while it is being written, 0 while none is, since a guard counts its kills
-	// from 1 (sendMemoryKills). All five are guarded by mu.
+	// one the pod's reports of no role may go on (noRoleReports). These fields and the queue's
+	// in-flight sequence are guarded by mu, so the carrier and the head are selected together.
 	memoryKills    []shimwire.LauncherMemoryKill
 	reportWriter   *shimwire.Writer
 	reportsCarried bool
 	reportsNoRole  bool
-	memorySending  uint64
-	// memoryWake tells this role's report sender a report is waiting (sendMemoryKillsUntil), and
-	// memorySend holds one send of the waiting reports at a time (sendMemoryKills).
-	memoryWake chan struct{}
-	memorySend sync.Mutex
+	killReportQueue
 	// noRoleReports is the pod's one queue of the reports of processes of no role, which every
 	// role manager of an issue pod's container shares and which sends on the connection of one of
 	// them (serveMemoryGuard). It is nil in the controller pod's single-role form, where every

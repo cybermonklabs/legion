@@ -1,5 +1,5 @@
 {
-  "comment": "The two refusal patterns a project sets (signal_own_refusal_pattern, signal_provider_refusal_pattern) and the class each host gives a refused model request's text under them: own where the own pattern matches, else provider where the provider's does, else unknown. The Oh My Pi plugin compiles each as new RegExp(pattern, \"su\") (packages/pi-legion/src/model-requests.test.ts) and the Claude Code bridge as config.SharedPattern does, regexp.Compile(\"(?s)\" + pattern) (packages/daemon/internal/claudebridge/modelrequests_test.go); both read this file, so the two hosts class one text alike.",
+  "comment": "The two refusal patterns a project sets (signal_own_refusal_pattern, signal_provider_refusal_pattern) and the class each host gives a refused model request's text under them: own where the own pattern matches, else provider where the provider's does, else unknown. The Oh My Pi plugin compiles each as new RegExp(pattern, \"su\") (packages/pi-legion/src/model-requests.ts) and the Claude Code bridge as config.SharedPattern does, regexp.Compile(\"(?s)\" + pattern). The tests for both hosts read this file, so the two hosts class one text alike.",
   "patterns": {
     "own": "project tokens per minute|per-project limit",
     "provider": "upstream.*(rate limit|overloaded)"
