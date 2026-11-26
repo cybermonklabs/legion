@@ -5,8 +5,9 @@
  * A thread that needs no document is drawn whole under its subject line (`ThreadBodyPane`); a
  * thread whose document the column can open is drawn in that document, at the block it belongs
  * to (`ThreadDocumentBody`) - the anchored comment thread below its block, a decision block's
- * ask in the block itself. A document that cannot be opened, and an anchor that cannot be
- * placed, fall back to the thread alone with the text it is anchored to.
+ * ask in the block itself. A document that cannot be opened, an anchor that cannot be placed and
+ * a decision block the document no longer holds fall back to the thread alone with the text it
+ * is anchored to.
  */
 
 import { inboxThreadRow } from "@legion/contracts";
@@ -95,9 +96,11 @@ function ThreadBodyPane(pane: ThreadBodyProps): ReactNode {
  * view's own slot (`anchoredThread`); a decision block's ask needs none, because the block
  * draws the question, its answer and its thread itself (`AskBlockCard`).
  *
- * It falls back to the thread alone, with its quote, when the document cannot be opened - and,
- * for a thread the column must place itself, when the document holds no such block: an orphaned
- * anchor, or one naming a block that has gone, leaves the thread nowhere to be drawn.
+ * It falls back to the thread alone, with its quote, when the document cannot be opened, and
+ * when the document holds no such block: an orphaned anchor, or one naming a block that has
+ * gone, leaves the thread nowhere to be drawn, and a decision block that has gone takes the
+ * question's card with it, so the thread is drawn with the question's own card
+ * (`AskThreadBody`).
  */
 function ThreadDocumentBody({
   anchoredThread,

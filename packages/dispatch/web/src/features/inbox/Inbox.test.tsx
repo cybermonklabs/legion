@@ -13,7 +13,11 @@ import {
   holdNotifications,
   recordCommits,
 } from "../../__tests__/commits";
-import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import {
+  type FakeDocumentRuntime,
+  type FakeEditor,
+  fakeDocumentRuntime,
+} from "../../__tests__/document-runtime";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
@@ -9231,17 +9235,12 @@ test("r on the thread of a decision block presses its Write a reply and puts the
 
 // R18 below the column's width, in a decision document that holds another question still open:
 // that question's card draws no reply box and says so, and the mark names its own thread. So `r`
-// on the answered question's thread waits for that thread's own "Write a reply", even where the
-// open question's card is drawn first - the document draws both blocks, and the answered one's
-// card waits on the read of the issue's asks - and puts the caret in the box it opens, never at
-// the view's scroller as though this thread had no box.
-test("below the column's width r on a decision block's thread lands in its own reply box, past another open question's card drawn first", async () => {
+// on the answered question's thread lands on that thread's own "Write a reply", with the open
+// question's mark beside it, and puts the caret in the box it opens, never at the view's
+// scroller as though this thread had no box.
+test("below the column's width r on a decision block's thread lands in its own reply box beside another open question's card", async () => {
   const user = userEvent.setup();
-  const done: InboxRow = {
-    ...decisionRow("ask-done", "block-a", "Ship behind a flag?"),
-    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
-    state: "answered",
-  };
+  const done = answeredDecision();
   const open: InboxRow = {
     ...decisionRow("ask-open", "block-b", "Rename the flag?"),
     asked_of: "bob",
@@ -9249,8 +9248,6 @@ test("below the column's width r on a decision block's thread lands in its own r
   const fake = fakeDocumentRuntime({ text: "The live document" });
   const threadRow = (ask: InboxRow) =>
     replyRow(ask.id, { kind: "ask", ref: `/issues/CORE-1/asks/${ask.id}`, subject: ask.question });
-  const indexed = (asks: readonly InboxRow[]) => asks.map((ask) => ({ ...ask, last_reply: null }));
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(indexed([open]));
   const spies = [
     spyOn(api, "getInbox").mockResolvedValue([]),
     mockAskReads([done, open]),
@@ -9258,7 +9255,9 @@ test("below the column's width r on a decision block's thread lands in its own r
     spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT),
     spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
-    listIssueAsks,
+    spyOn(api, "listIssueAsks").mockResolvedValue(
+      [done, open].map((ask) => ({ ...ask, last_reply: null }))
+    ),
     spyOn(api, "listMyReplies").mockResolvedValue({
       as_of: "2026-10-12T00:00:00Z",
       limit: 200,
@@ -9267,7 +9266,7 @@ test("below the column's width r on a decision block's thread lands in its own r
       total: 2,
     }),
   ];
-  const { queryClient, unmount } = renderInbox("/", { runtime: fake.runtime });
+  const { unmount } = renderInbox("/", { runtime: fake.runtime });
 
   try {
     const row = await waitFor(() => shortRow("reply:ask-done"));
@@ -9285,20 +9284,11 @@ test("below the column's width r on a decision block's thread lands in its own r
     >;
     const construct = nodeViews.ask;
     if (construct === undefined) throw new Error("the ask node view was not installed");
-    act(() => {
+    await act(async () => {
       editor.root.append(construct(askBlockNode("block-a", done.question)).dom);
       editor.root.append(construct(askBlockNode("block-b", open.question)).dom);
     });
-    // The open question's card first: it draws no box, and the view lands nowhere yet.
     await within(view).findByTestId("ask-ask-open");
-    await afterFrameAndTasks();
-    expect(screen.getByTestId("inbox-pane-scroller")).not.toHaveFocus();
-
-    // The read of the issue's asks that holds the answered question too.
-    listIssueAsks.mockResolvedValue(indexed([done, open]));
-    await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ["asks", "CORE-1"] });
-    });
     const opener = await within(view).findByRole("button", { name: "Write a reply" });
     await waitFor(() => expect(opener).toHaveAttribute("aria-expanded", "true"));
     const box = document.getElementById(opener.getAttribute("aria-controls") ?? "");
@@ -9309,61 +9299,195 @@ test("below the column's width r on a decision block's thread lands in its own r
   }
 });
 
-// R18 below the column's width on the thread of a decision block its document no longer holds:
-// the block draws the question's card and its "Write a reply", so with the block gone the thread
-// has no box in the view. Once the document has drawn without the block, `r` lands at the view's
-// scroller, where any pick lands, rather than leaving the reader on the page's body.
-test("below the column's width r on a decision block's thread whose block the document no longer holds opens its reading view at its scroller", async () => {
-  const user = userEvent.setup();
-  const gone: InboxRow = {
-    ...decisionRow("ask-gone", "block-gone", "Ship behind a flag?"),
+/** The answered question the rows below read the thread of: a decision block of `SPEC_DOCUMENT`
+ *  whose thread takes a reply. */
+function answeredDecision(): InboxRow {
+  return {
+    ...decisionRow("ask-done", "block-a", "Ship behind a flag?"),
     answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
     state: "answered",
   };
-  const fake = fakeDocumentRuntime({ text: "The live document" });
+}
+
+/** The reads of an Inbox that lists the thread of `ask`, a decision block of `SPEC_DOCUMENT`,
+ *  alone: its issue `closed` or open, and the issue's asks read holding `indexed`, which is the
+ *  question itself unless a row says otherwise. Returns what puts them back. */
+function decisionThreadReads(
+  ask: InboxRow,
+  { closed = false, indexed = [ask] }: { closed?: boolean; indexed?: readonly InboxRow[] } = {}
+): () => void {
   const spies = [
     spyOn(api, "getInbox").mockResolvedValue([]),
-    mockAskReads([gone]),
-    mockIssueReads(),
+    mockAskReads([ask]),
+    spyOn(api, "getIssue").mockResolvedValue({
+      closed_at: closed ? "2026-09-12T00:00:00Z" : null,
+    } as unknown as IssueDetails),
     spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT),
     spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([{ ...gone, last_reply: null }]),
+    spyOn(api, "listIssueAsks").mockResolvedValue(
+      indexed.map((row) => ({ ...row, last_reply: null }))
+    ),
     spyOn(api, "listMyReplies").mockResolvedValue({
       as_of: "2026-10-12T00:00:00Z",
       limit: 200,
       offset: 0,
       rows: [
-        replyRow("ask-gone", {
+        replyRow(ask.id, {
           kind: "ask",
-          ref: "/issues/CORE-1/asks/ask-gone",
-          subject: gone.question,
+          ref: `/issues/CORE-1/asks/${ask.id}`,
+          subject: ask.question,
         }),
       ],
       total: 1,
     }),
   ];
-  const { unmount } = renderInbox("/", { runtime: fake.runtime });
+  return () => {
+    for (const spy of spies) spy.mockRestore();
+  };
+}
 
+/** Syncs the document the column or the view opened and draws one decision block in it. The
+ *  draw is awaited inside `act`: the pane reads the drawn blocks from a `MutationObserver`,
+ *  whose callback runs after a synchronous `act` has returned, and sets state from them. */
+async function drawDocumentWith(
+  fake: FakeDocumentRuntime,
+  blockId: string,
+  question: string
+): Promise<void> {
+  await waitFor(() => expect(fake.connections).toHaveLength(1));
+  act(() => fake.sync());
+  await waitFor(() => expect(fake.editors).toHaveLength(1));
+  const editor = fake.editors[0];
+  if (editor === undefined) throw new Error("the column mounted no editor");
+  const nodeViews = editor.viewProps.nodeViews as Record<
+    string,
+    (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+  >;
+  const construct = nodeViews.ask;
+  if (construct === undefined) throw new Error("the ask node view was not installed");
+  await act(async () => {
+    editor.root.append(construct(askBlockNode(blockId, question)).dom);
+  });
+}
+
+// A decision block's question the document no longer holds: the block drew its card, so the
+// pane falls back to the question's own card, as it does where the document cannot be opened,
+// and as a thread whose anchor it cannot place falls back to the thread alone. The reader reads
+// and answers it there, beside the list and in the reading view alike.
+for (const [place, width] of [
+  ["beside the list", 1440],
+  ["below the column's width", undefined],
+] as const) {
+  test(`${place} the pane of a decision block's thread whose block the document no longer holds draws the question's card, its thread and its reply box`, async () => {
+    const user = userEvent.setup();
+    const narrow = width === undefined ? () => {} : widenToReadingPane();
+    const restore = decisionThreadReads(answeredDecision());
+    const fake = fakeDocumentRuntime({ text: "The live document" });
+    const { unmount } = renderInbox(width === undefined ? "/" : "/?item=reply%3Aask-done", {
+      runtime: fake.runtime,
+    });
+    try {
+      if (width === undefined) {
+        const row = await waitFor(() => shortRow("reply:ask-done"));
+        act(() => row.focus());
+        await user.keyboard("{Enter}");
+        await screen.findByTestId("inbox-reading-view");
+      }
+      // The document draws another block, and not the question's. The pane is the document's
+      // own frame from here, so it is read once the document has drawn.
+      await drawDocumentWith(fake, "block-other", "Rename the flag?");
+      const thread = await within(screen.getByTestId("inbox-pane")).findByTestId(
+        "inbox-thread-ask"
+      );
+      await within(thread).findByText("Ship it.");
+      expect(thread.querySelector("[data-reply-box]")).not.toBeNull();
+    } finally {
+      unmount();
+      narrow();
+      restore();
+    }
+  });
+
+  test(`${place} the pane of a decision question whose block the document no longer holds draws the question's card`, async () => {
+    const user = userEvent.setup();
+    const narrow = width === undefined ? () => {} : widenToReadingPane();
+    const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+    const fake = fakeDocumentRuntime({ text: "The live document" });
+    const reads = mockDocumentColumnReads([ask]);
+    const { unmount } = renderInbox(width === undefined ? "/" : "/?item=ask-a", {
+      runtime: fake.runtime,
+    });
+    try {
+      if (width === undefined) {
+        const row = await waitFor(() => shortRow("ask-a"));
+        act(() => row.focus());
+        await user.keyboard("{Enter}");
+        await screen.findByTestId("inbox-reading-view");
+      }
+      await drawDocumentWith(fake, "block-other", "Rename the flag?");
+      const card = await within(screen.getByTestId("inbox-pane")).findByTestId("ask-ask-a");
+      expect(card.querySelector("[data-ask-answer]")).not.toBeNull();
+    } finally {
+      unmount();
+      narrow();
+      reads.restore();
+    }
+  });
+}
+
+// R18 below the column's width on the thread of a decision block its document no longer holds:
+// the pane draws the question's own card in place of the document (the rows above), and `r`
+// puts the caret in that card's reply box, as on any thread that takes a reply.
+test("below the column's width r on a decision block's thread whose block the document no longer holds puts the caret in the reply box of the question's card", async () => {
+  const user = userEvent.setup();
+  const restore = decisionThreadReads(answeredDecision());
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const { unmount } = renderInbox("/", { runtime: fake.runtime });
   try {
-    const row = await waitFor(() => shortRow("reply:ask-gone"));
+    const row = await waitFor(() => shortRow("reply:ask-done"));
     act(() => row.focus());
     await user.keyboard("r");
     const view = await screen.findByTestId("inbox-reading-view");
-    await waitFor(() => expect(fake.connections).toHaveLength(1));
-    act(() => fake.sync());
-    await waitFor(() => expect(fake.editors).toHaveLength(1));
-    const editor = fake.editors[0];
-    if (editor === undefined) throw new Error("the view mounted no editor");
-    // The document draws another block, and not the question's.
-    drawAskBlock(editor, "block-other", "Rename the flag?");
-    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
-    expect(view.querySelector("[data-reply-box], [data-reply-opener]")).toBeNull();
+    await drawDocumentWith(fake, "block-other", "Rename the flag?");
+    await waitFor(() =>
+      expect(view.querySelector('[data-inbox-thread-body="ask"] [data-reply-box]')).toHaveFocus()
+    );
   } finally {
     unmount();
-    for (const spy of spies) spy.mockRestore();
+    restore();
   }
 });
+
+// R18 below the column's width on the thread of a decision block that draws no card of the
+// question: on a closed issue the document is read-only and its blocks read their own record,
+// and where the issue's asks read, once answered, holds no ask for the block, the block reads
+// its own record too. Either way the thread has no reply box in the view, and `r` lands at the
+// view's scroller, where any pick lands, rather than leaving the reader on the page's body.
+for (const [what, options] of [
+  ["on a closed issue", { closed: true }],
+  ["the issue's asks read does not hold", { indexed: [] }],
+] as const) {
+  test(`below the column's width r on the thread of a decision block ${what} opens its reading view at its scroller`, async () => {
+    const user = userEvent.setup();
+    const ask = answeredDecision();
+    const restore = decisionThreadReads(ask, options);
+    const fake = fakeDocumentRuntime({ text: "The live document" });
+    const { unmount } = renderInbox("/", { runtime: fake.runtime });
+    try {
+      const row = await waitFor(() => shortRow("reply:ask-done"));
+      act(() => row.focus());
+      await user.keyboard("r");
+      const view = await screen.findByTestId("inbox-reading-view");
+      await drawDocumentWith(fake, "block-a", ask.question);
+      await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+      expect(view.querySelector("[data-reply-box], [data-reply-opener]")).toBeNull();
+    } finally {
+      unmount();
+      restore();
+    }
+  });
+}
 
 // The same refusal, pressed on the card the reading column draws for a question written as a
 // decision block. That card is the document page's own (`ReadingPane` -> `DocumentPane`, in

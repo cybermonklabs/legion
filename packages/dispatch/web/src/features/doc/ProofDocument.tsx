@@ -1391,6 +1391,7 @@ export function ProofDocument({
           return (
             <AskBlockCard
               ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
+              asksRead={!asksQuery.isPending}
               host={host}
               inBody={false}
               key={host.key}

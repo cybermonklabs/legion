@@ -350,7 +350,8 @@ function ApprovalBody({
 
 /** A question written as a decision block: the live document, drawn by the document page's own
  *  component in its pane surface, scrolled so that the heading of the question's section sits
- *  at the top of the column, with a bar marking the section down to the block. */
+ *  at the top of the column, with a bar marking the section down to the block. A document that
+ *  cannot be opened, or no longer holds the block, falls back to the question's own card. */
 function DecisionBody({
   artifactId,
   ask,
@@ -391,9 +392,9 @@ function DecisionBody({
  * A question is one of three flows, each with only its own reads and its own effects under the
  * one head: a question written as a decision block (`DecisionBody`), an approval request
  * (`ApprovalBody`), and a question in no document (`CardBody`), which is what a question whose
- * document could not be opened falls back to as well — the column never shows the document
- * page's rebuild or repair prompts. A Reply or an Agent row is one of four thread bodies
- * (`ThreadPane.tsx`), which fall back the same way.
+ * document could not be opened, or no longer holds its block, falls back to as well — the
+ * column never shows the document page's rebuild or repair prompts. A Reply or an Agent row is
+ * one of four thread bodies (`ThreadPane.tsx`), which fall back the same way.
  *
  * Each flow keys its head by the ask, so the next question selected is drawn under a head of its
  * own. The head holds no write: the Inbox holds each snooze and each Assign to me, by ask, and

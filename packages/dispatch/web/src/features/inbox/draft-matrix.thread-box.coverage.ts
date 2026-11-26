@@ -153,7 +153,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[10],
   }),
   ...answers(
-    "DocumentPane | ThreadBody | early return | if (failed || (anchoredThread !== undefined && blockFound === false)) return …",
+    "DocumentPane | ThreadBody | early return | if (failed || blockFound === false) return …",
     { reason: REASONS[10] }
   ),
   ...answers("DocumentPane | ThreadBody | conditional | !(paneBody === undefined) ? …", {
@@ -183,7 +183,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "DocumentPane | ThreadBodyContent | conditional | if (failed || (anchoredThread !== undefined && blockFound === false))",
+    "DocumentPane | ThreadBodyContent | conditional | if (failed || blockFound === false)",
     { reason: REASONS[10] }
   ),
   ...answers("ThreadDocumentBody | ThreadBodyContent | address prop | thread={thread}", {

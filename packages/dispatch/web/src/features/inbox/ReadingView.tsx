@@ -28,10 +28,11 @@ export const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expande
  *  not hold or whose conversation the session's read does not hold; any thread whose read
  *  failed, and one that draws nothing at all. So does an ask's card while the question is still
  *  open, which takes no reply (`AskCard`, by `takesReply`), a decision block's replies whose read
- *  failed (`AskThreadDisclosure`), and a decision block's thread whose document is drawn without
- *  the block (`PaneDocument.tsx`'s `DocumentPane`). Below 1280 px `r` lands at the reading view's
- *  scroller there rather than waiting for a box (`landingIn`); a thread whose reads are still out
- *  carries neither the box nor the mark. */
+ *  failed (`AskThreadDisclosure`), a decision block that draws no card of its question on a
+ *  read-only document or a malformed block (`AskBlockCard`), and the pane of a decision block
+ *  whose question the document's asks read does not hold (`PaneDocument.tsx`'s `DocumentPane`).
+ *  Below 1280 px `r` lands at the reading view's scroller there rather than waiting for a box
+ *  (`landingIn`); a thread whose reads are still out carries neither the box nor the mark. */
 const NO_REPLY_BOX_ATTRIBUTE = "data-inbox-no-reply-box";
 
 /** The mark (`NO_REPLY_BOX_ATTRIBUTE`) of the thread `threadId`. */
@@ -209,8 +210,9 @@ export function useReadingViewLanding({
     const observer = new MutationObserver(() => {
       if (land()) observer.disconnect();
     });
-    // A part already drawn can come to say it draws no box - a document found without the
-    // block, an Agent thread once the live list answers - by the mark alone, which adds no node.
+    // A part already drawn can come to say it draws no box - a document pane whose block's asks
+    // read answered without the question, an Agent thread once the live list answers - by the
+    // mark alone, which adds no node.
     observer.observe(view, {
       attributeFilter: [NO_REPLY_BOX_ATTRIBUTE],
       childList: true,
