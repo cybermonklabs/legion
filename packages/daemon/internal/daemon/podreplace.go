@@ -394,11 +394,11 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 // it ends the round of each round's record of the issue that the finish took with it (took,
 // store.PodReplacementFinish.Took), as the act that took its pod (endTakenRound), so one rule says
 // which taken records end a round (the Legion reviewer's finding on podreplace.go:351 on #5285 at
-// 18d81dad). Only a launch's finish takes a round's record: a round is named by its pod
-// (supervise.PodRound), and a round's record takes that pod alone (runtime.PodAct), so the finish
-// of a round's record takes no record of another round. The group is the issue's claims as their
-// machines hold them now, unmasked (machinesGroup), which no failed read of the store can keep from
-// it. A record this daemon cannot read ends nothing.
+// 18d81dad). No finish of a round's record takes the record of another round: a round is named by
+// its pod (supervise.PodRound), and a round's record takes that pod alone (runtime.PodAct), so such
+// a finish takes only records of its own round and launch records, and ends no other round. The
+// group is the issue's claims as their machines hold them now, unmasked (machinesGroup), which no
+// failed read of the store can keep from it. A record this daemon cannot read ends nothing.
 func (s *supervision) endTakenRounds(ctx context.Context, issue string, took []store.PodReplacement) {
 	var group []supervise.Claim
 	read := false
