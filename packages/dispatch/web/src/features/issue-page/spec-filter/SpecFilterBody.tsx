@@ -1324,6 +1324,9 @@ function DecisionCell({
       data-said={decision?.said}
       data-spec-cell=""
       data-spec-statements={statements.map((statement) => statement.node.id).join(" ")}
+      // The canonical tree id of the decision whose sheet this cell mounts (`sheetNode`), where
+      // `data-node-id` holds a `dispatch://` address because no outline read ran below 1024 px.
+      data-text-node={sheetNode}
       // An item of the outline, as the statements beside it are: it is where the focus goes
       // from a statement (R5's `w`), and the prototype's own cell takes the focus the same way.
       // A person's whole answer and "Author unknown" are drawn only while the cell itself has

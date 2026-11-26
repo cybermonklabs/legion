@@ -1836,8 +1836,11 @@ type WordsBox = NonNullable<SpotReading["words"]>;
  * Brings the element `shown` locates to the middle of the window, waits out the frames the page
  * lays the scrolled page out in (`framesPass`), and answers what `measure` reads then, once every
  * match it reads stands inside the window (`page.viewportSize()`): a pointer presses nothing past
- * the window's edge, and a press there makes no selection. The scroll is made again on each try,
- * where the page moved it after the last one.
+ * the window's edge, and a press there makes no selection. Where `shown` is taller than the
+ * window - a row below 1024 px draws its node's threads in its sheet, under its words (R3) - its
+ * middle can leave the matches above the window's top, so the window then moves on to the middle
+ * of the matches themselves. The scroll is made again on each try, where the page moved it after
+ * the last one.
  */
 async function inWindow(
   page: Page,
@@ -1858,6 +1861,15 @@ async function inWindow(
       async () => {
         await shown.evaluate((element) =>
           element.scrollIntoView({ behavior: "instant", block: "center" })
+        );
+        await framesPass(page);
+        measured = await measure();
+        if (measured.every(inside) || measured.length === 0) return measured.every(inside);
+        const top = Math.min(...measured.map((words) => words.first.top));
+        const bottom = Math.max(...measured.map((words) => words.last.bottom));
+        await page.evaluate(
+          (by) => window.scrollBy({ behavior: "instant", top: by }),
+          (top + bottom - size.height) / 2
         );
         await framesPass(page);
         measured = await measure();
@@ -2295,6 +2307,9 @@ async function readNoControl(
     composerBox(page),
     "$mod+Alt+m on a selection across two rows opens no composer"
   ).toHaveCount(0);
+  // The risk's row stands between the lens's and the finding's, so its words are inside the
+  // selection across them, and a press inside a selection drags it rather than selecting anew.
+  await page.evaluate(() => document.getSelection()?.removeAllRanges());
 
   await takes(risk, "slow", "the risk's heading");
   // The risk's early warning line: "The warning comes before the reader asks."
@@ -3259,7 +3274,7 @@ test("a thread on words a view's cut hides stands beside its own statement", asy
   if (!onBase("a thread on words a view's cut hides stands beside its own statement", "COMPOSER")) {
     return;
   }
-  await phase(browser, seedMarginIssue, async (page, seeded) => {
+  await phase(browser, seedNoThreads, async (page, seeded) => {
     const sentence = (index: number) =>
       `Sentence ${index} of the long statement keeps the reader on the same page for a while.`;
     const words = [
@@ -3400,5 +3415,77 @@ test("a press on a control of a thread the stack pushed down acts", async ({ bro
       card.getByRole("button", { exact: true, name: "Reopen" }),
       "the thread a press resolved draws Reopen"
     ).toBeVisible();
+  });
+});
+
+// c-write, R5 and part J (G6): below 1024 px the Spec view reads no outline, so an agent decision
+// cell's `data-node-id` holds its `dispatch://` address while its sheet mounts under its canonical
+// tree id (`data-text-node`). Selecting stored words in that cell opens the composer in that
+// cell's sheet and routes its send to the decision's block.
+test("below 1024 px in Spec a selection in an agent decision cell opens its sheet composer", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  if (
+    !onBase(
+      "below 1024 px in Spec a selection in an agent decision cell opens its sheet composer",
+      "COMPOSER",
+      "PART_J"
+    )
+  ) {
+    return;
+  }
+  await phase(browser, seedMarginIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: 800, width: 1000 });
+    const traffic = watchApiRequests(page);
+    await openView(page, traffic, seeded.key, "spec");
+    const canonical = blockNode(seeded.specSlug, seeded.agentDecision);
+    const cell = page
+      .getByTestId("issue-column")
+      .locator(`[data-spec-cell][data-text-node="${canonical}"]`);
+    await expect(cell, "the Spec view draws the agent decision's cell").toHaveCount(1);
+    await expect(
+      cell,
+      "below 1024 px the decision cell keeps its dispatch:// data-node-id"
+    ).toHaveAttribute(
+      "data-node-id",
+      `dispatch://${seeded.key}/${seeded.specSlug}#b-${seeded.agentDecision}`
+    );
+    const words = cell.locator("[data-node-words]");
+    const [target] = await inWindow(
+      page,
+      cell,
+      async () => [await lineWords(words, "narrow spacing")],
+      'match 0 of "narrow spacing" in the agent decision cell'
+    );
+    if (target === undefined) throw new Error("the agent decision cell draws no narrow spacing");
+    await dragAcross(page, target, target);
+    const control = commentControl(page);
+    await expect(
+      control,
+      "Comment stands beside a selection in the agent decision cell below 1024 px"
+    ).toBeVisible();
+    await control.click();
+    const sheetComposer = cell.locator("[data-text-threads] [data-text-composer]");
+    await expect(
+      sheetComposer,
+      "pressing Comment opens the composer inside the agent decision cell's sheet"
+    ).toBeVisible();
+    const field = sheetComposer.getByRole("textbox").first();
+    await expect(field, "the decision sheet's composer has the focus").toBeFocused();
+    await field.fill("A note on the agent decision below 1024 px.");
+    const written = page.waitForResponse(commentWrite);
+    await field.press("ControlOrMeta+Enter");
+    const response = await written;
+    expect(response.status(), "the decision sheet composer's send succeeds").toBe(201);
+    const body: unknown = response.request().postDataJSON();
+    expect(
+      typeof body === "object" && body !== null && "anchor" in body ? body.anchor : undefined,
+      "the decision sheet composer anchors to the agent decision's block"
+    ).toMatchObject({
+      artifact: seeded.specArtifactId,
+      block_id: seeded.agentDecision,
+      quote: "narrow spacing",
+    });
   });
 });

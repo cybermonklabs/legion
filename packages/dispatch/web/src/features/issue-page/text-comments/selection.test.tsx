@@ -5,7 +5,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import { ApiError, api } from "../../../api/client";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
+import { SPEC_DOCUMENT, specRef } from "../decisions-filter/decisions-fixtures";
 import { readComment } from "../outline-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { GATES } from "./gates";
@@ -13,9 +13,12 @@ import {
   answerSeededReads,
   clearSelection,
   columnOf,
+  DECISION,
   type DrawnPage,
   drawFrame,
+  drawPage,
   newClient,
+  ON_DECISION,
   ON_STATEMENT,
   OTHER,
   OTHER_WORDS,
@@ -30,6 +33,7 @@ import {
   selectWords,
   setSelection,
 } from "./margin-fixtures";
+import { TEXT_THREADS_ATTRIBUTE } from "./NodeThreads";
 import { SelectionComment } from "./SelectionComment";
 import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 
@@ -741,3 +745,65 @@ test("composer open, the node's row is folded or paged away: the composer stays 
     client.clear();
   }
 });
+
+// R5 and part J (G6): below 1024 px the Spec view reads no outline, so an agent decision cell's
+// `data-node-id` holds its `dispatch://` reference while its sheet mounts under its canonical
+// tree id (`data-text-node`). Selecting stored words in that cell opens the composer in that
+// cell's sheet and routes its send to the decision's block, while `data-node-id` stays unchanged.
+test.skipIf(!GATES.PART_J)(
+  "below 1024 px in Spec, selecting stored words in an agent decision cell opens the composer in its sheet and routes to its block",
+  async () => {
+    const user = userEvent.setup();
+    const pending = Promise.withResolvers<never>();
+    stubs = answerSeededReads({ threads: [] });
+    const create = spyOn(api, "createComment").mockReturnValue(pending.promise);
+    stubs.push(create);
+    const client = newClient();
+    const view = drawPage(client, "spec", { width: 1000 });
+    try {
+      const cell = await waitFor(
+        () => {
+          const found = view.container.querySelector<HTMLElement>(
+            "[data-spec-cell][data-decision-id]"
+          );
+          expect(found, "the Spec view draws no decision cell").not.toBeNull();
+          return found as HTMLElement;
+        },
+        { timeout: 4000 }
+      );
+      // No outline read ran below 1024 px, so `data-node-id` keeps the `dispatch://` address while
+      // `data-text-node` carries the canonical tree id the cell's sheet mounts under.
+      expect(cell.dataset.nodeId, "the cell's data-node-id changed").toBe(specRef(DECISION));
+      expect(cell.dataset.textNode, "the cell carries not its sheet's canonical tree id").toBe(
+        ON_DECISION.node
+      );
+      rangeEndsAt(rectOf(100, 200, 80, 20));
+      selectWords(cell, "decision d1");
+      await user.click(
+        await controlDrawn(view, "a selection in the decision cell's stored words draws no control")
+      );
+      const composer = await waitFor(() => {
+        const open = cell.querySelector<HTMLElement>(
+          `[${TEXT_THREADS_ATTRIBUTE}] [${TEXT_COMPOSER_ATTRIBUTE}]`
+        );
+        expect(open, "the decision cell's sheet holds no composer").not.toBeNull();
+        return open as HTMLElement;
+      });
+      await send(composer, user, "Check this decision.");
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+      expect(create.mock.calls[0]?.[1], "the send's anchor").toMatchObject({
+        anchor: {
+          artifact: SPEC_DOCUMENT.id,
+          block_id: DECISION,
+          occurrence: 0,
+          quote: "decision d1",
+        },
+        body: "Check this decision.",
+      });
+    } finally {
+      await act(async () => clearSelection());
+      view.finish();
+      client.clear();
+    }
+  }
+);

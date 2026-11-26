@@ -186,6 +186,10 @@ describe("every row site draws its node's threads in the sheet below 1024 px", (
           expect(drawn, `${site.name} draws no [data-text-threads] in its row`).not.toBeNull();
           return drawn as HTMLElement;
         });
+        expect(
+          row.dataset.textNode ?? row.dataset.nodeId,
+          `${site.name} carries not its sheet's canonical tree id`
+        ).toBe(site.thread.node);
         const after = [ownWordsOf(row)[0], site.facts ? row.querySelector(site.facts) : null];
         for (const before of after) {
           if (before === null || before === undefined) continue;

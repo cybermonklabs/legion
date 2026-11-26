@@ -47,7 +47,9 @@ interface Selected {
   readonly words: SelectedWords;
 }
 
-/** The mark every row carries, which names its node by its tree id. */
+/** The mark every row carries, which names its node; a row whose `data-node-id` is not its
+ *  sheet's canonical tree id (`SpecFilterBody.tsx`'s decision cell below 1024 px) carries that id
+ *  on `data-text-node`. */
 const ROW = "[data-node-id]";
 
 /** What a row draws a text block of its node's words as: a paragraph, a heading, a code block, a
@@ -91,7 +93,7 @@ function selectedIn(
   const range = selection.getRangeAt(0);
   const start = range.startContainer;
   const row = (start instanceof Element ? start : start.parentElement)?.closest<HTMLElement>(ROW);
-  const nodeId = row?.dataset.nodeId;
+  const nodeId = row?.dataset.textNode ?? row?.dataset.nodeId;
   const node = nodeId === undefined ? undefined : view.nodes.get(nodeId);
   if (row === null || row === undefined || nodeId === undefined || node === undefined) return null;
   if (!placed(nodeId) || writeFor(subjectOf(node, issue.key)) === null) return null;
