@@ -429,7 +429,8 @@ function step(
  * red for what failed and the decision violet for what waits for review, each with its word, so
  * the colour repeats what the word says). The count is the author's number and carries
  * `data-preset-count`, which the checks read it by; it carries "+" while the read it is read
- * from holds nodes no page read yet holds (`PresetSignal.more`, R15).
+ * from holds nodes no page read yet holds (`PresetSignal.more`, R15), and the flag's number
+ * carries it the same way where the flag says so (`PresetSignal.flag.more`).
  */
 function Signal({
   id,
@@ -455,7 +456,11 @@ function Signal({
           {...pageChrome}
         >
           {" · "}
-          <span {...authorText}>{flag.count}</span> {FILTER_SIGNAL_WORDS[flag.word]}
+          <span {...authorText}>
+            {flag.count}
+            {flag.more === true ? "+" : ""}
+          </span>{" "}
+          {FILTER_SIGNAL_WORDS[flag.word]}
         </span>
       )}
     </span>

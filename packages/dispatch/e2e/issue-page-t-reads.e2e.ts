@@ -1,9 +1,8 @@
 /** the rows count the tree and view reads the page sends the server and draw each filter from
  *  the view it answers */
 
-import type { IssueTreeRead } from "../web/src/api/types";
 import { coverageNotes, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
-import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { createIssueArtifact, getIssue, getIssueCoverage } from "./api";
 import { seedNoChildren, seedWholeIssue } from "./issue-layout-seed";
 import { closeDetails, gotoIssue, issuePage, openDetails, phase, presetCount } from "./issue-page";
@@ -23,6 +22,7 @@ import {
   pressFilter,
   ROW_MS,
   releaseFilter,
+  restatingSections,
   unexplainedDifferences,
   VIEW_FILTERS,
   VIEW_SEEDS,
@@ -367,34 +367,6 @@ test("each filter draws its view read's rows, and each decision that shaped a st
     });
   }
 });
-
-/**
- * The nodes of view read `answer` that restate a person's answer, by the read ids the row
- * counts by and the ids it draws them by (`treeIdOf`), read from the facts the seed wrote and the
- * read answers on each: a `decision` block whose `from_ask` (`decision.asks`) names an ask the
- * asks read holds as answered, with no `shaped` tie of its own (`decision.links`), which is how a
- * seed writes the old decisions document's section that restates an answer (part U's spec R5).
- * Part U draws no row for such a node and counts it nowhere (INFRA-1196's decisions 513 and 521).
- */
-function restatingSections(
-  answer: IssueTreeRead,
-  reads: TreeIdReads
-): { readonly drawn: ReadonlySet<string>; readonly read: ReadonlySet<string> } {
-  const answered = new Set(
-    (reads.asks ?? []).flatMap((ask) => (ask.state === "answered" ? [ask.id] : []))
-  );
-  const idOf = treeIdOf(answer, reads);
-  const read = new Set(
-    (answer.nodes ?? []).flatMap((node) =>
-      node.supertag === "decision" &&
-      (node.decision?.links ?? []).length === 0 &&
-      (node.decision?.asks ?? []).some((ask) => answered.has(ask))
-        ? [node.id]
-        : []
-    )
-  );
-  return { drawn: new Set([...read].map(idOf)), read };
-}
 
 // c-views for Decisions, owed until the server serves the tree read's Decisions view
 // (`decisionsViewServedGate`, read before Decisions is pressed): the Decisions filter draws its

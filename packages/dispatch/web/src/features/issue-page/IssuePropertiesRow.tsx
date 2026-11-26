@@ -36,7 +36,7 @@ import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { coverageStatements } from "./tree-drafts";
-import { useTreeRead } from "./tree-read/tree-read";
+import { treeRead, useTreeRead, viewQuery } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
@@ -90,17 +90,21 @@ export function IssuePropertiesRow({
   // observer, so each read here takes that rule too, and the count costs no request of its own
   // (`waiting.ts`). A statement is one by the rule the outline's review list reads
   // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
+  // The decisions are the decisions view read's wherever the page holds it, which holds each of
+  // them however many pages of the tree read the page holds, watched under the key the page
+  // reads it by and never sent (`treeRead`), so the count sends no view read of its own.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
+  const decisions = useQuery(treeRead(viewQuery(issue.key, "decisions"))).data;
   const isCoverageStatement = useMemo(
     () => coverageStatements(issue, coverage.data),
     [issue, coverage.data]
   );
   const waiting = useMemo(
-    () => waitingOnReader(issue, viewer, isCoverageStatement, tree, comments.data),
-    [issue, viewer, isCoverageStatement, tree, comments.data]
+    () => waitingOnReader(issue, viewer, isCoverageStatement, tree, comments.data, decisions),
+    [issue, viewer, isCoverageStatement, tree, comments.data, decisions]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -208,9 +212,15 @@ export function IssuePropertiesRow({
           <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${pageWaitingBg}`} />
           {/* The words are one item, so the flex gap is the dot's alone: as items of their own,
               the brackets and the number each took the gap and the count drew "Waiting on
-              you ( 2 )". */}
+              you ( 2 )". The number carries "+" while the read its decisions are counted from
+              names a next page (R15), as each count of the view row does. */}
           <span>
-            {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+            {PROPERTY_LABELS.waiting_on_you} (
+            <span {...authorText}>
+              {waiting.total}
+              {waiting.more === true ? "+" : ""}
+            </span>
+            )
           </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (

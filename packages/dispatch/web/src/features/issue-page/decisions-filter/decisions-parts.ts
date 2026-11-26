@@ -1,12 +1,21 @@
-import type { Actor, CommentWithTrees, Decision, DisplayTree } from "../../../api/types";
+import type {
+  Actor,
+  CommentWithTrees,
+  Decision,
+  DisplayTree,
+  RequirementCoverage,
+} from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
+import type { ReferenceNameReading } from "../../refs/reference-names";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { type DecisionNode, decidedByPerson } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, inReviewList, reviewState } from "../decision-review";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
+import { nodeReading } from "../presets";
+import type { TreeAnswer } from "../tree-read/tree-read";
 
 /**
  * The Decisions filter's parts, read from the tree, its decision nodes, the issue's asks and its
@@ -76,8 +85,12 @@ import { type DecisionState, isReader } from "../page-words";
  *
  * - **The `shaped` tie** is a link from a decision's own block, or an answered ask's, to a block
  *   of the spec (`Decision.links`), which is the edge as the decision node carries it; the
- *   tuple is the decision model's. A tie counts where its far end is a statement of this issue,
- *   read from the tree.
+ *   tuple is the decision model's. A tie counts where its far end is a statement of this issue:
+ *   a requirement node of the tree, or one the coverage read holds, by the rule the review list
+ *   is read by everywhere (`tree-drafts.ts`' `coverageStatements`), so a statement past the pages
+ *   of Conversation's read the tree was built from is one all the same. The entry's row draws a
+ *   line for each tie's statement by one rule: from the tree's node of it where the tree holds
+ *   one, and else from the coverage read's row of it (`ShapedStatement.node`).
  * - **When a decision was made** is the time its words last changed (`Decision.changed_at`);
  *   the decision node holds no other time for one.
  * - **A Change** is a comment a person wrote that the tree read hangs under the decision's node,
@@ -101,15 +114,34 @@ export const DECISIONS_PART_ORDER = [
 /** One part of the filter, by its own token, which is its `data-decisions-part`. */
 export type DecisionsPart = (typeof DECISIONS_PART_ORDER)[number];
 
+/** The words a statement on a decision's row is drawn by: the tree's node of it, or the coverage
+ *  read's row of it, read as a requirement (`shapesOf`). */
+type StatementWords = Pick<TreeNode, "id" | "reference" | "source" | "text" | "tree" | "type">;
+
+/** What the model reads of the coverage read's row of a statement: its address, its words and
+ *  the server's reading of them, where the read sent one. */
+type CoverageStatement = Pick<RequirementCoverage, "ref" | "text" | "text_tree">;
+
 /** One statement a decision's `shaped` tie names, as the decision's row draws it. */
 export interface ShapedStatement {
   /** The statement's node id. */
   readonly id: string;
   /** The statement, whose one line a row projects from its words, as R1 cuts a row's
-   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. */
-  readonly node: TreeNode;
+   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. The tree's node of
+   *  it where the tree holds one; else, for a statement past the pages of Conversation's read
+   *  the tree was built from, the coverage read's row of it, at that row's own address (`ref`),
+   *  with its words (`text`) and the server's reading of them where the read sent one
+   *  (`text_tree`). */
+  readonly node: StatementWords;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
+  /** How the page names a statement only the coverage read holds, which the page's names read
+   *  was never asked for: by the reading of that row's words (`presets.ts`' `nodeReading`), as a
+   *  view names a block only its own tree holds (`PresetView.readings`). The body publishes it
+   *  to the names store, so the row names the statement by the line the store projects from it,
+   *  as it names every other. Absent for a statement the tree holds a node of, which the page's
+   *  names read names. */
+  readonly reading?: ReferenceNameReading;
   /** Whether the decision changed after it first named the statement and the statement has not
    *  changed since (`DecisionLink.stale`). */
   readonly stale: boolean;
@@ -247,10 +279,24 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
 /**
  * The filter's parts.
  *
- * `root` is the whole tree, which holds each ask and each decision with its words and each
- * statement a tie may name; `view` is the tree as the Decisions filter leaves it
- * (`presetView`), whose nodes are the ones the filter by words kept and the one the address
- * names. `nodeIdOf` is how this issue addresses a node (`tree-drafts.ts`'s `treeContext`), so
+ * `root` is the whole tree the view was drawn over, which holds each ask and each decision with
+ * its words and each statement a tie may name: the tree the decisions view read builds, as the
+ * view's slot hands it (`decisions-entries.ts`' `useDecisionsTree`), or Conversation's tree until
+ * that read holds an answer. `view` is the tree as the Decisions filter leaves it (`presetView`),
+ * whose nodes of `root` are the ones the filter by words kept and the one the address names.
+ * `viewRead` is the decisions view read, its answer and the tree that answer builds, where `root`
+ * is not that tree: each question and each decision the answer holds that `root` holds no node
+ * of - one past the pages of Conversation's read `root` was built from - stands in its part,
+ * placed after `root`'s nodes at its place in the read's tree, and is none a view drawn over
+ * `root` left out. A node that tree holds only as Conversation's context is no entry: `root`
+ * holds it, or holds it no longer.
+ * `coverageStatement` is the coverage read's row of the statement an address names, where that
+ * read holds one (`tree-drafts.ts`' `coverageStatementOf`), by the rule the review list is read
+ * by in the outline and the header's count (`coverageStatements`, `decision-review.ts`'
+ * `inReviewList`): beside the tree's own requirement nodes it is what makes a tie's far end a
+ * statement, so a statement past the pages of Conversation's read the tree was built from decides
+ * a decision's part as one the tree holds, and its row draws that statement's line from the row.
+ * `nodeIdOf` is how this issue addresses a node (`tree-drafts.ts`'s `treeContext`), so
  * a tie resolves to the node it names however its address is written. `changes` is the change
  * a person asked of each decision, by the decision's address (`decisions-entries.ts`'
  * `changesOf`), with the server's reading of its body where the tree read sent one, and
@@ -259,32 +305,42 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
 export function decisionsParts({
   asks,
   changes,
+  coverageStatement,
   decisions,
   issueKey,
   nodeIdOf,
   reader,
   root,
   view,
+  viewRead,
 }: {
   /** The issue's asks, for how each closed one was closed. */
   readonly asks: readonly DecisionsAsk[] | undefined;
   readonly changes?: ReadonlyMap<string, ChangeComment & Pick<CommentWithTrees, "body_tree">>;
   readonly decisions: readonly DecisionNode[] | undefined;
+  /** The coverage read's row of the statement an address names; none where it is not given. */
+  readonly coverageStatement?: (reference: string) => CoverageStatement | undefined;
   /** The issue's key, which a change's address in the conversation is built with. */
   readonly issueKey: string;
   readonly nodeIdOf: (reference: string) => string | undefined;
   readonly reader: string | undefined;
-  /** The whole tree. */
+  /** The whole tree the view was drawn over. */
   readonly root: TreeNode;
   /** The tree as the Decisions filter leaves it; the whole tree where none is given. */
   readonly view?: TreeNode;
+  /** The decisions view read, where `root` is not the tree it builds. */
+  readonly viewRead?: { readonly answer: TreeAnswer; readonly tree: TreeNode };
 }): DecisionsParts {
-  const placed = placements(root);
+  const over = placements(root);
+  const placed = viewRead === undefined ? over : placements(viewRead.tree, over);
+  // The read's own nodes, by their read ids (`TreeNode.readId`).
+  const read = new Set((viewRead?.answer.nodes ?? []).map((node) => node.id));
   const kept = view === undefined ? undefined : idsOf(view);
   const rows = new Map((decisions ?? []).map((row) => [row.ref, row]));
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   const isStatement = (reference: string): boolean =>
-    placed.get(nodeIdOf(reference) ?? "")?.node.type === "requirement";
+    placed.get(nodeIdOf(reference) ?? "")?.node.type === "requirement" ||
+    coverageStatement?.(reference) !== undefined;
   const open: AskEntry[] = [];
   const review: DecisionEntry[] = [];
   const yours: DecisionsEntry[] = [];
@@ -296,7 +352,16 @@ export function decisionsParts({
   const decidedBy = (by: Actor | undefined): DecisionsEntry[] =>
     isReader(by, reader) ? yours : others;
   for (const { node, parent } of placed.values()) {
-    if (kept !== undefined && !kept.has(node.id)) continue;
+    if (!over.has(node.id)) {
+      // A node of the view read's tree `root` holds none of is no node the view was drawn over,
+      // so none it left out: a question or a decision the read holds stands in its part, and any
+      // other node is what those stand on, a statement a tie names or a node one hangs under.
+      if ((node.type !== "ask" && node.type !== "decision") || !read.has(node.readId ?? "")) {
+        continue;
+      }
+    } else if (kept !== undefined && !kept.has(node.id)) {
+      continue;
+    }
     const base = {
       node,
       ...(parent === undefined ? {} : { parent }),
@@ -308,7 +373,10 @@ export function decisionsParts({
       // ask's own address (its `kind` is `person`), the address the ask's node carries: its
       // `shaped` ties are the statements the person's decision shaped.
       const own = rows.get(node.reference ?? "");
-      const shapes = own?.kind === "person" ? shapesOf(own, nodeIdOf, placed) : [];
+      const shapes =
+        own?.kind === "person"
+          ? shapesOf(own, nodeIdOf, placed, isStatement, coverageStatement)
+          : [];
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
@@ -351,7 +419,9 @@ export function decisionsParts({
       agents.push({ ...base, ...timeOf(node.at), kind: "decision", shapes: [] });
       continue;
     }
-    const shapes = shapesOf(row, nodeIdOf, placed);
+    // Each statement a tie names, whether the tree holds its node or only the coverage read holds
+    // its row, so a statement rests on the decision exactly where it shapes one.
+    const shapes = shapesOf(row, nodeIdOf, placed, isStatement, coverageStatement);
     const person = decidedByPerson(row);
     const asked = person || row.replaced ? undefined : changes?.get(row.ref);
     const standing = reviewState(person ? { replaced: row.replaced } : row, asked !== undefined);
@@ -430,9 +500,14 @@ interface Placement {
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
  *  is edited (`TreeNode.transcluded`), with the parent it hangs under there: its one line, its
  *  address and its author's corrections of it, as the outline's filters give a row's parent
- *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. */
-export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
-  const placed = new Map<string, Placement>();
+ *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. Where
+ *  `before` is given, its placements come first, each as it is, and a node of `root` it places
+ *  already is not placed again. */
+export function placements(
+  root: TreeNode,
+  before?: ReadonlyMap<string, Placement>
+): ReadonlyMap<string, Placement> {
+  const placed = new Map(before);
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {
     if (!placed.has(node.id)) {
       placed.set(node.id, {
@@ -470,29 +545,54 @@ function timeOf(at: string | null | undefined): { readonly at?: string } {
 }
 
 /** The entry's address in the conversation, where its node has one. */
-function pathOf(node: TreeNode): { readonly path?: string } {
+function pathOf(node: Pick<TreeNode, "reference">): { readonly path?: string } {
   const path = conversationPath(node);
   return path === undefined ? {} : { path };
 }
 
-/** The statements of this issue `row`'s ties name, each once, in the ties' own order. */
+/** The statements of this issue `row`'s ties name (`isStatement`), each once, in the ties' own
+ *  order, each drawn by one rule: from the tree's node of it where `placed` holds one, and else
+ *  from the coverage read's row of it (`coverageStatement`), read as a requirement of that node
+ *  id at the row's own address, and named by the reading of the row's words
+ *  (`ShapedStatement.reading`). */
 function shapesOf(
   row: Pick<Decision, "links">,
   nodeIdOf: (reference: string) => string | undefined,
-  placed: ReadonlyMap<string, Placement>
+  placed: ReadonlyMap<string, Placement>,
+  isStatement: (reference: string) => boolean,
+  coverageStatement: ((reference: string) => CoverageStatement | undefined) | undefined
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
   for (const link of row.links ?? []) {
-    const statement =
-      link.to.ref === undefined ? undefined : placed.get(nodeIdOf(link.to.ref) ?? "");
-    if (statement === undefined || statement.node.type !== "requirement") continue;
-    const node = statement.node;
-    const held = shapes.get(node.id);
-    shapes.set(node.id, {
-      id: node.id,
-      node,
-      ...pathOf(node),
-      stale: link.stale || held?.stale === true,
+    const ref = link.to.ref;
+    if (ref === undefined || !isStatement(ref)) continue;
+    const id = nodeIdOf(ref);
+    if (id === undefined) continue;
+    const held = shapes.get(id);
+    if (held !== undefined) {
+      shapes.set(id, { ...held, stale: held.stale || link.stale });
+      continue;
+    }
+    const node = placed.get(id)?.node;
+    const covered = node === undefined ? coverageStatement?.(ref) : undefined;
+    const words: StatementWords | undefined =
+      node ??
+      (covered === undefined
+        ? undefined
+        : {
+            id,
+            reference: covered.ref,
+            text: covered.text,
+            ...(covered.text_tree === undefined ? {} : { tree: covered.text_tree }),
+            type: "requirement",
+          });
+    if (words === undefined) continue;
+    shapes.set(id, {
+      id,
+      node: words,
+      ...pathOf(words),
+      ...(covered === undefined ? {} : { reading: nodeReading(words) }),
+      stale: link.stale,
     });
   }
   return [...shapes.values()];

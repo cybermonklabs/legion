@@ -16,13 +16,19 @@ import {
   KEY,
   SPEC_DOCUMENT,
   SPEC_SLUG,
+  shaped,
 } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
 import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
+import {
+  issueTreeQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  viewKey,
+} from "../tree-read/tree-read";
 import { ProvidersSlot } from "./providers";
 import { ViewRowSlot, viewRowSignals } from "./view-row";
 
@@ -418,6 +424,137 @@ test("with no filter the view row draws the real counts while the names read is 
       client.isFetching({ queryKey: ["reference-targets"] }),
       "the names read is not out"
     ).toBe(1);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+/** The reads `answerReads` answers, the coverage read holding the spec's statement `r1`, and how
+ *  the tree read answers a decision of the spec at `position` tied to `r1` that waits for the
+ *  reader's review (`waiting`), which the Decisions control's count and its flag both count. */
+function reviewReads() {
+  const reads = answerReads();
+  const statement = buildDispatchReference({ block: { id: "r1" }, key: KEY, kind: "spec" });
+  reads.coverage.mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [
+      { block_id: "r1", checks: 1, gaps: [], plan_tasks: 0, ref: statement, text: "R1." },
+    ],
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  } as never);
+  const waiting = (block: string, position: number) =>
+    treeNode(block, "decision", KEY, {
+      decision: { links: [shaped(statement)], text_sha256: `sum-${block}`, waiting_review: true },
+      document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
+    });
+  return { reads, waiting };
+}
+
+/** What the Decisions control draws: its count, and its flag of what waits for review. */
+function decisionsSignal(container: HTMLElement) {
+  return {
+    count: drawnCounts(container).decisions,
+    flag: container.querySelector('[data-preset-flag="to_review"]')?.textContent,
+  };
+}
+
+// INFRA-1196's architect on R15 for a count over a paged read: the Decisions control's count and
+// its flag of what waits for review read the decisions view read whenever the page holds it,
+// which is whole, with no "+"; until then they read Conversation's read, whose first page here
+// names a next one and holds one of the issue's two waiting decisions, and the count and the
+// flag both carry "+", since the flag is a count over the same read. No read is sent for it: the
+// page holds the view read once the Decisions filter was on.
+test("the Decisions control counts Conversation's paged read with + until the decisions view read is held, and that read whole after", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const { reads, waiting } = reviewReads();
+  reads.tree.mockResolvedValue(
+    treeAnswer(
+      [treeNode(KEY, "issue", null), specBlock("r1", "requirement", 0), waiting("d1", 1)],
+      [],
+      { cursor: "page-2" }
+    )
+  );
+  const view = renderViewRow(client, presetPath(KEY, "decisions"));
+  try {
+    await waitFor(() =>
+      expect(
+        decisionsSignal(view.container),
+        "the count over a read that names a next page"
+      ).toEqual({
+        count: "1+",
+        flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
+    await act(async () => {
+      client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1), waiting("d2", 2)])
+      );
+    });
+    await waitFor(() =>
+      expect(
+        decisionsSignal(view.container),
+        "the count once the decisions view read is held"
+      ).toEqual({
+        count: "2",
+        flag: ` · 2 ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
+    expect(
+      reads.tree.mock.calls.filter(([, query]) => query?.view === "decisions"),
+      "the row sent a decisions view read of its own"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+// INFRA-1196's architect, 13:39Z: "the '· n to review' flag takes '+' too while a cursor remains,
+// since it is a count (part T's R15 holds every count over a paged read)". Once the page holds
+// the decisions view read, the flag is read from it as the count is, and carries "+" exactly
+// where the count does: while that read names a next page itself, whatever Conversation's read
+// names, which here names none. Once the view read answers whole, neither carries it.
+test("the Decisions control's to-review flag carries + while the decisions view read it is read from names a next page", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const { reads, waiting } = reviewReads();
+  reads.tree.mockResolvedValue(
+    treeAnswer([treeNode(KEY, "issue", null), specBlock("r1", "requirement", 0), waiting("d1", 1)])
+  );
+  const view = renderViewRow(client, presetPath(KEY, "decisions"));
+  try {
+    await waitFor(() =>
+      expect(decisionsSignal(view.container), "the count over a whole read").toEqual({
+        count: "1",
+        flag: ` · 1 ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
+    const decisions = [treeNode(KEY, "issue", null), waiting("d1", 1), waiting("d2", 2)];
+    await act(async () => {
+      client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(decisions, [], { cursor: "next" }));
+    });
+    await waitFor(() =>
+      expect(
+        decisionsSignal(view.container),
+        "the flag over a decisions view read that names a next page"
+      ).toEqual({ count: "2+", flag: ` · 2+ ${FILTER_SIGNAL_WORDS.to_review}` })
+    );
+    await act(async () => {
+      client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(decisions));
+    });
+    await waitFor(() =>
+      expect(decisionsSignal(view.container), "the flag once that read answers whole").toEqual({
+        count: "2",
+        flag: ` · 2 ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
   } finally {
     view.unmount();
     restoreMatchMedia();
