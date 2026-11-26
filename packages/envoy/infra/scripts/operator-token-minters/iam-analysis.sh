@@ -53,6 +53,7 @@ fi
 # operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
 # token: its outermost principal is the account it acts as, already judged, so it is no finding.
 analyze() {
+  local first="" rest=""
   ANALYZE_ERROR=""
   if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
     --expand-groups --output-group-edges --expand-roles --analyze-service-account-impersonation \
@@ -65,7 +66,8 @@ analyze() {
     ANALYZE_ERROR="the analysis is not the JSON Policy Analyzer answers: $(first_line "$WORK/analysis.err")"
     return 1
   fi
-  if [ "$(cut -d"$US" -f1 "$WORK/analysis.rec" | head -n 1)" = error ]; then
+  IFS="$US" read -r first rest <"$WORK/analysis.rec" || true
+  if [ "$first" = error ]; then
     ANALYZE_ERROR="$(cut -d"$US" -f2- "$WORK/analysis.rec" | head -n 1)"
     return 1
   fi
@@ -76,7 +78,7 @@ analyze() {
 # fence's residual (iam_holder).
 live_iam() {
   local check="$1" step="${CHECK_STEP[$1]}" resource="${CHECK_RESOURCE[$1]}" witness_member="${CHECK_WITNESS[$1]:-}"
-  local holders what identity role attached perms how designed hattached text chains=0 allowances
+  local holders what identity role attached perms how designed hattached text chains=0 allowances witness_found
   if [ -n "${CHECK_MISSING[$check]:-}" ]; then
     unknown "$step" "${CHECK_MISSING[$check]}"
     return
@@ -106,12 +108,17 @@ live_iam() {
   if [ "$check" = dbsecret ] && [ "$RBAC_OK" != true ]; then
     unknown "$step" "the RBAC step's principals' reviews for get on it could not be made (live: RBAC)"
   fi
-  # Never `cut | grep -q` under pipefail: grep stops at its first match, and a long answer's next
-  # write then fails the pipeline with SIGPIPE, reading a witness that is there as one that is not.
-  if [ -n "$witness_member" ] && ! grep -qxF -- "$witness_member" < <(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec"); then
+  # One awk counts the holders and finds the witness, reading the whole file: never `cut | grep -q`
+  # under pipefail, where grep stops at its first match and a long answer's next write then fails
+  # the pipeline with SIGPIPE, reading a witness that is there as one that is not. The witness
+  # reaches awk through its environment, which keeps a backslash in it as written.
+  read -r holders witness_found < <(member="$witness_member" awk -F"$US" '$1 == "row" {
+      if (!($2 in seen)) { seen[$2]; n++ }
+      if (($2 "") == (ENVIRON["member"] "")) found = 1
+    } END { print n + 0, found + 0 }' "$WORK/analysis.rec")
+  if [ -n "$witness_member" ] && [ "$witness_found" != 1 ]; then
     unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete"
   fi
-  holders="$(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec" | sort -u | wc -l | tr -d ' ')"
   # A chain record's holder role and holder are in its written-out chain, the sentence's part.
   while IFS="$US" read -r -u 3 what identity role attached perms how designed _ hattached _ text; do
     if [ "$what" = chain ]; then

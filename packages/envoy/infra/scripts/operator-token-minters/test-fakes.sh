@@ -29,11 +29,14 @@ case "${words[*]}" in
   "iam roles describe "*)
     role="${words[3]}"
     [ ! -e "$world/refuse-describe" ] || refuse iam.roles.describe "Permission 'iam.roles.get' denied on resource (or it may not exist)."
-    if ! jq -e --arg r "$role" 'has($r)' "$world/roles.json" >/dev/null; then
+    # One jq both finds the role and writes its answer; none is NOT_FOUND.
+    answer="$(jq --arg r "$role" 'if has($r) then {name: $r, title: $r, stage: "GA", etag: "AA==", includedPermissions: .[$r]} else empty end' \
+      "$world/roles.json")" || answer=""
+    if [ -z "$answer" ]; then
       echo "ERROR: (gcloud.iam.roles.describe) NOT_FOUND: The role named $role was not found." >&2
       exit 1
     fi
-    jq --arg r "$role" '{name: $r, title: $r, stage: "GA", etag: "AA==", includedPermissions: .[$r]}' "$world/roles.json"
+    printf '%s\n' "$answer"
     ;;
   "projects describe $project")
     jq -n --arg p "$project" --arg n "$number" \
@@ -213,8 +216,9 @@ forbidden() {
 }
 # A world marked token-secret-data gives each token Secret data, as a real API server holds it;
 # every call then looks under the run's work directories ($TMPDIR/operator-token-minters.*) for
-# that data, and records where it finds it (row cp).
-secret_data_b64="$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"
+# that data, and records where it finds it (row cp). The data's base64 is written out, since every
+# call reads it: `printf '%s' SECRET-DATA-CANARY-7f3a | base64` prints it, as printed_secret_data does.
+secret_data_b64=U0VDUkVULURBVEEtQ0FOQVJZLTdmM2E=
 if [ -e "$dir/token-secret-data" ]; then
   for work in "${TMPDIR:-/tmp}"/operator-token-minters.*/; do
     [ -d "$work" ] || continue

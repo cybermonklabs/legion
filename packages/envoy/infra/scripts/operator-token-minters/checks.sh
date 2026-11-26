@@ -122,13 +122,28 @@ held_list() {
   [ -n "$out" ] || out="${CHECK_PERMS[$1]// /$US}"
   printf '%s' "$out"
 }
+# role_grants CHECK: sets GRANTED to the permissions of CHECK that ROLE_FILE (role_perms) lists,
+# comma-separated, in CHECK_PERMS's order; none, an empty GRANTED. Read in bash, as held_text is:
+# the code step asks it for each binding and check.
+role_grants() {
+  local permission line
+  local -A listed=()
+  GRANTED=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$line" ]; then listed[$line]=1; fi
+  done <"$ROLE_FILE"
+  for permission in ${CHECK_PERMS[$1]}; do
+    [ -z "${listed[$permission]:-}" ] || GRANTED="${GRANTED:+$GRANTED,}$permission"
+  done
+}
 
 # --- Roles. ---
 
 # role_perms ROLE: sets ROLE_FILE to a file listing the role's permissions, from the previews'
-# custom roles or `gcloud iam roles describe`; returns 1 with ROLE_ERROR.
+# custom roles or `gcloud iam roles describe`; returns 1 with ROLE_ERROR. The file's name is the
+# role's with each character outside A-Za-z0-9._- made _, as step-code-iam.sh names a preview's.
 role_perms() {
-  ROLE_FILE="$WORK/roles/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+  ROLE_FILE="$WORK/roles/${1//[^A-Za-z0-9._-]/_}"
   ROLE_ERROR=""
   if [ -e "$ROLE_FILE.error" ]; then
     ROLE_ERROR="$(cat "$ROLE_FILE.error")"

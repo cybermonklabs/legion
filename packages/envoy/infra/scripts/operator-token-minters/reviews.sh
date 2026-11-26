@@ -465,13 +465,17 @@ custom_rights() {
 # ADMISSION_ALWAYS short, and when no JSON array of rights was built, which sets ADMISSION_RIGHTS to
 # none ([]) rather than to what jq printed.
 admission_rights() {
-  local missing="" resource built
+  local missing="" resource built line
+  local -A listed=()
   ADMISSION_ERROR=""
   if ! kubectl --kubeconfig "$1" api-resources --api-group=admissionregistration.k8s.io -o name >"$WORK/admission-resources" 2>"$WORK/admission-resources.err"; then
     ADMISSION_ERROR="the API server's discovery of admissionregistration.k8s.io could not be read, so a webhook or admission policy it serves beside the two webhook configurations is not reviewed: $(first_line "$WORK/admission-resources.err")"
   else
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ]; then listed[$line]=1; fi
+    done <"$WORK/admission-resources"
     for resource in "${ADMISSION_ALWAYS[@]}"; do
-      grep -qxF -- "$resource.admissionregistration.k8s.io" "$WORK/admission-resources" || missing="${missing:+$missing, }$resource.admissionregistration.k8s.io"
+      [ -n "${listed[$resource.admissionregistration.k8s.io]:-}" ] || missing="${missing:+$missing, }$resource.admissionregistration.k8s.io"
     done
     [ -z "$missing" ] ||
       ADMISSION_ERROR="the API server's discovery of admissionregistration.k8s.io lists no $missing, which every API server serves, so its list is not whole"
@@ -519,7 +523,7 @@ named_grants() {
 # roles,clusterroles` makes one list request for each kind, so a list without either is not whole,
 # and code-rbac.jq passes over a binding whose role the list lacks.
 live_named() {
-  local what id detail kind ns name policy residual
+  local what id detail kind ns name policy residual witnesses
   # ROLES_OK: whether $WORK/roles.json holds this cluster's roles, for follow_becomes's named read.
   ROLES_OK=false
   [ "$BINDINGS_OK" = true ] || return 0
@@ -531,13 +535,17 @@ live_named() {
     unknown "$2" "the API server's list of roles could not be read, so a right a role limits by name is not read: $(first_line "$WORK/named.rec.err")"
     return 0
   fi
-  if ! jq -e 'any(.items[]; .kind == "ClusterRole" and .metadata.name == "cluster-admin"
-      and .metadata.labels["kubernetes.io/bootstrapping"] == "rbac-defaults")' "$WORK/roles.json" >/dev/null 2>&1; then
+  # One jq reads both witnesses, "true true" when the list holds both; each reads false where jq
+  # cannot read an item, as each read alone did.
+  witnesses="$(jq -r '[(try any(.items[]; .kind == "ClusterRole" and .metadata.name == "cluster-admin"
+      and .metadata.labels["kubernetes.io/bootstrapping"] == "rbac-defaults") catch false),
+    (try any(.items[]; .kind == "Role" and .metadata.namespace == "kube-system" and .metadata.name == "extension-apiserver-authentication-reader"
+      and .metadata.labels["kubernetes.io/bootstrapping"] == "rbac-defaults") catch false)] | map(tostring) | join(" ")' "$WORK/roles.json" 2>/dev/null)" || witnesses=""
+  if [ "${witnesses% *}" != true ]; then
     unknown "$2" "the API server's list of roles holds no bootstrap ClusterRole cluster-admin (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so it is not whole and a right a role limits by name is not read"
     return 0
   fi
-  if ! jq -e 'any(.items[]; .kind == "Role" and .metadata.namespace == "kube-system" and .metadata.name == "extension-apiserver-authentication-reader"
-      and .metadata.labels["kubernetes.io/bootstrapping"] == "rbac-defaults")' "$WORK/roles.json" >/dev/null 2>&1; then
+  if [ "${witnesses#* }" != true ]; then
     unknown "$2" "the API server's list of roles holds no bootstrap Role kube-system/extension-apiserver-authentication-reader (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so its Roles are not whole and a right a Role limits by name is not read"
     return 0
   fi
@@ -570,16 +578,27 @@ live_named() {
 # is not whole: without its RoleBindings, binding_rights would ask nothing outside the guarded
 # namespaces and live_named would read no RoleBinding. Its subjects are still added.
 bound_subjects() {
-  local kind ns name label
+  local kind ns name label admin_witness="" reader_witness=""
+  # The two witnesses, as jq tests of the bindings' list.
+  local admin_test='any(.items[]?; .kind == "ClusterRoleBinding" and .metadata.name == "cluster-admin" and .roleRef.kind == "ClusterRole"
+      and .roleRef.name == "cluster-admin" and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")'
+  local reader_test='any(.items[]?; .kind == "RoleBinding" and .metadata.namespace == "kube-system"
+      and .metadata.name == "system::extension-apiserver-authentication-reader"
+      and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")'
   local -A held=()
   BOUND=0 BOUND_ERROR="" BINDINGS_OK=false
   if ! kubectl --kubeconfig "$1" get clusterrolebindings,rolebindings --all-namespaces -o json >"$WORK/bindings.json" 2>"$WORK/bindings.err"; then
     BOUND_ERROR="the API server refused the bindings' list (it needs list on clusterrolebindings and rolebindings, container.clusterRoleBindings.list and container.roleBindings.list on GKE): $(first_line "$WORK/bindings.err")"
     return 1
   fi
-  if ! is_list "$WORK/bindings.json" "$WORK/bindings.err" || ! jq -r "$JQ_REC"'[.items[] | (.metadata.namespace // "") as $bns | .subjects[]?
+  # One jq writes the subjects and, first, a `witnesses` record (no subject's kind) of whether the
+  # list holds each witness; a witness reads false where jq cannot read an item, and is read again
+  # alone below, so jq's own error on that item reaches stderr.
+  if ! is_list "$WORK/bindings.json" "$WORK/bindings.err" || ! jq -r "$JQ_REC"'
+      (["witnesses", (try '"$admin_test"' catch false), (try '"$reader_test"' catch false)] | rec),
+      ([.items[] | (.metadata.namespace // "") as $bns | .subjects[]?
       | select(.kind == "User" or .kind == "Group" or .kind == "ServiceAccount")
-      | [.kind, (if .kind == "ServiceAccount" then (.namespace // $bns) else "" end), .name]] | unique[] | rec' \
+      | [.kind, (if .kind == "ServiceAccount" then (.namespace // $bns) else "" end), .name]] | unique[] | rec)' \
     "$WORK/bindings.json" >"$WORK/bindings.rec" 2>"$WORK/bindings.err"; then
     BOUND_ERROR="the API server's list of bindings could not be read: $(first_line "$WORK/bindings.err")"
     return 1
@@ -587,6 +606,10 @@ bound_subjects() {
   BINDINGS_OK=true
   while IFS="$US" read -r label _; do held[$label]=1; done <"$WORK/principals.rec"
   while IFS="$US" read -r -u 7 kind ns name; do
+    if [ "$kind" = witnesses ]; then
+      admin_witness="$ns" reader_witness="$name"
+      continue
+    fi
     if [ "$kind" = Group ]; then
       own_group "$name" || continue
       [ -z "${held[group:$name]:-}" ] || continue
@@ -616,15 +639,13 @@ bound_subjects() {
     fi
     BOUND=$((BOUND + 1))
   done 7<"$WORK/bindings.rec"
-  if ! jq -e 'any(.items[]?; .kind == "ClusterRoleBinding" and .metadata.name == "cluster-admin" and .roleRef.kind == "ClusterRole"
-      and .roleRef.name == "cluster-admin" and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")' \
-    "$WORK/bindings.json" >/dev/null; then
+  if [ "$admin_witness" != true ]; then
+    jq -e "$admin_test" "$WORK/bindings.json" >/dev/null || true
     BOUND_ERROR="the bindings' list holds no bootstrap cluster-admin ClusterRoleBinding, which every cluster has, so it is not the cluster's whole list"
     return 1
   fi
-  if ! jq -e 'any(.items[]?; .kind == "RoleBinding" and .metadata.namespace == "kube-system"
-      and .metadata.name == "system::extension-apiserver-authentication-reader"
-      and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")' "$WORK/bindings.json" >/dev/null; then
+  if [ "$reader_witness" != true ]; then
+    jq -e "$reader_test" "$WORK/bindings.json" >/dev/null || true
     BOUND_ERROR="the bindings' list holds no bootstrap RoleBinding kube-system/system::extension-apiserver-authentication-reader (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so its RoleBindings are not whole and a right given in a namespace outside the guarded ones is not read"
     return 1
   fi
@@ -634,12 +655,16 @@ bound_subjects() {
 # system:serviceaccounts:<namespace> for the namespace of each reviewed ServiceAccount outside the
 # system namespaces, a bound one too (a system namespace's ServiceAccounts are seeds, reviewed with
 # that group). A binding to one reaches every member Kubernetes gives it, whatever Google Groups for
-# RBAC says. Sets GROUPS_ADDED.
+# RBAC says. Sets GROUPS_ADDED. The file's labels are read once, into held, as bound_subjects reads
+# them.
 namespace_groups() {
-  local group
+  local group label
+  local -A held=()
   GROUPS_ADDED=0
+  while IFS="$US" read -r label _ || [ -n "$label" ]; do [ -z "$label" ] || held[$label]=1; done <"$WORK/principals.rec"
   while IFS= read -r group; do
-    grep -qxF -- "group:$group" < <(cut -d"$US" -f1 "$WORK/principals.rec") && continue
+    [ -z "${held[group:$group]:-}" ] || continue
+    held[group:$group]=1
     printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
     GROUPS_ADDED=$((GROUPS_ADDED + 1))
   done < <({
@@ -768,16 +793,34 @@ shape_error() {
   return 1
 }
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
-# where both hold one, RIGHTS's label stays. Both reach jq on its stdin, never its command line. It
-# refuses anything but two JSON arrays (is_rights), an empty argument included, printing why and
-# returning 1: a step assigns its result, so under errexit the run stops there, UNKNOWN, rather
-# than go on without the rights the argument owed. Every rights value a step joins goes through it.
-# custom_rights, admission_rights and binding_rights check what they build with is_rights too, so a
-# failed build reads as their own UNKNOWN, naming those rights, rather than stopping the run.
+# where both hold one, RIGHTS's label stays. Both reach jq on its stdin, and through files in $WORK
+# named by the shell's own pid, so two concurrent joins never share one; never on its command line.
+# One jq both
+# judges and joins them. It refuses anything but two JSON arrays (rec.jq's is_one_array, the rule
+# is_rights holds a value to), an empty argument included, printing why and returning 1: a step
+# assigns its result, so under errexit the run stops there, UNKNOWN, rather than go on without the
+# rights the argument owed. Every rights value a step joins goes through it. custom_rights,
+# admission_rights and binding_rights check what they build with is_rights, so a failed build reads
+# as their own UNKNOWN, naming those rights, rather than stopping the run.
 with_rights() {
-  if ! is_rights "$1" || ! is_rights "$2"; then
-    echo "with_rights takes two JSON arrays, and was given: $(printf '%.60s' "$1"), $(printf '%.60s' "$2")" >&2
-    return 1
-  fi
-  printf '%s\n%s\n' "$1" "$2" | jq -c -s '.[0] + .[1] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)'
+  local rights="$WORK/with-rights.$BASHPID.rights" more="$WORK/with-rights.$BASHPID.more" status=0
+  printf '%s' "$1" >"$rights"
+  printf '%s' "$2" >"$more"
+  # jq exits 2 on a file that is not JSON and 3 (halt_error) on one that is not one array. The join
+  # reads the two from stdin, so an error it meets names that input as it always did.
+  printf '%s\n%s\n' "$1" "$2" | jq -c -s -L "$LIB" --slurpfile rights "$rights" --slurpfile more "$more" 'include "rec";
+    if is_one_array($rights) and is_one_array($more) then
+      .[0] + .[1] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)
+    else "" | halt_error(3) end' 2>"$rights.err" || status=$?
+  case "$status" in
+    0) return 0 ;;
+    2 | 3)
+      echo "with_rights takes two JSON arrays, and was given: $(printf '%.60s' "$1"), $(printf '%.60s' "$2")" >&2
+      return 1
+      ;;
+    *)
+      printf '%s\n' "$(<"$rights.err")" >&2
+      return "$status"
+      ;;
+  esac
 }
