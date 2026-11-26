@@ -768,8 +768,8 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 // given at or carried to (CarryPlan). Where it does, added is the ids of the tasks the version
 // recorded it added (PlanVersion.Added), in the plan's order: what register_plan answered when it
 // took the version, [] where it added none and where it was taken before its write recorded what
-// it added (store migration 20261123200630_plan_added). intake.ApplyFact reads it to answer a give
-// of a version the store holds as a duplicate, whatever the give's id.
+// it added (store migration 20261123200630_plan_added). register_plan reads it after a give of the
+// version in force applies, whatever the give's id.
 func (s *Postgres) PlanVersionHeld(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) (added []string, held bool, err error) {
 	added = []string{}
 	err = tx.QueryRow(ctx, `select added from issue_plans where issue = $1 and generation = $2 and version = $3 and artifact_id = $4`,
