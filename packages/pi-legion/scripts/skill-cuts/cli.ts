@@ -552,9 +552,11 @@ import {
 } from "./cases";
 import {
   BASH_GATE_COMMITS,
+  type BashInterceptor,
   type CheckoutCopy,
   colocateJj,
   gateVersion,
+  interceptorOf,
   type KnivesRepository,
   messagesRunJj,
   readOnlyCall,
@@ -2350,11 +2352,14 @@ const SharedCheckout = z.strictObject({
 
 /** The shell a written case's stage answered its `bash` calls in (`caseShell`, checkout.ts's
  *  ShellSetup): `prefix`, the PI_SHELL_PREFIX its context session's Oh My Pi ran them with (null
- *  for none), and `gate`, its experiments extension's bash gate: the dotfiles commit it was loaded
- *  at, whether that version was taken from the profile's commit (no refusal of the gate in the
- *  context session's history: `profile`) or from those refusals (`history`; checkout.ts's
- *  `gateVersion`), and the arm (`leading`); or why the runner does not know it, and no `bash` call
- *  of the stage is answered. */
+ *  for none); and, where the profile's dotfiles commit holds a bash gate, `gate`, its experiments
+ *  extension's bash gate: the dotfiles commit it was loaded at, whether that version was taken
+ *  from the profile's commit (no refusal of the gate in the context session's history: `profile`)
+ *  or from those refusals (`history`; checkout.ts's `gateVersion`), and the arm (`leading`); else
+ *  `interceptor`, Oh My Pi's own interceptor as that commit's omp/config.yml sets it: the commit,
+ *  and whether it is on (`enabled`; checkout.ts's `interceptorOf`), a form a stage recorded before
+ *  it was does not hold; or why the runner does not know it, and no `bash` call of the stage is
+ *  answered. */
 const StageShell = z.union([
   z.strictObject({
     prefix: z.string().nullable(),
@@ -2363,6 +2368,10 @@ const StageShell = z.union([
       from: z.enum(["history", "profile"]),
       leading: z.boolean(),
     }),
+  }),
+  z.strictObject({
+    prefix: z.string().nullable(),
+    interceptor: z.strictObject({ commit: z.string(), enabled: z.boolean() }),
   }),
   z.strictObject({ why: z.string() }),
 ]);
@@ -3429,6 +3438,10 @@ const NO_CHECKOUT: Unanswered = {
   why: "the case has no checkout of its context session's repository, so the runner answers none of its read-only calls (build-cases now passes over a context session whose working directory is in no checkout it knows, as no-checkout)",
 };
 
+/** What a written case's dotfiles are read through (`caseShell`, `caseKnives`): the runner's
+ *  source and cache, and the configuration's `dotfilesRepo`. */
+type DotfilesReader = Pick<Runner, "source" | "cacheDir" | "dotfilesRepo">;
+
 /** The dotfiles' omp wrapper, which exports PI_SHELL_PREFIX from commit bcd580fa on
  *  (checkout.ts's `shellPrefixOf`). */
 const DOTFILES_SHIM = "shims/omp";
@@ -3443,7 +3456,7 @@ const dotfilesPrefixes = new Map<string, Promise<string | undefined | Unanswered
  *  context's file is; or why not: the file is missing or cannot be read, or sets it in a form the
  *  runner does not read. */
 function dotfilesPrefix(
-  r: Runner,
+  r: DotfilesReader,
   repo: string,
   commit: string
 ): Promise<string | undefined | Unanswered> {
@@ -3471,14 +3484,18 @@ function dotfilesPrefix(
 
 /** The dotfiles' experiments extension (its entry `index.ts`, which installers/omp.sh links into
  *  every profile) and its bash gate's core, whose text tells its version (checkout.ts's
- *  `gateVersion`). */
+ *  `gateVersion`), and which a commit holds from 050e8a40 on. */
 const EXPERIMENTS_DIR = "omp/extensions/experiments";
 const GATE_CORE = `${EXPERIMENTS_DIR}/bash-gate-core.ts`;
+/** The dotfiles' Oh My Pi settings, which shims/omp gives every session: its `bashInterceptor`
+ *  sets Oh My Pi's own interceptor, which a session ran where its commit holds no bash gate
+ *  (checkout.ts's `interceptorOf`). */
+const DOTFILES_CONFIG = "omp/config.yml";
 
 /** The text of `file` of the dotfiles `repo` at `commit`, through the runner's source and cache;
  *  undefined where the commit holds no such file. Throws where the read fails. */
 async function dotfilesText(
-  r: Runner,
+  r: DotfilesReader,
   repo: string,
   commit: string,
   file: string
@@ -3491,23 +3508,54 @@ async function dotfilesText(
   }
 }
 
+/** Oh My Pi's own bash interceptor as the dotfiles' omp/config.yml of `repo` at `commit` sets it
+ *  (checkout.ts's `interceptorOf`: on, with the rules it sets, or undefined where it is off), read
+ *  through the runner's source and cache as a context's file is; or why not: the file is missing
+ *  or cannot be read, or sets `bashInterceptor` in a form the runner does not read. */
+async function dotfilesInterceptor(
+  r: DotfilesReader,
+  repo: string,
+  commit: string
+): Promise<BashInterceptor | undefined | Unanswered> {
+  const whose = `whose bashInterceptor set the session's Oh My Pi's own bash interceptor`;
+  let config: string | undefined;
+  try {
+    config = await dotfilesText(r, repo, commit, DOTFILES_CONFIG);
+  } catch (error) {
+    return {
+      why: `${DOTFILES_CONFIG} of ${repo} at ${commit}, ${whose}, could not be read: ${messageFor(error)}`,
+    };
+  }
+  if (config === undefined) {
+    return { why: `${repo} at ${commit} holds no ${DOTFILES_CONFIG}, ${whose}` };
+  }
+  const interceptor = interceptorOf(config);
+  return interceptor !== undefined && "why" in interceptor
+    ? { why: `${DOTFILES_CONFIG} of ${repo} at ${commit}: ${interceptor.why}` }
+    : interceptor;
+}
+
 /**
  * The shell written case `c`'s context session's Oh My Pi ran its `bash` calls in (checkout.ts's
  * ShellSetup), from the one commit of the configuration's dotfiles repository (`dotfilesRepo`)
  * the case's profile's skills name, and what its stage records of it (StageShell): the
- * PI_SHELL_PREFIX its `shims/omp` exports (`dotfilesPrefix`); and the bash gate of its
- * experiments extension (BashGate), at the version the session ran (checkout.ts's
- * `gateVersion`: the profile's commit, or an older one the refusals in the context session's
- * history name, cases.ts's `checkout.bashGate`), its directory read through the runner's source
- * into the cache, in the session's arm. Why not, and then none of the case's `bash` calls is
- * answered, rather than one answered in a shell the session did not have: the configuration
- * names no dotfiles repository, the profile names no commit of it or more than one, the shim
- * cannot be read, the case records no arm of the gate (a case built before build-cases recorded
- * it is not read from the store, as its `checkout.jj` is not either), `gateVersion` refuses, or
- * the extension cannot be read.
+ * PI_SHELL_PREFIX its `shims/omp` exports (`dotfilesPrefix`); and, where that commit holds the
+ * experiments extension's bash gate (GATE_CORE), that bash gate (BashGate), at the version the
+ * session ran (checkout.ts's `gateVersion`: the profile's commit, or an older one the refusals in
+ * the context session's history name, cases.ts's `checkout.bashGate`), its directory read through
+ * the runner's source into the cache, in the session's arm; else (every commit before 050e8a40)
+ * Oh My Pi's own interceptor as the commit's omp/config.yml sets it (`dotfilesInterceptor`; none
+ * where it is off), whatever the case records of a gate, since such a session drew no arm of one.
+ * Why not, and then none of the case's `bash` calls is answered, rather than one answered in a
+ * shell the session did not have: the configuration names no dotfiles repository, the profile
+ * names no commit of it or more than one, the shim or the config cannot be read or sets its value
+ * in a form the runner does not read, the gate's core cannot be read, the case of a commit with
+ * the gate records no arm of it (a case built before build-cases recorded it is not read from the
+ * store, as its `checkout.jj` is not either), `gateVersion` refuses, or the extension cannot be
+ * read. Exported for cli.test.ts.
  */
-async function caseShell(
-  r: Runner,
+export async function caseShell(
+  r: DotfilesReader,
   c: Case
 ): Promise<{ readonly shell: ShellSetup | Unanswered; readonly record: StageShell }> {
   const refused = (why: string) => ({ shell: { why }, record: { why } });
@@ -3521,6 +3569,28 @@ async function caseShell(
   const { repo, commit } = dotfiles;
   const prefix = await dotfilesPrefix(r, repo, commit);
   if (typeof prefix === "object") return refused(prefix.why);
+  let profileCore: string | undefined;
+  try {
+    profileCore = await dotfilesText(r, repo, commit, GATE_CORE);
+  } catch (error) {
+    return refused(
+      `${GATE_CORE} of ${repo} at ${commit}, which says whether the session's bash calls passed through a bash gate, could not be read: ${messageFor(error)}`
+    );
+  }
+  if (profileCore === undefined) {
+    const interceptor = await dotfilesInterceptor(r, repo, commit);
+    if (interceptor !== undefined && "why" in interceptor) return refused(interceptor.why);
+    return {
+      shell: {
+        ...(prefix === undefined ? {} : { prefix }),
+        ...(interceptor === undefined ? {} : { interceptor }),
+      },
+      record: {
+        prefix: prefix ?? null,
+        interceptor: { commit, enabled: interceptor !== undefined },
+      },
+    };
+  }
   const recorded = c.checkout?.bashGate;
   if (recorded === undefined) {
     return refused(
@@ -3528,7 +3598,6 @@ async function caseShell(
     );
   }
   try {
-    const profileCore = await dotfilesText(r, repo, commit, GATE_CORE);
     const cores = new Map<string, string>();
     for (const version of recorded.versions === undefined ? [] : BASH_GATE_COMMITS) {
       const text = await dotfilesText(r, repo, version, GATE_CORE);
@@ -3570,7 +3639,7 @@ async function caseShell(
  *  is known, for the caller's `file` of it, which `use` says what it is for: the configuration
  *  names no dotfiles repository, or the profile names no commit of it or several. */
 function profileDotfiles(
-  r: Runner,
+  r: DotfilesReader,
   c: Case,
   file: string,
   use: string

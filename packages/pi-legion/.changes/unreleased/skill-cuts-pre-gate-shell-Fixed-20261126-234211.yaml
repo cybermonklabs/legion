@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  The `skill-cuts` behaviour replay answers the `bash` calls of a written case whose profile's
+  dotfiles commit predates the bash gate (it holds no `omp/extensions/experiments/bash-gate-core.ts`:
+  every commit before 050e8a40). Before, each such call went unanswered, so every run that made one
+  was made again. Such a session ran no gate but Oh My Pi's own bash interceptor, as the commit's
+  `omp/config.yml` sets `bashInterceptor`. The runner now asks the pinned Oh My Pi's interceptor,
+  given that setting alone, in a run that runs nothing of the call: a call it refuses gets the
+  refusal the session saw, `Blocked: <message>` and the original command, at the session's paths,
+  and a call it lets through is answered as before. Whether such a case records an arm of the gate
+  no longer matters. A `config.yml` that cannot be read, or that sets `bashInterceptor` in a form
+  the runner does not read, leaves the case's `bash` calls unanswered, naming why. The stage
+  records the shell of such a case as `{"prefix", "interceptor": {"commit", "enabled"}}`.
+time: 2026-11-26T23:42:11Z
+custom:
+    Issue: skill-cuts-pre-gate-shell

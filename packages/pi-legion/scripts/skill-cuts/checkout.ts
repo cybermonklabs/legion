@@ -169,7 +169,8 @@
  * install action exports it); its native addon is `pinnedAddon`'s. Bound read-only under PIN_MOUNT
  * (`/mnt/pin`): the binary's directory, the addon's real directory at `natives/18.18.6` (so the
  * pin's loader finds it under `PI_NATIVES_DIR=/mnt/pin/natives`), and a per-call directory holding
- * the stub hook (pin-hook.ts) and its `call.json`; the checkout copy stays read-only at
+ * the stub hook (pin-hook.ts), its `call.json` and, in a shell with Oh My Pi's own interceptor,
+ * the `config.yml` of its setting (below); the checkout copy stays read-only at
  * CHECKOUT_MOUNT. An empty 64 MiB tmpfs at `/mnt/pin/home` is the pin's `HOME` and holds its fresh
  * session directory: the sandbox's one writable file system. The pin runs `omp -p --hook
  * /mnt/pin/call/hook.ts --model stub/call --session-dir /mnt/pin/home/sessions --no-title
@@ -188,7 +189,9 @@
  * **The session's shell** (`CheckoutCopy.shell`, `ShellSetup`; cli.ts's `caseShell`): a `bash` call
  * is answered as the case's context session's Oh My Pi ran it, as the dev box's dotfiles set it up
  * at the one dotfiles commit the case's profile names (a profile that names none or several, a
- * shim that cannot be read, a case that records no arm of the gate: no `bash` call is answered).
+ * file below that cannot be read or that sets its value in a form the runner does not read, a
+ * case of a profile whose commit holds the bash gate that records no arm of it: no `bash` call is
+ * answered).
  * - The prefix. The dotfiles' `shims/omp` exports `PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-set +e +u
  *   +o pipefail;}"` from commit bcd580fa (2026-10-25) on (`shellPrefixOf`; none before), and the
  *   pin puts the prefix before each command inside its executor, `${prefix} ${command}`
@@ -197,7 +200,9 @@
  *   +o pipefail` (whose `set` has no filter, filters/mod.rs `supports`), and one that holds a
  *   command substitution is not read at all (a chain one of whose stages holds one is
  *   `Compound`); and the pin's run gets PI_SHELL_PREFIX.
- * - The bash gate (`BashGate`). Every recorded session ran the dotfiles' experiments extension
+ * - The bash gate (`BashGate`), where the profile's commit holds one
+ *   (`omp/extensions/experiments/bash-gate-core.ts`, from dotfiles commit 050e8a40, 2026-10-19,
+ *   on). A session of such a profile ran the dotfiles' experiments extension
  *   (`omp/extensions/experiments/index.ts`, which installers/omp.sh links into every profile): its
  *   `bash-gate.ts` turns the pin's own interceptor off in its process, and `bash-gate-core.ts`'s
  *   `intercept` blocks a call one of the interceptor's default rules matches (read: head, tail,
@@ -223,6 +228,32 @@
  *   commit, and the stage records which. The extension's code comes from the dotfiles at that
  *   commit, read through the runner's source into its cache (it imports Oh My Pi's own modules and
  *   Node's alone, so it needs no package), never another version.
+ * - Oh My Pi's own interceptor (`BashInterceptor`), where the profile's commit holds no bash gate
+ *   (every commit before 050e8a40). Such a session's `bash` calls met no gate: its Oh My Pi ran
+ *   its own interceptor as the commit's `omp/config.yml` sets `bashInterceptor` (`interceptorOf`;
+ *   at 072e87ff, for one, `enabled: true` and no `patterns`, so the default rules, exec/settings.ts
+ *   lines 17-98 at the pin tag; 050e8a40 set it `false` as the gate took those rules over), and
+ *   none where it sets it off or not at all (the pin's default). Whether the case records an arm
+ *   of the gate does not matter. Each `bash` call is shown to the interceptor first, as to the
+ *   gate (`interceptorAnswer`): a pin run with a `--config` of the call's own directory that
+ *   holds that `bashInterceptor` block alone (every other setting the pin's default), and with
+ *   PI_SHELL_PREFIX `exit 0;` (INTERCEPTOR_ASK_PREFIX), so a call the interceptor lets through
+ *   runs nothing: the executor ends the shell before the command, and the interceptor reads the
+ *   command as the call gives it, before any prefix (bash.ts lines 621-631 and 1316-1317), so
+ *   that prefix stands in for the session's own without changing what the interceptor decides.
+ *   The pin's tool-policy gate asks the interceptor before the tool runs
+ *   (extensibility/extensions/wrapper.ts lines 281-292) and refuses a call it blocks with
+ *   ``Tool "bash" is blocked by tool policy.\nReason: <message>\n\nOriginal command: <command>``
+ *   (tools/approval.ts lines 617-626; the reason is the interceptor's text less its `Blocked: `,
+ *   bash.ts line 630), where the session's Oh My Pi returned the interceptor's own text as the
+ *   bash tool's error, ``Blocked: <message>\n\nOriginal command: <command>``
+ *   (tools/bash-interceptor.ts line 140, which the pin's bash tool still throws, bash.ts line
+ *   1317), as a recorded session's result shows. So a call the interceptor refuses gets
+ *   `Blocked: ` and the pin's reason, an error, at the session's paths, whatever else would keep
+ *   the runner from running it; one it lets through is answered as below, by the runner's own run
+ *   or, where the minimizer may rewrite it, by the pin's run with the same `--config`. The
+ *   experiments extension such a commit may hold (61010900 on, with no bash gate) is not loaded,
+ *   as a gate's run turns every feature but the gate off.
  * - The stub against an ordinary session. checkout.test.ts runs the pin's bash tool on a fixture
  *   both through this harness (the prefix and the gate) and in an ordinary `omp -p` session of the
  *   same binary with a HOME of its own, the dotfiles' omp/config.yml (`--config`), PI_SHELL_PREFIX,
@@ -252,7 +283,9 @@
  * `file_path` or `notebook_path`, and each word of a `command` that is `/` or `~/` and more;
  * never the call's `cwd`; a relative path, a `skill://` URL among them, read against the session's
  * working directory), is under the checkout's root. A call the bash gate refused gets none (Oh My
- * Pi emits no `tool_result` for a blocked call). Where the context session touched the repository
+ * Pi emits no `tool_result` for a blocked call); one Oh My Pi's own interceptor refused can (the
+ * session's interceptor refused it inside its bash tool, whose error that event carries, as
+ * build.ts's `sessionKnives` reads it too). Where the context session touched the repository
  * and got no block for it, a run gets none. Not answered: a call that touches the repository where
  * the context session never touched it, or the case was built before build-cases recorded its
  * blocks, and knives' registry the dotfiles hold may give it blocks (cli.ts's `caseKnives`).
@@ -2004,10 +2037,15 @@ export interface CheckoutCopy {
  *  ${command}` (exec/bash-executor.ts lines 233-267 and 640-660 at the pin), so its minimizer
  *  reads the prefixed command (`minimizerReadings`) and the pin's run is given it (`pinAnswer`);
  *  absent, none. `gate`, the bash gate of the dotfiles' experiments extension the session ran
- *  (`BashGate`), which every `bash` call passes through first (`gateAnswer`); absent, none. */
+ *  (`BashGate`), which every `bash` call passes through first (`gateAnswer`), where the profile's
+ *  commit holds one; `interceptor`, Oh My Pi's own interceptor, on as the commit's omp/config.yml
+ *  sets it (`BashInterceptor`), which every `bash` call passes through first
+ *  (`interceptorAnswer`), where the commit holds no bash gate; each absent, none (cli.ts sets at
+ *  most one). */
 export interface ShellSetup {
   readonly prefix?: string;
   readonly gate?: BashGate;
+  readonly interceptor?: BashInterceptor;
 }
 
 /** The bash gate of the dotfiles' experiments extension (`omp/extensions/experiments/index.ts`,
@@ -2024,6 +2062,27 @@ export interface ShellSetup {
 export interface BashGate {
   readonly dir: string;
   readonly leading: boolean;
+}
+
+/** Oh My Pi's own bash interceptor, on, as a written case's context session ran it where its
+ *  profile's dotfiles commit holds no bash gate (cli.ts's `caseShell`, from the commit's
+ *  omp/config.yml, `interceptorOf`): `patterns`, the rules the commit sets
+ *  (`bashInterceptor.patterns`), each as written there; absent, the pin's default rules
+ *  (DEFAULT_BASH_INTERCEPTOR_RULES, exec/settings.ts lines 17-98 at the pin). The pin's run is
+ *  given that setting alone (`interceptorConfig`). */
+export interface BashInterceptor {
+  readonly patterns?: readonly InterceptorRule[];
+}
+
+/** One rule of Oh My Pi's bash interceptor (BashInterceptorRule, exec/settings.ts lines 7-14 at
+ *  the pin): a call one of whose commands `pattern` (with `flags`) matches is refused with
+ *  `message`, where the session holds the tool `tool`. */
+export interface InterceptorRule {
+  readonly pattern: string;
+  readonly flags?: string;
+  readonly tool: string;
+  readonly message: string;
+  readonly allowSubcommands?: readonly string[];
 }
 
 /** The checkout's repository as knives' plugin gives it blocks (cli.ts's `caseKnives`), where a
@@ -2110,6 +2169,84 @@ export function shellPrefixOf(shim: string): string | undefined | Unanswered {
   return value;
 }
 
+/** The keys of a rule of Oh My Pi's bash interceptor (InterceptorRule). */
+const RULE_KEYS: Readonly<Record<string, true>> = {
+  pattern: true,
+  flags: true,
+  tool: true,
+  message: true,
+  allowSubcommands: true,
+};
+
+/** Whether `value`, a rule of a config.yml's `bashInterceptor.patterns`, is in the form Oh My Pi
+ *  reads one (InterceptorRule): a mapping of a string `pattern`, `tool` and `message`, a string
+ *  `flags` and a list of strings `allowSubcommands` where given, and nothing else; and its message
+ *  starts with no blank, which the pin's tool-policy gate would cut from the reason it gives
+ *  (bash.ts line 630 at the pin), so that `interceptorAnswer` gives the session's text. */
+function isInterceptorRule(value: unknown): value is InterceptorRule {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const rule = value as Record<string, unknown>;
+  const { pattern, flags, tool, message, allowSubcommands } = rule;
+  return (
+    Object.keys(rule).every((key) => Object.hasOwn(RULE_KEYS, key)) &&
+    typeof pattern === "string" &&
+    typeof tool === "string" &&
+    typeof message === "string" &&
+    !/^\s/.test(message) &&
+    (flags === undefined || typeof flags === "string") &&
+    (allowSubcommands === undefined ||
+      (Array.isArray(allowSubcommands) &&
+        allowSubcommands.every((each) => typeof each === "string")))
+  );
+}
+
+/**
+ * Oh My Pi's own bash interceptor as a session ran it (`ShellSetup.interceptor`), from `config`,
+ * the text of the dotfiles' omp/config.yml at the commit the case's profile names: on, with the
+ * rules its `bashInterceptor.patterns` sets (`BashInterceptor`), where its
+ * `bashInterceptor.enabled` is true; undefined where that is false or absent, or the file sets no
+ * `bashInterceptor` (or no setting at all), the pin's default (bash.ts line 612, exec/settings.ts
+ * lines 170-180 at the pin); why not where the file is no YAML mapping, or sets `bashInterceptor`
+ * in a form the runner does not read: anything but a mapping of `enabled`, true or false, and
+ * `patterns`, a list of rules (`isInterceptorRule`), or a key of its own that starts with the
+ * name (`bashInterceptor.enabled: …`).
+ */
+export function interceptorOf(config: string): BashInterceptor | undefined | Unanswered {
+  let read: unknown;
+  try {
+    read = Bun.YAML.parse(config);
+  } catch (error) {
+    return { why: `omp/config.yml is no YAML the runner reads: ${messageFor(error)}` };
+  }
+  if (read === null) return undefined;
+  if (typeof read !== "object" || Array.isArray(read)) {
+    return { why: "omp/config.yml is no mapping of settings" };
+  }
+  const unread = (what: string): Unanswered => ({
+    why: `omp/config.yml sets bashInterceptor in a form the runner does not read (${what}), where it reads a mapping of enabled, true or false, and patterns, a list of rules, each a pattern, a tool and a message that starts with no blank, with flags and allowSubcommands where given`,
+  });
+  const named = Object.keys(read).find(
+    (key) => key !== "bashInterceptor" && key.startsWith("bashInterceptor")
+  );
+  if (named !== undefined) return unread(`a key ${JSON.stringify(named)}`);
+  const block: unknown = Reflect.get(read, "bashInterceptor");
+  if (block === undefined) return undefined;
+  if (typeof block !== "object" || block === null || Array.isArray(block)) {
+    return unread(`bashInterceptor: ${JSON.stringify(block)}`);
+  }
+  const { enabled, patterns, ...rest } = block as Record<string, unknown>;
+  const others = Object.keys(rest);
+  if (others.length > 0) return unread(`its keys ${others.join(", ")}`);
+  if (enabled !== undefined && typeof enabled !== "boolean") {
+    return unread(`enabled: ${JSON.stringify(enabled)}`);
+  }
+  if (patterns !== undefined && !(Array.isArray(patterns) && patterns.every(isInterceptorRule))) {
+    return unread(`patterns: ${JSON.stringify(patterns)}`);
+  }
+  if (enabled !== true) return undefined;
+  return patterns === undefined ? {} : { patterns };
+}
+
 /** The dotfiles commits at which the experiments extension's bash gate (`BashGate`) took each of
  *  the four forms of its refusal that ran, oldest first: a refusal of one step reads the same in
  *  all four, ``Blocked: `<step>` has a dedicated tool, `<tool>`. <message>\n\nOriginal command:
@@ -2154,18 +2291,19 @@ export function gateRefusalVersions(text: string): readonly string[] | undefined
 
 /**
  * The dotfiles commit whose experiments extension a written case's context session ran
- * (`BashGate.dir`, cli.ts's `caseShell`), and where it is taken from: `profile`, the dotfiles
- * commit the case's profile names, whose bash-gate-core.ts is `profileCore` (undefined where it
- * holds none); `versions`, the versions whose text form matches every refusal of the gate in the
- * context session's own history (cases.ts's `checkout.bashGate.versions`, `gateRefusalVersions`;
- * undefined where it holds none); `cores`, each of BASH_GATE_COMMITS' bash-gate-core.ts. Where
- * the history holds no refusal, the profile's commit (`from: "profile"`). Where it holds some,
- * the profile's commit where its bash-gate-core.ts is a version they match, else the newest
- * version they match that is older than the profile's (the extension loads once per process, so
- * a session runs its profile's version or an older one; a profile's text of none of the four is
- * taken as newer than each), `from: "history"`. Why not: the profile's commit holds no bash gate
- * (its sessions ran another, which the runner does not load), the refusals match no one version,
- * or only versions newer than the profile's.
+ * (`BashGate.dir`, cli.ts's `caseShell`), where the profile's commit holds a bash gate (one that
+ * holds none ran Oh My Pi's own interceptor, `BashInterceptor`, and cli.ts asks no version of
+ * it), and where it is taken from: `profile`, the dotfiles commit the case's profile names, whose
+ * bash-gate-core.ts is `profileCore`; `versions`, the versions whose text form matches every
+ * refusal of the gate in the context session's own history (cases.ts's
+ * `checkout.bashGate.versions`, `gateRefusalVersions`; undefined where it holds none); `cores`,
+ * each of BASH_GATE_COMMITS' bash-gate-core.ts. Where the history holds no refusal, the profile's
+ * commit (`from: "profile"`). Where it holds some, the profile's commit where its
+ * bash-gate-core.ts is a version they match, else the newest version they match that is older
+ * than the profile's (the extension loads once per process, so a session runs its profile's
+ * version or an older one; a profile's text of none of the four is taken as newer than each),
+ * `from: "history"`. Why not: the refusals match no one version, or only versions newer than the
+ * profile's.
  */
 export function gateVersion({
   profile,
@@ -2174,15 +2312,10 @@ export function gateVersion({
   cores,
 }: {
   profile: string;
-  profileCore: string | undefined;
+  profileCore: string;
   versions: readonly string[] | undefined;
   cores: ReadonlyMap<string, string>;
 }): { readonly commit: string; readonly from: "history" | "profile" } | Unanswered {
-  if (profileCore === undefined) {
-    return {
-      why: `the dotfiles commit ${profile} the case's profile names holds no bash gate (omp/extensions/experiments/bash-gate-core.ts), so its sessions ran another, which the runner does not load`,
-    };
-  }
   if (versions === undefined) return { commit: profile, from: "profile" };
   if (versions.length === 0) {
     return {
@@ -2305,7 +2438,9 @@ export function knivesAdded(
 
 /** `answer`, the answer to the read-only call `input` from `copy`, with knives' blocks after it
  *  where they go there (`knivesAdded`), or why not. A call the bash gate refused is never given
- *  here: a blocked call ends before Oh My Pi's `tool_result` event, which knives hooks. */
+ *  here: a blocked call ends before Oh My Pi's `tool_result` event, which knives hooks. One Oh My
+ *  Pi's own interceptor refused is: the session's interceptor refused it inside its bash tool,
+ *  whose error that event carries (`interceptorAnswer`). */
 function knivesAnswer(
   copy: CheckoutCopy,
   input: Readonly<Record<string, unknown>>,
@@ -2492,8 +2627,9 @@ function mountName(target: string): string {
 /** Where a sandbox that answers a call through the pinned Oh My Pi (`runSandboxed`'s `pin`) holds
  *  it, each bound read-only: its binary's directory at `bin`, its native addon's at
  *  `natives/<NATIVES_VERSION>` (the PI_NATIVES_DIR `natives`), the call's own directory, the
- *  hook and its call (`pinAnswer`), at `call`, and the dotfiles' experiments extension, where the
- *  call's shell has its bash gate (`BashGate.dir`), at `ext`. */
+ *  hook, its call and, where the call's shell has Oh My Pi's own interceptor, its setting
+ *  (`pinAnswer`), at `call`, and the dotfiles' experiments extension, where the call's shell has
+ *  its bash gate (`BashGate.dir`), at `ext`. */
 const PIN_MOUNT = "/mnt/pin";
 /** The pin's HOME in such a sandbox, which holds its session directory: an empty tmpfs of
  *  PIN_HOME_BYTES, the sandbox's one writable file system. */
@@ -2900,6 +3036,20 @@ function rootPaths(copy: CheckoutCopy, text: string): string {
 /** The name of the hook in a pin call's own directory (`pinAnswer`), and the hook's source. */
 const PIN_HOOK = "hook.ts";
 const PIN_HOOK_SOURCE = path.join(import.meta.dir, "pin-hook.ts");
+/** The name of the settings file in a pin call's own directory, which its `--config` names, where
+ *  the call's shell has Oh My Pi's own interceptor (`interceptorConfig`). */
+const PIN_CONFIG = "config.yml";
+
+/** The settings file a pin run in a shell with Oh My Pi's own interceptor `interceptor` is given
+ *  (`--config`): its `bashInterceptor` block alone, on, with the rules the session's omp/config.yml
+ *  set where it set any (`BashInterceptor.patterns`), so every other setting is the pin's default.
+ *  JSON, which YAML reads. */
+function interceptorConfig(interceptor: BashInterceptor): string {
+  const { patterns } = interceptor;
+  return JSON.stringify({
+    bashInterceptor: { enabled: true, ...(patterns === undefined ? {} : { patterns }) },
+  });
+}
 
 /** `value` as one word of bash, in single quotes. */
 function shellWord(value: string): string {
@@ -2949,8 +3099,10 @@ function featuresOff(gate: BashGate): string[] | Unanswered {
  * title; no variable of the runner's beyond SANDBOX_ENV's and PI_NATIVES_DIR, which names the
  * pin's own addon (natives.ts's `pinnedAddon`), bound read-only; its binary the pin's own
  * (natives.ts's `pinnedOmp`, its SHA-256 the release's), bound read-only. With `shell` (a `bash`
- * call's, `ShellSetup`), PI_SHELL_PREFIX is its prefix, as the session's Oh My Pi had it; and
- * where it has the session's bash gate (`BashGate`), the experiments extension's directory is
+ * call's, `ShellSetup`), PI_SHELL_PREFIX is its prefix, as the session's Oh My Pi had it; where
+ * it has Oh My Pi's own interceptor (`BashInterceptor`), the run's `--config` is a file of the
+ * call's own directory that sets it alone (`interceptorConfig`); and where it has the session's
+ * bash gate (`BashGate`), the experiments extension's directory is
  * bound read-only at `ext`, its `index.ts` alone is loaded with `-e` (`--no-extensions` keeps
  * every other discovery off; an explicit `-e` path still loads, the pin's CLI flags say),
  * OMP_EXPERIMENT_BASH_GATE_LEADING is the session's arm, and every other feature of the
@@ -2995,8 +3147,11 @@ export async function pinRun(
   try {
     writeFileSync(path.join(own, PIN_HOOK), readFileSync(PIN_HOOK_SOURCE));
     writeFileSync(path.join(own, PIN_CALL_FILE), JSON.stringify(call));
+    const { gate, interceptor } = shell;
+    if (interceptor !== undefined) {
+      writeFileSync(path.join(own, PIN_CONFIG), interceptorConfig(interceptor));
+    }
     const omped = `${PIN_MOUNT}/bin/${path.basename(omp.file)}`;
-    const gate = shell.gate;
     const command = [
       `HOME=${PIN_HOME}`,
       `PI_NATIVES_DIR=${PIN_MOUNT}/natives`,
@@ -3011,6 +3166,7 @@ export async function pinRun(
       "-p",
       ...(gate === undefined ? [] : [`-e ${PIN_MOUNT}/ext/index.ts`]),
       `--hook ${PIN_MOUNT}/call/${PIN_HOOK}`,
+      ...(interceptor === undefined ? [] : [`--config ${PIN_MOUNT}/call/${PIN_CONFIG}`]),
       "--model stub/call",
       `--session-dir ${PIN_HOME}/sessions`,
       "--no-title --no-extensions --no-skills --no-rules --no-context-files",
@@ -3123,6 +3279,80 @@ function gateAnswer(
     };
   })();
   gateAnswers.set(key, asked);
+  return asked;
+}
+
+/** The PI_SHELL_PREFIX of a pin run made only to ask Oh My Pi's own interceptor
+ *  (`interceptorAnswer`): the pin's executor runs `exit 0; <command>`, so its shell ends before
+ *  the command, and a call the interceptor lets through runs nothing. The interceptor reads the
+ *  command as the call gives it, before any prefix (bash.ts lines 621-631 and 1316-1317 at the
+ *  pin), so this prefix stands in for the session's own without changing what it decides. */
+const INTERCEPTOR_ASK_PREFIX = "exit 0;";
+
+/** What the pinned Oh My Pi's tool-policy gate says before its reason where a tool's own approval
+ *  refuses a call of it (tools/approval.ts lines 617-626 at the pin): the bash tool's approval
+ *  refuses a call its interceptor blocks, its reason the interceptor's text less its `Blocked: `
+ *  (bash.ts lines 621-631), and the gate asks it before the tool runs
+ *  (extensibility/extensions/wrapper.ts lines 281-292). */
+const PIN_POLICY_REFUSAL = 'Tool "bash" is blocked by tool policy.\nReason: ';
+
+/** What Oh My Pi's own interceptor made of each `bash` call this process asked it of
+ *  (`interceptorAnswer`), by its rules, the copy, the checkout's root and the call's arguments:
+ *  each asked once, its answer depending on those alone (the copy, where the pin's bash tool takes
+ *  a leading `cd <dir> &&` as the call's directory and finds none there, an error); one the pin
+ *  gave no answer for is dropped, so the next asks again. */
+const interceptorAnswers = new Map<string, Promise<CheckoutAnswer | "passed" | Unanswered>>();
+
+/**
+ * What Oh My Pi's own interceptor `interceptor` (`BashInterceptor`) makes of the `bash` call
+ * `input`, as the session's Oh My Pi ran it before its bash tool ran the command: the pin's run
+ * with that setting alone and the shell prefix INTERCEPTOR_ASK_PREFIX (`pinAnswer`), so nothing
+ * of the call runs. A call it refuses is refused by the pin's tool-policy gate
+ * (PIN_POLICY_REFUSAL), with a reason that ends with the call's command (`\n\nOriginal command:
+ * <command>`, tools/bash-interceptor.ts line 140 at the pin); its answer is `Blocked: ` and that
+ * reason, an error, the text the session's Oh My Pi returned (the file's header, "The session's
+ * shell"). "passed" where the call reached the shell, which ended before the command, so its
+ * answer is no error. Or why neither: the pin gave no answer, or an error that is no refusal of
+ * its interceptor.
+ */
+function interceptorAnswer(
+  copy: CheckoutCopy,
+  input: Readonly<Record<string, unknown>>,
+  interceptor: BashInterceptor
+): Promise<CheckoutAnswer | "passed" | Unanswered> {
+  const key = JSON.stringify([interceptor.patterns ?? null, copy.dir, copy.root, input]);
+  const held = interceptorAnswers.get(key);
+  if (held !== undefined) return held;
+  const asked = (async (): Promise<CheckoutAnswer | "passed" | Unanswered> => {
+    const pin = await pinAnswer(
+      copy,
+      { tool: "bash", arguments: sandboxInput(copy, input), seed: {} },
+      [],
+      { prefix: INTERCEPTOR_ASK_PREFIX, interceptor }
+    );
+    if ("why" in pin) {
+      interceptorAnswers.delete(key);
+      return {
+        why: `the session's Oh My Pi's own bash interceptor decides whether the call runs, and the pinned Oh My Pi that holds it gave no answer: ${pin.why}`,
+      };
+    }
+    if (!pin.isError) return "passed";
+    const [part, ...more] = pin.content;
+    const text = part?.type === "text" ? (part.text ?? "") : "";
+    const reason = text.slice(PIN_POLICY_REFUSAL.length);
+    const command = typeof input.command === "string" ? input.command : "";
+    if (
+      more.length === 0 &&
+      text.startsWith(PIN_POLICY_REFUSAL) &&
+      reason.endsWith(`\n\nOriginal command: ${command}`)
+    ) {
+      return { text: `Blocked: ${reason}`, isError: true };
+    }
+    return {
+      why: `the pinned Oh My Pi's bash tool gave an error that is no refusal of its interceptor, where a call the interceptor lets through reaches a shell that ends before it: ${firstLine(text) || "no text"}`,
+    };
+  })();
+  interceptorAnswers.set(key, asked);
   return asked;
 }
 
@@ -5777,11 +6007,17 @@ async function bashAnswer(
   // How the session's Oh My Pi ran its bash calls, or why the runner does not know it.
   const shell = copy.shell ?? {};
   if ("why" in shell) return shell;
-  // The session's bash gate saw the call before its bash tool did: a call it refuses gets its
-  // refusal and never runs, whatever else would keep the runner from running it.
+  // The session's bash gate, or where it had none Oh My Pi's own interceptor, saw the call before
+  // its bash tool ran it: a call it refuses gets its refusal and never runs, whatever else would
+  // keep the runner from running it. The interceptor refused inside the session's bash tool, so
+  // knives' hook read its refusal as any other result; the gate's ended the call before that.
   if (shell.gate !== undefined) {
     const gated = await gateAnswer(copy, input, shell.gate, shell);
     if (gated !== "passed") return gated;
+  }
+  if (shell.interceptor !== undefined) {
+    const intercepted = await interceptorAnswer(copy, input, shell.interceptor);
+    if (intercepted !== "passed") return knivesAnswer(copy, input, intercepted, run);
   }
   const programs = simpleCommands(script).map((each) => literal(each.words[0] ?? []) ?? "");
   if (!copy.git && programs.some((program) => program === "git" || program === "jj")) {

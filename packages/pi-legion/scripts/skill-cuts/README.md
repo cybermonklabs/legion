@@ -1053,7 +1053,8 @@ with `SKILL_CUTS_OMP=<dir>/omp-v18.18.6-sami.20261119-162325-linux-x64/bin/omp`)
 absent or another build's, such a call is not answered, its reason saying why and how to get the
 pin's. The tests that run it skip outside CI where it is missing, with one line, and fail by their
 own name under `GITHUB_ACTIONS=true` (`test-natives.ts`'s `pinBinary`). In the sandbox the binary's
-directory, the addon's and the call's own (the hook and its call file) are bound read-only under
+directory, the addon's and the call's own (the hook, its call file and, in a shell with Oh My Pi's
+own interceptor, the settings file of it) are bound read-only under
 `/mnt/pin`, and an empty 64 MiB tmpfs at `/mnt/pin/home` is the pin's `HOME` and holds its fresh
 session directory: the one writable file system, the checkout copy staying read-only; the pin gets
 only `PATH`, `HOME` and `PI_NATIVES_DIR` in its environment, no `PI_CONFIG_FILES`, and no
@@ -1065,8 +1066,9 @@ A written case's `bash` calls are answered in the shell its context session's Oh
 in, as the dev box's dotfiles set it up at the one commit of the configuration's `dotfilesRepo`
 its profile's skills name (`cli.ts`'s `caseShell`, `checkout.ts`'s `ShellSetup`). Where the
 configuration names no such repository, the profile names no commit of it or several, a file
-below cannot be read, or the case records no arm of the gate, no `bash` call of the case is
-answered (`unanswered-read`, naming why), and the stage records why (`checkout.shell: {"why"}`).
+below cannot be read or sets its value in a form the runner does not read, or the case of a
+commit with the bash gate records no arm of it, no `bash` call of the case is answered
+(`unanswered-read`, naming why), and the stage records why (`checkout.shell: {"why"}`).
 
 - The prefix. The dotfiles' `shims/omp` exports `PI_SHELL_PREFIX="${PI_SHELL_PREFIX:-set +e +u
   +o pipefail;}"` from commit bcd580fa (2026-10-25) on (none before), and the pin puts the prefix
@@ -1076,7 +1078,9 @@ answered (`unanswered-read`, naming why), and the stage records why (`checkout.s
   that holds a command substitution is not read at all (a chain one of whose stages holds one is
   kept whole); the pin's run gets `PI_SHELL_PREFIX`. The shim is read once per commit, through
   the runner's source into `--cache-dir`.
-- The bash gate. Every recorded session ran the dotfiles' experiments extension
+- The bash gate, where the profile's commit holds one
+  (`omp/extensions/experiments/bash-gate-core.ts`, from dotfiles commit 050e8a40, 2026-10-19, on).
+  A session of such a profile ran the dotfiles' experiments extension
   (`omp/extensions/experiments/index.ts`, which `installers/omp.sh` links into every profile): its
   `bash-gate.ts` turns the pin's own interceptor off in its process, and `bash-gate-core.ts`'s
   `intercept` blocks a call one of the interceptor's default rules matches (read: `head`, `tail`,
@@ -1108,12 +1112,28 @@ answered (`unanswered-read`, naming why), and the stage records why (`checkout.s
   gate before the skill's read matches (`checkout.bashGate.versions`). Where it holds none, the
   extension is the profile's commit's; where it holds some, the profile's commit's where its
   `bash-gate-core.ts` is a version they match, else the newest version they match that is older
-  than the profile's (`gateVersion`); a profile's commit with no bash gate, refusals that match no
-  version or only newer ones, refuse. The extension's directory is read at that commit through
+  than the profile's (`gateVersion`); refusals that match no version, or only newer ones,
+  refuse. The extension's directory is read at that commit through
   the runner's source into `--cache-dir` (it imports only Oh My Pi's own modules and Node's, so
   it needs no package), never another version. The stage records the shell
   (`checkout.shell`: `{"prefix", "gate": {"commit", "from", "leading"}}`, `from` `profile` or
   `history`).
+- Oh My Pi's own interceptor, where the profile's commit holds no bash gate (every commit before 050e8a40).
+  Such a session's `bash` calls met no gate: its Oh My Pi ran its own interceptor as the commit's `omp/config.yml` sets `bashInterceptor` (`checkout.ts`'s `interceptorOf`),
+  on at 072e87ff, for one, with no `patterns` of its own, so the pin's default rules (`exec/settings.ts` lines 17-98 at the pin tag), where 050e8a40 turned it off as the gate took those rules over.
+  Where the config turns it off or does not set it, there is none (the pin's default); a config that cannot be read, or sets `bashInterceptor` in a form the runner does not read, answers no `bash` call.
+  Whether the case records an arm of the gate does not matter, since such a session drew none.
+  Each `bash` call is shown to the interceptor before anything else of it, as to the gate (`interceptorAnswer`):
+  a pin run whose `--config` (a file of the call's own directory) holds that `bashInterceptor` block alone, every other setting at the pin's default,
+  and whose `PI_SHELL_PREFIX` is `exit 0;`, so the shell ends before a call the interceptor lets through, and nothing of it runs.
+  The interceptor reads the command as the call gives it, before any prefix (`tools/bash.ts` lines 621-631 and 1316-1317), so that prefix changes nothing it decides.
+  The pin's tool-policy gate asks the interceptor before the tool runs (`extensibility/extensions/wrapper.ts` lines 281-292) and refuses a call it blocks with ``Tool "bash" is blocked by tool policy.\nReason: <message>\n\nOriginal command: <command>`` (`tools/approval.ts` lines 617-626),
+  where the session's Oh My Pi returned the interceptor's own text as the bash tool's error, ``Blocked: <message>\n\nOriginal command: <command>`` (`tools/bash-interceptor.ts` line 140), as a recorded session's result shows.
+  So a call the interceptor refuses gets `Blocked: ` and the pin's reason, an error, at the session's paths, whatever else would keep the runner from running it, and knives' blocks where they go (the interceptor refused inside the session's bash tool, whose result knives' hook reads);
+  one it lets through is answered as before, by the runner's own run, or by the pin's run with the same `--config` where the minimizer may rewrite it.
+  Each call's answer is asked once per runner process.
+  The experiments extension such a commit may hold (61010900 on, with no bash gate) is not loaded, as a gate's run turns every feature but the gate off.
+  The stage records the shell (`checkout.shell`: `{"prefix", "interceptor": {"commit", "enabled"}}`).
 - The stub against an ordinary session. A test runs the pin's bash tool on a fixture through this
   harness and in an ordinary `omp -p` session of the same binary (a HOME of its own, the
   dotfiles' `omp/config.yml` by `--config`, `PI_SHELL_PREFIX`, the experiments extension, none of
@@ -3401,7 +3421,8 @@ repository and commit, the checkout's root on the session's machine, the working
 whether the context session ran jj, a `bash` call of its transcript whose command holds the word
 `jj`, the bash gate it ran, the arm of its last `experiments` entry before the skill's read
 and the gate's versions its refusals before that read match (`bashGate`: `{leading, versions}`,
-absent where no such entry names the arm; "The bash gate" above), and what knives added for the
+absent where no such entry names the arm, as for a session whose dotfiles predate the gate, which
+needs none; "The bash gate" above), and what knives added for the
 checkout's repository (`knives`: `{blocks, touched}`, "knives' blocks" above), which the case's
 own history, the task and the skill's read, cannot show; a case built before the build passed
 over a context session in no checkout it knows may have none, and its runs answer no read-only

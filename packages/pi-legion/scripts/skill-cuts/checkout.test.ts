@@ -2256,7 +2256,7 @@ test("gateRefusalVersions tells each version of the bash gate by the form of its
 test("gateVersion takes the profile's commit where the history holds no refusal of the gate or one its version's form matches, else the newest version the refusals match that is older than the profile's, and refuses the rest", () => {
   const [v1, v2, v3, v4] = BASH_GATE_COMMITS;
   const cores = new Map(BASH_GATE_COMMITS.map((commit) => [commit, `core of ${commit}`]));
-  const at = (core: string | undefined, versions: readonly string[] | undefined) =>
+  const at = (core: string, versions: readonly string[] | undefined) =>
     gateVersion({ profile: "p0f11e", profileCore: core, versions, cores });
   expect(at(`core of ${v4}`, undefined)).toEqual({ commit: "p0f11e", from: "profile" });
   expect(at(`core of ${v4}`, [v2, v3])).toEqual({ commit: v3, from: "history" });
@@ -2266,7 +2266,6 @@ test("gateVersion takes the profile's commit where the history holds no refusal 
     why: expect.stringContaining("match only versions"),
   });
   expect(at(`core of ${v4}`, [])).toEqual({ why: expect.stringContaining("match no one") });
-  expect(at(undefined, undefined)).toEqual({ why: expect.stringContaining("holds no bash gate") });
 });
 
 // Catches: a call the session's bash gate refused answered with the runner's own run (or left
@@ -2327,6 +2326,104 @@ test("a session's experiments extension whose gates.json names a feature that is
   };
   expect(await answerCall(copy, "bash", { command: "cat x" }, "hashline")).toEqual({
     why: `the session's bash gate decides whether the call runs, and the pinned Oh My Pi that holds it gave no answer: the session's experiments extension names a feature "x-y" in its gates.json that is no variable name the runner can turn off`,
+  });
+});
+
+/** The made-up checkout root of a dev-box session whose dotfiles commit predates the bash gate:
+ *  its directory on the dev box, the parent of its working directory, mapped here. */
+const BATCHLOG = "/srv/dev/batchlog";
+
+/** The message of the read rule, the first of Oh My Pi's default interceptor rules, as the pin
+ *  writes it (DEFAULT_BASH_INTERCEPTOR_RULES, packages/coding-agent/src/exec/settings.ts lines
+ *  17-28 at the tag v18.18.6-sami.20261119-162325 of cybermonklabs/oh-my-pi). */
+const READ_RULE_MESSAGE =
+  "Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.";
+
+/** The refusal by Oh My Pi's own interceptor of `command` under the rule whose message is
+ *  `message`, as the pin writes it (packages/coding-agent/src/tools/bash-interceptor.ts line 140
+ *  at the pin tag: `Blocked: ${rule.message}\n\nOriginal command: ${originalCommand}`). */
+function interceptorRefusal(message: string, command: string): string {
+  return `Blocked: ${message}\n\nOriginal command: ${command}`;
+}
+
+/** A call a dev-box session made on 2026-10-17, its dotfiles at a commit before 050e8a40 (no bash
+ *  gate; its omp/config.yml sets `bashInterceptor: enabled: true`), from its working directory
+ *  BATCHLOG/gate, with no `cwd`: its paths mapped from the dev box's directory to BATCHLOG, every
+ *  other byte as its model gave it. The session recorded PRE_GATE_REFUSAL for it, an error. */
+const PRE_GATE_BLOCKED_CALL = {
+  command: `ls -la ${BATCHLOG}/gate ${BATCHLOG}/gate-run ${BATCHLOG}/origin-main ${BATCHLOG}/timing 2>&1 | cat; cat ${BATCHLOG}/gate-brief.md`,
+  i: "Listing existing gate dirs",
+};
+
+/** The refusal the session recorded for PRE_GATE_BLOCKED_CALL, its paths mapped the same way,
+ *  every other byte as it was. */
+const PRE_GATE_REFUSAL =
+  "Blocked: Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.\n\nOriginal command: ls -la /srv/dev/batchlog/gate /srv/dev/batchlog/gate-run /srv/dev/batchlog/origin-main /srv/dev/batchlog/timing 2>&1 | cat; cat /srv/dev/batchlog/gate-brief.md";
+
+/** The call the same session made before PRE_GATE_BLOCKED_CALL, which its interceptor let through
+ *  (the session recorded a listing), its paths mapped the same way, the dev box's disk to /srv. */
+const PRE_GATE_RUN_CALL = {
+  command: `ls -la ${BATCHLOG}/ ${BATCHLOG}/gate 2>&1; nproc; df -h /srv | cat`,
+  i: "Inspecting workspace directory",
+};
+
+/** A copy of that session's checkout under `name`, at BATCHLOG, its working directory gate/, in
+ *  the shell such a session had: no prefix, and Oh My Pi's own interceptor on, with its default
+ *  rules. */
+function preGateCopy(name: string): CheckoutCopy {
+  const copy = filesCopy(name, {
+    "gate/notes.md": "# Notes\n",
+    "gate-run/run.log": "ok\n",
+    "origin-main/README.md": "# Origin\n",
+    "timing/times.txt": "1\n",
+    "gate-brief.md": "# Gate brief\n",
+  });
+  return { ...copy, root: BATCHLOG, cwd: `${BATCHLOG}/gate`, shell: { interceptor: {} } };
+}
+
+// Catches: a call that the interceptor of a session whose dotfiles predate the bash gate refused
+// answered by the runner's own run, left unanswered, or refused in the pin's tool-policy form
+// (`Tool "bash" is blocked by tool policy.`) rather than the session's; its paths left at the
+// sandbox's; or a call the interceptor let through refused, or answered other than with no
+// interceptor.
+pinned.test(
+  "under Oh My Pi's own interceptor a call it refused gets the session's recorded refusal byte for byte, Blocked: and the read rule's message and the original command at the session's paths; that call's first step alone, whose cat reads a pipe, gets the runner's own run, and the session's earlier call the answer it gets with no interceptor",
+  async () => {
+    const copy = preGateCopy("pre-gate-recorded");
+    expect(PRE_GATE_REFUSAL).toBe(
+      interceptorRefusal(READ_RULE_MESSAGE, PRE_GATE_BLOCKED_CALL.command)
+    );
+    expect(await answerCall(copy, "bash", PRE_GATE_BLOCKED_CALL, "hashline")).toEqual({
+      text: PRE_GATE_REFUSAL,
+      isError: true,
+    });
+    const command = PRE_GATE_BLOCKED_CALL.command.slice(
+      0,
+      PRE_GATE_BLOCKED_CALL.command.indexOf(";")
+    );
+    const own = await sandboxedBash(copy, command);
+    if ("why" in own) throw new Error(own.why);
+    expect([...own.output].length).toBeLessThan(1000);
+    expect(
+      sansWallTime(
+        await answerCall(copy, "bash", { ...PRE_GATE_BLOCKED_CALL, command }, "hashline")
+      )
+    ).toEqual({ text: own.output, isError: false });
+    expect(await answerCall(copy, "bash", PRE_GATE_RUN_CALL, "hashline")).toEqual(
+      await answerCall({ ...copy, shell: {} }, "bash", PRE_GATE_RUN_CALL, "hashline")
+    );
+  }
+);
+
+// Catches: a call of a session whose dotfiles predate the bash gate answered by the runner's own
+// run, as if no interceptor had seen it, where the pinned Oh My Pi that holds the interceptor
+// gave no answer.
+test("under Oh My Pi's own interceptor, with no pinned binary, a bash call is not answered, saying why the pin gave no answer", async () => {
+  const copy = preGateCopy("pre-gate-no-pin");
+  await withoutPinBinary(async () => {
+    expect(await answerCall(copy, "bash", { command: "ls" }, "hashline")).toEqual({
+      why: expect.stringContaining("SKILL_CUTS_OMP names no file"),
+    });
   });
 });
 

@@ -34,6 +34,7 @@ import {
   CaseResult,
   type CliIo,
   caseResultFile,
+  caseShell,
   falseLossChance,
   main,
   noVerdict,
@@ -46,7 +47,7 @@ import {
   textDigest,
 } from "./cli";
 import { loadConfig } from "./config";
-import { cacheKey, installedCopies, skillFrontmatter } from "./context";
+import { cacheKey, installedCopies, localSource, skillFrontmatter } from "./context";
 import { countSql } from "./countsql";
 import { GATEWAY_TRIES } from "./gateway";
 import { beforeText, judgeBody, judgeIdentity, NOTHING_REPLY } from "./judge";
@@ -2615,6 +2616,75 @@ function meanWords(differences: number[]): string {
     ? `${head} (one case, so no interval)`
     : `${head} (95% interval ${mean.interval.low.toFixed(2)} to ${mean.interval.high.toFixed(2)}, t over the cases)`;
 }
+
+// Catches: a written case whose profile's dotfiles commit predates the bash gate refused for the
+// gate it never ran, so none of its bash calls is answered, or put under the gate where the case
+// records an arm; Oh My Pi's own interceptor left off where the commit's omp/config.yml turns it
+// on, or on where it turns it off; a config.yml in a form the runner does not read taken as one;
+// or a case of a commit with the gate that records no arm of it answered in a guessed shell.
+test("caseShell gives a case whose dotfiles commit holds no bash gate Oh My Pi's own interceptor as its omp/config.yml sets it, on or off, whatever the case records of a gate; it refuses a config.yml it does not read, and a case of a commit with the gate that records no arm", async () => {
+  const repos = path.join(scratch, "case-shell-repos");
+  const shim = ["#!/usr/bin/env bash", "set -euo pipefail", 'exec omp "$@"', ""].join("\n");
+  const commits = {
+    on: "a0a0a0a0a0a0a0a0",
+    off: "b0b0b0b0b0b0b0b0",
+    unread: "c0c0c0c0c0c0c0c0",
+    gated: "d0d0d0d0d0d0d0d0",
+  } as const;
+  const configs: Record<keyof typeof commits, string> = {
+    on: "advisor:\n  enabled: true\nbashInterceptor:\n  enabled: true\n",
+    off: "bashInterceptor:\n  enabled: false\n",
+    unread: "bashInterceptor:\n  enabled: sometimes\n",
+    gated: "bashInterceptor:\n  enabled: true\n",
+  };
+  for (const name of ["on", "off", "unread", "gated"] as const) {
+    writeSkill(path.join(repos, DOTFILES.repo, commits[name]), {
+      "shims/omp": shim,
+      "omp/config.yml": configs[name],
+      ...(name === "gated"
+        ? { "omp/extensions/experiments/bash-gate-core.ts": "export const gate = true;\n" }
+        : {}),
+    });
+  }
+  const r = {
+    source: localSource(repos),
+    cacheDir: path.join(scratch, "case-shell-cache"),
+    dotfilesRepo: DOTFILES.repo,
+  };
+  const root = "/work/acme/proj";
+  const shellAt = (commit: string, bashGate?: { leading: boolean }) => {
+    const c = makeWrittenCase("w00");
+    return caseShell(r, {
+      ...c,
+      profile: { ...c.profile, skills: c.profile.skills.map((skill) => ({ ...skill, commit })) },
+      checkout: {
+        repo: "acme/proj",
+        commit: "f00df00df00df00d",
+        root,
+        cwd: root,
+        ...(bashGate === undefined ? {} : { bashGate }),
+      },
+    });
+  };
+  const on = {
+    shell: { interceptor: {} },
+    record: { prefix: null, interceptor: { commit: commits.on, enabled: true } },
+  };
+  expect(await shellAt(commits.on)).toEqual(on);
+  expect(await shellAt(commits.on, BASH_GATE)).toEqual(on);
+  expect(await shellAt(commits.off)).toEqual({
+    shell: {},
+    record: { prefix: null, interceptor: { commit: commits.off, enabled: false } },
+  });
+  const unread = {
+    why: expect.stringContaining("sets bashInterceptor in a form the runner does not read"),
+  };
+  expect(await shellAt(commits.unread)).toEqual({ shell: unread, record: unread });
+  const noArm = {
+    why: expect.stringContaining("records no arm of its context session's bash gate"),
+  };
+  expect(await shellAt(commits.gated)).toEqual({ shell: noArm, record: noArm });
+});
 
 describe("behaviour: written cases and the report's descriptions", () => {
   test("the served-sessions refusal stops session cases only, and a skill with written cases never reports it as its reason for no verdict", async () => {
