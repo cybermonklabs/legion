@@ -4,7 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { CheckBlock } from "../../../api/types";
+import type { CheckBlock, RequirementCoverage } from "../../../api/types";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
@@ -41,7 +41,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // Whether the read that holds the Verification document's blocks runs, from an observer of its
   // own (`useBlocksRunning`): under this filter its own view read.
   const running = useBlocksRunning(issue.key, "verification");
-  const { checks, reads } = useVerificationReads(issue.key, {
+  const { checks, reads, requirements } = useVerificationReads(issue.key, {
     ...blocksOf("verification"),
     isFetching: running,
   });
@@ -92,6 +92,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           namesLine={names}
           published={published}
           reads={reads}
+          requirements={requirements}
           view={view.root}
           whole={whole}
         />
@@ -102,12 +103,16 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   );
 }
 
+/** The coverage read's rows while it holds none: the same value on every render. */
+const NO_REQUIREMENTS: readonly RequirementCoverage[] = [];
+
 /**
- * The reads the Verification view is drawn from, as its body takes them (the `checks` and
- * `reads` of `VerificationFilterBody`): the coverage read, the results read with the issue's
- * checks, the Verification document's blocks it is handed, and how the three stand. Both reads are
- * the slot's own observers, apart from `useIssueTree`'s of the same keys, so what they fetch is
- * read by their own options alone.
+ * The reads the Verification view is drawn from, as its body takes them (the `checks`, `reads`
+ * and `requirements` of `VerificationFilterBody`): the coverage read with its rows, every
+ * statement of the issue's spec, the results read with the issue's checks, the Verification
+ * document's blocks it is handed, and how the three stand. Both reads are the slot's own
+ * observers, apart from `useIssueTree`'s of the same keys, so what they fetch is read by their
+ * own options alone.
  */
 export function useVerificationReads(
   issueKey: string,
@@ -115,6 +120,7 @@ export function useVerificationReads(
 ): {
   checks: readonly CheckBlock[];
   reads: VerificationReads;
+  requirements: readonly RequirementCoverage[];
 } {
   // The coverage read, and the issue's checks with the results recorded against them, under the
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own. The
@@ -126,6 +132,9 @@ export function useVerificationReads(
   const coverage = useQuery({ ...issueCoverageQuery(issueKey), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(issueKey), ...EVENT_FRESH });
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
+  // The coverage read's rows, which the summary's covered count is read from alone: that read
+  // answers every statement of the issue's spec, where the view read answers a page at a time.
+  const requirements = coverage.data?.requirements ?? NO_REQUIREMENTS;
   // The blocks read of the Verification document too: a check learns the statements it serves
   // from its block's `serves` pointer, which only that read carries (`tree-nodes.ts`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
@@ -167,7 +176,7 @@ export function useVerificationReads(
       : answered
         ? { state: "answered" }
         : { state: "waiting" };
-  return { checks, reads };
+  return { checks, reads, requirements };
 }
 
 /** What the line of a read that failed is given: which refusal it says, the read's own count of
