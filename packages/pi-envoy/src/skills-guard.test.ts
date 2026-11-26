@@ -68,6 +68,25 @@ test("the injected dispatch-first skill fits its budget on every host", () => {
   expect(readDispatchFirstContext(file).length).toBeLessThan(6_000);
 });
 
+// The entry skill every session with Dispatch is served, dispatch-first as the host injects it
+// (readDispatchFirstContext), grows by no more than the 500 bytes the spec approved over its size
+// at the base. Each ceiling is that injected text's size in bytes measured at ecd967b17a4e, plus
+// 500.
+const ENTRY_SKILL_CEILINGS = [
+  {
+    entry: "dispatch-first, as injected",
+    bytes: () => Buffer.byteLength(readDispatchFirstContext(dispatchFirstSkillFile(staged))),
+    ceiling: 3_236 + 500,
+  },
+];
+test("each served entry skill stays within its base plus 500 bytes", () => {
+  const over = ENTRY_SKILL_CEILINGS.flatMap(({ entry, bytes, ceiling }) => {
+    const size = bytes();
+    return size > ceiling ? [`${entry}: ${size} bytes, over its ceiling of ${ceiling}`] : [];
+  });
+  expect(over).toEqual([]);
+});
+
 // dispatch-first is the one Dispatch skill every session holds without loading it, so the two
 // rules that keep a person's view of an agent's work true live there: a blocker is an open ask,
 // and every accepted request is recorded and read back before the turn ends. The test reads the

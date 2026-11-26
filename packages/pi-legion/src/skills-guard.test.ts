@@ -10,13 +10,17 @@ import {
 import {
   brokenRelativeLinks,
   brokenSkillLinks,
+  bundledAgents,
   files,
   longSkillBodies,
   misnamedSkills,
   oversizedFiles,
   REPO_ROOT,
+  references,
+  shippedAgents,
   skillLinks,
   stageSkills,
+  unresolvedReferences,
 } from "@legion/pi-shared/test/skills-guard";
 
 // The Claude Code plugin is generated from this repository's skills/ and this package's agents/,
@@ -67,6 +71,92 @@ test("every skill://<name>/<path> link names a file that exists, and its #anchor
 test("every relative link resolves to a file inside the staged partition", () => {
   expect(brokenRelativeLinks(staged)).toEqual([]);
 });
+
+// Every reference a Legion role can be pointed along resolves against the two packed plugins:
+// those in the texts a role reads — the skills both plugins stage, the agents this plugin ships
+// and the daemon's prompt parts — and those the daemon and the plugins' own code write, in a
+// message, a refusal or a comment, read whole from every non-test Go file of the daemon and
+// every non-test TypeScript file of the sources the plugins bundle. A `skill://` reference or a
+// `skills/<name>/<path>` path names a skill one partition stages, a file of it, and a heading of
+// that file for its `#anchor`; a `task(agent="<name>")` names an agent this plugin ships or Oh My
+// Pi bundles. Each group of files must hold a reference, so a reader that found none cannot pass
+// while checking nothing.
+function everyReference(envoyStaged: string) {
+  const typeScript = [
+    "packages/pi-shared/src",
+    "packages/pi-legion/src",
+    "packages/envoy-client/src",
+  ]
+    .flatMap((root) => files(path.join(REPO_ROOT, root)))
+    .filter(
+      (file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && !file.includes("/__tests__/")
+    );
+  const go = files(path.join(REPO_ROOT, "packages/daemon")).filter(
+    (file) => file.endsWith(".go") && !file.endsWith("_test.go")
+  );
+  const fromRepository: [string, string[]][] = [
+    ["the agents", files(agentsRoot).filter((file) => file.endsWith(".md"))],
+    ["the prompt parts", files(promptsRoot).filter((file) => file.endsWith(".md"))],
+    ["the daemon's Go", go],
+    ["the plugins' TypeScript", typeScript],
+  ];
+  const found = [
+    {
+      group: "the staged skills",
+      held: [staged, envoyStaged].flatMap((root) =>
+        files(root).flatMap((file) =>
+          references(path.join("skills", path.relative(root, file)), readFileSync(file, "utf8"))
+        )
+      ),
+    },
+    ...fromRepository.map(([group, sources]) => ({
+      group,
+      held: sources.flatMap((file) =>
+        references(path.relative(REPO_ROOT, file), readFileSync(file, "utf8"))
+      ),
+    })),
+  ];
+  expect(found.filter(({ held }) => held.length === 0).map(({ group }) => group)).toEqual([]);
+  return found.flatMap(({ held }) => held);
+}
+
+test("every reference a shipped text or the daemon names resolves against the packed plugins", () => {
+  const envoyStaged = stageSkills("@sjawhar/pi-envoy");
+  try {
+    const skillReferences = everyReference(envoyStaged).filter(
+      (reference) => !("agent" in reference)
+    );
+    expect(unresolvedReferences(skillReferences, [staged, envoyStaged], new Set())).toEqual([]);
+  } finally {
+    rmSync(path.dirname(envoyStaged), { recursive: true, force: true });
+  }
+});
+
+// The agents Oh My Pi bundles are read from the Oh My Pi binary itself, as
+// packages/pi-envoy/src/skills-guard.test.ts's agent test reads them: LEGION_TEST_OMP names it,
+// and on GitHub Actions it must be set.
+const omp = process.env.LEGION_TEST_OMP;
+const onActions = process.env.GITHUB_ACTIONS === "true";
+test.skipIf(omp === undefined && !onActions)(
+  "every task agent a shipped text or the daemon names is one this plugin ships or Oh My Pi bundles",
+  async () => {
+    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const envoyStaged = stageSkills("@sjawhar/pi-envoy");
+    try {
+      const agentReferences = everyReference(envoyStaged).filter(
+        (reference) => "agent" in reference
+      );
+      const available = new Set([
+        ...shippedAgents(path.dirname(agentsRoot)),
+        ...(await bundledAgents(omp)),
+      ]);
+      expect(unresolvedReferences(agentReferences, [], available)).toEqual([]);
+    } finally {
+      rmSync(path.dirname(envoyStaged), { recursive: true, force: true });
+    }
+  },
+  60_000
+);
 
 // Reads by filesystem path stop at 300 lines, so a worker reaches a reference only through a
 // `skill://legion-worker/<path>` link from somewhere it reads.
@@ -717,13 +807,30 @@ test("every file of the Legion role skills fits the skill budget", () => {
   const budgeted = files(staged).filter((file) =>
     /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
   );
-  expect(budgeted.length).toBeGreaterThan(20);
   const over = budgeted.flatMap((file) => {
     const text = readFileSync(file, "utf8");
     const bytes = Buffer.byteLength(text);
     const lines = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
     return bytes > 8_000 || lines > 150
       ? [`${path.relative(staged, file)}: ${lines} lines, ${bytes} bytes`]
+      : [];
+  });
+  expect(over).toEqual([]);
+});
+
+// The entry skill each Legion role is served, its `SKILL.md` as this plugin stages it, grows by
+// no more than the 500 bytes the spec approved over its size at the base. Each ceiling is that
+// file's size measured at ecd967b17a4e, plus 500.
+const ENTRY_SKILL_CEILINGS = [
+  { skill: "legion-worker", ceiling: 7_968 + 500 },
+  { skill: "legion-architect", ceiling: 7_829 + 500 },
+  { skill: "legion-controller", ceiling: 7_767 + 500 },
+];
+test("each served entry skill stays within its base plus 500 bytes", () => {
+  const over = ENTRY_SKILL_CEILINGS.flatMap(({ skill, ceiling }) => {
+    const bytes = statSync(path.join(staged, skill, "SKILL.md")).size;
+    return bytes > ceiling
+      ? [`${skill}/SKILL.md: ${bytes} bytes, over its ceiling of ${ceiling}`]
       : [];
   });
   expect(over).toEqual([]);

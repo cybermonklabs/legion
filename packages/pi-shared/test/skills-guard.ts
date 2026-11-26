@@ -15,14 +15,33 @@ export const SPILL_THRESHOLD_BYTES = 50 * 1024;
 /** The repository root, where `skills/` and the prepack script live. */
 export const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 const PREPACK_SCRIPT = path.join(REPO_ROOT, "scripts/pi-plugin-prepack.sh");
+// A skill's name as `skill://<name>` writes it, ending on a letter or digit so that a sentence's
+// full stop is not read into it (packages/daemon/internal/promptrefs/promptrefs.go).
+const SKILL_NAME = "[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?";
 // A link's path stops at whitespace, a closing bracket or quote, a code span, or Markdown emphasis
 // (`**skill://…/pr-body.md**`); `#anchor` is kept so it can be checked against the target's headings.
-const SKILL_LINK = /skill:\/\/([a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)\/([^\s)`'"\]>*]+)/g;
+const SKILL_LINK = new RegExp(String.raw`skill:\/\/(${SKILL_NAME})\/([^\s)\`'"\]>*]+)`, "g");
 // A relative Markdown link, `](../…)` or `](./…)`, up to its closing parenthesis.
 const RELATIVE_LINK = /\]\((\.\.?\/[^\s)]+)\)/g;
 // A task dispatch as the daemon's boot gate reads it (packages/daemon/internal/promptrefs/
 // promptrefs.go): the name inside `agent="…"`, as `task(agent="<name>")` writes it.
 const AGENT_DISPATCH = /agent="([a-z0-9][a-z0-9._-]*)"/g;
+// What a reference's path stops at in any text, source code included: where a link's path stops,
+// and at a backslash, which escapes a quote in a Go or TypeScript string.
+const REFERENCE_PATH = String.raw`[^\s)\`'"\]>*\\]+`;
+// `skill://<name>`, then a `/<path>` or a `#<anchor>`, if any.
+const SKILL_REFERENCE = new RegExp(
+  String.raw`skill:\/\/(${SKILL_NAME})([/#]${REFERENCE_PATH})?`,
+  "g"
+);
+// A path into a skill as the repository lays the skills out, `skills/<name>/<path>`, where
+// `skills/` begins the path rather than ends a longer one (`dist/skills/`, `.omp/skills/`).
+const SKILL_PATH = new RegExp(
+  String.raw`(?<![\w./~-])skills\/([a-z0-9][a-z0-9._-]*)\/(${REFERENCE_PATH})`,
+  "g"
+);
+// AGENT_DISPATCH, also with the quotes a Go or TypeScript string escapes: `agent=\"<name>\"`.
+const AGENT_REFERENCE = /agent=\\?"([a-z0-9][a-z0-9._-]*)\\?"/g;
 
 /**
  * Stages `packageName`'s skill partition into a fresh temporary directory through the prepack
@@ -320,6 +339,86 @@ export function unresolvedAgentDispatches(
       ({ source, name }) =>
         `${source} dispatches ${name}, which neither this plugin nor Oh My Pi ships`
     );
+}
+
+/**
+ * One reference a text makes, as `text` writes it, at `line` of the file `source` names: to a file
+ * of a skill (`target`, its `SKILL.md` where the reference names no path) and, with `anchor`, to
+ * a heading of that file; or to a task agent.
+ */
+export type Reference = {
+  readonly source: string;
+  readonly line: number;
+  readonly text: string;
+} & (
+  | { readonly skill: string; readonly target: string; readonly anchor: string | undefined }
+  | { readonly agent: string }
+);
+
+/**
+ * Every reference in `text`, the whole of the file `source` names, comments and code fences
+ * included: each `skill://<name>[/<path>][#anchor]`, each `skills/<name>/<path>[#anchor]`, and
+ * each `task(agent="<name>")`, whose quotes a Go or TypeScript string may escape.
+ */
+export function references(source: string, text: string): Reference[] {
+  const lineOf = (index: number | undefined) => text.slice(0, index).split("\n").length;
+  // A reference that ends a sentence or a clause carries its full stop or comma.
+  const intoSkill = (skill: string, rest: string) => {
+    const [target = "", anchor] = rest.replace(/[.,;:]+$/, "").split("#");
+    return { skill, target: target === "" ? "SKILL.md" : target, anchor };
+  };
+  return [
+    ...[...text.matchAll(SKILL_REFERENCE)].map(
+      ({ 0: written, 1: skill = "", 2: rest = "", index }) => ({
+        source,
+        line: lineOf(index),
+        text: written.replace(/[.,;:]+$/, ""),
+        ...intoSkill(skill, rest.replace(/^\//, "")),
+      })
+    ),
+    ...[...text.matchAll(SKILL_PATH)].map(({ 0: written, 1: skill = "", 2: rest = "", index }) => ({
+      source,
+      line: lineOf(index),
+      text: written.replace(/[.,;:]+$/, ""),
+      ...intoSkill(skill, rest),
+    })),
+    ...[...text.matchAll(AGENT_REFERENCE)].map(({ 0: written, 1: agent = "", index }) => ({
+      source,
+      line: lineOf(index),
+      text: written,
+      agent,
+    })),
+  ];
+}
+
+/**
+ * The references of `found` that do not resolve against the packed plugins, each as one sentence
+ * naming its source and line: one to a skill no partition of `partitions` stages, to a path that
+ * is no file of that skill, or to an anchor no heading of that file renders (`anchors`), and one
+ * to a task agent `agents` does not hold.
+ */
+export function unresolvedReferences(
+  found: readonly Reference[],
+  partitions: readonly string[],
+  agents: ReadonlySet<string>
+): string[] {
+  return found.flatMap((reference) => {
+    const at = `${reference.source}:${reference.line}: ${reference.text}`;
+    if ("agent" in reference) {
+      return agents.has(reference.agent) ? [] : [`${at} names a task agent no plugin ships`];
+    }
+    const { skill, target, anchor } = reference;
+    const partition = partitions.find((root) => existsSync(path.join(root, skill, "SKILL.md")));
+    if (partition === undefined) return [`${at} names a skill neither plugin stages`];
+    const file = path.join(partition, skill, target);
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      return [`${at} names no file of the skill ${skill}`];
+    }
+    if (anchor !== undefined && !anchors(readFileSync(file, "utf8")).has(anchor)) {
+      return [`${at} names no heading of ${skill}/${target}`];
+    }
+    return [];
+  });
 }
 
 /** The worker skill, the one file the release rule below is written over. */
