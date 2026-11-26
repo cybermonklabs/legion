@@ -203,8 +203,10 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	if err := e.store.MarkRunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil {
-		return err
+	if false {
+		if err := e.store.MarkRunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil {
+			return err
+		}
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }
