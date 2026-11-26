@@ -31,16 +31,18 @@ type Credential struct {
 // an unlisted credential's.
 //
 // VisibleProjectsSQL is its SQL twin for reads, which TestTheListRuleIsOneInGoAndSQL holds equal to
-// it over every combination. Dispatch's 11 write checks in internal/dispatch/api call it with
-// Listed alone, the project each write names, and that project's visibility, which each check
-// reads in the statement or the transaction that reads the project, before the write. The project
-// check of a retraction asks it once more, for the check's issue, before any other layer reads
-// the request (api's secondProjectResolverFor). seenBy calls it the same way to leave out of an
-// answer each issue that the caller cannot see: the issues of a 409 PARENT_STATUS_CONFLICT
-// (seenConflictIssues), the children of a 409 FOREIGN_CHILD_OPEN and the checks that a result's
-// check value matches. No caller builds a restricted member's credential, so the change that
-// turns on restricted member kinds for writes must change each of these calls: the 11 write
-// checks, the retraction's second check and seenBy.
+// it over every combination. Each write check in internal/dispatch/api calls it with Listed
+// alone, the project each write names, and that project's visibility, which each check reads in
+// the statement or the transaction that reads the project, before the write. The project check of
+// a retraction asks it once more, for the check's issue, before any other layer reads the request
+// (api's secondProjectResolverFor), and a status change asks it once more for the issue it names,
+// under its planner's owner locks (api's planStatusChangeUnderLocks). seenBy calls it the same way
+// to leave out of an answer each issue that the caller cannot see: the issues of a 409
+// PARENT_STATUS_CONFLICT (seenConflictIssues), the children of a 409 FOREIGN_CHILD_OPEN and the
+// checks that a result's check value matches. No caller builds a restricted member's credential,
+// so the change that turns on restricted member kinds for writes must change each of these calls:
+// each write check, the retraction's second check, the status change's check of its named issue
+// and seenBy.
 func CredentialCovers(cred Credential, project string, private bool) bool {
 	if cred.Browser {
 		return true

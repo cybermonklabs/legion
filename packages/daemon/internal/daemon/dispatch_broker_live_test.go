@@ -2059,7 +2059,7 @@ const proxyHalfLifeSlack = time.Second / 2
 const proxyReads = 480 * time.Second
 
 // proxyPace is the least time between the starts of two requests of C2's client: in proxyReads
-// it sends at most 4,800, so it makes the 2,000 C2 asks for while the proxy and Dispatch answer
+// it sends at most 4,801, so it makes the 2,000 C2 asks for while the proxy and Dispatch answer
 // each request within 240 ms.
 const proxyPace = 100 * time.Millisecond
 

@@ -1,6 +1,6 @@
 // private_project_writes_test.go holds the private-project clause of INFRA-4799's R8: a broker
 // token that names one project writes no object of a private project that it does not name. Each
-// of the 11 write checks that ask access.CredentialCovers has a case of its own. Each HTTP case
+// write check that asks access.CredentialCovers has a case of its own. Each HTTP case
 // makes the write to the private project's object and the same write to a target that does not
 // exist, and holds the two answers equal in status, code and message. Each reads what the two
 // writes could add before and after them, and finds nothing written. The same write with a token
@@ -20,6 +20,11 @@
 //     retractCheckResult asks again in its transaction (refuseRetractionOfUncoveredCheck).
 //     TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne calls each of the two
 //     second checks directly, and so holds the branch of each.
+//   - withinProjectScope refuses a status change of a private project's issue before the
+//     handler runs, and planStatusChangeUnderLocks asks about the issue the call names again
+//     under its owner locks. TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne
+//     (private_project_cascade_test.go) calls the route's handler past the pre-handler check,
+//     and so holds the branch of the second.
 //
 // A status change leaves the private issue out of its cascade, and the answers 409
 // PARENT_STATUS_CONFLICT and 409 FOREIGN_CHILD_OPEN leave it out of their issues.
