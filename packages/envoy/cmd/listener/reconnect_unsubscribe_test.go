@@ -55,7 +55,7 @@ func TestAnUnsubscribeThroughANATSReconnectFailsByName(t *testing.T) {
 	}
 	before := disconnected()
 	server.Stop(t)
-	waitFor(t, 15*time.Second, "the listener to see the NATS server go", func() bool { return disconnected() > before })
+	waitFor(t, "the listener to see the NATS server go", func() bool { return disconnected() > before })
 
 	started := time.Now()
 	answer := reconnectWritesCall(listener.port, "/v1/interests/unsubscribe", unsubscribeBody(t, sessionID, topic), 15*time.Second)
@@ -111,7 +111,7 @@ func (rig *consumerCallCutRig) cutAtNextFilterWrite(t *testing.T, sessionID stri
 	rig.deps.consumers.afterStoredRowRead = func() {
 		cut.Do(func() {
 			rig.proxy.Cut()
-			waitFor(t, 3*time.Second, "the listener's session-consumer connection to start reconnecting", func() bool {
+			waitFor(t, "the listener's session-consumer connection to start reconnecting", func() bool {
 				return errors.Is(rig.consumerCall(sessionID), bus.ErrReconnecting)
 			})
 		})
@@ -123,7 +123,7 @@ func (rig *consumerCallCutRig) cutAtNextFilterWrite(t *testing.T, sessionID stri
 func (rig *consumerCallCutRig) restore(t *testing.T, sessionID string) {
 	t.Helper()
 	rig.proxy.Restore()
-	waitFor(t, 10*time.Second, "the listener's session-consumer connection to reconnect", func() bool {
+	waitFor(t, "the listener's session-consumer connection to reconnect", func() bool {
 		return rig.consumerCall(sessionID) == nil
 	})
 }

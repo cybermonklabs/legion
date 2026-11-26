@@ -251,7 +251,7 @@ func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness,
 	if err := publishDeliveryException(harness.client, item, "delivery_failed", ""); err != nil {
 		t.Fatalf("control: publish an exception on %s's lane: %v", subject, err)
 	}
-	if _, err := exceptions.NextMsg(5 * time.Second); err != nil {
+	if _, err := exceptions.NextMsg(listenerWaitBound(t)); err != nil {
 		t.Fatalf("control: the exception probe for %s did not read the exception published on its lane: %v", subject, err)
 	}
 	if err := harness.client.Publish(item); err != nil {
@@ -370,14 +370,14 @@ func TestACopyForASessionWithNoRecordWaitsOnceAndWakesEvenWhenItsInterestNamesTh
 		harness := run.harness
 
 		// The first delivery waits: it is sent back for the agent wait, with no line logged.
-		waitFor(t, 15*time.Second, "the first delivery to wait", func() bool {
+		waitFor(t, "the first delivery to wait", func() bool {
 			return counterValue(t, metricsBody(t, harness), nakedCounter) == 1
 		})
 		if got := len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")); got != 0 {
 			t.Fatalf("%d wake lines at the first delivery, want none - the message waits first, whatever its interest row names:\n%s", got, harness.logs.String())
 		}
 		// The redelivery finds no record still, and reports the wake.
-		waitFor(t, 15*time.Second, "the redelivered message to report the wake", func() bool {
+		waitFor(t, "the redelivered message to report the wake", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")) > 0
 		})
 		logs := harness.logs.String()
@@ -403,7 +403,7 @@ func TestACopyForASessionWithNoRecordWaitsOnceAndWakesEvenWhenItsInterestNamesTh
 		run, wakes := start(t, target, &session.SessionEntry{MachineID: "test-machine"})
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery to be acknowledged as a skip", func() bool {
+		waitFor(t, "the delivery to be acknowledged as a skip", func() bool {
 			return counterValue(t, metricsBody(t, harness), deliveredSeries("skipped")) == 1
 		})
 		// A wake would come no sooner than the agent wait, so the probe is read past it.
@@ -478,7 +478,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 		run, held, wakes := start(t, target, unplaceableDeferralCap)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery that found the cap reached to report its wake", func() bool {
+		waitFor(t, "the delivery that found the cap reached to report its wake", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")) > 0
 		})
 		awaitWake(t, wakes, wakeKindAgent, target)
@@ -506,7 +506,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 		run, held, _ := start(t, "ses_cap_last_slot", unplaceableDeferralCap-1)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery in the last slot to wait", func() bool {
+		waitFor(t, "the delivery in the last slot to wait", func() bool {
 			return counterValue(t, metricsBody(t, harness), nakedCounter) == 1
 		})
 		if got := held.size(); got != unplaceableDeferralCap {
@@ -547,7 +547,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 		preloadDeferrals(t, held, unplaceableDeferralCap-1)
 		cfg.deferredUnplaceable = held
 		startUnplaceableDelivery(t, harness, cfg, target, 0)
-		waitFor(t, 15*time.Second, "the first delivery to wait", func() bool {
+		waitFor(t, "the first delivery to wait", func() bool {
 			return counterValue(t, metricsBody(t, harness), nakedCounter) == 1
 		})
 		if got := held.size(); got != unplaceableDeferralCap {
@@ -558,7 +558,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 
 	t.Run("a redelivery that reports the wake", func(t *testing.T) {
 		harness, held := start(t, "ses_slot_released_by_report")
-		waitFor(t, 15*time.Second, "the redelivery to report the wake", func() bool {
+		waitFor(t, "the redelivery to report the wake", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")) > 0
 		})
 		if got := held.size(); got != unplaceableDeferralCap-1 {
@@ -577,7 +577,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("register %s during the wait: %v", target, err)
 		}
-		waitFor(t, 15*time.Second, "the redelivery to be acknowledged as a skip", func() bool {
+		waitFor(t, "the redelivery to be acknowledged as a skip", func() bool {
 			return counterValue(t, metricsBody(t, harness), deliveredSeries("skipped")) == 1
 		})
 		if got := held.size(); got != unplaceableDeferralCap-1 {
@@ -637,7 +637,7 @@ func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			harness, held := start(t, tc.target, tc.preload)
-			waitFor(t, 15*time.Second, "the redelivery to report its wake", func() bool {
+			waitFor(t, "the redelivery to report its wake", func() bool {
 				return len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")) > 0
 			})
 			if got := held.size(); got != tc.preload {

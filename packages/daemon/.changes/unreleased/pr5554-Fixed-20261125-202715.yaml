@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The launcher''s own client of a generation''s session-database socket reaches a socket directory whose path holds a space. Its connection URL wrote the space as `+`, which pgx keeps as a `+`, so it named another directory; the URL now writes it as `%20`.'
+time: 2026-11-25T20:27:15Z
+custom:
+    Issue: pr5554

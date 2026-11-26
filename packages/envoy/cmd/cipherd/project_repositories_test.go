@@ -5,7 +5,6 @@
 package main
 
 import (
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // edgeListenerAccount is the ServiceAccount BROKER_NATS_SERVICES lists as the edge listener of
@@ -173,9 +173,9 @@ func (r edgeRig) env(more ...[]string) []string {
 	return env
 }
 
-// natsCalloutEnv is the NATS auth service's settings for a broker whose hub is not up: a URL
-// nothing listens on (the service connects in the background and retries), the three seeds, and
-// services as BROKER_NATS_SERVICES, for the cluster audience a service's NATS token carries.
+// natsCalloutEnv is the NATS auth service's settings for a broker whose hub is not up: an address
+// that refuses every dial (the service connects in the background and retries), the three seeds,
+// and services as BROKER_NATS_SERVICES, for the cluster audience a service's NATS token carries.
 func natsCalloutEnv(t *testing.T, services string) []string {
 	t.Helper()
 	dir := t.TempDir()
@@ -194,15 +194,9 @@ func natsCalloutEnv(t *testing.T, services string) []string {
 		}
 		return path
 	}
-	// A port this test held and let go, so nothing answers there.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	hub := "nats://" + listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
+	// A port the test holds and nothing listens on, so nothing answers there: a closed listener's
+	// port is any process's to take.
+	hub := "nats://" + testport.Refused(t)
 	return []string{
 		"BROKER_NATS_URLS=" + hub,
 		"BROKER_NATS_SEED_FILE=" + write("user.seed", nkeys.CreateUser),

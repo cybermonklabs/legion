@@ -35,6 +35,11 @@ import (
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
 // resume is what says so, so one head that settles again as each of its checks finishes wakes the
 // pod once.
+//
+// The listener's report of a message is also a mark on the claim it names, whatever that claim's
+// state (listenerWake, dispatch://INFRA-5682 R1): a wake of that claim that waits in the daemon's
+// pacing, or the one this report raises, goes ahead of the wakes that carry no message, because
+// Envoy keeps a role's message an hour and then drops it.
 
 // Pods is the daemon's record of its released pods as the workflow reads and writes it: the Envoy
 // listener's liveness report, the claims a release left released, the wake that brings one back,
@@ -52,11 +57,11 @@ type Pods interface {
 	RecordListenerReady(ctx context.Context, tx pgx.Tx, at time.Time) error
 	// ReleasedClaimOfRole is the released claim of issue's role, and whether there is one.
 	ReleasedClaimOfRole(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (supervise.Claim, bool, error)
-	// ReleasedClaimByToken and ReleasedClaimBySession are the released claim a listener's report
-	// names, by the role token a message was published to and by the session one was sent to.
-	// Every daemon reads the report and only the one holding a released claim of that name acts.
-	ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
-	ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
+	// ClaimByToken and ClaimBySession are the claim a listener's report names, by the role token a
+	// message was published to and by the session one was sent to, in whatever state it is. Every
+	// daemon reads the report and only the one holding a claim of that name acts.
+	ClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
+	ClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
 	// ClaimInReleaseBySession and ClaimInReleaseByToken are the live claim a listener's report
 	// names while a release of its pod has not ended: a claim neither suspended, failed nor
 	// retired, whose issue's release mark still stands. They answer the claim, when the release
@@ -69,6 +74,12 @@ type Pods interface {
 	// it suspended or the start a wake queues. The outbox resumes the role when that row runs, so
 	// the role is already coming back (store.PodRecords.StartQueued).
 	StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error)
+	// MarkMessage marks the claim token for an Envoy message that has waited since at, and
+	// answers the mark it wrote, or else the mark that stands once it has: the earliest of the
+	// marks the role has taken no turn since, and the zero time for a claim that takes none. A mark
+	// written where none stood can be one the role has taken a turn since, which stands not at all
+	// (the store's MarkClaimMessageTx).
+	MarkMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) (time.Time, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
 	// a wake another pass already took, which is already bringing the pod back. at is the time of
 	// the take, which the resume records as the wake's time (wakeReleased). pause is the project
@@ -387,14 +398,18 @@ func retellWakeTask(kind, detail, task string, from, to WakeStop) (string, bool)
 // know which daemon owns a session and must not learn.
 //
 // A live claim whose pod a release is still taking makes the report wait for the release to end
-// (listenerWakeInRelease). A released claim is woken (listenerWakeReleased). Any other report
-// does nothing.
+// (listenerWakeInRelease). Any other claim of that name the report marks for the message it
+// carried, in this transaction and whatever the claim's state (markMessage, dispatch://INFRA-5682
+// R1), so a wake of the claim that already waits in the pacing moves to the message queue. A
+// claim that is released is woken as well (listenerWakeReleased), and the start that wake queues
+// finds the claim marked.
 //
-// The claim in a release is read first, and the released claim only when there is none. The two
-// reads are two statements of one READ COMMITTED transaction, so a release can record the claim
-// as released between them. A claim moves only from live to released, so in this order the first
-// read finds it live or the second finds it released. In the other order, both reads could miss
-// it.
+// The claim in a release is read first, and the claim of that name in any state only when there
+// is none. The two reads are two statements of one READ COMMITTED transaction, so a release can
+// record the claim as released between them. A claim moves only from live to released, so in
+// this order the first read finds it live or the second finds it released. In the other order,
+// the first read could find it live and the second, once the release recorded it, miss it, and
+// the report would wake nothing.
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -403,23 +418,40 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 		return intake.Result{}, e.cfg.Pods.RecordListenerReady(ctx, tx, fact.At)
 	}
 	kind, detail := pods.WakeRoleMessage, fact.Role
-	readInRelease, readReleased := e.cfg.Pods.ClaimInReleaseByToken, e.cfg.Pods.ReleasedClaimByToken
+	readInRelease, readNamed := e.cfg.Pods.ClaimInReleaseByToken, e.cfg.Pods.ClaimByToken
 	if fact.Kind == intake.ListenerWakeAgent {
 		kind, detail = pods.WakeAgentMessage, fact.Session
-		readInRelease, readReleased = e.cfg.Pods.ClaimInReleaseBySession, e.cfg.Pods.ReleasedClaimBySession
+		readInRelease, readNamed = e.cfg.Pods.ClaimInReleaseBySession, e.cfg.Pods.ClaimBySession
 	}
 	held, marked, found, err := readInRelease(ctx, tx, detail)
 	if err != nil {
 		return intake.Result{}, err
 	}
 	if found {
-		return intake.Result{}, e.listenerWakeInRelease(ctx, held, marked, kind, detail, fact)
+		return intake.Result{}, e.listenerWakeInRelease(ctx, tx, held, marked, kind, detail, fact)
 	}
-	released, found, err := readReleased(ctx, tx, detail)
+	named, found, err := readNamed(ctx, tx, detail)
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.listenerWakeReleased(ctx, tx, released, kind, detail)
+	if err := e.markMessage(ctx, tx, named.Token, fact.At); err != nil || !named.Released() {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.listenerWakeReleased(ctx, tx, named, kind, detail)
+}
+
+// markMessage marks the claim token for the message a listener's report carried, which has
+// waited since at (Pods.MarkMessage), and once the fact commits tells the claim's machine the mark
+// the store holds (Config.MessageMarked).
+func (e *Engine) markMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) error {
+	mark, err := e.cfg.Pods.MarkMessage(ctx, tx, token, at)
+	if err != nil {
+		return err
+	}
+	if notify := e.cfg.MessageMarked; notify != nil && !mark.IsZero() {
+		store.OnCommit(ctx, func() { notify(token, mark) })
+	}
+	return nil
 }
 
 // listenerWakeReleased wakes the released claim a listener's report names. It reads the issue and
@@ -439,16 +471,17 @@ func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released s
 // marked then, still stands (Pods.ClaimInReleaseBySession, Pods.ClaimInReleaseByToken). A release
 // stops a role's process before it records the claim as released, and that record waits for the
 // stop to end. The report is then applied again after wakeRetryInRelease (intake.RetryLater,
-// Waiting): once the release records the claim, the report wakes it, and once a cancel ends the
-// release, the report finds the claim live or its start queued. A report still in that gap
-// WakeHeldForRelease after its own time is dropped with one warning, once the fact that drops it
-// commits.
-func (e *Engine) listenerWakeInRelease(ctx context.Context, held supervise.Claim, marked time.Time, kind, detail string, fact intake.ListenerWake) error {
+// Waiting): once the release records the claim, the report marks and wakes it, and once a cancel
+// ends the release, the report finds the claim live or its start queued, and marks it. A report
+// still in that gap WakeHeldForRelease after its own time drops its wake with one warning, once
+// the fact that drops it commits, and marks the claim as every other report marks the claim it
+// names (markMessage): the message still waits for the role, whatever wake brings it back.
+func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, held supervise.Claim, marked time.Time, kind, detail string, fact intake.ListenerWake) error {
 	deadline := fact.At.Add(WakeHeldForRelease)
 	if !e.now().Before(deadline) {
 		e.warnOnCommit(ctx, "wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report",
 			"issue", held.Issue, "role", held.Role, "kind", kind, "detail", detail, "report", fact.Report, "at", fact.At)
-		return nil
+		return e.markMessage(ctx, tx, held.Token, fact.At)
 	}
 	return &intake.RetryLater{After: wakeRetryInRelease, Waiting: true, Err: fmt.Errorf(
 		"the %s wake for %s finds %s's %s in a release marked at %s; it is applied again until the release ends, at the latest until %s",

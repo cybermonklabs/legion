@@ -2018,6 +2018,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           sendUserInput(turn.body, {
             ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
             tag: turn.messageId,
+            // The person's own turn, from outside the session: like a line typed at the terminal,
+            // it ends a cyber-policy hold the session is under (`PiApi.sendUserInput`'s `origin`).
+            origin: "outside",
           })
         )
         .then(
@@ -2491,10 +2494,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
             const injectionSessionID = sessionID;
             noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
             notedSessionIDs.add(injectionSessionID);
-            pi.sendUserMessage(
-              delivery.content,
-              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
-            );
+            pi.sendUserMessage(delivery.content, {
+              ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
+              // The person's own turn, from outside the session, as `runTypedInput` sends it.
+              origin: "outside",
+            });
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's
             // end, which stops that search (`endInjectedUserTurns`).

@@ -800,7 +800,29 @@ func (s *SessionConsumers) setPendingStart(name string, start uint64) {
 	s.pending[name] = start
 }
 
-// ackFloor is the stream sequence up to which consumer info has every message it delivered acked.
+// ConsumerPosition is what the floor rule reads of a consumer, as both NATS client APIs report it:
+// the jetstream package's ConsumerInfo, which the session consumers read (ackFloor), and nats.go's
+// legacy one, which Dispatch's delivery intakes read (internal/dispatch/delivery, takeOverStart).
+// One rule over the plain fields, so the two cannot come to read one consumer differently.
+type ConsumerPosition struct {
+	AckFloorStream   uint64
+	AckFloorConsumer uint64
+	OptStartSeq      uint64
+	DeliveredStream  uint64
+	NumAckPending    int
+}
+
+// ackFloor is AckFloor of info.
+func ackFloor(info *jetstream.ConsumerInfo) uint64 {
+	return AckFloor(ConsumerPosition{
+		AckFloorStream: info.AckFloor.Stream, AckFloorConsumer: info.AckFloor.Consumer,
+		OptStartSeq: info.Config.OptStartSeq, DeliveredStream: info.Delivered.Stream,
+		NumAckPending: info.NumAckPending,
+	})
+}
+
+// AckFloor is the stream sequence up to which a consumer at position p has every message it
+// delivered acked.
 // It is the floor the server reports (AckFloor.Stream), except in two cases. While the server
 // reports no ack floor in either sequence (AckFloor.Stream == 0 and AckFloor.Consumer == 0) and the
 // consumer's delivered stream sequence is at or above the sequence before its start
@@ -880,14 +902,16 @@ func (s *SessionConsumers) setPendingStart(name string, start uint64) {
 // its ack wait passed three times over, still counts in NumAckPending and the server's floor stays
 // below it, before a later message is acked and after, so a restart hands it to the session again.
 // A limit would break that: the server drops a message that reached it from what awaits an ack,
-// and this clause would then read that message as acked.
-func ackFloor(info *jetstream.ConsumerInfo) uint64 {
-	floor := info.AckFloor.Stream
-	if floor == 0 && info.AckFloor.Consumer == 0 && info.Config.OptStartSeq > 0 && info.Delivered.Stream+1 >= info.Config.OptStartSeq {
-		floor = info.Config.OptStartSeq - 1
+// and this clause would then read that message as acked. A consumer of Dispatch's delivery intakes
+// carries no MaxDeliver either (internal/dispatch/delivery, deliveryConsumerConfig and
+// jobConsumerConfig), so the clause holds for them too.
+func AckFloor(p ConsumerPosition) uint64 {
+	floor := p.AckFloorStream
+	if floor == 0 && p.AckFloorConsumer == 0 && p.OptStartSeq > 0 && p.DeliveredStream+1 >= p.OptStartSeq {
+		floor = p.OptStartSeq - 1
 	}
-	if info.NumAckPending == 0 {
-		floor = max(floor, info.Delivered.Stream)
+	if p.NumAckPending == 0 {
+		floor = max(floor, p.DeliveredStream)
 	}
 	return floor
 }

@@ -60,10 +60,11 @@ func reopenStore(t *testing.T, store *Store) *Store {
 	return reopened
 }
 
-// A wake reads a released claim by its role token and by the session it kept, and reads neither
-// once another path has taken the claim over: a suspension of any other source is somebody
-// else's to resume.
-func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(t *testing.T) {
+// A listener's report reads the claim it names by its role token and by the session it kept,
+// whatever the claim's state, since the report marks it in any of them. What the read says of the
+// claim is what decides the wake: it is released until another path takes it over, and a
+// suspension of any other source is somebody else's to resume.
+func TestAListenersReportReadsItsClaimByTokenAndBySessionInAnyState(t *testing.T) {
 	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
@@ -71,18 +72,18 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 
 	records := podRecords(t, store)
 	inTx(t, store, func(tx pgx.Tx) error {
-		byToken, found, err := records.ReleasedClaimByToken(ctx, tx, string(releasedToken))
-		if err != nil || !found {
-			t.Fatalf("ReleasedClaimByToken = %+v, %t, %v; want the released claim", byToken, found, err)
+		byToken, found, err := records.ClaimByToken(ctx, tx, string(releasedToken))
+		if err != nil || !found || !byToken.Released() {
+			t.Fatalf("ClaimByToken = %+v, %t, %v; want the released claim", byToken, found, err)
 		}
 		if byToken.Issue != rootIssue || byToken.Role != claim.RoleImplementer || byToken.ServingGeneration != 1 {
 			t.Fatalf("the claim read by token = %+v, want the implementer of %s at generation 1", byToken, rootIssue)
 		}
-		bySession, found, err := records.ReleasedClaimBySession(ctx, tx, "session-1")
-		if err != nil || !found || bySession.Token != releasedToken {
-			t.Fatalf("ReleasedClaimBySession = %+v, %t, %v; want the same claim", bySession, found, err)
+		bySession, found, err := records.ClaimBySession(ctx, tx, "session-1")
+		if err != nil || !found || bySession.Token != releasedToken || !bySession.Released() {
+			t.Fatalf("ClaimBySession = %+v, %t, %v; want the same claim", bySession, found, err)
 		}
-		if _, found, err := records.ReleasedClaimBySession(ctx, tx, "another-daemons-session"); err != nil || found {
+		if _, found, err := records.ClaimBySession(ctx, tx, "another-daemons-session"); err != nil || found {
 			t.Fatalf("a session of no claim of this project = %t, %v; want not found", found, err)
 		}
 		return nil
@@ -94,11 +95,13 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 			t.Fatalf("take the claim over: %v", err)
 		}
 		inTx(t, store, func(tx pgx.Tx) error {
-			if _, found, err := records.ReleasedClaimByToken(ctx, tx, string(releasedToken)); err != nil || found {
-				t.Fatalf("a claim suspended by %s reads released = %t, %v; want not found", source, found, err)
+			byToken, found, err := records.ClaimByToken(ctx, tx, string(releasedToken))
+			if err != nil || !found || byToken.Released() || byToken.SuspendedBy != source {
+				t.Fatalf("a claim suspended by %s reads %+v, %t, %v; want it found and not released", source, byToken, found, err)
 			}
-			if _, found, err := records.ReleasedClaimBySession(ctx, tx, "session-1"); err != nil || found {
-				t.Fatalf("a claim suspended by %s reads released by session = %t, %v; want not found", source, found, err)
+			bySession, found, err := records.ClaimBySession(ctx, tx, "session-1")
+			if err != nil || !found || bySession.Released() {
+				t.Fatalf("a claim suspended by %s reads by session %+v, %t, %v; want it found and not released", source, bySession, found, err)
 			}
 			return nil
 		})

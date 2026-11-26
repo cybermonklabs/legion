@@ -139,7 +139,7 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		marker, _ := rig.storeEvent(t, agent)
 
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), marker)
-		waitFor(t, 15*time.Second, "the relay to pause the silent session", func() bool { return relayPausedLines(rig, sessionID) > 0 })
+		waitFor(t, "the relay to pause the silent session", func() bool { return relayPausedLines(rig, sessionID) > 0 })
 		if n := relayPausedLines(rig, sessionID); n != 1 {
 			t.Fatalf("the relay paused the silent session %d times, want once:\n%s", n, rig.harness.logs.String())
 		}

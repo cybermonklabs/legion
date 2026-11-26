@@ -339,7 +339,7 @@ func TestANewListenerDurableDoesNotReplayTheStream(t *testing.T) {
 		}
 
 		publish(t, rig.publisher, freshRole)
-		waitFor(t, 10*time.Second, "the new listener to forward the role message sent after its start", func() bool {
+		waitFor(t, "the new listener to forward the role message sent after its start", func() bool {
 			return roleForwards(listener, freshRole.EventID) == 1
 		})
 		copied, err := rig.publisher.JS().GetLastMsg(bus.Stream, contracts.LegacyAgentSubject(replayHolder))

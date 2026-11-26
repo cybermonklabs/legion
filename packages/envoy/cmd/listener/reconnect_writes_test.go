@@ -142,7 +142,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		t.Helper()
 		disconnects := lines("disconnected")
 		server.Stop(t)
-		waitFor(t, 15*time.Second, "the listener to see the NATS server go", func() bool { return lines("disconnected") > disconnects })
+		waitFor(t, "the listener to see the NATS server go", func() bool { return lines("disconnected") > disconnects })
 	}
 	// observe reads the server the listener writes to, on a connection of the test's own.
 	observe := func(t *testing.T) natsgo.JetStreamContext {
@@ -265,7 +265,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		// reconnect buffer as the listener's do, has its send in this outage refused with it.
 		probe := connectPublisher(t, uri)
 		stop(t)
-		waitFor(t, 15*time.Second, "control: the test's own bus connection to start reconnecting", probe.Conn.IsReconnecting)
+		waitFor(t, "control: the test's own bus connection to start reconnecting", probe.Conn.IsReconnecting)
 		if err := probe.Conn.Publish("reconnect-writes.control", []byte("{}")); err == nil || !strings.Contains(err.Error(), reconnectBufferRefusal) {
 			t.Fatalf("control: a send on the test's own bus connection in the outage answered %v, want nats.go's %q", err, reconnectBufferRefusal)
 		}
@@ -286,7 +286,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 			}
 		}
 		server.Start(t)
-		waitFor(t, 30*time.Second, "the listener to reconnect", func() bool { return lines("reconnected") > reconnects })
+		waitFor(t, "the listener to reconnect", func() bool { return lines("reconnected") > reconnects })
 		listener.waitHealthy(t)
 		// A write held anywhere and sent after the reconnect would be on the server within this.
 		time.Sleep(2 * time.Second)
@@ -326,7 +326,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 				gaveUp.Round(time.Millisecond), sendRequestBudget)
 		}
 		server.Start(t)
-		waitFor(t, 30*time.Second, "the listener to reconnect", func() bool { return lines("reconnected") > reconnects })
+		waitFor(t, "the listener to reconnect", func() bool { return lines("reconnected") > reconnects })
 		reconnected := time.Since(called)
 		t.Logf("the test gave up on the publish %s after the call (%s), and saw the listener reconnect %s after it; the route's deadline is %s after the request arrived",
 			gaveUp.Round(time.Millisecond), got, reconnected.Round(time.Millisecond), sendRequestBudget)
@@ -338,7 +338,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		// sends nothing after it answers. A route that went on with the publish answers only once
 		// the stream acknowledged it or the route's deadline ended.
 		var answered []map[string]any
-		waitFor(t, 15*time.Second, "the publish route's line for the publish the test gave up on", func() bool {
+		waitFor(t, "the publish route's line for the publish the test gave up on", func() bool {
 			answered = linesIn(listener.Output.String(), "listener publish", map[string]any{"topic": givenUp})
 			return len(answered) > 0
 		})
@@ -424,14 +424,14 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 	}
 	reconnecting := func(t *testing.T) {
 		t.Helper()
-		waitFor(t, 15*time.Second, "the listener's session-consumer connection to start reconnecting", func() bool {
+		waitFor(t, "the listener's session-consumer connection to start reconnecting", func() bool {
 			return errors.Is(consumerCall(), bus.ErrReconnecting)
 		})
 	}
 	reconnected := func(t *testing.T) {
 		t.Helper()
-		waitFor(t, 30*time.Second, "the listener to reconnect", rig.harness.client.Connected)
-		waitFor(t, 30*time.Second, "the listener's session-consumer connection to reconnect", func() bool { return consumerCall() == nil })
+		waitFor(t, "the listener to reconnect", rig.harness.client.Connected)
+		waitFor(t, "the listener's session-consumer connection to reconnect", func() bool { return consumerCall() == nil })
 	}
 
 	if !t.Run("an answer and a hand-over while the listener's connections are cut fail by name", func(t *testing.T) {

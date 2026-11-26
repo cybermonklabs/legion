@@ -30,7 +30,7 @@ func TestAReceiptARelaySocketPublishesWhileNATSReconnectsFailsByName(t *testing.
 	}
 
 	rig.proxy.Cut()
-	waitFor(t, 15*time.Second, "the socket replica's connection to start reconnecting", rig.client.Connection().IsReconnecting)
+	waitFor(t, "the socket replica's connection to start reconnecting", rig.client.Connection().IsReconnecting)
 	client.pub(frame.Reply, relayReplyDone)
 	if code, reason := client.closeCode(5 * time.Second); code != websocket.CloseTryAgainLater || reason != relaySocketReasonNATSUnavailable {
 		t.Fatalf("the socket closed %d %q, want %d %q", code, reason, websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)

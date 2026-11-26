@@ -572,15 +572,17 @@ func OpenOrLastPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, b
 // PauseLetOutsTx is, through tx's snapshot and by issue, when the wake pacing let out the launch
 // of that issue's role that pause held: the latest stuck clock (pod_resumes.clock_at) of the
 // role's resumes the pause held (pod_resumes.pause_id). The resume starts that clock at its own
-// moment (SetProjectResumeClocksTx), and the reservation of the launch moves it to the moment the
-// pacing lets the launch out (SetResumeClock), so it is the let-out once the launch has reserved
-// its turn. An issue whose role the pause held no wake of is absent. project is the project
-// token, as pod_resumes holds it. The architect-stalled arms read it once per reading for the
-// architects (admit's readPauseLetOuts), so an architect the pause stopped owing a launch counts
-// no time before that launch was let out.
-func PauseLetOutsTx(ctx context.Context, tx pgx.Tx, project string, pause int64, role claim.Role) (map[string]time.Time, error) {
-	rows, err := tx.Query(ctx, `select issue, max(clock_at) from pod_resumes
-		where project = $1 and pause_id = $2 and role = $3 group by issue`, project, pause, string(role))
+// moment (SetProjectResumeClocksTx), and the let-out of the launch moves it to the moment the
+// pacing lets the launch out (SetResumeClock). A launch that still waits in the pacing's queue has
+// no let-out yet, and its open resume's clock is stopped (pod_resumes.queued), so its let-out is
+// now, the reader's own reading of the clock: not before it. An issue whose role the pause held
+// no wake of is absent. project is the project token, as pod_resumes holds it. The
+// architect-stalled arms read it once per reading for the architects (admit's readPauseLetOuts),
+// so an architect the pause stopped owing a launch counts no time before that launch was let out.
+func PauseLetOutsTx(ctx context.Context, tx pgx.Tx, project string, pause int64, role claim.Role, now time.Time) (map[string]time.Time, error) {
+	rows, err := tx.Query(ctx, `select issue, max(case when queued and first_turn_at is null and closed_at is null
+			then $4::timestamptz else clock_at end) from pod_resumes
+		where project = $1 and pause_id = $2 and role = $3 group by issue`, project, pause, string(role), now)
 	if err != nil {
 		return nil, fmt.Errorf("read the let-outs of the %s launches pause %d held: %w", role, pause, err)
 	}

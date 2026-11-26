@@ -255,7 +255,7 @@ func (rig *inProcessRig) copies(t *testing.T, subject string) uint64 {
 // the row read before it sent anything, and fails on any other count.
 func (rig *inProcessRig) requireOneCopy(t *testing.T, subject string, before uint64) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the stream to store the message on "+subject, func() bool { return rig.copies(t, subject) > before })
+	waitFor(t, "the stream to store the message on "+subject, func() bool { return rig.copies(t, subject) > before })
 	if got := rig.copies(t, subject) - before; got != 1 {
 		t.Fatalf("the stream stored %d copies on %s, want 1: both attempts carry one message id", got, subject)
 	}
@@ -423,7 +423,7 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	var firstForward ended
 	select {
 	case firstForward = <-first:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the resend's first forward did not end")
 	}
 	thaw()
@@ -673,7 +673,7 @@ func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t 
 				t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
 			}
 			<-applied
-			waitFor(t, 10*time.Second, "the stream to store both exceptions on "+lane, func() bool { return rig.copies(t, lane) >= before+2 })
+			waitFor(t, "the stream to store both exceptions on "+lane, func() bool { return rig.copies(t, lane) >= before+2 })
 			if got := rig.copies(t, lane) - before; got != 2 {
 				t.Fatalf("the stream stored %d copies on %s, want 2: each exception is an event of its own", got, lane)
 			}

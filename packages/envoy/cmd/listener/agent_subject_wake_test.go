@@ -154,7 +154,7 @@ func startAloneRig(t *testing.T) *aloneRig {
 		t.Fatalf("control: publish an exception on %s's lane: %v", control.Topic, err)
 	}
 	lane := bus.ExceptionTopicPrefix + control.Topic
-	waitFor(t, 5*time.Second, "control: the exception reader to read the exception published on "+lane, func() bool {
+	waitFor(t, "control: the exception reader to read the exception published on "+lane, func() bool {
 		rig.mu.Lock()
 		defer rig.mu.Unlock()
 		return slices.Contains(rig.exceptions, lane)

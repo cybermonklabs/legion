@@ -41,7 +41,7 @@ func TestARegistrationThroughANATSReconnectFailsByName(t *testing.T) {
 	}
 	before := disconnected()
 	server.Stop(t)
-	waitFor(t, 15*time.Second, "the listener to see the NATS server go", func() bool { return disconnected() > before })
+	waitFor(t, "the listener to see the NATS server go", func() bool { return disconnected() > before })
 
 	started := time.Now()
 	answer := reconnectWritesCall(listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2"), 15*time.Second)

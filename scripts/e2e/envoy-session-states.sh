@@ -229,6 +229,8 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/run-verdict.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
 . "$root/scripts/e2e/lib/dispatch-identity.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
 # ---- the selection ------------------------------------------------------------------------------
 selected=()
@@ -896,10 +898,10 @@ make_issue() {
 # and agent directory of the run's own. Its RPC is newline JSON both ways, so the rig writes
 # requests on a FIFO it holds open and reads answers out of the process's own stdout.
 write_omp_profile() {
-  local natives=$HOME/.omp/natives role url id key
-  # The caller's native-module cache, linked as lib/omp-home.sh links it, so a fresh home downloads
+  local natives role url id key
+  # The caller's native-module cache (omp_natives_dir, lib/omp-home.sh), so a fresh home downloads
   # nothing and the caller's own ~/.omp is neither written nor removed.
-  if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+  natives=$(omp_natives_dir)
   mkdir -p "$natives" "$work/home/.omp" "$work/agent"
   ln -sfT "$natives" "$work/home/.omp/natives"
   # A selection with no check that needs a model turn needs no model route, and still needs a
