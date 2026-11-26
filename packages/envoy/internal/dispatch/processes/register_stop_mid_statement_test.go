@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Register's wait ends with its context's error when the context ends while one of the wait's
@@ -38,7 +39,7 @@ func TestRegistersWaitEndsWithItsContextDuringAStatementsWrite(t *testing.T) {
 	// The hold reads the statement's text on the socket, so the connection is plaintext whatever
 	// the test database's URL asks for: what this row holds is the driver's error, not TLS.
 	config.ConnConfig.TLSConfig, config.ConnConfig.Fallbacks = nil, nil
-	hold := &writeHold{marker: []byte("pg_advisory_xact_lock"), writing: make(chan struct{}), deadline: make(chan struct{})}
+	hold := &writeHold{marker: []byte("pg_advisory_xact_lock"), giveUp: testwait.Context(t), writing: make(chan struct{}), deadline: make(chan struct{})}
 	dial := config.ConnConfig.DialFunc
 	config.ConnConfig.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := dial(ctx, network, addr)
@@ -67,7 +68,7 @@ func TestRegistersWaitEndsWithItsContextDuringAStatementsWrite(t *testing.T) {
 		t.Fatalf("the registry lock statement's write was never held (Register returned %v): the row forced nothing", err)
 	}
 	if !hold.deadlineSet.Load() {
-		t.Fatalf("the context ended during the held write but no deadline reached the socket within %s, so the write was not failed by the context's end (Register returned %v)", writeHoldBound, err)
+		t.Fatalf("the context ended during the held write but no deadline reached the socket before the test binary's give-up (testwait.Context), so the write was not failed by the context's end (Register returned %v)", err)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Register, its context ended during a statement's write, returned %v; want an error wrapping the context's error, which is how cmd/dispatch tells a stop from a failure", err)
@@ -77,15 +78,15 @@ func TestRegistersWaitEndsWithItsContextDuringAStatementsWrite(t *testing.T) {
 	}
 }
 
-// writeHoldBound is how long a held write waits for the context watcher's deadline: a give-up
-// bound for a goroutine hand-over (the watcher's), never a measurement. A watcher that never sets
-// one fails the row by name rather than hanging it.
-const writeHoldBound = 30 * time.Second
-
 // writeHold holds the first write whose bytes hold marker until a deadline is set on the
-// connection after the hold began, and then lets it go to the socket.
+// connection after the hold began, and then lets it go to the socket. The deadline is a fact that
+// must come - pgx's context watcher sets it once the context ends - so the hold waits for it with
+// no span of its own, only until giveUp, the test binary's own give-up (testwait.Context): a
+// watcher that never sets one then fails the row by name rather than hanging it, and a loaded
+// runner that sets it late fails nothing.
 type writeHold struct {
 	marker      []byte
+	giveUp      context.Context
 	once        sync.Once
 	held        atomic.Bool
 	deadlineSet atomic.Bool
@@ -110,7 +111,7 @@ func (c *heldConn) Write(b []byte) (int, error) {
 		close(c.hold.writing)
 		select {
 		case <-c.hold.deadline:
-		case <-time.After(writeHoldBound):
+		case <-c.hold.giveUp.Done():
 		}
 	}
 	return c.Conn.Write(b)
