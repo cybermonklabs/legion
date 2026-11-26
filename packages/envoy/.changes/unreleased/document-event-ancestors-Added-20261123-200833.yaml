@@ -4,9 +4,10 @@ body: |-
   document, file or image carry `ancestors`, the keys of the issues above that issue, parent first
   up to the root, as the issue's own events do: `[]` for a root's artifact. Every path that writes
   one names it: an upload, a named version and the other version routes, a settlement, the
-  decisions step's restore and a removal. A page open on an ancestor then reaches its tree from
-  the event alone. An event of a project's document, which belongs to no issue, carries no
-  `ancestors`, and an event written before this release carries none either.
+  decisions step's restore, an issue's conversion, the query drain's revision and a removal. A
+  page open on an ancestor then reaches its tree from the event alone. An event of a project's
+  document, which belongs to no issue, carries no `ancestors`, and an event written before this
+  release carries none either.
 time: 2026-11-23T20:08:33Z
 custom:
     Issue: INFRA-5411

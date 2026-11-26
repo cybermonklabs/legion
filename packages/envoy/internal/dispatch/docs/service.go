@@ -1770,8 +1770,9 @@ func ArtifactVersionEventPayload(
 // and [] for a root. An artifact of no issue - a project's document, an agent's conversation's
 // file - has no chain, and gets nil, whose event names none. A document's path holds its issue's
 // key and not its loaded row, so a root's chain costs the walk's one query too, where an issue
-// event's does not (api's issueAncestors). Each path reads it once, in its read phase, before its
-// first write.
+// event's does not (api's issueAncestors). Each path reads it in its read phase, before its first
+// write: once for its event, and a node's delete, which appends a version event for each document
+// of the room it changed, once for each of those events.
 func DocumentEventAncestors(ctx context.Context, q refs.Queryer, issue *string) ([]string, error) {
 	if issue == nil || *issue == "" {
 		return nil, nil

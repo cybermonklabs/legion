@@ -98,8 +98,7 @@ func requireIssueAncestors(t *testing.T, what string, event storedDocumentEvent,
 			event.eventType, what, want, issueKey, event.payload)
 		return
 	}
-	var stored bytes.Buffer
-	if err := json.Compact(&stored, raw); err != nil || !bytes.Equal(stored.Bytes(), want) {
+	if !jsonEqual(t, raw, string(want)) {
 		t.Errorf("the stored %s payload of %s holds ancestors %s, want %s, the ancestors of %s's own issue.created",
 			event.eventType, what, raw, want, issueKey)
 	}

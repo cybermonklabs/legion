@@ -876,7 +876,7 @@ function issuesAboveFor(
 /** Whether `client`'s cache holds a query under issue `key`'s tree read (`issueTreeKey`, by
  *  prefix): its outline or a view of it, whatever observes it, or nothing does. */
 function holdsTreeRead(client: QueryClient, key: string): boolean {
-  return client.getQueryCache().findAll({ queryKey: issueTreeKey(key) }).length > 0;
+  return client.getQueryCache().find({ exact: false, queryKey: issueTreeKey(key) }) !== undefined;
 }
 
 /**

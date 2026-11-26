@@ -2218,9 +2218,10 @@ function treeCheckCounts(checks: Map<string, number>): { checks: number; most: n
 // trees beside the cache, and would miss an answer that lands while a check waits for it. A
 // version that names its chain marks the parent's four reads with no check (D-R2-presence), and
 // scans no answer to place the child (`issuesAbove` runs for an event that names none alone), so
-// its scans fall by half. A version that names none checks every coverage read under the page's
-// issues with D-R2-fallback's target. The milliseconds are not asserted: a failure's message gives
-// them beside the base's counts, and the pull request's body gives them as measured.
+// its scans fall by half. A version that names none runs D-R2-fallback's check on every read under
+// `["issue"]`, each issue's detail read and its coverage read (100 here), and the check passes the
+// coverage reads alone. The milliseconds are not asserted: a failure's message gives them beside
+// the base's counts, and the pull request's body gives them as measured.
 test("one event over fifty open trees checks each tree read it does not name once, and a version that names its chain scans each answer once", () => {
   const events = {
     "C's plain ask": eventOf(

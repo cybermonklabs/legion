@@ -8525,9 +8525,9 @@ test("a refresh of the relations' names that fails over the answer they hold kee
 
 /** Each relation row whose Retry the case below presses, by its label, the words its failure
  *  line says, and the name of the first link that row draws once the read answers. */
-const RETRIED_RELATIONS: readonly (readonly [string, string, string, string])[] = [
-  ["Duplicate of", PROPERTY_LABELS.duplicate_of, TITLES_READ_FAILED, DUPLICATE],
-  ["Filed from", PROPERTY_LABELS.filed_from, STATE_LINES.filed_from_unreadable, FILED_LINE],
+const RETRIED_RELATIONS: readonly (readonly [string, string, string])[] = [
+  [PROPERTY_LABELS.duplicate_of, TITLES_READ_FAILED, DUPLICATE],
+  [PROPERTY_LABELS.filed_from, STATE_LINES.filed_from_unreadable, FILED_LINE],
 ];
 
 // The failed read's Retry stays, busy and holding the focus of a reader who pressed it by
@@ -8536,7 +8536,7 @@ const RETRIED_RELATIONS: readonly (readonly [string, string, string, string])[] 
 // titles does (ST-3 R-f).
 test.each(
   RETRIED_RELATIONS
-)("%s's Retry of the relations' failed names read keeps the focus while the read is out, and hands it to the row's first link once it answers", async (_name, label, failedWords, first) => {
+)("%s's Retry of the relations' failed names read keeps the focus while the read is out, and hands it to the row's first link once it answers", async (label, failedWords, first) => {
   const user = userEvent.setup();
   const { restore, titles } = stubRelations(relatedIssue, async (refs) =>
     namedTargets(refs, RELATED_NAMES)
@@ -8741,7 +8741,6 @@ test.each(
     await waitFor(() => expect(namesReads(titles)).toEqual(reads.map((refs) => [...refs])));
     for (const relation of ["duplicate_of", "filed_from"] as const) {
       const label = PROPERTY_LABELS[relation];
-      expect(label, `PROPERTY_LABELS names no ${relation}`).toBeString();
       expect(
         screen.queryAllByText(label, { exact: true, selector: "[data-page-chrome]" }),
         `the rows of ${relation}`
