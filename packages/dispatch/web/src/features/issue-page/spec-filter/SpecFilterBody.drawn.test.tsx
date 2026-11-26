@@ -12,10 +12,11 @@ import {
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, type NavigateFunction, useLocation } from "react-router-dom";
 
 import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
 import { displayTree } from "../../../__tests__/display-trees";
+import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { installResizeObserver } from "../../../__tests__/scroll-box";
 import { api } from "../../../api/client";
@@ -39,6 +40,11 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
@@ -71,7 +77,7 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
+import { publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { drawStage } from "../slots/stage-fixtures";
 import { nodeRowSelectorOf } from "../tree-focus";
@@ -116,16 +122,17 @@ function IssueScope(): ReactNode {
   return null;
 }
 
-/** The names the page's one batched read brought, published as the page publishes them
- *  (`useIssueTree.ts`), which a reference in a node's drawn words is named from (`RowText`). */
+/** What the page publishes of its one batched read (`useIssueTree.ts`, `publishedNames`), which a
+ *  reference in a node's drawn words is named from (`RowText`), published to the store as the
+ *  page publishes it. */
 function Named({
   children,
-  names,
+  published,
 }: {
   children: ReactNode;
-  names: ReadonlyMap<string, string> | undefined;
+  published: PublishedReferences;
 }): ReactNode {
-  usePublishReferenceNames(names);
+  usePublishReferenceNames(published);
   return children;
 }
 
@@ -328,6 +335,9 @@ function drawBody(
       for (const spy of Object.values(spies)) spy.mockRestore();
     },
   };
+  // What the page publishes of its names read, which the store holds and the body hands its rows
+  // (`PublishedReferenceNames`): one value, as the page's tree makes one.
+  const published = publishedNames(names ?? new Map());
   const bodyOf = (over: IssueDetails): ReactNode => (
     <SpecFilterBody
       context={context}
@@ -336,6 +346,7 @@ function drawBody(
       holdsEscape={false}
       issue={over}
       onEditing={onEditing}
+      published={published}
       reader={reader}
       // The case holds each read as it says, so an address lands as soon as its row is drawn.
       readsSettled
@@ -350,7 +361,7 @@ function drawBody(
   const page = (drawn: boolean): ReactNode => (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <Named names={names}>
+        <Named published={published}>
           <MemoryRouter>
             <KeymapProvider>
               <MarginProvider>
@@ -864,7 +875,7 @@ test("an agent's decision draws its words with each reference named, in its cell
       // batched read (`tree-drafts.ts`), which is the name the page gives it
       // (`referenceStandIns`).
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name, ref: cited }],
+        chips: [{ answered: true, gone: false, reading: { words: name }, ref: cited }],
         text: words,
         tree,
       }),
@@ -878,7 +889,7 @@ test("an agent's decision draws its words with each reference named, in its cell
         text_tree: tree,
       }),
     ],
-    { names: new Map([[cited, `:::requirement{#r4}\n${name}\n:::`]]) }
+    { names: new Map([[cited, name]]) }
   );
   try {
     await waitFor(() =>
@@ -1061,7 +1072,7 @@ test("the focus on a decision draws the person's whole answer, character for cha
       // The tree names every block a decision links as a chip on it, as the page's model does
       // (`tree-drafts.ts`).
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
+        chips: [{ answered: true, gone: false, reading: { words: "r1" }, ref: statementRef("r1") }],
       }),
     ]),
     [
@@ -1260,6 +1271,126 @@ test("the Spec view opened more than 30 s after whoami answered asks for it noth
   }
 });
 
+// The address's statement takes the tab stop only where the reader has not acted since they
+// followed the address, in whatever render the view first draws it. The coverage and every
+// document's blocks, which the statements come from and the settling waits on as well, are held,
+// so the view draws no statement and the stage finds no row to give the focus, which stays on the
+// page's body. The reader turns the wheel there. The reads then answer together, and the
+// statements are first drawn in the render the reads settle in: the landing yields to the wheel,
+// and the stage gives the focus it finds on nothing to the tab-stop row, the first statement, and
+// not the address's, which a spec taller than the screen draws below it.
+test("a Spec address whose statements are drawn only once the reads settle keeps the stop off the address's statement where the reader acted first", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  holdTreeReads(client);
+  client.removeQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
+  const answered = Promise.withResolvers<void>();
+  const coverage = spyOn(api, "getIssueCoverage").mockImplementation(async () => {
+    await answered.promise;
+    return coverageRead(["r1", "r2"]);
+  });
+  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(async () => {
+    await answered.promise;
+    return [];
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = drawStage("#b-r2", { client, issue: issueDetails(), preset: "spec" });
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-tree]"),
+        "the stage drew no Spec view"
+      ).toBeInTheDocument()
+    );
+    expect(
+      view.container.querySelector("[data-spec-body] [data-node-row]"),
+      "the view drew a statement before the reads answered"
+    ).toBeNull();
+    await act(async () => window.dispatchEvent(new Event("wheel")));
+    await act(async () => answered.resolve());
+    const first = await waitFor(() => {
+      const row = rowOf(view, "spec#b-r1");
+      expect(
+        row,
+        `the statements drawn after a turn of the wheel left the focus on ${document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return row;
+    });
+    // The frame a landing would have asked for as the reads settled.
+    await act(() => nextFrame());
+    const addressed = rowOf(view, "spec#b-r2");
+    expect(
+      first,
+      `the reads settling moved the focus to ${document.activeElement?.tagName}`
+    ).toHaveFocus();
+    expect(
+      [first.tabIndex, addressed.tabIndex],
+      "the address's statement took the tab stop after the reader acted"
+    ).toEqual([0, -1]);
+  } finally {
+    view.unmount();
+    coverage.mockRestore();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// The stage's controller of the reader's acts is a following's own only from that following's
+// first commit, so the render that draws a view at a new address still reads the last
+// following's, which the press that followed the new address ended. The outline is drawn with
+// every read answered, and the reader presses, as on a link to a statement, which opens the Spec
+// view at the statement's address: the view draws its statements in its first render, from the
+// reads the page holds, and the address's statement takes the tab stop and the focus, since the
+// reader has not acted since they followed that address.
+test("the Spec view opened at a statement after a press on the outline gives that statement the stop and the focus", async () => {
+  const issue = issueDetails();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  holdTreeReads(client);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead(["r1", "r2"]));
+  for (const id of treeDocumentIds(issue)) {
+    client.setQueryData(artifactBlocksQuery(id).queryKey, []);
+  }
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const held: { navigate?: NavigateFunction } = {};
+  const view = drawStage("", { client, held, issue, preset: "conversation" });
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-issue-body] [data-node-row]"),
+        "the stage drew no outline"
+      ).toBeInTheDocument()
+    );
+    await act(async () => window.dispatchEvent(new Event("pointerdown")));
+    await act(async () => held.navigate?.(`${presetPath(KEY, "spec")}#b-r2`));
+    const addressed = await waitFor(() => {
+      const row = rowOf(view, "spec#b-r2");
+      expect(
+        row,
+        `the Spec view opened at the statement's address left the focus on ${document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return row;
+    });
+    // The frame the landing asked for as the view was drawn.
+    await act(() => nextFrame());
+    expect(
+      addressed,
+      `the landing moved the focus to ${document.activeElement?.tagName}`
+    ).toHaveFocus();
+    expect(
+      [rowOf(view, "spec#b-r1").tabIndex, addressed.tabIndex],
+      "the address's statement took no tab stop"
+    ).toEqual([-1, 0]);
+  } finally {
+    view.unmount();
+    names.mockRestore();
+  }
+});
+
 // The Spec view draws the names reads' line as the tree says it, speaking or not
 // (`NamesFailure.speaks`): a line that stands again for a refusal it already said is drawn
 // without speaking. The names read of the tree's set is refused; a comment goes, the names read
@@ -1400,16 +1531,17 @@ test("each statement carries how it stands, by a shape with its own name", () =>
 });
 
 // A statement's own words carry its number where the spec wrote one, and are drawn as its author
-// wrote them, whole.
+// wrote them, whole: the shared renderer draws the stored markdown, so the marks the author typed
+// around the number are drawn as the bold they say and are no characters of the words.
 test("a statement's words are drawn as its author wrote them", () => {
-  const words =
-    "**R1.** Every node's words are on the page without opening it; an agent's long words " +
+  const rest =
+    " Every node's words are on the page without opening it; an agent's long words " +
     "show their first six lines and the rest one key away, and his words are never cut.";
-  const { read, view } = drawBody(issueTree([statement("r1", { text: words })]));
+  const { read, view } = drawBody(issueTree([statement("r1", { text: `**R1.**${rest}` })]));
   try {
     expect(
       view.container.querySelector("[data-spec-statement] [data-node-words]")?.textContent
-    ).toBe(words);
+    ).toBe(`R1.${rest}`);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -2274,6 +2406,45 @@ test("a press on a statement's words passes its point to the outline's editing",
   }
 });
 
+// A press that drags across a statement's words selects them, as on any words of the page, and
+// the click that ends it on the same words opens no editor in their place: the selection stays,
+// for the reader to copy.
+test("a drag that selects a statement's words keeps the selection and opens no editor", async () => {
+  const user = userEvent.setup();
+  const onEditing = mock<OnEditing>(() => {});
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text: "The page draws r1." }), statement("r2")]),
+    [],
+    { editor: specEditor(), onEditing }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = within(row).getByText("The page draws r1.");
+    await user.pointer([
+      { keys: "[MouseLeft>]", offset: 0, target: words },
+      { offset: 8, target: words },
+      { keys: "[/MouseLeft]", target: words },
+    ]);
+    expect(window.getSelection()?.toString(), "the drag selected no words").toBe("The page");
+    // The task an editor the press opened would open in.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(onEditing, "the drag opened the editor").not.toHaveBeenCalledWith(
+      "artifact-spec",
+      expect.any(Function)
+    );
+    expect(row.querySelector("[data-test-spec-editor]")).toBeNull();
+    expect(window.getSelection()?.toString(), "the drag's selection was lost").toBe("The page");
+    expect(row).toHaveFocus();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // R8: a press is counted in the editor's text. The view draws a reference to an issue by the
 // issue's key and title, while the editor holds the reference as it is written, hidden under a
 // title of its own that takes no caret (`@legion/proof-editor`'s `reference-decorations.ts`), so a
@@ -2282,67 +2453,29 @@ test("a press on a statement's words passes its point to the outline's editing",
 // written hidden in it. Counted as drawn, the press on "first" would put the caret 8 characters
 // into the words after the reference rather than 3.
 test("a press after a reference counts the reference as the editor holds it", async () => {
-  const user = userEvent.setup();
   const cited = "dispatch://CORE-2";
   const after = " first, then the rest.";
   const text = `Read ${cited}${after}`;
-  const editorView = new EditorView(null, {
-    state: EditorState.create({
-      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
-    }),
+  await pressAfterKind({
+    drawn: (words) => {
+      const link = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(link?.textContent).toBe("CORE-2 The other issue");
+      expect(link?.nextSibling?.textContent).toBe(after);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>CORE-2 The other issue</span>
+        <span hidden>{cited}</span>
+        {after}
+      </>
+    ),
+    into: 3,
+    names: new Map([[cited, "The other issue"]]),
+    pressed: after,
+    text,
+    tree: displayTree(text),
   });
-  const onEditing: OnEditing = (artifactId, onEditor) => {
-    if (artifactId !== undefined) onEditor?.({ view: editorView });
-  };
-  const editor = (
-    <DocumentStage artifactId="artifact-spec">
-      <div contentEditable suppressContentEditableWarning>
-        <section data-block-id="r1">
-          <p>
-            {"Read "}
-            <span contentEditable={false}>CORE-2 The other issue</span>
-            <span hidden>{cited}</span>
-            {after}
-          </p>
-        </section>
-      </div>
-    </DocumentStage>
-  );
-  const { read, view } = drawBody(
-    issueTree([statement("r1", { text, tree: displayTree(text) })]),
-    [],
-    { editor, names: new Map([[cited, "The other issue"]]), onEditing }
-  );
-  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
-  try {
-    const row = rowOf(view, "spec#b-r1");
-    const link = await waitFor(() => {
-      const found = row.querySelector(`[data-node-words] a[data-row-reference="${cited}"]`);
-      expect(found?.textContent).toBe("CORE-2 The other issue");
-      return found;
-    });
-    const pressed = link?.nextSibling;
-    if (!(pressed instanceof Text) || pressed.parentElement === null) {
-      throw new Error("the statement draws no words after its reference");
-    }
-    expect(pressed.data).toBe(after);
-    // The press is on "first", 3 characters into the words after the reference.
-    const point = mock(() => ({ offsetNode: pressed, offset: 3 }));
-    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
-    await user.pointer({ keys: "[MouseLeft]", target: pressed.parentElement });
-    await waitFor(() => {
-      const words = row.querySelector('[data-block-id="r1"] p')?.lastChild;
-      expect(words?.textContent).toBe(after);
-      expect(window.getSelection()?.anchorNode).toBe(words);
-      expect(window.getSelection()?.anchorOffset).toBe(3);
-    });
-  } finally {
-    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
-    else Object.defineProperty(document, "caretPositionFromPoint", original);
-    view.unmount();
-    editorView.destroy();
-    read.mockRestore();
-  }
 });
 
 /**
@@ -2352,8 +2485,8 @@ test("a press after a reference counts the reference as the editor holds it", as
  * reads. The statement's words are `text`, drawn from `tree`, the reading the server sends,
  * where one is given, and as stored where none is, with `names` as the page's batched read named
  * its references. A plain editable on the stage stands in for the editor's drawing of the
- * statement, as in the case above: `held` is its paragraph, each kind drawn as the editor draws
- * it. `drawn` reads the statement's drawn words before the press.
+ * statement: `held` is its paragraph, each kind drawn as the editor draws it. `drawn` reads the
+ * statement's drawn words before the press.
  */
 async function pressAfterKind({
   at,
@@ -2432,14 +2565,13 @@ async function pressAfterKind({
   }
 }
 
-// Inline HTML, such as a placeholder `<name>`, is drawn as its characters, while the editor holds
-// it as an atom the caret cannot enter, so a press after it counts it as nothing. Counted as
-// drawn, the press on "then" would put the caret 6 characters on, after "the".
-test("a press after inline html lands in the word pressed", async () => {
-  const after = " and then the rest.";
+/** Statement r1's words for `pressAfterKind`: a placeholder in inline HTML, `<name>`, and the
+ *  words after it, drawn from the server's reading and held by the editor as an atom. */
+function withInlineHtml() {
+  const after = " first, then the rest.";
   const text = `Kept by <name>${after}`;
-  await pressAfterKind({
-    drawn: (words) => {
+  return {
+    drawn: (words: HTMLElement) => {
       expect(words.querySelector('[data-type="html"]')?.textContent).toBe("<name>");
     },
     held: (
@@ -2451,11 +2583,26 @@ test("a press after inline html lands in the word pressed", async () => {
         {after}
       </>
     ),
-    into: 7,
     pressed: after,
     text,
     tree: displayTree(text),
-  });
+  };
+}
+
+// Inline HTML, such as a placeholder `<name>`, is drawn as its characters, while the editor holds
+// it as an atom the caret cannot enter, so a press after it counts it as nothing. Counted as
+// drawn, the press on "first," would put the caret 6 characters on, in "then": the word before
+// it is `<name>` in the view and "by" in the editor, so the word pressed is found nowhere to set
+// the count right.
+test("a press after inline html lands in the word pressed", async () => {
+  await pressAfterKind({ ...withInlineHtml(), into: 3 });
+});
+
+// The atom holds no text, so the end of the text before it and the start of the text after it
+// have one count. A press at the start of the text after it - on the left half of its first
+// character - puts the caret there, after the atom, and not before it.
+test("a press at the start of the text after inline html lands after it", async () => {
+  await pressAfterKind({ ...withInlineHtml(), into: 0 });
 });
 
 // A mention of a block is drawn as a chip by the block's words, while the editor holds the
@@ -2518,13 +2665,13 @@ test("a press after an image lands in the word pressed", async () => {
   }
 });
 
-// A hard break is a line break in both, which holds no text, so a press after it counts nothing
-// for it.
-test("a press after a hard break lands in the word pressed", async () => {
+/** Statement r1's words for `pressAfterKind` with a hard break between two lines, drawn from the
+ *  server's reading and held by the editor as a line break. */
+function withHardBreak() {
   const after = "Line two, then the rest.";
   const text = `Line one.\\\n${after}`;
-  await pressAfterKind({
-    drawn: (words) => {
+  return {
+    drawn: (words: HTMLElement) => {
       expect(words.querySelector("br")).not.toBeNull();
     },
     held: (
@@ -2534,11 +2681,23 @@ test("a press after a hard break lands in the word pressed", async () => {
         {after}
       </>
     ),
-    into: 6,
     pressed: after,
     text,
     tree: displayTree(text),
-  });
+  };
+}
+
+// A hard break is a line break in both, which holds no text, so a press after it counts nothing
+// for it.
+test("a press after a hard break lands in the word pressed", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 6 });
+});
+
+// The break holds no text, so the end of the line before it and the start of the line after it
+// have one count. A press at the start of the line after it - on the left half of its first
+// character - puts the caret there, after the break, and not at the end of the line before.
+test("a press at the start of the text after a hard break lands after the break", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 0 });
 });
 
 // A footnote's reference is drawn as its label, while the editor holds it as an atom the caret
@@ -2566,25 +2725,28 @@ test("a press after a footnote reference lands in the word pressed", async () =>
   });
 });
 
-// A statement whose read sent no reading of its words is drawn as stored, its inline HTML as the
-// characters it was written as, with no mark of what the editor holds there, so the count of the
-// press runs on by the 6 characters of `<name>`, to the end of "the". The word pressed is found
-// with the words beside it where the editor holds them, and the caret goes as far into it.
+// A statement whose reading draws a token as plain characters, with no mark of what the editor
+// holds there, is an inline kind the count leaves uncounted: the editor holds `[atom]` as an atom
+// the caret cannot enter, so the count of the press runs on by its 6 characters, to the end of
+// "the". The word pressed is found with the words beside it where the editor holds them, and the
+// caret goes as far into it.
 test("an uncounted inline kind still puts the caret in the pressed word", async () => {
   const after = " and then the rest.";
-  const text = `Kept by <name>${after}`;
+  const text = `Kept by [atom]${after}`;
   await pressAfterKind({
     at: 7,
     drawn: (words) => {
-      expect(words.querySelector('[data-type="html"]')).toBeNull();
+      expect(
+        words.querySelector(
+          '[data-row-written], [data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture]'
+        )
+      ).toBeNull();
       expect(words.textContent).toContain(text);
     },
     held: (
       <>
         {"Kept by "}
-        <span contentEditable={false} data-type="html">
-          {"<name>"}
-        </span>
+        <span contentEditable={false}>{"[atom]"}</span>
         {after}
       </>
     ),
@@ -2592,6 +2754,10 @@ test("an uncounted inline kind still puts the caret in the pressed word", async 
     lands: after,
     pressed: text,
     text,
+    tree: {
+      content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
   });
 });
 
@@ -2606,7 +2772,7 @@ test("a press on a decision's cell or away from it changes what the body draws o
       answeredAsk("ask-1", { text: stored }),
       statement("r1"),
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
+        chips: [{ answered: true, gone: false, reading: { words: "r1" }, ref: statementRef("r1") }],
       }),
     ]),
     [
@@ -2691,6 +2857,285 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
     read.mockRestore();
     scrolls.mockRestore();
     boxes.mockRestore();
+  }
+});
+
+/** The page a hold case reads, which happy-dom does not lay out: its size observers, which the
+ *  case calls by hand (`resize`); its boxes - the column heads from 0 to 31 px, each element the
+ *  case's own `boxOf` gives a box, and every other at 200 px; and `window.scrollBy`, which calls
+ *  the case's optional `scroll` and records each call (`scrolledBy`). `restore` gives each back. */
+function layOutPage(
+  boxOf: (element: HTMLElement) => DOMRect | undefined,
+  scroll?: (delta: number) => void
+) {
+  const sizes = installResizeObserver();
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
+    return boxOf(this) ?? new DOMRect(0, 200, 600, 48);
+  });
+  const scrolls = spyOn(window, "scrollBy").mockImplementation(
+    (options?: number | ScrollToOptions) => {
+      if (typeof options === "object") scroll?.(options.top ?? 0);
+    }
+  );
+  return {
+    resize: sizes.resize,
+    restore: () => {
+      scrolls.mockRestore();
+      boxes.mockRestore();
+      sizes.restore();
+    },
+    // `scrollBy`'s first overload takes a number; the body calls the one that takes options.
+    scrolledBy: (): unknown[] => scrolls.mock.calls.map((call): unknown => call[0]),
+  };
+}
+
+test("a drag over an unfocused statement's words gives it the focus and moves no page", async () => {
+  const user = userEvent.setup();
+  const page = layOutPage((element) =>
+    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, -200, 600, 3 * window.innerHeight)
+      : undefined
+  );
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2", { text: "The page draws r2." })])
+  );
+  try {
+    const first = rowOf(view, "spec#b-r1");
+    const tall = rowOf(view, "spec#b-r2");
+    const words = within(tall).getByText("The page draws r2.");
+    act(() => first.focus());
+    expect(tall).not.toHaveFocus();
+
+    await user.pointer([
+      { keys: "[MouseLeft>]", offset: 0, target: words },
+      { offset: 8, target: words },
+      { keys: "[/MouseLeft]", target: words },
+    ]);
+    await waitFor(() => expect(tall.className).toContain(pageFocusedRow));
+    expect(tall).toHaveFocus();
+    expect(window.getSelection()?.toString()).toBe("The page");
+    page.resize(tall);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the press placed the tall statement").toEqual([]);
+
+    await user.keyboard("{ArrowUp}");
+    expect(first).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(tall).toHaveFocus();
+    expect(page.scrolledBy(), "the later key did not place the tall statement").toContainEqual({
+      top: -200 - 31 - 8,
+    });
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// A key or a press holds the item it leaves the focus in where it stands while the page grows
+// (`holdWhereItStands`), and does not bring it on screen again by the page's rule, which puts an
+// item taller than the screen at its top. A decision cell is as tall as its whole run of
+// statements, and only its words stay at the top of the screen: deep in a run taller than the
+// screen, a hold that brought the cell on screen would take the page to the top of the run at a
+// press on those words, and the statement the reader was reading would leave the screen.
+// happy-dom lays nothing out, so the boxes are given - the heads from 0 to 31 px, the cell from
+// two screens above the window to two below it, its words at 75 px, and every statement on
+// screen - and the page's size observers are called by hand, as the browser calls them as they
+// start and as the page grows.
+test("a press on a decision cell's words deep in a run taller than the screen moves no page", async () => {
+  const user = userEvent.setup();
+  const page = layOutPage((element) => {
+    if (element.hasAttribute("data-spec-cell")) {
+      return new DOMRect(0, -2 * window.innerHeight, 280, 4 * window.innerHeight);
+    }
+    if (element.hasAttribute("data-spec-cell-words")) return new DOMRect(0, 75, 280, 120);
+    return undefined;
+  });
+  const run = ["r1", "r2", "r3"];
+  const { read, view } = drawBody(
+    issueTree([...run.map((block) => statement(block)), decisionNode("d1")]),
+    [
+      decision({
+        block_id: "d1",
+        kind: "agent",
+        links: run.map((block) => shaped(statementRef(block))),
+      }),
+    ]
+  );
+  try {
+    act(() => rowOf(view, "spec#b-r2").focus());
+    const cell = view.container.querySelector<HTMLElement>("[data-spec-cell]");
+    const words = cell?.querySelector<HTMLElement>("[data-spec-quote]");
+    if (cell == null || words == null) throw new Error("the body draws no decision's words");
+    await user.click(words);
+    await waitFor(() => expect(document.activeElement).toBe(cell));
+    // The observers' first call, in the frame after they start, and the page growing.
+    page.resize(document.body);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the press moved the page").toEqual([]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// The same hold, of a statement taller than the screen that the reader has read on into: `f`
+// moves the focus to a link of its words on screen, and Escape back to the statement, and the page
+// stays where the reader had it. A hold that brought the statement on screen would take the page
+// to its top at each key. The statement is given a box on screen as the focus comes to it, which
+// the page's rule leaves where it is, and then one from a screen above the window to two below it.
+test("a key that moves the focus to a statement taller than the screen moves no page", async () => {
+  const user = userEvent.setup();
+  let readOn = false;
+  const page = layOutPage((element) =>
+    readOn && element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, -window.innerHeight, 600, 3 * window.innerHeight)
+      : undefined
+  );
+  const linked = "**R2.** Read [the guide](https://example.com/guide) first.";
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2", { text: linked, tree: displayTree(linked) })])
+  );
+  try {
+    const tall = rowOf(view, "spec#b-r2");
+    const link = await waitFor(() => {
+      const found = tall.querySelector<HTMLElement>("[data-node-words] a");
+      if (found === null) throw new Error("the statement draws no link in its words");
+      return found;
+    });
+    act(() => tall.focus());
+    readOn = true;
+    await user.keyboard("f");
+    expect(document.activeElement, "f did not reach the link in the statement's words").toBe(link);
+    page.resize(document.body);
+    page.resize(document.body);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement, "Escape did not give the statement back").toBe(tall);
+    page.resize(document.body);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "a key moved the page").toEqual([]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// Rows drawn above the statement a key moved the focus to push it down the page, and the hold
+// scrolls the page by as far, so the statement stands where it stood (`holdWhereItStands`).
+// happy-dom lays nothing out, so the boxes are given: the heads from 0 to 31 px, each statement on
+// screen, and the statement held 120 px further down once the page has grown.
+test("a page that grows above a held statement keeps the statement where it stands", async () => {
+  const user = userEvent.setup();
+  let top = 200;
+  const page = layOutPage((element) =>
+    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, top, 600, 48)
+      : undefined
+  );
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(rowOf(view, "spec#b-r2"));
+    top += 120;
+    page.resize(document.body);
+    expect(
+      page.scrolledBy(),
+      "the hold left the statement where the page's growth pushed it"
+    ).toEqual([{ top: 120 }]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+test("a hold keeps the row where the reader left it when the page scrolls it of its own accord", async () => {
+  const user = userEvent.setup();
+  let contentTop = 200;
+  let scroll = 0;
+  let limit = 95;
+  const page = layOutPage(
+    (element) =>
+      element.dataset.nodeId === "spec#b-r2"
+        ? new DOMRect(0, contentTop - scroll, 600, 48)
+        : undefined,
+    (delta) => {
+      scroll = Math.min(scroll + delta, limit);
+    }
+  );
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    await user.keyboard("{ArrowDown}");
+    expect(rowOf(view, "spec#b-r2")).toHaveFocus();
+    page.resize(document.body);
+
+    // The page scrolls without a reader act, then draws more content above the row.
+    scroll = 50;
+    act(() => window.dispatchEvent(new Event("scroll")));
+    contentTop += 120;
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the page's scroll changed the target of the hold").toEqual([
+      { top: 70 },
+    ]);
+    expect(contentTop - scroll).toBe(225);
+
+    // The first correction hit the end of the page. More content below the row gives it room.
+    limit = 200;
+    page.resize(document.body);
+    expect(contentTop - scroll).toBe(200);
+    expect(page.scrolledBy()).toEqual([{ top: 70 }, { top: 25 }]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// The focus task after a press places a statement below the heads. The hold uses the top after
+// that placing, and a later resize corrects only the movement from there.
+test("a placing after the press counts as where the held statement stands", async () => {
+  const user = userEvent.setup();
+  let top = 15;
+  const page = layOutPage(
+    (element) =>
+      element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+        ? new DOMRect(0, top, 600, 48)
+        : undefined,
+    (delta) => {
+      top -= delta;
+    }
+  );
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    const pressed = rowOf(view, "spec#b-r2");
+    // The statement's bullet, outside its words, so the press holds the statement rather than
+    // opening its editor.
+    const bullet = pressed.querySelector<HTMLElement>(":scope > span");
+    if (bullet === null) throw new Error("the statement draws no bullet");
+    await user.click(bullet);
+    await waitFor(() => expect(pressed.className).toContain(pageFocusedRow));
+    expect(top).toBe(39);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the hold scrolled the page back over the placing").toEqual([
+      { top: -24 },
+    ]);
+    top += 40;
+    page.resize(document.body);
+    expect(
+      page.scrolledBy(),
+      "the hold left the placed statement where the page's growth pushed it"
+    ).toEqual([{ top: -24 }, { top: 40 }]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
   }
 });
 
@@ -3274,7 +3719,7 @@ test("q goes to the next open question in the conversation, where the view draws
 test("w on an address-named row goes to its decision in the conversation where that decision heads no run", async () => {
   const user = userEvent.setup();
   const behind = decisionNode("d1", {
-    chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+    chips: [{ answered: true, gone: false, reading: { words: "A remark" }, ref: "comment-1" }],
   });
   const tree = issueTree([
     statement("r1"),
@@ -3309,7 +3754,7 @@ test("w on an address-named row says nothing of its decision while the asks read
     statement("r1"),
     node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
     decisionNode("d1", {
-      chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+      chips: [{ answered: true, gone: false, reading: { words: "A remark" }, ref: "comment-1" }],
     }),
   ]);
   const made = [
@@ -3485,7 +3930,14 @@ test("an option label that cites a statement is drawn by the statement's name, n
   const named = "Keep R2. Every address as written";
   // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
   const made = decisionNode("d1", {
-    chips: [{ answered: true, gone: false, name: "R2. Every address", ref: statementRef("r2") }],
+    chips: [
+      {
+        answered: true,
+        gone: false,
+        reading: { words: "R2. Every address" },
+        ref: statementRef("r2"),
+      },
+    ],
   });
   const { read, view } = drawBody(
     issueTree([
@@ -3501,7 +3953,9 @@ test("an option label that cites a statement is drawn by the statement's name, n
         kind: "person",
         links: [shaped(statementRef("r1"))],
       }),
-    ]
+    ],
+    // The page publishes the chip's name, which the names store hands the view.
+    { names: new Map([[statementRef("r2"), "R2. Every address"]]) }
   );
   try {
     expect(textsOf(view, "[data-spec-quote]")).toEqual([`“${named}”`]);

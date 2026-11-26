@@ -108,6 +108,7 @@ import {
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
 import {
   askFacts,
+  daemonOf,
   drawnInstant,
   focusedNodeFacts,
   focusedRowFacts,
@@ -236,16 +237,6 @@ async function readHistoryDown(
       await nextFrames(page);
     }
   }
-}
-
-/** The Legion daemon of `project`, which writes on the project's issues as the session
- *  `legion-daemon:<PROJECT>`: a message it writes with no target begins a thread the history
- *  holds whole, whoever writes in it (`agents-only.ts`). */
-function daemonOf(project: string) {
-  return {
-    actor: { id: `legion-daemon:${project}`, kind: "session" as const },
-    as: "agent" as const,
-  };
 }
 
 /** The Legion daemon of `CORE`, the project most rows seed their issue in. */

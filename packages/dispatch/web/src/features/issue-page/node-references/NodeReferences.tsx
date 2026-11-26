@@ -5,8 +5,9 @@ import { Link } from "react-router-dom";
 import { api } from "../../../api/client";
 import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/classes";
 import { drawsEdge } from "../../refs/ReferencedBy";
+import { useKnownReferences } from "../../refs/reference-names";
 import { referencesQuery, standsFailed } from "../../refs/reference-target";
-import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "../details-error";
 import { useListPages } from "../details-leaves";
 import type { FocusedNode } from "../focused-node";
@@ -14,7 +15,6 @@ import { useMarginDrawer } from "../margin-slot";
 import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
-import { useKnownReferenceNames } from "../reference-names";
 import { ROW_LINK } from "../row-references";
 import { issueItemWords, type ReferenceRow, referenceRows } from "./references-list";
 
@@ -69,7 +69,7 @@ function useIssueItemWords(
  *
  * One link per node that points at the focused one, mentions included, each landing on that
  * node: a node of this issue opens focused in the outline, and a node of another issue or of a
- * project document opens where that address opens (`buildReferencePath`). The outline
+ * project document opens where that address opens (`referenceHref`). The outline
  * already carries two of the three edges the old disclosure listed - what serves a node is its
  * spine and what needs it is a chip - and nothing on the page points back from a node to what
  * mentions it, so this is where a reader reads that.
@@ -77,7 +77,7 @@ function useIssueItemWords(
  * Each row names the citing node by words the page already holds for it: a comment, a message
  * or a question of this issue by all of its words, drawn whole with no cut and no clamp, beside
  * its word, each reference in them named from the page's one batched read of what references
- * point at (`useKnownReferenceNames`), as the outline's row names it; and any other node by the
+ * point at (`useKnownReferences`), as the outline's row names it; and any other node by the
  * word of its tie or of its kind alone, with its issue and its time. The read's excerpt is the
  * node's stored text, the markdown its author typed with every address it cites, and is drawn
  * nowhere. The rows are drawn 20 at a time, with Show more under them (`ReferenceList`).
@@ -121,17 +121,26 @@ export function NodeReferences({
   const here = addressed === undefined ? undefined : parseNodeReference(addressed);
   const issueKey = here !== undefined && "key" in here ? here.key : undefined;
   const itemWords = useIssueItemWords(issueKey, open);
-  // The names the page's one batched read gave what its references point at, which a reference in
-  // a citing item's line is named by: a context the page publishes, so no request.
-  const names = useKnownReferenceNames();
+  // The names the page's one batched read gave what its references point at, and which of them
+  // name a post its author edited, by which a reference in a citing item's line is named: a
+  // context the page publishes, so no request.
+  const { edited, names } = useKnownReferences();
   // An edge a newer build answers with, of a kind or to a node this page does not know, is left
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
   // the node kind's, which says it was only named. Built while the list is open, and again only
   // when what they are read from changes, not on every move of the focus.
   const rows = useMemo(
     () =>
-      open ? referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names) : NO_ROWS,
-    [itemWords, names, open, query.data]
+      open
+        ? referenceRows(
+            itemWords,
+            (query.data?.edges ?? []).filter(drawsEdge),
+            names,
+            issueKey,
+            edited
+          )
+        : NO_ROWS,
+    [edited, issueKey, itemWords, names, open, query.data]
   );
   const toggle = useRef<HTMLButtonElement>(null);
   // Retry goes with its line once the read it sent lands, under the reader's own press, and the
@@ -214,6 +223,7 @@ function ReferenceList({
       <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={pages.list}>
         {rows.slice(0, pages.drawn).map((row) => {
           const route = row.ref === undefined ? undefined : parseNodeReference(row.ref);
+          const href = route === undefined ? undefined : referenceHref(route);
           // The edge's own word where the model gives the tuple one, and the kind of node where
           // it does not, which is every mention: the old panel's own rule.
           const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
@@ -231,7 +241,7 @@ function ReferenceList({
                   {word}
                 </span>
               )}
-              {text === "" ? null : route === undefined ? (
+              {text === "" ? null : href === undefined ? (
                 <span
                   className="min-w-0 [overflow-wrap:anywhere]"
                   {...(named ? authorText : pageChrome)}
@@ -241,7 +251,7 @@ function ReferenceList({
               ) : (
                 <Link
                   className={`dispatch-inline-link min-w-0 flex-1 [overflow-wrap:anywhere] ${ROW_LINK} ${pageInkText}`}
-                  to={buildReferencePath(route)}
+                  to={href}
                   {...(named ? authorText : pageChrome)}
                 >
                   {text}

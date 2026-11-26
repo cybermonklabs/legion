@@ -35,10 +35,13 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // (`useOutlineReads`), under the keys and with the freshness the tree reads them by, so they
   // cost no request of their own and build no second tree. The names reads are the tree's, and
   // the view draws from them too - the three sentences, and the name of every reference a plain
-  // line cites - so their line while they stand failed (`namesFailure`) is passed on for the body
-  // to draw. The body lands on the node the address names only once every read the tree's rows
+  // line cites - so their line while they stand failed (`names`) is passed on for the body to
+  // draw, and what the page publishes of that read (`published`) for the body to hand its rows in
+  // the render that draws them, so a reference the page asks for is read once and not again by a
+  // row. The body lands on the node the address names only once every read the tree's rows
   // come from has settled (`readsSettled`), for the one reason `SpecFilterBody` gives.
-  const { failed, namesFailure, namesHeld, readsHeld, readsSettled, root } = useOutlineReads(issue);
+  const { failed, names, namesHeld, published, readsHeld, readsSettled, root } =
+    useOutlineReads(issue);
   // What the first group's two rows count, over the whole tree and under the same words filter as
   // the view row's signals, once the tree may be counted (`briefCounts`).
   const counts = useMemo(
@@ -104,9 +107,10 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
           holdsEscape={address.filter !== ""}
           {...viewEscape}
           issue={issue}
+          namesLine={names}
           onEditing={onEditing}
+          published={published}
           reader={viewer}
-          {...(namesFailure === undefined ? {} : { namesFailure })}
           readsSettled={readsSettled}
           {...(request === undefined ? {} : { request })}
           {...(revealed === undefined ? {} : { reveal: revealed })}

@@ -41,6 +41,9 @@ export interface VersionViewProps {
    *  default, the app's. */
   freshness?: EventFreshness;
   highlight: Highlight | undefined;
+  /** The issue the document is on, which the version's text is a text of; null for a project
+   *  document. */
+  issueKey: string | null;
   /** The project document shown, for block asks with no issue to be referenced under. */
   owner: { project: string; slug: string } | undefined;
   version: number;
@@ -53,6 +56,7 @@ export function VersionView({
   createdAt,
   freshness,
   highlight,
+  issueKey,
   owner,
   version,
 }: VersionViewProps): ReactNode {
@@ -91,7 +95,10 @@ export function VersionView({
   const markdown = isText(versionQuery.data) ? versionQuery.data.markdown : undefined;
   // Where a `#id` in this version's text resolves: the document it is a version of, whose
   // latest version's question blocks declare the asks it names, as the server reads them.
-  const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifactId, issueKey),
+    [artifactId, issueKey]
+  );
   const followReference = useReferenceClick();
 
   // `ProofDocument` renders this view and forwards `highlight`; `ArtifactDocument` above it
@@ -255,6 +262,9 @@ export function VersionView({
         onClick={followReference}
       >
         <div ref={root} />
+        {/* The read-only editor paints the version itself and draws its references as
+            decorations: why the renderer has no mount here is the reading list's
+            `document-version-body` (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);

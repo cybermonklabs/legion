@@ -269,10 +269,11 @@ test("a who-is-reading answer 31 seconds old sends no request: Details' facts of
       <ProvidersSlot issue={ISSUE} route={ROUTE}>
         <FocusedNodeFacts
           issueKey={ISSUE.key}
+          issueTitle={ISSUE.title}
           node={{
             id: "comment-1",
             item: { id: "comment-1", kind: "comment" },
-            title: "Ship it on Friday.",
+            text: "Ship it on Friday.",
             type: "comment",
           }}
           state={undefined}

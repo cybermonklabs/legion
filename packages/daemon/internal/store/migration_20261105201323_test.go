@@ -26,6 +26,7 @@ const designGateStepVersion = 20261105201323
 // earlier release names `on conflict (issue)`, which no unique index answers once the key is
 // (issue, step), so its writes are refused.
 func TestTheStoredDesignGateBecomesTheSpecStepsRowWith20261105201323(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designGateStepVersion-1)

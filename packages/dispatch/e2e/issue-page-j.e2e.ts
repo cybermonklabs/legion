@@ -102,10 +102,12 @@ import {
   drawnContentsEntries,
   expectOnScreen,
   focusBranchControl,
+  openSpecStatement,
   ownWords,
+  pressWordAfterWheel,
   rowAuthor,
-  scrollAtRest,
   seedChildWithSpec,
+  seedStatement,
   seedTallSpec,
   specRuns,
   statementBlock,
@@ -116,6 +118,7 @@ import { withIssuePage } from "./issue-page-option";
 import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { verificationCheck } from "./issue-page-v";
+import { settledScrollTop } from "./mermaid-helpers";
 import { expect, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -1791,6 +1794,44 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
   });
 });
 
+// The tester's finding at 2790ecda: a statement that cites a post of the issue that is gone keeps
+// the page inside its viewport at 390 px. A reference with no name - a gone one, or one the read
+// has not answered yet - reads as the words its author wrote, and a reference to a post is drawn
+// as a chip, which does not wrap. At 2790ecda, after the merge of `main` that draws such a
+// reference as written in place of its short form, the chip holds the whole address, a run of 65
+// characters with no space, and the page scrolls sideways: on a large issue's copy at 390 x 844
+// the page was 586 px wide, so the phone drew it zoomed out to 586 by 1269 px, and presses and
+// the focused row's place were read against a screen the reader does not see. At 01679f81 the
+// chip held the reference's short form, and the page fit.
+// SLOW(>=2s): a seeded issue of sixty statements and two loads of the Spec view, at 390 and 320
+// px, each measured once the statement is drawn.
+test("a statement that cites a gone post keeps the page inside its viewport at 390 px", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = seedStatement((seeded) =>
+    statementBlock(
+      LONG_BLOCK_ID,
+      `Answer dispatch://${seeded.key}/comment/${GONE_COMMENT} at once, then read the rest.`
+    )
+  );
+  await phase(browser, seed, async (page, seeded) => {
+    const cited = issuePage(page).locator(
+      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"] [data-node-words] a`
+    );
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ height: PHONE.height, width });
+      await gotoIssue(page, presetPath(seeded.key, "spec"));
+      await expect(
+        cited.first(),
+        `the Spec view draws no link for the gone post the statement cites at ${width} px`
+      ).toBeVisible();
+      await expectIssuePageDrawn(page);
+      await assertPageFits(page);
+    }
+  });
+});
+
 // R7 and R9: the Spec view opened at its own address while neither read its statements come
 // from can be read - the spec's blocks and the coverage, which names each statement - draws the
 // statements' line saying so and no row, and that line's Retry takes the focus: nothing else
@@ -1980,6 +2021,75 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
   });
 });
 
+// The tester's finding at cf7e601c: at 390 px, the row a key left the reader on stays on screen
+// once the statements are drawn above it, as it does at 1440 px (the row above). The comment's
+// address is loaded from Settings with the coverage read and the spec's blocks read held, so the
+// comment's row is drawn alone and holds the focus; the reader presses End, then ArrowDown, on
+// it, each on a load of its own, and the reads are let go. At cf7e601c the view's hold scrolls
+// the page as the statements are drawn above the row, but takes a scroll it did not make as
+// where the row stands, so on a large issue's copy at 390 x 844 the row ended 38 906, 45 947 and
+// 1 655 px below the screen's top in 8 of 12 such loads (End, ArrowDown and a press), and on
+// screen in each of 4 loads with no act. At 32ff1e43, whose hold was the outline's
+// (`holdInPlaceOf`), the row stood on screen after each key.
+// SLOW(>=2s): a seeded issue of sixty statements, then two loads of Settings and two of the Spec
+// view, each read once every statement is drawn and the page has stopped moving.
+test("at 390 px the row a key left the reader on during the Spec view's load stays on screen once the statements are drawn above it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedTallSpec, async (page, seeded) => {
+    await page.setViewportSize({ height: 844, width: 390 });
+    const spec = presetPath(seeded.key, "spec");
+    const body = issuePage(page).locator("[data-spec-body]");
+    const statements = body.locator("[data-spec-statement]");
+    const comment = body.locator(`[data-node-row][data-node-id="${seeded.commentId}"]`);
+    const heldPaths = new Set([
+      `/api/v1/artifacts/${seeded.specArtifactId}/blocks`,
+      `/api/v1/issues/${seeded.key}/coverage`,
+    ]);
+    const heldRead = (url: URL): boolean => heldPaths.has(url.pathname);
+    for (const key of ["End", "ArrowDown"] as const) {
+      const keyHeld = Promise.withResolvers<void>();
+      await page.route(heldRead, async (route) => {
+        await keyHeld.promise;
+        await route.continue();
+      });
+      await page.goto("/settings");
+      await expect(
+        page.getByRole("heading", { level: 1, name: "Settings" }),
+        `Settings is not drawn before the comment's address is loaded, for ${key}`
+      ).toBeVisible();
+      await gotoIssue(page, `${spec}?comment=${seeded.commentId}`);
+      await expect(
+        comment,
+        `the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before ${key}`
+      ).toBeVisible();
+      await expect(
+        comment,
+        `the comment's row does not hold the focus while the coverage and the spec's blocks are held, before ${key}`
+      ).toBeFocused();
+      await page.keyboard.press(key);
+      keyHeld.resolve();
+      await expect(
+        statements,
+        `the comment's address, ${key} pressed on its row during the load, does not draw every statement of the spec once the coverage and the spec's blocks answer`
+      ).toHaveCount(seeded.requirements.length);
+      // Every statement is drawn above the row, and the page is read once it has stopped moving,
+      // so the hold has done what it does with the rows drawn above.
+      await settledScrollTop(page);
+      await expect(
+        comment,
+        `${key} on the comment's row during the load leaves the focus off that row once the statements are drawn above it`
+      ).toBeFocused();
+      await expectOnScreen(
+        comment,
+        `${key} on the comment's row during the load at 390 px, its statements drawn above it`
+      );
+      await page.unroute(heldRead);
+    }
+  });
+});
+
 // The tester's finding at 1f2cdd53: a key that only scrolls the page keeps the reader's place. A
 // key the Spec view's tree does not bind - Page Down, Space, Page Up - scrolls the page and leaves
 // the focus on the statement it was pressed on, so it takes the reader nowhere, and nothing may
@@ -1995,57 +2105,27 @@ test("a key that only scrolls the page keeps the reader's place in the Spec view
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(LONG_BLOCK_ID, longWords("long", 200)),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+  const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 200)));
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
     await expect(
       statements,
       "the Spec view does not draw every statement of the spec and the long one"
     ).toHaveCount(seeded.requirements.length + 1);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
     // A script's focus, which starts no hold of the reader's: the keys below are the reader's.
     await long.focus();
     await expect(long, "the long statement does not take the focus").toBeFocused();
-    /** The page's scroll once it has stopped moving: two frames apart, two reads that agree. */
-    const restingScroll = (): Promise<number> =>
-      page.evaluate(async () => {
-        let last = window.scrollY;
-        for (;;) {
-          const frames = Promise.withResolvers<void>();
-          requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
-          await frames.promise;
-          if (window.scrollY === last) return Math.round(last);
-          last = window.scrollY;
-        }
-      });
     const screen = DESKTOP.height;
     for (const [key, down] of [
       ["PageDown", true],
       ["Space", true],
       ["PageUp", false],
     ] as const) {
-      const before = await restingScroll();
+      const before = await settledScrollTop(page);
       await page.keyboard.press(key);
-      const moved = (await restingScroll()) - before;
+      const moved = (await settledScrollTop(page)) - before;
       expect(
         down ? moved : -moved,
         `${key} on the focused statement moves the page ${moved} px, not half a screen (${screen / 2} px) or more ${down ? "down" : "up"}`
@@ -2072,43 +2152,25 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(LONG_BLOCK_ID, longWords("long", 600)),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+  const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
     await expect(
       statements,
       "the Spec view does not draw every statement of the spec and the long one"
     ).toHaveCount(seeded.requirements.length + 1);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
     // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
     // screen, with the rest of its 600 words on screen under the column heads.
     const heads = body.locator("[data-spec-head]");
     const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
     const top = await long.evaluate((row) => row.getBoundingClientRect().top);
-    const wheelAt = await scrollAtRest(page);
+    const wheelAt = await settledScrollTop(page);
     await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
     await page.mouse.wheel(0, top + 200);
     await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
+      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
       .not.toBe(wheelAt);
     const box = await long.evaluate((row) => {
       const { bottom, left, top: rowTop, width } = row.getBoundingClientRect();
@@ -2137,14 +2199,14 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
     ).toBe(true);
     const pressed = await wordAtCaret(page, at);
     expect(pressed, "the press's point holds no word of the long statement").toMatch(/^long\d+/);
-    const pressedAt = await scrollAtRest(page);
+    const pressedAt = await settledScrollTop(page);
     await page.mouse.click(at.x, at.y);
     await expect
       .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
         message: "a press on the long statement's words does not put the caret in them",
       })
       .toBe(true);
-    const moved = (await scrollAtRest(page)) - pressedAt;
+    const moved = (await settledScrollTop(page)) - pressedAt;
     expect(
       await wordAtCaret(page, "selection"),
       `a press on the word "${pressed}" puts the caret in another word`
@@ -2153,6 +2215,105 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
       Math.abs(moved),
       `a press on the long statement's words, its top above the screen, moves the page ${moved} px`
     ).toBeLessThanOrEqual(1);
+  });
+});
+
+// The tester's finding at cf7e601c: a drag over a statement's words keeps what it selected on
+// screen and keeps the reader's place. The drag selects words and opens no editor, and the
+// statement takes the focus once the press is over, as a press does. At cf7e601c that focus
+// places the statement by the page's rule, which puts a statement taller than the screen at its
+// top, so the page jumps up and the selected words leave the screen: on a large issue's copy,
+// 1693 px at 1440 x 900 for a statement 4144 px tall, and 4940 px at 390 x 844. A press on the
+// same words, with no drag, moves no page (the row above).
+// SLOW(>=2s): a seeded issue of sixty statements and one of 600 words, a load of the Spec view, a
+// turn of the wheel and a drag, each read once the page has stopped moving.
+test("a drag over a Spec statement's words keeps the selection on screen and the reader's place", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
+  await phase(browser, seed, async (page, seeded) => {
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
+    const body = issuePage(page).locator("[data-spec-body]");
+    const heads = body.locator("[data-spec-head]");
+    const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
+    // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
+    // screen, with the rest of its 600 words on screen under the column heads.
+    const top = await long.evaluate((row) => row.getBoundingClientRect().top);
+    const wheelAt = await settledScrollTop(page);
+    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+    await page.mouse.wheel(0, top + 200);
+    await expect
+      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
+      .not.toBe(wheelAt);
+    const box = await long.evaluate((row) => {
+      const { left, top: rowTop, width } = row.getBoundingClientRect();
+      return { left, top: rowTop, width };
+    });
+    expect(
+      box.top,
+      "after the wheel the long statement's top is not above the screen"
+    ).toBeLessThan(0);
+    expect(
+      await long.evaluate((row) => row.contains(document.activeElement)),
+      "the long statement holds the focus before the drag"
+    ).toBe(false);
+    // The drag runs along one line of the statement's words, 60 px under the column heads, from a
+    // quarter of the row's width to two thirds of it, clear of a link or a chip at both ends.
+    const from = { x: box.left + box.width / 4, y: headsBottom + 60 };
+    const to = { x: box.left + (box.width * 2) / 3, y: headsBottom + 60 };
+    for (const point of [from, to]) {
+      expect(
+        await long.evaluate((row, at) => {
+          const hit = document.elementFromPoint(at.x, at.y);
+          return row.contains(hit) && hit?.closest("a, button") === null;
+        }, point),
+        `the point (${point.x}, ${point.y}) is not on the long statement's words`
+      ).toBe(true);
+    }
+    const draggedAt = await settledScrollTop(page);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 8 });
+    await page.mouse.up();
+    // The statement takes the focus in a task after the press ends, and that focus is what places
+    // it, so the page is read once the focus has come and the page has stopped moving.
+    await expect
+      .poll(() => long.evaluate((row) => row.contains(document.activeElement)), {
+        message: "the long statement does not take the focus once the drag is over",
+      })
+      .toBe(true);
+    const moved = (await settledScrollTop(page)) - draggedAt;
+    const selection = await page.evaluate(() => {
+      const selected = window.getSelection();
+      const range = selected === null || selected.rangeCount === 0 ? null : selected.getRangeAt(0);
+      const rect = range?.getBoundingClientRect();
+      return {
+        bottom: rect?.bottom ?? 0,
+        collapsed: selected?.isCollapsed ?? true,
+        editing:
+          document.activeElement instanceof HTMLElement && document.activeElement.isContentEditable,
+        text: selected?.toString() ?? "",
+        top: rect?.top ?? 0,
+      };
+    });
+    expect(selection.editing, "the drag over the long statement's words opened its editor").toBe(
+      false
+    );
+    expect(selection.collapsed, "the drag over the long statement's words kept no selection").toBe(
+      false
+    );
+    expect(selection.text, "the drag selected no words of the long statement").toMatch(
+      /long\d+\s+long\d+/
+    );
+    expect(
+      Math.abs(moved),
+      `a drag over the long statement's words, its top above the screen, moves the page ${moved} px`
+    ).toBeLessThanOrEqual(1);
+    expect(
+      selection.top >= headsBottom && selection.bottom <= DESKTOP.height,
+      `after the drag the selected words stand from ${selection.top} to ${selection.bottom} px, off the screen`
+    ).toBe(true);
   });
 });
 
@@ -2224,36 +2385,19 @@ test("a press on a Spec statement's words after a reference puts the caret in th
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
+  const seed = seedStatement(async () => {
     const cited = await createIssue({
       force: true,
       project: PROJECT,
       title: "The issue this statement cites by its key, drawn by its key and its title",
     });
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(
-            LONG_BLOCK_ID,
-            `Read dispatch://${cited.key} first. ${longWords("long", 120)}`
-          ),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
-  await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    const body = issuePage(page).locator("[data-spec-body]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
+    return statementBlock(
+      LONG_BLOCK_ID,
+      `Read dispatch://${cited.key} first. ${longWords("long", 120)}`
     );
+  });
+  await phase(browser, seed, async (page, seeded) => {
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     await expect(long, "the Spec view draws no statement that cites the other issue").toHaveCount(
       1
     );
@@ -2261,53 +2405,13 @@ test("a press on a Spec statement's words after a reference puts the caret in th
       long.locator("[data-node-words] a"),
       "the statement draws no link for the reference it holds"
     ).not.toHaveCount(0);
-    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
-    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
-      long.evaluate((row, wanted) => {
-        const words = row.querySelector("[data-node-words]");
-        if (words === null) return null;
-        const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
-          if (found < 0) continue;
-          const range = document.createRange();
-          range.setStart(text, found + 1);
-          range.setEnd(text, found + 2);
-          const box = range.getBoundingClientRect();
-          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
-        }
-        return null;
-      }, word);
     // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
     const pressed = "long60";
-    const far = await wordBox(pressed);
-    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-    const wheelAt = await scrollAtRest(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
-    await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    // The poll above waited until the page stopped moving after the wheel, so one read of the
-    // word's box is where it stands when it is pressed.
-    const at = await wordBox(pressed);
-    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
-    const point = at ?? { x: 0, y: 0 };
-    expect(
-      await wordAtCaret(page, point),
-      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
-    ).toBe(pressed);
-    await page.mouse.click(point.x, point.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message:
-          "a press on the statement's words after its reference does not put the caret in them",
-      })
-      .toBe(true);
-    expect(
-      await wordAtCaret(page, "selection"),
-      `a press on the word "${pressed}", after the statement's reference, puts the caret in another word`
-    ).toBe(pressed);
+    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
+      noCaret:
+        "a press on the statement's words after its reference does not put the caret in them",
+      otherWord: `a press on the word "${pressed}", after the statement's reference, puts the caret in another word`,
+    });
   });
 });
 
@@ -2324,83 +2428,26 @@ test("a press on a Spec statement's words after inline HTML puts the caret in th
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(
-            LONG_BLOCK_ID,
-            `It draws "Kept by <name>" and "Replaced by <name>". ${longWords("long", 120)}`
-          ),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+  const seed = seedStatement(() =>
+    statementBlock(
+      LONG_BLOCK_ID,
+      `It draws "Kept by <name>" and "Replaced by <name>". ${longWords("long", 120)}`
+    )
+  );
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    const body = issuePage(page).locator("[data-spec-body]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     await expect(long, "the Spec view draws no statement that holds inline HTML").toHaveCount(1);
     await expect(
       long.locator('[data-node-words] [data-type="html"]'),
       "the statement draws no inline HTML for the placeholders it holds"
     ).toHaveCount(2);
-    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
-    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
-      long.evaluate((row, wanted) => {
-        const words = row.querySelector("[data-node-words]");
-        if (words === null) return null;
-        const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
-          if (found < 0) continue;
-          const range = document.createRange();
-          range.setStart(text, found + 1);
-          range.setEnd(text, found + 2);
-          const box = range.getBoundingClientRect();
-          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
-        }
-        return null;
-      }, word);
     // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
     const pressed = "long60";
-    const far = await wordBox(pressed);
-    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-    const wheelAt = await scrollAtRest(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
-    await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    // The poll above waited until the page stopped moving after the wheel, so one read of the
-    // word's box is where it stands when it is pressed.
-    const at = await wordBox(pressed);
-    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
-    const point = at ?? { x: 0, y: 0 };
-    expect(
-      await wordAtCaret(page, point),
-      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
-    ).toBe(pressed);
-    await page.mouse.click(point.x, point.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message:
-          "a press on the statement's words after its inline HTML does not put the caret in them",
-      })
-      .toBe(true);
-    expect(
-      await wordAtCaret(page, "selection"),
-      `a press on the word "${pressed}", after the statement's inline HTML, puts the caret in another word`
-    ).toBe(pressed);
+    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
+      noCaret:
+        "a press on the statement's words after its inline HTML does not put the caret in them",
+      otherWord: `a press on the word "${pressed}", after the statement's inline HTML, puts the caret in another word`,
+    });
   });
 });
 
@@ -2418,8 +2465,7 @@ test("a press on a Spec statement's words after every inline kind the editor hol
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
+  const seed = seedStatement(async (seeded) => {
     const cited = await createIssue({
       force: true,
       project: PROJECT,
@@ -2430,26 +2476,10 @@ test("a press on a Spec statement's words after every inline kind the editor hol
       `It draws "Kept by <name>" beside ![shot.png](dispatch://${seeded.key}/artifact/shot-png@v1)`,
       `and a note[^note].\\\n${longWords("long", 120)}`,
     ].join(" ");
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: `${statementBlock(LONG_BLOCK_ID, words)}\n\n[^note]: The note the statement names.`,
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+    return `${statementBlock(LONG_BLOCK_ID, words)}\n\n[^note]: The note the statement names.`;
+  });
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    const body = issuePage(page).locator("[data-spec-body]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     await expect(long, "the Spec view draws no statement that holds every inline kind").toHaveCount(
       1
     );
@@ -2467,52 +2497,12 @@ test("a press on a Spec statement's words after every inline kind the editor hol
       "the statement draws no picture"
     ).toHaveCount(1);
     await expect(words.locator("br"), "the statement draws no hard break").toHaveCount(1);
-    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
-    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
-      long.evaluate((row, wanted) => {
-        const drawn = row.querySelector("[data-node-words]");
-        if (drawn === null) return null;
-        const walker = document.createTreeWalker(drawn, NodeFilter.SHOW_TEXT);
-        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
-          if (found < 0) continue;
-          const range = document.createRange();
-          range.setStart(text, found + 1);
-          range.setEnd(text, found + 2);
-          const box = range.getBoundingClientRect();
-          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
-        }
-        return null;
-      }, word);
     // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
     const pressed = "long60";
-    const far = await wordBox(pressed);
-    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-    const wheelAt = await scrollAtRest(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
-    await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    // The poll above waited until the page stopped moving after the wheel, so one read of the
-    // word's box is where it stands when it is pressed.
-    const at = await wordBox(pressed);
-    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
-    const point = at ?? { x: 0, y: 0 };
-    expect(
-      await wordAtCaret(page, point),
-      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
-    ).toBe(pressed);
-    await page.mouse.click(point.x, point.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message:
-          "a press on the statement's words after every inline kind does not put the caret in them",
-      })
-      .toBe(true);
-    expect(
-      await wordAtCaret(page, "selection"),
-      `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`
-    ).toBe(pressed);
+    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
+      noCaret:
+        "a press on the statement's words after every inline kind does not put the caret in them",
+      otherWord: `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`,
+    });
   });
 });

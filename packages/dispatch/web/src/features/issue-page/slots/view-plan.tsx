@@ -38,8 +38,12 @@ export function ViewPlanSlot({
   const address = issueAddress(route, search, hash, spec?.slug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
-  const { failed: refusedLines, readsSettled, root } = useOutlineReads(issue);
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its bars and steps draw waits on those names.
+  const { failed: refusedLines, names, published, readsSettled, root } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves. It is
   // these two reads and not `useIssueTree`'s `blocksHeld`, which counts the Verification and
@@ -164,8 +168,10 @@ export function ViewPlanSlot({
           holdsEscape={address.filter !== ""}
           {...viewEscape}
           isClosed={isClosed}
+          namesLine={names}
           onEditing={onEditing}
           plan={plan}
+          published={published}
           reads={reads}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}

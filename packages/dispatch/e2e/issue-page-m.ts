@@ -12,12 +12,15 @@ import { settledState } from "./settled";
 
 /**
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
- * history, the steps under it, the facts of the focused row, and the way to them; and
- * `putStepExperiment`, the one write of their seed that `e2e/api.ts` has no wrapper for.
+ * history, the steps under it, the facts of the focused row, and the way to them;
+ * `putStepExperiment`, the one write of their seed that `e2e/api.ts` has no wrapper for; and
+ * `daemonOf`, the Legion daemon of a project as their seed's writes name it.
  *
- * This file is those rows' own: it imports the readers of `e2e/issue-page.ts`,
- * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, `settledState` of `e2e/settled.ts`, and
- * `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and copies none of them.
+ * This file is those rows' own, and the reading list's drivers of Details' history
+ * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`: it
+ * imports the readers of `e2e/issue-page.ts`, `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`,
+ * `settledState` of `e2e/settled.ts`, and `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and
+ * copies none of them.
  *
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
  *
@@ -337,12 +340,23 @@ export function stepsUnread(page: Page): Promise<string[]> {
   });
 }
 
+/** The Legion daemon of `project`, which writes on the project's issues as the session
+ *  `legion-daemon:<PROJECT>`: a message it writes with no target begins a thread the history
+ *  holds whole, whoever writes in it (`agents-only.ts`), and it is the one writer the steps'
+ *  routes admit for that project's issues. */
+export function daemonOf(project: string) {
+  return {
+    actor: { id: `legion-daemon:${project}`, kind: "session" as const },
+    as: "agent" as const,
+  };
+}
+
 /**
  * Writes the experiment and the variant of run `id` of issue `key`, as the Legion daemon of the
  * issue's project writes them after it has written the run
  * (`PUT /api/v1/issues/{key}/steps/{id}/experiment`): under the agent bearer, naming the session
- * `legion-daemon:<PROJECT>`, the one writer the route admits for that project's issues. It throws,
- * naming the status and the body, where the answer is not ok.
+ * of `daemonOf`, the one writer the route admits for that project's issues. It throws, naming the
+ * status and the body, where the answer is not ok.
  */
 export async function putStepExperiment(
   key: string,
@@ -350,7 +364,7 @@ export async function putStepExperiment(
   drawn: Pick<StepExperimentInput, "experiment" | "variant">
 ): Promise<void> {
   const input: StepExperimentInput = {
-    actor: { id: `legion-daemon:${issueProject(key)}`, kind: "session" },
+    actor: daemonOf(issueProject(key)).actor,
     ...drawn,
   };
   const response = await fetch(

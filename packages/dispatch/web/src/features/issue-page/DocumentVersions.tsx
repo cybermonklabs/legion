@@ -114,6 +114,8 @@ export function DocumentVersions({
               >
                 <span className={pageInkText} {...pageChrome}>
                   {version.named && version.summary !== null ? (
+                    // A version's summary, as its writer gave it: the reading list's
+                    // `issue-page-version-summary`.
                     <span {...authorText}>{version.summary}</span>
                   ) : (
                     <VersionWords version={version} word={sentenceCase(FILE_WORDS.version)} />
@@ -170,6 +172,7 @@ function VersionPicker({
         {versions.map((version) => (
           <option key={version.number} value={version.number}>
             {CONTROL_LABELS.version} {version.number}
+            {/* A version's summary, as its writer gave it: `issue-page-version-summary`. */}
             {version.named && version.summary !== null ? ` — ${version.summary}` : ""}
           </option>
         ))}

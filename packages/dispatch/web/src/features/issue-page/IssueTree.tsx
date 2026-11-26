@@ -12,8 +12,9 @@ import { useNavigate } from "react-router-dom";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
-import { EditedMark } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
+import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
@@ -21,18 +22,18 @@ import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
-import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
+import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { DeletedLine } from "./NodeRow";
+import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
-import { pressedAtom, pressInWords, statementWordsAt } from "./press-point";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
+import { pressedAtom, pressInWords, statementWordsAt } from "./spec-filter/pressed-words";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import {
@@ -105,6 +106,7 @@ export function IssueTree({
   landingReport,
   onEditing,
   openingWaits = false,
+  published,
   readsHeld = true,
   readsSettled = true,
   request,
@@ -173,6 +175,13 @@ export function IssueTree({
    *  says where (`slots/body.tsx`), a question or a first row the opening focused would be a move
    *  before it. No wait unless the page says otherwise. */
   openingWaits?: boolean;
+  /** What the page publishes of its one batched read (`useIssueTree.ts`'s `published`), which
+   *  the tree hands every row and crumb it draws in the render that draws it
+   *  (`PublishedReferenceNames`): a reference the page is asking for waits on the page's answer
+   *  from a row's first render, rather than being read again by the row (R8). The page publishes
+   *  it to the names store as well, which names each target. Every caller hands it, so no tree
+   *  draws a row that reads what its page asks for. */
+  published: PublishedReferences;
   /** Whether each read the tree's nodes come from holds an answer, which a failed read never
    *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
    *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a
@@ -1154,7 +1163,7 @@ export function IssueTree({
     };
   }, [landing]);
 
-  return (
+  const outline = (
     <div className="mb-3 flex min-w-0 flex-col">
       {/* Over the tree and never in it: an alert inside the tree would break its structure of
           rows (`FailedReadLine`). */}
@@ -1204,9 +1213,8 @@ export function IssueTree({
               // zoom draws 96 px where it was 112. Its display is left to the floor's
               // `inline-flex`: the line is a flex box, which makes each crumb a block box
               // whatever its display, and `inline-block`, `inline` and `block` drew the same box.
-              // It draws one line for a node, so it is the node's first line (`firstLineOf`),
-              // cut at a word from the words every one-line drawing of a node is cut from
-              // (`lineWords`), and it wraps rather than being cut again mid-word by its box; the
+              // It draws one line for a node, as every place that names a node by one does
+              // (`CrumbName`), and it wraps rather than being cut again mid-word by its box; the
               // issue is named by its key, since the header above draws its title, and a node
               // with no words by its kind's word, never its id, which is no name a reader reads.
               className="dispatch-inline-link min-h-0! min-w-0! max-w-full py-1 text-left underline [overflow-wrap:anywhere]"
@@ -1240,7 +1248,7 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              <CrumbLine issueId={root.id} node={above} />
+              {above.id === root.id ? above.id : <CrumbName node={above} />}
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -1254,16 +1262,17 @@ export function IssueTree({
         onBlur={releaseFocus}
         // R18 (decision 420 (1)): a press on the words of a row that takes a caret (`nodeEditable`,
         // which the row marks `data-editable`) opens its editor with the caret where the press
-        // landed - the point the Spec view's statements pass (`press-point.ts`, decisions 446 and
-        // 455), just past an atom pressed - as Enter opens it at the block's start. It is a click
-        // on the words its press went down on (`onMouseDownCapture`), with no text a drag selected,
-        // on a row other than the one being edited, whose press is its editor's own. A link, a chip
-        // or another control in the words answers its press itself (`statementWordsAt`), and a row
-        // that takes no caret takes the focus alone. The editor is asked for a task on, once the
-        // press's focus has settled and I's press rule has ended the editing another row held
-        // (`useNodeEditing.ts`), and only while the row still holds the focus; the row places
-        // nothing of its own meanwhile (`pressOpens`), and the editor holds the pressed word under
-        // the pointer without moving the page (`holdEditorAtBlock`).
+        // landed - the point the Spec view's statements pass (`spec-filter/pressed-words.ts`,
+        // decisions 446 and 455), just past an atom pressed (`pressedAtom`) - as Enter opens it at
+        // the block's start. It is a click on the words its press went down on
+        // (`onMouseDownCapture`), with no text a drag selected, on a row other than the one being
+        // edited, whose press is its editor's own. A link, a chip or another control in the words
+        // answers its press itself (`statementWordsAt`), and a row that takes no caret takes the
+        // focus alone. The editor is asked for a task on, once the press's focus has settled and
+        // I's press rule has ended the editing another row held (`useNodeEditing.ts`), and only
+        // while the row still holds the focus; the row places nothing of its own meanwhile
+        // (`pressOpens`), and the editor holds the pressed word under the pointer without moving
+        // the page (`holdEditorAtBlock`).
         onClick={(event) => {
           const words = pressedWords.current;
           pressedWords.current = null;
@@ -1289,9 +1298,7 @@ export function IssueTree({
             return;
           }
           const point = pressInWords(words, event.clientX, event.clientY);
-          const at = pressedAtom(event.target, words)
-            ? { ...point, afterAtom: true as const }
-            : point;
+          const at = pressedAtom(event.target, words) ? { ...point, next: true as const } : point;
           pressOpens.current = rowKey;
           window.setTimeout(() => {
             pressOpens.current = undefined;
@@ -1354,6 +1361,7 @@ export function IssueTree({
       ) : null}
     </div>
   );
+  return <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>;
 }
 
 /** How long a write's landing waits for the read that draws it before it takes the reader to
@@ -1373,29 +1381,24 @@ function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): Readonly
   return new Set([...ids].filter((id) => !drop.includes(id)));
 }
 
-/** What a crumb above a zoom says of `node`: the issue's key for the issue, the node's first line
- *  for any other (`firstLineOf`), and its kind's word where it has no words. */
-function crumbName(node: TreeNode, issueId: string): string {
-  if (node.id === issueId) return node.id;
-  const first = firstLineOf(lineWords(node));
-  return first.line === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(first);
-}
-
-/**
- * What a crumb above a zoom draws for `node`: its name (`crumbName`), with the marks of a post
- * its author corrected, since a crumb draws a node's one line where its own row is not drawn, as
- * a filter's parent line does (`NodeRow.tsx`'s `ParentLink`, INFRA-1523 R2 and R3). A deleted
- * comment or message is drawn as its deleted line, from the delete (`DeletedLine`) and never from
- * the node's text, which names the actor as no registry knows it and the time as stored; an
- * edited one says ` · edited` after its line (`EditedMark`).
- */
-function CrumbLine({ issueId, node }: { issueId: string; node: TreeNode }): ReactNode {
+/** What a crumb above a zoom says of a node other than the issue, which is named by its key:
+ *  its one line, as every place that names a node by one draws it (`useNodeLine`) - each
+ *  reference in it read as its target's current name (R8) - and its kind's word where its words
+ *  hold none (`lineOrKindWord`), with the marks of a post its author corrected, since a crumb
+ *  draws a node's one line where its own row is not drawn, as a filter's parent line does
+ *  (`node-line.tsx`'s `ParentLink`, deleted-post R2 and R3). A deleted comment or message is drawn
+ *  as its deleted line, from the delete (`DeletedLine`) and never from the node's text, which
+ *  names the actor as no registry knows it and the time as stored; an edited one says
+ *  ` · edited` after its line (`EditedMark`). */
+function CrumbName({ node }: { node: TreeNode }): ReactNode {
+  const { line, reads } = useNodeLine(node, { surface: "outline-crumb" });
   const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
   if (deleted !== null) return <DeletedLine deleted={deleted} />;
   return (
     <>
-      {crumbName(node, issueId)}
-      <EditedMark at={node.editedAt} marks={pageChrome} />
+      {reads}
+      {lineOrKindWord(line, node.type)}
+      {line === undefined ? null : <EditedMark at={node.editedAt} marks={pageChrome} />}
     </>
   );
 }
@@ -1535,21 +1538,20 @@ function landingParent(
   return under === undefined ? root : pathToTarget(root, { id: under.id, kind: "item" })?.at(-1);
 }
 
-/** The facts of `node` the panel draws while its row has the focus: who wrote it, the
- *  item it is, its own address and its state, and its own first line as its title, cut from the
- *  words every one-line drawing of a node is cut from (`lineWords`). A node with no words is
- *  named by the page's word for its kind (`NODE_TYPE_NAMES`), never by its id, which is no name
- *  a reader reads. */
+/** The facts of `node` the panel draws while its row has the focus: who wrote it, the item it
+ *  is, its own address and its state, and its own words, which the panel names it by as every
+ *  place that names a node by its one line does (`FocusedNode.text`). */
 export function focusedNodeOf(node: TreeNode): FocusedNode {
   const item = conversationItem(node);
-  const line = firstLineOf(lineWords(node)).line;
   return {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
+    ...(node.source === undefined ? {} : { source: node.source }),
     ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
-    title: line === "" ? NODE_TYPE_NAMES[node.type] : line,
+    text: node.text,
+    ...(node.tree === undefined ? {} : { tree: node.tree }),
     type: node.type,
   };
 }

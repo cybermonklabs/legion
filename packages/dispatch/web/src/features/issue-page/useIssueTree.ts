@@ -18,18 +18,20 @@ import {
 } from "../../api/queries";
 import type { AuthenticatedUser, IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import type { PostDeletion } from "../refs/post-marks";
+import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
+import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import {
   buildIssueTree,
   type DocumentBlocks,
   type IssueTreeReads,
   nodeWords,
+  type TreeAsk,
   type TreeNode,
   targetNaming,
 } from "./issue-tree";
-import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
+import { askState } from "./tree-drafts";
 import { useLineRefusals } from "./useLineRefusals";
 
 /** The issue's tree, and how far the reads it is built from have got. */
@@ -80,6 +82,10 @@ export interface IssueTreeView {
    *  has failed (`namesFailure`), so the names stay held then; where its very first read fails
    *  it holds none, and this is false until it answers. */
   readonly namesHeld: boolean;
+  /** What the page publishes of its batched read (`usePublishReferenceNames`), which the view
+   *  that draws the tree's rows hands them as well, in the render that draws them
+   *  (`PublishedReferenceNames`), so no row reads a reference the page is asking for. */
+  readonly published: PublishedReferences;
   readonly root: TreeNode;
 }
 
@@ -133,41 +139,59 @@ export function treeDocumentIds(issue: IssueDetails): string[] {
  * Every `dispatch://` address the tree holds: each node's own, so a block's words can be read,
  * each chip's, so a chip can name its target, and each one a node's words or its answer cite, so
  * a row links what its words name from this read and makes none per mention
- * (`row-references.ts`). This is what the batched reference read is given, which is why the
- * page draws every chip and every link in one request rather than one per node (R21); a block
- * whose words come from that read's own answer cites what nothing else cites, which one more
- * read names (`useIssueTree`). It is here, beside the reads it is the key of, and not beside
- * the model, which makes no read; what a text cites is read by `citedReferences`
+ * (`row-references.ts`). This is what the batched reference read is given, which is why the page
+ * draws every chip and every link in one request rather than one per node (R21); a block whose
+ * words come from that read's own answer cites what nothing else cites, which one more read
+ * names (`useIssueTree`). It is here, beside the reads it is the key of, and not beside the
+ * model, which makes no read; what a text cites is read by `citedReferences`
  * (`row-references.ts`), over the one reader of a text's citations (`text-references.ts`).
+ *
+ * Beside an issue's whole spec goes the issue's own address. A link titles the spec by the
+ * issue's title (`issueOrDocumentTitle`), which the read answers only under that address, so
+ * without it a plain line the page feeds would name another issue's spec by the page's word for
+ * a document, where a link and a line's own read name it by that title (`tree-drafts.ts`'s
+ * `treeContext`).
+ *
+ * The note a person wrote as they declined an ask is drawn under the ask's row in the Decisions
+ * view (`DecisionsRow.tsx`'s `Declined`) from the asks read, not from a node, so what each note
+ * cites (`asks`) is asked for here too. An ask is declined by the tree's own rule (`askState`):
+ * the server stores a decline as a `resolved` ask whose resolution is of kind `declined`.
  */
-function treeReferences(root: TreeNode): string[] {
+function treeReferences(root: TreeNode, asks: readonly TreeAsk[] = []): string[] {
   const refs = new Set<string>();
+  const add = (reference: string): void => {
+    refs.add(reference);
+    const route = parseNodeReference(reference);
+    if (route?.kind === "spec" && route.block === undefined) {
+      refs.add(buildDispatchReference({ key: route.key, kind: "issue" }));
+    }
+  };
   const walk = (node: TreeNode): void => {
-    if (node.reference !== undefined) refs.add(node.reference);
-    for (const chip of [...node.chips, ...node.alsoUnder]) refs.add(chip.ref);
-    for (const reference of citedReferences(nodeWords(node))) refs.add(reference);
-    for (const reference of citedReferences(node.answer?.text ?? "")) refs.add(reference);
+    if (node.reference !== undefined) add(node.reference);
+    for (const chip of [...node.chips, ...node.alsoUnder]) add(chip.ref);
+    for (const reference of citedReferences(nodeWords(node))) add(reference);
+    for (const reference of citedReferences(node.answer?.text ?? "")) add(reference);
     for (const child of node.children) walk(child);
   };
   walk(root);
+  for (const ask of asks) {
+    if (askState(ask) !== "declined") continue;
+    for (const reference of citedReferences(ask.resolution?.reason ?? "")) add(reference);
+  }
   return [...refs];
 }
 
-/** The names the page publishes until the batched name read answers: none, and the same empty
- *  map on every render, so no link beside the tree draws again for a read that names nothing. */
-const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
-
-/** The references the page publishes as ambiguous until the batched name read answers: none,
- *  and the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
-const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
-
-/** The references the page publishes as edited until the batched name read answers: none, and
- *  the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
-const NO_EDITED_TARGETS: ReadonlySet<string> = new Set();
-
-/** The references the page publishes as deleted until the batched name read answers: none, and
- *  the same empty map on every render, as `NO_TARGET_NAMES` is the same empty map. */
-const NO_DELETED_TARGETS: ReadonlyMap<string, PostDeletion> = new Map();
+/** What the page publishes of the batched name read until it answers: no target read, and the
+ *  same empty value on every render, so no surface beside the tree draws again for a read that
+ *  names nothing. */
+const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
+  ambiguous: new Set(),
+  deleted: new Map(),
+  edited: new Set(),
+  gone: new Set(),
+  readings: new Map(),
+  unnamed: new Set(),
+};
 
 /** The set of addresses the batched names read is given until the gate first opens: none, and
  *  the same empty set on every render, so the read's options are made once meanwhile. */
@@ -364,7 +388,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ]
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
-  const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
+  const refs = useMemo(() => treeReferences(unnamed, asks.data), [unnamed, asks.data]);
   // One request for every name, not one per read that landed. Each of these reads adds nodes to
   // the tree as it arrives, so asking while any is still out would ask for the addresses known
   // so far and ask again for the rest: measured on this pod, that cost the first load two reads
@@ -465,9 +489,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // read to name, the answer it gave before is dropped, as the set it answered last becomes none,
   // which holds no answer: its query is disabled and never answers again, so that answer would
   // have the page publish for good a name for an address no read asks for any more. A link
-  // beside the tree draws a published name in place of the one it reads of its own
-  // (`useKnownReferenceName`), and the feed refreshes a names read only for an address its key
-  // holds (`referenceNameTargets`), so no event would ever move that name.
+  // beside the tree draws a published name in place of the one it reads of its own, and the
+  // feed refreshes a names read only for an address its key holds (`referenceNameTargets`), so
+  // no event would ever move that name.
   const moreAnswered = extra.length === 0 || more.data !== undefined;
   const moreAnsweredSet = useLastAnswered(extra, moreAnswered);
   const moreHeld = useQuery({
@@ -528,36 +552,38 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
         : undefined,
     [failure, moreAnswered, refetchMore, refetchTargets, retrying, speaks, stands, targetsAnswered]
   );
-  // The same answer every link of this page would otherwise read one pointer at a time, which a
-  // link in a document, in a decision's card or in a comment's preview shows, and a row's
-  // in-place chip too (`reference-names.tsx`, R20). The name published for a target is the name
-  // a chip of the tree draws for it, by the one rule both read (`targetNaming`): a block's drawn
-  // first line, a whole document's word on the page, a question's or a comment's words with no
-  // markup, each the words alone. Beside the names go the references the read answered
-  // ambiguous, read with them by that same rule: a short reference two targets carry has no
-  // name, as a gone one has none, and a link draws it as written and links nothing where it
-  // reads a gone one's own, which the names alone would not tell it. And beside them go the
-  // references whose post its author edited, which a link marks ` · edited` after it cuts the
-  // name to its own length, so no cut takes the mark, and those whose post its author deleted,
-  // by the delete, which a row's words draw as the deleted line with its actor named as the page
-  // names an author. A chip's name is read from the issue, the documents' blocks and the names
-  // alone (`treeContext`), so the maps and the sets are built from those and nothing else: an
-  // answer of any other read - an ask, a comment, the coverage, the reader's login - publishes
-  // nothing new, which would draw every link beside the tree again. Until the names answer there
-  // is nothing to publish.
-  const { ambiguous, deleted, edited, names } = useMemo(
+  // The same answer every surface of this page would otherwise read one pointer at a time, which
+  // a link in a document, in a decision's card or in a comment's preview shows, a row's in-place
+  // chip and every one line of a node too (`refs/reference-names.tsx`, R20). The page publishes
+  // how each target is named, by the one rule a chip of the tree is named by (`targetNaming`),
+  // and the store projects each once, so every one of them draws a target in the same words.
+  // Beside the readings go the references the read answered ambiguous and those it answered
+  // gone, read by that same rule, each of which a surface draws as its author wrote it rather
+  // than reading it itself; those it answered with nothing to name them by, which a surface reads
+  // itself, as a link to one does; the references whose post its author edited, which a link
+  // marks ` · edited` after it cuts the name to its own length, so no cut takes the mark, and
+  // those whose post its author deleted, by the delete, which a row's words draw as the deleted
+  // line with its actor named as the page names an author; and every reference the page asks the
+  // read for, which a surface waits on the page's answer for rather than reading it itself, from
+  // before the first answer on. A chip's reading is read from the issue, the documents' blocks
+  // and the names alone (`treeContext`), so it is built from those and nothing else: an answer of
+  // any other read - an ask, a comment, the coverage, the reader's login - names nothing new.
+  const naming = useMemo(
     () =>
       named === undefined
-        ? {
-            ambiguous: NO_AMBIGUOUS_TARGETS,
-            deleted: NO_DELETED_TARGETS,
-            edited: NO_EDITED_TARGETS,
-            names: NO_TARGET_NAMES,
-          }
+        ? NO_TARGET_NAMING
         : targetNaming({ documents: documents.blocks, issue, targets: named }),
     [documents.blocks, issue, named]
   );
-  usePublishReferenceNames(names, ambiguous, edited, deleted);
+  // The tree is read anew whenever any of its reads answers, and so is each set of references
+  // published from it; the store hands readers the set it already holds where a new one holds
+  // the same references (`refs/reference-names.tsx`'s `merged`), so such a set draws nothing
+  // again.
+  const published = useMemo<PublishedReferences>(
+    () => ({ ...naming, asked: new Set([...refs, ...extra]) }),
+    [extra, naming, refs]
+  );
+  usePublishReferenceNames(published);
   const root = useMemo(
     () =>
       named === undefined || named === first
@@ -571,8 +597,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       blocksRead: documents.read,
       namesFailure,
       namesHeld,
+      published,
       root,
     }),
-    [documents.held, documents.read, namesFailure, namesHeld, root]
+    [documents.held, documents.read, namesFailure, namesHeld, published, root]
   );
 }

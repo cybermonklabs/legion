@@ -83,10 +83,13 @@ import { useWhoIsReading } from "./useIssueTree";
  */
 export function FocusedNodeFacts({
   issueKey,
+  issueTitle,
   node,
   state,
 }: {
   issueKey: string;
+  /** The issue's title, drawn when the focused node is the issue itself. */
+  issueTitle: string;
   node: FocusedNode;
   state: UserState | undefined;
 }): ReactNode {
@@ -113,7 +116,7 @@ export function FocusedNodeFacts({
       </h2>
       <dl className="mt-1 flex min-w-0 flex-col gap-1 text-sm">
         {node.type === "issue" ? (
-          <Fact label={sentenceCase(NODE_TYPE_NAMES.issue)} value={node.title} />
+          <Fact label={sentenceCase(NODE_TYPE_NAMES.issue)} value={issueTitle} />
         ) : (
           <Fact
             chrome

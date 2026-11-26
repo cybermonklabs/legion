@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { NOTHING_PUBLISHED } from "../refs/reference-names";
 import { useKeymapScope } from "../shell/keymap";
 import { issueTree, node } from "./decisions-filter/decisions-fixtures";
 import { IssueTree } from "./IssueTree";
@@ -61,6 +62,7 @@ test("a row's marked link is one stop of the f key", async () => {
           holdsEscape={false}
           isClosed={false}
           onEditing={() => {}}
+          published={NOTHING_PUBLISHED}
           reveal={undefined}
           root={root}
           rootRow

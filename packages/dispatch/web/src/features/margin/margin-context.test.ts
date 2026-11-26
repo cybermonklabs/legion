@@ -1,8 +1,15 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { ComposerKind } from "../conversation/composer-model";
 import type { RemarkRefusal } from "../doc/editor";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DOCUMENT_CLOSED_REFUSAL, REANCHOR_IN_PROGRESS, REANCHOR_REFUSALS } from "./margin-context";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const KINDS: readonly ComposerKind[] = ["ask", "comment", "suggestion"];
 const REASONS: readonly RemarkRefusal["refused"][] = [

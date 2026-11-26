@@ -86,6 +86,7 @@ export function VersionControl({
         {versions.map((item) => (
           <option key={item.number} value={item.number}>
             Version {item.number}
+            {/* A version's summary, as its writer gave it: `issue-page-version-summary`. */}
             {item.named && item.summary !== null ? ` — ${item.summary}` : ""}
           </option>
         ))}

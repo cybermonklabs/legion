@@ -4,7 +4,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
 import { dayLabel } from "../activity/activity-model";
-import { buildIssuePath, buildReferencePath, parseNodeReference } from "../refs/routes";
+import { buildIssuePath, parseNodeReference, referenceHref } from "../refs/routes";
 import {
   buildHistory,
   type HistoryBlock,
@@ -16,7 +16,7 @@ import {
   placeUnder,
   turnPlace,
 } from "./history-model";
-import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
+import { CONTROL_LABELS, DECLARED_WORDS, NODE_TYPE_NAMES, wordsIn } from "./page-words";
 import { PAGE_SIZE } from "./show-more-fixture";
 
 /**
@@ -874,8 +874,10 @@ test("a delivery of an agents' thread names its agent, never its address", () =>
 // An approval request is a line of the history (the outline draws no row for it), and its line
 // quotes the request's question. Found by the tester on a running build of b0082656 with a
 // copy of a large real issue: the lines of the spec's approval request read “… The new page
-// reaches `main` in parts …”, the backticks drawn as typed.
-test("an approval request's line draws its question's words, never its markup or an address", () => {
+// reaches `main` in parts …”, the backticks drawn as typed. The question is kept as one part of
+// the line that the renderer draws (`SentenceParts`), and no word of the line around it holds
+// its markup or its address.
+test("an approval request's line keeps its question as one part the renderer draws, and no markup or address as words", () => {
   seq = 0;
   const question =
     "Approve **spec.md** (version 10)? It reaches `main` in parts, as dispatch://CORE-2/spec#b-r1 asks.";
@@ -894,23 +896,24 @@ test("an approval request's line draws its question's words, never its markup or
       messages: [],
       today: "2026-11-15",
     })
-  ).flatMap((entry) =>
-    entry.kind === "event"
-      ? [entry.description.filter((part): part is string => typeof part === "string").join("")]
-      : []
-  );
+  ).flatMap((entry) => (entry.kind === "event" ? [entry.description] : []));
   expect(lines, "the request's two lines are not drawn").toHaveLength(2);
   for (const line of lines) {
+    expect(
+      line.filter((part) => typeof part === "object" && "prose" in part),
+      "the approval request's line does not keep its question as one part the renderer draws"
+    ).toEqual([expect.objectContaining({ prose: question })]);
+    const words = line.filter((part): part is string => typeof part === "string").join("");
     for (const typed of ["`", "**", "dispatch://"]) {
-      expect(line, `the approval request's line draws "${typed}" as typed`).not.toContain(typed);
+      expect(words, `the approval request's line draws "${typed}" as typed`).not.toContain(typed);
     }
   }
 });
 
 // A block's line names the block by its id, and a UUID is no name a reader reads: the history
-// names such a block by the first line of the words of the node that carries it, as the outline
-// names a question, and the panel links those words to that node. An id its author chose, a slug
-// such as `c-units`, reads as words and stays as `main` writes it.
+// names such a block by the one line of the node that carries it, which the panel draws as the
+// outline draws a node's line and links to that node. An id its author chose, a slug such as
+// `c-units`, reads as words and stays as `main` writes it.
 
 const QUESTION_BLOCK = "01f349b4-2a84-4ebb-81be-91fa2f4e2300";
 const CHECK_BLOCK = "6c0e1a52-93d4-4b7f-a0c8-2f5d8e9b1c47";
@@ -926,25 +929,30 @@ const BLOCKS = historyBlocks(
       block_id: QUESTION_BLOCK,
       id: "q1",
       question: "Which **layout** reads best on a phone? The rail or the drawer.",
+      question_tree: undefined,
     },
   ],
   [
     {
+      artifact_id: "verification-artifact",
       block_id: CHECK_BLOCK,
       ref: `dispatch://${KEY}/artifact/verification-md#b-${CHECK_BLOCK}`,
       text: "The units pass on a clean checkout.",
+      text_tree: undefined,
     },
     {
+      artifact_id: "verification-artifact",
       block_id: "c-units",
       ref: `dispatch://${KEY}/artifact/verification-md#b-c-units`,
       text: "The units pass.",
+      text_tree: undefined,
     },
   ]
 );
 
 /** The lines the history draws of `events` with the blocks `blocks`, newest first: each line's
- *  text, and the block it names by its node's words, whose part of the line it checks holds
- *  those words. */
+ *  text, and the block it names by its node's one line, whose part of the line it checks holds
+ *  the page's word for the node's kind, which the panel draws that line in place of. */
 function blockLines(
   blocks: HistoryInput["blocks"],
   events: readonly DispatchEvent[]
@@ -965,8 +973,8 @@ function blockLines(
     if (entry.block !== undefined) {
       expect(
         entry.description[entry.block.part],
-        "the block's part of the line is not its words"
-      ).toBe(entry.block.block.words);
+        "the block's part of the line is not its node's kind's word"
+      ).toBe(NODE_TYPE_NAMES[entry.block.block.node.type]);
     }
     return [
       {
@@ -988,12 +996,16 @@ test("a repaired block is named by its question's first words, never by its id",
   ]);
   expect(rest).toEqual([]);
   expect(line?.text, "the repaired block's line draws its id").not.toContain(QUESTION_BLOCK);
-  expect(line?.text).toBe(
-    "repaired server-owned state on block “Which layout reads best on a phone?”"
-  );
+  expect(line?.text).toBe(`repaired server-owned state on block “${NODE_TYPE_NAMES.ask}”`);
   expect(line?.block).toEqual({
+    node: {
+      id: "q1",
+      source: { id: "q1", issue: KEY, kind: "ask" },
+      text: "Which **layout** reads best on a phone? The rail or the drawer.",
+      tree: undefined,
+      type: "ask",
+    },
     path: buildIssuePath({ id: "q1", key: KEY, kind: "ask" }),
-    words: "Which layout reads best on a phone?",
   });
 });
 
@@ -1010,7 +1022,7 @@ test("a question's block marked malformed is named by the question's first words
   expect(rest).toEqual([]);
   expect(line?.text, "the malformed block's line draws its id").not.toContain(QUESTION_BLOCK);
   expect(line?.text).toBe(
-    "marked decision “Which layout reads best on a phone?” malformed: it names no options"
+    `marked decision “${NODE_TYPE_NAMES.ask}” malformed: it names no options`
   );
   expect(line?.block?.path).toBe(buildIssuePath({ id: "q1", key: KEY, kind: "ask" }));
 });
@@ -1032,13 +1044,19 @@ test("a refused check is named by its words where its id is a UUID, and by its i
   expect(lines[1]?.text, "the refused check's line draws its id").not.toContain(CHECK_BLOCK);
   expect(lines.map((line) => line.text)).toEqual([
     "refused check c-units: its ci_check names no job",
-    "refused check “The units pass on a clean checkout.”: its ci_check names no job",
+    `refused check “${NODE_TYPE_NAMES.check}”: its ci_check names no job`,
   ]);
   expect(lines.map((line) => line.block)).toEqual([
     undefined,
     {
+      node: {
+        id: CHECK_BLOCK,
+        source: { id: "verification-artifact", issue: KEY, kind: "artifact" },
+        text: "The units pass on a clean checkout.",
+        tree: undefined,
+        type: "check",
+      },
       path: checkPath(),
-      words: "The units pass on a clean checkout.",
     },
   ]);
 });
@@ -1046,8 +1064,9 @@ test("a refused check is named by its words where its id is a UUID, and by its i
 /** The page address of the check `BLOCKS` names by its words: its `ref`, read as a route. */
 function checkPath(): string {
   const route = parseNodeReference(`dispatch://${KEY}/artifact/verification-md#b-${CHECK_BLOCK}`);
-  if (route === undefined) throw new Error("the check's ref reads as no route");
-  return buildReferencePath(route);
+  const href = route === undefined ? undefined : referenceHref(route);
+  if (href === undefined) throw new Error("the check's ref reads as no page address");
+  return href;
 }
 
 test("a block whose id is a UUID that no node carries reads as a block that is gone", () => {
@@ -1076,6 +1095,36 @@ test("a block whose id is a UUID that no node carries reads as a block that is g
     },
   ]);
   expect(CONTROL_LABELS.history_gone_block).toBe("a block that is gone");
+});
+
+// A question cites a node by its bare address. An address is no name, so no line of the history
+// holds it: the block's part of the line stands for the node's one line, which the panel draws in
+// its place with each reference in it read as its target's name (`history-entries.tsx`).
+test("a block whose question cites an address names it in no line by that address", () => {
+  seq = 0;
+  const cited = historyBlocks(
+    KEY,
+    [
+      {
+        block_id: QUESTION_BLOCK,
+        id: "q1",
+        question: "Ship it as dispatch://CORE-2 says.",
+        question_tree: undefined,
+      },
+    ],
+    []
+  );
+  const lines = blockLines(cited, [
+    event("block.repaired", "2026-11-15T09:00:00Z", {
+      block_id: QUESTION_BLOCK,
+      disturbed_by: PERSON,
+      version: 3,
+    }),
+  ]);
+  expect(lines).toHaveLength(1);
+  expect(lines[0]?.text, "the block's line draws the address as typed").not.toContain(
+    "dispatch://"
+  );
 });
 
 // Until every read the blocks come from has answered, whether a block is gone is not known, so

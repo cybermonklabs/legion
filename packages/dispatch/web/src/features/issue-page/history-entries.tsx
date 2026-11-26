@@ -14,19 +14,26 @@ import {
   pageRowAct,
 } from "../../theme/classes";
 import { ActivityLine } from "../activity/ActivityLine";
+import { type SentencePart, SentenceParts } from "../activity/SentenceParts";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
-import { AgentName, type AgentPart, AgentParts } from "../refs/AgentName";
+import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { EditedMark } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { HistoryHandoff } from "./HistoryHandoff";
-import type { HistoryDay, HistoryEntry, HistoryTurn, NamedBlock } from "./history-model";
+import type {
+  HistoryBlock,
+  HistoryDay,
+  HistoryEntry,
+  HistoryTurn,
+  NamedBlock,
+} from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
-import { DeletedLine } from "./NodeRow";
+import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -243,13 +250,13 @@ function DocumentLine({
     Artifact,
     "issue_key" | "kind" | "name" | "primary" | "project" | "session_id" | "slug"
   >;
-  description: readonly AgentPart[];
+  description: readonly SentencePart[];
 }): ReactNode {
   const name = artifact.name;
   const linked = description.findIndex((part) => typeof part === "string" && part.includes(name));
   return (
     <span>
-      <AgentParts
+      <SentenceParts
         parts={description}
         text={(part, index) => {
           if (index !== linked) return part;
@@ -272,37 +279,50 @@ function DocumentLine({
   );
 }
 
-/** The line of a block repaired or found invalid that names the block by its node's words
+/** The line of a block repaired or found invalid that names the block by its node's one line
  *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's -
- *  the part of the line `block.part` names - a link to its node in the page's ink and its rows'
- *  underline, where its address reads as one. */
+ *  the part of the line `block.part` names - drawn as that line (`BlockName`). */
 function BlockLine({
   block,
   description,
 }: {
   block: NamedBlock;
-  description: readonly AgentPart[];
+  description: readonly SentencePart[];
 }): ReactNode {
-  const { path } = block.block;
   return (
     <span>
-      <AgentParts
+      <SentenceParts
         parts={description}
-        text={(part, index) =>
-          index !== block.part || path === undefined ? (
-            part
-          ) : (
-            <Link
-              className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
-              to={path}
-              {...authorText}
-            >
-              {part}
-            </Link>
-          )
-        }
+        text={(part, index) => (index === block.part ? <BlockName block={block.block} /> : part)}
       />
     </span>
+  );
+}
+
+/** The one line of the node that carries a block a line of the history names, as the outline
+ *  draws a node's (`node-line.tsx`'s `useNodeLine`): its first line, each reference in it read as
+ *  its target's name, and the page's word for its kind where its words hold none; a link to the
+ *  node in the page's ink and its rows' underline, where its address reads as one. Nothing of it
+ *  until the projection has answered. */
+function BlockName({ block }: { block: HistoryBlock }): ReactNode {
+  const { line, reads } = useNodeLine(block.node, { surface: "issue-page-history-block" });
+  const marks = line === "" ? pageChrome : authorText;
+  const words = lineOrKindWord(line, block.node.type);
+  return (
+    <>
+      {reads}
+      {block.path === undefined ? (
+        <span {...marks}>{words}</span>
+      ) : (
+        <Link
+          className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
+          to={block.path}
+          {...marks}
+        >
+          {words}
+        </Link>
+      )}
+    </>
   );
 }
 
@@ -352,7 +372,8 @@ function Turn({
         {turn.deleted === null ? (
           <MarkdownBody
             markdown={turn.body}
-            source={textSourceOf(turn.kind, turn.id)}
+            source={textSourceOf(turn.kind, turn.id, issueKey)}
+            surface="issue-page-history-turn"
             tree={turn.bodyTree}
           />
         ) : (

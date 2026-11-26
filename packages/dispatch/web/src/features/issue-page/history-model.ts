@@ -2,6 +2,7 @@ import type {
   Actor,
   Artifact,
   Ask,
+  AskWithTrees,
   CheckBlock,
   Comment,
   CommentWithTrees,
@@ -11,19 +12,18 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { activityDescription, dateKey, dayLabel } from "../activity/activity-model";
+import type { SentencePart } from "../activity/SentenceParts";
 import type { AgentPart } from "../refs/AgentName";
-import { askResolutionReason } from "../refs/actor";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import {
   buildIssuePath,
-  buildReferencePath,
   parseNodeReference,
+  referenceHref,
   sessionOfAddress,
 } from "../refs/routes";
+import { type TextSource, textSourceOf } from "../refs/text-references";
 import { agentsOnlyIds } from "./agents-only";
-import { drawnLine, firstLineOf } from "./issue-tree";
 import { CONTROL_LABELS, issueStatusWord, NODE_TYPE_NAMES } from "./page-words";
-import { plainWords } from "./tree-drafts";
 
 /**
  * The issue's history, as the panel draws it: every event that is no row of the outline, newest
@@ -76,10 +76,10 @@ export type HistoryEntry =
       readonly author: Actor;
       /** `main`'s line of the event, in the page's words where it names a delivery's agent, a
        *  status or a block (`historyLine`). */
-      readonly description: AgentPart[];
-      /** The block the line names by its node's words, where it names one, and which part of
-       *  `description` those words are, a part of their own, which the panel draws as a link to
-       *  the node (`historyLine`). */
+      readonly description: SentencePart[];
+      /** The block the line names by its node's one line, where it names one, and which part of
+       *  `description` stands for that line, a part of their own, which the panel draws as a link
+       *  to the node (`historyLine`). */
       readonly block?: NamedBlock;
       readonly event: DispatchEvent;
       readonly seq: number;
@@ -114,16 +114,25 @@ export interface UploadedFile {
   readonly slug: string | undefined;
 }
 
-/** A block a line of the history names (`HistoryInput.blocks`): the first line of its node's
- *  words, as the page draws one line for a node, and the address of that node, where its address
- *  reads as one. */
+/** A block a line of the history names (`HistoryInput.blocks`): the node that carries it, as the
+ *  page's one-line reader of a node takes it (`node-line.tsx`'s `useNodeLine`) - its id, the
+ *  record its words are, its stored text, the server's reading of that text where the read sent
+ *  one, and its kind - and the address of that node, where its address reads as one. */
 export interface HistoryBlock {
+  readonly node: {
+    readonly id: string;
+    readonly source: TextSource | undefined;
+    readonly text: string;
+    readonly tree: DisplayTree | undefined;
+    readonly type: "ask" | "check";
+  };
   readonly path: string | undefined;
-  readonly words: string;
 }
 
-/** A block a line of the history names by its node's words (`withBlock`): the block, and the
- *  place in the line's `description` of the part that holds those words and nothing else. */
+/** A block a line of the history names by its node's one line (`withBlock`): the block, and the
+ *  place in the line's `description` of the part that stands for that line and nothing else,
+ *  which holds the page's word for the node's kind and which the panel draws the line in place
+ *  of (`history-entries.tsx`'s `BlockLine`). */
 export interface NamedBlock {
   readonly block: HistoryBlock;
   readonly part: number;
@@ -163,41 +172,46 @@ const UPLOAD_RUN_MS = 60_000;
 const UUID_BLOCK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /**
- * The blocks the issue's nodes carry, by block id, as the history names them (`HistoryBlock`).
- * Each ask's typed block is named by its question's plain words, as the outline names a question
- * (`plainWords`), at the ask's own address, which puts the focus on its row. Each check of the
- * results read is named by its words, at the address its `ref` reads as, as Details' references
- * link a node (`NodeReferences.tsx`). The words are cut to the one line the page draws for a
- * node (`firstLineOf`, `drawnLine`), and a node with no words is named by its kind's word.
+ * The blocks the issue's nodes carry, by block id, as the history names them (`HistoryBlock`):
+ * each ask's typed block by its question, at the ask's own address, which puts the focus on its
+ * row; each check of the results read by its words, at the address its `ref` reads as, as
+ * Details' references link a node (`NodeReferences.tsx`). The panel draws each by its node's one
+ * line, as the outline draws a node's, and by its kind's word where its words hold none.
  */
 export function historyBlocks(
   issueKey: string,
-  asks: readonly Pick<Ask, "block_id" | "id" | "question">[],
-  checks: readonly Pick<CheckBlock, "block_id" | "ref" | "text">[]
+  asks: readonly (Pick<Ask, "block_id" | "id" | "question"> &
+    Partial<Pick<AskWithTrees, "question_tree">>)[],
+  checks: readonly Pick<CheckBlock, "artifact_id" | "block_id" | "ref" | "text" | "text_tree">[]
 ): ReadonlyMap<string, HistoryBlock> {
   const blocks = new Map<string, HistoryBlock>();
   for (const check of checks) {
     const route = parseNodeReference(check.ref);
     blocks.set(check.block_id, {
-      path: route === undefined ? undefined : buildReferencePath(route),
-      words: nodeLine(check.text, check, NODE_TYPE_NAMES.check),
+      node: {
+        id: check.block_id,
+        source: textSourceOf("artifact", check.artifact_id, issueKey),
+        text: check.text,
+        tree: check.text_tree,
+        type: "check",
+      },
+      path: route === undefined ? undefined : referenceHref(route),
     });
   }
   for (const ask of asks) {
     if (ask.block_id === null) continue;
     blocks.set(ask.block_id, {
+      node: {
+        id: ask.id,
+        source: textSourceOf("ask", ask.id, issueKey),
+        text: ask.question,
+        tree: ask.question_tree,
+        type: "ask",
+      },
       path: buildIssuePath({ id: ask.id, key: issueKey, kind: "ask" }),
-      words: nodeLine(ask.question, ask, NODE_TYPE_NAMES.ask),
     });
   }
   return blocks;
-}
-
-/** The first line of the stored text `text`, which `holder` holds, as the page draws one line
- *  for a node, or `kind`, the page's word for the node's kind, where the text holds no words. */
-function nodeLine(text: string, holder: object, kind: string): string {
-  const first = firstLineOf(plainWords(text, holder));
-  return first.line === "" ? kind : drawnLine(first);
 }
 
 /** The event types that write a post of a comment or message thread: its creation, an edit, a
@@ -548,14 +562,13 @@ function threadEntry(
 /**
  * The line of `event`, as today's Activity tab writes it (`activityDescription`), with what that
  * line names by a token in the page's words, as an address is no name: a delivery's target by
- * the agent it went to, never its address or
- * `session:<id>`; the status a reopened issue went into by its word; a stored text it
- * quotes, an approval request's question or the reason it was resolved with, by its plain words,
- * as the outline names an ask (`plainWords`), never the markup its author typed or a
- * bare `dispatch://` address, which reads as its short form; and a block it names by a UUID by
- * the words of the node that carries it, from `blocks`, never by that id, with that block and
- * the part of the line its words are (`withBlock`). Every other text a line of the history holds
- * is a name, a key or the server's own words, none of which is markdown.
+ * the agent it went to, never its address or `session:<id>`; the status a reopened issue went
+ * into by its word; and a block it names by a UUID by the words of the node that carries it,
+ * from `blocks`, never by that id, with that block and the part of the line its words are
+ * (`withBlock`). A stored text the line quotes, an approval request's question or the reason it
+ * was resolved with, is a part of its own, which the renderer draws (`SentenceParts`). Every
+ * other text a line of the history holds is a name, a key or the server's own words, none of
+ * which is markdown.
  */
 function historyLine(
   event: DispatchEvent,
@@ -593,17 +606,6 @@ function historyLine(
             ? withPart(line, event.payload.status, issueStatusWord(event.payload.status))
             : line,
       };
-    // Every ask event the history keeps is an approval request's (`ofOutlineRow`), whose
-    // question is markdown its agent wrote, citing addresses.
-    case "ask.opened":
-    case "ask.anchor_refreshed":
-    case "ask.edited":
-    case "ask.handed_back":
-    case "ask.asked_of":
-    case "ask.answered":
-      return { description: withWords(line, event.payload.question) };
-    case "ask.resolved":
-      return { description: withWords(line, askResolutionReason(event.payload.resolution)) };
     // `main`'s line names a block by its id after its word for the block: a question's block is
     // a decision there, and a check's block a check.
     case "block.repaired":
@@ -622,10 +624,10 @@ function historyLine(
 
 /** `line` with each reading of `token` in its text, the last of each part, drawn as `parts`. */
 function withPart(
-  line: AgentPart[],
+  line: SentencePart[],
   token: string | undefined,
   ...parts: AgentPart[]
-): AgentPart[] {
+): SentencePart[] {
   return withPartAt(line, token, parts).line;
 }
 
@@ -634,12 +636,12 @@ function withPart(
  *  begin, or -1 where `token` reads nowhere. An empty text, of `parts` or either side of a
  *  reading, is drawn as no part. */
 function withPartAt(
-  line: AgentPart[],
+  line: SentencePart[],
   token: string | undefined,
   parts: readonly AgentPart[]
-): { readonly at: number; readonly line: AgentPart[] } {
+): { readonly at: number; readonly line: SentencePart[] } {
   if (token === undefined || token === "") return { at: -1, line };
-  const drawn: AgentPart[] = [];
+  const drawn: SentencePart[] = [];
   let first = -1;
   for (const piece of line) {
     const at = typeof piece === "string" ? piece.lastIndexOf(token) : -1;
@@ -657,22 +659,17 @@ function withPartAt(
   return { at: first, line: drawn };
 }
 
-/** `line` with the stored text `stored` it quotes drawn by its plain words (`plainWords`). */
-function withWords(line: AgentPart[], stored: string | undefined): AgentPart[] {
-  if (stored === undefined) return line;
-  const words = plainWords(stored);
-  return words === stored ? line : withPart(line, stored, words);
-}
-
 /** `line` with its mention of the block `id`, which is `noun`, `main`'s word for the block, then
- *  the id, in the page's words where the id is a UUID (`UUID_BLOCK_ID`): that word and the words
- *  of the node that carries the block, in quotes as `main` quotes a question, where a node of the
- *  issue carries it (`blocks`), with that block and the part of the line its words are; the
- *  page's words for a block that is gone where none does; and that word alone after "a", as in
- *  "a block", while the blocks are not known, since whether the block is gone is not known then
- *  either. A block id that reads as words stays as `main` writes it. */
+ *  the id, in the page's words where the id is a UUID (`UUID_BLOCK_ID`): that word and, in quotes
+ *  as `main` quotes a question, a part that stands for the one line of the node that carries the
+ *  block, where a node of the issue carries it (`blocks`), with that block and the place of that
+ *  part; the page's words for a block that is gone where none does; and that word alone after
+ *  "a", as in "a block", while the blocks are not known, since whether the block is gone is not
+ *  known then either. A block id that reads as words stays as `main` writes it. The part holds
+ *  the page's word for the node's kind: the panel draws the node's line in its place, read as
+ *  the outline reads a node's line, so no address its words cite is drawn as typed. */
 function withBlock(
-  line: AgentPart[],
+  line: SentencePart[],
   noun: string,
   id: string,
   blocks: ReadonlyMap<string, HistoryBlock> | undefined
@@ -684,8 +681,8 @@ function withBlock(
   if (block === undefined) {
     return { description: withPart(line, mention, CONTROL_LABELS.history_gone_block) };
   }
-  const named = withPartAt(line, mention, [`${noun} “`, block.words, "”"]);
-  // The words are the part after the word for the block and its opening quote.
+  const named = withPartAt(line, mention, [`${noun} “`, NODE_TYPE_NAMES[block.node.type], "”"]);
+  // The node's line stands in the part after the word for the block and its opening quote.
   return named.at < 0
     ? { description: named.line }
     : { block: { block, part: named.at + 1 }, description: named.line };

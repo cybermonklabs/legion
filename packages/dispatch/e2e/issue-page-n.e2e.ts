@@ -153,7 +153,7 @@ import {
   pickPreset,
   treeActiveDescendant,
 } from "./issue-page-i";
-import { drawnContentsEntries, scrollAtRest, wordAtCaret } from "./issue-page-j";
+import { drawnContentsEntries, wordAtCaret } from "./issue-page-j";
 import {
   focusedNodeFacts,
   historyEntries,
@@ -236,6 +236,7 @@ import {
 } from "./issue-page-p";
 import { openIssue } from "./keyboard-issue";
 import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
+import { settledScrollTop } from "./mermaid-helpers";
 import { sql } from "./psql";
 import {
   ANCHOR,
@@ -5704,7 +5705,7 @@ async function wheelToMiddle(page: Page, y: number): Promise<void> {
   const size = page.viewportSize() ?? DESKTOP;
   await page.mouse.move(size.width / 2, size.height / 2);
   await page.mouse.wheel(0, y - size.height / 2);
-  await scrollAtRest(page);
+  await settledScrollTop(page);
 }
 
 // c-press-caret (R18, decision 420 (1)): a press on the words of an outline row that takes a caret
@@ -5772,7 +5773,7 @@ test("a press on a row puts the caret where it lands @phone", async ({ browser }
           await wordAtCaret(page, "selection"),
           `a press on "${PRESSED_WORD}" put the caret in another word`
         ).toBe(PRESSED_WORD);
-        await scrollAtRest(page);
+        await settledScrollTop(page);
         const moved = (await pressedRowTop()) - topAt;
         expect(
           Math.abs(moved),
@@ -5811,7 +5812,7 @@ test("a press on a row puts the caret where it lands @phone", async ({ browser }
         await expect
           .poll(() => focusedNodeId(page), { message: "a press on the comment left the focus" })
           .toBe(seeded.theirs);
-        await scrollAtRest(page);
+        await settledScrollTop(page);
         expect(await caretInNode(page), "a press on the comment opened an editor").toBe(false);
         await expect(
           comment.locator("[data-row-report]"),

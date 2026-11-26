@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -288,6 +289,10 @@ func retryableDeliveryFailure(failure string) bool {
 // commit together, unless the send waits on a held lane first, which starts a window of its own at
 // its delivery (mentionSend.takeover).
 type takeoverRetry struct {
+	// clock is the server's: the moment the first try was made, the span since it and the wait
+	// between two tries are all read from it, so a test that drives a fake decides when the
+	// window runs out rather than racing the wall clock (again).
+	clock   clock.Clock
 	first   time.Time
 	backoff time.Duration
 	// window is how long after first a try may still start: listenerTakeoverWindow, or the
@@ -296,10 +301,11 @@ type takeoverRetry struct {
 }
 
 // newTakeoverRetry starts the pacing of a sender about to make its first try, in this server's
-// take-over window.
+// take-over window and on this server's clock.
 func (s *server) newTakeoverRetry() takeoverRetry {
 	return takeoverRetry{
-		first:   time.Now(),
+		clock:   s.clock(),
+		first:   s.clock().Now(),
 		backoff: takeoverFirstBackoff,
 		window:  cmp.Or(s.deps.ListenerTakeoverWindow, listenerTakeoverWindow),
 	}
@@ -382,15 +388,11 @@ func (s *server) commentLookupBound(target string) time.Duration {
 // is still trying: the delivery sweep finds nothing to take, and a person's Retry finds the
 // attempt held.
 func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
-	if !retryableDeliveryFailure(failure) || time.Since(r.first)+r.backoff > r.window {
+	if !retryableDeliveryFailure(failure) || r.clock.Now().Sub(r.first)+r.backoff > r.window {
 		return false
 	}
-	wait := time.NewTimer(r.backoff)
-	defer wait.Stop()
-	select {
-	case <-ctx.Done():
+	if r.clock.Sleep(ctx, r.backoff) != nil {
 		return false
-	case <-wait.C:
 	}
 	r.backoff = min(2*r.backoff, takeoverMaxBackoff)
 	return true
@@ -402,12 +404,12 @@ func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
 // A claim transaction takes a pending attempt only while no sender holds it
 // (model.DeliveryClaimFreeSQL, selected beside the row it locks): nobody claimed it, or whoever
 // did never came back within model.DeliveryClaimLapse. A sender renews its claim before every
-// try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds by
-// default, DepsInput.EnvoyTimeout in a test) and the short transaction that records its outcome,
-// so a claim older than the lease was left by a process that died before its settle. Postgres
-// judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran ahead
-// of the database would otherwise read every live claim as lapsed, and one that ran behind could
-// never resume a stranded attempt.
+// try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds on
+// the server's clock, DepsInput.EnvoyTimeout in a test) and the short transaction that records
+// its outcome, so a claim older than the lease was left by a process that died before its settle.
+// Postgres judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran
+// ahead of the database would otherwise read every live claim as lapsed, and one that ran behind
+// could never resume a stranded attempt.
 //
 // A retry beside a live claim takes an attempt of its own rather than two senders driving one. A
 // retry beside a lapsed claim resumes that attempt under its original number, and so its

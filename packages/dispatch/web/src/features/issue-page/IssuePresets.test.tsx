@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymap } from "../shell/keymap";
@@ -19,6 +20,12 @@ import { type Filter, isFilter, type PresetSignal } from "./presets";
 import { ProvidersSlot } from "./slots/providers";
 import { AppProviders, stubReads } from "./slots/stage-fixtures";
 import { ViewRowSlot } from "./slots/view-row";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const SIGNALS: Readonly<Record<Filter, PresetSignal>> = {
   decisions: { count: 0 },

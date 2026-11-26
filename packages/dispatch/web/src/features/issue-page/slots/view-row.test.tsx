@@ -9,9 +9,15 @@ import type { ArtifactBlock, ReferenceTarget } from "../../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
+import {
+  decision,
+  decisionsRead,
+  issueDetails,
+  KEY,
+  SPEC_SLUG,
+} from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
-import { readComment, TWO_THREADS } from "../outline-fixtures";
+import { TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER } from "../page-words";
 import type { Filter } from "../presets";
 import { ProvidersSlot } from "./providers";
@@ -286,7 +292,7 @@ test("under a words filter the view row draws no count while the names read is o
 // The names read is read under the set of addresses the tree holds, so a read that brings a node
 // whose words cite a new address reads the names again, of a new set. The names in hand stand
 // while that read is out, as the last answer the names read gave, so under a words filter the
-// row keeps drawing its counts meanwhile.
+// row keeps drawing its counts meanwhile, and counts the node that read brought.
 test("under a words filter the view row keeps drawing its counts while the names read of a new set of addresses is out", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -294,7 +300,7 @@ test("under a words filter the view row keeps drawing its counts while the names
   reads.blocks.mockImplementation(blocksWithStep);
   const cited = "dispatch://CORE-7";
   // The names read of the first set answers with the step's words; the one of a set that holds
-  // the address a new comment cites is held out for the rest of the case.
+  // the address a new decision cites is held out for the rest of the case.
   const held = Promise.withResolvers<never>();
   reads.names.mockImplementation((refs: readonly string[]) =>
     refs.includes(cited)
@@ -312,24 +318,23 @@ test("under a words filter the view row keeps drawing its counts while the names
       ).toEqual({ decisions: "0", plan: "1", spec: "0", verification: "0" })
     );
 
-    // The comments are read again, and answer a new thread too, by the reader, whose words hold
-    // the filter's word and cite an issue no other node names.
-    reads.comments.mockResolvedValue([
-      ...TWO_THREADS,
-      { ...readComment("head-c", 5), body: `Hang the lanterns as ${cited} asks.` },
-    ] as never);
-    await act(async () => client.invalidateQueries({ queryKey: ["comments", KEY] }));
+    // The decisions are read again, and answer a decision too, whose words hold the filter's
+    // word and cite an issue no other node names: Decisions counts it.
+    reads.decisions.mockResolvedValue(
+      decisionsRead([decision("d1", { text: `Hang the lanterns as ${cited} asks.` })])
+    );
+    await act(async () => client.invalidateQueries({ queryKey: ["decisions", KEY] }));
     await waitFor(() =>
       expect(
         reads.names.mock.calls.some(([refs]) => refs.includes(cited)),
-        "the names were never read for the set that holds the new comment's address"
+        "the names were never read for the set that holds the new decision's address"
       ).toBe(true)
     );
     expect(client.isFetching(), "a read other than the names' is still out").toBe(1);
     expect(
       drawnCounts(view.container),
       "the row did not draw its counts with the names read of the new set out"
-    ).toEqual({ decisions: "0", plan: "1", spec: "0", verification: "0" });
+    ).toEqual({ decisions: "1", plan: "1", spec: "0", verification: "0" });
   } finally {
     view.unmount();
     restoreMatchMedia();

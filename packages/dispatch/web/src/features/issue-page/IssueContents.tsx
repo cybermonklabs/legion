@@ -66,9 +66,15 @@ export interface ContentsEntry {
  * issues, and its statements a check under them failed. A statement and a check are what the
  * filter row counts as one (`isStatement`, `isCheck`): a `requirement` or `check` block of any
  * other document is counted as neither. What sits under the issue and under no entry is counted
- * on none, since the issue has no entry; the filter row's signals count it.
+ * on none, since the issue has no entry; the filter row's signals count it. `producing` is the
+ * messages that produced a node in the whole tree (`producingMessages`), which `root` may be a
+ * words filter's cut of.
  */
-export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
+export function contentsOf(
+  root: TreeNode,
+  viewer: string | undefined,
+  producing: ReadonlySet<string>
+): ContentsEntry[] {
   const tally = (): Record<ContentsMark, number> => ({
     children: 0,
     failing: 0,
@@ -92,7 +98,7 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
   ): void => {
     for (const child of node.children) {
       if (child.transcluded) continue;
-      if (isContentsEntry(node, child, viewer)) {
+      if (isContentsEntry(node, child, viewer, producing)) {
         const children: ContentsEntry[] = [];
         const own = tally();
         walk(child, children, own);
@@ -161,6 +167,7 @@ export function ContentsList({
   nameOf,
   onFocusBranch,
   onGo,
+  producing,
   root,
 }: {
   /** Whether the outline draws one branch at a time, the current one. */
@@ -171,13 +178,15 @@ export function ContentsList({
   onFocusBranch: (current: string | undefined) => void;
   /** Goes to the node in the outline. */
   onGo: (id: string) => void;
+  /** The messages that produced a node in the whole tree (`producingMessages`). */
+  producing: ReadonlySet<string>;
   /** The tree the outline draws. */
   root: TreeNode;
 }): ReactNode {
   // The reader, read as the tree reads it (`useIssueTree`, `EVENT_FRESH`): staleness is per
   // observer, so under the app's 30 s `staleTime` the list drawn later would ask for it again.
   const viewer = useWhoIsReading().data?.login;
-  const entries = useMemo(() => contentsOf(root, viewer), [root, viewer]);
+  const entries = useMemo(() => contentsOf(root, viewer, producing), [producing, root, viewer]);
   const entryIds = useMemo(() => {
     const ids = new Set<string>();
     const walk = (list: readonly ContentsEntry[]) => {

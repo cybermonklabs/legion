@@ -58,7 +58,7 @@ export const EDITOR_BOX_ATTRIBUTE = "data-editor-box";
  * itself (`useNodeEditing.ts`), in the node's block and nowhere else.
  * With `at`, it places the caret where the press was instead (`placeAt`).
  */
-export function caretInBlock(host: HTMLElement, blockId?: string, at?: CaretAt): boolean {
+export function caretInBlock(host: HTMLElement, blockId: string | undefined, at?: CaretAt) {
   const drawn = drawnBlock(host, blockId);
   if (drawn === null) return false;
   drawn.editable.focus({ preventScroll: true });
@@ -150,18 +150,10 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 /** A place in the page, as each end of a selection is one. */
 export type Point = readonly [node: Node, offset: number];
 
-/** A press on the row's words: its viewport coordinates, its count of the editor's characters
- *  before it, and the word pressed as drawn, the text to each neighbour's end and how far in. */
-export type CaretAt = Readonly<{
-  x: number;
-  y: number;
-  offset: number;
-  word?: PressedWord;
-  /** The press landed on an atom - an image, inline HTML - which the count holds no character
-   *  for: the caret goes just past it (`pastAtom`), not at the end of the text before it. */
-  afterAtom?: true;
-}>;
-type PressedWord = readonly [before: string, word: string, after: string, into: number];
+/** A press on the row's words: where it was on screen, its count of the editor's characters before
+ *  it, the word pressed as drawn, and `next` where it began a drawn text after counted text. */
+export type CaretAt = Readonly<{ x: number; y: number; offset: number; word?: Word; next?: true }>;
+type Word = readonly [before: string, word: string, after: string, into: number];
 
 /**
  * Keeps a key pressed in the editor in `host` from taking its caret out of `blockId`'s block,
@@ -714,7 +706,7 @@ function keyAtBlock(
  * With `at`, it holds the box as above but scrolls only the box, to put the caret's line at `at.y`.
  * Answers what drops that second look.
  */
-export function holdEditorAtBlock(host: HTMLElement, blockId?: string, at?: CaretAt): () => void {
+export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined, at?: CaretAt) {
   const box = host.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
   if (box === null) return () => {};
   const editable = box.querySelector<HTMLElement>('[contenteditable="true"]');
@@ -827,13 +819,10 @@ function firstPlace(block: HTMLElement): Point {
   return [block, 0];
 }
 
-/** `at.offset` characters into the editable text of `block`, or its last editable place; where
- *  the text there is not the word pressed between its neighbours, as far into the nearest place
- *  that is, if one is. A press with no word reads an empty one, found at the count itself. */
+/** `at.offset` characters into the editable text of `block` (into the next text, where one ends
+ *  there, for a `next` press), or its last editable place; where the text there is not the word
+ *  pressed between its neighbours, as far into the nearest place that is, if one is. */
 function placeAt(block: HTMLElement, at: CaretAt): Point {
-  // A press on an atom puts the caret just past the atom the count stands at.
-  const { afterAtom, ...counted } = at;
-  if (afterAtom === true) return pastAtom(block, placeAt(block, counted));
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
@@ -847,47 +836,10 @@ function placeAt(block: HTMLElement, at: CaretAt): Point {
   const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
   let remaining = Math.max(0, found < 0 ? at.offset : found + before.length + into);
   for (const node of texts) {
-    if (remaining <= node.data.length) return [node, remaining];
+    if (remaining < node.data.length + (at.next ? 0 : 1)) return [node, remaining];
     remaining -= node.data.length;
   }
   return lastPlace(block);
-}
-
-/**
- * The place just past the atom that stands at `point` in `block` with nothing a caret can stand in
- * between - an element the caret cannot enter, an image or inline HTML the editor draws
- * `contenteditable="false"` - as a press on that atom asks (`CaretAt`'s `afterAtom`): the start of
- * the text right after the atom where that text takes a caret, else the place right after the
- * atom itself. The count holds no character for an atom, so it stands at the end of the text
- * before the atom, where a letter typed goes in before it. `point` where no atom stands there.
- */
-function pastAtom(block: HTMLElement, point: Point): Point {
-  const [node, offset] = point;
-  if (node instanceof Text && offset < node.data.length) return point;
-  const from = document.createRange();
-  from.setStart(node, offset);
-  const atom = [...block.querySelectorAll('[contenteditable="false"]')].find(
-    (one) => from.comparePoint(one, 0) >= 0
-  );
-  const parent = atom?.parentNode;
-  if (atom === undefined || parent === null || parent === undefined) return point;
-  const texts: Text[] = [];
-  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-    if (text instanceof Text && text.parentElement?.isContentEditable === true) texts.push(text);
-  }
-  const between = texts.some(
-    (text) =>
-      text !== node &&
-      text.data.length > 0 &&
-      from.comparePoint(text, 0) >= 0 &&
-      (atom.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_PRECEDING) !== 0
-  );
-  if (between) return point;
-  const next = atom.nextSibling;
-  return next instanceof Text && next.parentElement?.isContentEditable === true
-    ? [next, 0]
-    : [parent, [...parent.childNodes].indexOf(atom) + 1];
 }
 
 /** The last place of `block` a caret can stand at: the end of its last text a caret can enter,

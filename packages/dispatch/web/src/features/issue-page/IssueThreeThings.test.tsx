@@ -18,6 +18,7 @@ import type {
 import { pageStateText } from "../../theme/classes";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -26,6 +27,7 @@ import { IssueTree } from "./IssueTree";
 import { presetPath } from "./issue-address";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { useIssueNames } from "./one-line";
+import * as outlineReads from "./outline-reads";
 import {
   type CheckState,
   CONTROL_LABELS,
@@ -37,6 +39,7 @@ import {
   VERIFICATION_WORDS,
 } from "./page-words";
 import { filterSignals } from "./presets";
+import { Publisher, publishedTree } from "./projection-fixture";
 import { SENTENCE_TABLE } from "./sentence-table";
 import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
@@ -150,9 +153,14 @@ function bullets(
     root = treeNode(KEY, "issue", { children: summary === undefined ? [] : [summary] }),
   }: { held?: boolean; look?: "contents" | "spec"; root?: TreeNode } = {}
 ): { labels: string[]; lines: string[]; unmount: () => void } {
+  // The page publishes its chips' names to the names store, which the sentences name a cited
+  // reference by (`useReferenceNames`).
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head held={held} look={look} root={root} summary={summary} />
+      <ReferenceNamesProvider>
+        <Publisher published={publishedTree(root)} />
+        <Head held={held} look={look} root={root} summary={summary} />
+      </ReferenceNamesProvider>
     </MemoryRouter>
   );
   const items = within(screen.getByTestId("issue-three-things")).queryAllByRole("listitem");
@@ -686,7 +694,12 @@ test("a summary sentence that cites a block draws the block's name, not its addr
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
         chips: [
-          { answered: true, gone: false, name: "the whole issue in one reading", ref: cited },
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "the whole issue in one reading" },
+            ref: cited,
+          },
         ],
       }),
     ],
@@ -719,7 +732,14 @@ test("a summary sentence that cites a labelled statement stays one sentence unde
       summary,
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
-        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "R1. Every node is whole" },
+            ref: cited,
+          },
+        ],
       }),
     ],
   });
@@ -747,7 +767,14 @@ test("a summary with no sentence end that cites a labelled statement draws it as
       summary,
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
-        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "R1. Every node is whole" },
+            ref: cited,
+          },
+        ],
       }),
     ],
   });
@@ -1077,6 +1104,48 @@ test("under a words filter the Contents pane's rows wait for the names, and coun
   }
 });
 
+// The outline's reads as their module defines them, read before a case's spy stands in for the
+// module's export, which every import of it reads from then on.
+const useOutlineReadsItself = outlineReads.useOutlineReads;
+
+// R2: a words filter changes what the Contents slot lists, never what a thread produced. The
+// slot draws the list from the filter's view of the tree, and reads which messages produced a
+// node over the whole tree: under `?q=quokka` the view keeps the reader's message, whose words
+// hold the word, and drops the statement under it, which holds none, and the list still holds
+// the message. No read the tree is built from places a statement under a message, so the
+// outline's reads answer here with a tree that holds one.
+test("the Contents slot under a words filter keeps a message the reader wrote that produced a node", () => {
+  const statement = treeNode("spec#b-r1", "requirement", { text: "The page draws the list." });
+  const message = treeNode("message-mine", "message", {
+    author: { id: "alice", kind: "user" },
+    children: [statement],
+    held: 1,
+    text: "Please add a quokka statement.",
+  });
+  const root = treeNode(KEY, "issue", { children: [message], held: 2 });
+  const reads = spyOn(outlineReads, "useOutlineReads").mockImplementation((issue) => ({
+    ...useOutlineReadsItself(issue),
+    root,
+  }));
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const view = drawContents(seededClient(), issueDetails(), "/?q=quokka");
+    try {
+      expect(
+        [...view.container.querySelectorAll("[data-contents-entry]")].map((entry) =>
+          entry.getAttribute("data-contents-entry")
+        ),
+        "the Contents list under the words filter does not hold the reader's message"
+      ).toEqual([message.id]);
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    reads.mockRestore();
+    names.mockRestore();
+  }
+});
+
 // R1: an issue with no spec has no summary, and draws the two rows all the same.
 test("an issue with no spec still draws the two rows", async () => {
   const noSpec: IssueDetails = {
@@ -1168,6 +1237,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
               holdsEscape={false}
               isClosed={false}
               onEditing={() => {}}
+              published={publishedTree(root)}
               reveal={undefined}
               root={root}
               rootRow

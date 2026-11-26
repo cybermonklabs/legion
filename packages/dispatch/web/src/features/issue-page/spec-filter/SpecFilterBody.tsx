@@ -6,6 +6,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -32,10 +33,11 @@ import {
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
 import { blockFragment } from "../../refs/block-reference";
+import { PublishedReferenceNames, type PublishedReferences } from "../../refs/reference-names";
 import { standsFailed } from "../../refs/reference-target";
 import {
   buildReferencePath,
-  type DispatchReferenceRoute,
+  type PagedReferenceRoute,
   parseNodeReference,
 } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
@@ -45,13 +47,7 @@ import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
 import { useSetFocusedNode } from "../focused-node";
 import { type BriefCounts, ChecksNumber, IssueThreeThings } from "../IssueThreeThings";
-import {
-  focusedNodeOf,
-  holdInPlaceOf,
-  landOnRow,
-  type OutlineRequest,
-  useReleaseFocus,
-} from "../IssueTree";
+import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import { presetPath } from "../issue-address";
 import { artifactsBySlug, documentOfNode } from "../issue-artifacts";
@@ -60,6 +56,7 @@ import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
 import { shortDay } from "../node-time";
 import { useIssueNames } from "../one-line";
+import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
@@ -77,19 +74,21 @@ import {
   VIEW_LOADING_LINES,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
-import { pressInWords, statementWordsAt } from "../press-point";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
+import { issueAsksQuery } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
-import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
+import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import { ViewLoadingLine } from "../view-loading-line";
+import { treeItemOf, useAddressLanding } from "./address-landing";
+import { holdWhereItStands } from "./hold-where-it-stands";
+import { focusedTreeItem, pressInWords, statementWordsAt } from "./pressed-words";
 import {
   type SpecDecision,
   type SpecGroup,
@@ -158,8 +157,9 @@ export function SpecFilterBody({
   emptyLine,
   holdsEscape,
   issue,
-  namesFailure,
+  namesLine,
   onEditing,
+  published,
   reader,
   readsSettled,
   request,
@@ -184,13 +184,19 @@ export function SpecFilterBody({
    *  (`slots/view-spec.tsx`). */
   holdsEscape: boolean;
   issue: IssueDetails;
-  /** The names reads' line while they stand failed (`IssueTreeView.namesFailure`), which the
+  /** The names reads' line while they stand failed (`outline-reads.ts`'s `names`), which the
    *  slot passes from the page's tree: those reads are the tree's own, and the view draws from
    *  them too - the three sentences, and the name of every reference a plain line cites. None
    *  while they do not stand failed. */
-  namesFailure?: NamesFailure;
+  namesLine?: OutlineReads["names"];
   /** Asks the page for the editor of the document a row is being edited in. */
   onEditing: OnEditing;
+  /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
+   *  which the body hands every row it draws in the render that draws it
+   *  (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a reference
+   *  the page is asking for waits on the page's answer from a row's first render, rather than
+   *  being read again by the row (R8). */
+  published: PublishedReferences;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
   /** Whether every read the tree's rows come from has answered, with its data or with its
@@ -200,8 +206,8 @@ export function SpecFilterBody({
   /** What the page last asked of the outline: go to a node. The page acts on each ask once,
    *  whichever outline or body took it (`useTakeOutlineRequest`). */
   request?: OutlineRequest;
-  /** The node the address names, which takes the focus once per following of the address (R19),
-   *  unless the reader has acted since they followed it. */
+  /** The node the address names, which takes the focus and the tab stop once per following of
+   *  the address (R19), unless the reader has acted since they followed it. */
   reveal?: string;
   /** The whole tree, which holds the asks, the decisions and each statement's checks. */
   root: TreeNode;
@@ -274,7 +280,7 @@ export function SpecFilterBody({
   // refusals of its reads it has counted while the body lives, each once under its key
   // (`useLineRefusals`), which keys its alert, whether it stands, which draws it, and whether it
   // speaks.
-  // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
+  // The names reads' line (`namesLine`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
   const lines = [
@@ -313,7 +319,7 @@ export function SpecFilterBody({
   if (
     !(statementsHeld && marked && decidedHeld) &&
     unreadable.length === 0 &&
-    namesFailure === undefined
+    (namesLine === undefined || namesLine.length === 0)
   ) {
     const words = VIEW_LOADING_LINES.spec;
     waitingFor = [];
@@ -432,18 +438,39 @@ export function SpecFilterBody({
   // cell still holds the focus; a key's move takes it at once. Each item is the statement's or
   // the cell's element, which says whether it still holds the focus, with what taking the focus
   // does for it.
-  const press = usePressFocus<{ readonly item: HTMLElement; readonly take: () => void }>(
-    ({ take }) => take(),
+  type ItemFocus = {
+    readonly item: HTMLElement;
+    readonly take: () => void;
+    readPlacement?: () => void;
+  };
+  const pendingFocus = useRef<ItemFocus | undefined>(undefined);
+  const [readPressPlacement, setReadPressPlacement] = useState<(() => void) | undefined>();
+  // The rows' layout effects run before this one, so their placing belongs to the press.
+  useLayoutEffect(() => readPressPlacement?.(), [readPressPlacement]);
+  const press = usePressFocus<ItemFocus>(
+    (focus) => {
+      pendingFocus.current = undefined;
+      focus.take();
+      if (focus.readPlacement !== undefined) setReadPressPlacement(() => focus.readPlacement);
+    },
     ({ item }) => item.contains(document.activeElement)
   );
+  const focusItem = useCallback(
+    (item: HTMLElement, take: () => void) => {
+      const focus = { item, take };
+      pendingFocus.current = focus;
+      press.focus(focus);
+    },
+    [press]
+  );
   const focusStatement = useCallback(
-    (item: HTMLElement, node: TreeNode) => press.focus({ item, take: () => takeFocus(node) }),
-    [press, takeFocus]
+    (item: HTMLElement, node: TreeNode) => focusItem(item, () => takeFocus(node)),
+    [focusItem, takeFocus]
   );
   const focusCell = useCallback(
     (item: HTMLElement, decision: SpecDecision | undefined, open: string | undefined) =>
-      press.focus({ item, take: () => takeCell(decision, open) }),
-    [press, takeCell]
+      focusItem(item, () => takeCell(decision, open)),
+    [focusItem, takeCell]
   );
   // The focus leaving the body gives the panel back to the issue's own facts, unless it went
   // to Details, where a reader reads the node's: the outline's own rule (`useReleaseFocus`).
@@ -504,64 +531,40 @@ export function SpecFilterBody({
     if (request === undefined || !takeRequest(request) || request.id === undefined) return;
     tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
   }, [request, takeRequest]);
-  // An address that names a row puts the focus on it, once per following of the address (R19),
-  // as the outline lands on one (`IssueTree.tsx`'s `landOnRow`): the focus comes in the next
-  // frame and brings the row on screen, and the hold keeps it there, until the reader acts, while
-  // the page grows above it - with the statements, which the coverage read draws
-  // (`tree-drafts.ts`'s `addRequirements`), or the spec's blocks where they answer first, and
-  // with what the page draws after the reads (the names, the cuts once measured). The landing
-  // waits for every read the tree's rows come from to settle (`readsSettled`) for one reason the
-  // hold and the reader's acts do not cover: until then the stage may still draw the outline in
-  // the view's place. The view tells the stage whether it draws the node only once those reads
-  // have settled (`onAddressDrawn`, `useTellsAddressDrawn`), and a read the view draws no line of
-  // its own for that stands refused then - the comments', the messages' - makes the stage take
-  // the view off the page and draw the outline, which lands on the node itself. A landing before
-  // that would move the focus and the page to a row the stage then takes away, and the outline's
-  // landing would move them again. The row is not on the page until the reads that hold it have
-  // answered, so this looks again on every drawing of the columns, and the address is taken only
-  // once its row is found. The reader's first act since they followed the address ends the
-  // landing (`addressActs`), as it ends the outline's: a reader who acted before the reads
-  // settled - a key, a turn of the wheel, a press on another control, while the stage gave the
-  // view's tab stop no focus, its landing undecided (`ViewStage`) - keeps the focus where they put
-  // it and the page where they had it, and the landing does nothing to the page: no focus, no
-  // scroll, no hold. Watched only from the landing's start, a read that answered late pulled them
-  // back to the address's row. The landing is keyed on the following and the node (`landingKey`),
-  // as the outline's is: a link to the node the reader moved away from, followed again, lands
-  // again, and the columns drawn again at the same following land nowhere again.
-  const landingHold = useRef<AbortController | undefined>(undefined);
-  useEffect(() => () => landingHold.current?.abort(), []);
-  // The following, which the landing is keyed on with the node.
-  const following = useFollowing();
-  const taken = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (reveal === undefined || !readsSettled || statements.length === 0) return;
-    const landingKey = `${following}:${reveal}`;
-    if (taken.current === landingKey) return;
-    const row = treeItemOf(tree.current, reveal);
-    if (row === null) return;
-    taken.current = landingKey;
-    // The landing ends as it starts: the reader has acted since the following, and the page
-    // stays as they left it.
-    if (addressActs?.current?.signal.aborted === true) return;
-    landOnRow(row, landingHold);
-  }, [addressActs, following, readsSettled, reveal, statements]);
+  // An address that names a row puts the focus on it once every read the tree's rows come from
+  // has settled (`useAddressLanding`), looking again each time the statements the view draws
+  // change, and the landing's hold keeps it on screen while the page grows above it - with the
+  // statements, which the coverage read draws (`tree-drafts.ts`'s `addRequirements`), or the
+  // spec's blocks where they answer first, and with what the page draws after the reads (the
+  // names, the cuts once measured).
+  const drawn = useMemo(() => statements.map((node) => node.id).join(" "), [statements]);
+  const landingHold = useAddressLanding({
+    acts: addressActs,
+    drawn,
+    id: readsSettled ? reveal : undefined,
+    tree,
+  });
 
-  // Hold a tree item on screen until the next act, so reads that draw rows above it cannot
-  // push it out of view. A key starts a hold at keyup only where the page answered it - its
-  // keydown's default was prevented, by the keymap or by the tree's own cell keys - so End on
-  // the last row still holds it while Page Down, Space and Page Up, which the browser answers,
-  // start no hold. The native keydown event is kept until the matching keyup because the
-  // keymap's window listener runs after React's handler, so `defaultPrevented` is final only
-  // by then. A press can hold the item it clicked if that item has focus. Tab and a press
-  // outside an item start no hold. The editor places its own caret, so its row starts no hold
-  // either. The hold replaces the address's landing in `landingHold` (`holdInPlaceOf`).
+  // Hold a tree item where it stands until the next act, so reads that draw rows above it cannot
+  // push it out of view (`holdWhereItStands`). A key starts a hold at keyup only where the page
+  // answered it - its keydown's default was prevented, by the keymap or by the tree's own cell
+  // keys - so End on the last row still holds it while Page Down, Space and Page Up, which the
+  // browser answers, start no hold. The native keydown event is kept until the matching keyup
+  // because the keymap's window listener runs after React's handler, so `defaultPrevented` is
+  // final only by then. A press can hold the item it clicked if that item has focus. Tab and a
+  // press outside an item start no hold. The editor places its own caret, so its row starts no
+  // hold either. The hold replaces the address's landing in `landingHold`.
   const keyInTree = useRef<globalThis.KeyboardEvent | undefined>(undefined);
   const holdFocusedItem = (item: HTMLElement) => {
     if (editingRow !== undefined && item.dataset.rowKey === editingRow) return;
-    holdInPlaceOf(item, landingHold);
+    return holdWhereItStands(item, landingHold);
   };
   const pressedWords = useRef<HTMLElement | null>(null);
-  const openingFromPress = useRef<string | undefined>(undefined);
+  // A press on words already on screen gives the row focus without placing it, even
+  // if it selects text or opens no editor. The next reader act restores normal placing.
+  const [wordsPressRow, setWordsPressRow] = useState<string | undefined>(undefined);
+  const wordsPressActs = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => wordsPressActs.current?.abort(), []);
 
   useTreeKeymap({
     container: tree,
@@ -609,27 +612,51 @@ export function SpecFilterBody({
   });
 
   // The tree's one tab stop: the row the focus last rested on (R9), else the row the address
-  // names once the reads have settled, else the first statement. The address's row is the tab
-  // stop from the render that lands on it, as the Plan view's is: the stage gives a focus that
-  // rests on nothing to the tab-stop row as that render is drawn (`slots/stage.tsx`), before the
-  // landing's frame, and a landing whose row lost the focus to another row by then leaves the
-  // focus there (`landOnRow`). It is the tab stop where the reader has acted since the following
-  // as well, and moves no focus then: the stage gives the tab-stop row only a focus that rests on
-  // nothing, and a row the reader moved to holds the tab stop itself (`stop`). No render reads
-  // whether they have acted - an act aborts `addressActs` and draws nothing - so a tab stop that
-  // read it would move at whatever render came next.
+  // names once the reads have settled, where the reader has not acted since they followed the
+  // address, else the first statement. The address's row is the tab stop from the render that
+  // lands on it, as the Plan view's is: the stage gives a focus that rests on nothing to the
+  // tab-stop row as that render is drawn (`slots/stage.tsx`), before the landing's frame, and a
+  // landing whose row lost the focus to another row by then leaves the focus there
+  // (`landOnRow`). Whether the reader has acted since the following is read in the render that
+  // first finds the address's row in that following, and held for the rest of it, under the key
+  // the landing takes (the following and the row, `addressStop`): for a reader who acted the
+  // landing does nothing, but the stage still gives a focus they left on nothing - a turn of the
+  // wheel, or a key pressed on the page, before any statement was drawn - to the tab-stop row as
+  // the statements come, where the address's row would take it off screen; the first statement
+  // takes it instead. An act aborts `addressActs` and draws nothing, so a tab stop that read it
+  // at every render would move at whatever render came next. A row the reader moved to holds the
+  // tab stop itself (`stop`).
+  const following = useFollowing();
+  // The following of the controller the stage hands the body, noted as the Verification view
+  // notes it (`VerificationFilterBody`'s `actsFollowing`): a render of a following the body has
+  // not committed in yet reads the last following's controller (`ReaderActsWatch`), and no act,
+  // since the reader cannot have acted in this one yet.
+  const actsFollowing = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    actsFollowing.current = following;
+  }, [following]);
   const addressed = readsSettled ? statements.find((node) => node.id === reveal) : undefined;
+  const addressKey = addressed === undefined ? undefined : `${following}:${addressed.id}`;
+  const [addressStop, setAddressStop] = useState<{
+    readonly gives: boolean;
+    readonly key: string;
+  }>();
+  if (addressKey !== undefined && addressStop?.key !== addressKey) {
+    const acted =
+      actsFollowing.current === following && addressActs?.current?.signal.aborted === true;
+    setAddressStop({ gives: !acted, key: addressKey });
+  }
+  const addressTakes = addressStop?.key === addressKey && addressStop?.gives === true;
   const tabStop =
     stop !== undefined && statements.some((node) => node.id === stop)
       ? stop
-      : (addressed ?? statements[0])?.id;
+      : ((addressTakes ? addressed : undefined) ?? statements[0])?.id;
   const rowProps = (node: TreeNode): SpecRowProps => {
     const rowKey = rowKeys.get(node.id);
     const place = documentOfNode(node.id, artifacts);
     return {
       editable: nodeEditable(place, issue.closed_at !== null, admissions),
       editing: editing !== undefined && editing.row === rowKey ? editing.artifactId : undefined,
-      openingFromPress: openingFromPress.current === node.id,
       focused: focused === node.id,
       onFocus: (row) => focusStatement(row, node),
       ...(report?.row === node.id ? { report: report.line } : {}),
@@ -637,7 +664,7 @@ export function SpecFilterBody({
       tabStop: tabStop === node.id,
     };
   };
-  return (
+  const drawnBody = (
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
@@ -666,18 +693,18 @@ export function SpecFilterBody({
           speaks={speaks}
         />
       ))}
-      {namesFailure === undefined ? null : (
+      {namesLine?.map((line) => (
         <FailedReadLine
           // The names reads' count of failures (`NamesFailure.failure`), which changes only with
           // a new failure, and their Retry, which asks again each of them that holds no answer.
-          failure={namesFailure.failure}
-          key="names"
-          message={STATE_LINES.names_unreadable}
-          onRetry={namesFailure.retry}
-          retrying={namesFailure.retrying}
-          speaks={namesFailure.speaks}
+          failure={line.failure}
+          key={line.key}
+          message={line.message}
+          onRetry={line.retry}
+          retrying={line.retrying}
+          speaks={line.speaks}
         />
-      )}
+      ))}
       {waitingFor === undefined ? null : <ViewLoadingLine names={waitingFor} />}
       <Legend />
       <div
@@ -722,10 +749,13 @@ export function SpecFilterBody({
             return;
           }
           const rowKey = item.dataset.rowKey;
+          // A press on the focused statement's words opens the editor where it was; a drag that
+          // selected words opens none, and the selection stays.
           if (
             event.detail > 0 &&
             words !== null &&
             words === statementWordsAt(event.target, STATEMENT_WORDS) &&
+            window.getSelection()?.isCollapsed !== false &&
             rowKey !== undefined &&
             rowKey !== editingRow &&
             document.activeElement === item
@@ -733,20 +763,20 @@ export function SpecFilterBody({
             const node = rows.find((row) => row.node.id === item.dataset.nodeId)?.node;
             if (node === undefined) return;
             const at = pressInWords(words, event.clientX, event.clientY);
-            // The press's focus can draw a frame before the editor opens. Neither places the
-            // row on screen: the reader pressed words that were already on screen.
-            openingFromPress.current = node.id;
             // Run after the press focus settles and the outline releases any edit the press
             // left. A link or control never supplies a words box here.
             window.setTimeout(() => {
-              openingFromPress.current = undefined;
               if (document.activeElement !== item || !item.contains(words)) return;
               reportHere("");
               edit(rowKey, node, at);
             }, 0);
             return;
           }
-          holdFocusedItem(item);
+          const readPlacement = holdFocusedItem(item);
+          const pending = pendingFocus.current;
+          if (readPlacement !== undefined && pending?.item === item) {
+            pending.readPlacement = readPlacement;
+          }
         }}
         // A focus on the tree itself - the page's `t s` lands here - goes on to the tab-stop
         // row; where the view draws no row it stays here.
@@ -795,10 +825,16 @@ export function SpecFilterBody({
         // statement they did not press.
         onMouseDown={(event) => {
           press.onMouseDown();
-          pressedWords.current =
+          const words =
             event.button === 0 && !event.defaultPrevented
               ? statementWordsAt(event.target, STATEMENT_WORDS)
               : null;
+          pressedWords.current = words;
+          const row = words?.closest<HTMLElement>("[data-spec-statement]")?.dataset.nodeId;
+          wordsPressActs.current?.abort();
+          wordsPressActs.current =
+            row === undefined ? undefined : abortOnReaderAct(() => setWordsPressRow(undefined));
+          setWordsPressRow(row);
           if (
             event.target instanceof Element &&
             event.target.closest('[role="treeitem"]') === null
@@ -820,6 +856,7 @@ export function SpecFilterBody({
                 key={statement.node.id}
                 marked={marked}
                 statement={statement}
+                wordsPress={wordsPressRow === statement.node.id}
               />
             )}
             group={group}
@@ -842,6 +879,7 @@ export function SpecFilterBody({
       ) : null}
     </div>
   );
+  return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
 }
 
 /**
@@ -906,19 +944,6 @@ function clearOfHeads(element: HTMLElement): void {
   if (heads === undefined || heads.height === 0) return;
   const top = element.getBoundingClientRect().top;
   if (top < heads.bottom) window.scrollBy({ top: top - heads.bottom - CLEARANCE });
-}
-
-/** The statement or the decision cell of `tree` that draws node `id`; null where none does. */
-function treeItemOf(tree: HTMLElement | null, id: string): HTMLElement | null {
-  return (
-    tree?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"][role="treeitem"]`) ?? null
-  );
-}
-
-/** The item containing the focus, if it belongs to this tree. */
-function focusedTreeItem(tree: HTMLElement): HTMLElement | null {
-  const item = document.activeElement?.closest<HTMLElement>('[role="treeitem"]') ?? null;
-  return tree.contains(item) ? item : null;
 }
 
 /** The element holding a statement's words, which a press on them is read against
@@ -1041,15 +1066,21 @@ function Quote({ decision }: { decision: SpecDecision }): ReactNode {
   return (
     <>
       <span {...pageChrome}>“</span>
-      <span {...authorText}>{words}</span>
+      <span {...authorText}>
+        {/* spec-decision-line: the quote as one line of words `specDecidedBy` named. */}
+        {words}
+      </span>
       <span {...pageChrome}>”</span>
     </>
   );
 }
 
-/** Where the link to a decision goes: its node's own address, where the model holds one. */
-function routeOf(decision: SpecDecision | undefined): DispatchReferenceRoute | undefined {
-  return decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+/** Where the link to a decision goes: its node's own address, where the model holds one and it
+ *  opens a page. A person's opens none (`PagedReferenceRoute`), and is drawn as words. */
+function routeOf(decision: SpecDecision | undefined): PagedReferenceRoute | undefined {
+  const route =
+    decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+  return route?.kind === "person" ? undefined : route;
 }
 
 /** One part of a line `dotted` draws. */
@@ -1237,6 +1268,9 @@ function DecisionCell({
       />
       <div
         className="sticky top-[calc(var(--issue-identity-height,0px)+44px)] flex min-w-0 flex-col gap-[3px] max-[901px]:static"
+        // What the reader sees of the cell, which a hold of the cell keeps where it stands
+        // (`holdWhereItStands`).
+        data-spec-cell-words=""
         ref={words}
       >
         {decision === undefined ? (
@@ -1289,6 +1323,7 @@ function DecisionCell({
                   part:
                     decision.question === undefined ? null : (
                       <span data-spec-question="" {...authorText}>
+                        {/* spec-decision-line: the question as one line of words `specDecidedBy` named. */}
                         {decision.question}
                       </span>
                     ),
@@ -1367,7 +1402,6 @@ interface SpecRowProps {
   focused: boolean;
   /** Takes a focus anywhere in the row, once a press that gave it is over. */
   onFocus: (row: HTMLElement) => void;
-  openingFromPress: boolean;
   /** What a key pressed on this row reported when it had nowhere to go. */
   report?: string;
   rowKey: string | undefined;
@@ -1391,23 +1425,25 @@ function Statement({
   focused,
   marked,
   onFocus,
-  openingFromPress,
   report,
   rowKey,
   statement,
   tabStop,
+  wordsPress,
 }: SpecRowProps & {
   context: boolean;
   decision: SpecDecision | undefined;
   /** Whether the reads its mark comes from hold an answer. */
   marked: boolean;
+  /** Whether a press on the statement's words gives it focus without placing it. */
+  wordsPress: boolean;
   statement: SpecStatement;
 }): ReactNode {
   const node = statement.node;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);
-  const press = useOnScreenUnderHeads(row, focused, editing === undefined && !openingFromPress);
+  const press = useOnScreenUnderHeads(row, focused, editing === undefined && !wordsPress);
   useOutOfTabOrder(words, editing === undefined);
   // The count of the checks that serve it, drawn only where one does, and where its reference
   // names the block the Verification view puts the focus on.
@@ -1647,6 +1683,7 @@ function Because({
           {decision.question === undefined ? null : (
             <>
               <span data-spec-question="" {...authorText}>
+                {/* spec-decision-line: the question as one line of words `specDecidedBy` named. */}
                 {decision.question}
               </span>{" "}
             </>

@@ -12,6 +12,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import type { Artifact } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { DocumentAdmissionProvider } from "./document-admission";
@@ -23,16 +24,17 @@ import type { TreeNode } from "./issue-tree";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
 import { waitInAct } from "./outline-fixtures";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
+import { Publisher, publishedNames, publishedTree } from "./projection-fixture";
 import { EditorBox } from "./StagedDocument";
 import { abortOnReaderAct, type OnEditing, type OnEditor } from "./useNodeEditing";
 
 /**
  * R18 (decision 420 (1)): a press on the words of an outline row that takes a caret opens its
  * editor with the caret where the press landed, by the point the Spec view's statements pass
- * (`press-point.ts`, decisions 446 and 455), one case for each row of the plan's ST-8. A row that
- * takes no caret, a link, a control, a drag, a modifier and the row being edited keep what a
- * press does today; each such case presses the words plainly after, so a tree with no press of
- * its own fails it too.
+ * (`spec-filter/pressed-words.ts`, decisions 446 and 455), one case for each row of the plan's
+ * ST-8. A row that takes no caret, a link, a control, a drag, a modifier and the row being edited
+ * keep what a press does today; each such case presses the words plainly after, so a tree with
+ * no press of its own fails it too.
  *
  * The tree is drawn alone, as `IssueTree.test.tsx` draws it, with a plain editable standing in
  * for the editor of the spec, which draws each statement's block; happy-dom has no
@@ -220,8 +222,10 @@ function specBlocks(root: TreeNode, held: Readonly<Record<string, ReactNode>> = 
   });
 }
 
-/** The tree alone, under the page's keymap, as `IssueTree.test.tsx` draws it, with the spec's
- *  editor standing in (`EditedDocument`). `reveal` is the chain to the node an address names, and
+/** The tree alone, under the page's keymap and the names store, as `IssueTree.test.tsx` draws it,
+ *  publishing what the page publishes of its batched names read (`published`): where a case gives
+ *  nothing, what it publishes for the chips of the tree it draws (`publishedTree`). The spec's
+ *  editor stands in (`EditedDocument`). `reveal` is the chain to the node an address names, and
  *  `addressActs` the reader's acts since they followed it, as the page's body hands them on. */
 function renderTree(
   root: TreeNode,
@@ -229,11 +233,13 @@ function renderTree(
     addressActs,
     held,
     isClosed = false,
+    published: given,
     reveal,
   }: {
     addressActs?: RefObject<AbortController | undefined>;
     held?: Readonly<Record<string, ReactNode>>;
     isClosed?: boolean;
+    published?: PublishedReferences;
     reveal?: readonly TreeNode[];
   } = {}
 ) {
@@ -245,43 +251,49 @@ function renderTree(
   const document_: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
   const tree = { root };
-  const draw = () => (
-    <MemoryRouter>
-      <AddressProbe seen={seen} />
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <FocusedNodeProvider>
-              <DocumentAdmissionProvider>
-                <DocumentStages>
-                  <IssueScope />
-                  <IssueTree
-                    {...(addressActs === undefined ? {} : { addressActs })}
-                    addressKey="following-1"
-                    artifacts={new Map([[specDocument.slug, specDocument]])}
-                    context={new Set()}
-                    filtering={false}
-                    focusReveal={reveal !== undefined}
-                    holdsEscape={false}
-                    isClosed={isClosed}
-                    onEditing={(artifactId, onEditor) => {
-                      edited.push(artifactId);
-                      document_.set?.(artifactId, onEditor);
-                    }}
-                    reveal={reveal}
-                    root={tree.root}
-                    rootRow
-                  />
-                  <EditedDocument blocks={specBlocks(root, held)} held={document_} />
-                </DocumentStages>
-              </DocumentAdmissionProvider>
-            </FocusedNodeProvider>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  const view = render(draw());
+  const draw = () => {
+    const published = given ?? publishedTree(tree.root);
+    return (
+      <MemoryRouter>
+        <AddressProbe seen={seen} />
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <FocusedNodeProvider>
+                <DocumentAdmissionProvider>
+                  <DocumentStages>
+                    <IssueScope />
+                    <Publisher published={published} />
+                    <IssueTree
+                      {...(addressActs === undefined ? {} : { addressActs })}
+                      addressKey="following-1"
+                      artifacts={new Map([[specDocument.slug, specDocument]])}
+                      context={new Set()}
+                      filtering={false}
+                      focusReveal={reveal !== undefined}
+                      holdsEscape={false}
+                      isClosed={isClosed}
+                      onEditing={(artifactId, onEditor) => {
+                        edited.push(artifactId);
+                        document_.set?.(artifactId, onEditor);
+                      }}
+                      published={published}
+                      reveal={reveal}
+                      root={tree.root}
+                      rootRow
+                    />
+                    <EditedDocument blocks={specBlocks(root, held)} held={document_} />
+                  </DocumentStages>
+                </DocumentAdmissionProvider>
+              </FocusedNodeProvider>
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
+  // Under the names store, as the shell draws every page (`app.tsx`).
+  const view = render(draw(), { wrapper: ReferenceNamesProvider });
   return {
     address: () => seen.path,
     edited,
@@ -558,7 +570,10 @@ test("a press on a link in a row's words follows the link and opens no editor", 
   setViewport(1440);
   const user = userEvent.setup();
   const linked = "Read dispatch://CORE-2 first, then the rest.";
-  const view = renderTree(issue([theirComment, statement("r1", FIRST), statement("r2", linked)]));
+  // The page names what the words cite in its one batched read, so the row reads none of it.
+  const view = renderTree(issue([theirComment, statement("r1", FIRST), statement("r2", linked)]), {
+    published: publishedNames(new Map([["dispatch://CORE-2", "Another issue"]])),
+  });
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
     const row = rowOf(view.container, "spec#b-r2");
@@ -582,15 +597,18 @@ test("a press on a control in a row does the control's act and opens no editor: 
   const clipboard = navigator.clipboard;
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
   const reference = `dispatch://${KEY}/spec#b-r1`;
+  // The chip is named by its target's reading, which the page publishes for it (`publishedTree`).
+  const named = displayTree("The second statement");
+  if (named === undefined) throw new Error("the engine read no tree of the chip's target");
   const view = renderTree(
     issue([
       theirComment,
       statement("r1", FIRST, {
         chips: [
           {
-            answered: false,
+            answered: true,
             gone: false,
-            name: "The second statement",
+            reading: { tree: named },
             ref: `dispatch://${KEY}/spec#b-r2`,
           },
         ],

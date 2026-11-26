@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { isContentsEntry } from "./contents-entries";
+import { isContentsEntry, producingMessages } from "./contents-entries";
 import type { TreeNode } from "./issue-tree";
 import { node } from "./verification-filter/verification-fixtures";
 
@@ -21,18 +21,17 @@ test("an entry of the Contents list is an ask or a comment thread the reader beg
     id: "ISSUE-1",
     type: "issue",
   });
+  const producing = producingMessages(root);
+  const entry = (parent: TreeNode, child: TreeNode, viewer: string | undefined) =>
+    isContentsEntry(parent, child, viewer, producing);
 
-  expect(isContentsEntry(root, ask, "alice"), "an ask is not an entry").toBe(true);
-  expect(isContentsEntry(root, begun, "ALICE"), "the reader's thread is not an entry").toBe(true);
-  expect(isContentsEntry(root, thread, "alice"), "another reader's thread is an entry").toBe(false);
-  expect(isContentsEntry(thread, reply, "alice"), "a reply inside a thread is an entry").toBe(
-    false
-  );
-  expect(isContentsEntry(root, copy, "alice"), "a transcluded copy is an entry").toBe(false);
-  expect(isContentsEntry(root, askCopy, "alice"), "a transcluded ask is an entry").toBe(false);
-  expect(isContentsEntry(root, begun, undefined), "a thread with no reader is an entry").toBe(
-    false
-  );
+  expect(entry(root, ask, "alice"), "an ask is not an entry").toBe(true);
+  expect(entry(root, begun, "ALICE"), "the reader's thread is not an entry").toBe(true);
+  expect(entry(root, thread, "alice"), "another reader's thread is an entry").toBe(false);
+  expect(entry(thread, reply, "alice"), "a reply inside a thread is an entry").toBe(false);
+  expect(entry(root, copy, "alice"), "a transcluded copy is an entry").toBe(false);
+  expect(entry(root, askCopy, "alice"), "a transcluded ask is an entry").toBe(false);
+  expect(entry(root, begun, undefined), "a thread with no reader is an entry").toBe(false);
 });
 
 // A thread of messages alone produced no node, so it has no entry; one under which the tree
@@ -57,32 +56,28 @@ test("a message thread the reader began is an entry only where a node that is no
     id: "ISSUE-1",
     type: "issue",
   });
+  const producing = producingMessages(root);
+  const entry = (parent: TreeNode, child: TreeNode, viewer: string | undefined) =>
+    isContentsEntry(parent, child, viewer, producing);
 
-  expect(isContentsEntry(root, alone, "alice"), "a thread of messages alone is an entry").toBe(
-    false
-  );
+  expect(entry(root, alone, "alice"), "a thread of messages alone is an entry").toBe(false);
   expect(
-    isContentsEntry(root, underFirst, "alice"),
+    entry(root, underFirst, "alice"),
     "a thread with a statement under its first message is not an entry"
   ).toBe(true);
   expect(
-    isContentsEntry(root, underReply, "alice"),
+    entry(root, underReply, "alice"),
     "a thread with a statement under a reply in it is not an entry"
   ).toBe(true);
+  expect(entry(root, copied, "alice"), "a copied statement made the thread an entry").toBe(false);
   expect(
-    isContentsEntry(root, copied, "alice"),
-    "a copied statement made the thread an entry"
-  ).toBe(false);
-  expect(
-    isContentsEntry(root, copiedReply, "alice"),
+    entry(root, copiedReply, "alice"),
     "a copied reply's branch made the thread an entry"
   ).toBe(false);
-  expect(isContentsEntry(root, other, "alice"), "another reader's thread is an entry").toBe(false);
-  expect(isContentsEntry(underReply, reply, "bob"), "a reply inside a thread is an entry").toBe(
-    false
-  );
+  expect(entry(root, other, "alice"), "another reader's thread is an entry").toBe(false);
+  expect(entry(underReply, reply, "bob"), "a reply inside a thread is an entry").toBe(false);
   expect(
-    isContentsEntry(root, underFirst, undefined),
+    entry(root, underFirst, undefined),
     "a thread is an entry before the reader's login has answered"
   ).toBe(false);
 });

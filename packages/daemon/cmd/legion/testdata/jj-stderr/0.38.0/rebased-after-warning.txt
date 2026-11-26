@@ -1,0 +1,4 @@
+jj --color=never log --no-graph -r 'root()' -T commit_id
+Warning: Cannot define an alias that overrides the built-in command 'log'
+Rebased 1 descendant commits onto updated working copy
+--- exit 0

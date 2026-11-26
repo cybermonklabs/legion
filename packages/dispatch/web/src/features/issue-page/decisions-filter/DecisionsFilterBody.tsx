@@ -21,13 +21,19 @@ import {
   textMutedOnCanvas,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
+import {
+  PublishedReferenceNames,
+  type PublishedReferences,
+  useKnownReferences,
+} from "../../refs/reference-names";
+import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
 import { APPROVAL_CHIP } from "../approval-chip-box";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
-import { lineWords, type TreeNode } from "../issue-tree";
-import { chipWords } from "../node-row-chip";
+import { chipName, type TreeNode } from "../issue-tree";
+import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -122,8 +128,16 @@ const NOTHING = (): void => {};
  * Shift+Tab from a row goes up to the Retry. So the foot's control takes no focus until those
  * reads have both answered: until then a row or a Retry may yet come to take it.
  *
+ * After those lines stands the outline's names line while the page's names reads stand failed
+ * (`namesLine`), with a Retry that asks those reads again: every reference a row draws waits on
+ * those names, so while they stand failed a reference in an entry's words is drawn as its address
+ * and a statement on a decision's "informs" line is named by nothing; the line says why. The
+ * names place no entry, so their line takes none away.
+ *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
- * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
+ * by (`useIssueTree.ts`), so the body costs no request of its own (R20), and the names its rows
+ * draw are the page's batched read's, which the body hands every row in the render that draws it
+ * (`published`), so no row reads a reference the page asks for.
  */
 export function DecisionsFilterBody({
   artifacts,
@@ -131,7 +145,9 @@ export function DecisionsFilterBody({
   holdsEscape,
   isClosed,
   issue,
+  namesLine,
   onRevealDrawn,
+  published,
   reader,
   request,
   reveal,
@@ -152,12 +168,25 @@ export function DecisionsFilterBody({
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
   issue: IssueDetails;
+  /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
+   *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
+   *  none while they do not stand failed. Every reference the rows draw waits on those names
+   *  (`published`), so while they stand failed each is drawn as its address; the line says why.
+   *  The body draws it over the list after the lines of its own reads, as the outline draws it
+   *  after the lines of the reads its rows come from. */
+  namesLine: OutlineReads["names"];
   /** Told whether the list draws the node the address names (`reveal`), where the page draws
    *  the outline in the view's place if it does not (`slots/view-decisions.tsx`): given only
    *  while every read the tree is built from holds its answer. The body tells it as soon as it
    *  can say, and again each time what it draws changes; the stage acts on the first of these
    *  for each following of an address that names a node beside the view (`slots/stage.tsx`). */
   onRevealDrawn?: (drawn: boolean) => void;
+  /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
+   *  which the body hands every row it draws in the render that draws it
+   *  (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a reference
+   *  the page is asking for waits on the page's answer from a row's first render, rather than
+   *  being read again by the row (R8). */
+  published: PublishedReferences;
   /** Who is reading, whose own answer carries the ink rule (R34). Another person's decision
    *  stands under "Your decisions" too, with that person's name on its row. */
   reader: string | undefined;
@@ -186,21 +215,24 @@ export function DecisionsFilterBody({
   const agentText = useAgentText();
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
-  // The name each statement takes on a decision's "informs" line: the words its one line is cut
-  // from (`lineWords`), its first block's, cut by G's `chipWords` (decision 83), which each row
-  // draws as it is, so a statement reads here as the outline's chip for it reads. Where the
-  // coverage read sent the server's reading of a statement they are that reading's words, so
-  // they draw none of the marks its author typed; and the tree already holds them, so a
-  // statement is named with no read of names to wait for. A statement drawn under two parents
-  // is one node, so its first placement in the page's reading order names it.
+  // The name each statement takes on a decision's "informs" line, as every chip of the page
+  // names a block (`chipName`), so a statement reads here as the outline's chip for it reads: by
+  // the line the names store projects beside its name from the reading the page published for
+  // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
+  // each row draws as it is. One the store holds no line for yet is named by nothing until it
+  // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
+  // one node, so its first placement in the page's reading order names it.
+  const { lines } = useKnownReferences();
   const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
     const names = new Map<string, string>();
     for (const node of nodesInOrder(root)) {
-      if (node.type === "requirement" && !names.has(node.id))
-        names.set(node.id, chipWords(lineWords(node)));
+      const reference = node.type === "requirement" ? node.reference : undefined;
+      if (reference === undefined || names.has(node.id)) continue;
+      const line = lines.get(reference);
+      if (line !== undefined) names.set(node.id, chipName(parseNodeReference(reference), line));
     }
     return names;
-  }, [root]);
+  }, [lines, root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
@@ -788,7 +820,21 @@ export function DecisionsFilterBody({
   };
   const foot = `${headings}-agents`;
   const footRows = `${headings}-agents-rows`;
-  return (
+  // The lines the body says over the list: each read that says which entries there are and
+  // stands refused, the decisions before the questions, then the names' line (`namesLine`), as
+  // the outline draws it after the lines of the reads its rows come from (`outline-reads.ts`'s
+  // `useOutlineReads`).
+  const failedLines = [
+    ...unreadable.map((read) => ({
+      failure: failures[read],
+      key: read,
+      message: REFUSED_READ_WORDS[read],
+      retry: () => retry(read),
+      retrying: retrying.includes(read),
+    })),
+    ...namesLine,
+  ];
+  const drawnBody = (
     // One landmark named by the filter, which is where a reader who knew the old tab's four
     // sections finds them (R19). It holds the tree's rows and the foot's control, so the keys
     // and the focus are read over the whole of it.
@@ -805,20 +851,21 @@ export function DecisionsFilterBody({
       onMouseDown={press.onMouseDown}
       ref={body}
     >
-      {/* Each read that stands refused, as the page's one line for a failed read draws it, the
-          decisions before the questions. The lines stand over the tree and never in it: a tree
-          holds rows and groups of rows alone. They stand in place of the entries the read would
-          give: the tree is built from the same reads (`useIssueTree.ts`), so a read that holds
-          nothing gives the list no entry of its own, and no part is drawn for it. Each line's
-          alert is keyed by its read's count of failures, so a run that ends with no new
-          refusal, cancelled or paused offline, says nothing again. */}
-      {unreadable.map((read) => (
+      {/* Each line, as the page's one line for a failed read draws it, in the order above. The
+          lines stand over the tree and never in it: a tree holds rows and groups of rows alone.
+          A refused read's line stands in place of the entries the read would give: the tree is
+          built from the same reads (`useIssueTree.ts`), so a read that holds nothing gives the
+          list no entry of its own, and no part is drawn for it. The names place no entry, so
+          their line takes none away. Each line's alert is keyed by its read's count of failures,
+          so a run that ends with no new refusal, cancelled or paused offline, says nothing
+          again. */}
+      {failedLines.map((line) => (
         <FailedReadLine
-          failure={failures[read]}
-          key={read}
-          message={REFUSED_READ_WORDS[read]}
-          onRetry={() => retry(read)}
-          retrying={retrying.includes(read)}
+          failure={line.failure}
+          key={line.key}
+          message={line.message}
+          onRetry={line.retry}
+          retrying={line.retrying}
         />
       ))}
       {unreadable.length === 0 && out.length > 0 ? (
@@ -956,6 +1003,7 @@ export function DecisionsFilterBody({
       ) : null}
     </section>
   );
+  return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
 }
 
 /** The foot control's mark: a triangle that points right while the foot's decisions are folded

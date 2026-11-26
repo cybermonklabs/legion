@@ -4,6 +4,7 @@ import { type ReactNode, useMemo, useRef } from "react";
 import type { Artifact } from "../../api/types";
 import { pageMutedText, pageQuietText } from "../../theme/classes";
 import { drawsEdge } from "../refs/ReferencedBy";
+import { useKnownReferences } from "../refs/reference-names";
 import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
@@ -11,7 +12,6 @@ import { ReferenceList, useIssueItemWords } from "./node-references/NodeReferenc
 import { referenceRows } from "./node-references/references-list";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { useKnownReferenceNames } from "./reference-names";
 
 /**
  * What references a document opened in place of the outline (part N's R2 and R12), drawn open
@@ -41,12 +41,19 @@ export function DocumentReferences({ artifact }: { artifact: Artifact }): ReactN
   // issue beside them, and every other node says which issue it is of.
   const issueKey = artifact.issue_key ?? undefined;
   const itemWords = useIssueItemWords(issueKey, true);
-  // The names the page's one batched read gave what a citing item's words cite: a context the
-  // page publishes, so no request.
-  const names = useKnownReferenceNames();
+  // The names the page's one batched read gave what a citing item's words cite, and which of them
+  // name a post its author edited: a context the page publishes, so no request.
+  const { edited, names } = useKnownReferences();
   const rows = useMemo(
-    () => referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names),
-    [itemWords, names, query.data]
+    () =>
+      referenceRows(
+        itemWords,
+        (query.data?.edges ?? []).filter(drawsEdge),
+        names,
+        issueKey,
+        edited
+      ),
+    [edited, issueKey, itemWords, names, query.data]
   );
   // Retry goes with its line once the read it sent lands, and the focus it held goes to the
   // heading rather than fall to the page (`useRetryHandOff`).
