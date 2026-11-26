@@ -15,6 +15,7 @@ import (
 // the one line that names what replaces it, and the broker is asked nothing. The same word after
 // -- is an argument of the command, which runs with it.
 func TestRemovedGitHubFlagsExit2NamingTheirReplacement(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)
@@ -51,6 +52,7 @@ func TestRemovedGitHubFlagsExit2NamingTheirReplacement(t *testing.T) {
 // TestTheRunFormsHelpNamesTargetAndNoRemovedFlag: the exec form's -h shows --target in its
 // synopsis and its flags, and names none of the four removed GitHub flags.
 func TestTheRunFormsHelpNamesTargetAndNoRemovedFlag(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://127.0.0.1:1", t.TempDir(), nil, "NAME", "--help", "--", "true")
 	if exit != 0 || !strings.Contains(stderr, "[--target ACCOUNT[/REPOSITORY]]...") || !strings.Contains(stderr, "  -target ") {
