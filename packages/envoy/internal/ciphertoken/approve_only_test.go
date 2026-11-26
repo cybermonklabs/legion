@@ -102,8 +102,8 @@ func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) 
 					t.Fatalf("Verify = %+v, %v; want %+v, %v", decided, err, want, wantErr)
 				}
 				live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
-				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live, want) {
-					t.Fatalf("Live = %+v, %v; want %+v, %v", live, err, want, wantErr)
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live.Caller(), want) {
+					t.Fatalf("Live = %+v, %v; want %+v, %v", live.Caller(), err, want, wantErr)
 				}
 			})
 		}
