@@ -15,6 +15,7 @@ import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { useMarkComposePlace } from "../text-comments/TextMargin";
 import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
@@ -32,6 +33,10 @@ const LABELS_CONTROL_NAME = "Edit labels";
  * open document and its composer, stand above the sections only while a document's editor is
  * on the page (`useMargin().documentBridge`, which `ProofDocument.tsx` sets): the panel holds no
  * list of the conversation, which is the outline.
+ *
+ * Where the page draws the column of comments on text, which takes a block's editor's composes
+ * (`useMarkComposePlace`), the editor's threads and its composer are comments on text that stand
+ * in that column, and Details draws none of them (`EditorCards`).
  *
  * Slots share no state, so this slot keeps which of the two editors of its rows is open and
  * makes its own set of the issue's writes; the header's writes reach the same keyed line of the
@@ -136,6 +141,12 @@ function DetailsFill({ holdPanel }: { holdPanel: RefCallback<HTMLElement> }): nu
     (conversation: ReactNode) => (
       <IssueMarginCards
         conversation={documentUp ? conversation : undefined}
+        // The editor's own cards stand in the column of comments on text wherever the page draws
+        // one (`EditorCards`), as every comment on text does. The override is optional, as the
+        // prop is, so it stands after the attribute above and takes nothing while no editor is up.
+        {...((documentUp ? { conversation: <EditorCards>{conversation}</EditorCards> } : {}) as {
+          readonly conversation?: ReactNode;
+        })}
         panelHost={holdPanel}
       />
     ),
@@ -143,4 +154,14 @@ function DetailsFill({ holdPanel }: { holdPanel: RefCallback<HTMLElement> }): nu
   );
   useFillMarginSlot(fill);
   return null;
+}
+
+/**
+ * The margin's own cards of the document's editor on the page - its threads and its composer -
+ * which Details draws only while no column of comments on text takes the editor's composes
+ * (`useMarkComposePlace`): where one does, they are comments on text, drawn in the column like
+ * every other (R5, R6), and the editor opens its composer there.
+ */
+function EditorCards({ children }: { readonly children: ReactNode }): ReactNode {
+  return useMarkComposePlace() === undefined ? children : null;
 }

@@ -164,9 +164,23 @@ export const BRIDGE_BIND_WAIT_MS = 10_000;
 const QUOTE_KIND_SWITCH_REFUSAL =
   "This comment names its text by quote, with no highlight to change. Close this composer and select the text again.";
 
+/** A page's own place for a compose an editor's selection bar or its chord asks for, which opens
+ *  it there in place of the margin's composer: the new issue page's column of comments on text
+ *  takes a block's composes beside the block's node (`issue-page/text-comments/TextMargin.tsx`).
+ *  It answers the editor as `composeForMark` does: once the compose's send is out, and rejected
+ *  as its composer closes unsent or a newer compose takes its place, which takes the editor's mark
+ *  back out of the document. */
+export type MarkComposePlace = (compose: {
+  readonly anchor: ComposerAnchor;
+  readonly kind: ComposerKind;
+}) => Promise<void>;
+
 interface MarkComposeRequest {
   anchor: ComposerAnchor;
   kind: ComposerKind;
+  /** Where the compose opens in place of the margin's own composer, where the page gives one
+   *  (`MarkComposePlace`); with none, the margin opens it where it always has. */
+  place?: MarkComposePlace;
 }
 
 /** The compose of one document (`MarginContextValue.composes`): the number the newest compose on
@@ -570,6 +584,13 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   const composeForMark = useCallback(
     (request: MarkComposeRequest): Promise<void> =>
       new Promise<void>((resolve, reject) => {
+        // A compose the page takes to a place of its own is that place's from here: the margin
+        // holds no compose of it, sends nothing under its name and shows nothing, which would
+        // open Details over the page.
+        if (request.place !== undefined) {
+          request.place({ anchor: request.anchor, kind: request.kind }).then(resolve, reject);
+          return;
+        }
         const { artifact, mark_id: markId } = request.anchor;
         const sendKey = marginComposeSendKey(artifact);
         const held = store.get(sendKey);

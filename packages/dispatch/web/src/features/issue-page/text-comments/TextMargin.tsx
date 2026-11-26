@@ -15,7 +15,9 @@ import {
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
+import type { ComposerAnchor } from "../../conversation/composer-model";
 import { CardStackFocus, regionOrigin, useCardStack } from "../../margin/card-stack";
+import type { MarkComposePlace } from "../../margin/margin-context";
 import { parseIssuePath } from "../../refs/routes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { outlineItemRoute } from "../address-target";
@@ -25,6 +27,7 @@ import { type IssueAddress, issueAddress } from "../issue-address";
 import { LensActContext, useLensAct } from "../lenses/LensMenu";
 import { useMarginDrawer } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
+import { EDITOR_BOX_ATTRIBUTE } from "../node-caret";
 import { authorText } from "../page-structure";
 import { MARGIN_WORDS } from "../page-words";
 import type { SlotProps } from "../slot-props";
@@ -58,7 +61,7 @@ export const TEXT_COMPOSER_ATTRIBUTE = "data-text-composer";
 
 /** The attribute of the box each thread, and the composer, stands in in the column: the tree id of
  *  its node. */
-const THREAD_NODE_ATTRIBUTE = "data-text-thread-node";
+export const THREAD_NODE_ATTRIBUTE = "data-text-thread-node";
 
 /** The words a person selected, as the control hands them to the column to open its composer on
  *  (R5): the node they are in, by its tree id (`TreeNode.id`), and what the server needs to find
@@ -87,11 +90,13 @@ export interface TextComposer {
 
 /** The composer's one state for one app: the issue it is open on and the request, and what its
  *  last send left for that issue's page, which the column and the control share wherever each is
- *  drawn on the page. */
+ *  drawn on the page; and the column's place for a block's editor's composes while a column is
+ *  mounted (`useMarkComposePlace`). */
 interface ComposerStore {
   held: { readonly key: string; readonly request: TextComposerRequest } | undefined;
   landed: { readonly key: string; readonly outcome: TextComposerOutcome } | undefined;
   readonly listeners: Set<() => void>;
+  place: MarkComposePlace | undefined;
   readonly subscribe: (listener: () => void) => () => void;
 }
 
@@ -108,6 +113,7 @@ function composerStoreOf(client: QueryClient): ComposerStore {
       held: undefined,
       landed: undefined,
       listeners,
+      place: undefined,
       subscribe: (listener) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -118,16 +124,28 @@ function composerStoreOf(client: QueryClient): ComposerStore {
   return store;
 }
 
+/** Tells each reader of `store` that what it holds changed. */
+function tell(store: ComposerStore): void {
+  for (const listener of [...store.listeners]) listener();
+}
+
 /** Sets what `store` holds - the composer open, and what its last send left - and tells each
- *  reader. */
+ *  reader. A compose of a block's editor that the composer leaves with no send out - closed,
+ *  replaced by another, or gone with its page - rejects the editor's promise, so the editor takes
+ *  its mark back out of the document; one whose send went out was resolved then, which this does
+ *  not undo. */
 function holdComposer(
   store: ComposerStore,
   held: ComposerStore["held"],
   landed: ComposerStore["landed"] = store.landed
 ): void {
+  const left = store.held?.request.mark;
   store.held = held;
   store.landed = landed;
-  for (const listener of [...store.listeners]) listener();
+  if (left !== undefined && held?.request.mark !== left) {
+    left.reject(new Error("the composer closed with no send out"));
+  }
+  tell(store);
 }
 
 /**
@@ -185,6 +203,36 @@ export function useTextComposer(): TextComposer {
 }
 
 /**
+ * The column's place for a compose a block's editor asks for (`MarkComposePlace`), which the
+ * page hands the editor (`StagedDocument.tsx`): its selection bar and its chord open the
+ * composer of R5 in the column, beside the block's node, or in the node's sheet below 1024 px,
+ * and never in Details (R6). Undefined while no column of comments on text is mounted, as on
+ * every page but the new issue page; with none, the editor's composer opens in the margin as it
+ * always has, and Details hosts the editor's cards (`slots/details.tsx`).
+ */
+export function useMarkComposePlace(): MarkComposePlace | undefined {
+  const store = composerStoreOf(useQueryClient());
+  return useSyncExternalStore(store.subscribe, () => store.place);
+}
+
+/**
+ * The node of `view` a compose of a block's editor stands beside: the node of the block of the
+ * editor's mark (`placement.blockId`), else the node of the row the editor is drawn in
+ * (`EDITOR_BOX_ATTRIBUTE`) - a closed issue's document names its words by their quote alone, in
+ * no block. Undefined where neither is on the page.
+ */
+function composeNodeOf(view: ViewThreads, anchor: ComposerAnchor): string | undefined {
+  const blockId = anchor.mark_id === undefined ? anchor.block_id : anchor.placement?.blockId;
+  if (blockId !== undefined && blockId !== null) {
+    for (const [id, node] of view.nodes) {
+      if (node.document?.artifact_id === anchor.artifact && node.block_id === blockId) return id;
+    }
+  }
+  const box = document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  return box?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+}
+
+/**
  * The column at the right of the main column that draws each thread on text beside its node
  * (R2): an `aside` with `role="region"` named by the margin's words (`page-words-margin.ts`), the
  * third child of the page's row after the main column (`IssueOutlinePage.tsx`), so it follows the
@@ -227,6 +275,37 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
     },
     [key, store]
   );
+  // The column's place for a block's editor's composes (`useMarkComposePlace`), offered while the
+  // column is mounted at every width, since the node's sheet draws the same composer below
+  // 1024 px. It reads the view and the composer as they stand when the editor asks, and opens the
+  // composer on the editor's words as the control does: Details closes first.
+  const now = useRef({ composer, view });
+  now.current = { composer, view };
+  useEffect(() => {
+    const place: MarkComposePlace = (compose) => {
+      const { promise, reject, resolve } = Promise.withResolvers<void>();
+      const nodeId = composeNodeOf(now.current.view, compose.anchor);
+      if (nodeId === undefined) {
+        reject(new Error("no node of the page holds the editor's words"));
+        return promise;
+      }
+      now.current.composer.open({
+        block: null,
+        mark: { ...compose, reject, resolve },
+        nodeId,
+        occurrence: compose.anchor.occurrence ?? 0,
+        quote: compose.anchor.quote,
+      });
+      return promise;
+    };
+    store.place = place;
+    tell(store);
+    return () => {
+      if (store.place !== place) return;
+      store.place = undefined;
+      tell(store);
+    };
+  }, [store]);
   if (!wide || (view.threads.size === 0 && composer.request === undefined)) return null;
   return (
     <CardStackFocus.Provider value={stackFocus}>

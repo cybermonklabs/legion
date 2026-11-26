@@ -48,6 +48,7 @@ import {
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
 import { issueAsksQuery } from "../issue-page/useIssueTree";
+import type { MarkComposePlace } from "../margin/margin-context";
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
@@ -220,6 +221,11 @@ export interface ProofDocumentProps {
   /** The document, as the read that listed it answers it: where that answer carries `fragment`,
    *  the page connects at once; otherwise it waits for its own artifact read. */
   artifact: Artifact;
+  /** Where the selection bar's Comment, Suggest and Ask and the chord open their composer, in
+   *  place of the margin's (`MarkComposePlace`): the new issue page's column of comments on text
+   *  hands one to a block's editor (`issue-page/StagedDocument.tsx`). With none, the margin's
+   *  composer opens, as on every other page. */
+  composePlace?: MarkComposePlace;
   highlight: Highlight | undefined;
   highlightTerm?: string;
   isClosed: boolean;
@@ -288,6 +294,7 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
 export function ProofDocument({
   anchoredThread,
   artifact,
+  composePlace,
   highlight,
   highlightTerm = "",
   isClosed,
@@ -329,6 +336,10 @@ export function ProofDocument({
   // re-renders reopens nothing.
   const onEditorHandleRef = useRef(onEditorHandle);
   onEditorHandleRef.current = onEditorHandle;
+  // The page's place for the editor's composes, read through a ref like the hold above, so a
+  // host that re-renders reopens nothing.
+  const composePlaceRef = useRef(composePlace);
+  composePlaceRef.current = composePlace;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -1044,6 +1055,9 @@ export function ProofDocument({
                           quote: action.quote,
                         },
                         kind: composerKindFor(action.kind),
+                        ...(composePlaceRef.current === undefined
+                          ? {}
+                          : { place: composePlaceRef.current }),
                       });
                     case "quote-comment": {
                       // A closed issue's document takes no mark: the comment names its text by
@@ -1063,6 +1077,9 @@ export function ProofDocument({
                       return marginRef.current.composeForMark({
                         anchor: { artifact: artifact.id, ...anchor },
                         kind: "comment",
+                        ...(composePlaceRef.current === undefined
+                          ? {}
+                          : { place: composePlaceRef.current }),
                       });
                     }
                     default:

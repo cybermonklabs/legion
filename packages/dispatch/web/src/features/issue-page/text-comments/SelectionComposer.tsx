@@ -4,6 +4,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 
 import { ApiError } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
 import type { IssueDetails } from "../../../api/types";
+import type { ComposerAnchor, ComposerKind } from "../../conversation/composer-model";
 import { composerSend, useHeldSend } from "../../conversation/held-sends";
 import { MentionComposer } from "../../conversation/MentionComposer";
 import type { SentRequest } from "../../conversation/send-request";
@@ -36,19 +37,43 @@ import type { ViewThreads } from "./useTextThreads";
  * Once the send lands, the composer closes and the page lands on the new thread's root, or says
  * a reply's quote was not kept (`landingOf`); while Dispatch's last refusal says the words are
  * gone, one sentence says so beside the composer's own words.
+ *
+ * A block's editor opens it too, on the words its selection bar or its chord asked for
+ * (`EditorCompose`, through `composeForMark`'s place, `TextMargin.tsx`): with the kind the bar
+ * chose, anchored to what the bar wrote - its mark alone, or in a closed issue's document the
+ * quote - and its send out keeps the mark in the document.
  */
 
+/** A compose a block's editor asked for (`MarkComposePlace`): the anchor its selection bar wrote,
+ *  its mark or, in a closed issue's document, its quote, and the kind the bar chose, with the
+ *  editor's promise, which the composer resolves as its send goes out and the column rejects as
+ *  the composer closes unsent (`holdComposer`). */
+export interface EditorCompose {
+  readonly anchor: ComposerAnchor;
+  readonly kind: ComposerKind;
+  readonly reject: (reason: Error) => void;
+  readonly resolve: () => void;
+}
+
 /** The words a person selected and the node they are in, by its tree id: what the control hands
- *  the column to open its composer on (`TextComposerRequest`). */
-export type SelectedWords = QuotedWords & { readonly nodeId: string };
+ *  the column to open its composer on (`TextComposerRequest`), and the compose a block's editor
+ *  asked for on them (`mark`). */
+export type SelectedWords = QuotedWords & {
+  readonly mark?: EditorCompose;
+  readonly nodeId: string;
+};
 
 /** What the page does once a send lands: the new thread's root takes the focus once the re-read
  *  draws it, or, for a reply whose quote the server did not keep, one sentence says so. */
 export type TextComposerOutcome = { readonly root: string } | { readonly notice: string };
 
-/** One key for each selection a composer is opened on, which names its draft and its send. */
+/** One key for each selection a composer is opened on, which names its draft and its send: each
+ *  mark of an editor's is a selection of its own. */
 export function wordsKeyOf(words: SelectedWords): string {
-  return JSON.stringify([words.nodeId, words.block, words.occurrence, words.quote]);
+  const selected = [words.nodeId, words.block, words.occurrence, words.quote];
+  return JSON.stringify(
+    words.mark === undefined ? selected : [...selected, words.mark.anchor.mark_id ?? null]
+  );
 }
 
 /** The refusals that say the server found no such words: 400 `INVALID_ANCHOR` on an anchor
@@ -163,7 +188,9 @@ export function sendTargetOf(
 /**
  * Where the composer opened on `words` of the issue `issue`'s page sends (`sendTargetOf`), taken
  * from the view while it draws the node, and from where it last drew it once it is folded or paged
- * away, where the composer stays. Null in a mount that never met the node drawn.
+ * away, where the composer stays. Null in a mount that never met the node drawn. A compose of a
+ * block's editor sends its own anchor on the page's issue, whose document the editor holds,
+ * whether the node is drawn or not.
  */
 function useSendTarget({
   issue,
@@ -175,7 +202,12 @@ function useSendTarget({
   readonly words: SelectedWords;
 }): SendTarget | null {
   const drawn = view.nodes.get(words.nodeId);
-  const target = drawn === undefined ? undefined : sendTargetOf(view, drawn, issue, words);
+  const target =
+    words.mark !== undefined
+      ? { address: { anchor: words.mark.anchor, replyTo: null }, issue: issue.key }
+      : drawn === undefined
+        ? undefined
+        : sendTargetOf(view, drawn, issue, words);
   // The target as it was while each read of the node builds it afresh with the same values, so
   // the composer's anchor and reply keep their identity.
   const [last, setLast] = useState<SendTarget | null>(null);
@@ -210,6 +242,13 @@ export function SelectionComposer({
   const held = useHeldSend(sendName);
   const said =
     held?.status === "refused" && wordsGone(held.refusal) ? MARGIN_ANSWERS.words_gone : undefined;
+  // A compose of a block's editor keeps its mark from the moment its send is out, as the margin's
+  // compose does: the held send names that mark, through a refusal and its Retry.
+  const mark = words.mark;
+  const sendOut = held !== undefined;
+  useEffect(() => {
+    if (sendOut) mark?.resolve();
+  }, [mark, sendOut]);
   // `MentionComposer` ends a send that lands with its `onSent`, then its `onClose`; the landing
   // closes the composer with where the page lands, so that `onClose` is no Escape of the reader's.
   const landing = useRef(false);
@@ -251,7 +290,7 @@ export function SelectionComposer({
           // The writing list's box of a margin's composer opened from a selection, which writes a
           // comment on the words it quotes, as this one does, or a reply to a message's block.
           box="margin-composer"
-          kind="comment"
+          kind={words.mark?.kind ?? "comment"}
           mutationKey={sendName}
           onClose={() => {
             if (!landing.current) onLeave();

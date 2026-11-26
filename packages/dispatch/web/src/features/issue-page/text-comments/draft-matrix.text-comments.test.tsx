@@ -54,6 +54,8 @@
  * | text thread reply · the cards' shared writes change                 | (12)   |
  * | text thread reply · its card's host draws it fixed open or not      | (13)   |
  * | text thread reply · its thread's kind changes                       | (14)   |
+ * | selection composer · its kind changes                               | (15)   |
+ * | Details' margin composer · the column takes the editor's composes   | (16)   |
  *
  * (off) marks a move that takes the composer off the page: Escape closes the composer, other
  * words open another composer in its place (`key={wordsKeyOf(request)}`), another view draws no

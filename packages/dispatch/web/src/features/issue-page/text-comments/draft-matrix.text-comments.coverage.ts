@@ -41,6 +41,8 @@ const REASONS = {
   12: "12. `host` holds what every card of one column or sheet shares (`useThreadCardHost`): the issue's writes on its comments, the edit in progress and the reader. Its owner is the issue, which changes only with the issue, the issue-left rows; the rest moves no address and ends no mount.",
   13: "13. `fixedOpen` is the host's and never changes under a drawn card: the column and the sheet of comments on text draw every card fixed open, and the margin, the Conversation and the phone sheet pass none, so `standing={fixedOpen}` moves no reply composer to another box while it is mounted. A standing inline reply keeps its unsent draft under its thread's reply send name as an inline reply does (`keptNames` in `useKeptDrafts.ts`), which the text thread reply rows read.",
   14: "14. A thread's kind is its root's (`Thread.kind`): a thread on text rooted in a message is of the kind `message`, and its reply answers that message (`in_reply_to`) under its thread's reply send name for as long as its card is drawn. A read again never gives a card another root (reason 10), and every other thread sets no kind, so the spread moves no address and ends no mount.",
+  15: "15. The selection composer's kind is the kind a block's editor's selection bar or its chord chose - a comment, a suggestion or an ask - for the mark it opened the composer on (`words.mark`, through the column's place, `useMarkComposePlace`), and `comment` for every selection the page's own control opens it on. The composer draws no switch of its kind, and another action of the bar writes another mark, which is other words and another composer (`wordsKeyOf` names the mark, `key={wordsKeyOf(request)}`), so a reader cannot change the kind while the composer is mounted.",
+  16: "16. On the new issue page Details draws the margin's own content - its tabs, its compose and every card of the document's editor - only while no column of comments on text takes a block's editor's composes (`EditorCards` in `slots/details.tsx`, `useMarkComposePlace`). The column offers that place for as long as it is mounted, and it mounts and unmounts only with the page's slots, in the commit that mounts or unmounts Details' fill (`IssueOutline`), so a reader cannot change it under a mounted margin composer; and while it stands, the editor's selection bar and its chord open their composer in the column (reason 15), so the margin holds no compose of that editor for Details to draw.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -65,6 +67,18 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(`SelectionComposer | ${MOUNT} | address prop | replyTo={target.address.replyTo}`, {
     reason: REASONS[5],
   }),
+  ...answers(`SelectionComposer | ${MOUNT} | address prop | kind={words.mark?.kind ?? "comment"}`, {
+    reason: REASONS[15],
+  }),
+  // Details draws no card of the editor while the column takes the editor's composes.
+  ...answers(
+    "EditorCards | MarginComposerSlot | conditional | (useMarkComposePlace() === undefined) ? …",
+    { reason: REASONS[16] }
+  ),
+  ...answers(
+    "EditorCards | CommentsTab | conditional | (useMarkComposePlace() === undefined) ? …",
+    { reason: REASONS[16] }
+  ),
   ...answers(`SelectionComposer | ${MOUNT} | conditional | !(target === null) ? …`, {
     reason: REASONS[4],
   }),
