@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // mergeHoldsChangedVersion is the version of the migration this file tests, so the test can
@@ -14,22 +16,35 @@ const mergeHoldsChangedVersion = 20261126110259
 // merge holds document changed (record.MergeHoldsChanged). The outbox refuses a kind its
 // constraint does not name, so the row could not be queued before this migration, and the
 // transaction that applied the document's event would fail with it: the negative control is that
-// refusal, read before the migration, on a database that already carries the basis seeds' list
-// (20261122154643), which this version stands above. After it the row is queued, and so is every
-// kind the constraint already named, thirty-three in all, conflict_confirm, merge_forward,
-// design_changes, phase_ended, pending_basis_seed and reparent_seed among them, since the migration
-// rewrites the list whole and a kind left out would stop its own effect. A kind that is none is
-// still refused, and so is a kind of the merge the daemon no longer submits.
+// refusal, read before the migration, on the database main migrated before it, which carries the
+// basis seeds' list (20261122154643), which this version stands above. That database lacks the
+// done-by-checks migration (20261125004932), whose list names the kind too, and the upgrade applies
+// it before this one. After them the row is queued, and so is every kind the constraint already
+// named, thirty-five in all, conflict_confirm, merge_forward, design_changes, phase_ended,
+// pending_basis_seed, reparent_seed, close_read and close_wait_publish among them, since the
+// migration rewrites the list whole and a kind left out would stop its own effect. A kind that is
+// none is still refused, and so is a kind of the merge the daemon no longer submits.
 func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
-	migrateThrough(t, store, mergeHoldsChangedVersion-1)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if migration.Version >= mergeHoldsChangedVersion || migration.Version == doneByChecksVersion {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s as main's run did: %v", migration.Name, err)
+		}
+	}
 	queue := func(kind string) error {
 		_, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
 		return err
 	}
-	err := queue("merge_holds_changed")
+	err = queue("merge_holds_changed")
 	if err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a merge_holds_changed row before the migration = %v, want the kind constraint to refuse it: it is the row the migration exists for", err)
 	}
@@ -44,10 +59,10 @@ func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
 		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
 		"conflict_confirm", "merge_forward", "design_changes", "pending_basis_seed", "reparent_seed",
-		"merge_holds_changed",
+		"merge_holds_changed", "close_read", "close_wait_publish",
 	}
-	if len(kinds) != 33 {
-		t.Fatalf("the list names %d kinds, want the 33 the migration writes", len(kinds))
+	if len(kinds) != 35 {
+		t.Fatalf("the list names %d kinds, want the 35 the migration writes", len(kinds))
 	}
 	for _, kind := range kinds {
 		if err := queue(kind); err != nil {

@@ -2941,7 +2941,10 @@ It gives each `issue_bundle`, `issue_release` and `issue_suspend` row of the pro
 Each of its statements that names a table or a column this migration adds runs only where that table or column still exists, so block A run again, or after block B, prints nothing it cannot read and deletes that project's rows.
 
 Before it drops a column, block B puts back the four SQL functions as the earlier release reads them, since PostgreSQL records no dependency of a `language sql` body on a column, and a body left reading `tree_generation` would fail at run time after the drop.
-It then drops the four-argument `design_news_current`, the two tables and the new columns, puts back `outbox_kind_check` and `issues_phase_check` without the new values, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again (`versionRecorded` in `internal/store/store.go`).
+It then drops the four-argument `design_news_current`, the two tables and the new columns, puts back `issues_phase_check` without `verifying`, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again (`versionRecorded` in `internal/store/store.go`).
+Block B leaves `outbox_kind_check` as it stands.
+`20261126110259_merge_holds_changed` also writes that list whole, and a list put back here would drop its kinds and those of any later list.
+The list keeps `close_read` and `close_wait_publish`, which the earlier release never queues, and block A deleted every row of both.
 The tables and the columns are the database's, so every project's daemon on it rolls back too.
 
 ```sql
@@ -3001,8 +3004,6 @@ drop table if exists defects;
 alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
 alter table production_checks drop column if exists relook_seq, drop column if exists generation;
 alter table pending_task_deliveries drop column if exists start_at;
-alter table outbox drop constraint if exists outbox_kind_check;
-alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed'));
 alter table issues drop constraint if exists issues_phase_check;
 alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
 delete from schema_version where version = 20261125004932;

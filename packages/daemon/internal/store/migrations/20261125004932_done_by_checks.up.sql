@@ -48,8 +48,10 @@
 -- carries it, and when that change merged or a withdrawal ended it. close_reads holds each issue's
 -- newest read of its checks' states, with the moment the read began. The outbox takes close_read, the
 -- read of an issue's checks for the judge of its close, and close_wait_publish, the write of its
--- close-wait.md. The kind list is the basis seeds' of 20261122154643 with the two, written whole, so
--- this list is the last word on any database: its version stands above every list beneath it.
+-- close-wait.md. The kind list is the merge holds' of 20261126110259 with the two, written whole.
+-- 20261126110259 stands above this version and names the two as well. On a database main migrated,
+-- the upgrade applies this migration after it. So each of the two lists names every kind of both,
+-- and either can be the last word.
 -- pending_task_deliveries.start_at is where a next change's first task starts the working copy (a
 -- supervise start's StartAt), kept on the delivery so a restart between the queue and the send keeps
 -- it. Every delivery the upgrade finds reads none.
@@ -82,10 +84,13 @@
 -- 20261119203047, and step_run_witness with its body of 20261117004117. PostgreSQL records no
 -- dependency of a language sql body on a column, so a body left reading tree_generation would fail at
 -- run time after the drop, with nothing to refuse the drop. Only then does it drop the four-argument
--- design_news_current, the two tables and the new columns, put back outbox_kind_check and
--- issues_phase_check without the new values, and delete this migration's schema_version row, so the
--- roll forward applies this file again. An issue on a next change is an ordinary generation, which the
--- release before runs to its merge and closes there.
+-- design_news_current, the two tables and the new columns, put back issues_phase_check without
+-- verifying, and delete this migration's schema_version row, so the roll forward applies this file
+-- again. It leaves outbox_kind_check as it stands. 20261126110259 also writes that list whole, and
+-- a list put back here would drop its kinds and those of any later list. The list keeps close_read
+-- and close_wait_publish, which the release before never queues, and block A deleted every row of
+-- both. An issue on a next change is an ordinary generation, which the release before runs to its
+-- merge and closes there.
 --
 -- -- Block A: once for each project, with <PROJECT> its key, in any order.
 -- begin;
@@ -143,8 +148,6 @@
 -- alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
 -- alter table production_checks drop column if exists relook_seq, drop column if exists generation;
 -- alter table pending_task_deliveries drop column if exists start_at;
--- alter table outbox drop constraint if exists outbox_kind_check;
--- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed'));
 -- alter table issues drop constraint if exists issues_phase_check;
 -- alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
 -- delete from schema_version where version = 20261125004932;
@@ -224,7 +227,8 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'close_read', 'close_wait_publish'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
+  'merge_holds_changed', 'close_read', 'close_wait_publish'));
 
 -- design_news_current is the one rule of which news of a delivery's copy still counts, now read on
 -- the tree's run: an item or an opening rendered for told_issue in a tree whose run stood at
