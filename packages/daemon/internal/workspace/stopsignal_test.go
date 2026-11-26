@@ -75,22 +75,39 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	t.Run("a command that handles SIGTERM removes its lock", func(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
+		letGo := filepath.Join(dir, "let-go")
 		budget := time.Second
 		clock := clocktest.New(stopMoment)
 		ctx, cancel := clock.WithTimeout(context.Background(), budget)
 		defer cancel()
 		// The lock is taken before the command reports that it is running, so a lock that is gone
-		// at the end is one the command's own SIGTERM handler removed.
-		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
+		// at the end is one the command's own SIGTERM handler removed. The handler removes it and
+		// leaves only once the row has written letGo ($3): while it waits, the group outlives its
+		// SIGTERM, so the stop's grace is pending on the fake clock and the row can read it there.
+		// A handler that left at once would let a grace that left the injected clock — a real
+		// timer, or a real sleep of procgroup.StopGrace — still end the run, at the group's exit or
+		// a real second later, and the row would pass on it. The handler's wait gives up after a
+		// minute, as commandLives does and for its reason: a failing row of this file has nothing
+		// left to kill its command.
+		script := `: >"$1"; trap 'waited=0; while [ ! -e "$3" ] && [ "$waited" -lt 1200 ]; do sleep 0.05; waited=$((waited+1)); done; rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
 		ran := inFlight(func() error {
-			_, err := runCommandOn(ctx, clock, procgroup.NoReaper, budget, clock.Now(), environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
+			_, err := runCommandOn(ctx, clock, procgroup.NoReaper, budget, clock.Now(), environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, letGo})
 			return err
 		})
 		exists(t, "the command to report that it is running", ready)
 		clock.Advance(budget)
-		// The grace after the SIGTERM is on the same clock, which never moves again: a run that
-		// sat out its grace rather than ending it once the command left would never return.
+		// The handler holds the group past its SIGTERM, so the grace is armed on the fake clock
+		// from the moment the stop began. A grace that left the injected clock is never armed
+		// there, so this wait fails and names the grace.
+		if armed := clock.AwaitArmed(t, "the grace after the group's SIGTERM", 1); !armed[0].Equal(clock.Now().Add(procgroup.StopGrace)) {
+			t.Fatalf("the stop armed %v, want its grace of procgroup.StopGrace %v from %v", armed, procgroup.StopGrace, clock.Now())
+		}
+		if err := os.WriteFile(letGo, nil, 0o600); err != nil {
+			t.Fatalf("let the command's SIGTERM handler go: %v", err)
+		}
+		// The grace is on the same clock, which never moves again: a stop that sat out its grace
+		// rather than ending it once the command left would never return.
 		err := testwait.Receive(t, "the run to end once the command left on its SIGTERM, inside a grace the clock never spends", ran)
 
 		if _, statErr := os.Stat(lock); !os.IsNotExist(statErr) {
