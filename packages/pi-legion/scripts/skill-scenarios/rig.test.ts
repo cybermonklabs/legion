@@ -4825,6 +4825,105 @@ describe("health", () => {
     expect(code).toBe(1);
   });
 
+  // Catches (the architect's ruling of 2026-11-26T02:21Z, INFRA-764 round 35's run d77727e66fff,
+  // threads-closed correct base): a Dispatch 400 on a result write that the agent's own transcript
+  // shows as an input refusal, `RESULT_INPUT` (a 12-character commit; production's Dispatch gives
+  // the same answer), where the agent's next write of that result succeeded, read as a broken
+  // world: the server's line keeps the status and not the code, so rule 16 voided the run. And
+  // that reading made so wide that a 400 whose transcript code is `UNKNOWN_CHECK` (a world that
+  // lost its check), one whose code no transcript shows, or one the agent never wrote again
+  // goes unread. Each of the three is unhealthy as before.
+  test("a Dispatch 400 on a result write that the agent's transcript shows as RESULT_INPUT and its next write took is healthy, and any other 400 is not", () => {
+    const COMMIT = "b42fd5eeaac03388f3a50ceec36d9ba5bfee59b1";
+    const refused =
+      "RESULT_INPUT: commit is the 40-character lowercase hex commit the check ran at\n";
+    const write = (commit: string, result: string): Step => ({
+      tool: "bash",
+      args: {
+        command: `dispatch result --issue LWEVAL-1 --check k1 --role implementer --verdict pass --commit ${commit} --observed 'greet.ts is unchanged' 2>&1 | tail -5`,
+      },
+      result,
+    });
+    const taken = `Recorded pass for check k1 of LWEVAL-1 at ${COMMIT}, as implementer.\n`;
+    const POST = (at: string, status: number) =>
+      served(at, "POST", "/api/v1/issues/{key}/results", "/api/v1/issues/LWEVAL-1/results", status);
+    const transcribed = (name: string, steps: Step[], statuses: number[]) => {
+      const dir = run(name, [[]], {
+        dispatch: statuses.map((status, at) =>
+          POST(`2026-11-13T17:50:${30 + at * 10}.000Z`, status)
+        ),
+      });
+      writeFileSync(
+        path.join(dir, "sessions", TRANSCRIPT),
+        [
+          { type: "session" },
+          ...steps.flatMap((step, index) => [
+            {
+              type: "message",
+              timestamp: `2026-11-13T17:50:${29 + index * 10}.000Z`,
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "toolCall", id: `c${index}`, name: step.tool, arguments: step.args },
+                ],
+              },
+            },
+            {
+              type: "message",
+              message: {
+                role: "toolResult",
+                toolCallId: `c${index}`,
+                toolName: step.tool,
+                content: [{ type: "text", text: step.result ?? "" }],
+              },
+            },
+          ]),
+        ]
+          .map((entry) => `${JSON.stringify(entry)}\n`)
+          .join("")
+      );
+      return dir;
+    };
+    const corrected = transcribed(
+      "threads-closed-correct-base-14",
+      [write("b42fd5eeaac0", refused), write(COMMIT, taken)],
+      [400, 201]
+    );
+    const lost = transcribed(
+      "threads-closed-correct-base-15",
+      [
+        write(
+          "b42fd5eeaac0",
+          "UNKNOWN_CHECK: no check k1 in the Verification document of LWEVAL-1\n"
+        ),
+        write(COMMIT, taken),
+      ],
+      [400, 201]
+    );
+    const unshown = transcribed(
+      "threads-closed-correct-base-16",
+      [write("b42fd5eeaac0", "the command failed\n"), write(COMMIT, taken)],
+      [400, 201]
+    );
+    const unrepeated = transcribed(
+      "threads-closed-correct-base-17",
+      [write("b42fd5eeaac0", refused)],
+      [400]
+    );
+    const runs = [corrected, lost, unshown, unrepeated];
+    const { code, stdout } = health(...runs);
+    const call = "dispatch refusal: logs/dispatch.log:2, POST /api/v1/issues/LWEVAL-1/results";
+    const declined = "answered 400, which threads-closed does not declare for that role";
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-correct-base-14  healthy",
+      `threads-closed-correct-base-15  unhealthy: ${call} of the implementer, ${declined}`,
+      `threads-closed-correct-base-16  unhealthy: ${call} of the implementer, ${declined}`,
+      `threads-closed-correct-base-17  unhealthy: ${call} of the implementer, ${declined}`,
+    ]);
+    expect(stdout).toContain("health: dispatch: 3 of 4 runs\n");
+    expect(code).toBe(1);
+  });
+
   // Catches: an answer production gives a correct agent read as a broken world: HANDOFF_NOT_FOUND
   // for the reviewer-text-findings reviewer's `review`, which its world holds none of before the
   // reviewer writes it; and a run whose Dispatch refused nothing read as unhealthy, on its answers
