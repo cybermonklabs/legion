@@ -29,8 +29,8 @@ var (
 	ErrClosed = errors.New("worker stream closed")
 	// ErrNoAnswer is a request whose answer did not arrive within the RPC timeout
 	// (worker_rpc_timeout_seconds) — the bound the shipped client puts on every request
-	// (worker-rpc.ts:407-421).
-	ErrNoAnswer = errors.New("no answer on the worker stream within the RPC timeout")
+	// (worker-rpc.ts:407-421). It is runtime.ErrNoAnswer, which the supervisor reads.
+	ErrNoAnswer = runtime.ErrNoAnswer
 )
 
 // RefusedError is the far side answering a request with a refusal — OMP's `{success:false}`, or
@@ -223,15 +223,10 @@ func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 // Compact shortens Oh My Pi's session context with a handoff (shimwire.Handoff), and never with
 // Oh My Pi's `compact`, whose summary request Anthropic's classifier refuses for a long Claude
 // session (dispatch://INFRA-5798). The shim answers nothing of it and forwards it as it forwards
-// a prompt, so the answer is Oh My Pi's own `response` to the command:
-//
-//   - success with the handoff's result is a session shortened, and nil here;
-//   - `success: false` is a handoff Oh My Pi refused — one asked for while a turn runs, a
-//     session with nothing to hand off, a model call that failed — which is a *RefusedError
-//     carrying Oh My Pi's reason (runtime.RefusalReason reads the words);
-//   - success with no result (`data: null`) is a handoff that made no document, so the session
-//     was not shortened: a noHandoffError, whose reason is the daemon's sentence for it, since
-//     Oh My Pi gave none.
+// a prompt, so the answer is Oh My Pi's own `response` to the command, read by handoffResult.
+// `success: false` is a handoff Oh My Pi refused — one asked for while a turn runs, a session with
+// nothing to hand off, a model call that failed — which is a *RefusedError carrying Oh My Pi's
+// reason (runtime.RefusalReason reads the words).
 //
 // The wait is the request's own bound rather than the RPC timeout: Oh My Pi answers only once
 // the session's model has written the document over the whole transcript.
@@ -248,28 +243,50 @@ func (c *Conn) Compact(ctx context.Context, customInstructions string, bound tim
 	if err != nil {
 		return err
 	}
-	if data := bytes.TrimSpace(response.Data); len(data) == 0 || bytes.Equal(data, []byte("null")) {
-		return &noHandoffError{claim: c.claim}
+	return c.handoffResult(response.Data)
+}
+
+// handoffResult reads the data of Oh My Pi's successful answer to a handoff, which its RPC writes
+// as the handoff's result object or null (`case "handoff"` in
+// packages/coding-agent/src/modes/rpc/rpc-mode.ts of cybermonklabs/oh-my-pi at the pinned tag):
+//
+//   - an object is a session shortened, and nil here: `{}` for a handoff the daemon asks for, since
+//     the pinned Oh My Pi saves the document to a file only for a handoff it starts itself, and
+//     `{savedPath}` where it saved one;
+//   - null, or no data, is a handoff that made no document and committed nothing, so the session
+//     did not change: a *RefusedError of the handoff carrying the daemon's sentence for it, since
+//     Oh My Pi gave none (noHandoffReason);
+//   - anything else — a boolean, a number, a string, an array, an object whose savedPath is not a
+//     string — is an answer the daemon cannot read, so it claims no change of the session either:
+//     a *RefusedError of the handoff saying so (unreadHandoffReason).
+//
+// The two refusals are the existing refusal (RefusedError), so the caller reads their words as it
+// reads Oh My Pi's own (runtime.RefusalReason), and a compaction that did not shorten the session
+// resets nothing (internal/supervise's compactEnded).
+func (c *Conn) handoffResult(data json.RawMessage) error {
+	var result *struct {
+		SavedPath *string `json:"savedPath"`
+	}
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, &result); err != nil {
+			c.log.Warn("worker-stream: the handoff's result is not an object; the session is not reported shortened",
+				"claim", c.claim, "error", err)
+			return &RefusedError{Claim: c.claim, Command: shimwire.TypeHandoff, Reason: unreadHandoffReason}
+		}
+	}
+	if result == nil {
+		return &RefusedError{Claim: c.claim, Command: shimwire.TypeHandoff, Reason: noHandoffReason}
 	}
 	return nil
 }
 
-// noHandoffReason is the reason a handoff Oh My Pi answered with success and no result reads
-// as (noHandoffError). A model reads it in the controller's tool result, so it follows
-// ASD-STE100.
-const noHandoffReason = "Oh My Pi made no handoff document. The session did not change."
-
-// noHandoffError is Oh My Pi answering a handoff with success and no result (`data: null`): the
-// handoff made no document and committed nothing, so the session was not shortened (Conn.Compact).
-type noHandoffError struct{ claim claim.Token }
-
-func (e *noHandoffError) Error() string {
-	return fmt.Sprintf("worker-stream: %s handoff: %s", e.claim, noHandoffReason)
-}
-
-// RefusalReason is the daemon's sentence for the handoff that made no document
-// (runtime.RefusalReason), since Oh My Pi's answer carries no reason of its own.
-func (e *noHandoffError) RefusalReason() string { return noHandoffReason }
+// noHandoffReason and unreadHandoffReason are the daemon's words for the two successful answers to
+// a handoff that do not shorten the session (handoffResult). A model reads them in the
+// controller's tool result, so they follow ASD-STE100.
+const (
+	noHandoffReason     = "Oh My Pi made no handoff document. The session did not change."
+	unreadHandoffReason = "Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session changed."
+)
 
 // Shutdown asks the shim to end OMP: SIGTERM, then SIGKILL once the shim's grace runs out. The
 // shim acts on the frame itself and answers nothing (internal/shim); whether the process ended is

@@ -45,6 +45,10 @@ const handoffPeerRefusal = "this peer answers a handoff and no other request tha
 // admission, which its acknowledgement follows.
 const handoffRefusedInATurn = "Cannot hand off while a response is in progress"
 
+// unreadHandoffReason is the daemon's answer to a successful handoff whose data is no object
+// (internal/stream's handoffResult), in those words.
+const unreadHandoffReason = "Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session changed."
+
 // handoffRowTask is the task each row's claim is spawned with and owes.
 const handoffRowTask = "Work the issue."
 
@@ -418,10 +422,11 @@ func TestATaskWhosePromptIsAcceptedWhenTheHandoffIsAskedForIsSentOnce(t *testing
 // The answer of a compaction says whether the session was shortened and, when it was not, why
 // (dispatch://INFRA-5798 R2): Oh My Pi's own words for a handoff it refused, and the daemon's for
 // a handoff it answered with success and no handoff (`data: null`), which committed nothing. A
-// success that carries the handoff's result is a session shortened, with a saved path or without
-// one: the pinned Oh My Pi saves the document to a file only for a handoff it starts itself, so a
-// handoff the daemon asks for is answered `data: {}`. In every row the claim is back and the task
-// it owes goes to it once.
+// success that carries the handoff's result object is a session shortened, with a saved path or
+// without one: the pinned Oh My Pi saves the document to a file only for a handoff it starts
+// itself, so a handoff the daemon asks for is answered `data: {}`. A success whose data is no
+// object — a boolean, an array — is an answer the daemon cannot read, so it claims no change of
+// the session. In every row the claim is back and the task it owes goes to it once.
 func TestTheAnswerOfAHandoffSaysWhetherTheSessionWasShortened(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -456,6 +461,20 @@ func TestTheAnswerOfAHandoffSaysWhetherTheSessionWasShortened(t *testing.T) {
 				return shimwire.Response{ID: id, Command: handoffType, Success: true, Data: json.RawMessage(`{}`)}
 			},
 			want: api.CompactResponse{Compacted: true},
+		},
+		{
+			name: "success with data true",
+			answer: func(id string) shimwire.Response {
+				return shimwire.Response{ID: id, Command: handoffType, Success: true, Data: json.RawMessage(`true`)}
+			},
+			want: api.CompactResponse{Compacted: false, Reason: unreadHandoffReason},
+		},
+		{
+			name: "success with an array",
+			answer: func(id string) shimwire.Response {
+				return shimwire.Response{ID: id, Command: handoffType, Success: true, Data: json.RawMessage(`[]`)}
+			},
+			want: api.CompactResponse{Compacted: false, Reason: unreadHandoffReason},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

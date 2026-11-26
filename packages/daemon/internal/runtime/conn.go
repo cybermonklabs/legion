@@ -49,6 +49,13 @@ var ErrAdoptRefused = errors.New("runtime: the shim refused to adopt the working
 // transport loss, it sends that operator to the wrong side of the daemon.
 var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity could not be minted")
 
+// ErrNoAnswer is a request whose answer did not arrive within its wait: the transport's silence,
+// which is no answer of either kind. The supervisor reads it apart from every other transport
+// failure for one send, the one a compaction held: Oh My Pi parks a prompt that reaches it while
+// a handoff runs and answers it only once the handoff ends, so that send's wait can run out with
+// its prompt still on its way to its turn (internal/supervise's keepHeldPrompt).
+var ErrNoAnswer = errors.New("no answer on the worker stream within the RPC timeout")
+
 // RefusalReason is the words the agent refused with — Oh My Pi's `error` beside its
 // `success: false` — read from the error in err's chain that carries them, or "" when none does.
 // The stream's refusal carries them (stream.RefusedError), and so does the fake connection's.

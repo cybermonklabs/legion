@@ -942,6 +942,21 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 		return nil
 	}
+	// No prompt goes out under an id a prompt's result has already answered (Machine.resulted).
+	// Every answer that keeps the task takes it back under a new id first (takeBackPending), but a
+	// take-back whose write the store did not take keeps the id it could not move the task from,
+	// and the shim answers a prompt it has a record of from that record, without a second turn
+	// (shimwire's dedupe): a retry sent under that id would be answered by the turn that already
+	// ended, its replayed acknowledgement and turn taken for a retry that never ran. So the task is
+	// taken back again here, and goes under the id that take-back gives it once the store has taken
+	// it; while the store takes nothing, the task waits under the old id and nothing is sent.
+	if p.ID == m.resulted {
+		if err := m.takeBackPending(ctx, taskRead); err != nil {
+			m.log.Warn("supervise: the task still carries the id of a prompt whose result came, and its new id was not written; it waits rather than go under the old one",
+				"delivery", p.ID, "error", err)
+			return err
+		}
+	}
 	// A root architect's task of a run (asksRoot) is one of the two deliveries the question a
 	// restart left never answers (the other is below): such a task may be one nobody has ever
 	// sent — it is held on the claim while its root has no architect to hear it, across restarts —
@@ -1529,7 +1544,7 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 		p.Prompted = true
 	}
 	send := &sending{id: d.ID, generation: generation}
-	m.send, m.helloDuringSend = send, false
+	m.send, m.helloDuringSend, m.heldSend = send, false, ""
 	if seq := conn.Sequence(); seq > m.sentThrough {
 		m.sentThrough = seq
 	}
@@ -1761,15 +1776,13 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
 //
-// Nor is a confirmed delivery retired while a send of it is still in flight (Machine.send): a turn
-// taken for the task's while its send was adopting the working copy or minting its identity may
-// be another input's (turnAnswers), and only the send's own outcome says whether the prompt went
-// out at all. A refused or lost send takes that confirmation back and the task goes again
-// (refused); retired at the foreign turn's end, the task would be gone before that outcome came,
-// and the refusal would find nothing to take back. The outcome is a decision of its own, and the
-// settle that follows it retires the task where its turn is over (acked, ackedInTurn). A
-// successful result of any prompt of the task ends the doubt sooner (Machine.ranTask): it says a
-// turn ran the task, so the send's acknowledgement, still on its way, has nothing left to decide.
+// Nor is a confirmed delivery retired while its confirmation rests on its own send still in flight
+// (sendUnproven): a turn taken for the task's while its send was adopting the working copy or
+// minting its identity may be another input's (turnAnswers), and only the send's own outcome says
+// whether the prompt went out at all. A refused or lost send takes that confirmation back and the
+// task goes again (refused); retired at the foreign turn's end, the task would be gone before that
+// outcome came, and the refusal would find nothing to take back. The outcome is a decision of its
+// own, and the settle that follows it retires the task where its turn is over (acked, ackedInTurn).
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
@@ -1788,13 +1801,24 @@ func (m *Machine) settle(ctx context.Context) error {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
 		}
 	}
-	inFlight := m.send != nil && m.send.id == p.ID && m.ranTask != p.ID
-	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending() && !inFlight
+	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending() && !m.sendUnproven()
 	suspended := m.claim.State == StateSuspended && p.Phase != "" && m.claim.SuspendedBy.RetiresPhaseTask()
 	if !turnOver && !suspended {
 		return nil
 	}
 	return m.retirePending(ctx)
+}
+
+// sendUnproven is whether the pending task's confirmation rests on its own send still in flight
+// alone: a turn took the task for its own while that send was out (turnAnswers), no prompt of the
+// task is acknowledged, and no prompt's successful result has said a turn ran the task
+// (Machine.ranTask). Only the send's outcome can say whether the prompt went out at all, so such a
+// confirmation retires nothing (settle), and a let-go that fences the outcome out takes it back
+// (letGo). It is the one reading of an unproven send both make.
+func (m *Machine) sendUnproven() bool {
+	p := m.claim.Pending
+	return p != nil && !p.ConfirmedAt.IsZero() && m.send != nil && m.send.id == p.ID &&
+		!m.awaitsResult() && m.ranTask != p.ID
 }
 
 // promptFailed is a prompt that was acknowledged and then came to nothing: the wait for its turn
@@ -2076,11 +2100,55 @@ func (d *Delivery) credit(news []byte) {
 // acknowledgement can come twice for one prompt, and the agent read what the send the shim
 // forwarded carried. Every send under one id carries the same news (currentNews takes a new id for
 // a new rendering), so keeping the first is that rule's backstop.
+//
+// A prompt held behind a handoff that is acknowledged now — the shim answering its send again
+// from its record (noTurn) — is acknowledged from here on, and keeps the news it was held with.
 func (m *Machine) awaitResult(id string, news []byte) {
-	if m.outstandingPrompt(id) {
+	if at := slices.IndexFunc(m.outstanding, func(o awaitedPrompt) bool { return o.id == id }); at >= 0 {
+		m.outstanding[at].held = false
 		return
 	}
 	m.outstanding = append(m.outstanding, awaitedPrompt{id: id, news: news})
+}
+
+// sendWaitRanOut is whether a send ended because its wait ran out with no answer: the stream's own
+// bound (runtime.ErrNoAnswer) or the send's deadline (startSend), which are the same RPC timeout,
+// so either can end the send first. Every other end is an answer, or a transport that failed
+// outright: a closed connection, a write that failed.
+func sendWaitRanOut(err error) bool {
+	return errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// keepHeldPrompt keeps the prompt of a send the compaction held, whose wait ran out with no
+// answer, as a prompt of the pending task still on its way to its turn (heldSend, awaitedPrompt's
+// held): the pinned Oh My Pi parks a prompt that reaches it while a handoff runs, and admits and
+// acknowledges it only once the handoff ends, so the turn that prompt starts is the task's
+// whichever comes first, that turn's start or the compaction's end (turnAnswers, compactEnded).
+// The acknowledgement Oh My Pi then writes reaches no daemon request (stream's Conn.answer), so
+// the prompt is outstanding with no acknowledgement and its task is not marked read. The wait for
+// its turn is armed from the moment the turn can start: here once the compaction is over, and at
+// its end while it runs (compactEnded). A task its turn already confirmed waits for no turn.
+func (m *Machine) keepHeldPrompt(r PromptRefused) {
+	p := m.claim.Pending
+	if !m.outstandingPrompt(p.ID) {
+		m.outstanding = append(m.outstanding, awaitedPrompt{id: p.ID, news: p.News, held: true})
+	}
+	m.log.Info("supervise: the prompt's send ran out while the handoff held it; its turn is still the task's",
+		"delivery", p.ID, "error", r.Err)
+	if m.compacting == nil && p.ConfirmedAt.IsZero() {
+		m.disarm(TimerTurn)
+		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
+	}
+}
+
+// heldPrompt is the delivery id of the outstanding prompt a send the compaction held left with no
+// acknowledgement (keepHeldPrompt), and whether there is one.
+func (m *Machine) heldPrompt() (string, bool) {
+	at := slices.IndexFunc(m.outstanding, func(o awaitedPrompt) bool { return o.held })
+	if at < 0 {
+		return "", false
+	}
+	return m.outstanding[at].id, true
 }
 
 // forgetOutstanding ends the wait for every prompt of the pending task at once
@@ -2217,16 +2285,17 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 // takeBackConfirmation clears the pending delivery p's confirmation, and the claim's handshake's
 // with it where that confirmation was p's own (EntryHandshake.unconfirmed). It answers whether the
 // handshake changed, which is whether the write that records the take-back must carry the claim.
-// A let-go's take-back (interrupted) does not come here, since its task becomes the claim's only
-// once its write lands: it gives the handshake's confirmation back by the same reading where the
-// confirmation is in doubt (confirmationInDoubt), and keeps it where a turn of the task did take
-// it.
+// A let-go's take-back of the task (interrupted) does not come here, since its task becomes the
+// claim's only once its write lands: it gives the handshake's confirmation back by the same
+// reading where the confirmation is in doubt (confirmationInDoubt), and keeps it where a turn of
+// the task did take it.
 //
-// Both callers take a confirmation back with no prompt of the task outstanding (takeBackPending,
-// refused), so no turn of a prompt that carried news of the approved design can start any more,
-// and the copy of that news goes with the confirmation (Delivery.Carried, copyTurnNews, which
-// writes none with no prompt outstanding): the write that records the take-back ends the credit
-// the copy held, and no other (the claim store's design_news_told_in).
+// Its three callers each take a confirmation back with no prompt of the task acknowledged and still
+// outstanding (takeBackPending, refused; letGo, for a confirmation that rests on its own send
+// alone, sendUnproven), so no turn of a prompt that carried news of the approved design can start
+// any more, and the copy of that news goes with the confirmation (Delivery.Carried, copyTurnNews,
+// which writes none with no prompt outstanding): the write that records the take-back ends the
+// credit the copy held, and no other (the claim store's design_news_told_in).
 func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 	handshake, moved := m.claim.Handshake.unconfirmed(*p)
 	p.ConfirmedAt = time.Time{}
@@ -2278,13 +2347,14 @@ func (m *Machine) moveTelling(from, to string) bool {
 
 // confirmationInDoubt is whether the pending task's confirmation is one a let-go cannot vouch for:
 // it stands while the send of the task's prompt is in flight (Machine.send) or a prompt of the
-// task still waits on its result (awaitsResult). untellInFlight states the rule and why; this is
-// its one reading, which interrupted makes for the claim's handshake too. It reads the send and
-// the prompts outstanding, so it is read before the let-go forgets them (letGo, forgetSend;
-// interrupted).
+// task still waits on its result (awaitsResult), and no prompt's successful result has said a
+// turn ran the task (Machine.ranTask). untellInFlight states the rule and why; this is its one
+// reading, which letGo makes for the confirmation and interrupted for the claim's handshake, so
+// the result, the confirmation and the telling always agree. It reads the send and the prompts
+// outstanding, so it is read before the let-go forgets them (letGo, forgetSend; interrupted).
 func (m *Machine) confirmationInDoubt() bool {
 	p := m.claim.Pending
-	return (m.send != nil || m.awaitsResult()) && p != nil && !p.ConfirmedAt.IsZero()
+	return p != nil && !p.ConfirmedAt.IsZero() && m.ranTask != p.ID && (m.send != nil || m.awaitsResult())
 }
 
 // untellInFlight is the rule for a confirmation a let-go cannot vouch for (confirmationInDoubt).

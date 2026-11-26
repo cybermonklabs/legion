@@ -1593,38 +1593,43 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // a send under an id it already carried (shimwire's Dedupe), is of the same news as the send it
 // forwarded, since every send under one id carries the same news.
 //
-// An acknowledgement that reaches the machine after its prompt's result is stale (staleAck), and
-// nothing is recorded of it: the result has already settled what the prompt did. One of a task a
-// turn already confirmed — a turn that started and ended before the acknowledgement reached the
-// machine, which keeps the task while its send is in flight (settle) — is ackedInTurn's case in a
-// claim that turn left ready or idle: the prompt is recorded outstanding for its result, and no
-// wait is armed for a turn that has already run. Armed, that wait would outlive the task, whose
-// result confirms nothing more and so disarms nothing (confirmCarrying), and hold the next task
-// behind it (sendPending), or charge the prompt for a turn it ran (noTurn).
+// An acknowledgement that reaches the machine after its prompt's result is stale, and nothing is
+// recorded of it (takeAck). One of a task a turn already confirmed — a turn that started and ended
+// before the acknowledgement reached the machine, which keeps the task while its send is in flight
+// (settle) — is ackedInTurn's case in a claim that turn left ready or idle: the prompt is recorded
+// outstanding for its result, and no wait is armed for a turn that has already run. Armed, that
+// wait would outlive the task, whose result confirms nothing more and so disarms nothing
+// (confirmCarrying), and hold the next task behind it (sendPending), or charge the prompt for a
+// turn it ran (noTurn).
 func acked(m *Machine, ctx context.Context, ev Event) error {
-	m.helloDuringSend = false
-	if m.staleAck(ev) {
+	p, recorded := m.takeAck(ev)
+	if !recorded || !p.ConfirmedAt.IsZero() {
 		return nil
 	}
-	p := m.claim.Pending
-	if !p.ConfirmedAt.IsZero() {
-		m.awaitResult(p.ID, p.News)
-		return nil
-	}
-	m.awaitResult(p.ID, p.News)
 	m.markRead(p)
 	m.copyTurnNews(p)
 	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	return m.putPending(ctx)
 }
 
-// staleAck is whether a prompt's acknowledgement reached the machine after that prompt's result
+// takeAck is what every acknowledgement of a prompt of the pending task does, whatever the claim's
+// state: it ends the send's own marks (helloDuringSend, heldSend), and records the prompt
+// outstanding with the news it carried (awaitResult), unless the acknowledgement is stale. It
+// answers the pending delivery and whether the prompt was recorded.
+//
+// An acknowledgement is stale when it reached the machine after that prompt's result
 // (Machine.resulted). The result has ended the wait for every prompt of the task, and recorded as
 // outstanding this one would wait for a result that has already come, holding the finished task
 // on the claim (resultPending, settle). The send it ends is over all the same (fenceOutcome), so
 // the settle after it retires the task where its turn is over.
-func (m *Machine) staleAck(ev Event) bool {
-	return ev.(PromptAcked).DeliveryID == m.resulted
+func (m *Machine) takeAck(ev Event) (*Delivery, bool) {
+	m.helloDuringSend, m.heldSend = false, ""
+	p := m.claim.Pending
+	if ev.(PromptAcked).DeliveryID == m.resulted {
+		return p, false
+	}
+	m.awaitResult(p.ID, p.News)
+	return p, true
 }
 
 // ackedInTurn is the acknowledgement of a prompt whose turn the stream reported first: Oh My Pi's
@@ -1632,8 +1637,8 @@ func (m *Machine) staleAck(ev Event) bool {
 // confirmed the delivery (turnStarted). The mark and the wait for a turn are that turn's to need,
 // and it has started — but the prompt itself is still outstanding, and which of the turns that
 // follow is its own is still a question only its result answers, so it is recorded here too, with
-// the news it carried. The copy the confirmation credits stays as that confirmation fixed it
-// (turnAnswers). Nothing else moves, and nothing is written.
+// the news it carried (takeAck). The copy the confirmation credits stays as that confirmation
+// fixed it (turnAnswers). Nothing else moves, and nothing is written.
 //
 // A claim working because its session is being compacted, and holding a task no turn has
 // confirmed, is working for no turn of that task: the compaction took the claim with the send in
@@ -1641,20 +1646,11 @@ func (m *Machine) staleAck(ev Event) bool {
 // is, and it is recorded as acked records one. The wait for its turn that acked arms is ignored
 // by a working claim, and the compaction's end arms it again, from the moment the turn can start
 // (compactEnded).
-//
-// An acknowledgement that reaches the machine after its prompt's result is stale (staleAck), and
-// nothing is recorded of it.
 func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
-	p := m.claim.Pending
-	if m.staleAck(ev) {
-		m.helloDuringSend = false
-		return nil
-	}
-	if m.compacting != nil && p.ConfirmedAt.IsZero() {
+	if m.compacting != nil && m.claim.Pending.ConfirmedAt.IsZero() {
 		return acked(m, ctx, ev)
 	}
-	m.helloDuringSend = false
-	m.awaitResult(p.ID, p.News)
+	m.takeAck(ev)
 	return nil
 }
 
@@ -1745,8 +1741,19 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // handshake too (takeBackConfirmation), and the write is then of the claim and the delivery
 // together (putClaimAndPending), under the same mark and the same carrying on. A confirmation it
 // keeps for an outstanding prompt keeps the handshake's as well: that prompt's turn is the task's.
+//
+// A send the compaction held that ends with no answer is no loss (heldSend, keepHeldPrompt): the
+// pinned Oh My Pi parks a prompt that reaches it while a handoff runs, and admits and acknowledges
+// it only once the handoff ends, so the send's wait ran out with the prompt still on its way to its
+// turn. Nothing is taken back, recorded or charged, and the prompt stays the task's.
 func refused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(PromptRefused)
+	held := m.heldSend == r.DeliveryID && sendWaitRanOut(r.Err)
+	m.heldSend = ""
+	if held {
+		m.keepHeldPrompt(r)
+		return nil
+	}
 	resend := m.helloDuringSend
 	m.helloDuringSend = false
 	p := m.claim.Pending
@@ -2161,7 +2168,7 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 //
 // The other is a claim working because its session is being compacted: a turn starting under the
 // compaction — a follow-up an Envoy delivery queued while the session was being compacted, or the
-// turn of a prompt of the task Oh My Pi admitted and held behind the handoff — is recorded on the
+// turn of a prompt of the task that Oh My Pi parked until the handoff ended — is recorded on the
 // compaction: its end would otherwise reach an idle claim, where it means nothing, and the
 // compaction's end would send the owed task into a running agent (compactEnded). That turn's
 // start is decided and recorded as any start is (beginTurn, startTurn): its start line is written
@@ -2278,7 +2285,7 @@ func (m *Machine) busyTurnBegun(delivery string) {
 //
 // A claim working because its session is being compacted is left exactly where it is: a turn
 // can start and end under the compaction — an Envoy follow-up, or the turn of a prompt Oh My Pi
-// admitted and held behind the handoff (turnStartedWhileBusy) — and taking that turn's end for
+// parked until the handoff ended (turnStartedWhileBusy) — and taking that turn's end for
 // the compaction's end would hand the claim its owed task while Oh My Pi is still writing the
 // handoff document. CompactEnded is the only end of a
 // compaction (compactEnded). The end is recorded on the compaction all the same: the turn it
@@ -2654,6 +2661,18 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 }
 
 func noTurn(m *Machine, ctx context.Context, _ Event) error {
+	if id, held := m.heldPrompt(); held {
+		// The prompt a send the compaction held left with no acknowledgement started no turn
+		// within the bound of the moment its turn could start (keepHeldPrompt): nothing says Oh My
+		// Pi ever took it, so it is the loss its send's wait first read, and it is charged nothing.
+		// The send goes again under the same id: the shim answers a prompt it has a record of
+		// from that record, without a second turn (shimwire's dedupe), so an acknowledgement then
+		// is the prompt Oh My Pi took, and a prompt it never had goes now.
+		m.answered(id)
+		m.log.Warn("supervise: the prompt the handoff held started no turn; it is sent again under its id, charged nothing",
+			"delivery", id)
+		return m.sendPending(ctx)
+	}
 	// The bound alone keeps the mark: a turn that has not started within it may still be this
 	// task's, starting late, and the agent read the prompt when the turn began. The prompt stays
 	// outstanding too (Machine.outstanding): the pinned Oh My Pi acknowledges a prompt before its

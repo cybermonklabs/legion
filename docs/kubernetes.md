@@ -1562,6 +1562,7 @@ The answer says whether the session was shortened and, when it was not, why
 — Oh My Pi's own words for a handoff it refused, such as `Cannot hand off while a response is in progress` or `Nothing to hand off (already compacted)`, the daemon's `Oh My Pi made no handoff document. The session did not change.` for a handoff Oh My Pi answered with success and no document, and the daemon's for a wait that ran out or a transport that failed
 — and whatever task the claim owed has gone again either way.
 A task whose prompt Oh My Pi had accepted when the compaction was asked for is sent once: the handoff aborts no turn, so that prompt's turn is the task's.
+So is a prompt that reaches Oh My Pi while the handoff runs: Oh My Pi parks it until the handoff ends, and the daemon keeps a send whose wait ran out meanwhile as the task's prompt rather than sending it again.
 The command carries no deadline of its own, as no `legion claims` command does, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
 While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's re-send and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused `CLAIM_IN_A_TURN`, since a claim whose session is being compacted is read before its process and the compaction in flight owns what becomes of its agent.
 

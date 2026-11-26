@@ -1391,6 +1391,37 @@ func TestAnEarlierPromptsErrorEndsNoDoubtALaterSendLeft(t *testing.T) {
 	h.m.Wait()
 }
 
+// A prompt's turn ends in a provider error, and the store does not take the write of the
+// take-back that moves the task to a new id, so the task keeps the id that prompt carried. The
+// shim answers a prompt it has a record of from that record, without a second turn, so a retry
+// under that id would be answered by the turn that already ended. The next send takes the task
+// back again first, and goes under the new id (sendPending).
+func TestARetryWhoseTakeBackWriteFailedGoesUnderAFreshID(t *testing.T) {
+	h := workingClaim(t)
+	first := h.pending().ID
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.store.fail("PutDelivery", errBoom)
+	_ = h.m.Handle(h.ctx, StreamPromptResult{Claim: h.token, DeliveryID: first, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
+	h.store.fail("PutDelivery", nil)
+	if p := h.pending(); p.ID != first {
+		t.Fatalf("after the take-back's write failed the claim holds %+v, want the task kept under %s", p, first)
+	}
+	h.wantPrompts(1)
+
+	if err := h.m.Handle(h.ctx, RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}}); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	h.m.Wait()
+
+	prompts := h.wantPrompts(2)
+	if prompts[1].DeliveryID == first {
+		t.Fatalf("the retry went under %s, the id whose prompt's result already came", first)
+	}
+	if p := h.pending(); p.ID != prompts[1].DeliveryID {
+		t.Fatalf("the claim holds %+v, want the task under the id the retry carried, %s", p, prompts[1].DeliveryID)
+	}
+}
+
 func TestPromptOutcomesAndTimersForAStaleDeliveryAreDropped(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)

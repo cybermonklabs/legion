@@ -7,13 +7,19 @@ body: |-
   session (0 of 3 refused). The handoff writes its document as the session's compaction entry,
   method `handoff`, on the same session, and the daemon never falls back to `compact`. The answer
   is the same `{compacted, reason}`: Oh My Pi's own words for a handoff it refused (`Cannot hand
-  off while a response is in progress`, `Nothing to hand off (already compacted)`), and `Oh My Pi
-  made no handoff document. The session did not change.` for a success that carries no handoff.
-  A task whose prompt Oh My Pi has accepted when the compaction is asked for is now sent once: the
-  handoff aborts no turn, so the daemon no longer takes the task back and sends it again after
-  the compaction. A claim in a turn is still refused `CLAIM_IN_A_TURN`, now with the reason that
-  Oh My Pi refuses a compaction's handoff in that turn. A pod of an older release needs nothing
-  new: its shim forwards the `handoff` line to Oh My Pi as it forwarded `compact`.
+  off while a response is in progress`, `Nothing to hand off (already compacted)`), `Oh My Pi
+  made no handoff document. The session did not change.` for a success with `data: null`, and
+  `Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session
+  changed.` for a success whose data is no object. A task whose prompt Oh My Pi has accepted when
+  the compaction is asked for is now sent once: the handoff aborts no turn, so the daemon no
+  longer takes the task back and sends it again after the compaction. A prompt that reaches Oh My
+  Pi while the handoff runs is sent once too: Oh My Pi parks it until the handoff ends, so the
+  daemon keeps a send whose wait ran out under the handoff as the task's prompt, and that prompt's
+  turn confirms the task whether it starts before or after the compaction's end. No prompt goes
+  out under an id whose result already came, even where the write of the task's new id failed.
+  A claim in a turn is still refused `CLAIM_IN_A_TURN`, now with the reason that Oh My Pi refuses
+  a compaction's handoff in that turn. A pod of an older release needs nothing new: its shim
+  forwards the `handoff` line to Oh My Pi as it forwarded `compact`.
 time: 2026-11-25T09:30:25Z
 custom:
   Issue: INFRA-5798
