@@ -32,7 +32,7 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     held one or may have been handed the password, or a log line may hold it (treat the route
     password as read, cut its reach, rotate the password, then record and check again); 2 when it
     could not read all it needs, or the record is of another cluster, when authorization is not in
-    force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when
+    force, left no line of the reload that loaded it, or loaded within 30 s of a pod's start, when
     the mesh is not whole or the servers do not hold one password, when a pod's /routez still lists
     a closing route, with no address, to another hub server after the check's reads, when a route
     connection from another address named no server or was still open when the log was read, when

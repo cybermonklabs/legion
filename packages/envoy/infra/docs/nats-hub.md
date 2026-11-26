@@ -1326,7 +1326,7 @@ port-forward to 8222, its route port through a port-forward to 6222, and its nat
 log as `kubectl logs --timestamps` gives it, then reads the pods again. It exits 0 when every
 rule below holds; 1 when one shows the password may be read; and 2 when it could not read all it
 needs, when the log carries no time of the container runtime's, when authorization is not yet in
-force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when the
+force, left no line of the reload that loaded it, or loaded within 30 s of a pod's start, when the
 mesh is not whole or the servers do not hold one password, when a pod's `/routez` still lists a
 closing route, with no address, to another hub server after the check's reads, when a route
 connection from another address named no server or was still open when the log was read, when the
@@ -1380,25 +1380,40 @@ route` line with a password in it, which forced exit 1; after it, a reader forge
 timed at the container's start, and with the log cut at it the check said clean. So the check
 reads the time the container runtime read each line at, which no process in the pod sets, and a
 line in the logger's form is the server's only when it carries the start line's process id and
-its logger time is within 2 s of the runtime's. Any other is exit 2, and no rule reads it. A peer
-that writes the server's process id and the current time passes that test, and the process id is
-no secret: the chart runs each pod with `shareProcessNamespace: true` beside its config reloader
-(the chart's `files/stateful-set/pod-template.yaml`), so nats-server's process id is a small
-number, and one route name can hold a forged line for each likely id. The auth service's error
-text is the same path, for any client that reaches the client port, at any stage: so the auth
-service must put no newline a client chose into its error text, and one that does lets a client
-force exit 1 as a route peer can during `env` and `routes` (below). A forged line of either kind
-can make the check stricter, and can turn exit 1 for that peer's own connections into exit 2, but
-cannot make it pass, on one condition: authorization loads more than 10 s after each pod's
-container started, which the `env` roll and the two applies after it give, each one after the one
-before has finished. Within those 10 s a reader with the password could forge a start line the
-start rule takes, so the check holds to it: when the runtime read the `Reloaded: cluster` line of
-the reload that loaded authorization within 10 s of the container's `startedAt`, it is exit 2.
-Measured in this change's review: env, the record, routes, authorization and the reader within
-4 s of the start let a forged start line pass; the same line written more than 11 s after the
-start gave exit 1. A log with any line that carries no time of the runtime's is judged by no rule,
-since which of its lines the server wrote cannot be told, and is exit 2; `routes check` always
-reads with `--timestamps`.
+the runtime read it no earlier than 1 s before its logger time and no later than 30 s after it:
+the runtime and the server read one host clock, and the server stamps a line before it writes it,
+so a line logged after it was read was not written when it says, and a loaded node's runtime reads
+lines late, but within 30 s. Any other is exit 2, and no rule reads it. The late side is a bound
+for a loaded node, not a side to drop: it refuses a line a peer writes in the server's form, with
+the server's process id and a timestamp well in the past, which, read as the server's, could add
+findings or open the window earlier, and clear the two exit 2s named below. A peer that writes the
+server's process id and the current time passes that test, and the process id is no secret: the
+chart runs each pod with `shareProcessNamespace: true` beside its config reloader (the chart's
+`files/stateful-set/pod-template.yaml`), so nats-server's process id is a small number, and one
+route name can hold a forged line for each likely id. The auth service's error text is the same
+path, for any client that reaches the client port, at any stage: so the auth service must put no
+newline a client chose into its error text, and one that does lets a client force exit 1 as a
+route peer can during `env` and `routes` (below). A forged line of either kind can make the check
+stricter, and can turn exit 1 for that peer's own connections into exit 2, but, apart from the two
+exit 2s it can clear (below), cannot make it pass, on one condition: authorization loads more than
+30 s after each pod's container started, which the `env` roll and the two applies after it give,
+each one after the one before has finished. The start line is the server's only when the runtime
+read it no earlier than 1 s before the container's `startedAt` and no later than 30 s after it: a
+loaded node's runtime can read it late, and the bound against the container's start is what keeps
+a start line a reader forges at the top of a rotated log from passing. Within those 30 s a reader
+with the password could forge a start line the start rule takes, so the check holds to it: when
+the runtime read the `Reloaded: cluster` line of the reload that loaded authorization less than
+30 s after the container's `startedAt`, it is exit 2. Measured in an earlier review, when the
+bound was 10 s: env, the record, routes, authorization and the reader within 4 s of the start let
+a forged start line pass; the same line written more than 11 s after the start gave exit 1.
+Forged lines can clear
+two exit 2s: a `Reloaded server configuration` line a peer writes after the `Reloaded: cluster`
+marker silences the finding that the reload logged no end, and a `Trapped "hangup" signal` line a
+peer writes between the routes stage's reload and that marker silences the finding that the log
+holds no hangup, and opens the window at its own line. Neither finding is the verdict on
+authorization, which the route port's INFO read gives. A log with any line that carries no time of
+the runtime's is judged by no rule, since which of its lines the server wrote cannot be told, and
+is exit 2; `routes check` always reads with `--timestamps`.
 
 - **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
   another pod's `server_id`, from that pod's own IP, and each pod has a route to each of its
@@ -1494,7 +1509,7 @@ reads with `--timestamps`.
 - **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
   are the ones `routes record` saved, its log begins with `Starting nats-server`
   (`server/server.go:2295`) in the logger's form, and the container runtime read that line from
-  1 s before to 10 s after the container's `startedAt`. `kubectl logs` returns only the
+  1 s before to 30 s after the container's `startedAt`. `kubectl logs` returns only the
   latest log file, which the kubelet rotates at 10 MiB by default
   ([Logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/)),
   and the process this check looks for can rotate the earlier lines away, for example with failed

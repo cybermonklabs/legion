@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -137,7 +136,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 				"NATS_ROUTE_PASSWORD=" + password, "NATS_ROUTE_URLS=[" + strings.Join(routeURLs, ", ") + "]",
 			})
 		}
-		within(t, 30*time.Second, "the three servers' mesh", func() error {
+		within(t, "the three servers' mesh", func() error {
 			for _, s := range servers {
 				remotes, err := routeRemotesAt(host, s.monitor)
 				if err != nil {
@@ -170,7 +169,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 					before[i] = strings.Count(s.proc.Output.String(), rogue.peerLog)
 				}
 				p := startRogue(t, natsServer, "rogue", host, reservePortsOn(t, host, 3), targets)
-				within(t, 15*time.Second, "every peer refusing the rogue", func() error {
+				within(t, "every peer refusing the rogue", func() error {
 					for i, s := range servers {
 						if strings.Count(s.proc.Output.String(), rogue.peerLog) == before[i] {
 							return fmt.Errorf("%s has logged no %q since the rogue started", s.name, rogue.peerLog)
@@ -190,7 +189,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 		t.Run("control: a server with no credential joins the env render", func(t *testing.T) {
 			open := startRouteServer(t, renders["env"], natsServer, renders["env"].release+"-0", host, reservePortsOn(t, host, 3), nil)
 			p := startRogue(t, natsServer, "rogue", host, reservePortsOn(t, host, 3), []string{"nats://" + net.JoinHostPort(host, strconv.Itoa(open.route))})
-			within(t, 15*time.Second, "the rogue in the open server's routes", func() error {
+			within(t, "the rogue in the open server's routes", func() error {
 				remotes, err := routeRemotesAt(host, open.monitor)
 				if err != nil {
 					return err

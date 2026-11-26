@@ -68,10 +68,19 @@ var logPrefix = regexp.MustCompile(`^\[(\d+)\] (\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.
 // logTime is the layout of logPrefix's time (Go's log.LstdFlags with log.Lmicroseconds).
 const logTime = "2006/01/02 15:04:05.000000"
 
-// stampSkew is how far a line's logger time may be from the time the runtime read it: the runtime
-// reads each line from the container's output as the server writes it, and the rest allows for a
-// node under load.
-const stampSkew = 2 * time.Second
+// A line's logger time against the time the runtime read it. The runtime and the server read one
+// host clock, and the server timestamps a line before it writes it, so the runtime reads a line it
+// wrote no earlier than clockSlack (the two clocks' rounding) before its logger time; and on a node
+// under load it reads the line late, but no later than readLag after it. A line outside that span
+// is forged. The late side is a bound for a loaded node, not a side to drop: it refuses a line a
+// peer writes through a route's name or an auth error, in the server's form, with the server's
+// process id and a timestamp well in the past. Read as the server's, such a line could add
+// findings or open authorizationWindow's window earlier, and it would clear the two Unknowns that
+// function names when the forger can place it at their moments.
+const (
+	clockSlack = time.Second
+	readLag    = 30 * time.Second
+)
 
 // parseLog splits a log into its lines, without the empty ones and each without the carriage
 // return and spaces it ends with.
@@ -97,10 +106,11 @@ func parseLog(body []byte) []logLine {
 	return lines
 }
 
-// agrees reports whether l's logger time is within stampSkew of the time the runtime read it.
+// agrees reports whether the runtime read l no earlier than clockSlack before its logger time and
+// no later than readLag after it.
 func (l logLine) agrees() bool {
-	skew := l.runtime.Sub(l.at)
-	return l.form && skew < stampSkew && skew > -stampSkew
+	lag := l.runtime.Sub(l.at)
+	return l.form && lag >= -clockSlack && lag <= readLag
 }
 
 // is reports whether l is a line in the logger's form of level and exactly message.
@@ -143,11 +153,14 @@ const remoteTag = " - Remote: "
 var credentialedURL = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]*:[^\s/@]*@`)
 
 // The first line's time against its container's start: the API server gives a container's start
-// to the second, cut down, and nats-server logs its start line as it starts, so the line is
-// written no earlier than startSlack before that time and no later than startDelay after it.
+// to the second, cut down, and nats-server logs its start line as it starts, so the runtime reads
+// the line no earlier than startSlack before that time and, on a node under load, no later than
+// startDelay after it. The rule stays two-sided, against the container's start rather than the
+// line's own time: it is what keeps a start line a peer forges through a route's name, at the top
+// of a log the kubelet rotated, from passing as the server's (serversLines).
 const (
 	startSlack = time.Second
-	startDelay = 10 * time.Second
+	startDelay = 30 * time.Second
 )
 
 // podLoopback are the addresses of a pod's own network namespace: the port-forward of a check's
@@ -188,12 +201,12 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 }
 
 // serversLines returns, in order, the lines of a log that its server wrote: lines in the logger's
-// form, each read by the runtime within stampSkew of its logger time and carrying the start line's
-// process id. The start line is the server's when the runtime read it at the container's start,
-// since a line a peer forges carries the time the runtime read the line it was written in; a log
-// that does not begin with it may have lost its lines since the env roll, which is PasswordRead,
-// and then it returns every line whose times agree, whatever its process id, since no start line
-// names the server's.
+// form, each read by the runtime no earlier than clockSlack before its logger time and no later
+// than readLag after it, and carrying the start line's process id. The start line is the server's
+// when the runtime read it at the container's start, since a line a peer forges carries the time
+// the runtime read the line it was written in; a log that does not begin with it may have lost its
+// lines since the env roll, which is PasswordRead, and then it returns every line whose times
+// agree, whatever its process id, since no start line names the server's.
 // A log with lines that carry no time of the runtime's is judged by none of this, since which of
 // its lines the server wrote cannot be told: it is Unknown, and serversLines returns no line.
 // Every rule after this one reads only the lines it returns. It returns, too, the index in
@@ -240,9 +253,10 @@ func serversLines(r *Report, s server, lines []logLine) ([]logLine, int, bool) {
 	}
 	if forged > 0 {
 		r.add(pod, Unknown, "its log holds %d line(s) in nats-server's form that its server did not write when they say: their process id is "+
-			"not the start line's, or their time is %s or more from the time the container runtime read them. A route peer writes such lines "+
-			"through its server name, which nats-server prints unquoted when the route closes (client.go:2125), and the auth service through "+
-			"its error text (auth_callout.go:460); the check reads none of them, and cannot clear the log", forged, stampSkew)
+			"not the start line's, or the container runtime read them more than %s before or more than %s after their logger time. A route "+
+			"peer writes such lines through its server name, which nats-server prints unquoted when the route closes (client.go:2125), and "+
+			"the auth service through its error text (auth_callout.go:460); the check reads none of them, and cannot clear the log",
+			forged, clockSlack, readLag)
 	}
 	return own, startFinding, startPID != ""
 }
@@ -291,7 +305,13 @@ func ownLines(r *Report, pod string, lines []logLine) {
 // not yet on the pod, no line can be placed after it, and the env roll's lines name the old IPs of
 // the pods it rolled. The reload must have finished, and the runtime must have read its marker more
 // than startDelay after the container's start, or a start line a process wrote in that span through
-// a route's name could pass the start line rule; each is Unknown otherwise.
+// a route's name could pass the start line rule; each is Unknown otherwise. Forged lines clear two
+// Unknowns here, since the check cannot tell them from the server's: a peer that writes "Reloaded
+// server configuration" through a route's name after the marker silences the finding that the
+// reload logged no end, and one that writes the hangup line between the routes stage's reload and
+// the marker silences the finding that the log holds no hangup, and opens the window at its own
+// line. Neither finding is the verdict on authorization: the route port's INFO read (authOff,
+// checkLog) stays it.
 func authorizationWindow(r *Report, s server, lines []logLine, auth authState) ([]logLine, bool) {
 	pod := s.pod.Name
 	at := slices.IndexFunc(lines, func(l logLine) bool { return l.is("INF", clusterReloadedMessage) })
