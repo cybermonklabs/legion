@@ -278,7 +278,7 @@ func holdTheDeliveryReconcile(t *testing.T, builds *twoBuilds) {
 	leases := storetest.Leases(t, builds.database.Pool)
 	taken, release, ran := make(chan struct{}), make(chan struct{}), make(chan bool, 1)
 	go func() {
-		ran <- duty.Exclusive(context.Background(), leases, delivery.ReconcileLease, time.Time{}, 0, func(context.Context) {
+		ran <- duty.Exclusive(context.Background(), nil, leases, delivery.ReconcileLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
