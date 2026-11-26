@@ -1,6 +1,7 @@
 import type { Browser, BrowserContext, Page, TestInfo } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { outlineRowPath } from "../web/src/features/issue-page/lenses/store-link";
 import {
   CONTROL_LABELS,
   PRESET_NAMES,
@@ -253,12 +254,6 @@ function viewPress(view: Preset, width: LoadWidth): LoadAct {
   return { after: [], kind: "view", name, steps, view, when: "view row" };
 }
 
-const FOLD = press(
-  "a fold",
-  { control: FOLD_CONTROL, kind: "fold", row: OPEN_ROW },
-  { kind: "expanded", value: "false" },
-  true
-);
 const UNFOLD = press(
   "an unfold",
   { control: FOLD_CONTROL, kind: "folded" },
@@ -267,33 +262,49 @@ const UNFOLD = press(
 );
 const NEXT = stroke("j", "j", { kind: "ring", step: 1 }, true);
 
-/** The acts every width makes on Conversation's rows: a fold and an unfold of the first row in
- *  the viewport that holds children, and `j` and `k`. An unfold first folds that row, and `k`
- *  first steps forward with `j`, so each has a row to act on at its first moment. */
-const OUTLINE_ACTS: readonly LoadAct[] = [
-  {
-    after: [{ ...UNFOLD, measured: false }],
-    kind: "fold",
-    name: "a fold",
-    steps: [FOLD],
-    when: "rows",
-  },
-  {
-    after: [],
-    kind: "unfold",
-    name: "an unfold",
-    steps: [{ ...FOLD, measured: false }, UNFOLD],
-    when: "rows",
-  },
-  { after: [], kind: "next", name: "j", steps: [NEXT], when: "rows" },
-  {
-    after: [],
-    kind: "previous",
-    name: "k",
-    steps: [{ ...NEXT, measured: false }, stroke("k", "k", { kind: "ring", step: -1 }, true)],
-    when: "rows",
-  },
-];
+/**
+ * The acts every width makes on Conversation's rows: a fold and an unfold of the first row that
+ * holds children, and `j` and `k`. An unfold first folds that row, and `k` first steps forward
+ * with `j`, so each has a row to act on at its first moment.
+ *
+ * At 1440 px the row folded is the first in the viewport under the header that holds children,
+ * which the first drawing of the rows holds. At 390 px the first screen is the children's section,
+ * and no row of the outline that holds children stands in it, so the row folded is the first in
+ * the document that holds children (`within: "document"`), which is scrolled into view first
+ * (`revealStep`), and the fold is made at the first moment after that.
+ */
+function outlineActs(within: "document" | "viewport"): readonly LoadAct[] {
+  const fold = press(
+    "a fold",
+    { control: FOLD_CONTROL, kind: "fold", row: OPEN_ROW, within },
+    { kind: "expanded", value: "false" },
+    true
+  );
+  return [
+    {
+      after: [{ ...UNFOLD, measured: false }],
+      kind: "fold",
+      name: "a fold",
+      steps: [fold],
+      when: "rows",
+    },
+    {
+      after: [],
+      kind: "unfold",
+      name: "an unfold",
+      steps: [{ ...fold, measured: false }, UNFOLD],
+      when: "rows",
+    },
+    { after: [], kind: "next", name: "j", steps: [NEXT], when: "rows" },
+    {
+      after: [],
+      kind: "previous",
+      name: "k",
+      steps: [{ ...NEXT, measured: false }, stroke("k", "k", { kind: "ring", step: -1 }, true)],
+      when: "rows",
+    },
+  ];
+}
 
 /** A press on Keys, which opens the list of keys, closed after with Escape. */
 const KEYS_ACT: LoadAct = {
@@ -357,12 +368,12 @@ export const LOAD_ACTS: Readonly<Record<LoadWidth, readonly LoadAct[]>> = {
   390: [
     ONE_CONTROL_ACT,
     ...PRESET_ORDER.map((view) => viewPress(view, 390)),
-    ...OUTLINE_ACTS,
+    ...outlineActs("document"),
     DETAILS_ACT,
   ],
   1440: [
     ...PRESET_ORDER.map((view) => viewPress(view, 1440)),
-    ...OUTLINE_ACTS,
+    ...outlineActs("viewport"),
     KEYS_ACT,
     DETAILS_ACT,
   ],
@@ -680,11 +691,13 @@ export async function fiveLoads<T>(
  * Makes `steps` on the load's page, the first under the index `first` and each after it under the
  * next: each armed once it can be made (the first at `when`, every other at once), made, and
  * waited on until its result shows. A step armed at once is first brought where a press reaches
- * its control (`revealStep`), which an earlier act may have scrolled away; a step made at a first
- * drawing is made where its target was first drawn. `settle` runs before each measured step, after
- * that: a row of acts after the load waits for the load to end again there. A step whose result
- * does not show ends the steps, since the step after it has nothing to act on. Answers the index
- * of the last step, the act measured, and the index the next steps start at.
+ * its control (`revealStep`), which an earlier act may have scrolled away, and so is a fold of the
+ * first row of the document that holds children (390 px), whose row is scrolled to before the
+ * fold's first moment; any other step made at a first drawing is made where its target was first
+ * drawn. `settle` runs before each measured step, after that: a row of acts after the load waits
+ * for the load to end again there. A step whose result does not show ends the steps, since the
+ * step after it has nothing to act on. Answers the index of the last step, the act measured, and
+ * the index the next steps start at.
  */
 export async function makeSteps(
   page: Page,
@@ -695,7 +708,11 @@ export async function makeSteps(
 ): Promise<{ readonly last: number; readonly next: number }> {
   for (const [at, step] of steps.entries()) {
     const armedAt = at === 0 ? when : "now";
-    if (armedAt === "now") await revealStep(page, step);
+    const scrolledTo =
+      step.input.kind === "press" &&
+      step.input.target.kind === "fold" &&
+      step.input.target.within === "document";
+    if (armedAt === "now" || scrolledTo) await revealStep(page, step);
     if (step.measured) await settle?.();
     const point = await armStep(page, first + at, step, armedAt);
     await makeInput(page, step, point);
@@ -704,40 +721,60 @@ export async function makeSteps(
   return { last: first + steps.length - 1, next: first + steps.length };
 }
 
-/** The last row of Conversation's outline as the load ends, before any control of the paging
- *  rule is pressed: its node's id and kind. */
-export async function lastOutlineRow(
-  page: Page
-): Promise<{ readonly id: string; readonly type: string }> {
-  const row = await page.evaluate(() => {
-    const rows = document.querySelectorAll("[data-issue-body] [data-node-row]");
-    const last = rows.item(rows.length - 1);
-    return last === null
-      ? null
-      : {
-          id: last.getAttribute("data-node-id") ?? "",
-          type: last.getAttribute("data-node-type") ?? "",
-        };
-  });
-  if (row === null || row.id === "") throw new Error("Conversation drew no row with a node id");
-  return row;
+/** A row of Conversation's outline, by the id it is drawn by and its kind. */
+export interface OutlineRow {
+  readonly id: string;
+  readonly type: string;
 }
 
-/** The address that names a row of issue `key`'s outline: an ask's, a comment's or a message's
- *  own (`/asks/<id>`, `/comments/<id>`, `/messages/<id>`), and a block's `#b-` fragment on the
- *  issue's address, which the first node carrying the block answers. */
-export function rowAddress(
-  key: string,
-  row: { readonly id: string; readonly type: string }
-): string {
+/** The rows of Conversation's outline as the load ends, in the order they are drawn, before any
+ *  control of the paging rule is pressed. */
+export async function outlineRows(page: Page): Promise<OutlineRow[]> {
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll("[data-issue-body] [data-node-row]")].map((row) => ({
+      id: row.getAttribute("data-node-id") ?? "",
+      type: row.getAttribute("data-node-type") ?? "",
+    }))
+  );
+  if (rows.length === 0) throw new Error("Conversation drew no row");
+  return rows;
+}
+
+/**
+ * The address that names a row of issue `key`'s outline, which the page lands on: a block's `#b-`
+ * fragment on the issue's address, which the first node carrying the block answers, for a row
+ * drawn by a block of one of the issue's documents (an ask indexed from a block among them); an
+ * ask's, a comment's or a message's own address (`/asks/<id>`, `/comments/<id>`, `/messages/<id>`)
+ * for one drawn by its own id; and for a child issue, the issue's address at `?node=` of the
+ * child's key, which is both the id the tree read gives the child's node and the id its row is
+ * drawn by (`tree-read/tree-nodes.ts`' `treeIdOfNode`), and which the outline lands on
+ * (`issue-address.ts`' `pathToTarget`). Undefined for any other row, whose drawn id need not be
+ * its id in the tree read, so no address is sure to name it.
+ */
+export function rowAddress(key: string, row: OutlineRow): string | undefined {
+  const block = row.id.indexOf("#b-");
+  if (block !== -1) return `${presetPath(key, "conversation")}${row.id.slice(block)}`;
   if (row.type === "ask" || row.type === "comment" || row.type === "message") {
     return buildIssuePath({ id: row.id, key, kind: row.type });
   }
-  const block = row.id.indexOf("#b-");
-  if (block !== -1) return `${presetPath(key, "conversation")}${row.id.slice(block)}`;
-  throw new Error(
-    `the row ${row.type} ${row.id} is neither an item nor a block, and no address names it`
-  );
+  if (row.type === "child_issue") return outlineRowPath(key, row.id);
+  return undefined;
+}
+
+/** The row Row 2 names by its own address: the last of `rows` an address names (`rowAddress`),
+ *  with whether it is the last row drawn, which the row's bound is named by. */
+export function namedRow(
+  key: string,
+  rows: readonly OutlineRow[]
+): { readonly address: string; readonly last: boolean; readonly row: OutlineRow } {
+  for (let at = rows.length - 1; at >= 0; at -= 1) {
+    const row = rows[at];
+    const address = row === undefined ? undefined : rowAddress(key, row);
+    if (row !== undefined && address !== undefined) {
+      return { address, last: at === rows.length - 1, row };
+    }
+  }
+  throw new Error(`no address names any of the ${rows.length} rows Conversation drew`);
 }
 
 /** The selector of the outline's row of node `id`. */

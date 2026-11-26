@@ -25,15 +25,15 @@ import {
   LOAD_ACTS,
   LOAD_VIEWS,
   LOADS,
-  lastOutlineRow,
   loadCpuRate,
   loadWidth,
   makeSteps,
+  namedRow,
   type OpenedLoad,
   oneLoad,
   outlineRowSelector,
+  outlineRows,
   printReading,
-  rowAddress,
   test,
 } from "./issue-page-load";
 import { WAITING_QUESTION } from "./issue-page-t-scale";
@@ -77,13 +77,23 @@ import { expect } from "./test";
  *   drawing, but in a frame of the typeface's swap. Dashboard, Threads and Documents are owed
  *   until their parts add them to the view row's list.
  * - Row 2 (R3): the row an address names, and the ask the root's first focus names, stand in the
- *   viewport at the first drawing of the rows and keep their place until the load has ended.
+ *   viewport at the first drawing of the rows and keep their place until the load has ended. The
+ *   row an address names is the last row Conversation draws as the load ends - a child issue's
+ *   row on the seed, named at `?node=` of its key - or, where no address names that row, the last
+ *   row before it that one does; its bound is named `named-row.last-row` or
+ *   `named-row.last-addressed-row` for the two, and a line before its bounds names the row and its
+ *   address.
  * - Row 3 (R3): with the typeface's file answered 3 s late, the layout shift is at most 0.1.
  * - Row 4 (R2): each act of the width, made at the first moment it can be made, shows its result
  *   within 200 ms, as `holdAct` reads an act that needs a read; no Event Timing entry and no task
- *   after the first drawing of the view row runs over 200 ms.
+ *   after the first drawing of the view row runs over 200 ms. At 390 px the first screen is the
+ *   children's section and holds no row of the outline with children, so the row a fold and an
+ *   unfold act on - the first in the document that holds children - is scrolled into view first,
+ *   and the act is made at the first moment after that; at 1440 px it is the first such row in
+ *   the viewport, as the first drawing of the rows draws it.
  * - Row 5 (R2): each act, made once in each load after it has ended, shows its result within
- *   200 ms, read as Row 4 reads it.
+ *   200 ms, read as Row 4 reads it. A control an earlier act scrolled out of reach is scrolled
+ *   back into view first (`revealStep`).
  *
  * The rows of one worker share its seed (`test` of `e2e/issue-page-load.ts`), so they run in the
  * order they are written, and Row 2, whose first focus seeds an ask that waits on the reader in
@@ -476,26 +486,31 @@ test("a load draws the named row in the viewport at once and keeps it there", as
   const rate = loadCpuRate(testInfo.project.name);
   const seeded = await loadSeeds.shape();
   // The last row the page draws once the load has ended, before any control of the paging rule
-  // is pressed, named by its own address.
-  const last = await oneLoad(
+  // is pressed, named by its own address; where no address names that row, the last row before it
+  // that one does, and the bound's name says which (`namedRow`).
+  const named = await oneLoad(
     browser,
     rate,
     { address: presetPath(seeded.key, "conversation"), boxes: "none" },
     async (load) => {
       await waitForLoadEnd(load.page, load.requests);
-      return await lastOutlineRow(load.page);
+      return namedRow(seeded.key, await outlineRows(load.page));
     }
   );
+  const prefix = named.last ? "named-row.last-row" : "named-row.last-addressed-row";
+  printReading(
+    `${prefix} rate=${rate} row=${named.row.type}:${named.row.id} address=${named.address}`
+  );
   holdNamedRow(
-    "named-row.last-row",
+    prefix,
     rate,
     await fiveLoads(
       browser,
       rate,
       {
-        address: rowAddress(seeded.key, last),
+        address: named.address,
         boxes: "named",
-        named: { selector: outlineRowSelector(last.id), text: null },
+        named: { selector: outlineRowSelector(named.row.id), text: null },
       },
       ended
     )

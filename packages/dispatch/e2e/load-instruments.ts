@@ -617,12 +617,18 @@ export interface ControlTarget {
   readonly selector: string;
 }
 
-/** What a press presses: a control, the fold control of the first row in the viewport under the
- *  header that `row` finds (an open row holding children), or the fold control of the row the
- *  step before folded. */
+/** What a press presses: a control; the fold control of the first row that `row` finds (an open
+ *  row holding children), among the rows in the viewport under the header (`within: "viewport"`)
+ *  or in the whole document (`within: "document"`, which `reveal` scrolls into view first); or
+ *  the fold control of the row the step before folded. */
 export type ActTarget =
   | ControlTarget
-  | { readonly control: string; readonly kind: "fold"; readonly row: string }
+  | {
+      readonly control: string;
+      readonly kind: "fold";
+      readonly row: string;
+      readonly within: "document" | "viewport";
+    }
   | { readonly control: string; readonly kind: "folded" };
 
 /** How a step is made: the mouse at its target's box, or a key. */
@@ -700,10 +706,11 @@ interface LoadInstruments {
   probe(): { readonly now: number; readonly tasks: readonly TaskEntry[] };
   /** What the init script has collected. */
   record(): LoadRecord;
-  /** Whether a press at the centre of `step`'s target, where it is a control, reaches it: the
-   *  control is drawn, and the topmost element at its centre is it or inside it. Where it is not,
-   *  the control is scrolled to the middle of the viewport, and the answer is false until the
-   *  next frame reads it again. True for a key and for a row's fold control. */
+  /** Whether a press at the centre of `step`'s target, where it is a control or the fold control
+   *  of the first row in the document that holds children, reaches it: the target is drawn, and
+   *  the topmost element at its centre is it or inside it. Where it is not, the target is
+   *  scrolled to the middle of the viewport, and the answer is false until the next frame reads
+   *  it again. True for a key and for the other fold targets, which are where they are. */
   reveal(step: ActStep): boolean;
   /** Whether the step armed under `index` has shown its result. */
   shown(index: number): boolean;
@@ -988,7 +995,7 @@ export function instrumentPage(config: PageConfig): void {
       return row === null || found === null ? null : { control: found, row };
     }
     for (const row of document.querySelectorAll(aim.row)) {
-      if (!inViewport(row.getBoundingClientRect(), top)) continue;
+      if (aim.within === "viewport" && !inViewport(row.getBoundingClientRect(), top)) continue;
       const found = foldControl(row, aim.control);
       if (found !== null) return { control: found, row };
     }
@@ -1143,8 +1150,10 @@ export function instrumentPage(config: PageConfig): void {
       };
     },
     reveal: (step) => {
-      if (step.input.kind !== "press" || step.input.target.kind !== "control") return true;
-      const found = control(step.input.target);
+      if (step.input.kind !== "press") return true;
+      const aim = step.input.target;
+      if (aim.kind === "folded" || (aim.kind === "fold" && aim.within === "viewport")) return true;
+      const found = aim.kind === "control" ? control(aim) : (target(aim, foot())?.control ?? null);
       if (found === null) return false;
       const box = found.getBoundingClientRect();
       const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
@@ -1360,12 +1369,14 @@ export async function armStep(
 }
 
 /**
- * Waits until a press at the centre of `step`'s target, where it is a control, reaches it,
- * scrolling the control into the viewport where the page has moved it out of reach: an act made
- * once the reader has moved the page - after `j` brought a lower row on screen, at 1440 px the
- * view row scrolls under the band that stays at the top, and at 390 px the header scrolls away -
- * is made where a reader makes it, at a control they can press. A press at the first drawing is
- * made where its target was first drawn and never waits for this (`makeSteps`).
+ * Waits until a press at the centre of `step`'s target, where it is a control or the first row
+ * of the document that holds children (`ActTarget`'s `within: "document"`), reaches it, scrolling
+ * the target into the viewport where it is out of reach. An act made once the reader has moved
+ * the page - after `j` brought a lower row on screen, at 1440 px the view row scrolls under the
+ * band that stays at the top, and at 390 px the header scrolls away - is made where a reader
+ * makes it, at a control they can press; and at 390 px the fold's row, which the first screen
+ * does not hold, is scrolled to first. Any other press at a first drawing is made where its
+ * target was first drawn and never waits for this (`makeSteps`).
  */
 export async function revealStep(page: Page, step: ActStep): Promise<void> {
   try {

@@ -15,6 +15,8 @@ import {
   LOAD_ACTS,
   LOAD_ROW_SELECTOR,
   makeSteps,
+  namedRow,
+  rowAddress,
   VIEW_ROW_SELECTOR,
 } from "../issue-page-load";
 import {
@@ -649,7 +651,7 @@ test("the init script's readers take the entries an observer has queued and not 
   });
 });
 
-/** A box as `getBoundingClientRect` answers it, of the stand-in page below. */
+/** A box as `getBoundingClientRect` answers it, of a stand-in page. */
 interface StandInBox {
   readonly bottom: number;
   readonly height: number;
@@ -664,6 +666,134 @@ interface StandInBox {
 /** The box at `x`, `y` of `width` by `height`. */
 function boxAt(x: number, y: number, width: number, height: number): StandInBox {
   return { bottom: y + height, height, left: x, right: x + width, top: y, width, x, y };
+}
+
+/** An element of a stand-in page, with as much of an element as the init script reads of one. */
+interface StandInElement {
+  readonly attributes: Record<string, string>;
+  readonly name: string;
+  closest(): StandInElement | null;
+  contains(other: unknown): boolean;
+  getAttribute(name: string): string | null;
+  getBoundingClientRect(): StandInBox;
+  hasAttribute(name: string): boolean;
+  readonly isConnected: true;
+  querySelector(): null;
+  querySelectorAll(): StandInElement[];
+  scrollIntoView(): void;
+  readonly textContent: string;
+}
+
+/** An element named `name`, drawn at `box`: its attributes, its words, the elements its
+ *  selectors find inside it and the one `closest` finds around it, whatever the selector, and
+ *  what scrolling it into view does to the page. */
+function standInElement(
+  name: string,
+  box: () => StandInBox,
+  {
+    attributes = {},
+    inside = () => [],
+    around = () => null,
+    onScroll = () => {},
+    words = "",
+  }: {
+    readonly attributes?: Record<string, string>;
+    readonly inside?: () => StandInElement[];
+    readonly around?: () => StandInElement | null;
+    readonly onScroll?: () => void;
+    readonly words?: string;
+  } = {}
+): StandInElement {
+  const drawn: StandInElement = {
+    attributes,
+    closest: around,
+    contains: (other) => other === drawn,
+    getAttribute: (attribute) => attributes[attribute] ?? null,
+    getBoundingClientRect: box,
+    hasAttribute: (attribute) => attribute in attributes,
+    isConnected: true,
+    name,
+    querySelector: () => null,
+    querySelectorAll: inside,
+    scrollIntoView: onScroll,
+    textContent: words,
+  };
+  return drawn;
+}
+
+/**
+ * A stand-in of a browser that draws `drawn` (topmost first) in a viewport `height` px tall,
+ * answers each selector of `selected` with its elements, and does `press` with what a press at
+ * its point reaches, the page hearing its pointerdown whatever it reached. The page's frames run
+ * each time the stand-in of Playwright waits on the page, and the messages a frame posts are
+ * delivered once its callbacks have run. Answers the globals the init script runs against
+ * (`withStandIns`), the stand-in of Playwright's page and the name of what each press reached.
+ */
+function standInBrowser(world: {
+  readonly drawn: () => readonly StandInElement[];
+  readonly height: number;
+  readonly press: (hit: StandInElement | null) => void;
+  readonly selected: Record<string, () => readonly StandInElement[]>;
+}) {
+  const elementFromPoint = (x: number, y: number) =>
+    y < 0 || y >= world.height
+      ? null
+      : (world.drawn().find((drawn) => {
+          const box = drawn.getBoundingClientRect();
+          return x >= box.left && x < box.right && y >= box.top && y < box.bottom;
+        }) ?? null);
+  const callbacks: ((time: number) => void)[] = [];
+  const messages: number[] = [];
+  const port: { onmessage: ((message: { readonly data: number }) => void) | null } = {
+    onmessage: null,
+  };
+  const frame = () => {
+    for (const callback of callbacks.splice(0)) callback(performance.now());
+    for (const index of messages.splice(0)) port.onmessage?.({ data: index });
+  };
+  const listeners = new Map<string, ((event: unknown) => void)[]>();
+  const pressed: string[] = [];
+  const playwright = {
+    keyboard: { press: async () => {} },
+    mouse: {
+      click: async (x: number, y: number) => {
+        const hit = elementFromPoint(x, y);
+        pressed.push(hit?.name ?? "nothing");
+        for (const listener of listeners.get("pointerdown") ?? []) {
+          listener({ isTrusted: true, timeStamp: performance.now(), type: "pointerdown" });
+        }
+        world.press(hit);
+      },
+    },
+    waitForFunction: async (answers: (argument: unknown) => unknown, argument: unknown) => {
+      for (let frames = 0; frames < 10; frames += 1) {
+        frame();
+        const answer = answers(argument);
+        if (answer) return { jsonValue: async () => answer };
+      }
+      throw new errors.TimeoutError("no frame of the stand-in page answered");
+    },
+  };
+  const globals = {
+    MessageChannel: class {
+      port1 = port;
+      port2 = { postMessage: (index: number) => messages.push(index) };
+    },
+    document: {
+      elementFromPoint,
+      fonts: { addEventListener: () => {} },
+      querySelector: (selector: string) => world.selected[selector]?.()[0] ?? null,
+      querySelectorAll: (selector: string) => world.selected[selector]?.() ?? [],
+    },
+    requestAnimationFrame: (callback: (time: number) => void) => callbacks.push(callback),
+    window: {
+      addEventListener: (type: string, listener: (event: unknown) => void) => {
+        listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+      },
+      innerHeight: world.height,
+    },
+  };
+  return { elementFromPoint, globals, page: playwright as unknown as Page, pressed };
 }
 
 // Row 5 of builds Job `e2e-rows-7pffd`, at 1440 px, made a fold, an unfold, `j` and `k`, and then
@@ -685,119 +815,143 @@ test("an act after the load presses its control where a reader can, scrolling it
     throw new Error("the acts at 1440 px hold no press on Keys that opens a list");
   }
   let scrolled = 93;
-  let open = false;
   let scrolls = 0;
-  const pressed: string[] = [];
-  const element = (
-    name: string,
-    words: string,
-    box: () => StandInBox,
-    scrollIntoView = () => {}
-  ) => {
-    const drawn = {
-      contains: (other: unknown) => other === drawn,
-      getBoundingClientRect: box,
-      name,
-      querySelector: () => null,
-      scrollIntoView: () => {
-        scrolls += 1;
-        scrollIntoView();
-      },
-      textContent: words,
-    };
-    return drawn;
-  };
-  const band = element("the band", "LAY›LAY-1", () => boxAt(56, 0, 1384, 63));
-  const viewRow = element("the view row", "", () => boxAt(56, 97 - scrolled, 1384, 34));
+  let open = false;
+  const band = standInElement("the band", () => boxAt(56, 0, 1384, 63), { words: "LAY›LAY-1" });
+  const viewRow = standInElement("the view row", () => boxAt(56, 97 - scrolled, 1384, 34));
   // Scrolled into view, Keys would come to the middle of the viewport, as far as the page's top
   // lets it: back to the page's top.
-  const keysButton = element(
-    "Keys",
-    "Keys",
-    () => boxAt(1340, 98 - scrolled, 56, 32),
-    () => {
+  const keysButton = standInElement("Keys", () => boxAt(1340, 98 - scrolled, 56, 32), {
+    onScroll: () => {
+      scrolls += 1;
       scrolled = Math.max(0, 98 + 16 - 450);
-    }
+    },
+    words: "Keys",
+  });
+  const list = standInElement("the list of keys", () => boxAt(420, 200, 600, 400));
+  const browser = standInBrowser({
+    drawn: () => [...(open ? [list] : []), band, keysButton, viewRow],
+    height: 900,
+    press: (hit) => {
+      if (hit === keysButton) open = true;
+    },
+    selected: {
+      "[data-filter-row]": () => [viewRow],
+      "[data-identity-block]": () => [band],
+      [step.input.target.selector]: () => [keysButton],
+      [step.result.selector]: () => (open ? [list] : []),
+    },
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    // As the page stands, a press at Keys' centre lands on the band.
+    expect(browser.elementFromPoint(1340 + 28, 98 - scrolled + 16)?.name).toBe("the band");
+    const made = await makeSteps(browser.page, 0, keys.steps, "now");
+    expect(scrolls, "Keys was not scrolled back into view once").toBe(1);
+    expect(browser.pressed, "the press did not reach Keys").toEqual(["Keys"]);
+    const reading = actReading(instruments.record(), made.last);
+    expect(reading.act).toBe("a press on Keys");
+    expect(reading.read).toBeNull();
+    expect(reading.shown, "the press on Keys read no result").not.toBeNull();
+  });
+});
+
+// Row 4 of builds Job `e2e-rows-7pffd`, at 390 px, could make no fold and no unfold: the first
+// screen there is the children's section, and no row of the outline that holds children stood in
+// the viewport at the first drawing of the rows. At 390 px the fold's row is the first in the
+// document that holds children, scrolled into view first. The stand-in page is 664 px tall, its
+// view row of 56 px at the top, and that row 1,200 px down.
+test("at 390 px a fold acts on the first row in the document that holds children, scrolled into view before the fold's first moment, and at 1440 px on the first in the viewport", async () => {
+  const fold = LOAD_ACTS[390].find((act) => act.kind === "fold");
+  const step = fold?.steps[0];
+  if (fold === undefined || step?.input.kind !== "press" || step.input.target.kind !== "fold") {
+    throw new Error("the acts at 390 px hold no fold of a row");
+  }
+  expect(step.input.target.within).toBe("document");
+  const wide = LOAD_ACTS[1440].find((act) => act.kind === "fold")?.steps[0]?.input;
+  expect(wide?.kind === "press" && wide.target.kind === "fold" ? wide.target.within : null).toBe(
+    "viewport"
   );
-  const list = element("the list of keys", "", () => boxAt(420, 200, 600, 400));
-  const elementFromPoint = (x: number, y: number) =>
-    [...(open ? [list] : []), band, keysButton, viewRow].find((drawn) => {
-      const box = drawn.getBoundingClientRect();
-      return x >= box.left && x < box.right && y >= box.top && y < box.bottom;
-    }) ?? null;
-  const selected: Record<string, () => unknown[]> = {
-    "[data-filter-row]": () => [viewRow],
-    "[data-identity-block]": () => [band],
-    [step.input.target.selector]: () => [keysButton],
-    [step.result.selector]: () => (open ? [list] : []),
+  let scrolled = 0;
+  let scrolls = 0;
+  const attributes: Record<string, string> = {
+    "aria-expanded": "true",
+    "data-node-id": "spec#b-r3",
+    "data-node-type": "requirement",
+    "data-row-key": "LAY-1>spec#b-r3",
   };
-  // The page's frames, each run when the stand-in of Playwright waits on the page, and the
-  // messages each frame posts, delivered once its callbacks have run.
-  const callbacks: ((time: number) => void)[] = [];
-  const messages: number[] = [];
-  const port: { onmessage: ((message: { readonly data: number }) => void) | null } = {
-    onmessage: null,
-  };
-  const frame = () => {
-    for (const callback of callbacks.splice(0)) callback(performance.now());
-    for (const index of messages.splice(0)) port.onmessage?.({ data: index });
-  };
-  const listeners = new Map<string, ((event: unknown) => void)[]>();
-  const playwright = {
-    keyboard: { press: async () => {} },
-    mouse: {
-      // A press reaches what is topmost at its point; the page hears its pointerdown whatever it
-      // reached.
-      click: async (x: number, y: number) => {
-        const hit = elementFromPoint(x, y);
-        pressed.push(hit?.name ?? "nothing");
-        for (const listener of listeners.get("pointerdown") ?? []) {
-          listener({ isTrusted: true, timeStamp: performance.now(), type: "pointerdown" });
-        }
-        if (hit === keysButton) open = true;
-      },
-    },
-    waitForFunction: async (answers: (argument: unknown) => unknown, argument: unknown) => {
-      for (let frames = 0; frames < 10; frames += 1) {
-        frame();
-        const answer = answers(argument);
-        if (answer) return { jsonValue: async () => answer };
-      }
-      throw new errors.TimeoutError("no frame of the stand-in page answered");
-    },
-  };
-  await withStandIns(
+  const viewRow = standInElement("the view row", () => boxAt(0, 0, 390, 56));
+  const children = standInElement("the children's section", () => boxAt(0, 56, 390, 1100));
+  const bullet: StandInElement = standInElement(
+    "the fold control",
+    () => boxAt(14, 1204 - scrolled, 16, 16),
     {
-      MessageChannel: class {
-        port1 = port;
-        port2 = { postMessage: (index: number) => messages.push(index) };
+      around: () => row,
+      onScroll: () => {
+        scrolls += 1;
+        scrolled = 1204 + 8 - 332;
       },
-      document: {
-        elementFromPoint,
-        fonts: { addEventListener: () => {} },
-        querySelector: (selector: string) => selected[selector]?.()[0] ?? null,
-        querySelectorAll: (selector: string) => selected[selector]?.() ?? [],
-      },
-      requestAnimationFrame: (callback: (time: number) => void) => callbacks.push(callback),
-      window: {
-        addEventListener: (type: string, listener: (event: unknown) => void) => {
-          listeners.set(type, [...(listeners.get(type) ?? []), listener]);
-        },
-        innerHeight: 900,
-      },
-    },
-    async (instruments) => {
-      // As the page stands, a press at Keys' centre lands on the band.
-      expect(elementFromPoint(1340 + 28, 98 - scrolled + 16)?.name).toBe("the band");
-      const made = await makeSteps(playwright as unknown as Page, 0, keys.steps, "now");
-      expect(scrolls, "Keys was not scrolled back into view once").toBe(1);
-      expect(pressed, "the press did not reach Keys").toEqual(["Keys"]);
-      const reading = actReading(instruments.record(), made.last);
-      expect(reading.act).toBe("a press on Keys");
-      expect(reading.read).toBeNull();
-      expect(reading.shown, "the press on Keys read no result").not.toBeNull();
     }
   );
+  const row: StandInElement = standInElement("the row", () => boxAt(0, 1200 - scrolled, 390, 96), {
+    attributes,
+    inside: () => [bullet],
+  });
+  const browser = standInBrowser({
+    drawn: () => [viewRow, bullet, row, children],
+    height: 664,
+    press: (hit) => {
+      if (hit === bullet) attributes["aria-expanded"] = "false";
+    },
+    selected: {
+      "[data-filter-row]": () => [viewRow],
+      [step.input.target.row]: () => (attributes["aria-expanded"] === "true" ? [row] : []),
+      [VIEW_ROW_SELECTOR]: () => [row],
+    },
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    const made = await makeSteps(browser.page, 0, fold.steps, fold.when);
+    expect(scrolls, "the fold's row was not scrolled into view once").toBe(1);
+    expect(browser.pressed, "the press did not reach the fold control").toEqual([
+      "the fold control",
+    ]);
+    expect(attributes["aria-expanded"]).toBe("false");
+    const reading = actReading(instruments.record(), made.last);
+    expect(reading.act).toBe("a fold");
+    expect(reading.shown, "the fold read no result").not.toBeNull();
+  });
+});
+
+test("Row 2 names the last row Conversation draws by its own address, a child issue's at ?node= of its key, and else the last row before it that an address names", () => {
+  const rows = [
+    { id: "LAY-10", type: "child_issue" },
+    { id: "spec#b-r3", type: "requirement" },
+    { id: "spec#b-q2", type: "ask" },
+    { id: "c-1", type: "comment" },
+    { id: "LAY-6", type: "child_issue" },
+  ];
+  expect(rows.map((row) => rowAddress("LAY-1", row))).toEqual([
+    "/issues/LAY-1?node=LAY-10",
+    "/issues/LAY-1#b-r3",
+    // An ask indexed from a block is drawn by that block, which its fragment names.
+    "/issues/LAY-1#b-q2",
+    "/issues/LAY-1/comments/c-1",
+    "/issues/LAY-1?node=LAY-6",
+  ]);
+  expect(namedRow("LAY-1", rows)).toEqual({
+    address: "/issues/LAY-1?node=LAY-6",
+    last: true,
+    row: { id: "LAY-6", type: "child_issue" },
+  });
+  // A row drawn by an id the tree read need not give its node - a block of another issue, drawn
+  // by its block id - is one no address is sure to name: the row named is the last before it.
+  const foreign = { id: "c29", type: "check" };
+  expect(rowAddress("LAY-1", foreign)).toBeUndefined();
+  expect(namedRow("LAY-1", [...rows, foreign])).toEqual({
+    address: "/issues/LAY-1?node=LAY-6",
+    last: false,
+    row: { id: "LAY-6", type: "child_issue" },
+  });
+  expect(() => namedRow("LAY-1", [foreign])).toThrow(/no address names any of the 1 rows/);
 });
 
 // ---------------------------------------------------------------------------------------------
