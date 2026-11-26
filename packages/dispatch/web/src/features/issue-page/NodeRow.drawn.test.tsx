@@ -1715,6 +1715,24 @@ test("a plan task nobody asked for says so, in words", () => {
   });
 });
 
+// R10: a statement no plan task serves, once the issue holds a plan task, says so on its row in
+// the gap's few words, marked with its kind, and in its sentence in its body.
+test("a statement no plan task serves draws the gap's words, marked with its kind", () => {
+  const gaps: GapKind[] = ["no_plan_task"];
+  const statement = node({ gaps, id: "spec#b-r1", statement: true, type: "requirement" });
+  const view = renderRow(statement);
+  try {
+    const gap = view.container.querySelector("[data-gap]");
+    expect([gap?.getAttribute("data-gap-kind"), gap?.textContent]).toEqual([
+      "no_plan_task",
+      "No plan task",
+    ]);
+  } finally {
+    view.unmount();
+  }
+  expect(drawnGap(statement).line).toBe("No plan task serves this statement.");
+});
+
 // While a document of the issue is still being indexed no statement is drawn as lacking a check:
 // its face draws, where its gaps are, that document's line in the server's own words, and its row
 // draws no gap.

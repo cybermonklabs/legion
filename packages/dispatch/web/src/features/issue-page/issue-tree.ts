@@ -421,6 +421,12 @@ export interface IssueTreeReads {
    *  last replaced its body - which the tree read answers no mark of
    *  (`tree-read/tree-nodes.ts`'s `postMarksOf`). The tree read answers each message as a node. */
   readonly messages?: readonly MessageRead[];
+  /** The Plan view read's answer (`?view=plan`), which holds the plan tasks of the issue and of
+   *  every issue under it: whether it holds one says whether a statement no plan task serves is a
+   *  gap (`tree-read/tree-nodes.ts`' `draftRequirement`). It is the answer the page holds:
+   *  undefined until the read first answers and while that first read stands refused, and the
+   *  answer held before where a later read of it is refused. */
+  readonly plan?: TreeAnswer;
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */

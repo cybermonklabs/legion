@@ -15,7 +15,6 @@ import type {
   RequirementCoverage,
 } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
-import { isDecisionEntry } from "../../issue/decision-entries";
 import { type PostDeletion, postDeletion } from "../../refs/post-marks";
 import type { ReferenceNameReading } from "../../refs/reference-names";
 import {
@@ -133,6 +132,11 @@ export interface KeptReads {
    *  issue is still being indexed, its line, which the server writes in place of every missing
    *  check (`coverageNotes`). Each requirement the read holds draws them. */
   readonly coverageNotes: string[];
+  /** Whether the Plan view's answer the page holds (`IssueTreeReads.plan`) holds a plan task: one
+   *  of this issue, or of an issue under it, which that read answers with the issue's own. Once
+   *  one is held a statement no plan task serves is a gap, since a plan is written after the spec
+   *  is approved; false while that read holds no answer. */
+  readonly planned: boolean;
   /** What the author of each comment and message of the comments read and the messages read did
    *  to it, by the post's own id: the tree read answers its words, a deleted post's none, and no
    *  mark of either. A post nobody corrected has no entry. */
@@ -457,10 +461,10 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
 }
 
 /** A requirement, with the counts and the gaps the coverage read holds for it, and a statement of
- *  the issue where it is one (`isStatementNode`). Where that read holds it, its gaps are read by
- *  the outline's one rule (`requirementGaps`), which draws its two edges disagreeing too: the
- *  node its `from` attribute names (`originOf`) against each decision a `shaped` tuple that ends
- *  at it starts from (`isDecisionNode`), each read as the id the tree draws that node by. */
+ *  the issue where it is one (`isStatementNode`). Where that read holds it, its gaps are the ones
+ *  that read carries (`requirementGaps`); a statement lacks a check by the answer's own count of
+ *  them, and a plan task where that read counts none serving it once the Plan view holds a plan
+ *  task (`KeptReads.planned`). */
 function draftRequirement(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -473,21 +477,7 @@ function draftRequirement(
   if (coverage !== undefined) {
     draft.counts = { checks: coverage.checks, planTasks: coverage.plan_tasks };
     if (context.kept.coverageNotes.length > 0) draft.coverageNotes = context.kept.coverageNotes;
-    // The decisions that shaped it count only against an origin (`requirementGaps`), so they are
-    // read only where it has one.
-    const origin = originOf(node, context);
-    const shapers =
-      origin === undefined
-        ? undefined
-        : new Set(
-            context.tuplesTo(node.id).flatMap((tuple) => {
-              const shaper = tuple.kind === "shaped" ? context.nodeOf(tuple.from.id) : undefined;
-              return shaper !== undefined && isDecisionNode(shaper)
-                ? [context.treeIdOfNode(shaper)]
-                : [];
-            })
-          );
-    draft.gaps = requirementGaps(coverage.gaps ?? [], origin, shapers);
+    draft.gaps = requirementGaps(coverage.gaps ?? []);
   }
   // Where the answer counts the checks that serve it (`checks`, which every read of the route
   // answers on a requirement), a statement lacks a check by that count, whatever the coverage
@@ -497,30 +487,22 @@ function draftRequirement(
     const others = draft.gaps.filter((gap) => gap !== "no_check");
     draft.gaps = served === 0 ? [...others, "no_check"] : others;
   }
+  // The coverage read counts the plan tasks of this issue and of every issue under it that serve
+  // the statement (`plan_tasks`). While a document of the issue is still being indexed that count
+  // may not hold them yet, and the server names no requirement as lacking one then
+  // (`coverageNotes`), so neither does the page.
+  if (
+    draft.statement === true &&
+    coverage?.plan_tasks === 0 &&
+    context.kept.planned &&
+    context.kept.coverageNotes.length === 0
+  ) {
+    draft.gaps = [...draft.gaps, "no_plan_task"];
+  }
+  // A proposed statement is a question still open and an overtaken one is closed: neither owes
+  // any work, so neither draws a gap, whatever the counts say.
+  if (node.state === "proposed" || node.state === "overtaken") draft.gaps = [];
   return draft;
-}
-
-/** Whether `node` is a decision, by the rule the decisions read's entries are read by
- *  (`isDecisionEntry`): a decision node is an agent's decision, and an ask is a person's where a
- *  person answered it, which the read says by the decision it sends on the ask - the route sends
- *  one only on an ask whose state is `answered` (`issue_tree_read.go`'s `readDecisions`). An open
- *  ask is a question and a declined one decided nothing, so neither carries one, and neither is
- *  a decision. */
-function isDecisionNode(node: TreeAnswerNode): boolean {
-  if (node.supertag !== "decision" && node.supertag !== "ask") return false;
-  const answered = node.supertag === "ask" && node.decision !== undefined;
-  return isDecisionEntry({
-    answer_state: answered ? "answered" : null,
-    kind: node.supertag === "decision" ? (node.decision?.kind ?? "agent") : "person",
-  });
-}
-
-/** The node a requirement's `from` attribute names as where it came from: the attribute's first
- *  pointer (`parseBlockPointerValue`), as this issue addresses it (`nodeIdOf`), which is the id
- *  the tree draws that node by; undefined where it names none, or nothing of this issue. */
-function originOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
-  const [first] = parseBlockPointerValue(node.attributes?.from ?? "", POINTER_ITEMS) ?? [];
-  return first === undefined ? undefined : context.nodeIdOf(first);
 }
 
 /**
@@ -1208,6 +1190,9 @@ function keptReads(
       const node = nodes.get(decision.ref);
       return node === undefined ? undefined : idOf(node);
     }),
+    planned: (reads.plan?.nodes ?? []).some(
+      (node) => node.supertag === "plan_task" && node.state !== "gone"
+    ),
     posts: postMarksOf(reads),
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
