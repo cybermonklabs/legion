@@ -68,6 +68,9 @@ func (r *waitRig) check(issue string) record.ProductionCheck {
 func (r *waitRig) report(issue string, look int, verdict, summary string, wake *time.Time) intake.Result {
 	r.t.Helper()
 	starts := r.lookStarts(issue)
+	if len(starts) == 0 {
+		r.t.Fatalf("%s has no look started for its report of look %d", issue, look)
+	}
 	named := starts[len(starts)-1]
 	if named.CheckLook != look || !named.CheckOpenedAt.Equal(r.check(issue).OpenedAt) {
 		r.t.Fatalf("the look's task names look %d of the check opened %s, want look %d of the check opened %s", named.CheckLook, named.CheckOpenedAt,

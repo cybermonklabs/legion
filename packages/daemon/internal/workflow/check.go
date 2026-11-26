@@ -200,7 +200,7 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
 		"Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing. " +
 		"Report pass once each check above has a result that passes at its commit. " +
-		"Report fail for a requirement observed as not met, and record that check's result as a fail. " +
+		"Report fail for a requirement observed as not met, and record that check's result as a fail with dispatch result. " +
 		"A fail starts the next change of this issue, so send it to no controller. " +
 		"A defect outside this issue still goes as skill://legion-worker/references/findings.md says.")
 	if last {
