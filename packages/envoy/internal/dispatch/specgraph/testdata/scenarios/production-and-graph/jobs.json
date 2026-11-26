@@ -1,0 +1,4 @@
+[
+  { "job": "production-checks", "leg": "", "commit": "c1", "ended": true },
+  { "job": "production-checks", "leg": "", "commit": "c1", "ended": false }
+]

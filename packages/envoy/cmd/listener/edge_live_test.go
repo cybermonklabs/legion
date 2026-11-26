@@ -351,7 +351,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = probe.Flush()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for {
 			logged := rig.violations(t)
 			if slices.ContainsFunc(logged, func(v []string) bool { return v[1] == provoked }) {
@@ -363,7 +363,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("the server logged no violation naming %s within 10s, so its log was not read", provoked)
+				t.Fatalf("the server logged no violation naming %s in time, so its log was not read", provoked)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
