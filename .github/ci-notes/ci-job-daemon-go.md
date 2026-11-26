@@ -42,14 +42,15 @@ import-path order, so one long package that came late set the step's time. In me
 So each step runs in legs: one job per leg, all at the same time, each over the packages
 `.github/go-legs.yaml` lists for it, longest first. The first split ran the plain step in two legs:
 leg 1 was internal/store, whose 542 s set its time, beside the next three, each on a core of its
-own; leg 2 was the other 87 packages, about 880 s of package time over four cores, and the steps
-no leg splits (the race-impossible tests, the forced-order tests and Stage 1, 57 s in that job).
-internal/daemon takes three race legs, a group of its tests each
-([below](#why-internaldaemons-tests-run-in-three-legs)); race leg 4 is the other four packages,
-whose time is internal/launcher's (292 s in run 45601893438; internal/intake took 134 s there, its
-tests now beside each other). The longest leg was then plain leg 1, internal/store's: 506 s of job
-in run 45678673783, against 463 s for the longest race leg (a group of internal/daemon) and 385 s
-for race leg 4, where the merge group had waited 940 s for daemon-go.
+own; leg 2 was the other 87 packages, about 880 s of package time over four cores, and ran alone
+the steps no leg splits: the race-impossible tests, the forced-order tests and Stage 1, 57 s in
+that job, and the shape gate of internal/api stamped with main's merge order, added since (4 s
+with its stamp in job 139602068850). internal/daemon takes three race legs, a group of its tests
+each ([below](#why-internaldaemons-tests-run-in-three-legs)); race leg 4 is the other four
+packages, whose time is internal/launcher's (292 s in run 45601893438; internal/intake took 134 s
+there, its tests now beside each other). The longest leg was then plain leg 1, internal/store's:
+506 s of job in run 45678673783, against 463 s for the longest race leg (a group of
+internal/daemon) and 385 s for race leg 4, where the merge group had waited 940 s for daemon-go.
 
 Those legs put the packages that compete for the runner's cores in one leg. In the ten green merge
 groups that ran the legs from 20:27Z to 22:55Z on 2026-11-25 (runs 45695186634 to 45717072988),
@@ -66,15 +67,20 @@ With cmd/legion alone beside three packages that need neither cores nor Postgres
 but the other leg then held every Postgres package, and internal/store took 407.4 s there and the
 leg 611 s of job (run 45737777272, jobs 139637308654 and 139637308512). So the plain step runs in
 three legs, a runner each: leg 1 is cmd/legion's with internal/leakguard, internal/record and
-internal/repocache; leg 2 is internal/store's with the small packages and the steps no leg splits;
-leg 3 is internal/workspace, internal/runtime/sandbox, internal/workflow, internal/admit,
-internal/api and the rest, about 874 s of package time over four cores.
+internal/repocache; leg 2 is internal/store's with the small packages and the race-impossible
+tests, the forced-order tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox,
+internal/workflow, internal/admit, internal/api and the rest, about 874 s of package time over
+four cores, and the stamped shape gate, which reuses the test build of internal/api that leg 3's
+plain step compiled.
 
 The rules the legs keep:
 
-- **Each package runs once, in one leg.** `.github/scripts/go_legs.py`, which each leg's go test
-  step runs for its packages, compares the file with `go list ./...` first and fails the step,
-  naming each, when a package is in no place, in two, or when a place names no package. It also
+- **Each package runs once, in one place.** A place is one leg, or, for a package split by test
+  name as internal/daemon is in three race legs, one group of its tests in each of several legs
+  of one job ([below](#why-internaldaemons-tests-run-in-three-legs)), every test in one group.
+  `.github/scripts/go_legs.py`, which each leg's go test step runs for its packages, compares the
+  file with `go list ./...` first and fails the step, naming each, when a package is in no place,
+  in two, or when a place names no package. It also
   takes how many legs the job's matrix runs (`strategy.job-total`) and fails when the file's legs
   are not exactly those, since a leg the file has and the matrix does not launch runs in no job,
   and when a leg lists no package, since xargs would then run go test on the module's root. So a
