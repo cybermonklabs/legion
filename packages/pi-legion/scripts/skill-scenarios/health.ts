@@ -108,9 +108,11 @@
  *      other search is part of the world, whether or not it names the workflow; no host a `bash`
  *      command reaches (`bashHosts`), a here-document an interpreter runs
  *      included; no host an `eval` cell reaches (`evalHosts`): each `tool.<name>(…)` call of it by
- *      that tool's own reading, and every network URL in the rest of it, in any language; no
- *      http(s) URL a `read`, `fetch` or `grep` is given as its path; no network URL in a file the
- *      run wrote and then ran, where the agent that ran it reached it (`fileRuns`, `Keeper`); and
+ *      that tool's own reading, and every network URL in the rest of it, in any language, but
+ *      one in a literal a variable holds that only text tools' calls of the cell are given
+ *      (`textOnly`); no http(s) URL a `read`, `fetch` or `grep` is given as its path; no network
+ *      URL in a file the run wrote and then ran, where the agent that ran it reached it
+ *      (`fileRuns`, `Keeper`); and
  *      no network URL in any string argument of a tool
  *      TEXT_TOOLS does not name, a tool nobody named included. A URL in text a call writes (a
  *      review body, a reply, a commit message, a file never run) is a link, not a reach, and so
@@ -4407,15 +4409,59 @@ function evalToolCalls(code: string) {
   return calls;
 }
 
+/** A string literal a statement binds to a name, from the statement's start to the literal's
+ * quote: JavaScript's `const`, `let` or `var NAME = "…"`, and Python's `NAME = "…"` at a line's
+ * start, a string prefix (`r`, `f`) before its quote. */
+const BOUND_LITERAL =
+  /\b(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*(?=['"`])|^[ \t]*([A-Za-z_]\w*)[ \t]*=[ \t]*[rRbBuUfF]{0,2}(?=['"])/gm;
+
+/** Whether the variable a statement of an eval cell's `code` binds in `[from, to)` is text only a
+ * text tool is given: its `name` is used, and each use of it but the binding's lies in the
+ * argument text of the cell's session tool calls (`calls`) whose tools are all of TEXT_TOOLS but
+ * `write` and `edit` (whose text `fileRuns` reads again where a file runs, from the call's own
+ * literals alone), no expression among those calls' literals using it but as the whole of it
+ * (`${msg}`, not `${await fetch(msg)}`). A use anywhere else may hand it to a fetch or a shell. */
+function textOnly(
+  code: string,
+  calls: readonly { tool: string; code: string[]; open: number; close: number }[],
+  name: string,
+  from: number,
+  to: number
+): boolean {
+  const word = new RegExp(`(?<![\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`);
+  const uses = [...code.matchAll(new RegExp(word, "g"))]
+    .map((hit) => hit.index ?? 0)
+    .filter((at) => at < from || at >= to);
+  return (
+    uses.length > 0 &&
+    uses.every((at) => {
+      const holding = calls.filter((one) => one.open <= at && at < one.close);
+      return (
+        holding.length > 0 &&
+        holding.every(
+          (one) =>
+            TEXT_TOOLS[one.tool] !== undefined &&
+            one.tool !== "write" &&
+            one.tool !== "edit" &&
+            one.code.every((expression) => expression.trim() === name || !word.test(expression))
+        )
+      );
+    })
+  );
+}
+
 /** Every host an `eval` cell reaches: each session tool call of it (`evalToolCalls`) by the
  * reading its tool gets as a call of its own (`reachesOf`: none for a tool of TEXT_TOOLS,
  * `bashHosts` for `bash`, the URL a `read` is given, the class default for a tool nobody named),
  * given the files the run wrote, those the cell's calls before it wrote included, the pane's
  * variables (`pane`), and the code of each expression among its literals; a `fetch` the cell
  * gives no URL of plain text that names a host (`{url: u}`, a template's `${base}/x`), whose host
- * the reader cannot tell (`unreadUrl`); then the rest of the cell, those calls blanked, as a
- * program (`programHosts`: every network URL in it, and each fetch of it whose URL the reader
- * cannot tell). A cell with a call whose brackets or literals do not end is read whole as code. */
+ * the reader cannot tell (`unreadUrl`); then the rest of the cell, those calls blanked, and each
+ * string literal of no expression a statement binds to a variable only text tools are given
+ * blanked too (BOUND_LITERAL, `textOnly`: `const msg = "… https://…"` that only
+ * `tool.envoy_publish({message: msg})` reads), as a program (`programHosts`: every network URL in
+ * it, and each fetch of it whose URL the reader cannot tell). A cell with a call whose brackets or
+ * literals do not end is read whole as code. */
 function evalHosts(
   call: Call,
   written: readonly Written[],
@@ -4444,6 +4490,17 @@ function evalHosts(
       reached.push({ ...hit, via: hit.via ?? ` in the cell's tool.${one.tool} call` });
     seen.push(...record(writtenText(inner), seen, call.tool, call.file));
     rest.fill(" ", one.open, one.close);
+  }
+  const blanked = rest.join("");
+  for (const hit of blanked.matchAll(BOUND_LITERAL)) {
+    const quote = (hit.index ?? 0) + hit[0].length;
+    const end = literalEnd(blanked, quote);
+    if (
+      end >= 0 &&
+      literalArgs(blanked.slice(hit.index, end))?.code.length === 0 &&
+      textOnly(code, calls, hit[1] ?? hit[2] ?? "", hit.index ?? 0, end)
+    )
+      rest.fill(" ", quote, end);
   }
   return [...reached, ...programHosts(rest.join(""), false)];
 }
