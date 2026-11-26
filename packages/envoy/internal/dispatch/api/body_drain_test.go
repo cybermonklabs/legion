@@ -465,10 +465,10 @@ func (b repeatedByte) Read(p []byte) (int, error) {
 
 // Which 413 a route answers a body past its limit with follows the limit on its own row: every
 // row that takes an upload's body (apiRoute.BodyLimit, upload) answers the upload's CAP_EXCEEDED,
-// the two rows that carry a limit of their own (handoffWrite, markdownRoundTrip) their own
-// CAP_EXCEEDED, and every other row the JSON limit's REQUEST_TOO_LARGE (bodyTooLarge). A new
-// upload row is answered as an upload by being an upload row, with no list of upload patterns to
-// keep in step.
+// the three rows that carry a limit of their own (handoffWrite, markdownRoundTrip, fileRoundTrip)
+// their own CAP_EXCEEDED, and every other row the JSON limit's REQUEST_TOO_LARGE (bodyTooLarge).
+// A new upload row is answered as an upload by being an upload row, with no list of upload
+// patterns to keep in step.
 func TestEveryRoutesOversizedBodyIsAnsweredByItsRowsLimit(t *testing.T) {
 	t.Parallel()
 	served := &server{}
@@ -481,7 +481,7 @@ func TestEveryRoutesOversizedBodyIsAnsweredByItsRowsLimit(t *testing.T) {
 		switch route.BodyLimit {
 		case maxUploadRequestBytes:
 			want, uploads = "CAP_EXCEEDED", uploads+1
-		case handoffRequestLimit, markdownRoundTripLimit:
+		case handoffRequestLimit, markdownRoundTripLimit, fileRoundTripLimit:
 			want = "CAP_EXCEEDED"
 		}
 		t.Run(route.Method+" "+route.Pattern, func(t *testing.T) {

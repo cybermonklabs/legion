@@ -82,7 +82,7 @@ var embeddingProjectKeyFillRetry = 5 * time.Minute
 func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leases duty.Leases) {
 	for {
 		finished, gone := false, false
-		duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(ctx context.Context) {
+		duty.Exclusive(ctx, nil, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(ctx context.Context) {
 			// The rows it had labelled are on the failure line: every batch before the one that
 			// failed is committed and the cursor records them, so the count says how much of the
 			// pass the next try has left rather than how much it lost.

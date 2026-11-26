@@ -285,6 +285,9 @@ func (d *heldDurable) run(ctx context.Context) {
 	attempt := func() {
 		if d.subject == "" {
 			d.attempt(ctx)
+			if hook := d.tuning.attempted.Load(); hook != nil {
+				(*hook)()
+			}
 		}
 	}
 	attempt()
@@ -336,7 +339,8 @@ func (d *heldDurable) attempt(ctx context.Context) {
 		return
 	}
 	// The take-over asked for mutual exclusion and nothing else, and no tick is due (the zero time).
-	duty.Exclusive(ctx, d.leases, consumerLease(d.name), time.Time{}, 0, d.takeOver)
+	// The lease's lines are the intake's, so they go to its logger.
+	duty.Exclusive(ctx, d.tuning.log, d.leases, consumerLease(d.name), time.Time{}, 0, d.takeOver)
 }
 
 // lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew.
@@ -368,7 +372,7 @@ func (d *heldDurable) takeHold(ctx context.Context) bool {
 		return false
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
-		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token,
+		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token, Logger: d.tuning.log,
 	})
 	if err != nil {
 		if ctx.Err() == nil {

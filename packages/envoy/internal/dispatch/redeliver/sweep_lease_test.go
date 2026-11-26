@@ -82,7 +82,7 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(context.Background(), leases, duty.WebhookRedeliveryLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(context.Background(), nil, leases, duty.WebhookRedeliveryLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
@@ -200,7 +200,7 @@ type sweepLease struct {
 	periods []time.Duration
 }
 
-func (l *sweepLease) exclusive(ctx context.Context, _ duty.Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
+func (l *sweepLease) exclusive(ctx context.Context, _ *slog.Logger, _ duty.Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
 	l.mu.Lock()
 	l.took = append(l.took, time.Now())
 	l.names = append(l.names, name)

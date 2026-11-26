@@ -13,6 +13,7 @@ import (
 // merge_state it already held, never a zero that would read as none open. The round does not end
 // on `blocked` beside them, and the daemon's next read of the pull request writes both.
 func TestAPullRequestRecordedBefore20261124130001HoldsNoCountAndNoRollup(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261124060500)

@@ -174,11 +174,7 @@ type settlementPass struct {
 	ledger *Ledger
 	tx     pgx.Tx
 	owner  artifactOwner
-	latest struct {
-		model.Version
-		markdown         string
-		docUpdateVersion int64
-	}
+	latest latestVersionRow
 	// readHead is the head of the document's stored history this pass read under the document's
 	// lock, before it stored anything (readLocked). snapshotCursor is the head the version records
 	// (doc_update_version), through which every one of the room's updates it holds is stored; it
@@ -1208,9 +1204,10 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 		return settleDone, p.abandon(err)
 	}
 	// The events name the version the next pass leaves the document at: the one after the
-	// latest when that pass versions the repaired document, the latest otherwise.
+	// latest when that pass versions the repaired document, the latest otherwise. That pass
+	// versions it by commitVersion's test (latestVersionRow.holds).
 	settledVersion := p.latest.Number
-	if contentChanged && p.planned.repairedErr == nil && p.planned.repaired != p.latest.markdown {
+	if contentChanged && p.planned.repairedErr == nil && !p.latest.holds(p.planned.repaired) {
 		settledVersion++
 	}
 	// The second read of a refused update's second order (roomRefusedUpdate), beside the read of
@@ -1359,12 +1356,17 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	// render the same markdown, and a version for one of those would repeat the version before it
 	// too (LEGION-229 requirement 2).
 	// contentChanged stays the first half of the test: a version an older renderer wrote is not
-	// this settlement's to canonicalise when nothing has touched the document since.
+	// this settlement's to canonicalise when nothing has touched the document since. The second
+	// half is whether the latest version holds this rendering (latestVersionRow.holds): byte for
+	// byte, or, for a version another renderer version wrote or none stamped, as markdown that
+	// reads as it. So a renderer change leaves no version behind it either where an edit was made
+	// and undone since, which changed the content and changed it back: the version holds the
+	// same tree in the spelling its renderer wrote.
 	contentChanged, err := contentChangedSinceVersion(ctx, p.tx, room, p.latest.docUpdateVersion)
 	if err != nil {
 		return settleDone, p.abandon(err)
 	}
-	versioning := contentChanged && p.markdown != p.latest.markdown
+	versioning := contentChanged && !p.latest.holds(p.markdown)
 	settledVersion := p.latest.Number
 	if versioning {
 		settledVersion++

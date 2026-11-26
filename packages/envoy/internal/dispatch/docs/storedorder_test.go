@@ -372,6 +372,45 @@ func TestStoredOrderChecker(t *testing.T) {
 	})
 }
 
+// A version another renderer version wrote, or one no renderer version stamped, holds its
+// renderer's spelling of the fold's tree: its md5 and length differ from the fold's render, and
+// the check reads its markdown and reports no mismatch where that markdown reads as the render.
+// A version holding other text than the fold is still a mismatch, whatever its stamp.
+func TestStoredOrderReadsAVersionOfAnotherRendererVersionAsTheTreeItSpells(t *testing.T) {
+	another := pmdoc.RendererVersion - 1
+	for _, test := range []struct {
+		name     string
+		renderer *int
+		stored   string
+		clean    bool
+	}{
+		{"another renderer version's spelling of the fold's tree", &another, respelledLooseList, true},
+		{"an unstamped version's spelling of the fold's tree", nil, respelledLooseList, true},
+		{"another renderer version's version of other text", &another, "- first\n- second\n\n- fourth\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			history := newCraftedHistory(t, looseList)
+			history.version(test.stored, 1)
+			if _, err := history.database.Pool.Exec(context.Background(), `
+				update artifact_versions set renderer_version = $2
+				where artifact_id = $1 and number = (select max(number) from artifact_versions where artifact_id = $1)
+			`, history.artifactID, test.renderer); err != nil {
+				t.Fatalf("stamp the version's renderer version: %v", err)
+			}
+			report := history.check(time.Time{})
+			if test.clean {
+				if !report.Clean() || report.VersionsChecked != 1 {
+					t.Fatalf("report = %+v, want a clean check of the one version", report)
+				}
+				return
+			}
+			if mismatch := onlyMismatch(t, report, StoredOrderVersion); mismatch.Version != 2 || mismatch.DocUpdateVersion != 1 || !mismatch.FoldRenders {
+				t.Fatalf("mismatch = %+v, want version 2 at update 1 holding other text than the fold", mismatch)
+			}
+		})
+	}
+}
+
 // assertStoredOrder waits for the room's updates to be stored, then checks the document's stored
 // history and fails the test on each row that does not replay.
 func assertStoredOrder(t *testing.T, service *Service, artifactID string) StoredOrderReport {
@@ -580,7 +619,7 @@ func TestStoredOrderSettlementOverAnUnstoredEdit(t *testing.T) {
 	assertStoredOrder(t, service, artifactID)
 }
 
-// Window C, snapshot. The setup of TestSnapshotCreditsAnEditMadeBetweenItsAuthorsAndCopyOnTheNextVersion:
+// Window C, snapshot. The setup of TestSnapshotCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce:
 // Bob's edit reaches the room between the snapshot's authors and its copy, its observer held after
 // crediting it and before handing it to persistence (afterCaptureAuthorsTake, afterCreditUpdate).
 // The snapshot holds his edit at a doc_update_version without his update.
