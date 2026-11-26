@@ -175,7 +175,7 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 			parameters, literals := benchtime.PreparedArguments(t, text.name+" with "+scope.name, text.arguments...)
 			plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
 				fmt.Sprintf("corpus_walk_%d_%d", scopeNumber, textNumber), text.statement, parameters, literals))
-			plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlan(t, ctx, connection,
+			plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlanUnder(t, ctx, connection,
 				text.statement, nil, text.arguments...))
 		}
 		for _, plan := range plans {

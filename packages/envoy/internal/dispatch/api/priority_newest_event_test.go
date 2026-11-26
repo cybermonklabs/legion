@@ -361,15 +361,15 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 // settings, with no enable_* setting changed, which are the settings the server's connections
 // plan under: the generic plan that a prepared statement settles on
 // (explaintest.AnalyzedGenericPlan) and the plan made for the values of the read
-// (explaintest.AnalyzedPlan). Each is read with no project named and with one. Sequential scans
-// stay on: with them off, the planner reads a table it would scan whole through the whole of one
-// of its indexes instead, with no index condition, which is the same read under another name, in
-// a plan the server does not run. The corpus is read in three states of each issue's newest-event
-// pair (newestEventStates): as written, with every pair null, which is a deployment before
-// 20261125144002 fills it; after that fill; and with one member issue's pair a seq behind its
-// last_seq, as an append by the release before 20261125143901 leaves it during a roll or after a
-// rollback. In each, the priorities read's statement (priorityReadQuery) answers main's times,
-// and each of its plans:
+// (explaintest.AnalyzedPlanUnder). Each is read with no project named and with one. Sequential
+// scans stay on: with them off, the planner reads a table it would scan whole through the whole of
+// one of its indexes instead, with no index condition, which is the same read under another name,
+// in a plan the server does not run. The corpus is read in three states of each issue's
+// newest-event pair (newestEventStates): as written, with every pair null, which is a deployment
+// before 20261125144002 fills it; after that fill; and with one member issue's pair a seq behind
+// its last_seq, as an append by the release before 20261125143901 leaves it during a roll or
+// after a rollback. In each, the priorities read's statement (priorityReadQuery) answers main's
+// times, and each of its plans:
 //
 //   - reads, in its newest event (newestEventRead), the event of last_seq of exactly the member
 //     issues whose pair does not name it, and no other event (requireNewestEventProbes): every
@@ -448,7 +448,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 				parameters, literals := benchtime.PreparedArguments(t, text.name+" over "+over, text.arguments...)
 				plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
 					fmt.Sprintf("newest_event_%d_%d_%d", stateNumber, scopeNumber, textNumber), text.statement, parameters, literals))
-				plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
+				plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlanUnder(t, ctx, corpus.database.Pool,
 					text.statement, nil, text.arguments...))
 			}
 			for _, plan := range plans {

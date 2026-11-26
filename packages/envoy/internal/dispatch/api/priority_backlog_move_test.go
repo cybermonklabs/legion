@@ -419,11 +419,11 @@ func TestTheBacklogMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 				{"the generic plan", explaintest.AnalyzedGenericPlan(t, ctx, connection,
 					fmt.Sprintf("backlog_move_%d_%d", statementNumber, schemaNumber), statement.sql,
 					parameters, literals, withSeqScansOff...)},
-				{"the plan for its values", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool, statement.sql,
+				{"the plan for its values", explaintest.AnalyzedPlanUnder(t, ctx, corpus.database.Pool, statement.sql,
 					withSeqScansOff, statement.arguments...)},
-				{"the plan for its values with the default settings", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
+				{"the plan for its values with the default settings", explaintest.AnalyzedPlanUnder(t, ctx, corpus.database.Pool,
 					statement.sql, schema.setup, statement.arguments...)},
-				{"the plan for its values with bitmap scans off", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
+				{"the plan for its values with bitmap scans off", explaintest.AnalyzedPlanUnder(t, ctx, corpus.database.Pool,
 					statement.sql, withBitmapScansOff, statement.arguments...)},
 			}
 			for _, plan := range plans {

@@ -43,7 +43,7 @@ func projectRig(t *testing.T, profiles ...string) (*rig, *projectaccesstest.Serv
 		s.secrets = []secrets.LocalSecret{tagged("PRIV_SECRET", ada), tagged("PRIV_SHARED", policy.OwnerShared)}
 		s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		if len(profiles) > 0 {
-			s.profiles = policytest.ProfilesFile(profiles...)
+			s.profiles = policytest.KindsFile(profiles...)
 		}
 	})
 	return r, dispatch
@@ -111,7 +111,7 @@ func TestTheApprovalPageShowsAPrivateSecretsProject(t *testing.T) {
 // PRIV, who may approve the profile by owner and tier, gets the 404 an id no record has, as for
 // PRIV_SHARED (TestAnOutsiderSeesNoPrivateRequest).
 func TestAPrivateProjectsProfileIsShownAndHiddenAsItsSource(t *testing.T) {
-	r, _ := projectRig(t, `{"name": "PRIV_SHARED_READ", "source": "PRIV_SHARED", "proxy": {"hosts": ["api.example.com"]}}`)
+	r, _ := projectRig(t, `{"name": "PRIV_SHARED_READ", "source": "PRIV_SHARED", "proxy": "example"}`)
 	enrollmentID, key := r.benSession(t, "ben-profile-box")
 	r.nameProjects(t, enrollmentID, privProject)
 	profiled := r.request(t, enrollmentID, key, "rotate the shared key", nil, "", "PRIV_SHARED_READ")

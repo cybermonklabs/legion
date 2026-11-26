@@ -314,7 +314,7 @@ func TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex(t *testing.T) {
 		}{
 			{"the generic plan", explaintest.AnalyzedGenericPlan(t, ctx, connection, fmt.Sprintf("answers_read_%d", number),
 				text.statement, parameters, literals, "set local enable_seqscan = off")},
-			{"the plan for its values", explaintest.AnalyzedPlan(t, ctx, f.database.Pool, text.statement,
+			{"the plan for its values", explaintest.AnalyzedPlanUnder(t, ctx, f.database.Pool, text.statement,
 				[]string{"set local enable_seqscan = off"}, arguments...)},
 		}
 		for _, plan := range plans {
