@@ -135,7 +135,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 			view.PodUID = podUID
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion())
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -173,11 +173,12 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 }
 
 // releaseUnownedPods decides each pod of the project that no claim of its issue can use: an
-// issue whose every claim is failed, retired or suspended holds a pod of 3 CPU and 19 GiB that
-// no role can take a turn in, and this is the pass that releases it. One issue's failure is
-// logged and the rest are decided, as the idle pass has it: a release is a saving and never a
-// correctness step, and the one start that waits on it, a start whose pod lacks the slot of its
-// claim or the role of its step, is served by the update round too.
+// issue whose every claim is failed, retired or suspended holds a pod no role can take a turn
+// in, and the pod's reservation with it (2 CPU and 8 GiB at the defaults), and this is the pass
+// that releases it. One issue's failure is logged and the rest are decided, as the idle pass has
+// it: a release is a saving and never a correctness step, and the one start that waits on it, a
+// start whose pod lacks the slot of its claim or the role of its step, is served by the update
+// round too.
 //
 // It writes one line saying what the whole pass did — how many issues it decided, how many it
 // released and how many it held under each reason — whenever it decided at least one. That line
@@ -370,14 +371,14 @@ func operatorSuspended(view pods.IdleView) []string {
 // podWaitHeldWords is what the controller is told of starts, the starts that wait whose pod of
 // issue the operator's suspension of the claims suspended, each named as operatorSuspended names
 // it, holds, for the controller agent in plain words. Each start is named by the
-// claim it starts as `legion state` names a claim (api.ClaimNameInIssue): by its role where it
-// starts the role's own claim, and by its role with the claim's token beside it for any other claim
-// of the role, since the role alone would name a second agent's start as a start of the role's own
-// agent.
-func podWaitHeldWords(issue string, starts []pods.WaitingStart, suspended []string, idle time.Duration) string {
+// claim it starts (record.WaitingClaim), as `legion state` names a claim (api.ClaimNameInIssue): by
+// its role where it starts the role's own claim, and by its role with the claim's token beside it
+// for any other claim of the role, since the role alone would name a second agent's start as a
+// start of the role's own agent.
+func podWaitHeldWords(issue string, starts []record.WaitingClaim, suspended []string, idle time.Duration) string {
 	names := make([]string, len(starts))
 	for i, start := range starts {
-		names[i] = api.ClaimNameInIssue(start.Role, start.Claim)
+		names[i] = api.ClaimNameInIssue(start.Role, start.Token)
 	}
 	waiting := strings.Join(names, ", ")
 	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made without the slot or the role that each of those starts needs, and no role runs in it. "+
@@ -548,10 +549,11 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
-// a pod holds 3 CPU and 19 GiB for as long as it stands. A deployment that sees one of the three
-// every tick is reading capacity held by something that is not work. IdleHoldUnownedUnpushedWork
-// is recorded too: its pod stands with no live claim because its disk holds work origin does not
-// hold, and the record is where an operator finds the pod whose roles must come back to push it.
+// a pod holds its reservation (2 CPU and 8 GiB at the defaults) for as long as it stands. A
+// deployment that sees one of the three every tick is reading capacity held by something that is
+// not work. IdleHoldUnownedUnpushedWork is recorded too: its pod stands with no live claim
+// because its disk holds work origin does not hold, and the record is where an operator finds
+// the pod whose roles must come back to push it.
 //
 // A project's pause's three holds are recorded too (IdleHoldPaused, IdleHoldPauseHeld,
 // IdleHoldUnownedPauseHeld, decision 12 of dispatch://INFRA-3759): each is a pod release would
@@ -742,10 +744,10 @@ func checkClaim(view pods.IdleView, live []store.ReleasedClaim) store.ReleasedCl
 // leftPodCloseRows is the close of a pod whose issue left the workflow as outbox rows
 // (workflow.LeftPodClose). A pod with no live claim gets the issue's Sandbox suspension alone
 // (leftPodStopRows). A pod with a live claim gets one row first, and no other: the workspace check
-// (record.IssueWorkspaceCheck with CloseRoles), read through a live claim of the open phase's role,
-// else the first live claim, which queues the stops and the suspension only where the read
-// finds nothing that origin does not hold (checkLeftPodWorkspace), since those delete a disk a role
-// worked on. The rows carry no release and the store writes them with no mark
+// (record.IssueWorkspaceCheck with CloseRoles), read through checkClaim's claim (the open phase's
+// worker if live, else the first live claim), which queues the stops and the suspension only where
+// the read finds nothing that origin does not hold (checkLeftPodWorkspace), since those delete a
+// disk a role worked on. The rows carry no release and the store writes them with no mark
 // (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	if len(decision.Claims) == 0 {

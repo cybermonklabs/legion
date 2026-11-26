@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -137,6 +139,47 @@ func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
 	ghost.Role = "ghost"
 	if handler, _, reason := accept(ghost); handler != nil || reason != "launcher role is not one of its pod's roles" {
 		t.Errorf("a launcher of ghost = %v, %q; want the refusal %q", handler != nil, reason, "launcher role is not one of its pod's roles")
+	}
+}
+
+func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
+	g := deploymentRig(t)
+	const checker claim.Role = "checker"
+	token, err := claim.NewToken(testProject, testTree, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := g.spawn(testSpec(t, token, checker, testTree))
+	logs := &lockedLog{}
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+		o.Log = slog.New(slog.NewTextHandler(logs, nil))
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)})(g, o)
+	})()
+	if slices.Contains(restarted.issueRoles, checker) {
+		t.Fatal("checker is still configured after restart")
+	}
+
+	hello := rigLauncherHello(g, loc.Sandbox.Name, loc.Sandbox.PodUID, checker)
+	hello.Token += "-wrong"
+	if handler, _, reason := restarted.LauncherResolver()(hello); handler != nil || reason != "launcher token is not current" {
+		t.Errorf("dropped role with a wrong token: accepted=%t, refusal=%q", handler != nil, reason)
+	}
+
+	restarted.refreshGitHubCredentials(g.ctx)
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "github credential refresh failed") && strings.Contains(line, "role=checker") {
+			t.Errorf("refresh tried the dropped role: %s", line)
+		}
+	}
+
+	launcher := redial(t, g, token, loc.Sandbox.Generation, false)
+	if err := restarted.Suspend(g.ctx, loc); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := launcher.commands(), fmt.Sprintf("stop %d", loc.Sandbox.Generation); got != want {
+		t.Errorf("dropped role's launcher received %q, want %q", got, want)
 	}
 }
 

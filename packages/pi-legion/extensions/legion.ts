@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
@@ -86,6 +87,12 @@ import {
   workspaceRecreatedMessage,
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
+
+// The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+// the manifest of the module this process loaded names it once a pack has written it, and a
+// checkout's own fixtures decide it for a plugin run from the checkout. A bundle installed with
+// neither refuses to load here rather than speak a number it guessed.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
@@ -369,12 +376,11 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
-    // This build's own `legion.daemonApiVersion`, read from the manifest of the module this
-    // process loaded, as the claim's registration reads it. The daemon serves each answer in
-    // the shape the contract the caller states describes.
+    // This build's own contract, as the claim's registration states it. The daemon serves each
+    // answer in the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
       requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
-      { pluginContract: pkg.legion.daemonApiVersion }
+      { pluginContract: PLUGIN_CONTRACT }
     );
     return daemonClient;
   };

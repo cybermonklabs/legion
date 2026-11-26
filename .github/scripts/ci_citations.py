@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Holds each citation under .github/ to the file it names, and refuses a citation of any other
-shape there.
+"""Holds each citation under .github/, and in each //ci: line of a file outside it, to the file it
+names, and refuses a citation of any other shape there.
 
 A citation names what it means inside a file, never a line of it: a line number names whatever
 line a later edit moves there, and nothing reads a citation of a file the citing change does not
@@ -59,11 +59,17 @@ A path word is a word that is a tracked file's path, or the end of one after a s
 a slash or a dot, or a capitalised file name such as CODEOWNERS or Dockerfile: browser.Dockerfile,
 ci.yaml and scripts/build.ts are path words when a tracked file's path ends so.
 
-The scope is every tracked text file under .github/, read as plain text: no comment, string,
-heredoc or Markdown structure of the citing file is parsed, so a citation counts wherever it
-stands. A tracked symlink is skipped, being another file's text, which is read at its own path
-when that is under .github/; a file that is not UTF-8 is no text. Nothing outside .github/ is
-read, held or refused.
+The scope is every tracked text file under .github/, and each //ci: line of every tracked text
+file outside it, read as plain text: no comment, string, heredoc or Markdown structure of the
+citing file is parsed, so a citation counts wherever it stands in what is read. A tracked symlink
+is skipped, being another file's text, which is read at its own path; a file that is not UTF-8 is
+no text. Outside .github/ a //ci: line alone is read: a line whose text, after any whitespace,
+starts with //ci:, the test the parser of ci_filter_sources.py puts to each line of a Go file
+before it reads the rest as what a test reads (CI_LINE below cites it). So every line that parser
+reads is read here, and in any other text file too, so that a guide's example is held as well.
+Each such line is read alone, as that parser reads it: no rule reads across its end into the next
+line, and a problem names the line it is on. Any other line outside .github/, among them a //ci:
+that does not start its line, as in a string or after code, is not read, held or refused.
 
 How the code of a cited file is read, each language by its own scanner:
 - Python through its tokenize module: its NAME tokens are its identifiers, and a name that is
@@ -106,6 +112,10 @@ SCANNERS = os.path.dirname(os.path.realpath(__file__))
 TS_SCANNER = ".github/scripts/ci_citations_code.ts"
 GO_SCANNER = ".github/scripts/ci_citations_code.go"
 SCOPE = ".github/"
+# The test a line of a file outside SCOPE passes to be read, matched at the line's start: the start
+# of `.github/scripts/ci_filter_sources.py#DIRECTIVE`, which reads the rest of such a line of a Go
+# file as what a test reads, so that this check reads every line that one reads.
+CI_LINE = re.compile(r"\s*//ci:")
 BACKTICK = "\x60"
 
 
@@ -501,11 +511,11 @@ def beside_problems(citing, repo):
 
 # ---- the scan ---------------------------------------------------------------------------------
 
-def scanned(repo):
-    """Every tracked text file under .github/: no symlink, and UTF-8."""
+def texts(repo, inside):
+    """Every tracked text file under .github/, or every one outside it: no symlink, and UTF-8."""
     for path in repo.files:
         full = os.path.join(ROOT, path)
-        if not path.startswith(SCOPE) or os.path.islink(full) or not os.path.isfile(full):
+        if path.startswith(SCOPE) != inside or os.path.islink(full) or not os.path.isfile(full):
             continue
         try:
             with open(full, encoding="utf-8") as f:
@@ -514,12 +524,27 @@ def scanned(repo):
             continue
 
 
+def ci_lines(repo):
+    """Each //ci: line of a tracked text file outside .github/, as its path and the text read: the
+    line alone, after a newline for each line above it, so that no rule reads across its end and a
+    problem names the line it is on."""
+    for path, body in texts(repo, inside=False):
+        if "//ci:" not in body:
+            continue
+        for number, line in enumerate(body.split("\n"), 1):
+            if CI_LINE.match(line):
+                yield path, "\n" * (number - 1) + line
+
+
 def main(argv):
     if argv:
-        print("ci_citations.py takes no arguments: it reads every tracked text file under .github/")
+        print("ci_citations.py takes no arguments: it reads every tracked text file under .github/ and each "
+              "//ci: line of the tracked text files outside it")
         return 2
     repo = Repo()
-    citing = [(path, Citing(body, repo)) for path, body in scanned(repo)]
+    files = [(path, Citing(body, repo)) for path, body in texts(repo, inside=True)]
+    lines = [(path, Citing(text, repo)) for path, text in ci_lines(repo)]
+    citing = files + lines
     try:
         repo.load({m.group(1) for _, c in citing for m in c.tokens if m.group(1) in repo.exact})
     except ScanFailed as failure:
@@ -531,16 +556,16 @@ def main(argv):
                     *hash_problems(c, repo), *beside_problems(c, repo)]
         found.extend(f"{path}:{number}: {message}" for number, message in sorted(problems))
     tokens = sum(len(c.tokens) for _, c in citing)
-    holding = sum(1 for _, c in citing if c.tokens)
     for problem in found:
         print(problem)
     if found:
         return 1
     if tokens == 0:
-        print(f"found no citation token in the {len(citing)} text files under {SCOPE}: a scan that finds "
-              "none holds none, so this is a failure, not a pass")
+        print(f"found no citation token in the {len(files)} text files under {SCOPE} or the {len(lines)} //ci: "
+              "lines outside it: a scan that finds none holds none, so this is a failure, not a pass")
         return 1
-    print(f"{tokens} citation tokens in {holding} of the {len(citing)} text files under {SCOPE} "
+    print(f"{tokens} citation tokens in {sum(1 for _, c in files if c.tokens)} of the {len(files)} text files "
+          f"under {SCOPE} and {sum(1 for _, c in lines if c.tokens)} of the {len(lines)} //ci: lines outside it "
           f"name text their files hold, and no citation there is of another shape")
     return 0
 

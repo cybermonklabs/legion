@@ -257,7 +257,7 @@ func LeftBy(role claim.Role, at Phase) Phase {
 		}
 		return Implementing
 	}
-	if claim.IsRole(role) && !claim.IsBuiltin(role) {
+	if claim.IsDeploymentRole(role) {
 		return Step
 	}
 	return ""

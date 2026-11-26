@@ -73,12 +73,12 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
-		podUpdateRole{role: claim.RoleTester, state: supervise.StateIdle, session: true, inPod: true, contract: api.DaemonAPIVersion},
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion()},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateIdle, session: true, inPod: true, contract: api.DaemonAPIVersion()},
 		readyWorker(claim.RoleArchitect),
-		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion(),
 			round: podUpdateRound, reasons: podUpdateDrift, unasked: true},
-		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion(),
 			suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, left: podUpdateRound, unasked: true},
 	)
 	rig.drifts(podUpdateDrift)
@@ -297,7 +297,7 @@ func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T
 		dispatchProject: "LEGION", log: rig.log}).enqueueOutbox
 	token := mustClaimToken(t, other, claim.RoleArchitect)
 	if err := rig.st.PutClaim(rig.ctx, supervise.Claim{Token: token, Project: podUpdateProject, Tree: other, Issue: other,
-		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion(),
 		Session: "ses_other", SessionFile: "/sessions/other.jsonl", Locator: podUpdateLocator(token, other, otherPod)}); err != nil {
 		t.Fatalf("seed the operator's spawn of %s: %v", other, err)
 	}

@@ -21,6 +21,7 @@ var inPlanningB = record.Assignment{Experiment: "planning", Unit: "issue", Varia
 // words: the route and the workflow name them through these constructors, so an owner reads the
 // same text whichever of the two refused, and a change of a word is a change of this test.
 func TestThePlanRefusalsSayWhy(t *testing.T) {
+	t.Parallel()
 	accepting := func(starts int64) record.StepEntry {
 		return record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}, Starts: starts}
 	}
@@ -120,6 +121,7 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 }
 
 func TestStaleEntryRefusalsNameARecordedCountZeroRun(t *testing.T) {
+	t.Parallel()
 	entry := record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}}
 	for _, stale := range []struct {
 		name string
@@ -145,6 +147,7 @@ func TestStaleEntryRefusalsNameARecordedCountZeroRun(t *testing.T) {
 }
 
 func TestStaleEntryRefusalsNameAZeroEntryAsNoRun(t *testing.T) {
+	t.Parallel()
 	for _, stale := range []struct {
 		name string
 		make func(record.StepEntry) *Refusal

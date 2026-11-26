@@ -17,10 +17,9 @@ name: CI job test
 # its build-input list, the changelog fold, the guides' layout, and the lint and typecheck of the
 # script directories that are no workspace. Those are build, lint and typecheck checks, which run
 # on a pull request whatever their time. test runs the tests: the `*.test.sh` harness of each
-# script under .github/scripts
-# (and of scripts/priorities-seed-check.sh), the Bun suites of scripts/ and the live proofs'
-# libraries. Its `test` output is held back on a pull request without the label full-ci or
-# lane:test, so it runs in the merge queue
+# script under .github/scripts (and of scripts/daemon-contract-order.sh), the Bun suites of
+# scripts/ and the live proofs' libraries. Its `test` output is held back on a pull request without
+# the label full-ci or lane:test, so it runs in the merge queue
 # (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 #
 # The daemon's Go tests, which the test job used to carry, are
@@ -35,8 +34,9 @@ name: CI job test
 # harness instead of all of them. A step of a called workflow cannot read
 # `needs.changes.outputs.<name>` - inside a reusable workflow the only context carrying a caller's
 # value is `inputs` - so each calling job of ci.yaml hands this file one input,
-# `matched-filters`: the paths filter's own list of the filters that matched, or `all` on a
-# dispatched run and on one whose filters fell open. Each gated step reads its own filter out of it,
+# `matched-filters`: the paths filter's own list of the filters that matched, or `all` on a run
+# that selects every job (a dispatch of main, or one given every-job) and on one whose filters fell
+# open. Each gated step reads its own filter out of it,
 # `inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"<filter>"')`, the quotes
 # matching one whole name of the list, and `.github/scripts/check-ci-filters.sh` resolves that
 # through the caller's `with:` and holds the step to that shape (its rule 23). A gate added here
@@ -75,8 +75,8 @@ on:
       matched-filters:
         description: >-
           `.github/workflows/ci.yaml#needs.changes.outputs.matched_filters`: the paths filter's list of the filters
-          that matched, as JSON (`["test","release_push_test"]`), or `all` on a dispatched run and
-          on one whose filters fell open.
+          that matched, as JSON (`["test","release_push_test"]`), or `all` on a run that selects
+          every job (a dispatch of main, or one given every-job) and on one whose filters fell open.
           Each gated step below runs when its own filter is in it.
         type: string
         required: true
@@ -157,8 +157,8 @@ jobs:
       # them, and "Wait for the script harnesses and judge them",
       # the job's last step but the ci-ok report, is their verdict and prints each one's log. A
       # harness that needs an earlier step is queued after it: release-push.test.sh after
-      # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh
-      # and go-cache-working-set.test.sh after setup-go.
+      # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh,
+      # go-cache-working-set.test.sh and go-legs.test.sh after setup-go.
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"release_push_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/release-push.test.sh .github/scripts/release-push.test.sh
@@ -172,11 +172,6 @@ jobs:
 
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
-
-      # The seed that writes the first priorities from the table kept by hand, driven against a
-      # fake Dispatch of the test's own: it reaches no network and no deployment.
-      - name: Test the priorities seed
-        run: bun test scripts/priorities-seed.test.ts
 
       - name: Test the Bun pin check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_bun_version_test"')
@@ -375,9 +370,13 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"disk_watch_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/disk_watch.test.sh .github/scripts/disk_watch.test.sh
 
-      - name: Test the priorities seed check (a stand-in Dispatch)
-        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"priorities_seed_check_test"')
-        run: .github/scripts/harness-pool.sh start scripts/priorities-seed-check.test.sh bash scripts/priorities-seed-check.test.sh
+      - name: Test the daemon contract order script (a scratch repository)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"daemon_contract_order_test"')
+        run: .github/scripts/harness-pool.sh start scripts/daemon-contract-order.test.sh bash scripts/daemon-contract-order.test.sh
+
+      - name: Test the worker image's contract order step (a scratch repository)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"image_order_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/worker-image-contract-order.test.sh bash .github/scripts/worker-image-contract-order.test.sh
 
       # main's #4929 added it as a step of its own after the pool was written; it reads nothing
       # outside its own mktemp directory and the go stand-ins it puts on PATH there, so it is
@@ -440,6 +439,12 @@ jobs:
       - name: Test the build cache prune of the cache fills
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_cache_working_set_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-cache-working-set.test.sh .github/scripts/go-cache-working-set.test.sh
+
+      # After setup-go: its fixtures run the real go list over a scratch module with no
+      # requirement, which reads no module cache and no network.
+      - name: Test the Go legs' package lists
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-legs.test.sh .github/scripts/go-legs.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.

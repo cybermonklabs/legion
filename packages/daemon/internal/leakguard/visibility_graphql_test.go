@@ -590,7 +590,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
 				Clock:        clock,
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
-				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Env:          withRules(t, append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir())),
 			})
 			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
 			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
@@ -598,7 +598,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 				Dir:     t.TempDir(),
 				Remote:  "origin",
 				URL:     theURL,
-				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + theHost, RemoteSHA: noSHA}},
+				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + leakguardtest.RulesHost, RemoteSHA: noSHA}},
 			})
 			tc.check(t, err, sources)
 			if got := countLines(t, reads); got != 1 {

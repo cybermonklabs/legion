@@ -148,7 +148,7 @@ func TestAStartWhoseFirstTryFailsAfterItMakesItsClaimRecordsTheStepsAgentOnItsRe
 	if !found {
 		t.Fatalf("the first try made no claim %s: the case's premise", token)
 	}
-	if got := machine.Claim(); got.State != supervise.StateQueued || got.SessionAgent != "" || got.Generation != 0 {
+	if got := machine.Claim(); got.State != supervise.StateQueued || got.SessionAgent != "" || got.Launched() {
 		t.Fatalf("the first try left the claim %s at generation %d recording the agent %q, want it queued, never launched and recording none: the case's premise",
 			got.State, got.Generation, got.SessionAgent)
 	}

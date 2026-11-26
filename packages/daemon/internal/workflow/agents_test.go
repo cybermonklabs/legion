@@ -250,31 +250,31 @@ func TestARegivenTaskKeepsTheNamesOfItsKeys(t *testing.T) {
 
 // The project's default steps are named from their own steps when the first step of a run with no
 // owner's plan writes them: each agent has a name, the steps of a key share it. A name whose claim
-// holds the session of a key an earlier plan gave (record.KeySessions) is that key's, and so is a
+// holds the session of a key an earlier plan gave (record.NameClaims) is that key's, and so is a
 // name an earlier row of a key held, so the default steps' implementer takes implementer-2 beside
 // either; a name an earlier row with no key held is free.
 func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 	engine := returnEngine()
 	engine.cfg.DefaultSteps = []plan.Step{{Role: "implementer"}, {Role: "tester", Key: "r"}, {Role: "reviewer", Key: "r"}}
 	for _, tc := range []struct {
-		earlier  []record.PlanStep
-		sessions record.KeySessions
-		want     []claim.Agent
+		earlier []record.PlanStep
+		claims  record.NameClaims
+		want    []claim.Agent
 	}{
 		{want: []claim.Agent{"implementer", "tester", "tester"}},
-		{sessions: record.KeySessions{"implementer": {Role: "implementer", Key: "k"}}, want: []claim.Agent{"implementer-2", "tester", "tester"}},
+		{claims: record.NameClaims{"implementer": {Role: "implementer", Key: "k"}}, want: []claim.Agent{"implementer-2", "tester", "tester"}},
 		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k", Agent: "implementer"}},
 			want: []claim.Agent{"implementer-2", "tester", "tester"}},
 		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", Agent: "implementer"}},
 			want: []claim.Agent{"implementer", "tester", "tester"}},
 	} {
-		_, _, steps := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 2}, tc.earlier, nil, tc.sessions)
+		_, _, steps := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 2}, tc.earlier, nil, tc.claims)
 		var names []claim.Agent
 		for _, step := range steps {
 			names = append(names, step.Agent)
 		}
 		if !slices.Equal(names, tc.want) {
-			t.Fatalf("the default steps beside the rows %+v and the key sessions %v are named %q, want %q", tc.earlier, tc.sessions, names, tc.want)
+			t.Fatalf("the default steps beside the rows %+v and the claims by name %v are named %q, want %q", tc.earlier, tc.claims, names, tc.want)
 		}
 	}
 }

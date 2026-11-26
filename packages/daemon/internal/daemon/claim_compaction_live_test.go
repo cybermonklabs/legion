@@ -58,16 +58,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -117,7 +114,6 @@ const (
 // the controller session whose grant is the controller's own door onto both operations.
 type claimCompactionLive struct {
 	liveAgentProof
-	built *built
 	// panes is each live claim's own pane: its issue, its role and the stand-in it talks to.
 	panes map[claim.Token]*compactPane
 	// ladder, notice, root and refusing are the four issues, one pane each.
@@ -178,7 +174,6 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	proof := newLiveProof(t, "scripts/e2e/claim-compaction.sh")
 	r := &claimCompactionLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
-		built:          &built{},
 		panes:          map[claim.Token]*compactPane{},
 		ladder:         proof.cfg.Project + "-1", notice: proof.cfg.Project + "-2",
 		root: proof.cfg.Project + "-3", refusing: proof.cfg.Project + "-4",
@@ -287,7 +282,7 @@ func (r *claimCompactionLive) registerController() {
 	t := r.t
 	t.Helper()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret",
-		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
 	}
@@ -299,7 +294,7 @@ func (r *claimCompactionLive) registerController() {
 	status, body = r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: r.controllerSession,
 		OmpSessionFile: "/sessions/" + r.controllerSession + ".jsonl",
-		AgentID:        r.controllerSession, PluginContract: api.DaemonAPIVersion,
+		AgentID:        r.controllerSession, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
@@ -313,23 +308,14 @@ func (r *claimCompactionLive) registerController() {
 		r.controllerSession, registered.ClaimToken)
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the
-// API listener the fixture holds, and the workflow's App tokens stood in for. The clock is the
-// real one: what this proof measures — the RPC timeout a held summary outlasts, and the ladder's
-// first rung a compaction's own send comes inside of — is measured where it is real.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), and
+// the workflow's App tokens stood in for. The clock is the real one: what this proof measures — the
+// RPC timeout a held summary outlasts, and the ladder's first rung a compaction's own send comes
+// inside of — is measured where it is real.
 func (r *claimCompactionLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.built.mu.Lock()
-			defer r.built.mu.Unlock()
-			r.built.conns, r.built.address = listener, address
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		listen:         heldListen,
-		workflowTokens: &workflowTokenRecorder{},
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.workflowTokens = &workflowTokenRecorder{}
+	return o
 }
 
 // seed records the issues as the daemon would hold them at the moment each one's worker began: a

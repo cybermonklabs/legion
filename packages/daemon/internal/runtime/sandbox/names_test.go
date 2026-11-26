@@ -15,6 +15,7 @@ import (
 // the token becomes a DNS-1123 label. The locator golden pins the short case, whose claim token
 // carries an upper-case issue key.
 func TestSandboxNameIsTheIssueAsALabel(t *testing.T) {
+	t.Parallel()
 	for token, want := range map[claim.Token]string{
 		"legion-omp-LEGION-208-tester":       "legion-omp-legion-208",
 		"legion-legion-legion-208-architect": "legion-legion-legion-208",
@@ -29,6 +30,7 @@ func TestSandboxNameIsTheIssueAsALabel(t *testing.T) {
 // Past 63 characters the name keeps a readable prefix and ends in 8 hex of the issue token's
 // sha256. Role siblings name the same Sandbox, while different issues remain distinct.
 func TestSandboxNameOfALongTokenIsAnIssuePrefixAndHash(t *testing.T) {
+	t.Parallel()
 	long := claim.Token("legion-" + strings.Repeat("averyverylongprojectname", 3) + "-legion-208-implementer")
 	sibling := claim.Token("legion-" + strings.Repeat("averyverylongprojectname", 3) + "-legion-208-reviewer")
 	issueToken := strings.TrimSuffix(string(long), "-implementer")
@@ -50,6 +52,7 @@ func TestSandboxNameOfALongTokenIsAnIssuePrefixAndHash(t *testing.T) {
 // Every claim of the issue, one for each of its agents, names the same claim, and the
 // controller's claim its own.
 func TestIssueClaimNameIsTheControllersClaimName(t *testing.T) {
+	t.Parallel()
 	for token, want := range map[claim.Token]string{
 		rootToken:       "issue-legion-legion-legion-208",
 		workerToken:     "issue-legion-legion-legion-208",

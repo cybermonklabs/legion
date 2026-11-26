@@ -70,9 +70,10 @@ const (
 	CarriedDormant = "dormant"
 )
 
-// PermanentError is a broker refusal a retry cannot change (a broker 4xx other than an expired
-// token): an Enroll refusal drops the identity and waits for the shim's next hello; a Revoke
-// refusal is not retried.
+// PermanentError is a broker refusal a retry cannot change (a broker 4xx other than a 408 or a
+// 429, which are an outage, an expired pod token, or a registrar the broker does not yet list:
+// cipher.APIError.Permanent): an Enroll refusal drops the identity and waits for the shim's next
+// hello; a Revoke refusal is not retried.
 type PermanentError interface{ Permanent() bool }
 
 // ExpiredTokenError is an Enroll failure the broker gave because the pod token presented had

@@ -30,7 +30,7 @@
 -- the owner, or one that holds no name, is left out of both, as record.NameAgents takes no name
 -- from it. A claim's name is the last part of its token after the issue's part (claim.Token.Cut).
 -- NameAgents keeps a key's name from the rows and from the claims that record a key's session
--- (record.KeySessionsOf), and a write of a plan deletes rows: a version replaces the rows of each
+-- (record.NameClaimsOf), and a write of a plan deletes rows: a version replaces the rows of each
 -- task it gives (record.Postgres.PutPlan), a later version removes a task with its rows
 -- (DeleteTasks), and the first step of a new owner's run deletes the plans an earlier owner gave
 -- (workflow's passOverEarlierOwners). Left recording no agent, a claim would keep nothing of whose

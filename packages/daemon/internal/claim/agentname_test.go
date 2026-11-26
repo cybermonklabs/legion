@@ -44,10 +44,9 @@ func TestANumberedAgentsNameReadsBackToItsRole(t *testing.T) {
 
 // A role is no numbered agent of itself. A role of 32 bytes that ends in `-2`, 30 r's and -2, is
 // the name NumberedAgentName gives its own second agent, and NumberedAgentRole answers none for it
-// among roles that hold it, so its callers, the settings loader and plan.Validate, pass it the whole
-// list of roles. A role it is another role's numbered agent of, 30 r's, is still answered. The
-// fault: the role was read back as its own numbered agent, and each caller took it out of the list
-// first.
+// among roles that hold it. A role it is another role's numbered agent of, 30 r's, is still
+// answered. The fault: the role was read back as its own numbered agent, and each caller took it
+// out of the list first.
 func TestARoleIsNoNumberedAgentOfItself(t *testing.T) {
 	self := Role(strings.Repeat("r", 30) + "-2")
 	other := Role(strings.Repeat("r", 30))

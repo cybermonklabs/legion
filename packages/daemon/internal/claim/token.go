@@ -92,6 +92,10 @@ func RoleRank(role Role) int {
 	return len(Roles)
 }
 
+// IsDeploymentRole reports whether role is a valid issue claim role outside Legion's six.
+// To check whether that role is configured, consult the deployment.
+func IsDeploymentRole(role Role) bool { return IsRole(role) && !IsBuiltin(role) }
+
 // NewToken is the token of the agent named for role on issue, AgentToken(project, issue,
 // Agent(role)): `legion-<project>-<issue project, lowercased>-<number>-<role>`, byte for byte the
 // shipped roleToken (packages/contracts/src/legion-roles.ts:48-55). It refuses a name that is no
