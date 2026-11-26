@@ -56,10 +56,13 @@
 #             component go, E's parent is cleared, X's parent moves in place to M, relay is added
 #             under legion, daemon depends on listener, workspace and server's dependency go,
 #             listener's parent moves in place to daemon, N is given envoy, and the refs row of D's
-#             document goes. Each standing relation is answered once - by its old arm where its row
-#             names no node or was moved in place, by the store otherwise - and each deleted one,
-#             and each old value, nowhere, through graph_edges, the references read of both
-#             processes and the counts.
+#             document's citation of C goes while its text still cites C. Each standing relation is
+#             answered once - by its old arm where its row names no node or was moved in place, by
+#             the store otherwise - and each deleted one, and each old value, nowhere, through
+#             graph_edges, the references read of both processes and the counts. The citation is
+#             answered nowhere in the transaction that deletes its refs row; that delete owes the
+#             document a re-index, and this head's forms drain writes the row again from the
+#             text, so from then on the citation stands, answered once, by the store.
 #   restart   the second process restarted: its boot backfill appends the tuple that names each new
 #             value, so each standing relation is answered once, by the store, dated as its old arm
 #             dated it, and the old arms answer none; X and listener hang under their new parents
@@ -84,11 +87,11 @@
 #
 # Inputs: DATABASE_URL (infra_1253_upgrade on this machine, which this driver empties),
 # DISPATCH_TOKEN (the agent bearer every server accepts, e2e-token), PROJECT (CORE) and PRE_1149_SHA
-# (the release before the graph store, which is `git merge-base origin/main
-# origin/legion/INFRA-1149` where unset), the inputs c-view-arms' run line passes; DEV_SIGNIN_LOGIN
-# (optional, the person, `alice` by default), BASELINE_EXTRA_ENV and LEGION_WORKSPACE as
-# lib-baseline.sh reads them; and on PATH the stamped envoy-dispatch of this head, bun (the fake
-# GitHub), base64, curl, diff, git, go, jq, openssl, psql and python3. Each unmet input is exit 2.
+# (the release before the graph store, 62110c253b58ea2c852b60b85a7cd371f4951eac where unset), the
+# inputs c-view-arms' run line passes; DEV_SIGNIN_LOGIN (optional, the person, `alice` by
+# default), BASELINE_EXTRA_ENV and LEGION_WORKSPACE as lib-baseline.sh reads them; and on PATH the
+# stamped envoy-dispatch of this head, bun (the fake GitHub), base64, curl, diff, git, go, jq,
+# openssl, psql and python3. Each unmet input is exit 2.
 # Run it with bash, never bun.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
@@ -109,7 +112,7 @@ Usage: cd packages/dispatch && DATABASE_URL=$INFRA_1253_UPGRADE_DATABASE_URL DIS
          bash e2e/acceptance/view-arms-rollback.sh
        (DATABASE_URL names infra_1253_upgrade on this machine, which this driver empties;
        PRE_1149_SHA is the release before the graph store and defaults to
-       `git merge-base origin/main origin/legion/INFRA-1149`; the stamped envoy-dispatch of this
+       62110c253b58ea2c852b60b85a7cd371f4951eac; the stamped envoy-dispatch of this
        head is on PATH)
 USAGE
 }
@@ -151,18 +154,15 @@ tree_database_parts "$database_url" "$database_names"
 # The earlier release, read in full in the checkout lib-baseline.sh builds it from, so the commit
 # read here is the commit built. PRE_1149_SHA must predate the graph store: over a build that holds
 # it, the announcement it writes could list the four arms' kinds, and the upgrade below would read
-# nothing about a release that writes no tuple. PRE_1149_SHA is `git merge-base origin/main
-# origin/legion/INFRA-1149` where the run names none, the release before the branch that added the
-# graph store. The later build the `later` section boots is this head stamped again with the
-# checkout's HEAD^ (later_commit), read there.
+# nothing about a release that writes no tuple. Where the run names none, PRE_1149_SHA is
+# 62110c253b58ea2c852b60b85a7cd371f4951eac, as c-view-arms' run line defaults it: the parent of
+# cybermonklabs/legion#3178's merge commit aaa6c50470d on main, the release before the graph store.
+# The branch that added the store, origin/legion/INFRA-1149, was deleted at that merge, so its merge
+# base with origin/main, which this default once was, names no commit any more. The later build
+# the `later` section boots is this head stamped again with the checkout's HEAD^ (later_commit),
+# read there.
 readonly repo="${LEGION_WORKSPACE:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
-if [[ -z "${PRE_1149_SHA:-}" ]]; then
-  PRE_1149_SHA="$(git -C "$repo" merge-base origin/main origin/legion/INFRA-1149)" || {
-    printf '%s: PRE_1149_SHA is unset and git merge-base origin/main origin/legion/INFRA-1149 names no commit of %s\n' \
-      "$driver" "$repo" >&2
-    exit 2
-  }
-fi
+PRE_1149_SHA="${PRE_1149_SHA:-62110c253b58ea2c852b60b85a7cd371f4951eac}"
 readonly graph_store_migration=packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql
 pre_commit="$(git -C "$repo" rev-parse --verify --quiet "${PRE_1149_SHA}^{commit}")" || {
   printf '%s: PRE_1149_SHA %s names no commit of %s\n' "$driver" "$PRE_1149_SHA" "$repo" >&2
@@ -958,14 +958,38 @@ insert into issue_components (issue_key, mode) values (:'waiter', 'explicit');
 insert into issue_component_members (issue_key, project_key, component_id) values (:'waiter', :'p', 'envoy');
 delete from issue_component_members where issue_key = :'deleted_link';
 SQL
-with_vars "$section" "delete the refs row of $cited_id's citation of $child as a build of the release before does" "
+# The refs row of the citation goes alone, as an older build's re-index of a text no write changed
+# deletes an edge (migration 20261117025906): the document's text still cites C. In the transaction
+# that deletes it, graph_edges, its arm over refs and its tuple arm answer the citation nowhere: the
+# store states it, the tuple arm answers a document's mention only beside its refs row, and the arm
+# over refs answers none from a document that carries its node. Read after the commit, that would
+# race this head's forms drain, which the delete owes the document to (refs_forms_owed).
+with_vars "$section" "delete the refs row of $cited_id's citation of $child as a build of the release before does, and read graph_edges in that transaction" "
+  begin;
   with gone as (
     delete from refs where from_kind = 'artifact' and from_id = :'cited' and to_kind = 'issue' and to_id = :'child'
     returning 1)
-  select count(*) from gone" "cited=$cited_id" "child=$child"
-[[ "$answer" == 1 ]] ||
-  fail "$section" "delete the refs row of $cited_id's citation of $child" "it deleted $answer rows"
+  select count(*) from gone;
+  select (select count(*) from graph_edges where $(view_arms_where "$cited_edge"))
+    || '|' || (select count(*) from ($(<"$work/arm.refs")) arm (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq)
+               where $(view_arms_where "$cited_edge"))
+    || '|' || (select count(*) from ($(<"$work/arm.tuple")) arm (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq)
+               where $(view_arms_where "$cited_edge"));
+  commit;" "cited=$cited_id" "child=$child"
+[[ "${answer%%$'\n'*}" == 1 ]] ||
+  fail "$section" "delete the refs row of $cited_id's citation of $child" "it deleted ${answer%%$'\n'*} rows"
+[[ "${answer#*$'\n'}" == '0|0|0' ]] ||
+  fail "$section" "in the transaction that deletes its refs row, graph_edges, its arm over refs and its tuple arm answer $cited_edge nowhere" \
+    "they answer it (graph_edges|refs arm|tuple arm): ${answer#*$'\n'}"
+pass "$section" "in the transaction that deletes its refs row, graph_edges, its arm over refs and its tuple arm answer $cited_edge nowhere (a citation the store states whose refs row the release before deleted with no retraction)"
 pass "$section" "wrote and deleted the rows a build of the release before writes and deletes, by SQL"
+# This head's forms drain indexes the document again from its text within one of its passes, which
+# still cites C: it writes the refs row again and states the citation, so graph_edges answers it
+# once more, through the tuple arm, and the document's references read answers C once, at the block
+# that holds it, as it did throughout (refs' heldByABlock).
+view_arms_wait_edge "$section" "$cited_edge"
+view_arms_once "$section" "after the rollback:" store "$cited_edge" \
+  "a citation whose refs row this head's forms drain wrote again from the document's text"
 
 rollback_store=(
   "issue $stamped blocked_by issue $target"
@@ -995,9 +1019,8 @@ rollback_deleted=(
   "component $project/listener part_of component $project/envoy|the parent $project/listener left when it was moved in place"
   "component $project/server depends_on component $project/listener|a stamped component dependency the release before deleted with no retraction"
   "issue $deleted_link affects component $project/envoy|a stamped issue's component the release before deleted with no retraction"
-  "$cited_edge|a citation the store states whose refs row the release before deleted with no retraction"
 )
-rollback_standing=("${rollback_store[@]}")
+rollback_standing=("${rollback_store[@]}" "$cited_edge")
 for entry in "${rollback_old[@]}"; do
   rollback_standing+=("${entry%%|*}")
 done
