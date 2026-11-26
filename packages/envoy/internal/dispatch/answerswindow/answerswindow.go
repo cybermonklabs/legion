@@ -28,8 +28,11 @@ const personWordsEvent = `e.actor->>'kind' = 'user' and e.type in ` + model.Pers
 // DeliveredPersonEvent is the SQL predicate, on the event aliased e, that holds for a person's
 // event of the five types (personWordsEvent) whose published_destinations name at least one
 // session's topic (contracts.AgentTopicPrefix): a delivery of a person's words to a session, the
-// events the answers read reads. Of those it lists every one but a resolution that is not a
-// decline, so on data that holds other resolutions this predicate counts more than the list holds.
+// events the answers read reads. It is no count of the list: the list holds one item for each
+// ask, comment and message at its current words and only where those are in the window, so an
+// ask answered twice is one item; it lists no resolution that is not a decline; and it adds the
+// session's message and comment deliveries, which this predicate never holds. The seed answers
+// each ask at most once and resolves one only by a decline.
 const DeliveredPersonEvent = personWordsEvent + `
 	  and exists (select 1 from unnest(e.published_destinations) reached (topic)
 	              where reached.topic like '` + contracts.AgentTopicPrefix + `%')`

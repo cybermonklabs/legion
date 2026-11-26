@@ -53,10 +53,9 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 //     read costs fewer buffers there, and it too reads no event before the window. The test is
 //     published_destinations @> array[$3], because GIN's array_ops serves @> and not = any.
 //     published_destinations is not null (0020_outbox_retry), and for an array that is not null
-//     the two tests hold for the same rows. events_person_words_with_declines, which holds the
-//     same events by time alone, stays for two reasons: this read takes it where the window holds
-//     few such events, as above, and a pod of the release before, whose text still tests = any,
-//     reads through it while the new release rolls out.
+//     the two tests hold for the same rows. events_person_words_with_declines stays for two
+//     reasons: this read takes it on such a window, as above, and a pod of the release before,
+//     whose text still tests = any, reads through it while the new release rolls out.
 //   - S2 (message_ids' second arm): the session's message deliveries the listener took: targeted
 //     messages, direct or on an issue, and broadcast copies. `sent` is one it handed to the
 //     running session, `queued` one it stored for a session that is not running and hands over

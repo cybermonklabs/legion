@@ -381,8 +381,8 @@ const priorityNewestEventKeyedWalkQuery = `with recursive ` + keyedMemberTerms +
 // join of every event of each member row's issue, which the planner may hash, and the newest
 // created_at of them under each priority. Beside main's text it measures what keying the walk
 // alone saves, as priorityNewestEventKeyedWalkQuery beside priorityNewestEventQuery measures it
-// over the read of one event of each member issue. It is written out beside its walk, as that
-// text is, for the same reason.
+// over the read of one event of each member issue. Its own text is written out, as that text's
+// is, for the same reason.
 const keyedWalkOverMainsNewestEventQuery = `with recursive ` + keyedMemberTerms + `
 	select m.priority, max(e.created_at)
 	from members m
