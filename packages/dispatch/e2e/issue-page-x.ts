@@ -610,34 +610,36 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     asPlanner
   );
   expect(decided.applied, "the spec does not take the agent's decisions").toBe(1);
-  // The questions go in right after the spec's own, so the overtaken one stands next below it among
-  // the spec's blocks, and `q` from the one reaches the other; the proposed one stands right after
-  // the overtaken one.
-  const asked = await editArtifact(
-    whole.specArtifactId,
-    {
-      ops: [
-        {
-          after: `block:${OPEN_QUESTION_BLOCK_ID}`,
-          markdown: `${OVERTAKEN_QUESTION_BLOCK}\n\n${PROPOSED_QUESTION_BLOCK}`,
-          op: "insert",
-        },
-      ],
-    },
-    asPlanner
+  // The overtaken question goes in right after the spec's own, so it stands next below it among the
+  // spec's blocks, and `q` from the one reaches the other. The proposed one goes in right after the
+  // overtaken one, in a second edit once the first one's ask exists: the overtaken question's ask
+  // is made first, and the tree read, which orders an unranked node by when it was made
+  // (`compareSiblings` in the server's `issue_tree_read.go`), draws the proposed question right
+  // after it in every seed.
+  const writeQuestion = async (after: string, markdown: string, block: string, what: string) => {
+    const asked = await editArtifact(
+      whole.specArtifactId,
+      { ops: [{ after, markdown, op: "insert" }] },
+      asPlanner
+    );
+    expect(asked.applied, `the spec does not take ${what}`).toBe(1);
+    return readUntil(
+      async () => ((await getIssue(key)).open_asks ?? []).find((ask) => ask.block_id === block),
+      (found) => found !== undefined,
+      `the issue read of ${key} never holds the ask of ${what}`
+    );
+  };
+  const overtakenAsk = await writeQuestion(
+    `block:${OPEN_QUESTION_BLOCK_ID}`,
+    OVERTAKEN_QUESTION_BLOCK,
+    OVERTAKEN_QUESTION_ID,
+    "the question made overtaken"
   );
-  expect(asked.applied, "the spec does not take the questions made overtaken and proposed").toBe(1);
-  // Both questions go in in one edit, so one read of the issue that holds both their asks names
-  // each, and whom the proposed one waits on.
-  const [overtakenAsk, proposedAsk] = await readUntil(
-    async () => {
-      const open = (await getIssue(key)).open_asks ?? [];
-      return [OVERTAKEN_QUESTION_ID, PROPOSED_QUESTION_ID].map((block) =>
-        open.find((ask) => ask.block_id === block)
-      );
-    },
-    (found) => found.every((ask) => ask !== undefined),
-    `the issue read of ${key} never holds the asks of the questions made overtaken and proposed`
+  const proposedAsk = await writeQuestion(
+    `block:${OVERTAKEN_QUESTION_ID}`,
+    PROPOSED_QUESTION_BLOCK,
+    PROPOSED_QUESTION_ID,
+    "the question made proposed"
   );
   const overtakenAskId = overtakenAsk?.id ?? "";
   const proposedAskId = proposedAsk?.id ?? "";

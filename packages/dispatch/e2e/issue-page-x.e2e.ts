@@ -1537,11 +1537,12 @@ async function expectQuestionInDecisions(page: Page, read: SeededPage): Promise<
 
 /**
  * Answers the spec's own open question, which stands right before the overtaken one: the
- * overtaken question is then the first in the tree's order that would wait on alice were it live,
- * so a page that let it keep its wait would open on it (`expectOpensOnLiveQuestion`). The readings
- * after this write hold with the spec's own question answered: the header's count reads what
- * waits from the issue read as it stands (`expectWaitsLeaveOut`), and the Graph readings read the
- * overtaken question alone.
+ * overtaken question, which the seed makes right before the proposed one (`seedNodeStates`), is
+ * then the first in the tree's order that would wait on alice were it live, so a page that let it
+ * keep its wait would open on it (`expectOpensOnLiveQuestion`, which reads that order too). The
+ * readings after this write hold with the spec's own question answered: the header's count reads
+ * what waits from the issue read as it stands (`expectWaitsLeaveOut`), and the Graph readings read
+ * the overtaken question alone.
  */
 async function answerSpecQuestion(read: SeededPage): Promise<void> {
   await answerAsk(read.seeded.whole.openQuestion.askId, {
@@ -1555,11 +1556,16 @@ async function answerSpecQuestion(read: SeededPage): Promise<void> {
  * Conversation opens with the focus on the first question in the tree's order that waits on
  * alice, and not on the overtaken question nor on a row under it. With the spec's own open
  * question answered (`answerSpecQuestion`), the overtaken question is the first in the tree's
- * order that would wait on alice were it live. The proposed question, which stands right after it
- * and still waits on alice (`seedNodeStates`), is where the page opens.
+ * order that would wait on alice were it live. The proposed question, which the seed makes right
+ * after it and which still waits on alice (`seedNodeStates`), is where the page opens. The row
+ * then reads that the outline draws the proposed question after the overtaken one: drawn before
+ * it, the proposed question is where the page opens whether or not the overtaken one kept its
+ * wait.
  */
 async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<void> {
   const { answer, plain, seeded, traffic } = read;
+  const overtaken = questionReadId(answer, seeded, "overtakenQuestion");
+  const proposed = questionReadId(answer, seeded, "proposedQuestion");
   await gotoSettled(page, traffic, plain);
   await expectOpeningLanded(page);
   await expect
@@ -1567,7 +1573,14 @@ async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<
       message:
         "Conversation opens with the focus on a row other than the open question that waits on alice",
     })
-    .toBe(questionReadId(answer, seeded, "proposedQuestion"));
+    .toBe(proposed);
+  // The order is read after the focus: `drawnRowId` opens every branch, which moves the focus.
+  await drawnRowId(page, overtaken, "the overtaken question");
+  const drawnReadIds = (await treeItemsDrawn(page)).map((item) => item.readId);
+  expect(
+    drawnReadIds.indexOf(overtaken),
+    "the proposed question is not drawn after the overtaken one, so the opening proves nothing about the overtaken question's wait"
+  ).toBeLessThan(drawnReadIds.indexOf(proposed));
 }
 
 /** The overtaken question in Graph, with its statement open under it, and its criterion where the
@@ -1730,52 +1743,48 @@ async function expectQuestionReached(page: Page, read: SeededPage): Promise<void
 
 /** `q` focuses the overtaken question as it does any open question: from a question it goes to the
  *  next one in the tree's order, and from any other row to the first. The press is made on the
- *  open question the page draws right before the overtaken one, read from the drawn rows, because
- *  the read orders two questions made in one edit by their ids, which the seed does not choose;
- *  where none is drawn before it, the press is made on a row that is no question. */
+ *  question, the spec's own or the proposed one, that the page draws right before the overtaken
+ *  one, read from the drawn rows. The seed draws the open question first, so the press is made on
+ *  a row that is no question only on a page that draws no question before the overtaken one. */
 async function expectQReaches(page: Page, read: SeededPage): Promise<void> {
   const { answer, plain, seeded, traffic } = read;
   const overtaken = questionReadId(answer, seeded, "overtakenQuestion");
   await gotoSettled(page, traffic, plain);
   const overtakenId = await drawnRowId(page, overtaken, "the overtaken question");
-  const openId = await drawnRowId(
-    page,
-    questionReadId(answer, seeded, "openQuestion"),
-    "the open question"
+  // `drawnRowId` opened every branch, so one read of the rows holds every question's.
+  const items = await treeItemsDrawn(page);
+  const otherQuestions = new Set(
+    (["openQuestion", "proposedQuestion"] as const).flatMap((which) => {
+      const readId = questionReadId(answer, seeded, which);
+      const item = items.find((drawn) => drawn.readId === readId);
+      return item === undefined ? [] : [item.id];
+    })
   );
-  const proposedId = await drawnRowId(
-    page,
-    questionReadId(answer, seeded, "proposedQuestion"),
-    "the proposed question"
-  );
-  const drawnIds = (
-    await nodeRows(page).evaluateAll((rows) => rows.map((row) => row.getAttribute("data-node-id")))
-  ).filter((id): id is string => id !== null && id.length > 0);
+  const drawnIds = items.map((item) => item.id).filter((id) => id !== "");
   const overtakenAt = drawnIds.indexOf(overtakenId);
   expect(overtakenAt, "the overtaken question is not among the drawn rows").toBeGreaterThanOrEqual(
     0
   );
-  const otherQuestions = new Set([openId, proposedId]);
-  const allQuestions = new Set([openId, proposedId, overtakenId]);
+  const questionBefore = drawnIds
+    .slice(0, overtakenAt)
+    .filter((id) => otherQuestions.has(id))
+    .at(-1);
   const startId =
-    drawnIds
-      .slice(0, overtakenAt)
-      .filter((id) => otherQuestions.has(id))
-      .at(-1) ?? drawnIds.find((id) => !allQuestions.has(id));
-  const noStart =
-    "the outline draws neither an open question before the overtaken one nor a row that is no open question";
-  expect(startId, noStart).toBeDefined();
-  if (startId === undefined) throw new Error(noStart);
-  const start = nodeRow(page, startId).first();
-  await expect(start, `the start row ${startId} is no row of the outline`).toHaveCount(1);
-  await start.focus();
-  await expect(start).toBeFocused();
+    questionBefore ?? drawnIds.find((id) => id !== overtakenId && !otherQuestions.has(id));
+  if (startId === undefined) {
+    throw new Error(
+      "the outline draws neither an open question before the overtaken one nor a row that is no question"
+    );
+  }
+  await focusRow(page, startId);
   await page.keyboard.press("q");
   await expectFocusedOnScreen(
     page,
     read,
     overtaken,
-    "q from the question before the overtaken one"
+    questionBefore === undefined
+      ? `q from the row ${startId}, which is no question`
+      : "q from the question before the overtaken one"
   );
 }
 

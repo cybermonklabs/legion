@@ -7,6 +7,7 @@ import { createElement, type ReactNode, useMemo } from "react";
 import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { renderWithQueries } from "../../../__tests__/query-provider";
 import { api, type WriteRequest } from "../../../api/client";
 import {
   artifactBlocksQuery,
@@ -1700,22 +1701,17 @@ const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
  *  under a query client whose failed read is not retried: a chip's words are drawn through the
  *  plain-text projection, which reads through react-query. */
 function drawChip(chip: LensChip) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  return renderWithQueries(
     createElement(
-      QueryClientProvider,
-      { client },
+      MemoryRouter,
+      { initialEntries: [`/issues/${KEY}`] },
       createElement(
-        MemoryRouter,
-        { initialEntries: [`/issues/${KEY}`] },
-        createElement(
-          Routes,
-          null,
-          createElement(Route, {
-            element: createElement(NodeLink, { chip, tabStops: false }),
-            path: "/issues/:key/*",
-          })
-        )
+        Routes,
+        null,
+        createElement(Route, {
+          element: createElement(NodeLink, { chip, tabStops: false }),
+          path: "/issues/:key/*",
+        })
       )
     )
   );
