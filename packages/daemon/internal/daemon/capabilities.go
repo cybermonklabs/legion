@@ -87,7 +87,7 @@ func (s *supervision) deploymentWith(statuses []sandbox.CacheStatus) capabilitie
 	s.reportMu.Lock()
 	defer s.reportMu.Unlock()
 	for _, m := range s.supervisor.supervised() {
-		c := m.View().Claim
+		c := m.Published()
 		report, ok := s.reports[c.Token]
 		if !ok || c.Locator == nil || report.Locator.Incarnation != c.Locator.Incarnation {
 			continue

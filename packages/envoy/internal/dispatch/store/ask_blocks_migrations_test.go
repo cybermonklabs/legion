@@ -64,6 +64,7 @@ func assertAskOwed(t *testing.T, store *Store, what, id string) askBlockState {
 // block-aware build's own index, in the write's transaction, leaves the ask indexed, and the
 // reconciliation's owed read is served by the partial index.
 func TestAnOlderBuildsWriteLeavesTheAskBlocksOwed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
@@ -157,6 +158,7 @@ func TestAnOlderBuildsWriteLeavesTheAskBlocksOwed(t *testing.T) {
 // before 20261101143211, and one written after 20261101143211 and before the trigger that owes
 // it (an older build's write during the migrations), each gets an owed state row.
 func TestTheAskBlockMigrationsOweEveryStoredAsk(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, beforeAskBlocks)
 	seedBlockIndexIssue(t, store)

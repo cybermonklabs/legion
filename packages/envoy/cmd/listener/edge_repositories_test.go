@@ -40,6 +40,7 @@ import (
 // resolve to, read fresh through the broker at the registration with the listener's own account,
 // and an event of each reaches it.
 func TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_github"
 	token := rig.personToken(sessionID, "PRIV")
@@ -63,6 +64,7 @@ func TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories(t *testing.T) {
 // repository, is refused 403 repository_not_in_project, and such a repository's event never
 // reaches the session.
 func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_other_repository"
 	token := rig.personToken(sessionID, "PRIV")
@@ -88,6 +90,7 @@ func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
 // session's interest in it is gone at the refresh after. The production refresh runs every 30 s
 // and an answer lives 60 s, so both happen within 60 s of the change.
 func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
+	t.Parallel()
 	if edgeRepositoryRefresh != 30*time.Second || edgeRepositoryAnswerLife != 60*time.Second {
 		t.Fatalf("the refresh runs every %s and an answer lives %s, want 30 s and 60 s", edgeRepositoryRefresh, edgeRepositoryAnswerLife)
 	}
@@ -136,6 +139,7 @@ func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
 // on the next frame, named Envoy-Gap-Reason: repository_withheld so a client does not read it as
 // the stream's retention gap, and every frame that is not GitHub's flows as before.
 func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_unknown"
 	token := rig.personToken(sessionID, "PRIV")
@@ -170,6 +174,7 @@ func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
 // frame still carries Envoy-Gap: true with Envoy-Gap-Reason: repository_withheld. Control: with
 // edge mode off nothing is withheld and no frame carries the mark.
 func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_gap_epoch"
 	token := rig.personToken(sessionID, "PRIV")
@@ -184,6 +189,7 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 	testwait.Eventually(t, "the edge to withhold the acme/pub event while no answer stands", func() bool {
 		return rig.withheld(t, "answer_unknown") >= 1
 	})
+	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration under a new delivery epoch")
@@ -203,6 +209,7 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 // process - sends it on the session's next frame and clears it from the entry. Control: with the
 // mark kept in the relaying process alone, the frame after the move carries none.
 func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_gap_moved"
 	token := rig.personToken(sessionID, "PRIV")
@@ -235,6 +242,7 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 		return !noted
 	})
 
+	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration that brings the session back to this listener")
@@ -250,6 +258,23 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	})
 }
 
+// awaitConsumerSettled waits for the server to take every ack of what sessionID's consumer has
+// delivered - the session's done for a frame, the relay's own for a GitHub event it withheld - and
+// then for the consumer's stored state (awaitSessionConsumerStored), before a row's registration
+// under a new delivery epoch restarts the relay at the ack floor. A restart that finds a delivery
+// still awaiting its ack deletes the consumer and creates it again at the floor, which sends the
+// withheld event once more, and a delete that soon after a delivery or an ack can meet the
+// consumer's state write still under way, which fails the create.
+func awaitConsumerSettled(t *testing.T, rig *edgeRig, sessionID string) {
+	t.Helper()
+	info, err := rig.consumers.Info(t.Context(), sessionID)
+	if err != nil {
+		t.Fatalf("read %s's consumer: %v", sessionID, err)
+	}
+	awaitAcked(t, rig.consumers, sessionID, info.Delivered.Stream)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
+}
+
 // The gap mark a later withheld event owes outlives another relay's clear of an earlier mark:
 // while the session moves, its old relay (A) noted a mark for a GitHub event it withheld while no
 // repository answer stood, the new relay (B) adopted the mark the entry carries
@@ -260,6 +285,7 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 // the row passes with edge mode off by design. Control: with noteRepositoryGap writing the mark it
 // noted before again, B's clear removes the later event's mark and the row fails.
 func TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_gap_handed_over"
 	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
@@ -403,6 +429,7 @@ func (kv stalledSessionEntryKV) Update(key string, value []byte, last uint64) (u
 // the next frame carries no gap mark and the entry keeps the mark for a later run, and the row
 // fails.
 func TestAMarkAnotherRelayWritesDuringARunReachesTheRunsNextFrame(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_gap_live_run"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
@@ -437,6 +464,7 @@ func TestAMarkAnotherRelayWritesDuringARunReachesTheRunsNextFrame(t *testing.T) 
 // with the run taking any mark the copy shows before each frame (relayNATS before this row), the
 // next frame carries the same mark again, and the row fails.
 func TestARelayRunCarriesAMarkOnceWhileItsCopyTrailsTheClear(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, mark = "ses_edge_gap_carried_once", "the-other-listeners-mark"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
@@ -494,6 +522,7 @@ func TestARelayRunCarriesAMarkOnceWhileItsCopyTrailsTheClear(t *testing.T) {
 // unconditionally (session.SessionRegistry.PutWithin as it was before this row), the mark is lost
 // and the row fails.
 func TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_gap_raced"
 	token := rig.personToken(sessionID, "PRIV")
@@ -537,6 +566,7 @@ func TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead(t *testing.T) 
 // the event acknowledged before the mark is written (sessionRelays.edgeWithholds before this row),
 // the consumer's ack floor passes the event while the entry carries no mark, and the row fails.
 func TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored(t *testing.T) {
+	t.Parallel()
 	requireWithheldEventGivenBackUntilMarked(t, "ses_edge_gap_durable", func(bucket natsgo.KeyValue, sessionID string) error {
 		_, err := bucket.Put(sessionID, []byte(`{"machine_id":7}`))
 		return err
@@ -553,6 +583,7 @@ func TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored(t *testing.T) {
 // as marked (session.SessionRegistry.SetRepositoryGap before this row), the consumer's ack floor
 // passes the event while no entry carries its mark, and the row fails.
 func TestAWithheldEventIsGivenBackWhileTheSessionHasNoEntry(t *testing.T) {
+	t.Parallel()
 	requireWithheldEventGivenBackUntilMarked(t, "ses_edge_gap_no_entry", func(bucket natsgo.KeyValue, sessionID string) error {
 		return bucket.Delete(sessionID)
 	})
@@ -809,6 +840,7 @@ func TestAGiveBackWhoseNakFailsIsLoggedEveryTime(t *testing.T) {
 // edge compares owner and name ignoring case: an interest in Acme/Pub is admitted through an
 // answer of acme/pub, and the event the intake publishes for Acme/Pub reaches the session.
 func TestAnEdgeComparesRepositoriesIgnoringCase(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_case"
 	token := rig.personToken(sessionID, "PRIV")
@@ -827,6 +859,7 @@ func TestAnEdgeComparesRepositoriesIgnoringCase(t *testing.T) {
 // It holds both for a GitHub topic the registration names and for one the session's row holds,
 // which the edge reads the answer for as well.
 func TestAnEdgeRepositoriesRefusalCopiesNoBrokerText(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const named, stored = "ses_edge_unknown_named", "ses_edge_unknown_stored"
 	rig.placeElsewhereFollowing(t, stored, []string{}, "notifications.github.acme.pub.>")
@@ -854,6 +887,7 @@ func TestAnEdgeRepositoriesRefusalCopiesNoBrokerText(t *testing.T) {
 // not_in_project, while the event of acme/a.b reaches it. The relay holds each event to the
 // repository its own payload names.
 func TestAnEdgeRelaysOnlyTheEventsOfTheRepositoryItsAnswerNames(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_dotted"
 	rig.repositories.answer("PRIV", "acme/a.b")
@@ -880,6 +914,7 @@ func TestAnEdgeRelaysOnlyTheEventsOfTheRepositoryItsAnswerNames(t *testing.T) {
 // holds, as the 503 for a stored GitHub topic does, so POST /v1/roles/set reads the claim as one
 // its holder did not renew.
 func TestAnEdgeRepositoriesRefusalRecordsTheUnrenewedClaims(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, role = "ses_edge_unknown_renewal", "legion-priv-priv-8-tester"
 	token := rig.personToken(sessionID, "PRIV")
@@ -907,6 +942,7 @@ func (f edgeBrokerTransport) RoundTrip(request *http.Request) (*http.Response, e
 // PRIV's answer is fresh when the pass ends. Read one after the other, PRIV's would wait for
 // SLOW's to time out, and with enough slow projects ahead of it would age past its life.
 func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
+	t.Parallel()
 	var slowWaiting atomic.Int32
 	slowEntered := make(chan struct{})
 	release := make(chan struct{})
@@ -948,8 +984,8 @@ func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
 	}()
 	select {
 	case <-privRead:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the refresh read no answer of PRIV within 30 s")
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatal("the refresh read no answer of PRIV in time")
 	}
 	close(release)
 	<-done
@@ -1337,6 +1373,7 @@ func TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd(t *testing.T) {
 // told from no write by the entry's revision, with no clock read. Control: with the read given the
 // whole budget, the renewal runs on a context that has ended and the entry is not renewed.
 func TestAHungRepositoryReadStillRenewsTheEdgeSession(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, pub = "ses_edge_hung_broker", "notifications.github.acme.pub.>"
 	token := rig.personToken(sessionID, "PRIV")

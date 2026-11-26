@@ -672,8 +672,11 @@ func (m *sessionRelays) signal() {
 	}
 }
 
-// stop stops every relay and waits, within ctx, for their goroutines to return, so no relay acks or
-// publishes after it; the session-consumer connection is drained after it (sessionDelivery.drain).
+// stop stops every relay and waits, within ctx, for the relay loop and every run to return; a run
+// stopped while it pulls returns the messages it holds with a nak before it ends (release). When
+// ctx ends first, stop warns and returns while that work still runs, so a run still going may
+// then publish a frame, have one acked on the session's done reply (onReply) or nak what it
+// holds. The session-consumer connection is drained after it (sessionDelivery.drain).
 func (m *sessionRelays) stop(ctx context.Context) {
 	if m == nil {
 		return

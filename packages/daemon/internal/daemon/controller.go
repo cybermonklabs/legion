@@ -161,6 +161,20 @@ func (k *controllerKeeper) keep() error {
 		return nil
 	}
 	err := m.Handle(ctx, request)
+	// A retry resumes the recorded session (R5 of dispatch://INFRA-4508): a new session is the
+	// operator's or the controller's choice, and the run of refused turns no longer starts one. The
+	// keeper makes that choice for the daemon's own controller in one case alone: the resume is
+	// refused because one of the recorded session's names is held for another claim, or for none
+	// (supervise.IsSessionHeldElsewhere, claim.SessionHeldRefusal). Such a resume would be refused
+	// at every retry, and nobody else retries this claim, so the keeper asks the retry again in a
+	// new session, as an operator's `legion claims retry --fresh-session` does, and the answer to
+	// that is the one judged below: the hold's wait on the role, a lookup the listener refuses, or
+	// the retry admitted. The resume's other refusals — a session name the daemon cannot hold, a
+	// claim at the cap of held names — are answered as before: no new session is asked for.
+	if retry, ok := request.(supervise.RequestRetry); ok && !retry.FreshSession && supervise.IsSessionHeldElsewhere(err) {
+		request = supervise.RequestRetry{Claim: token, FreshSession: true}
+		err = m.Handle(ctx, request)
+	}
 	// A retry in a new session the hold refuses is no fault of the keeper's, and its own backoff
 	// asks again, so it returns nothing its loop logs at Error; the keeper says why once per
 	// episode, at the level the cause asks for. A role held under the recorded session by another

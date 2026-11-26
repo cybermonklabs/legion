@@ -260,7 +260,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // while it waits for its turn. The pacing does not exempt the resume (supervise's exemptWake lets
 // only an operator's requests through), so over a wave it can wait more than an hour, the machine
 // holding the claim launching with no process and its view naming the waiting wake (supervise's
-// parkWake, ClaimView.WakeWaiting). The row waits through that park because a hook prompt
+// waitOnMachine, ClaimView.WakeWaiting). The row waits through that park because a hook prompt
 // published then would be kept for the listener's one hour from that publish, which can end before
 // the pod starts. So a waiting wake that starts a process
 // (supervise.StartsProcess) over a claim that records no process holds the row until the launch
@@ -472,7 +472,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // a claim this path owns. A `suspend` row takes one role over and drops that role's backstop alone
 // (decision 17 of dispatch://INFRA-3759): another role of the pod may be waiting on a deploy with
 // nothing but its own backstop to bring it back. An issue's close and a tree's close name no role
-// (dropReleasedWork), and drop every backstop of the issue, since the issue's work is over. The
+// (forgetIdleRelease), and drop every backstop of the issue, since the issue's work is over. The
 // claim's own suspension source is re-stamped by the machine (supervise's suspendedAgain), which
 // is what takes it out of every released-claim read; this drops what is left behind in the
 // record.
@@ -490,16 +490,23 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 	}
 }
 
-// dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
-// saved: the issue is done, or its tree is closing, so nothing will restore that bundle and
-// nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
-func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
+// forgetIdleRelease takes a released pod's issue over and forgets the decline of an idle release
+// of it (store.ForgetIdleDecline): the issue is done, or its tree is closing, so no idle release of
+// its pod is coming. It deletes the record of the disks of the issue's pods too
+// (store.DeleteIssuePodDisks), which the issue's update rounds read (workOnRoundPod): no round of
+// the issue's pods is left to name a role by it. Both records expire together, at the end of the
+// issue's work, which is the one event of every caller, so a change to the idle release here must
+// keep the delete of the disks' record. A linger and a park keep both, because their issue comes
+// back. A runner with no tree store does nothing, as takeOverRelease says.
+func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
+	if err := r.trees.ForgetIdleDecline(ctx, r.project, issue); err != nil {
+		r.log.Warn("wake: could not forget the declined idle release of a finished issue", "issue", issue, "error", err)
+	}
+	if err := r.trees.DeleteIssuePodDisks(ctx, issue); err != nil {
+		r.log.Warn("wake: could not delete the record of the disks of the pods of a finished issue", "issue", issue, "error", err)
 	}
 }

@@ -21,6 +21,7 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
+  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -33,8 +34,9 @@ import pkg from "../package.json";
 /** This plugin's own build, which `read_build` answers with: the manifest of the module this
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
  * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
- * build on every pod made from an older image. */
-const BUILD = pluginBuildOf(pkg);
+ * build on every pod made from an older image. Its contract is `daemonContract`'s, read as the
+ * module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
@@ -91,6 +93,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "compact",
     "pause",
     "resume",
+    "replay_give_up",
+    "discard_give_up",
   ],
 };
 
@@ -114,6 +118,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   compact: ["issue", "role"],
   pause: ["reason"],
   resume: [],
+  replay_give_up: ["giveUp", "consumer", "throughSeq"],
+  discard_give_up: ["giveUp", "consumer", "throughSeq", "reason"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -207,6 +213,26 @@ function wakesWaitingSummary(state: LegionState): string | undefined {
   return `wakes waiting ${state.wakesWaiting.length}${next === undefined ? "" : ` next ${next}`}`;
 }
 
+/**
+ * The summary's lines on the intake's open give-ups (`intakeGiveUps`): the messages the daemon's
+ * intake gave up on that no replay or discard has closed. One line for each consumer with any
+ * open, with how many and the newest stream sequence among them, which is the `throughSeq` of a
+ * replay_give_up or discard_give_up of all of them; `intake give-ups (none)` while none is open.
+ * A state that carries no such key has no such line, as with `wakesWaiting`: the daemon leaves
+ * the key off the state it serves a caller it reads as below the contract that added it
+ * (`api.stateFor`, `withoutIntakeGiveUps`). Each field is taken off the state's own
+ * `intakeGiveUps` and the `consumers` under it, the names `LEGION_ANSWER_READS` declares.
+ */
+function intakeGiveUpsSummary(state: LegionState): readonly string[] {
+  const giveUps = state.intakeGiveUps;
+  if (giveUps === undefined) return [];
+  if (giveUps.consumers.length === 0) return ["intake give-ups (none)"];
+  return giveUps.consumers.map(
+    (consumer) =>
+      `intake give-ups ${consumer.name} open ${consumer.open} newest seq ${consumer.newestSeq}`
+  );
+}
+
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
 const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
@@ -216,6 +242,9 @@ const SUMMARY_LEGEND =
   "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
   "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
+  "intake give-ups <consumer> open <count> newest seq <stream sequence>, one line for each " +
+  "consumer with messages the daemon's intake gave up on and no replay or discard has closed, " +
+  "or intake give-ups (none); " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
@@ -224,9 +253,9 @@ const SUMMARY_LEGEND =
 
 /**
  * The whole state as the controller reads it between its filtered reads: the project, its pause
- * or its last pause, the admission lists, the wakes the pacing holds, each capability's status,
- * one line per recorded issue, and under each issue Legion still runs its slot, its hold, its
- * gate and its claims.
+ * or its last pause, the admission lists, the wakes the pacing holds, each consumer's open
+ * give-ups, each capability's status, one line per recorded issue, and under each issue Legion
+ * still runs its slot, its hold, its gate and its claims.
  *
  * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
@@ -269,6 +298,7 @@ function stateSummary(state: LegionState): string {
   }
   const wakesWaiting = wakesWaitingSummary(state);
   if (wakesWaiting !== undefined) lines.push(wakesWaiting);
+  lines.push(...intakeGiveUpsSummary(state));
   for (const capability of state.capabilities ?? []) {
     // A row that is not `present` is one someone acts on, so it keeps the fact its check found
     // and the legion.yaml line that would record a decision; no filter answers for capabilities.
@@ -388,13 +418,14 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
+    check_opened_at: phaseOp.check_opened_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
     return_to: phaseOp.return_to,
@@ -403,6 +434,27 @@ function toolSchema(pi: PiApi): unknown {
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
+    // The give-ups replay_give_up and discard_give_up take: one record by its id, or a consumer's
+    // open records through a stream sequence, checked whole before a grant is minted
+    // (`giveUpSelection`), as `version` is.
+    giveUp: z
+      .number()
+      .describe(
+        "replay_give_up's and discard_give_up's one give-up, a message the daemon's intake gave up on: its record id, as the intake-gave-up notice names it. Name it, or consumer and throughSeq, never both"
+      )
+      .optional(),
+    consumer: z
+      .string()
+      .describe(
+        "replay_give_up's and discard_give_up's intake consumer, as read_state's summary names it on an intake give-ups line: with throughSeq, every open give-up of that consumer at or below that stream sequence"
+      )
+      .optional(),
+    throughSeq: z
+      .number()
+      .describe(
+        "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups"
+      )
+      .optional(),
   });
 }
 
@@ -415,6 +467,37 @@ function requiredString(
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${operation} requires ${name}`);
   return value;
+}
+
+/** A whole number from 1: a give-up's record id, a stream sequence or a gate's version. */
+const isWholeFromOne = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+
+/** The give-ups `operation` (replay_give_up or discard_give_up) names: `giveUp`, one record by its
+ * id, or `consumer` with `throughSeq`, every open record of that consumer at or below that stream
+ * sequence. Exactly one form, as the daemon takes it (`GIVE_UP_REQUEST_INVALID` otherwise), so a
+ * call that names both, or neither, is refused here, before a grant is minted. */
+function giveUpSelection(
+  parameters: Record<string, unknown>,
+  operation: string
+): { readonly giveUp: number } | { readonly consumer: string; readonly throughSeq: number } {
+  const { giveUp, throughSeq } = parameters;
+  const bulk = parameters.consumer !== undefined || throughSeq !== undefined;
+  if (giveUp !== undefined && bulk) {
+    throw new Error(`${operation} takes giveUp, or consumer and throughSeq, not both`);
+  }
+  if (giveUp !== undefined) {
+    if (!isWholeFromOne(giveUp)) {
+      throw new Error(`${operation}'s giveUp is a give-up's record id, a whole number from 1`);
+    }
+    return { giveUp };
+  }
+  if (!bulk) throw new Error(`${operation} requires giveUp, or consumer and throughSeq`);
+  const consumer = requiredString(parameters, operation, "consumer");
+  if (!isWholeFromOne(throughSeq)) {
+    throw new Error(`${operation} requires throughSeq with consumer, a stream sequence from 1`);
+  }
+  return { consumer, throughSeq };
 }
 
 /** Refuses every field `operation` does not take, in the phase ops' wording
@@ -446,7 +529,7 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
+  /** Told of each successful step completion or backward move, never a look's report. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
@@ -573,7 +656,8 @@ export function createLegionTool(deps: {
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
-        "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
+        "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, how " +
+        "many give-ups each intake consumer has open and the newest stream sequence among them, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
         "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
@@ -632,7 +716,23 @@ export function createLegionTool(deps: {
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-        "since each would start a turn. ",
+        "since each would start a turn. " +
+        "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
+        "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
+        "live delivery takes and publishes nothing to the stream, so replay once the fix for a record's last error runs in " +
+        "the daemon. Name giveUp, one record's id, as the intake-gave-up notice names it, or consumer and throughSeq, every " +
+        "open record of that consumer at or below that stream sequence: read_state's summary gives each consumer's open " +
+        "count and newest seq. By its id a replay takes a discarded record too, so a wrong discard can be undone. One call " +
+        "takes at most 100 records, in stream order, and goes on past a record that fails. The answer is the daemon's: " +
+        "replayed, each record's id, consumer, streamSeq and outcome, and remaining, how many open records of the selection " +
+        "are left for another call. applied, already applied and no fact close the record; failed, with its error, leaves " +
+        "the record as it was. " +
+        "discard_give_up (giveUp, or consumer and throughSeq, and reason) closes the records it names with your reason and " +
+        "applies nothing: use it for a message that can never apply. The answer is discarded, the id of each record it " +
+        "closed. The daemon refuses a call that names both forms or neither, and a discard whose reason is blank or longer " +
+        "than 2,048 characters (GIVE_UP_REQUEST_INVALID), an id of no give-up of this project (GIVE_UP_NOT_FOUND), a replay " +
+        "of a record a replay closed and a discard of a closed record, naming how and when it closed (GIVE_UP_CLOSED), an " +
+        "id a running replay holds (GIVE_UP_BEING_REPLAYED), and every call to a daemon that runs no intake (NO_INTAKE). ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -662,15 +762,16 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to another phase. Either way this session's phase is no longer open.
+          // A successful phase completion or backward move closes phase input. A report with
+          // check_opened_at leaves it open for this session's phase work.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
+          const effect = phaseInputAfter(operation, parameters);
+          if (effect === "phase-closed") {
             onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
+          } else if (effect === "update-answered") {
             onUpdateAnswered(context);
           }
           return jsonSuccess(answer);
@@ -696,6 +797,21 @@ export function createLegionTool(deps: {
           if (operation === "resume") {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.projectResume({ grantId }));
+          }
+          // The replay and the discard of the intake's give-ups name no issue either. Each is
+          // validated whole, its selection and the discard's reason, before its grant is minted,
+          // and each answer is the daemon's own: each record the replay took with how it ended and
+          // how many are left, or the ids the discard closed.
+          if (operation === "replay_give_up") {
+            const selection = giveUpSelection(parameters, operation);
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.intakeReplay({ grantId, ...selection }));
+          }
+          if (operation === "discard_give_up") {
+            const selection = giveUpSelection(parameters, operation);
+            const reason = requiredString(parameters, operation, "reason");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.intakeDiscard({ grantId, ...selection, reason }));
           }
           // The controller's three writes of one issue: each validated whole before its grant is
           // minted.
@@ -727,7 +843,7 @@ export function createLegionTool(deps: {
         switch (operation) {
           case "register_gate": {
             const version = parameters.version;
-            if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+            if (!isWholeFromOne(version)) {
               throw new Error("register_gate requires a positive integer version");
             }
             // The gate is the tree root's, registered by the root's own architect, as the daemon

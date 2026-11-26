@@ -405,8 +405,9 @@ reread wrote none, since the secret's state did not change
 
 The broker's RFC 8693 token exchange is on, for one account entry,
 `system:serviceaccount:example-ns:example-worker`, writing the project `EXAMPLE` for
-`ada@example.com`, and for one read entry
-([Exchange a read entry's token](#exchange-a-read-entrys-token)).
+`ada@example.com`, for one read entry
+([Exchange a read entry's token](#exchange-a-read-entrys-token)), and for two job entries
+([Exchange a job's token](#exchange-a-jobs-token)).
 `$DEV_BROKER_DIR/exchange-token` holds the account entry's pod token for the exchange's own
 audience, `legion-broker-exchange`.
 
@@ -486,19 +487,25 @@ the exchange's audience. The token request above, with that token as `subject_to
 `session=example-reader-session` or no `session`, mints a token that holds the OAuth scope `read`
 alone. Its introspection answer carries `"service":"example-reader"`, `"project_scope":"none"` and
 `"scope":"read"`, and no `person` and no `projects`. A request that names another session is
-refused, and one that names `scope=read` is refused `invalid_scope`: the entry decides the scope,
-and the request never does. The entry fixes its session, so the script registers no pod for it,
-and the registration route refuses one with `409 SESSION_FIXED`.
+refused. A request that adds `scope=read` gets the same token under the project scope
+`read-none`. The entry fixes its session, so the script registers no pod for it, and the
+registration route refuses one with `409 SESSION_FIXED`.
 
-Dispatch serves that token on the routes its read list names, today
-`GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every
-other route of its route table and on `GET /ws/live`. `packages/dispatch/e2e/read-token-live.ts`
-shows both against this stack. Leave the stack running. `bun run dispatch:local` runs until
-Ctrl-C, so it takes a shell of its own: open a new one and paste the dev broker's exports into it
-too, as you pasted them into the second shell. A shell without them expands `$AGENT_SECRETS_URL`
-and `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In
-that new shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where
-there is no Docker, also set `DATABASE_URL` to a Postgres database of its own):
+Any other trade may ask for `read` too: add `scope=read` to the account entry's request above,
+and its token keeps the person, the session and the project `EXAMPLE`, carries the project scope
+`read-named` and holds `read`. It may add a cut, `as_of=<an RFC 3339 time>`, no later than the
+trade. Such a token writes nothing.
+
+Dispatch serves a read-only token on the GET routes it classes as reads, and answers it
+`403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. It answers a
+read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but
+`GET /api/v1/whoami`. `packages/dispatch/e2e/read-token-live.ts` shows each of these against this
+stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it takes a shell of
+its own: open a new one and paste the dev broker's exports into it too, as you pasted them into
+the second shell. A shell without them expands `$AGENT_SECRETS_URL` and
+`$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In that new
+shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where there is no
+Docker, also set `DATABASE_URL` to a Postgres database of its own):
 
 ```console
 $ DISPATCH_E2E_AGENT_SECRETS_URL=$AGENT_SECRETS_URL DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$AGENT_SECRETS_ACCOUNT_TOKEN_FILE bun run dispatch:local
@@ -511,19 +518,96 @@ there, and run the script in the second shell, which already holds the exports, 
 
 ```console
 $ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/read-token-live.ts
-seeded EXAMPLE: architecture source example/arch, issue EXAMPLE-1
-ok   GET /api/v1/projects/EXAMPLE/architecture [read-only token]: 200 - (want 200)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+seeded EXAMPLE: issue EXAMPLE-1
+ok   GET /api/v1/issues/EXAMPLE-1 [read entry's token]: 200 - (want 200)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [read entry's token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /ws/live [read entry's token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /api/v1/issues/EXAMPLE-1 [example entry's read token]: 200 - (want 200)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [example entry's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /ws/live [example entry's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ok   GET /api/v1/issues/EXAMPLE-1/comments [alice]: 0 comment(s) with this run's body (want 0)
-ok   GET /api/v1/issues/EXAMPLE-1 [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [named-project token]: 201 - (want 2xx)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [example entry's token]: 201 - (want 2xx)
+ok   POST /v1/oauth/introspect [machine login's read token]: the answer machine-login (want machine-login)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token]: 200 - (want 200)
+ok   GET /ws/live [machine login's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   POST /v1/oauth/introspect [machine login's read token with a cut]: the answer machine-login-with-a-cut (want machine-login-with-a-cut)
+ok   GET /api/v1/whoami [machine login's read token with a cut]: 200 cut 2026-11-18T09:30:00.123456Z (want 200 cut 2026-11-18T09:30:00.123456Z)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
+ok   GET /ws/live [machine login's read token with a cut]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ```
 
-The script creates the project `EXAMPLE`, an architecture source and an issue in that Dispatch. It
-sends three requests with the read-only token, reads the issue's comments as alice, and then sends
-the same comment with the account entry's token, which may write `EXAMPLE`. It exits 1 when any
-answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
+The script creates the project `EXAMPLE` and an issue in that Dispatch. It trades the read entry's
+token, then the account entry's token with `scope=read`, and sends each a read, a comment and a
+`GET /ws/live`. It reads the issue's comments as alice, and then sends the same comment with the
+account entry's ordinary token, which may write `EXAMPLE`. It logs a machine in, approved through
+this stack, and trades that machine login's token with `scope=read`, then with `scope=read` and
+the cut the golden answers name. It checks each answer of the broker's introspection against
+`packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json`, sends the first token a read
+and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, a read and a
+`GET /ws/live`. It prints one line for each request, with its status and its code, and exits 1
+when any answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
 `bun run dispatch:local` started again, which empties the instance.
+
+## Exchange a job's token
+
+The exchange lists two job entries too, each a job that writes for no person.
+`BROKER_EXCHANGE_JOB_ACCOUNTS=system:serviceaccount:example-ns:example-job=EXAMPLE=example-job-session`
+is a job pod: `$DEV_BROKER_DIR/job-token` holds that account's pod token for the exchange's
+audience, and the token request above, with that token and no `session`, mints a token that names
+the account as its service, no person, the session `example-job-session` and the project `EXAMPLE`
+alone.
+`BROKER_EXCHANGE_JOB_WORKFLOWS=example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=public=example-workflow-session`
+is a GitHub Actions workflow, whose run's token mints a token of the project scope `public` that
+names `example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main` as its service
+and the session `example-workflow-session`. Each entry fixes its session, so the script registers
+neither.
+
+`dev-oidc-issuer` stands in for GitHub as well. The script starts it with
+`--actions-token example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=$DEV_BROKER_DIR/actions-request-token`:
+it writes a random request token to that file and answers the run's token request at the URL the
+banner's `actions request URL:` line prints, `<issuer URL>/_actions/token/1?api-version=2.0`, to
+loopback callers alone. A `GET` of that URL with `&audience=<audience>` and
+`Authorization: bearer <request token>` is answered `{"value": "<token>"}`, a token in the claims
+GitHub writes of that run (`repository`, `workflow_ref`, `job_workflow_ref`, `ref`), with a new
+`jti` each time, since the broker takes each GitHub token once; with no `audience` the token is
+for `https://github.com/example-org`, as GitHub's is. Any other bearer is `401`, in GitHub's shape.
+The broker takes that issuer as `BROKER_EXCHANGE_GITHUB_ISSUER`, with
+`BROKER_EXCHANGE_GITHUB_AUDIENCE=legion-broker-github`, so a client run with
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions`, `ACTIONS_ID_TOKEN_REQUEST_URL` the actions request
+URL, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` the file's content and
+`AGENT_SECRETS_MACHINE_AUDIENCE=legion-broker-github` trades as that workflow's run would on
+GitHub.
+
+`packages/dispatch/e2e/job-token-live.ts` drives both, with `dispatch api`, against a local
+Dispatch that reads this broker, started as the read-token section starts it. The script creates
+project `EXAMPLE` too, so start `bun run dispatch:local` again first if `read-token-live.ts` ran
+against it. Then, from `packages/dispatch`:
+
+```console
+$ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/job-token-live.ts
+seeded EXAMPLE
+ok   [job pod] GET /api/v1/whoami: exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE (want exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE)
+ok   [job pod] POST /api/v1/issues (EXAMPLE, body on standard input): exit 0 -, key EXAMPLE-1 (want exit 0 -, a key)
+ok   [job pod] GET /api/v1/issues/EXAMPLE-1/events: exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none (want exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none)
+ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 1 PROJECT_SCOPE (want the person entry's: exit 1 PROJECT_SCOPE)
+ok   [job workflow] POST /api/v1/issues/EXAMPLE-1/comments (body from a file): exit 0 - (want exit 0 -)
+ok   [job workflow] GET /api/v1/whoami: exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main, session example-workflow-session, project null (want exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main)
+ok   [person entry] GET /api/v1/whoami: exit 0 -, owner ada@example.com, service null, session example-worker-session, project EXAMPLE (want exit 0 -, owner ada@example.com)
+```
+
+The script creates project `EXAMPLE` as alice, then runs this checkout's `dispatch api`
+(`packages/envoy-client/bin/dispatch.ts`) once for each line, and once more for the example
+entry's issue in `OPS`, in an environment that keeps only `PATH`, `HOME` and `TMPDIR` and sets
+`DISPATCH_URL`, `AGENT_SECRETS_URL`, `PERSON_SIGNIN_TRADE=off` and the identity of the line. The job
+pod (`AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` with `job-token`) creates an issue in `EXAMPLE`
+from standard input, and Dispatch records it under the entry's session with the account as its
+service and no owner. The same issue in `OPS` gets the answer that the example entry's token, a
+person's named token for `EXAMPLE`, gets there, and the line wants exactly that answer:
+`403 PROJECT_SCOPE`, `exit 1 PROJECT_SCOPE`, until dispatch://INFRA-4799 changes that for both.
+The workflow's run (`github-actions`, with the actions request URL and token and no
+`DISPATCH_HOST` or session id) comments on that issue from a file. The example entry's token, the
+control, names its person as the owner. It exits 1 when any answer is not the one it wants.
+Project `EXAMPLE` then exists, so a second run needs `bun run dispatch:local` started again.
 
 ## Read the log and the metrics
 

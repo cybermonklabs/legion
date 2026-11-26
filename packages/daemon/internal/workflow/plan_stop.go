@@ -285,7 +285,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}

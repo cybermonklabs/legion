@@ -20,6 +20,7 @@ import (
 // is copied. The control is the same steps with no record of a claim that never landed, which leaves
 // the kept lane empty too, so a copy in the case comes from the waiting record alone.
 func TestATakeoverRecordThatWaitedWhileItsHolderKeptTheRoleCopiesNoOlderHour(t *testing.T) {
+	t.Parallel()
 	for _, waiting := range []bool{false, true} {
 		name := "control: no record of a claim that never landed"
 		if waiting {
@@ -67,7 +68,7 @@ func TestATakeoverRecordThatWaitedWhileItsHolderKeptTheRoleCopiesNoOlderHour(t *
 			if err := rig.harness.client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {
 				t.Fatalf("delete %s's consumer: %v", a, err)
 			}
-			waitFor(t, 10*time.Second, a+"'s consumer gone", func() bool {
+			waitFor(t, a+"'s consumer gone", func() bool {
 				_, err := rig.harness.client.JS().ConsumerInfo(bus.Stream, consumer)
 				return err != nil
 			})

@@ -11,8 +11,10 @@ import {
 import { pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { textSourceOf } from "../refs/text-references";
 import type { SessionSettingsView } from "./conversation";
-import type { SwitchRequest } from "./use-session-switch";
+import type { SwitchRequest, SwitchStatus } from "./use-session-switch";
 
 /** A picker in the row under the message box: a native `<select>`, as the delivery control is. A
  *  long model id is clipped on screen only (the option's value, which a pick sends, is the whole
@@ -192,13 +194,17 @@ export function SessionSettings({
  * other, shrinks to a sliver beside the pickers and stacks a word per line, which made the row
  * taller than the transcript on a 390 px screen and pushed the message box under the keyboard.
  * A line under the row is read where it always was, at any width.
+ *
+ * Where the line quotes the session's reply, a stored message, the reply is drawn by the
+ * renderer inline, as that message: the line is a paragraph of the page and in no link or
+ * button, so a key or a mention in the reply is a link reading as its target's name (R6).
  */
 export function SessionSwitchLines({
   notice,
   status,
 }: {
   notice: string | undefined;
-  status: string | undefined;
+  status: SwitchStatus | undefined;
 }): ReactNode {
   return (
     <>
@@ -208,7 +214,16 @@ export function SessionSwitchLines({
           data-testid="agent-switch-status"
           role="status"
         >
-          {status}
+          {status.words}
+          {status.reply === undefined ? null : (
+            <MarkdownBody
+              markdown={status.reply.body}
+              source={textSourceOf("message", status.reply.id, undefined)}
+              surface="session-switch-answer"
+              tree={status.reply.tree}
+              variant="inline"
+            />
+          )}
         </p>
       )}
       {notice === undefined ? null : (

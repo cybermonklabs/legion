@@ -184,12 +184,18 @@ type fakeBroker struct {
 	// authorization, answering 200 with no device_code or user_code.
 	enrollEmpty2xx     bool
 	deviceAuthEmpty2xx bool
+	// deviceAuthFields, when set, replaces the device authorization answer's own pairs with its
+	// own, a nil value removing its pair: a broker naming another interval or lifetime, or none.
+	deviceAuthFields map[string]any
 	// oauthErrorStatus, when set, is the status of every OAuth error the token endpoint answers, in
 	// place of its own: a broker, or a proxy before it, answering 5xx, 408 or 429 with a body that
 	// still names access_denied, expired_token or invalid_grant, or another refusal status.
 	// devicePolls counts every device code grant the token endpoint receives, whatever it answers.
 	oauthErrorStatus int
 	devicePolls      int
+	// devicePollAnswer, when set, is handed each device code grant with a known code and a valid
+	// proof, by its count among devicePolls, and answers it where it returns true. It runs under mu.
+	devicePollAnswer func(poll int, w http.ResponseWriter) bool
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -435,7 +441,15 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.next++
 		f.deviceCode = fmt.Sprintf("device-%d", f.next)
 		f.pendingCode = fakeConfirmationCode()
-		writeJSON(w, 200, map[string]any{"device_code": f.deviceCode, "user_code": f.pendingCode, "verification_uri": f.srv.URL, "expires_in": 900, "interval": 1})
+		answer := map[string]any{"device_code": f.deviceCode, "user_code": f.pendingCode, "verification_uri": f.srv.URL, "expires_in": 900, "interval": 1}
+		for name, value := range f.deviceAuthFields {
+			if value == nil {
+				delete(answer, name)
+			} else {
+				answer[name] = value
+			}
+		}
+		writeJSON(w, 200, answer)
 	})
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -471,6 +485,9 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			}
 			if !dpopProves(r, f.srv.URL+"/v1/oauth/token", f.pendingThumbprint) {
 				oauthError(400, "invalid_dpop_proof")
+				return
+			}
+			if f.devicePollAnswer != nil && f.devicePollAnswer(f.devicePolls, w) {
 				return
 			}
 			switch f.loginOutcome {
@@ -528,7 +545,10 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.retired = append(f.retired, r.PathValue("id"))
 		w.WriteHeader(http.StatusNoContent)
 	})
-	f.srv = httptest.NewServer(mux)
+	// The handlers read f.srv on the server's goroutines, so it is set before the server serves:
+	// built unstarted, assigned, then started.
+	f.srv = httptest.NewUnstartedServer(mux)
+	f.srv.Start()
 	t.Cleanup(f.srv.Close)
 	return f
 }
@@ -676,6 +696,7 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t) // records the login request object; issues on the first poll
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
@@ -708,6 +729,7 @@ func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
 // well, and the next start's refresh settles whether the login still stands; nothing else is
 // written under HOME.
 func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	f := newFakeBroker(t)
@@ -767,6 +789,7 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 // gets the broker's refusal rather than errNoCredential, since the helper holds a credential and
 // its retry can use it.
 func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	old := b.cred.Load()
@@ -799,6 +822,7 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 // clear and the record; it waits up to 200 ms for that read, which returns at once unless the lock
 // holds it back until the refusal is recorded.
 func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -833,6 +857,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 // denied and no longer refused: its outcome is newer than the refusal, and `machine login`, which
 // reads the same answer, must tell the operator it was denied.
 func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -865,6 +890,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 // outcomes and confirms a later Login, once the prior one is no longer pending, starts completely
 // fresh rather than reusing the denied/expired attempt's key.
 func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
@@ -905,6 +931,7 @@ func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
 }
 
 func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	sess, _ := newSession(1234, 77, "example-host-devbox:1234:77", "", nil, nil)
@@ -926,6 +953,7 @@ func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
 }
 
 func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
@@ -954,6 +982,7 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 }
 
 func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
+	t.Parallel()
 	b := &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
@@ -968,6 +997,7 @@ func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
 // LAUNCHER_INVALID" prefix; each shape with an empty part drops that part, so a front door's 502
 // with no JSON body does not read "broker 502 : ".
 func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		err  BrokerError
 		want string
@@ -988,6 +1018,7 @@ func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
 // writes into its directory, so the caller that closed the broker can remove that directory
 // while a refresh or an approved login is still finishing.
 func TestASaveAfterTheBrokerClosesWritesNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	b := &Broker{MachineFile: filepath.Join(dir, "machine.json")}
 	b.Close()

@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The committed `package.json` no longer holds `legion.daemonApiVersion` (dispatch://INFRA-1569).
+  Each step that packs the plugin writes it: the release, the worker image and
+  `scripts/e2e/lib/pack-plugin.sh`. The number written is that of the tree packed, the greatest
+  number of `packages/contracts/fixtures/daemon-api/released-contracts.json` plus the count of
+  entry fixtures beside it, which is the number the daemon built from the same commit requires.
+  The bundle inlines the manifest it was packed with, so the plugin states the number its manifest
+  declares. Code run from a checkout, a test or a plugin linked from one, counts the checkout's own
+  fixtures; a plugin linked from a checkout declares no number in its manifest, and the daemon's
+  boot gate refuses it, so install one a pack wrote.
+time: 2026-11-24T13:20:00Z
+custom:
+  Issue: INFRA-1569

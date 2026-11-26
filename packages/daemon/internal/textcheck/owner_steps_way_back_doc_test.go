@@ -1,5 +1,11 @@
 package textcheck
 
+// This test reads the plan rows' migration through migrations.All, as
+// plan_ratings_way_back_doc_test.go reads the plan record's, and internal/store's
+// owner_steps_way_back_test.go, which runs that migration's way back, reads no text outside its
+// package, so the guide is this one's one row.
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide (through `packages/daemon/internal/textcheck/way_back_doc_test.go#wayBackBlockOfTheGuide`)
+
 import "testing"
 
 // The way back of the release whose owner's plan picks the steps stands in two files: the header

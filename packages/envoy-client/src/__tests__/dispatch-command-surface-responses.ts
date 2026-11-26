@@ -409,6 +409,19 @@ export function architectureSource() {
   };
 }
 
+/** `PUT` and `DELETE /api/v1/projects/{key}/proven-sessions`: the project as the project list
+ *  shows it, its setting as the write left it. */
+export function projectBody(provenSessions: boolean) {
+  return {
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    gated_steps: [],
+    proven_sessions: provenSessions,
+    created_at: AT,
+  };
+}
+
 /** `GET /api/v1/priorities`: one live priority with work under it, and one issue in each of the
  *  two faults, so the record holds every line `dispatch priorities` can print. Neither faulted
  *  issue is claimed, so the run reads no agent list and no printed line carries a liveness. */

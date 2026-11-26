@@ -34,6 +34,7 @@ import (
 // on that subject, and the owner's consumer acks the message. Its control is the live row's
 // (relay_socket_live_test.go): the receipt not published, and the message is still pending.
 func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_forward"
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
@@ -66,6 +67,7 @@ func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
 // client publishes nothing on the receipt family but receipts a word long. Control, in the same
 // row: the same subject with done is published, and the owner acks the message.
 func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_receipt_body"
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
@@ -102,6 +104,7 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 // is published on it. Control: the subject check removed; the other session's frame reaches the
 // socket and the row fails naming it.
 func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_refused", "ses_someone_else"
 	client, _ := rig.open(t, session)
@@ -117,8 +120,8 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 				t.Fatalf("a sub to %s was answered %s, want err subject_not_granted for sid %d", subject, frame.raw, sid)
 			}
 			return true
-		case <-time.After(2 * time.Second):
-			t.Errorf("a sub to %s was answered nothing within 2 s, want err subject_not_granted for sid %d", subject, sid)
+		case <-time.After(listenerWaitBound(t)):
+			t.Errorf("a sub to %s was answered nothing in time, want err subject_not_granted for sid %d", subject, sid)
 			return false
 		}
 	}
@@ -176,6 +179,7 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 // is its own control: the socket closed first, the replica holds no subscription, and the same
 // probe reads stopped.
 func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_probed"
 	client, _ := rig.open(t, session)
@@ -192,7 +196,7 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	client.none(500*time.Millisecond, "a message carrying the probe's header under a relay receipt")
 
 	_ = client.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-	waitFor(t, 5*time.Second, "the replica to drop the socket's subscription", func() bool {
+	waitFor(t, "the replica to drop the socket's subscription", func() bool {
 		return rig.client.Connection().NumSubscriptions() == held
 	})
 	if probeSessionConnection(t.Context(), prober, session, logger) {
@@ -348,6 +352,7 @@ func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
 // it. Control: the rule removed; the socket of * opens, subscribes notifications.envoy.deliver.*,
 // and another session's frame reaches it, which the row names.
 func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const victim = "ses_edge_victim"
 	for _, session := range []string{"*", ">", "ses_edge.dotted"} {
@@ -362,14 +367,14 @@ func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
 				case <-client.pongs:
 				case frame := <-client.frames:
 					t.Fatalf("the socket of the session %q was opened, and its sub of %s was answered %s; want 400 before the upgrade", session, bus.DeliverSubject(session), frame.raw)
-				case <-time.After(5 * time.Second):
+				case <-time.After(listenerWaitBound(t)):
 					t.Fatalf("the socket of the session %q was opened and answered no ping; want 400 before the upgrade", session)
 				}
 				publishRelayFrame(t, rig.owner.url, victim, natsgo.Header{})
 				select {
 				case frame := <-client.frames:
 					t.Fatalf("the socket of the session %q was opened, and %s's frame reached it: %s", session, victim, frame.raw)
-				case <-time.After(2 * time.Second):
+				case <-time.After(listenerWaitBound(t)):
 					t.Fatalf("the socket of the session %q was opened; want 400 before the upgrade", session)
 				}
 			}
@@ -749,7 +754,7 @@ func TestARelaySocketsReplicaHoldsNoMoreThanItsBudget(t *testing.T) {
 			held, bytes := socket.held()
 			t.Fatalf("the socket of %s holds %d frames, %d bytes, and is open, though it alone was sent %d frames of 512 KiB past the replica's budget of %d", sessions[i], held, bytes, frames, budget)
 		}
-		_ = conns[i].SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second)))
+		_ = conns[i].SetReadDeadline(time.Now().Add(listenerWaitBound(t)))
 		_, _, err := conns[i].ReadMessage()
 		var closed *websocket.CloseError
 		if !errors.As(err, &closed) || closed.Code != websocket.CloseTryAgainLater || closed.Text != relaySocketReasonSlowConsumer {
@@ -781,8 +786,8 @@ func TestARelaySocketPastTheListenersCapIsRefused503(t *testing.T) {
 	if err := first.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("close the first socket: %v", err)
 	}
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return rig.holds("ses_edge_cap_a") == 0 }) {
-		t.Fatal("the replica still holds the first socket 5s after its client closed it")
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return rig.holds("ses_edge_cap_a") == 0 }) {
+		t.Fatal("the replica still holds the first socket the time this package gives a wait after its client closed it")
 	}
 	rig.openWith(t, third, token)
 }
@@ -790,6 +795,7 @@ func TestARelaySocketPastTheListenersCapIsRefused503(t *testing.T) {
 // A binary frame closes the socket 1003 text_frames_only: the wire is text frames of JSON.
 // Control: the binary frame's branch removed; the socket stays open, and the row fails naming it.
 func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_binary"
 	client, _ := rig.open(t, session)
@@ -886,6 +892,7 @@ func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T
 // Control: the edge's consumers at bus.SessionConsumerMaxAckPending; the restart sends hundreds
 // at once, past the socket's limits, and the socket closes 1013 slow_consumer.
 func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session, backlog = "ses_edge_backlog", 300
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
@@ -896,9 +903,15 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 	}
 	client, _ := rig.open(t, session)
 	client.subscribeOwn(session)
+	// The relay sent the first relayEdgeInFlight frames to no socket, and the registration below
+	// restarts it at the floor, which deletes the consumer holding them and creates it again, so
+	// the row waits for that many in flight and then for the consumer's stored state
+	// (awaitSessionConsumerStored).
+	awaitAckState(t, rig.owner.consumers, session, relayEdgeInFlight, 0)
+	awaitSessionConsumerStored(t, rig.owner.harness.client.Conn, session)
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
 	seen := map[string]bool{}
-	deadline := time.After(60 * time.Second)
+	deadline := time.After(listenerWaitBound(t))
 	for len(seen) < backlog {
 		select {
 		case frame := <-client.frames:
@@ -914,7 +927,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 		case err := <-client.closed:
 			t.Fatalf("the socket of a prompt client closed after %d of %d frames: %v\n%s", len(seen), backlog, err, rig.logs.String())
 		case <-deadline:
-			t.Fatalf("the socket of a prompt client was sent %d of %d frames in 60s", len(seen), backlog)
+			t.Fatalf("the socket of a prompt client was sent %d of %d frames within the time this package gives a wait", len(seen), backlog)
 		}
 	}
 	client.stillOpen(time.Second, "after the backlog")
@@ -923,6 +936,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 // A frame over 1 MiB closes the socket 1009 (control: a frame just under the bound is read and
 // answered).
 func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_oversized"
 	client, _ := rig.open(t, session)
@@ -947,6 +961,7 @@ func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
 // 30 s before the test binary's deadline (testwait), so a loaded machine slows the row and does not
 // fail it. Control: a well-formed sub on the same rig is taken and closes nothing.
 func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_bad_frames"
 	for _, row := range []struct {
@@ -983,8 +998,8 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 	case <-client.pongs:
 	case err := <-client.closed:
 		t.Fatalf("a well-formed sub closed the socket: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("no pong within 5 s of a well-formed sub")
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatal("no pong within the time this package gives a wait, after a well-formed sub")
 	}
 }
 
@@ -993,6 +1008,7 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 // client once; the socket stays open and goes on forwarding under the sid it holds. Control: the
 // first sub is taken.
 func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_many_subs"
 	client, _ := rig.open(t, session)
@@ -1023,6 +1039,7 @@ func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
 // goroutine of its own; the err arrives before the subscribe is held, the message is lost, and the
 // row fails naming it.
 func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withSocketNATSLatency(400*time.Millisecond))
 	const session = "ses_edge_in_order"
 	client, _ := rig.open(t, session)
@@ -1037,7 +1054,7 @@ func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 		if frame.Op != "msg" || frame.sid(t) != 1 || frame.Reply != sent.Reply {
 			t.Fatalf("the message published once the second sub was answered reached the socket as %s, want the msg %s under sid 1", frame.raw, sent.Reply)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the message %s published once the second sub was answered never reached the socket: the second sub was answered before the first's subscribe was held", sent.Reply)
 	}
 }
@@ -1049,6 +1066,7 @@ func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 // ping handler that answers at once, off the reader; the pong precedes the subscribe, the message
 // is lost, and the row fails naming it.
 func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withSocketNATSLatency(400*time.Millisecond))
 	const session = "ses_edge_flush"
 	client, _ := rig.open(t, session)
@@ -1056,8 +1074,8 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 	client.ping()
 	select {
 	case <-client.pongs:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no pong within 5 s of the ping")
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatal("no pong within the time this package gives a wait, after the ping")
 	}
 	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
 	select {
@@ -1065,7 +1083,7 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 		if frame.Op != "msg" || frame.Reply != sent.Reply {
 			t.Fatalf("the socket sent %s, want the msg %s published the moment the pong arrived", frame.raw, sent.Reply)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the message %s published the moment the pong arrived never reached the socket: the pong came before the subscribe was held", sent.Reply)
 	}
 }
@@ -1075,6 +1093,7 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 // Envoy-Subject alone when the message carries no header of its own. Control: the headers read one
 // value per name (Header.Get); the repeated values are lost and the row fails naming them.
 func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_headers"
 	client, _ := rig.open(t, session)
@@ -1105,6 +1124,7 @@ func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 // included, through the same /v1 a deployment mounts. Control: the same path on the edge rig is
 // upgraded.
 func TestANonEdgeListenerServesNoRelaySocket(t *testing.T) {
+	t.Parallel()
 	routes := http.NewServeMux()
 	logger := logging.NewWithWriter("not-edge", &bytes.Buffer{})
 	registerV1Routes(routes, &listenerDeps{}, "not-edge", logger)

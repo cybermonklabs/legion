@@ -301,10 +301,13 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 }
 
 // sessionRecorder is a Registrar that records the session of every registration a machine
-// starts.
+// starts, and the names of every release it asks, answering each release with the next of
+// releaseErrs, nil once they run out.
 type sessionRecorder struct {
-	mu       sync.Mutex
-	sessions []string
+	mu          sync.Mutex
+	sessions    []string
+	releaseErrs []error
+	releases    [][]string
 }
 
 func (r *sessionRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), error) {
@@ -314,10 +317,29 @@ func (r *sessionRecorder) KeepPodSession(_ context.Context, s PodSession) (func(
 	return func() {}, nil
 }
 
+func (r *sessionRecorder) ReleasePodSessions(_ context.Context, names []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.releases = append(r.releases, slices.Clone(names))
+	if len(r.releaseErrs) == 0 {
+		return nil
+	}
+	err := r.releaseErrs[0]
+	r.releaseErrs = r.releaseErrs[1:]
+	return err
+}
+
 func (r *sessionRecorder) registered() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.sessions)
+}
+
+// released is the names of every release the machine asked, in order.
+func (r *sessionRecorder) released() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.releases)
 }
 
 // The pod's session registration is held as an enrollment is (ensureRegistered, plan E's t-e-54):
@@ -1154,5 +1176,52 @@ func TestARuleResumeOfASessionTheClaimDoesNotHoldLeavesItSuspended(t *testing.T)
 	}
 	if lines := h.logs.lines("not resumed by rule: the claim records a session it does not hold"); len(lines) != 1 {
 		t.Fatalf("the rule's refusal wrote %d lines, want one: %v", len(lines), lines)
+	}
+}
+
+// IsSessionHeldElsewhere matches the resume refusal of a name held for another claim or for none,
+// whichever of the session's names was refused — its id here, its file's name there — and neither
+// of the hold's two other refusals, a session file no hold can cover and a claim at the cap of held
+// names, though all three are 409s of one type (claim.Refusal). Each refusal here is resumeRefusal's
+// own, the RefusedError a retry or a resume answers with, which is the chain the controller keeper
+// reads (internal/daemon's controllerKeeper.keep).
+func TestIsSessionHeldElsewhereMatchesTheHeldRefusalAlone(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	for _, tc := range []struct {
+		name          string
+		hold          func(*harness)
+		session, file string
+		refusal       claim.Refusal
+		held          bool
+	}{
+		{"the session id held for another claim", func(h *harness) { h.store.setHold(sessionID("ses_held"), other) },
+			"ses_held", "/state/sessions/held.jsonl", claim.SessionHeldRefusal("ses_held"), true},
+		{"the session file's name held for no claim", func(h *harness) { h.store.setHold(Hold{Kind: HoldFileName, Name: "taken.jsonl"}, "") },
+			"ses_mine", "/state/sessions/taken.jsonl", claim.SessionHeldRefusal("taken.jsonl"), true},
+		{"a session file no hold can cover", func(*harness) {},
+			"ses_mine", "/state/sessions//mine.jsonl", claim.SessionNameUnheldRefusal("session file"), false},
+		{"a claim at the cap of held names", func(h *harness) { h.store.fillHolds(h.token, MaxHeldNamesPerClaim) },
+			"ses_new", "/state/sessions/new.jsonl", claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			tc.hold(h)
+			h.m.mu.Lock()
+			h.m.claim.Session, h.m.claim.SessionFile = tc.session, tc.file
+			err := h.m.resumeRefusal(h.ctx, "retry")
+			h.m.mu.Unlock()
+
+			var refused *RefusedError
+			var refusal claim.Refusal
+			if !errors.As(err, &refused) || !errors.As(err, &refusal) || refusal != tc.refusal {
+				t.Fatalf("the resume's refusal = %v, want a RefusedError carrying %v", err, tc.refusal)
+			}
+			if got := IsSessionHeldElsewhere(err); got != tc.held {
+				t.Fatalf("IsSessionHeldElsewhere(%v) = %t, want %t", err, got, tc.held)
+			}
+		})
+	}
+	if IsSessionHeldElsewhere(nil) {
+		t.Fatal("IsSessionHeldElsewhere(nil) = true, want false")
 	}
 }

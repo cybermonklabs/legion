@@ -103,6 +103,7 @@ func TestAKeyedRunnerRunsOneKeyInOrderAndKeysAtOnce(t *testing.T) {
 // stop hands back every item still waiting behind its key, in each key's order, and refuses every
 // later item; the item in its handler runs on, and wait returns once it has ended.
 func TestAStoppedKeyedRunnerHandsBackWhatWaits(t *testing.T) {
+	t.Parallel()
 	recorder := &keyedRecorder{gates: map[int]chan struct{}{1: make(chan struct{})}, start: make(chan keyedItem, 8)}
 	runner := newKeyedRunner(recorder.handle)
 	runner.run("a", keyedItem{"a", 1})

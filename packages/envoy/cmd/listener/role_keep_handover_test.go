@@ -281,6 +281,7 @@ func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
 // answered 202 kept and a live holder waiting - was stranded until it expired too. A walk that
 // moved the role's cursor made progress, so the handover goes on to the copies behind them.
 func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role    = "kept-handover-expired"
@@ -367,6 +368,7 @@ func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
 // (roleKeepDrainHolds), so either check ends it: no copy reaches the session that released the
 // role inside the pause.
 func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-released"
@@ -484,6 +486,7 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 // its copy, inside its hour, reaches nobody, and it wakes its role again (raiseKeptRoleWake),
 // where the claimed lane, whose holder is live, wakes nothing.
 func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-sweep-stranded"
@@ -527,7 +530,7 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	sweepOnce(ctx, cfg)
 
 	left := map[string]bool{keys[1]: true, keys[2]: true}
-	for deadline := time.After(30 * time.Second); len(left) > 0; {
+	for deadline := time.After(listenerWaitBound(t)); len(left) > 0; {
 		select {
 		case key := <-forwards:
 			if key == keys[0] {
@@ -583,6 +586,7 @@ func countSessionBucketReads(t *testing.T, sessions *session.SessionRegistry) *a
 // claim's handover came to read the session registry under a test that was replacing it. The pass
 // opens with the lane instead, and ends there when the lane holds nothing.
 func TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		empty  = "kept-empty-lane"
@@ -799,6 +803,7 @@ func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarnes
 // roleKeepWindow. The role's claim record names the session that claimed it, so the read is
 // retried and the copy reaches the holder its sender was told it was kept for.
 func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-holder-read-failed"
@@ -889,6 +894,7 @@ func (kv *sessionBucketThatStalls) Get(string) (natsgo.KeyValueEntry, error) {
 // a pause. Quieting that read too ended ten minutes of a claimed role's lane failing with nothing
 // above Debug, where the same failure whose window ended in a pause was reported at Error.
 func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		shutdown       bool
@@ -950,6 +956,7 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 // spending its window on a bus which is not answering. Before the guard saw a context this wait
 // was a plain Lock, and only the handover ahead of it could end it.
 func TestAKeptLaneGuardStopsWaitingWhenTheHandoversContextEnds(t *testing.T) {
+	t.Parallel()
 	guards := newRoleKeepGuards()
 	const role = "kept-guard-cancel"
 
@@ -981,8 +988,8 @@ func TestAKeptLaneGuardStopsWaitingWhenTheHandoversContextEnds(t *testing.T) {
 		if ok {
 			t.Fatalf("the cancelled hold of role %s reported that it took the guard, which the first hold still holds", role)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the hold of role %s's guard did not return within 10 s of its context ending", role)
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("the hold of role %s's guard did not return in time of its context ending", role)
 	}
 
 	// The guard is the first holder's throughout: a release the cancelled wait never made would

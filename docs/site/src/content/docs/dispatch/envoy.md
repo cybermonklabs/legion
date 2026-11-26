@@ -55,7 +55,22 @@ notifications.github.<owner>.<repo>.job.<run_id>.completed    a finished Actions
 ```
 
 A dot in an owner, repository, or ref name is written `_` in the subject, so `acme/site.io` is
-`notifications.github.acme.site_io`. A redelivered webhook is recognised and stored once.
+`notifications.github.acme.site_io`. A redelivered webhook is recognised and stored once: an event
+is keyed by its `X-GitHub-Delivery` GUID, which GitHub gives one event in every webhook that
+receives it, so the copies two Apps installed on one repository deliver are stored once too.
+
+The listener logs one `github published` line for each topic of each delivery it publishes, with
+the delivery's GUID, its event and action, the topic, the key, the hook target's id
+(`X-GitHub-Hook-Installation-Target-ID`, an App's id for an App's webhook), `result=stored` or
+`result=duplicate`, the stream's answer, and `resent=true` where that answer came to the bus's
+resend after the connection closed under its first send, which counts as `stored` since the first
+send may have stored that copy. A comment or a review also logs a `github sender` line, which
+names the sender and the hook target's type and id. The body's signature covers neither
+`X-GitHub-Delivery` nor the two hook-target headers, so the lines write what they hold of them
+quoted: the `github sender` line `target_type`, `target_id` and `delivery`
+(`target_type="integration" target_id="5341240"`), the `github published` line `target_id`,
+`delivery` and `key`, the key being built from the delivery, and the `github mention detected`
+line `delivery`.
 
 When a repository has been renamed, the listener publishes each of its events a second time under
 the former name, for every pair `ENVOY_GITHUB_REPOSITORY_RENAMES` configures as
@@ -206,10 +221,13 @@ again. If no session takes a message by then, the listener drops it and sends th
 session a dead letter, when the publish named that session, unless it drops the message more than
 an hour late. The dead letter is an Envoy message on the session's agent subject that names the
 role, the message's event id, its first line, why Envoy dropped it, and when Envoy kept it and
-dropped it. The listener also sends one when it drops a kept message inside its hour because the
-live holder does not take the message's delivery mode, and `envoy_role_dead_letters_total` counts
-both. A publish that repeats a dedupe key while its first copy is still kept stores nothing new,
-and is answered with that first copy.
+dropped it. A dead letter quotes nothing of a message from Dispatch. A comment or a message is
+named by its id and its `dispatch://` reference, where its event carries them, because its author
+can edit or delete it; any other message from Dispatch, such as an ask's, an issue's or a delivery
+receipt, is named by its event id alone. The listener also sends one when it drops a kept message
+inside its hour because the live holder does not take the message's delivery mode, and
+`envoy_role_dead_letters_total` counts both. A publish that repeats a dedupe key while its first
+copy is still kept stores nothing new, and is answered with that first copy.
 While a kept message has at least 20 minutes of its hour left and no live session holds the
 role, the listener raises the role's wake report again every five minutes, so a released Legion
 role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
@@ -556,6 +574,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | Required with `github`: the webhook secret. |
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
+| `ENVOY_VERDICT_APP_ID` | Optional with `github`: the id of the GitHub App that writes `legion-verdict`. The listener leaves that App's own check suites out of the CI record, in every action, and logs `ci: left out the verdict App's own check suite` for each, so a head settles beside the suite GitHub makes the App on each push. Unset or blank leaves no suite out; a value that is not a whole number above 0 with no leading zero refuses startup. Give Dispatch the same value as `DISPATCH_VERDICT_APP_ID`, or its CI reconcile pass writes the App's completed suite back and the head is published a second time. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
 | `ENVOY_WEBHOOK_BODY_BUDGET` | The bytes of webhook body the listener holds at once across every webhook route; default 64 MiB. A delivery that finds no room within its route's short wait is answered `503` with `Retry-After: 1`. |
@@ -780,7 +799,7 @@ install it, what each component deploys and which settings it sets.
 | `200` `starting` | The listener is still binding its durable consumer. |
 | `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
-| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. |
+| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. `nats credential refused: …`, naming the refusal, while the listener's start waits for NATS to admit its credential (below). |
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read
@@ -804,8 +823,31 @@ watch the timestamp's age. No setting changes the minute or the 2-minute bound.
 
 `GET /livez` needs no credential either. It answers `204` and reads nothing: no flush to NATS, no
 cache ping and no read of the durable consumer. A liveness or startup probe reads it, so a bus
-outage or a warming cache restarts no listener. Readiness stays on `/healthz`, whose status tells
-a starting listener from a serving one.
+outage, a warming cache or a start that waits for its credential restarts no listener. Readiness
+stays on `/healthz`, whose status tells a starting listener from a serving one.
+
+A NATS server that refuses the listener's credential as it starts, at the connect or at the
+`ENVOY_NOTIFICATIONS` stream's reconcile, does not end the start at once: a hub refuses a new nkey
+until each of its servers has reloaded the configuration that names it, about a minute later. The
+listener tries again after 1 second, doubling each wait up to 10 seconds, for up to 180 seconds
+from its first try. The same wait, under the same 180 seconds, covers the start's later connects,
+the role lane's and the session consumers', each on a connection of its own: one can meet a server
+that has not reloaded after another got in through one that has. Meanwhile `/healthz` answers
+`503` `unhealthy`, naming the last refusal, and `/livez` answers `204`. Once a server admits it, the
+start goes on as usual, and `/healthz` stops naming the refusal as soon as that connect gets in. A
+try in progress at 180 seconds may still succeed, and no try begins after it on a refusal: when the
+last try begun by then is refused, the listener exits `1`, its last line naming its credential (an
+nkey user by its public key) and the last refusal. A connect made after the 180 seconds tries ten
+times, a second apart, as before. A dial that fails for any other reason, whenever it fails, ends
+the start only after ten tries a second apart, as before, so a connect begun near the 180 seconds
+still makes them. A reconcile that fails for any other reason, such as `ENVOY_NATS_REPLICAS` above
+`1` on a single server, ends the start at once, and so does a step after a connect that got in, such
+as the role lane's subscribe; such a line names the step that failed, and the credential only when a
+server refused it. An edge
+listener (`ENVOY_EDGE_PROJECTS`) only reads the stream and opens no role lane, and its start waits
+out a refused credential at the connect, and a grant that refuses that read, the same way. A stream
+the server does not hold, a read that times out, or any other failure of the read ends its start at
+once.
 
 `GET /readyz` needs no credential either. It answers whether /v1 can serve, and a load balancer's
 health check reads it: `503 {"status":"starting"}` until the /v1 gate opens; after that

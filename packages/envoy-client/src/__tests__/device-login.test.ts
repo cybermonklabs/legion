@@ -8,7 +8,7 @@
 // the session; and two processes that trade at once spend one refresh token once, since the
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
-import { expect, spyOn, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   mkdirSync,
@@ -23,10 +23,15 @@ import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { runDispatchCli } from "../dispatch-cli";
 import { dispatchSettings } from "../dispatch-config";
 import { readEnvoyConfig } from "../envoy-config";
 import { deviceLoginStandIns } from "./broker-stand-ins";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const { broker, laptopEnvironment, loginFile, tempDir } = deviceLoginStandIns("device-login");
 
@@ -174,6 +179,29 @@ test("dispatch login refuses a file setting that names no regular file, before a
     expect(stdout, name).not.toContain(file);
     expect(stub.authorizations, name).toHaveLength(0);
   }
+});
+
+test("dispatch login --device refuses a code no poll could reach before it prints the code", async () => {
+  // A broker whose interval is no shorter than its code's life: the code would lapse before its
+  // first poll, and an approval of it would mint a launcher credential bound to a key no process
+  // holds. The command shows no code to approve, names the broker's interval and lifetime, and
+  // does not tell the person to ask again, which would meet the same answer.
+  const stub = broker({ interval: 1_800 });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON], {
+    HOME: tempDir(),
+    AGENT_SECRETS_URL: stub.url,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+  });
+  expect(code, stdout).toBe(1);
+  expect(stdout).not.toContain("WDJB-MJHT");
+  expect(stdout).not.toContain("enter the code");
+  expect(stdout).toContain(
+    "answered a device code that lives 600 s, with a poll interval of 1800 s"
+  );
+  expect(stdout).not.toContain("ask again");
+  expect(stub.authorizations).toHaveLength(1);
+  expect(stub.polls).toHaveLength(0);
 });
 
 test("a login approved and then not kept names its credential and where to revoke it", async () => {
@@ -337,8 +365,10 @@ test("a laptop session's Dispatch credential is its device login's trade, naming
     access_expires_at: new Date(Date.now() + 600_000).toISOString(),
   });
   const env = laptopEnvironment(stub.url, "http://dispatch.test", written.path);
-  const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
-  const resolution = dispatchSettings(env, config, { session: "ses-laptop-1" });
+  const config = await readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, {
+    cwd: tempDir(),
+  });
+  const resolution = await dispatchSettings(env, config, { session: "ses-laptop-1" });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   expect(resolution.credential.scheme).toBe("DPoP");
   const headers = await resolution.credential.headers("GET", "http://dispatch.test/api/v1/whoami");

@@ -38,6 +38,7 @@ func wantNamedNotPrinted(t *testing.T, what, text string, named []string, secret
 // carries a credential, or that is no plain http(s) URL, is not printed, and the line names the
 // setting in its place; a plain one still prints as the page under it, and names the setting too.
 func TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"issued"})
 	for _, row := range []struct {
@@ -68,6 +69,7 @@ func TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt(t *testing.T) {
 // prints the approve URL: a page that carries a user and a password, or a token in its query, is
 // not printed. Control: a plain https page still prints whole.
 func TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:72).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	password := "hunter2pw-" + "verifypage-" + "6d1e"
 	withUser := (&url.URL{Scheme: "https", User: url.UserPassword("tokuser5b8c", password), Host: "dispatch.example", Path: "/credentials/machine"}).String()
@@ -93,6 +95,7 @@ func TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt(t *testing.T) {
 // help still says AGENT_SECRETS_KEY_DIR is --out's default, and still prints the default of
 // --pod-token-file, which is this program's own constant.
 func TestEnrollHelpPrintsNoKeyDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:99).
 	const secret = "hunter2pw-keydir-6e2f18"
 	t.Setenv("AGENT_SECRETS_KEY_DIR", filepath.Join(t.TempDir(), secret))
 	for _, row := range []struct {
@@ -116,6 +119,7 @@ func TestEnrollHelpPrintsNoKeyDirectory(t *testing.T) {
 // does not parse, or names no host, is refused without the URL or the parser's words about it,
 // which quote it whole; a proxy URL that names a host is still used.
 func TestAnAirlockProxyURLThatCannotBeUsedIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, proxy, secret string
 	}{
@@ -168,6 +172,7 @@ func inheritedWgetrc(t *testing.T) (string, []string) {
 // With nothing in the way the root takes the grant's files, and the wgetrc there carries the
 // inherited lines: the control, which shows the run read that WGETRC.
 func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *testing.T) {
+	t.Parallel()
 	wgetrc, secrets := inheritedWgetrc(t)
 	base := filepath.Join(t.TempDir(), "runtime")
 	root := filepath.Join(base, "agent-secrets", "airlock")

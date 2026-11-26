@@ -396,21 +396,24 @@ func below(request, limit string) bool {
 	return requested.Cmp(limited) < 0
 }
 
-// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 3 CPU
-// and 19Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request. Under gVisor
-// every process of a pod uses whatever the pod has free, so the pod's peak must fit its one
-// number: an INFRA issue pod measured at 1-minute resolution used its whole 19Gi for minutes while
-// its reviewer ran a review (2026-10-21). The disk limit bounds what the pod writes to the node's
-// disk; the request, which the scheduler fits to the node's allocatable ephemeral storage — its
-// root volume, which nobody has sized for these pods — binds scheduling to little. An operator who
-// knows the root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no
-// main container requesting more than 10Gi of it and clamps each container's limit to its request,
-// so a deployment there sets both to at most 10Gi. The controller, which runs alone in its pod,
-// gets a pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
+// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 2 CPU
+// and 8Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request: the size
+// INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with the
+// route and the guidance that take builds and whole test suites out of the pod in place
+// (dispatch://INFRA-1115, R1 to R4). Under gVisor every process of a pod uses whatever the pod has
+// free, so the pod's peak must fit its one number: an INFRA issue pod that still ran its own
+// builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran
+// a review (2026-10-21). The disk limit bounds what the pod writes to the node's disk; the
+// request, which the scheduler fits to the node's allocatable ephemeral storage — its root volume,
+// which nobody has sized for these pods — binds scheduling to little. An operator who knows the
+// root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no main
+// container requesting more than 10Gi of it and clamps each container's limit to its request, so a
+// deployment there sets both to at most 10Gi. The controller, which runs alone in its pod, gets a
+// pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
 // (internal/daemon/kubernetes.go, probeReservation), since it starts one Oh My Pi at a time and
 // runs no lane, and a probe sized as a pod could not boot on a full pool.
 var defaultResources = PodResources{
-	Issue:      Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
+	Issue:      Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
 	Controller: Reservation{CPU: "1", CPURequest: "1", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
 }
 
@@ -452,8 +455,8 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // daemon logs in with at boot and again before each launcher credential expires, reading the file
 // each time so the kubelet's rotation is picked up (no person approves the login, and the key it
 // wins lives only in process memory); the audience of the projected token every pod carries for
-// the broker; and that pod token's lifetime. The audience defaults to the broker's own
-// (`agent-secrets`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
+// the broker; and that pod token's lifetime. The audience defaults to Cipher's own
+// (`cipher`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
 // Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
 // second projected token every enrolled pod carries, the identity the broker's exchange trades for
 // a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
@@ -465,12 +468,15 @@ type AgentSecretsConfig struct {
 	ExchangeAudience   string
 }
 
+// DefaultAgentSecretsAudience is the audience an agent_secrets block that names none settles on,
+// Cipher's; the key table prints it as the block's default.
+const DefaultAgentSecretsAudience = "cipher"
+
 const (
-	agentSecretsKey             = kubernetesKey + ".agent_secrets"
-	defaultAgentSecretsAudience = "agent-secrets"
-	defaultTokenExpirySeconds   = 3600
-	minTokenExpirySeconds       = 600
-	maxTokenExpirySeconds       = 3600
+	agentSecretsKey           = kubernetesKey + ".agent_secrets"
+	defaultTokenExpirySeconds = 3600
+	minTokenExpirySeconds     = 600
+	maxTokenExpirySeconds     = 3600
 )
 
 // readAgentSecrets reads `runtime.kubernetes.agent_secrets`: nil when absent, every member checked.
@@ -488,7 +494,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if fields["operator"] != nil {
 		return nil, fmt.Errorf("%s.operator was removed (LEGION-664): the daemon logs in with its own ServiceAccount token (token_file), which no person approves, so it names no approver; delete the key", agentSecretsKey)
 	}
-	block := &AgentSecretsConfig{Audience: defaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
+	block := &AgentSecretsConfig{Audience: DefaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
 	if block.URL, err = requiredString(fields["url"], agentSecretsKey+".url", ""); err != nil {
 		return nil, err
 	}

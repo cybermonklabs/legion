@@ -32,14 +32,14 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(ctx, sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
 	}
 	if err != nil {
 		return err
 	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read))
+	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read.Revision))
 	return nil
 }
 
