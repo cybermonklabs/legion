@@ -1081,7 +1081,7 @@ func TestAnIssuePodsWorkspaceInitStreamsItsCloneFromTheCache(t *testing.T) {
 			continue
 		}
 		if strings.HasSuffix(transfer, " fetch") {
-			t.Errorf("workspace-init fetched from GitHub after streaming the cache: %q", transfer)
+			t.Errorf("the provision's fill took a transfer from GitHub after streaming the cache: %q", transfer)
 		}
 	}
 }
