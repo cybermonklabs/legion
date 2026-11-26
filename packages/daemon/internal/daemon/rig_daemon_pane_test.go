@@ -388,39 +388,38 @@ func (d rigDispatch) call(method, path string, body, into any, want int) error {
 	return json.Unmarshal(answer, into)
 }
 
-// rigCheck is one check of an issue as GET /api/v1/issues/{key}/results answers it, with what a
+// worldCheck is one check of an issue as GET /api/v1/issues/{key}/results answers it, with what a
 // pass at a head needs of its results.
-type rigCheck struct {
-	BlockID string `json:"block_id"`
-	When    string `json:"when"`
-	Surface string `json:"surface"`
-	Run     string `json:"run"`
-	Results []struct {
-		Verdict    string          `json:"verdict"`
-		CommitSHA  string          `json:"commit_sha"`
-		NotCounted string          `json:"not_counted"`
-		Retracted  json.RawMessage `json:"retracted"`
-	} `json:"results"`
+type worldCheck struct {
+	BlockID string        `json:"block_id"`
+	When    string        `json:"when"`
+	Surface string        `json:"surface"`
+	Run     string        `json:"run"`
+	Results []worldResult `json:"results"`
+}
+
+// worldResult is one result of a check: its verdict, its commit, why Dispatch counts it for
+// nothing (empty where it counts), and the retraction that stands against it (null for none).
+type worldResult struct {
+	Verdict    string          `json:"verdict"`
+	CommitSHA  string          `json:"commit_sha"`
+	NotCounted string          `json:"not_counted"`
+	Retracted  json.RawMessage `json:"retracted"`
 }
 
 // passedAt is whether the check holds a pass at head that counts: one no retraction stands
 // against and that Dispatch counts.
-func (c rigCheck) passedAt(head string) bool {
-	return slices.ContainsFunc(c.Results, func(result struct {
-		Verdict    string          `json:"verdict"`
-		CommitSHA  string          `json:"commit_sha"`
-		NotCounted string          `json:"not_counted"`
-		Retracted  json.RawMessage `json:"retracted"`
-	}) bool {
+func (c worldCheck) passedAt(head string) bool {
+	return slices.ContainsFunc(c.Results, func(result worldResult) bool {
 		retracted := len(result.Retracted) > 0 && string(result.Retracted) != "null"
 		return result.Verdict == "pass" && result.CommitSHA == head && result.NotCounted == "" && !retracted
 	})
 }
 
 // checks is the issue's checks, as Dispatch answers its results now.
-func (d rigDispatch) checks(issue string) ([]rigCheck, error) {
+func (d rigDispatch) checks(issue string) ([]worldCheck, error) {
 	var read struct {
-		Checks []rigCheck `json:"checks"`
+		Checks []worldCheck `json:"checks"`
 	}
 	if err := d.call(http.MethodGet, "/api/v1/issues/"+issue+"/results", nil, &read, http.StatusOK); err != nil {
 		return nil, err
@@ -439,7 +438,7 @@ func passAtHead(d rigDispatch, issue, head string, passes []string) error {
 		return fmt.Errorf("read the results of %s: %w", issue, err)
 	}
 	for _, id := range passes {
-		at := slices.IndexFunc(checks, func(c rigCheck) bool { return c.BlockID == id })
+		at := slices.IndexFunc(checks, func(c worldCheck) bool { return c.BlockID == id })
 		if at < 0 {
 			return fmt.Errorf("the world names a pass of %s, and the Verification document of %s holds no check %s", id, issue, id)
 		}
