@@ -122,6 +122,7 @@ on:
       - 'packages/daemon/internal/store/migrations/**'
       - 'packages/daemon/internal/store/storetext/**'
       - 'packages/daemon/internal/stream/**'
+      - 'packages/daemon/internal/subreaper/**'
       - 'packages/daemon/internal/supervise/*'
       - 'packages/daemon/internal/termsafe/**'
       - 'packages/daemon/internal/tlsalert/**'
