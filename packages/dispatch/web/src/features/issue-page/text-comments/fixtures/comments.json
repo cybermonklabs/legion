@@ -2601,13 +2601,13 @@
       "mentions": [],
       "node_anchor": {
         "node": {
-          "id": "lens/lens#findingBlock",
+          "id": "lens/rowLens#rowFindingBlock",
           "kind": "block",
           "state": "live"
         },
         "occurrence": 1,
         "orphaned": false,
-        "quote": "finding"
+        "quote": "record"
       },
       "reply_block": null,
       "reply_to": null,
@@ -2652,13 +2652,13 @@
       "mentions": [],
       "node_anchor": {
         "node": {
-          "id": "lens",
+          "id": "rowLens",
           "kind": "lens",
           "state": "live"
         },
         "occurrence": 1,
         "orphaned": false,
-        "quote": "verdict"
+        "quote": "margin"
       },
       "reply_block": null,
       "reply_to": null,
@@ -2754,13 +2754,13 @@
       "mentions": [],
       "node_anchor": {
         "node": {
-          "id": "risk",
+          "id": "rowRisk",
           "kind": "risk",
           "state": "live"
         },
         "occurrence": 1,
         "orphaned": false,
-        "quote": "delay"
+        "quote": "slow"
       },
       "reply_block": null,
       "reply_to": null,
