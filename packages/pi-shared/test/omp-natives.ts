@@ -1,12 +1,14 @@
 // Oh My Pi's native modules for the tests that run the real binary under a fresh HOME
 // (omp-harness.ts's ompRoot). Oh My Pi extracts the one its CPU needs from its own binary into
-// .omp/natives/<version> under any HOME that lacks it, about 123 MiB at the pin. It reads that
+// .omp/natives/<version>-<digest prefix> (the version and the first 12 hexadecimal digits of the
+// embedded addons' digest) under any HOME that lacks it, about 124 MiB at the pin. It reads that
 // directory from elsewhere only under a variable a test would have to set (getNativesDir,
-// @oh-my-pi/pi-natives native/loader-state.js, in this order): PI_NATIVES_DIR or
-// OMP_DOWNLOAD_ROOT, which no pod or pane sets, then an existing $XDG_DATA_HOME/omp, which moves
-// its whole profile, then OMP_CONFIG_ROOT, which moves its whole config root. Each HOME's natives
-// are instead hardlinks to one copy per binary under the user's cache directory, or symlinks to it
-// where the HOME is on another filesystem than the cache (`linkTree`).
+// @oh-my-pi/pi-natives native/natives-dir.js, in this order): PI_NATIVES_DIR or
+// OMP_DOWNLOAD_ROOT, which no pod or pane sets, then $XDG_CACHE_HOME/omp/natives when
+// $XDG_CACHE_HOME/omp exists, then natives under OMP_CONFIG_ROOT, which moves its whole config
+// root, else under ~/$PI_CONFIG_DIR, which is .omp unless set. Each HOME's natives are instead
+// hardlinks to one copy per binary under the user's cache directory, or symlinks to it where the
+// HOME is on another filesystem than the cache (`linkTree`).
 //
 // The copy is the one the Go tests keep (packages/daemon/internal/testbin/natives.go,
 // testbin.OMPHome): the same directory, name, layout, lock, fill and links, so a machine holds one
@@ -32,8 +34,9 @@ const caches = new Map<string, Promise<string>>();
 
 /**
  * Links `binary`'s natives into `home`'s .omp/natives from the shared copy, filling the copy first
- * if no process has. The test's environment must name no XDG_DATA_HOME, as none does here: Oh My
- * Pi keeps its natives under $XDG_DATA_HOME/omp when that directory exists.
+ * if no process has. The environment the binary runs under must name no XDG_CACHE_HOME, as
+ * omp-harness.ts's ompEnv names none: Oh My Pi keeps its natives under $XDG_CACHE_HOME/omp when
+ * that directory exists.
  */
 export async function linkOmpNatives(binary: string, home: string): Promise<void> {
   let cache = caches.get(binary);
@@ -69,7 +72,7 @@ function nativesCacheRoot(): string {
  * Which natives a binary writes is its own choice: the pin writes only the variant its CPU
  * selects, and earlier binaries wrote every variant they embed. So the check reads what was
  * extracted rather than demanding each embedded name. What it refuses is a file that is not a
- * whole native of this binary: the binary writes each native to a `.tmp.<pid>.<ms>` file and
+ * whole native of this binary: the binary writes each native to a `.tmp.<pid>.<uuid>` file and
  * renames it only once it is whole, so a failed write leaves nothing (refused as an empty
  * extraction), or a leftover temporary file when the cleanup fails too (refused by its name), and
  * anything that is not a regular file, or not at its embedded size, is refused as well. Among the
