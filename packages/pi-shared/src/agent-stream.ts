@@ -712,27 +712,37 @@ export class AgentStreamPublisher {
    * Fills the ring with turns this process did not run: the messages a session's transcript holds
    * when the process takes the session up (a pod's restart and `omp --continue`, a `--resume`, a
    * `/resume`), oldest first, each as the host handed it to `message_end` when it ran. Each is kept
-   * as `record` keeps a settled message, so a replay after a restart reads as one before it would
-   * have, inside the same bounds: the newest `AGENT_STREAM_LIMITS.historyMessages` of the messages
-   * this build carries, and the replay's byte budget. Only those are read: the walk goes back from
-   * the newest no further than the bound reaches, so a long transcript costs the bound, not its
-   * length. Nothing is published, since a viewer reads these from its replay.
-   * `dispatchMessageIdOf` names the Dispatch message a user message delivered, which only the
-   * caller can know (`record`'s `dispatchMessageId`).
+   * as `record` keeps a settled message, into the ring's own bounds, so a replay after a restart
+   * reads as one before it would have. A message already in the ring stands: a restore after a
+   * turn of this process adds the turns before it and replaces none of them.
+   *
+   * Which messages survive is decided as the ring itself decides it: the slots are walked in the
+   * order the messages were recorded, a message of a slot the ring holds keeps that slot's place,
+   * and past the bound the slot first taken goes. Only the slot each message takes is read here,
+   * never its body: a body is read where a frame is built, for the messages the bound kept.
+   * Nothing is published, since a viewer reads these from its replay. `dispatchMessageIdOf` names
+   * the Dispatch message a user message delivered, which only the caller can know (`record`'s
+   * `dispatchMessageId`).
    */
   restore(
     messages: readonly unknown[],
     dispatchMessageIdOf: (message: unknown) => string | undefined = () => undefined
   ): void {
-    const carried = new Set<string>();
-    let first = messages.length;
-    while (first > 0 && carried.size < AGENT_STREAM_LIMITS.historyMessages) {
-      first -= 1;
-      const message = readMessage(messages[first]);
+    // The newest message of each slot the ring would still hold, by the slot's place in it.
+    const slots = new Map<string, number>();
+    for (const [index, raw] of messages.entries()) {
+      const message = readMessage(raw);
       const key = message === null ? null : keyFor(message);
-      if (key !== null) carried.add(key);
+      if (key === null) continue;
+      slots.set(key, index);
+      if (slots.size <= AGENT_STREAM_LIMITS.historyMessages) continue;
+      const oldest = slots.keys().next();
+      if (oldest.done !== true) slots.delete(oldest.value);
     }
-    for (const raw of messages.slice(first)) this.#keep(raw, false, dispatchMessageIdOf(raw));
+    for (const index of [...slots.values()].sort((left, right) => left - right)) {
+      const raw = messages[index];
+      this.#keep(raw, false, dispatchMessageIdOf(raw));
+    }
   }
 
   /** Puts one message into the ring, dropping the oldest past the bound, and returns its entry;

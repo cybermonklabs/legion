@@ -23205,6 +23205,61 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, fresh);
   }, 30_000);
 
+  // A ring a session holds does not say its transcript was read back: the host can record a turn
+  // under a session before a pass has taken that session up, and that ring then holds the one turn
+  // and none before it. Here the host leaves A for B, records A's next turn with no event for the
+  // move back, and only then does a pass take A up again.
+  test("a session whose ring holds a turn recorded before its pass still replays its earlier turns", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-ring-before-the-pass"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const earlier = [
+      {
+        id: "e0",
+        message: {
+          content: [{ text: "A turn of its own, before the move.", type: "text" }],
+          role: "assistant",
+          timestamp: 10,
+        },
+        type: "message",
+      },
+    ];
+    const base = sessionContext("ses_rolled_back");
+    const rolledBack: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => earlier,
+        getEntries: () => earlier,
+      },
+    };
+    await fixture.handlers.get("session_start")?.({}, rolledBack);
+    // The host moves to another session, and this one's ring is dropped: nobody watches it.
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, sessionContext("ses_other"));
+    // It is back, with no event, and records a turn: that turn makes the ring again.
+    await fixture.handlers.get("message_end")?.(
+      {
+        message: {
+          content: [{ text: "A turn after the move back.", type: "text" }],
+          role: "assistant",
+          timestamp: 20,
+        },
+      },
+      rolledBack
+    );
+    // The pass that learns of the move takes the session up.
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, rolledBack);
+
+    expect(await viewerReplay("ses_rolled_back", "inbox-rolled-back-viewer")).toEqual([
+      { dispatchMessageId: undefined, id: "a10", role: "assistant" },
+      { dispatchMessageId: undefined, id: "a20", role: "assistant" },
+    ]);
+    await fixture.handlers.get("session_shutdown")?.({}, rolledBack);
+  }, 30_000);
+
   test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {
     // Two-second tokens, so the keeper renews within the test: each renewal lands a new token,
     // and the connection reconnects to present it before the old one lapses. Shutdown stops it.

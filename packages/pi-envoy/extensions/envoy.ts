@@ -3000,10 +3000,17 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // most the served session's, the host's live one and the rings still watched are held, and a
   // watch lapses within AGENT_STREAM_WATCH_TTL_MS of its viewer's last ping.
   const agentStreams = new Map<string, AgentStreamPublisher>();
+  /** The sessions whose ring was filled from their transcript (`restoreAgentStream`). A ring
+   *  alone does not say so: the host can record a turn under a session before a pass has taken
+   *  that session up, and that ring holds the one turn and none before it. */
+  const restoredAgentStreams = new Set<string>();
   /** Forgets the ring of every session but the `kept` ones, and those a viewer still watches. */
   const pruneAgentStreams = (...kept: string[]): void => {
     for (const [session, ring] of agentStreams) {
-      if (!kept.includes(session) && !ring.watched) agentStreams.delete(session);
+      if (kept.includes(session) || ring.watched) continue;
+      agentStreams.delete(session);
+      // The ring it was filled into is gone, so the session is filled again when it is taken up.
+      restoredAgentStreams.delete(session);
     }
   };
   const agentStreamOf = (session: string): AgentStreamPublisher => {
@@ -3032,7 +3039,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     branch: readonly unknown[],
     entries: readonly unknown[]
   ): void => {
-    if (session === "" || agentStreams.has(session)) return;
+    if (session === "" || restoredAgentStreams.has(session)) return;
+    restoredAgentStreams.add(session);
     const handled = handledMessages(entries);
     agentStreamOf(session).restore(transcriptMessages(branch), (message) => {
       const tag = messageTag(message);

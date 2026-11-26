@@ -1488,26 +1488,54 @@ describe("a session this process takes up with turns already in its transcript",
     expect(newest?.kind === "message" && newest.message.at).toBe(60);
   });
 
-  // A transcript of a long session holds thousands of messages, and an old message's body may be
-  // out of memory (Oh My Pi's cold entries read it back on access): only those the ring keeps are
-  // read at all.
-  test("reads no message older than the ones its bound keeps", () => {
+  // A long session's transcript holds thousands of messages, and an old one's body may be out of
+  // memory, read back from the host's store on access. The fill reads the slot each message takes
+  // and no body at all; a body is read where a frame is built, for the messages the bound kept.
+  test("reads no message's body, and at a replay only those its bound kept", () => {
     const { publisher } = harness();
     const read = new Set<number>();
     const total = AGENT_STREAM_LIMITS.historyMessages * 5;
     const messages = Array.from({ length: total }, (_, index) => ({
-      get role() {
-        read.add(index);
-        return "assistant";
-      },
-      content: [{ text: `turn ${index}`, type: "text" }],
+      role: "assistant",
       timestamp: index + 1,
+      get content() {
+        read.add(index);
+        return [{ text: `turn ${index}`, type: "text" }];
+      },
     }));
     publisher.restore(messages);
+    expect([...read]).toEqual([]);
 
-    expect(Math.min(...read)).toBe(total - AGENT_STREAM_LIMITS.historyMessages);
     publisher.noteViewer();
     expect(publisher.replay("s1").frames).toHaveLength(AGENT_STREAM_LIMITS.historyMessages);
+    expect(Math.min(...read)).toBe(total - AGENT_STREAM_LIMITS.historyMessages);
+  });
+
+  // The ring drops the slot first taken, and a later message of a slot it holds keeps that slot's
+  // place: a turn recorded again is the slot the next turn past the bound drops, its newer text
+  // with it. A fill that kept the newest messages by their last record would bring that turn back
+  // and drop the one the ring still held.
+  test("keeps the messages the ring itself would hold when one turn is recorded twice", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const messages = [
+      ...Array.from({ length: historyMessages }, (_, index) =>
+        assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+      ),
+      assistant(1, [{ text: "turn 1 again", type: "text" }]),
+      assistant(historyMessages + 1, [{ text: "the last turn", type: "text" }]),
+    ];
+    const ran = harness();
+    for (const message of messages) ran.publisher.record(SUBJECT, message, false);
+    ran.publisher.noteViewer();
+    const resumed = harness();
+    resumed.publisher.restore(messages);
+    resumed.publisher.noteViewer();
+
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live).toHaveLength(historyMessages);
+    expect(live.slice(0, 2)).toEqual(["turn 2", "turn 3"]);
+    expect(live.at(-1)).toBe("the last turn");
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
   });
 
   test("of an empty transcript keeps nothing: the session replays as a fresh one does", () => {
