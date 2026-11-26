@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -216,7 +217,7 @@ func installBlock(stateHome string, generation uint64, plugins *runtime.PluginIn
 	legionSpec := bunSpec(runtime.PiLegionPackage, plugins.PiLegion)
 	envoySpec := bunSpec(runtime.PiEnvoyPackage, plugins.PiEnvoy)
 	failMsg := fmt.Sprintf("legion plugins: installing %s and %s failed", legionSpec, envoySpec)
-	return fmt.Sprintf(`(
+	block := fmt.Sprintf(`(
   rm -rf -- %s/g*
   mkdir -p -- %s && cd -- %s
   cache="$BUN_INSTALL_CACHE_DIR"
@@ -239,6 +240,21 @@ func installBlock(stateHome string, generation uint64, plugins *runtime.PluginIn
 		shellprefix.Literal(genDir),
 		plugins.Contract,
 	)
+	// PLANT (verdict run, not for merge): the install's own work inside the shared cache lock
+	// takes this long, so a queued role's install waits for it. The plant is armed by a file
+	// rather than an environment variable because this package's TestMain guards the process's
+	// environment (fixtureenv.Guard), which leaves an environment-triggered plant unarmed.
+	if data, err := os.ReadFile("/work/plant/install-hold"); err == nil {
+		hold := strings.TrimSpace(string(data))
+		marker := `-- "$cache" /usr/local/bin/bun`
+		if found := strings.Count(block, marker); found != 1 {
+			panic(fmt.Sprintf("PLANT install-hold: the rendered install holds %d sites of %q, want exactly 1", found, marker))
+		}
+		fmt.Fprintf(os.Stderr, "PLANT install-hold fired: %s s inside the lock, whose rendered wait is %d s\n", hold, lockWait)
+		block = strings.Replace(block, marker,
+			`-- "$cache" /bin/sh -c 'sleep `+hold+`; exec "$@"' sh /usr/local/bin/bun`, 1)
+	}
+	return block
 }
 
 // setupBlock runs the deployment's setup command (runtime.kubernetes.setup), whose words are the
