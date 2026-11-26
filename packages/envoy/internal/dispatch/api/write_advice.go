@@ -616,7 +616,7 @@ type supersededApprovalGate struct {
 // nothing, which is right - the gate reopens on that carry's own artifact.approved event.
 //
 // The read is the newest review of the document (docs.NewestReview), one entry of
-// artifact_reviews_by_artifact_event_seq in docs.ReviewOrder, the order the reviews' events
+// artifact_reviews_by_artifact_event_seq in model.ReviewOrder, the order the reviews' events
 // committed: artifact_reviews.created_at is its transaction's start and its id is random, so an
 // approval committed while this write was open can carry an earlier pair than an older one, and
 // ordering by those two alone would report a gate this write did not close. It reports only when
@@ -744,7 +744,7 @@ func supersededAsWritten(ledger *docs.Ledger, artifactID string, version int, st
 }
 
 // newestReviewAsApproval is supersededApprovalAdvice's rule, over whatever queryer the caller
-// holds: the document's newest review in docs.ReviewOrder, reported when it approves the version
+// holds: the document's newest review in model.ReviewOrder, reported when it approves the version
 // right below version. A document with no review at all, an approval of an older version, an
 // approval of version itself (the approval carry's own review) and a changes request each report
 // nothing.

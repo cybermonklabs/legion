@@ -2130,15 +2130,20 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 // appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
 // made before it existed (graphstore.Uncaused): the event's append and the append of what that
 // write stated under it, in one batch, the second naming the event's id as the id sequence left it
-// (graphstore.LatestEvent), and then the head write of the nodes it stated of (graphstore.QueueHeads).
-// A route that writes as it goes pays one round trip for the three, as it paid for the event alone.
-func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+// (graphstore.LatestEvent), then each of then, statements the caller queues after those facts -
+// the follow route's mark of the queries of its ask's issue (docs.QueueAskQueryMark) - and then
+// the head write of the nodes it stated of (graphstore.QueueHeads). A route that writes as it goes
+// pays one round trip for them all, as it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused, then ...func(*store.WriteBatch)) (model.Event, error) {
 	var appended model.Event
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
 			return err
 		}
 		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		for _, step := range then {
+			step(b)
+		}
 		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
 		return nil
 	})

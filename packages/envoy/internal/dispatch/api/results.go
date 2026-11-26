@@ -68,7 +68,7 @@ const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact
 //
 // ArtifactID is the artifact the check's document_blocks row is keyed by, which keys its results'
 // rows too (check_results.check_artifact_id): the Verification document itself where it is its own
-// room, and the issue's tree artifact for a document of an issue room (T11 of this branch's plan).
+// room, and the issue's tree artifact for a document of an issue room.
 // DocumentID is the Verification document, whose live blocks hold the check's attributes, and
 // NodeAddress the address of the check block's node, `<ref_key of ArtifactID>#<block id>`, which a
 // result's result_of and part_of name.

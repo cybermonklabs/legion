@@ -30,9 +30,9 @@ const (
 )
 
 // tupleCheck is what the coverage read over the tuples holds of one node that serves a
-// requirement: its type, its issue, its state for the reader, and its current text sum.
+// requirement: its type, its issue, and its current text sum.
 type tupleCheck struct {
-	typ, issue, state, sum string
+	typ, issue, sum string
 }
 
 // issueCoverageOverTuples answers what each requirement node of the issue's tree lacks, read over
@@ -45,7 +45,8 @@ type tupleCheck struct {
 // check of which holds a passing result against the words the check holds now is unproven - a
 // check holding no result, holding only a fail, or holding a pass recorded against a text sum it no
 // longer holds - and a retracted result counts as none; one a check proves is proved. A requirement
-// whose node or a node above it is overtaken is closed with its subtree: it lists no gap and no
+// whose node or a node above it is overtaken - a question by its ask node's state, its `:::ask`
+// block's included (readTreeRequirements) - is closed with its subtree: it lists no gap and no
 // proof row, and it still counts the checks and the plan tasks that serve it, since the count is a
 // fact and closed means only that no gap is listed (INFRA-1253's architect,
 // dispatch://INFRA-1253/comment/cb7311d9-ca4b-4c63-b083-d8f49a9a7efa). A proposed requirement is
@@ -59,8 +60,8 @@ type tupleCheck struct {
 // block the block index has not reached has no node, so the read answers it once that index runs.
 // While a document of the issue owes its block index, the read names it among OwedDocuments and
 // raises no missing check or plan task, and its gaps hold that document's line in their place
-// (owedGap). Its first statement turns JIT off for the rest of the transaction q reads in
-// (refs.TurnJITOff), as every read that walks a tree does.
+// (owedGap). Every caller reads on the pool, outside any transaction, so it sends no
+// `set local jit = off` (refs.TurnJITOff), which would change nothing there.
 func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage, _, err := s.issueCoverageOverTuplesAndOwedGaps(ctx, q, who, issueKey, trees)
 	return coverage, err
@@ -72,9 +73,6 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 // (approvalCoverage).
 func (s *server) issueCoverageOverTuplesAndOwedGaps(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, []string, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	if err := refs.TurnJITOff(ctx, q); err != nil {
-		return model.IssueCoverage{}, nil, err
-	}
 	// The issue's spec, whether it has a plan and the documents that owe their block index, with
 	// their gap lines (queueOwedDocumentGaps), in one batch.
 	var owedGaps []string
@@ -147,28 +145,41 @@ func (s *server) issueCoverageOverTuplesAndOwedGaps(ctx context.Context, q query
 
 // treeRequirements is what the coverage read over the tuples reads of the requirement nodes of one
 // issue's tree: the tree's cut; each requirement node the reader may see, in the tree's own order,
-// with its id; and the walk's parent of each node and the node of each block of the tree as the
-// reader may see it (refs.Nodes), which tell whether a requirement is closed.
+// with its id; the walk's parent of each node; the node of each block of the tree as the reader may
+// see it (refs.Nodes) and of each ask of its conversation; and the ask whose node holds the
+// question's state of each `:::ask` block above a requirement (questions). These tell whether a
+// requirement is closed.
 type treeRequirements struct {
-	cut     refs.TreeCut
-	visible []refs.Target
-	ids     []string
-	parents map[refs.Target]refs.Target
-	nodes   map[refs.Target]model.GraphNode
+	cut       refs.TreeCut
+	visible   []refs.Target
+	ids       []string
+	parents   map[refs.Target]refs.Target
+	nodes     map[refs.Target]model.GraphNode
+	questions map[refs.Target]refs.Target
 }
 
-// readTreeRequirements is the treeRequirements of tree for who.
+// readTreeRequirements is the treeRequirements of tree for who. A question's state is its ask
+// node's alone, never its `:::ask` block's (R2 and R3 of INFRA-1150; api's askHoldsState refuses
+// a write on the block). The ask nodes come from the walk's own read of the conversation
+// (IssueTree.Conversation), which holds every ask of the issue as its loader answers it and leaves
+// none out for any reader, since no ask is reserved for its author: they cost no read. An
+// `:::ask` block above a requirement is read to its ask (questionAsks), in one statement sent only
+// where a requirement stands under such a block.
 func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree docs.IssueTree) (treeRequirements, error) {
 	read := treeRequirements{cut: tree.Cut, parents: make(map[refs.Target]refs.Target, len(tree.Nodes))}
 	var chain []refs.Target
 	var requirements []refs.Target
+	askBlocks := map[refs.Target]bool{}
 	for _, node := range tree.Nodes {
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
 		read.parents[target] = node.Parent
 		if node.Kind == refs.BlockNodeKind {
 			chain = append(chain, target)
-			if node.Type == requirementBlockType {
+			switch node.Type {
+			case requirementBlockType:
 				requirements = append(requirements, target)
+			case graphstore.SupertagAsk:
+				askBlocks[target] = true
 			}
 		}
 	}
@@ -179,20 +190,101 @@ func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree 
 	if err != nil {
 		return treeRequirements{}, err
 	}
-	read.nodes = nodes
-	for _, requirement := range requirements {
-		if _, seen := nodes[requirement]; seen {
-			read.visible = append(read.visible, requirement)
-			read.ids = append(read.ids, requirement.ID)
+	for target, excerpted := range tree.Conversation {
+		if target.Kind == graphstore.KindAsk {
+			nodes[target] = excerpted.Node
 		}
+	}
+	read.nodes = nodes
+	var questions []string
+	for _, requirement := range requirements {
+		if _, seen := nodes[requirement]; !seen {
+			continue
+		}
+		read.visible = append(read.visible, requirement)
+		read.ids = append(read.ids, requirement.ID)
+		for at, steps := read.parents[requirement], 0; at != (refs.Target{}) && steps <= len(read.parents); steps++ {
+			if askBlocks[at] && !slices.Contains(questions, at.ID) {
+				questions = append(questions, at.ID)
+			}
+			at = read.parents[at]
+		}
+	}
+	if len(questions) == 0 {
+		return read, nil
+	}
+	if read.questions, err = questionAsks(ctx, q, questions, read.cut); err != nil {
+		return treeRequirements{}, err
 	}
 	return read, nil
 }
 
-// closed says whether the node target, or a node above it in the walk, is overtaken.
+// questionAsksStatement is, at the cut whose seq bound $2 is, the ask of each `:::ask` block node
+// $1 names, as refs' QuestionMap finds it off the tuples: the block's own ask, whose asked_on names
+// the block, read into the block through graph_tuples_as_of_in, else, for a copy, its source, which
+// the block's copied_from names, read out of it through graph_tuples_as_of_out (INFRA-1098's
+// architect, dispatch://INFRA-1253/comment/2aa81020-a1e3-4037-b43b-d4b3104ab195). Of each relation
+// the newest tuple at or below the bound is kept while it asserts. Each block's rows come own ask
+// first, then newest first.
+const questionAsksStatement = `
+	select question.block, question.ask
+	from (
+		select newest.block, newest.ask, true as own, newest.seq
+		from (
+			select distinct on (t.to_id, t.from_id) t.to_id as block, t.from_id as ask, t.seq, t.asserted
+			from graph_tuples t
+			where t.to_kind = '` + refs.BlockNodeKind + `' and t.to_id = any($1) and t.kind = '` + graphstore.TupleAskedOn + `'
+			  and t.from_kind = '` + graphstore.KindAsk + `' and t.seq <= $2
+			order by t.to_id, t.from_id, t.seq desc
+		) newest
+		where newest.asserted
+		union all
+		select newest.block, newest.ask, false, newest.seq
+		from (
+			select distinct on (t.from_id, t.to_id) t.from_id as block, t.to_id as ask, t.seq, t.asserted
+			from graph_tuples t
+			where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = any($1) and t.kind = '` + graphstore.TupleCopiedFrom + `'
+			  and t.to_kind = '` + graphstore.KindAsk + `' and t.seq <= $2
+			order by t.from_id, t.to_id, t.seq desc
+		) newest
+		where newest.asserted
+	) question
+	order by question.block, question.own desc, question.seq desc`
+
+// questionAsks is the ask whose node holds the question's state of each of blocks, `:::ask` block
+// nodes, at cut's seq, the head's where it is a dated cut (questionAsksStatement): the first row of
+// each block. A copy whose node holds no copied_from yet, whose source only its opening line names,
+// gets none, and its block reads by its own state: the walk keeps no block's opening line
+// (refs.TreeChild holds the type it gives).
+func questionAsks(ctx context.Context, q queryer, blocks []string, cut refs.TreeCut) (map[refs.Target]refs.Target, error) {
+	seq, _ := treeCutBounds(cut)
+	rows, err := q.Query(ctx, questionAsksStatement, blocks, seq)
+	if err != nil {
+		return nil, fmt.Errorf("read the asks of %d question blocks: %w", len(blocks), err)
+	}
+	defer rows.Close()
+	questions := make(map[refs.Target]refs.Target, len(blocks))
+	for rows.Next() {
+		var block, ask string
+		if err := rows.Scan(&block, &ask); err != nil {
+			return nil, fmt.Errorf("read the ask of a question block: %w", err)
+		}
+		if target := (refs.Target{Kind: refs.BlockNodeKind, ID: block}); questions[target] == (refs.Target{}) {
+			questions[target] = refs.Target{Kind: graphstore.KindAsk, ID: ask}
+		}
+	}
+	return questions, rows.Err()
+}
+
+// closed says whether the node target, or a node above it in the walk, is overtaken: by its own
+// node's state, or, for an `:::ask` block, by its ask node's (questions).
 func (read treeRequirements) closed(target refs.Target) bool {
 	for at, steps := target, 0; at != (refs.Target{}) && steps <= len(read.parents); steps++ {
-		if read.nodes[at].State == graphstore.StateOvertaken {
+		state := read.nodes[at].State
+		if ask, held := read.questions[at]; held {
+			state = read.nodes[ask].State
+		}
+		if state == graphstore.StateOvertaken {
 			return true
 		}
 		at = read.parents[at]
@@ -294,8 +386,11 @@ func coverTreeRequirements(ctx context.Context, q queryer, who model.Actor, issu
 
 // registerTreeTexts registers with trees, the request's own reader, nil for a caller that asked
 // for no tree, the text_tree of each of requirements, the rows the answer carries, from the whole
-// text at its index of wholes, once the rows have stopped growing.
+// text at its index of wholes, once the rows have stopped growing; with no reader it cuts no text.
 func registerTreeTexts(trees *displayTreeReader, requirements []model.RequirementCoverage, wholes []string) {
+	if trees == nil {
+		return
+	}
 	for index, whole := range wholes {
 		trees.text(&requirements[index].TextTree, blockTextContent(whole, true))
 	}
@@ -313,9 +408,11 @@ const planTaskBlockType = "plan_task"
 func readServingChecks(ctx context.Context, q queryer, who model.Actor, serving map[string][]refs.Target, issues []string, cut refs.TreeCut) (map[refs.Target]tupleCheck, map[refs.Target]string, error) {
 	var targets []refs.Target
 	var ids []string
+	held := map[refs.Target]bool{}
 	for _, froms := range serving {
 		for _, from := range froms {
-			if from.Kind == refs.BlockNodeKind && !slices.Contains(targets, from) {
+			if from.Kind == refs.BlockNodeKind && !held[from] {
+				held[from] = true
 				targets = append(targets, from)
 				ids = append(ids, from.ID)
 			}
@@ -349,7 +446,6 @@ func readServingChecks(ctx context.Context, q queryer, who model.Actor, serving 
 		if !seen || node.State == graphstore.StateProposed || node.State == graphstore.StateOvertaken || !slices.Contains(issues, check.issue) {
 			continue
 		}
-		check.state = node.State
 		checks[target] = check
 		if check.typ == graphstore.BlockTypeCheck {
 			checkTargets = append(checkTargets, target)
@@ -435,13 +531,10 @@ func blockDocuments(ctx context.Context, q queryer, ids []string) (map[string]st
 // verificationChecksOverTuples answers the check nodes of documentID that the issue's Verification
 // query takes, in the tree's order (docs' IssueTree.Takes). It reads the words and attributes from
 // each node's text value and its version and text sum from its document_blocks row.
-// trees is the request's reader, nil for a caller that asked for none. Its first statement turns
-// JIT off for the rest of the transaction q reads in (refs.TurnJITOff), as every read that walks a
-// tree does.
+// trees is the request's reader, nil for a caller that asked for none. Its one caller reads on the
+// pool, outside any transaction, so it sends no `set local jit = off` (refs.TurnJITOff), which
+// would change nothing there.
 func verificationChecksOverTuples(ctx context.Context, q queryer, issueKey, documentID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
-	if err := refs.TurnJITOff(ctx, q); err != nil {
-		return nil, err
-	}
 	tree, err := docs.WalkIssueTree(ctx, q, issueKey, refs.TreeCut{})
 	if err != nil {
 		return nil, err
@@ -515,7 +608,9 @@ func verificationChecksOverTuples(ctx context.Context, q queryer, issueKey, docu
 		check.Version, check.SHA256, check.Results = read.version, read.sum, []model.CheckResult{}
 		check.Ref, _ = text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: issueKey, ID: read.slug, Block: check.BlockID})
 		checks = append(checks, check)
-		contents = append(contents, blockTextContent(whole, true))
+		if trees != nil {
+			contents = append(contents, blockTextContent(whole, true))
+		}
 	}
 	for index, content := range contents {
 		trees.text(&checks[index].TextTree, content)

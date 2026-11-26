@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -168,11 +169,7 @@ type issueWriteFence struct {
 // refuseForeignEvents is the fence of one step, which holds the named issue's owner lock: 409
 // ISSUE_CHANGED when an event on named after the fenced sequence is not one of the call's own.
 func (fence *issueWriteFence) refuseForeignEvents(ctx context.Context, tx pgx.Tx, named string) error {
-	rows, err := tx.Query(ctx, `select id from events where issue_key = $1 and seq > $2 order by id`, named, fence.sequence)
-	if err != nil {
-		return err
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	ids, err := fencedEventsAfter(ctx, tx, named, fence.sequence)
 	if err != nil {
 		return err
 	}
@@ -180,6 +177,56 @@ func (fence *issueWriteFence) refuseForeignEvents(ctx context.Context, tx pgx.Tx
 		if !fence.own[id] {
 			return errIssueChanged()
 		}
+	}
+	return nil
+}
+
+// decisionsQueryVersionSQL is whether the events row aliased e, an event of the issue $1, is an
+// artifact.version of that issue's decisions query. No route writes that document: a query drain
+// writes each of its versions once a write that moved the query's record has committed (R14),
+// naming the version after that write's writer, so such an event is neither a change a fence
+// guards against nor a person's own post.
+func decisionsQueryVersionSQL(e string) string {
+	return `(` + e + `.type = 'artifact.version' and exists (
+		select 1 from artifacts a
+		where a.id::text = ` + e + `.payload->>'artifact_id' and a.issue_key = $1 and ` + refs.DecisionsQuerySQL("a") + `))`
+}
+
+// fencedEventsStatement lists, oldest first, the events on the issue $1 after the sequence $2 that
+// a fence on the issue's sequence reads. It passes over the decisions query's versions
+// (decisionsQueryVersionSQL): the write that moved the query's record is a real change of the
+// issue, which the fence sees by the event it appends of its own, and before the drains an
+// expected_sequence never saw such a version at all.
+var fencedEventsStatement = `
+	select e.id from events e
+	where e.issue_key = $1 and e.seq > $2 and not ` + decisionsQueryVersionSQL("e") + `
+	order by e.id`
+
+// fencedEventsAfter is the events on issue after sequence that a fence reads (fencedEventsStatement).
+func fencedEventsAfter(ctx context.Context, q queryer, issue string, sequence int64) ([]int64, error) {
+	rows, err := q.Query(ctx, fencedEventsStatement, issue, sequence)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
+// refuseChangedSince is the fence of a write that sent expected_sequence, read under the issue's
+// owner lock against last, the issue's last_seq: 409 ISSUE_CHANGED where the sequence is past
+// last, or where an event after it is one a fence reads (fencedEventsAfter).
+func refuseChangedSince(ctx context.Context, q queryer, issue string, expected int64, last int) error {
+	switch {
+	case expected == int64(last):
+		return nil
+	case expected > int64(last):
+		return errIssueChanged()
+	}
+	ids, err := fencedEventsAfter(ctx, q, issue, expected)
+	if err != nil {
+		return err
+	}
+	if len(ids) > 0 {
+		return errIssueChanged()
 	}
 	return nil
 }
@@ -428,8 +475,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err != nil {
 		return issueWriteResult{}, err
 	}
-	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		return issueWriteResult{}, errIssueChanged()
+	if input.ExpectedSeq != nil {
+		if err := refuseChangedSince(ctx, tx, key, *input.ExpectedSeq, before.LastSeq); err != nil {
+			return issueWriteResult{}, err
+		}
 	}
 	// A step of a status change decides here, from the issue as it reads it under its own lock,
 	// whether it writes at all. A step that leaves the issue as it stands rolls back.

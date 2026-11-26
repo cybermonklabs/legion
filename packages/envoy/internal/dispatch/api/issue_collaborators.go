@@ -194,14 +194,17 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 
 // tallyCollaboratorEvents reads the issue's claim, writing and answer events, one row per actor
 // and type, into people (by canonical login) and sessions (by id). A session acting for a
-// person's token is an agent; the daemon's lifecycle writer and system writers are nobody.
+// person's token is an agent; the daemon's lifecycle writer and system writers are nobody. A
+// version of the issue's decisions query is nobody's post: a query drain writes it after the write
+// that moved the query's record, under that write's writer, whose own event already counts
+// (decisionsQueryVersionSQL).
 func (s *server) tallyCollaboratorEvents(
 	ctx context.Context, key string, people, sessions map[string]*collaboratorTally,
 ) error {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select coalesce(actor->>'kind', ''), coalesce(actor->>'id', ''), type, max(created_at)
-		from events
-		where issue_key = $1 and type = any($2)
+		select coalesce(e.actor->>'kind', ''), coalesce(e.actor->>'id', ''), e.type, max(e.created_at)
+		from events e
+		where e.issue_key = $1 and e.type = any($2) and not `+decisionsQueryVersionSQL("e")+`
 		group by 1, 2, 3
 	`, key, collaboratorEventTypes)
 	if err != nil {

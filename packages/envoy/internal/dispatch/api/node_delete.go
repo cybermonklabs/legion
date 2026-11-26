@@ -97,8 +97,8 @@ type deleteCountMoved struct {
 	Count int    `json:"count"`
 }
 
-// deleteCountMovedError is the refusal deleteNode answers for a count that moved, which the route
-// writes as deleteCountMoved.
+// deleteCountMovedError is the refusal deleteNode answers for a count that moved, which
+// writeHandlerError writes as its body (deleteCountMoved).
 type deleteCountMovedError struct {
 	named           string
 	count, expected int
@@ -109,14 +109,19 @@ func (e *deleteCountMovedError) Error() string {
 		e.named, e.count, e.expected)
 }
 
+// body is the refusal's answer: its code, its message and the count now.
+func (e *deleteCountMovedError) body() deleteCountMoved {
+	return deleteCountMoved{Code: codeDeleteCountMoved, Error: e.Error(), Count: e.count}
+}
+
 // keptKinds are the kinds of node, as the store keys them, that a delete takes nothing of, nor of
 // what stands under one (R7): an ask and a block of an ask, a comment and a message and a block of
 // either, another writer's words; an issue node, another issue; a document and a version, each
 // with a route of its own. An `:::ask` block of a document is one too (keptBranchSQL), whose ask
 // keeps its block, its state and its answer.
 var keptKinds = []string{
-	graphstore.KindAsk, graphstore.KindAsk + "_block", graphstore.KindComment, graphstore.KindComment + "_block",
-	graphstore.KindMessage, graphstore.KindMessage + "_block", graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindVersion,
+	graphstore.KindAsk, refs.ItemAsk.BlockKind(), graphstore.KindComment, refs.ItemComment.BlockKind(),
+	graphstore.KindMessage, refs.ItemMessage.BlockKind(), graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindVersion,
 }
 
 // keptBranchSQL is whether the node alias.kind and alias.id name, as the store keys it, is one the
@@ -194,18 +199,16 @@ type nodeDeleteRequest struct {
 }
 
 // readQuery reads dry_run and expected_count off query into request: dry_run is true or false, and
-// expected_count a count, a whole number from 0; any other value of either is the request's 400
-// DELETE_INPUT, naming it.
+// on the delete itself expected_count a count, a whole number from 0; any other value of either is
+// the request's 400 DELETE_INPUT, naming it. The dry run reads no expected_count.
 func (request *nodeDeleteRequest) readQuery(query url.Values) {
-	switch value := query.Get("dry_run"); value {
-	case "true":
-		request.dryRun = true
-	case "", "false":
-	default:
-		request.shape = errorf(http.StatusBadRequest, codeDeleteInput, "dry_run takes true or false, not %q", value)
+	dryRun, named, valid := parseQueryBool(query, "dry_run", false, true)
+	if named && !valid {
+		request.shape = errorf(http.StatusBadRequest, codeDeleteInput, "dry_run takes true or false, not %q", query.Get("dry_run"))
 		return
 	}
-	if !query.Has("expected_count") {
+	request.dryRun = dryRun
+	if dryRun || !query.Has("expected_count") {
 		return
 	}
 	value := query.Get("expected_count")
@@ -230,13 +233,7 @@ func (s *server) deleteNodeRoute(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalJSON(w, resolved, &input) {
 		return
 	}
-	person := docs.CallerIsPerson(proving)
-	var writer model.Actor
-	if person {
-		writer, ok = s.actingPerson(w, resolved)
-	} else {
-		writer, ok = s.requireActor(w, resolved, input.Actor)
-	}
+	writer, person, ok := s.nodeRouteWriter(w, proving, resolved, input.Actor)
 	if !ok {
 		return
 	}
@@ -255,38 +252,33 @@ func (s *server) deleteNodeRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	count, published, marked, err := s.deleteNode(r.Context(), request)
-	var moved *deleteCountMovedError
-	if errors.As(err, &moved) {
-		WriteJSON(w, http.StatusConflict, deleteCountMoved{Code: codeDeleteCountMoved, Error: moved.Error(), Count: moved.count})
-		return
-	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var drained []model.Event
-	for _, issue := range marked {
-		drained = append(drained, s.deps.Docs.DrainOwedQueries(r.Context(), issue)...)
-	}
-	s.publish(r.Context(), append(appendedEvents(published...), drained...)...)
+	s.publish(r.Context(), append(appendedEvents(published...), s.drainOwedQueries(r.Context(), marked)...)...)
 	WriteJSON(w, http.StatusOK, nodeDeleted{Count: count})
 }
 
 // resultUnderIssueStatement reads whether the recorded result whose id is $1 stands under the issue
-// $2: its node's part_of names its check, a check of that issue (check_results.check_issue_key).
-const resultUnderIssueStatement = `select exists (select 1 from check_results where id::text = $1 and check_issue_key = $2)`
+// $2, for the reader bound at $3 (refs.VisibilityArg): its node's part_of names its check, a check
+// of that issue (check_results.check_issue_key), and the reader may see that issue. A result is
+// project-visible (its registry entry), so the reader may see it where it may see its issue.
+var resultUnderIssueStatement = `select exists (select 1 from check_results where id::text = $1 and check_issue_key = $2
+	and ` + refs.VisibleKind(graphstore.KindIssue, "check_results.check_issue_key", "$3") + `)`
 
 // findDeleteRoot is the node request names, as the delete reads it, read in q, once it is found
 // under the issue for the caller (findWrittenNode: 404 NOT_FOUND for a node the caller may not see,
 // 409 NODE_GONE for a gone one), and is a node the delete takes. A recorded result, which no read
-// of the registry resolves, is read by its address `result/<id>` off its row. R32 refuses an agent's
-// delete whose {id} is the `:::ask` block of an answered ask (409 ANSWERED_ASK_KEPT, quoting its
-// question), and every node the delete never takes is then 400 NODE_NOT_DELETABLE, naming it and
-// its kind, whoever the caller is; then the query's own refusal (400 DELETE_INPUT).
+// of the registry resolves, is read by its address `result/<id>` off its row, and is 404 NOT_FOUND
+// to a caller who may not see the issue it stands under. R32 refuses an agent's delete whose {id}
+// is the `:::ask` block of an answered ask (409 ANSWERED_ASK_KEPT, quoting its question), and every
+// node the delete never takes is then 400 NODE_NOT_DELETABLE, naming it and its kind, whoever the
+// caller is; then the query's own refusal (400 DELETE_INPUT).
 func findDeleteRoot(ctx context.Context, q queryer, request nodeDeleteRequest) (moveNode, error) {
 	if kind, id, addressed := strings.Cut(request.id, "/"); addressed && kind == graphstore.KindResult {
 		var held bool
-		if err := q.QueryRow(ctx, resultUnderIssueStatement, id, request.key).Scan(&held); err != nil {
+		if err := q.QueryRow(ctx, resultUnderIssueStatement, id, request.key, refs.VisibilityArg(request.who)).Scan(&held); err != nil {
 			return moveNode{}, fmt.Errorf("read whether the result %s stands under %s: %w", id, request.key, err)
 		}
 		if !held {
@@ -330,7 +322,7 @@ func findDeleteRoot(ctx context.Context, q queryer, request nodeDeleteRequest) (
 // for its refusal.
 func undeletableReason(root moveNode) string {
 	switch {
-	case root.typ == "ask" || root.kind == graphstore.KindAsk || root.kind == graphstore.KindAsk+"_block":
+	case root.typ == "ask" || root.kind == graphstore.KindAsk || root.kind == refs.ItemAsk.BlockKind():
 		return "an ask keeps its block, its state and its answer, and closes through the ask's own routes"
 	case root.kind == graphstore.KindIssue:
 		return "an issue node is another issue, which closes through its own routes"
@@ -341,16 +333,17 @@ func undeletableReason(root moveNode) string {
 }
 
 // deletePlan is what a delete decides of the node it takes, read in its transaction: the node, the
-// nodes it takes - each node its read reaches that it keeps not and that is not gone yet, the node
-// first - and the count of them a read of the tree of {key} returns to the caller. visible and named
-// are, of each node it takes, whether the caller may see it and the words a refusal names it by, and
-// bands, of each block of a document it takes, the band of that document (refs.BlockRow).
+// nodes it takes - each node its read reaches that it keeps not and that is not gone yet, in the
+// read's order - and the count of them a read of the tree of {key} returns to the caller. visible
+// and named are, of each node it takes, whether the caller may see it and the words a refusal names
+// it by, and rows, of each block of a document it takes, its row (refs.BlockRow), which holds the
+// band of that document.
 type deletePlan struct {
 	root    moveNode
 	takes   []deleteReached
 	visible map[graphstore.NodeKey]bool
 	named   map[graphstore.NodeKey]string
-	bands   map[string]byte
+	rows    map[string]refs.BlockRow
 	count   int
 }
 
@@ -389,7 +382,7 @@ func readDeleteTakes(ctx context.Context, q queryer, root moveNode) ([]deleteRea
 // delete reads before it writes, in their order (node_delete.go's head): a result, R28's writer
 // check, and, from a caller who is no person, a person's decision and a lens, a finding, a risk or a
 // constraint. The dry run reads it with no lock held; the delete, under the owner locks.
-func planNodeDelete(ctx context.Context, q pgx.Tx, request nodeDeleteRequest, root moveNode) (deletePlan, error) {
+func planNodeDelete(ctx context.Context, q queryer, request nodeDeleteRequest, root moveNode) (deletePlan, error) {
 	takes, err := readDeleteTakes(ctx, q, root)
 	if err != nil {
 		return deletePlan{}, err
@@ -437,10 +430,7 @@ func (plan *deletePlan) readVisible(ctx context.Context, q queryer, who model.Ac
 	if err != nil {
 		return fmt.Errorf("read the nodes the delete of %s takes: %w", plan.root.named, err)
 	}
-	plan.bands = make(map[string]byte, len(blockRows))
-	for id, row := range blockRows {
-		plan.bands[id] = row.Band
-	}
+	plan.rows = blockRows
 	for _, node := range plan.takes {
 		var held model.GraphNode
 		var seen bool
@@ -482,7 +472,8 @@ func (plan *deletePlan) refuse(ctx context.Context, q queryer, request nodeDelet
 			plan.root.named, result, plan.root.named)
 	}
 	// One check for each issue and document the check judges: it reads the writer, the issue and the
-	// document alone, so a second node of either passes or is refused as the first was.
+	// document alone, so a second node of either passes or is refused as the first was. A node the
+	// caller may not see is named by where it stands, under the node the delete names.
 	writer := specWriter{actor: request.writer, person: request.person}
 	judged := map[[2]string]bool{}
 	for _, node := range plan.takes {
@@ -492,7 +483,11 @@ func (plan *deletePlan) refuse(ctx context.Context, q queryer, request nodeDelet
 			continue
 		}
 		judged[[2]string{issue, document}] = true
-		if err := refuseSpecWriterOfNodeType(ctx, q, writer, issue, node.typ, plan.named[node.key()]); err != nil {
+		named := plan.named[node.key()]
+		if !plan.visible[node.key()] {
+			named = "under " + plan.root.named
+		}
+		if err := refuseSpecWriterOfNodeType(ctx, q, writer, issue, node.typ, named); err != nil {
 			return err
 		}
 	}
@@ -500,7 +495,7 @@ func (plan *deletePlan) refuse(ctx context.Context, q queryer, request nodeDelet
 		return nil
 	}
 	for _, node := range plan.takes {
-		if !node.documentBlock() || node.typ != "decision" {
+		if !node.documentBlock() || node.typ != refs.DecisionSupertag {
 			continue
 		}
 		decision, decided, err := docs.PersonDecisionOfBlock(ctx, q, node.stored, node.id, node.typ)
@@ -519,13 +514,25 @@ func (plan *deletePlan) refuse(ctx context.Context, q queryer, request nodeDelet
 			"the delete of %s would take the decision %s, %q, a person's decision, and an agent cannot take one out: a person deletes it, or an agent acting under a token that holds the person scope; nothing was deleted",
 			plan.root.named, plan.named[node.key()], decision.Words)
 	}
-	standing := slices.IndexFunc(plan.takes, func(node deleteReached) bool { return standingKind(node.kind) })
-	if standing < 0 {
+	// The first lens, finding, risk or constraint the delete takes that the caller may see names the
+	// refusal; where it may see none, the refusal names none.
+	standing, seen := false, -1
+	for index, node := range plan.takes {
+		if !standingKind(node.kind) {
+			continue
+		}
+		standing = true
+		if plan.visible[node.key()] {
+			seen = index
+			break
+		}
+	}
+	if !standing {
 		return nil
 	}
-	if seen := slices.IndexFunc(plan.takes, func(node deleteReached) bool { return standingKind(node.kind) && plan.visible[node.key()] }); seen >= 0 {
+	if seen >= 0 {
 		node := plan.takes[seen]
-		return goneNotPermitted(stateTarget{kind: kindWord(node.kind), address: plan.named[node.key()], end: storedEnd{kind: node.stored, id: node.id}})
+		return goneNotPermitted(stateTarget{kind: kindWord(node.kind), address: plan.named[node.key()]})
 	}
 	return errorf(http.StatusForbidden, codeStateNotPermitted,
 		"this credential may not delete %s: what stands under it holds a node a person alone takes gone, a lens, a finding, a risk or a constraint, so nothing was deleted",
@@ -538,15 +545,15 @@ func (plan *deletePlan) refuse(ctx context.Context, q queryer, request nodeDelet
 // read answers, as the tree read leaves a node out (issueTreeBuilder.excluded): no block of a role
 // document - the spec, the Verification document, the plan - that is no typed block, such as a typed
 // block's own paragraph, and no block of another of the issue's documents, which the read with no
-// view does not open (plan.bands). The walk is read only where some node is left to count.
+// view does not open (plan.rows). The walk is read only where some node is left to count.
 func (plan *deletePlan) countRead(ctx context.Context, q queryer, key string) error {
-	var counted []deleteReached
+	counted := map[graphstore.NodeKey]bool{}
 	for _, node := range plan.takes {
 		if !plan.visible[node.key()] {
 			continue
 		}
 		if node.documentBlock() {
-			switch plan.bands[node.id] {
+			switch plan.rows[node.id].Band {
 			case refs.RankBandSpec, refs.RankBandVerification, refs.RankBandPlan:
 				if !pmdoc.IsTypedBlock(node.typ) {
 					continue
@@ -557,9 +564,8 @@ func (plan *deletePlan) countRead(ctx context.Context, q queryer, key string) er
 				}
 			}
 		}
-		counted = append(counted, node)
+		counted[node.key()] = true
 	}
-	plan.count = 0
 	if len(counted) == 0 {
 		return nil
 	}
@@ -567,13 +573,11 @@ func (plan *deletePlan) countRead(ctx context.Context, q queryer, key string) er
 	if err != nil {
 		return err
 	}
-	walked := make(map[graphstore.NodeKey]bool, len(tree.Nodes))
+	// Each counted node once, however often the walk names it.
 	for _, node := range tree.Nodes {
-		walked[graphstore.NodeKey{Kind: refs.StoredKindOf(node.Kind), ID: node.ID}] = true
-	}
-	for _, node := range counted {
-		if walked[node.key()] {
+		if walked := (graphstore.NodeKey{Kind: refs.StoredKindOf(node.Kind), ID: node.ID}); counted[walked] {
 			plan.count++
+			delete(counted, walked)
 		}
 	}
 	return nil
@@ -680,10 +684,12 @@ func (plan deletePlan) retractions(ctx context.Context, tx pgx.Tx, at time.Time,
 	block := map[graphstore.NodeKey]bool{}
 	for index, node := range plan.takes {
 		kinds[index], ids[index] = node.stored, node.id
-		block[node.key()] = node.documentBlock()
+		if node.documentBlock() {
+			block[node.key()] = true
+		}
 	}
 	var passKinds []string
-	if slices.ContainsFunc(plan.takes, deleteReached.documentBlock) {
+	if len(block) > 0 {
 		linked, err := refs.BlockRefKinds(ctx, tx)
 		if err != nil {
 			return nil, err
@@ -701,6 +707,9 @@ func (plan deletePlan) retractions(ctx context.Context, tx pgx.Tx, at time.Time,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the tuples out of what the delete of %s takes: %w", plan.root.named, err)
+	}
+	if len(block) == 0 {
+		return out, nil
 	}
 	return slices.DeleteFunc(out, func(tuple graphstore.Tuple) bool {
 		return block[graphstore.NodeKey{Kind: tuple.FromKind, ID: tuple.FromID}] && slices.Contains(passKinds, tuple.Kind)
@@ -748,7 +757,7 @@ func (s *server) dryRunNodeDelete(ctx context.Context, request nodeDeleteRequest
 	if err != nil {
 		return 0, err
 	}
-	if err := containerWouldEmpty(root, s.deps.Docs.PlanDeleteBlocksText(documentCtx, plan.documents())); err != nil {
+	if err := containerWouldEmpty(root, plan.takes, s.deps.Docs.PlanDeleteBlocksText(documentCtx, plan.documents())); err != nil {
 		return 0, err
 	}
 	return plan.count, nil
@@ -757,16 +766,29 @@ func (s *server) dryRunNodeDelete(ctx context.Context, request nodeDeleteRequest
 // containerWouldEmpty is err, the answer of a write of the delete of root's text or of its dry run,
 // as the delete answers it: a block the delete keeps that its text would leave with no block of its
 // own (pmdoc.ContainerEmptiedError) is 409 CONTAINER_WOULD_EMPTY, the move's code, naming that
-// block and its kind, and nothing is stored; any other error as it is.
-func containerWouldEmpty(root moveNode, err error) error {
+// block, its kind and, where the error names the document whose text holds it, that document by
+// the address of a block of it the delete takes (takes), in the delete's own words, and nothing is
+// stored; any other error as it is.
+func containerWouldEmpty(root moveNode, takes []deleteReached, err error) error {
 	var emptied *pmdoc.ContainerEmptiedError
 	if !errors.As(err, &emptied) {
 		return err
 	}
 	kind := strings.ReplaceAll(emptied.Type, "_", " ")
+	left, taken := "no block of its own", "the last block the "+kind+" holds"
+	if emptied.Type == "list_item" {
+		left, taken = "no first paragraph of its own", "the block the "+kind+" holds as its own first paragraph"
+	}
+	in := ""
+	if at := slices.IndexFunc(takes, func(node deleteReached) bool {
+		return emptied.Document != "" && node.document == emptied.Document
+	}); at >= 0 {
+		owner, _, _ := strings.Cut(takes[at].id, "#")
+		in = " of " + owner
+	}
 	return errorf(http.StatusConflict, codeContainerWouldEmpty,
-		"the delete of %s would leave the %s %s with no block of its own: %s; nothing was deleted, and the %s itself is deleted whole or kept",
-		root.named, kind, emptied.Container, emptied.Error(), kind)
+		"the delete of %s would leave the %s %q%s with %s: it takes %s; nothing was deleted, and the %s itself is deleted whole or kept",
+		root.named, kind, emptied.Container, in, left, taken, kind)
 }
 
 // deleteLockRead is what the delete reads to learn its owner locks, and again under them
@@ -860,7 +882,7 @@ func (s *server) deleteNode(ctx context.Context, request nodeDeleteRequest) (int
 		return 0, nil, nil, &deleteCountMovedError{named: root.named, count: plan.count, expected: *request.expected}
 	}
 	changed, err := s.deps.Docs.DeleteBlocksText(documentCtx, plan.documents(), request.writer)
-	if err := containerWouldEmpty(root, err); err != nil {
+	if err := containerWouldEmpty(root, plan.takes, err); err != nil {
 		return 0, nil, nil, err
 	}
 	// Each version's index pass states the blocks it removed gone, and leaves a prevented_by into
@@ -868,22 +890,13 @@ func (s *server) deleteNode(ctx context.Context, request nodeDeleteRequest) (int
 	versionCtx := refs.WithKeptPointerTargets(documentCtx, plan.blockAddresses())
 	var published []*model.Event
 	for _, document := range changed {
-		written, err := s.deps.Docs.SnapshotVersion(versionCtx, document, request.writer)
+		event, err := s.writeNodeRouteVersion(documentCtx, versionCtx, tx, ledger, document, request.writer)
 		if err != nil {
 			return 0, nil, nil, err
 		}
-		if !written.Wrote {
-			continue
+		if event != nil {
+			published = append(published, event)
 		}
-		artifact, err := loadArtifactRowByID(documentCtx, tx, document)
-		if err != nil {
-			return 0, nil, nil, err
-		}
-		event, err := s.commitArtifactVersionEvent(documentCtx, tx, ledger, ownerForArtifact(artifact), request.writer, artifact.ID, artifact.Name, written, nil)
-		if err != nil {
-			return 0, nil, nil, err
-		}
-		published = append(published, event)
 	}
 	gone, err := plan.goneNodes(ctx, tx, at, request.writer)
 	if err != nil {
@@ -897,14 +910,15 @@ func (s *server) deleteNode(ctx context.Context, request nodeDeleteRequest) (int
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	for _, issue := range orphans.Issues() {
+	orphaned := orphans.Issues()
+	for _, issue := range orphaned {
 		if issue != request.key && !slices.Contains(locked.issues, issue) {
 			return 0, nil, nil, errorf(http.StatusConflict, parentContended,
 				"the delete of %s would orphan a comment of %s, an issue it had not locked, which was anchored while this request waited for its locks, so nothing was deleted: read the count again and confirm it",
 				root.named, issue)
 		}
 	}
-	write := nodeDeleteWrite{gone: gone, retractions: retractions, orphans: orphans, marks: plan.marks(request.key, orphans.Issues())}
+	write := nodeDeleteWrite{gone: gone, retractions: retractions, orphans: orphans, marks: plan.marks(request.key, orphaned)}
 	marked := map[string]*bool{}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		queueNodeDelete(b, write, marked)
@@ -918,13 +932,7 @@ func (s *server) deleteNode(ctx context.Context, request nodeDeleteRequest) (int
 	for _, document := range changed {
 		s.deps.Docs.ScheduleSettlement(document)
 	}
-	var drain []string
-	for _, issue := range write.marks {
-		if took := marked[issue]; took != nil && *took {
-			drain = append(drain, issue)
-		}
-	}
-	return plan.count, published, drain, nil
+	return plan.count, published, takenMarks(write.marks, marked), nil
 }
 
 // nodeDeleteWrite is the write a delete makes once every rule passed, at graphstore.NoEvent, dated
@@ -941,18 +949,14 @@ type nodeDeleteWrite struct {
 }
 
 // queueNodeDelete puts write on b: the node write and the retractions (graphstore.QueueWrite), the
-// orphaned comments, the marks, after the tuples so their sequence is the last one the write drew,
-// and the head rows of what it states (graphstore.QueueHeads). marked holds, for each issue of
-// marks, whether its mark took.
+// orphaned comments, the marks, after the tuples so their sequence is the last one the write drew
+// (queueQueryMarks), and the head rows of what it states (graphstore.QueueHeads). marked holds, for
+// each issue of marks, whether its mark took.
 func queueNodeDelete(b *store.WriteBatch, write nodeDeleteWrite, marked map[string]*bool) {
 	if len(write.gone) > 0 || len(write.retractions) > 0 {
 		graphstore.QueueWrite(b, write.gone, write.retractions)
 	}
 	write.orphans.Queue(b)
-	for _, issue := range write.marks {
-		took := false
-		marked[issue] = &took
-		docs.QueueQueryMark(b, issue, graphstore.NoEvent, &took)
-	}
+	queueQueryMarks(b, write.marks, marked)
 	graphstore.QueueHeads(b, graphstore.HeadsOf(write.gone, write.retractions))
 }

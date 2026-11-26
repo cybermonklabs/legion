@@ -416,8 +416,8 @@ func (s *server) planStatusChangeUnderLocks(
 			if err := resumed.fence(*change.expectedSeq).refuseForeignEvents(ctx, tx, key); err != nil {
 				return statusChangePlan{}, nil, err
 			}
-		} else if *change.expectedSeq != int64(named.LastSeq) {
-			return statusChangePlan{}, nil, errIssueChanged()
+		} else if err := refuseChangedSince(ctx, tx, key, *change.expectedSeq, named.LastSeq); err != nil {
+			return statusChangePlan{}, nil, err
 		}
 	}
 	if named.ClosedAt != nil && change.status == "done" && !resumed.holds(key) {

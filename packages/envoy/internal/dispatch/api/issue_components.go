@@ -93,7 +93,7 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 // the issue's node. It answers the affects tuples the write appends and retracts, which it reads
 // against the ones the issue's node states now so it states only what moved, dated at the time its
 // issue_components row records, at for a write that leaves the issue inheriting, held for the
-// issue's own event to cause (stateIssueRelations). A component past the store's bound
+// issue's own event to cause (queueIssueRelations). A component past the store's bound
 // (graphstore.MaxAddressBytes) is no node of the store, so its row names no node and no tuple is
 // stated of it.
 func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, input componentsInput, at time.Time) ([]graphstore.Tuple, error) {
@@ -153,6 +153,7 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 	}
 	if input.Mode == "explicit" {
 		marked := make([]string, 0, len(input.IDs))
+		affects = make([]string, 0, len(input.IDs))
 		for _, id := range input.IDs {
 			if address := graphstore.ComponentAddress(project, id); graphstore.AddressFits(address) {
 				marked = append(marked, id)

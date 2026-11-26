@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -305,8 +306,9 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var keep model.DecisionKeep
 	var event model.Event
+	marked := false
 	if onNode {
-		keep, event, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
+		keep, event, marked, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
 	} else {
 		// kept for one release: heading-keep
 		keep, event, err = s.keepDecisionHeading(r.Context(), tx, actor, document, decision)
@@ -319,7 +321,11 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	published := []model.Event{event}
+	if marked {
+		published = append(published, s.deps.Docs.DrainOwedQueries(r.Context(), *document.IssueKey)...)
+	}
+	s.publish(r.Context(), published...)
 	WriteJSON(w, http.StatusOK, keep)
 }
 
@@ -383,10 +389,13 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // It writes as the store's writers do: the issue's owner lock first, under which it reads the
 // decision again and the node's current keepers, and then one write-phase batch (store.RunWrite),
 // so the transaction holds its id only for that batch: the person's node (one the store already
-// holds moves nothing), the projection row, the decision.kept event, and last the tuples, under
-// that event (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The
-// event's changed_version is the one the row is written with, which no statement of the batch
-// reads back.
+// holds moves nothing), the projection row, the decision.kept event, the tuples, under that event
+// (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent), and then the mark
+// of the issue's queries owed (docs.QueueQueryMark): the decisions query takes the decision, and
+// its record holds the kept_by and the kept_text_sum out of its node, so R14 owes that query a
+// version, which the route drains once the batch has committed. marked says whether the issue has
+// converted and took the mark. The event's changed_version is the one the row is written with,
+// which no statement of the batch reads back.
 //
 // keepDecision read decision on the pool, holding no lock, and an agent's write of the document
 // takes the same owner lock: one that committed while the Keep waited for it would leave the Keep
@@ -394,20 +403,20 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // is read again under the lock, as keepDecisionHeading reads its section: one the store no longer
 // holds, or holds replaced, is 404 TARGET_NOT_FOUND, and one whose text sum is no longer the one
 // it was read at is 409 DECISION_CHANGED, each with nothing written.
-func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
+func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, bool, error) {
 	own := issueOwner(*document.IssueKey)
 	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	current, found, err := s.readDecisionNode(ctx, tx, actor, document, decision.BlockID)
 	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	if !found || current.Replaced {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
+		return model.DecisionKeep{}, model.Event{}, false, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
 	}
 	if current.TextSHA256 != decision.TextSHA256 {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusConflict, "DECISION_CHANGED",
+		return model.DecisionKeep{}, model.Event{}, false, errorf(http.StatusConflict, "DECISION_CHANGED",
 			"the decision changed since it was read; read it again and keep what it says now")
 	}
 	decision = current
@@ -418,7 +427,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	earlier, err := graphstore.CurrentOut(ctx, tx, refs.BlockNodeKind, address, []string{refs.TupleKeptBy})
 	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	var tuples []graphstore.Tuple
 	for _, kept := range earlier {
@@ -442,6 +451,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	held := graphstore.PlanUncaused([]graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
 	keep := model.DecisionKeep{ArtifactID: document.ID}
 	var event model.Event
+	marked := false
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, held)
 		b.Queue("", `
@@ -462,12 +472,13 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 			return err
 		}
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		docs.QueueQueryMark(b, *document.IssueKey, graphstore.LatestEvent, &marked)
 		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
-	return keep, event, nil
+	return keep, event, marked, nil
 }
 
 // keptDecision is the decision Keep acts on at blockID of document, and whether it is a node's:

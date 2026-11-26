@@ -333,7 +333,7 @@ func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
 // are read on this arm.
 //
 // Build the eligible artifact set before joining the vector matches. Without the boundary, a
-// common lexeme on the scratch corpus drove thousands of artifact probes and a scan of projects
+// common lexeme on the measurement corpus drove thousands of artifact probes and a scan of projects
 // per document. The small eligible set joins to the GIN matches by ref_key instead.
 func relatedDocumentKeywordLegSQL(rank func(searchColumn string) string) string {
 	return `  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
@@ -345,7 +345,7 @@ func relatedDocumentKeywordLegSQL(rank func(searchColumn string) string) string 
     from node_search s
     join (select doc.id, doc.ref_key, doc.issue_key, doc.project_key, doc.slug, doc.name
             from artifacts doc join projects eligible on eligible.key = doc.project_key
-           where doc.kind = 'doc' and ($2 = '' or doc.project_key = $2)
+           where ` + searchTermDocument("doc") + ` and ($2 = '' or doc.project_key = $2)
            offset 0) a on a.ref_key = s.node_address
     left join issues i on i.key = a.issue_key
     cross join q
@@ -476,13 +476,13 @@ var (
 // page and the few blocks each row covers, never over every candidate; any other keyword row and
 // an issue carry no covers, so the join answers nothing for them.
 //
-// A lone cover needs no rank. For a document's other covers, reuse the stored vector only
-// when the node text equals the projected block text byte for byte and contains no ask
-// opening that search_document_text can strip. For text whose full vector fits, search_vector
-// with an empty head then stores exactly the vector the page used to build. Keep the original
-// rank and ordinality tie-break, rather than taking the first cover: an ask nested inside a
-// block can change its rank, and a window's order is not a lexical rank at all. Where the
-// text differs, the node is missing, or an ask might be stripped, build the original vector.
+// A lone cover needs no rank. A document's other covers are ranked every one, a tie broken by
+// ordinality, rather than the first cover taken: an ask nested inside a block can change its rank,
+// and a window's order is not a lexical rank at all. The stored vector is reused only where the
+// node text equals the projected block text byte for byte and holds no ask opening that
+// search_document_text can strip; for text whose full vector fits, search_vector with an empty head
+// stores exactly that vector. Where the text differs, the node is missing, or an ask might be
+// stripped, the vector is built from the text.
 //
 // A covered block is named only where the acting person may see it, by the registry's own
 // predicate over the block's node (refs.VisibleEnd, bound at seen, the parameter the acting
@@ -662,8 +662,8 @@ with q as (select
 // the check exists to find.
 //
 // seen is the acting credential's parameter. The registry's visibility join applies to all
-// candidates before ranking and counting. Meaning arms retain their own tests before their
-// candidate limits, and the page retains its tests of individual covers.
+// candidates before ranking and counting. Meaning arms bind their own tests before their
+// candidate limits, and the page binds its tests of individual covers.
 //
 // The arms are a materialized CTE of their own, and the visibility join reads that CTE rather
 // than the union itself. A CTE's scan costs only the rows it hands on, while a union in a FROM

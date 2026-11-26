@@ -633,7 +633,7 @@ func readIssueNeeds(ctx context.Context, tx pgx.Tx, issue string) (heldIssueNeed
 // writeIssueNeeds validates the issues issue waits on and writes the set waits names: the
 // issue_links rows that project it, each naming the issue's node, and the needs tuples the write
 // appends and retracts, which it answers, held for the issue's own event to cause
-// (stateIssueRelations). held is what the issue's waits stand at, read in the write's read phase
+// (queueIssueRelations). held is what the issue's waits stand at, read in the write's read phase
 // (readIssueNeeds), the zero value for an issue the write creates. It writes no row it keeps and
 // states nothing the store holds already: a target the issue waits on now and still names is left
 // as it stands, a target it no longer names loses its row and has its tuple retracted, dated at,

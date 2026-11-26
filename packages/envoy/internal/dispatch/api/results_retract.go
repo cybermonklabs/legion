@@ -353,10 +353,11 @@ func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mode
 		if !held {
 			return nil
 		}
-		graphstore.QueueWrite(b, nil, []graphstore.Tuple{graphstore.ResultRetracted(
-			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
+		retracted := []graphstore.Tuple{graphstore.ResultRetracted(
+			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)}
+		graphstore.QueueWrite(b, nil, retracted)
 		docs.QueueQueryMark(b, checkIssueKey, event, &marked)
-		graphstore.QueueHeads(b, []graphstore.NodeKey{{Kind: graphstore.KindResult, ID: retraction.ResultID}})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, retracted))
 		return nil
 	})
 	return marked, err

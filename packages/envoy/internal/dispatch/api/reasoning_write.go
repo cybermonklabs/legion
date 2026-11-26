@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -187,8 +188,8 @@ func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []
 // It answers the nodes the request wrote, in the order it named them, without their authors':
 // the nodes this write made, which are the ones a write made for a run names as changed by it
 // (graphstore.TupleChangedByRun). Each is marked changed (graphstore.Node's Changed) and no
-// author's node is, so graphstore.QueueWrite, on a context holding a run (store.WithRun), appends that
-// run's changed_by_run out of each of them alone.
+// author's node is, so graphstore.QueueWrite, on a batch made for a run (store.WriteBatch's Run),
+// appends that run's changed_by_run out of each of them alone.
 func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) ([]graphstore.Node, error) {
 	written := make([]graphstore.Node, len(write.nodes))
 	for index, node := range write.nodes {
@@ -326,7 +327,7 @@ func refuseGoneNode(ctx context.Context, tx pgx.Tx, end storedEnd) error {
 // constraint, and by its store id otherwise.
 func goneEndError(end storedEnd) error {
 	kind, address := graphstore.AddressKind(end.kind, end.id), end.id
-	if slices.Contains(refs.StandingKinds(), kind) {
+	if standingKind(kind) {
 		address = refs.StoreRef(kind, end.id)
 	}
 	return nodeGone(kind, address)
@@ -532,40 +533,48 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 // so what stands under the node is read for the write and for no refusal, and tells the caller
 // nothing.
 //
-// It answers the node as the write leaves it and the state it held before.
-func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graphstore.Node, string, error) {
+// The state is one of the values a query's record holds of the node (R14), so a write that moves
+// it marks the queries of the issue owed in its batch, after the tuples, so its sequence is the
+// state tuple's, and before the head rows (docs.QueueQueryMark), as the node delete marks them:
+// marked says, once the batch has run, whether the issue has converted and took the mark, and the
+// route drains its queries after its COMMIT (docs.Service.DrainOwedQueries).
+//
+// It answers the node as the write leaves it, the state it held before, and whether it marked.
+func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graphstore.Node, string, bool, error) {
 	if _, err := lockIssueOwner(ctx, tx, write.issue); err != nil {
-		return graphstore.Node{}, "", err
+		return graphstore.Node{}, "", false, err
 	}
 	node, held, err := graphstore.ReadNode(ctx, tx, write.target.end.kind, write.target.end.id)
 	switch {
 	case err != nil:
-		return graphstore.Node{}, "", err
+		return graphstore.Node{}, "", false, err
 	case !held:
-		return graphstore.Node{}, "", errNodeNotHeld
+		return graphstore.Node{}, "", false, errNodeNotHeld
 	}
 	if gone, err := storedGone(ctx, tx, write.target.end); err != nil {
-		return graphstore.Node{}, "", err
+		return graphstore.Node{}, "", false, err
 	} else if gone {
-		return graphstore.Node{}, "", nodeGone(write.target.kind, write.target.address)
+		return graphstore.Node{}, "", false, nodeGone(write.target.kind, write.target.address)
 	}
 	if err := write.allowed(node); err != nil {
-		return graphstore.Node{}, "", err
+		return graphstore.Node{}, "", false, err
 	}
 	previous := node.State
 	if previous == write.state {
-		return node, previous, nil
+		return node, previous, false, nil
 	}
 	moved, err := graphstore.PlanState(ctx, tx, []graphstore.Node{node}, write.state, write.at, write.who)
 	if err != nil {
-		return graphstore.Node{}, "", err
+		return graphstore.Node{}, "", false, err
 	}
+	marked := false
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueWrite(b, moved, nil)
+		docs.QueueQueryMark(b, write.issue, graphstore.NoEvent, &marked)
 		graphstore.QueueHeads(b, graphstore.HeadsOf(moved, nil))
 		return nil
 	}); err != nil {
-		return graphstore.Node{}, "", err
+		return graphstore.Node{}, "", false, err
 	}
-	return moved[0], previous, nil
+	return moved[0], previous, marked, nil
 }

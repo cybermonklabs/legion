@@ -141,7 +141,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			// ask's node, held for the ask.answered event closeAskTx queues, then the row.
 			change := asks.Answered(answer)
 			change.Who, change.At, change.Held = actor, answer.At, held
-			settled, err := ledger.PlanSettle(ctx, ask.ID, change)
+			settled, err := ledger.PlanSettle(ctx, ask, change)
 			if err != nil {
 				return model.Ask{}, err
 			}

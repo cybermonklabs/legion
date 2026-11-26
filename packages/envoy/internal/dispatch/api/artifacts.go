@@ -59,7 +59,7 @@ const (
 // table unaliased. role is read beside its node's query value (graphstore.ArtifactQueryRoleSQL),
 // and scanArtifact takes the row's own where it holds one: model.Artifact carries it as "" when
 // the document plays no role, and a document of an issue born converted carries none in its row
-// but plays its node's query (decision 2 of this branch's plan; R8 keeps the read's role), the
+// but plays its node's query (R8 of the issue-tree spec keeps the read's role), the
 // issue's decisions query among them (model.Artifact.DecisionsQuery); retired_at as whether it is
 // set (model.Artifact.Retired); and last the room the document is edited in, its document_rooms
 // row's room or its own id (model.Artifact.Room, refs.DocumentRoomSQL).
@@ -661,8 +661,8 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 // (documentRole), read once by the caller, which refuses a blank create that takes one: the row
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
 // created see it as every later reader will. query is the query value of a role document of a
-// converted issue, which joins the issue's room and writes no role (decision 2 of this branch's
-// plan): its node is a query node of that name, which the read projects as its role, and "" for
+// converted issue, which joins the issue's room and writes no role: its node is a query node of
+// that name, which the read projects as its role, and "" for
 // every other document.
 //
 // The create's one time is read here, in the read phase, under the owner lock the caller holds: its
@@ -674,7 +674,7 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 // The node is written in the project of the issue or the project that owns the document, or
 // between the parties of the conversation that does, and it is the node this create makes
 // (graphstore.Created). It states beside it the facts the row projects: its part_of the issue that
-// owns it, and an image's or a file's bytes, input's under sha (R16 of this branch's spec); a
+// owns it, and an image's or a file's bytes, input's under sha (R16 of the issue-tree spec); a
 // project's document and a conversation's file hang under no issue. The row names the node
 // (node_kind, node_address). A ref_key past the store's address bound is no node of it
 // (graphstore.AddressFits), as every writer of the store leaves such an address out, and the write
@@ -870,7 +870,7 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 // statedVersionBytes plans, on the node an image's or a file's row names, the facts of the bytes a
 // later version of it holds (graphstore.ArtifactBytes), dated at, the version's own time, and held
 // for the event the upload queues (graphstore.QueueCaused appends them), so the node's current
-// values are its newest version's (R16 of this branch's spec). It writes no node, so nothing
+// values are its newest version's (R16 of the issue-tree spec). It writes no node, so nothing
 // is queued before the event. A row an older build wrote names no node and states nothing here:
 // the backfill gives it its node and its newest version's bytes in the transaction that names the
 // node on the row (graphcensus' writeObjectBatch), which holds the document's owner lock to its
@@ -1027,7 +1027,7 @@ func (s *server) storeArtifact(
 		}
 		// A role document of a converted issue - its Verification document or its plan - joins the
 		// issue's room (queueIssueRoomJoin below) and writes no role: the part it plays is the query
-		// value of its node, a query node of that name (decision 2 of this branch's plan), which the
+		// value of its node, a query node of that name, which the
 		// read projects as its role. Every other document keeps a room of its own
 		// (documentJoinsIssueRoom).
 		joining := kind == "doc" && issueRoom != "" && documentJoinsIssueRoom(slug)
@@ -1713,7 +1713,7 @@ const maxIntegerColumn = math.MaxInt32
 // fitsIntegerColumn reports whether a number the caller named is no greater than
 // maxIntegerColumn. Each handler that takes such a number for an integer column holds it to this
 // bound before any query is made with it, each with its own lower bound and its own refusal: the
-// two of this file that read a version number from a path or a query (parseVersionNumber), the
+// three that read a version number from a path or a query (parseVersionNumber), the
 // read mark's body (putDocumentRead), the delivery accept's attempt in its path (acceptDelivery,
 // which answers it as the attempt it is not, 404 MESSAGE_NOT_FOUND), the attempt a reply names
 // in its body (replyComment and replyMessage, each answering it as the delivery it is not, 404),
@@ -1731,9 +1731,10 @@ func fitsIntegerColumn[N int | int64](number N) bool {
 
 // parseVersionNumber reads a version number the caller named in a path or a query: a positive
 // integer that fits the column (fitsIntegerColumn), and false for anything else, which is the
-// caller's input refused, 400 INVALID_VERSION, with no query made with it. Both routes that read
-// a version number from a path or a query read it here: GET …/versions/{number} and the change
-// set (getArtifactChanges), each answering the refusal in its own words.
+// caller's input refused, 400, with no query made with it. The three routes that read a version
+// number from a path or a query read it here: GET …/versions/{number} (400 INVALID_VERSION), the
+// change set (getArtifactChanges) and the tree read's v (serveIssueTree, 400 INVALID_QUERY), each
+// answering the refusal in its own words.
 func parseVersionNumber(text string) (int, bool) {
 	number, err := strconv.Atoi(text)
 	if err != nil || number < 1 || !fitsIntegerColumn(number) {
@@ -2483,7 +2484,7 @@ func readsAsDocument(artifact model.Artifact) bool {
 // the issue's tree artifact (createIssueTree): it is the issue's room, whose own fragment holds the
 // nodes written into the issue rather than into a document, and the tree read names it. Nor is
 // the issue's decisions query (refs.DecisionsQuerySQL): Decisions is a view over decision nodes
-// and not a document (R6 and R8 of this branch's spec), which its own address and id still read.
+// and not a document (R6 and R8 of the issue-tree spec), which its own address and id still read.
 var issueArtifactsStatement = `
 		select ` + artifactColumns + `
 		from artifacts where issue_key = $1 and ` + issueArtifactsListed("artifacts") + `
@@ -3669,7 +3670,7 @@ var nodesOfOtherIssuesStatement = `
 func refuseNodesOfOtherIssues(ctx context.Context, q queryer, artifact model.Artifact, ops []model.EditOp) error {
 	var addresses []string
 	for _, op := range ops {
-		for _, named := range []string{op.Block, blockAnchor(op.After), blockAnchor(op.Before)} {
+		for _, named := range []string{op.Block, blockAnchor(op.After), blockAnchor(op.Before), blockAnchor(op.Into)} {
 			if strings.Contains(named, "#") {
 				addresses = append(addresses, named)
 			}
@@ -3698,9 +3699,8 @@ func refuseNodesOfOtherIssues(ctx context.Context, q queryer, artifact model.Art
 // blockAnchor is the block id an insert's or a move's anchor names in its `block:<id>` form, "" for
 // an anchor written as a quote.
 func blockAnchor(anchor string) string {
-	id, _ := strings.CutPrefix(anchor, "block:")
-	if id == anchor {
-		return ""
+	if id, ok := strings.CutPrefix(anchor, "block:"); ok {
+		return id
 	}
-	return id
+	return ""
 }

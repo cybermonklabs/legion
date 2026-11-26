@@ -418,9 +418,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	// An issue is born converted - its spec a fragment of the issue's room from its first write,
-	// and a query node - only while every live process serves the issue room (decision 7 of
-	// this branch's plan, R5): a process of the release before would admit the spec's
-	// socket to the spec's own room. It is read here, in the read phase, and so is everything the
+	// and a query node - only while every live process serves the issue room (R5 of the issue-tree
+	// spec): a process of the release before would admit the spec's socket to the spec's own room.
+	// It is read here, in the read phase, and so is everything the
 	// room's documents are planned from (planConvertedIssueRoom), before the spec's seed, which
 	// then writes the spec's fragment of the room.
 	bornConverted, err := fleetServesIssueRoom(r.Context(), tx)
@@ -596,7 +596,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
-	// (R16 of this branch's spec); what that write states waits for the issue.created event
+	// (R16 of the issue-tree spec); what that write states waits for the issue.created event
 	// below (graphstore.QueueCaused). It is one of the create's inline writes, before the
 	// ledger's: the spec's version and block index run at Commit, and the index's projection rows
 	// name the spec's node. Each row names its node in the same transaction. Both are nodes this
@@ -1005,8 +1005,8 @@ func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
 // `decisions-md`, and this row carries no role and never that slug.
 const issueDecisionsName = "decisions"
 
-// convertedIssueRoom is what an issue born converted holds beside its spec's row (T12b of
-// this branch's plan), as the create's read phase planned it (planConvertedIssueRoom):
+// convertedIssueRoom is what an issue born converted holds beside its spec's row, as the create's
+// read phase planned it (planConvertedIssueRoom):
 // its tree artifact, whose Yjs document is the issue's room, and its decisions query node, each by
 // the id and the slug its row will take, and what the read phase's document work held for the
 // issue's event - the two documents' first versions' nodes and the decisions query's index. The
@@ -1046,7 +1046,7 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 	if room.decisionsSlug, err = s.nextArtifactSlug(ctx, tx, issue, issueDecisionsName); err != nil {
 		return convertedIssueRoom{}, fmt.Errorf("take the decisions query's slug: %w", err)
 	}
-	pending := func(id, slug, kind string) refs.DocumentAddress {
+	pending := func(slug, kind string) refs.DocumentAddress {
 		return refs.DocumentAddress{
 			RefKey: graphstore.ArtifactRefKey(key, project, "", slug), IssueKey: key,
 			Ref:           refs.ArtifactRef(&key, project, nil, slug, kind, false),
@@ -1054,8 +1054,8 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 			Band: refs.DocumentBand(&key, kind, false, nil, slug),
 		}
 	}
-	ledger.RegisterPendingArtifact(room.tree, pending(room.tree, room.treeSlug, "tree"), "")
-	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisions, room.decisionsSlug, "doc"), graphstore.QueryDecisions)
+	ledger.RegisterPendingArtifact(room.tree, pending(room.treeSlug, "tree"), "")
+	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisionsSlug, "doc"), graphstore.QueryDecisions)
 	ledger.RegisterPendingRoom(specID, room.tree)
 	if err := docs.AnnounceDocumentRooms(ctx, tx, room.tree, specID); err != nil {
 		return convertedIssueRoom{}, err
@@ -1149,8 +1149,8 @@ func (s *server) createConvertedIssueRoom(ledger *docs.Ledger, key, project, spe
 // queueIssueRoomJoin is the room join createConvertedIssueRoom queues, for a document whose row's
 // insert is queued on ledger, an upload's (queueNewArtifact): it records on the ledger that the
 // document is edited in room (docs.Ledger.RegisterPendingRoom), so the document work that follows
-// writes the document's
-// fragment of the room, and queues the document_rooms row right after that insert, whose key it
+// writes the document's fragment of the room, and queues the document_rooms row right after that
+// insert, whose key it
 // names, and before any write of the document. The announcement is a notification, which
 // Postgres delivers at the commit, so it is sent at once and assigns the transaction no id.
 func queueIssueRoomJoin(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, room, document string) error {
@@ -1164,8 +1164,8 @@ func queueIssueRoomJoin(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, roo
 // documentJoinsIssueRoom is whether a new document of a converted issue, whose slug is slug, is
 // made a fragment of the issue's room: only one of the issue's three role documents - its spec,
 // which createConvertedIssueRoom joins as the issue is created, and its Verification document and
-// plan (roleSlugs), which an upload creates - from its first write (R5 of this branch's spec,
-// version 112). Every other document keeps a room of its own, as every document of an
+// plan (roleSlugs), which an upload creates - from its first write (R5 of the issue-tree spec).
+// Every other document keeps a room of its own, as every document of an
 // unconverted issue does. The room's state is one update ygo decodes, whose bound the documents in
 // it share (docs' refuseUndecodableSeed refuses a seed past it), so a document no role names would
 // spend that bound for the three, and the heaviest documents the element limit admits filled it in
@@ -1196,10 +1196,10 @@ func decisionsQueryWrite(slug, key, project string, actor model.Actor, at time.T
 }
 
 // createDecisionsQuery queues on b the decisions query node id of the issue key in project, under
-// slug: a doc row with no fragment and no document_rooms row (D6 of this branch's plan), whose
-// node is written, as written plans it (decisionsQueryWrite), before the row that names it. Its
-// version 1, empty, with its version node and its index, is the read phase's
-// (planConvertedIssueRoom). The row carries no role: the read projects `decisions` from the node's
+// slug: a doc row with no fragment and no document_rooms row, whose node is written, as written
+// plans it (decisionsQueryWrite), before the row that names it. Its version 1, the rendering of the
+// decisions the spec holds, with its version node and its index, is the read phase's
+// (queueDecisionsFirstVersion). The row carries no role: the read projects `decisions` from the node's
 // query value. What the node write states waits for the caller's event, which the caller causes it
 // under.
 func (s *server) createDecisionsQuery(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor) error {

@@ -136,11 +136,13 @@ func (b *issueTreeBuilder) kindOrder(order []refs.Target) []refs.Target {
 			mark(target, treeRoleTree)
 		}
 	}
+	// A climb stops at a node already marked: its own climb, or the climb that marked it, marks
+	// everything above it.
 	for _, target := range order {
 		if roles[target] != treeRoleTree {
 			continue
 		}
-		for at, steps := b.effective[target], 0; at != (refs.Target{}) && b.kept[at] && steps <= len(b.entries); steps++ {
+		for at, steps := b.effective[target], 0; at != (refs.Target{}) && b.kept[at] && !in[at] && steps <= len(b.entries); steps++ {
 			mark(at, treeRoleContext)
 			if at == b.root() {
 				break

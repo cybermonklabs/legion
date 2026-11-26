@@ -326,6 +326,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
+	// A question of a converted issue is a node the decisions query takes, so its create moves that
+	// query's record and owes it a version (R14): the write phase marks the issue's queries owed last,
+	// after the ask's facts, and Commit drains the mark, writing that version before this route
+	// publishes (docs.Ledger.MarkAskQueries).
+	ledger.MarkAskQueries(ask)
 	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
 	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
 	// statements follow the row's insert, queued above, which the rows of a part reference. The
@@ -647,6 +652,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The decisions query's rendering prints each question it takes, so an edit of a question's
+	// words owes that query a version (R14, R15), drained once Commit has run the write phase
+	// (docs.Ledger.MarkAskQueries); an edit of its urgency or of multiple alone changes no words and
+	// no fact of its node, and an approval request, which no query takes, was refused above.
+	if askWordsChanged(previous, ask) {
+		ledger.MarkAskQueries(ask)
 	}
 	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
 	// request naming its run) names the ask as changed by that run where it changed them

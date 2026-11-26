@@ -29,20 +29,22 @@ package api
 // every caller (400 NODE_NOT_MOVABLE); a parent nobody holds (404 NOT_FOUND),
 // and a constraint moved under any node but an issue's (400 INVALID_POINTER), which R7 reads before
 // every other rule; a body that names no move (400 MOVE_INPUT) and a move that states no placement
-// (428 PRECONDITION_REQUIRED); R28's writer check on a requirement, a criterion or a check (403
-// DOCUMENT_WRITER_NOT_ARCHITECT); R32's refusal of an agent's move of a person's decision, an
-// answered ask's `:::ask` block or a decision a person decided (409 ANSWERED_ASK_KEPT); then,
-// under the owner locks (lockNodeRouteOwners), a placement revision that moved (412); a parent
-// inside the moving subtree, a parent outside the issue's own tree, and a node that reads its issue
-// from its own row moved under a node of an issue below (each 400 INVALID_POINTER); a parent that
-// is, or stands under, the node of a document a removal could take (409
-// PARENT_DOCUMENT_REMOVABLE); a parent the walk of its issue does not reach (409
-// PARENT_NOT_REACHED); an after that is no ranked sibling of the node's band (400
-// INVALID_POINTER); and last, under the room locks, a text move that would leave a callout or a
-// list item with no block of its own (409 CONTAINER_WOULD_EMPTY), or a text the document's schema
-// cannot hold where the move puts it (400 INVALID_POINTER). A refused move stores nothing.
+// (428 PRECONDITION_REQUIRED); then, under the owner locks (lockNodeRouteOwners), R28's writer
+// check on a requirement, a criterion or a check (403 DOCUMENT_WRITER_NOT_ARCHITECT), which reads
+// the issue's chain under the issue's owner lock as every writer check does, R32's refusal of an
+// agent's move of a person's decision, an answered ask's `:::ask` block or a decision a person
+// decided (409 ANSWERED_ASK_KEPT), a placement revision that moved (412); a parent inside the
+// moving subtree, a parent outside the issue's own tree, and a node that reads its issue from its
+// own row moved under a node of an issue below (each 400 INVALID_POINTER); a parent that is, or
+// stands under, the node of a document a removal could take (409 PARENT_DOCUMENT_REMOVABLE); a
+// parent the walk of its issue does not reach (409 PARENT_NOT_REACHED); an after that is no ranked
+// sibling of the node's band (400 INVALID_POINTER); and last, under the room locks, a text move that
+// would leave a callout or a list item with no block of its own (409 CONTAINER_WOULD_EMPTY), or a
+// text the document's schema cannot hold where the move puts it (400 INVALID_POINTER). A refused
+// move stores nothing.
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -78,11 +80,11 @@ const (
 	// codeParentDocumentRemovable is a parent that is, or stands under, the node of a document a
 	// removal could take, under which the node moved may not stand.
 	codeParentDocumentRemovable = "PARENT_DOCUMENT_REMOVABLE"
-	// codeContainerWouldEmpty is a move whose text would leave a callout or a list item with no
+	// codeContainerWouldEmpty is a move or a delete whose text would leave a container with no
 	// block of its own.
 	codeContainerWouldEmpty = "CONTAINER_WOULD_EMPTY"
-	// codePreconditionRequired is a move with no If-Match, and codePreconditionFailed one whose
-	// tag is not the node's placement_seq.
+	// codePreconditionRequired is a move or a delete with no If-Match, and codePreconditionFailed
+	// one whose tag is not the node's placement_seq.
 	codePreconditionRequired = "PRECONDITION_REQUIRED"
 	codePreconditionFailed   = "PRECONDITION_FAILED"
 )
@@ -162,10 +164,10 @@ func moveNodeOf(node model.GraphNode, end storedEnd, address string) moveNode {
 	}
 }
 
-// moveNodeKinds are the kinds the route moves no node of: an ask, a comment and a message, and a
+// unmovableKinds are the kinds the route moves no node of: an ask, a comment and a message, and a
 // block of one, each of whose part_of follows its own row (R7).
 var unmovableKinds = []string{graphstore.KindAsk, graphstore.KindComment, graphstore.KindMessage,
-	graphstore.KindAsk + "_block", graphstore.KindComment + "_block", graphstore.KindMessage + "_block"}
+	refs.ItemAsk.BlockKind(), refs.ItemComment.BlockKind(), refs.ItemMessage.BlockKind()}
 
 // moveNodeRoute is PATCH /api/v1/issues/{key}/nodes/{id}: the move of the node {id} names under the
 // node parent names, among its siblings where after names one, by the caller (node_move.go's head).
@@ -180,8 +182,11 @@ func (s *server) moveNodeRoute(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(body, &members); err != nil {
+	// The members the body names, read again off its bytes as replaceFieldsRefusal reads them: the
+	// decoder stops after the one value readJSONBody took, which a closing bracket or brace may
+	// follow.
+	var members map[string]jsonMember
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&members); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read the move's members: %w", err))
 		return
 	}
@@ -197,13 +202,7 @@ func (s *server) moveNodeRoute(w http.ResponseWriter, r *http.Request) {
 	case afterNamed && input.After != nil && *input.After == "":
 		shape = errorf(http.StatusBadRequest, codeMoveInput, "after names no node: give the store address of a ranked sibling, or null to stand first")
 	}
-	person := docs.CallerIsPerson(proving)
-	var writer model.Actor
-	if person {
-		writer, ok = s.actingPerson(w, resolved)
-	} else {
-		writer, ok = s.requireActor(w, resolved, input.Actor)
-	}
+	writer, person, ok := s.nodeRouteWriter(w, proving, resolved, input.Actor)
 	if !ok {
 		return
 	}
@@ -216,12 +215,32 @@ func (s *server) moveNodeRoute(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var drained []model.Event
-	for _, issue := range marked {
-		drained = append(drained, s.deps.Docs.DrainOwedQueries(r.Context(), issue)...)
-	}
-	s.publish(r.Context(), append(appendedEvents(published...), drained...)...)
+	s.publish(r.Context(), append(appendedEvents(published...), s.drainOwedQueries(r.Context(), marked)...)...)
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// nodeRouteWriter is who the write of a node route is made by, and whether its caller is a person
+// as R32 reads one (docs.CallerIsPerson): that person, acting (actingPerson), or else the actor the
+// request names (requireActor). Where neither resolves it answers the refusal itself, and false.
+func (s *server) nodeRouteWriter(w http.ResponseWriter, proving model.Actor, resolved *http.Request, supplied *model.Actor) (writer model.Actor, person, ok bool) {
+	person = docs.CallerIsPerson(proving)
+	if person {
+		writer, ok = s.actingPerson(w, resolved)
+	} else {
+		writer, ok = s.requireActor(w, resolved, supplied)
+	}
+	return writer, person, ok
+}
+
+// drainOwedQueries is the drain, after a node route's COMMIT, of the queries of each of issues its
+// batch marked owed, in their order (docs.Service.DrainOwedQueries), and answers the events the
+// drains appended, which the route publishes after its own.
+func (s *server) drainOwedQueries(ctx context.Context, issues []string) []model.Event {
+	var drained []model.Event
+	for _, issue := range issues {
+		drained = append(drained, s.deps.Docs.DrainOwedQueries(ctx, issue)...)
+	}
+	return drained
 }
 
 // nodeMoveRequest is one move as the route read its request: the issue and the node's address,
@@ -317,18 +336,7 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 			"a move states the placement it read: send If-Match with the placement_seq of %s as a quoted entity tag, as the tree read answers it",
 			moved.named)
 	}
-	// R28: only a person or an architect of the issue moves a requirement, a criterion or a check.
-	if err := refuseSpecWriterOfNode(ctx, tx, specWriter{actor: move.writer, person: move.person}, move.key, storedEnd{kind: moved.stored, id: moved.id}, moved.named); err != nil {
-		return nodeMoved{}, nil, nil, err
-	}
-	// R32: an agent moves no person's decision: the :::ask block node of an answered ask, or a
-	// decision a person decided.
-	if !move.person {
-		if err := refusePersonDecisionMove(ctx, tx, moved); err != nil {
-			return nodeMoved{}, nil, nil, err
-		}
-	}
-	current, held, err := currentPlacement(ctx, tx, moved)
+	current, seq, err := currentPlacement(ctx, tx, moved)
 	if err != nil {
 		return nodeMoved{}, nil, nil, err
 	}
@@ -338,7 +346,7 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 	switch {
 	case named != nil:
 		parent = *named
-	case !held:
+	case seq == nil:
 		return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeMoveInput,
 			"the %s %s stands under no node, so a move that keeps its parent has none to keep: name parent", moved.word(), moved.named)
 	}
@@ -352,6 +360,20 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 	})
 	if err != nil {
 		return nodeMoved{}, nil, nil, err
+	}
+	// R28: only a person or an architect of the issue moves a requirement, a criterion or a check.
+	// The check reads the issue's chain under the owner locks, as every writer check does
+	// (refuseSpecWriterOfNode), so no write of the issue's role holders, labels or parent commits
+	// between it and the move.
+	if err := refuseSpecWriterOfNode(ctx, tx, specWriter{actor: move.writer, person: move.person}, move.key, storedEnd{kind: moved.stored, id: moved.id}, moved.named); err != nil {
+		return nodeMoved{}, nil, nil, err
+	}
+	// R32: an agent moves no person's decision: the :::ask block node of an answered ask, or a
+	// decision a person decided.
+	if !move.person {
+		if err := refusePersonDecisionMove(ctx, tx, moved); err != nil {
+			return nodeMoved{}, nil, nil, err
+		}
 	}
 	if !matchesPlacement(move.tags, read.placementSeq) {
 		return nodeMoved{}, nil, nil, errorf(http.StatusPreconditionFailed, codePreconditionFailed,
@@ -369,9 +391,11 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 			return nodeMoved{}, nil, nil, nodeNotFound(move.key, move.id)
 		}
 	}
-	reparents := read.parentKind != parent.stored || read.parentID != parent.id
+	// The part_of a move writes names the parent as a tuple names its far end (farEndOf): a finding
+	// as lens_block, as the reasoning routes and every read of an edge into a finding name it.
+	reparents := read.parentKind != parent.kind || read.parentID != parent.id
 	if reparents {
-		if err := s.refuseMoveParent(ctx, tx, move.key, moved, parent, read); err != nil {
+		if err := refuseMoveParent(ctx, tx, move.key, moved, parent, read); err != nil {
 			return nodeMoved{}, nil, nil, err
 		}
 	}
@@ -384,11 +408,13 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 		return nodeMoved{}, nil, nil, err
 	}
 	var published []*model.Event
+	textChanged := false
 	if block != nil {
-		event, err := s.moveBlockText(documentCtx, tx, ledger, move, moved, parent, block, placed)
+		event, changed, err := s.moveBlockText(documentCtx, tx, ledger, move, moved, parent, block, placed)
 		if err != nil {
 			return nodeMoved{}, nil, nil, err
 		}
+		textChanged = changed
 		if event != nil {
 			published = append(published, event)
 		}
@@ -401,13 +427,13 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 	}
 	write := moveWrite{
 		moved: moved, from: storedEnd{kind: read.parentKind, id: read.parentID}, to: parent,
-		reparents: reparents, rank: placed.rank, ranked: placed.ranked, stored: block != nil && block.placement != refs.PlacementStored,
+		reparents: reparents, rank: placed.rank, stored: block != nil && block.placement != refs.PlacementStored,
 		block: block, at: at, writer: move.writer, marks: marks,
 	}
-	seq := read.placementSeq
+	placement := read.placementSeq
 	marked := map[string]*bool{}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		queueNodeMove(b, write, marked, &seq)
+		queueNodeMove(b, write, marked, &placement)
 		return nil
 	}); err != nil {
 		return nodeMoved{}, nil, nil, err
@@ -415,20 +441,14 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 	if err := ledger.Commit(ctx); err != nil {
 		return nodeMoved{}, nil, nil, err
 	}
-	if block != nil && block.textChanged {
+	if textChanged {
 		s.deps.Docs.ScheduleSettlement(block.document)
 	}
-	var drain []string
-	for _, issue := range marks {
-		if took := marked[issue]; took != nil && *took {
-			drain = append(drain, issue)
-		}
+	answer := nodeMoved{Parent: parent.address(), After: placed.follows}
+	if placement != nil {
+		answer.PlacementSeq = *placement
 	}
-	answer := nodeMoved{Parent: parent.address(), After: placed.follows, PlacementSeq: 0}
-	if seq != nil {
-		answer.PlacementSeq = *seq
-	}
-	return answer, published, drain, nil
+	return answer, published, takenMarks(marks, marked), nil
 }
 
 // kindWord is a node's kind as a refusal names it: a finding for a lens's block, the kind itself
@@ -457,7 +477,7 @@ func matchesPlacement(tags []string, seq *int64) bool {
 	}
 	want := `"` + strconv.FormatInt(*seq, 10) + `"`
 	for _, header := range tags {
-		for _, tag := range strings.Split(header, ",") {
+		for tag := range strings.SplitSeq(header, ",") {
 			if strings.TrimSpace(tag) == want {
 				return true
 			}
@@ -495,21 +515,21 @@ var currentPlacementStatement = `
 	where newest.asserted
 	order by newest.seq desc limit 1`
 
-// currentPlacement is the node moved stands under now, as a far end, and whether it stands under
-// any.
-func currentPlacement(ctx context.Context, q queryer, moved moveNode) (moveNode, bool, error) {
+// currentPlacement is the node moved stands under now, as a far end, and the seq of its current
+// part_of, its placement_seq: nil where it stands under none.
+func currentPlacement(ctx context.Context, q queryer, moved moveNode) (moveNode, *int64, error) {
 	var parent moveNode
 	var seq int64
 	err := q.QueryRow(ctx, currentPlacementStatement, moved.stored, moved.id).Scan(&parent.kind, &parent.id, &seq)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return moveNode{}, false, nil
+		return moveNode{}, nil, nil
 	}
 	if err != nil {
-		return moveNode{}, false, fmt.Errorf("read where %s stands: %w", moved.named, err)
+		return moveNode{}, nil, fmt.Errorf("read where %s stands: %w", moved.named, err)
 	}
 	parent.stored = refs.StoredKindOf(parent.kind)
 	parent.named = parent.address()
-	return parent, true, nil
+	return parent, &seq, nil
 }
 
 // goneParentStatement reads, of the node the store keys as $1 and $2, which every read answers as
@@ -521,8 +541,7 @@ var goneParentStatement = `
 	  and ` + refs.VisibleGoneRow("held", "$3")
 
 // orphanedDocumentStatement reads whether the store holds a node of the document whose ref_key is
-// $1, not gone, at an address no artifacts row holds, as graphcensus's orphanedDocumentNode reads
-// one: a document a removal took the row of.
+// $1, not gone, at an address no artifacts row holds: a document a removal took the row of.
 var orphanedDocumentStatement = `
 	select true from graph_nodes n
 	where n.kind = '` + graphstore.KindArtifact + `' and n.id = $1 and n.state <> '` + graphstore.StateGone + `'
@@ -539,17 +558,15 @@ func findMoveParent(ctx context.Context, q queryer, who model.Actor, address str
 	if err != nil {
 		return moveNode{}, err
 	}
-	notFound := errorf(http.StatusNotFound, "NOT_FOUND", "no node %q to stand under", address)
 	if !ok {
-		return moveNode{}, notFound
+		return moveNode{}, noMoveParent(address)
 	}
 	node, found, err := refs.Node(ctx, q, who, kind, id, true)
 	if err != nil {
 		return moveNode{}, err
 	}
 	if found {
-		end := farEndOf(node, address)
-		return moveNode{kind: end.kind, stored: refs.StoredKindOf(end.kind), id: end.id, named: cmp.Or(node.Ref, address)}, nil
+		return moveNodeOf(node, farEndOf(node, address), address), nil
 	}
 	parent := moveNode{kind: kind, stored: refs.StoredKindOf(kind), id: id, named: address}
 	var held bool
@@ -569,7 +586,12 @@ func findMoveParent(ctx context.Context, q queryer, who model.Actor, address str
 			return moveNode{}, fmt.Errorf("read whether %s is a document with no row: %w", address, err)
 		}
 	}
-	return moveNode{}, notFound
+	return moveNode{}, noMoveParent(address)
+}
+
+// noMoveParent is the 404 NOT_FOUND of a move's parent address that names no node.
+func noMoveParent(address string) error {
+	return errorf(http.StatusNotFound, "NOT_FOUND", "no node %q to stand under", address)
 }
 
 // moveSide is one node a move's read reaches: the kind and the id its tuples name it by, how far
@@ -583,9 +605,10 @@ type moveSide struct {
 }
 
 // moveRead is what a move reads under its owner locks, and what it reads to learn which locks to
-// take: the moved node and its part_of subtree (beneath, the moved node first), the parent and its
-// part_of chain (above, the parent first), the far end of the moved node's current part_of, and
-// its placement_seq (readMove), nil where it holds none.
+// take: the moved node and its part_of subtree (beneath, in the read's order, which puts the moved
+// node first only where its kind sorts first), the parent and its part_of chain (above, the parent
+// first), the far end of the moved node's current part_of, and its placement_seq (readMove), nil
+// where it holds none.
 type moveRead struct {
 	beneath, above       []moveSide
 	parentKind, parentID string
@@ -595,9 +618,11 @@ type moveRead struct {
 // issues are the issues the read's nodes stand under, each once, in the order the read met them.
 func (read moveRead) issues() []string {
 	var issues []string
-	for _, side := range slices.Concat(read.beneath, read.above) {
-		if side.issue != "" && !slices.Contains(issues, side.issue) {
-			issues = append(issues, side.issue)
+	for _, sides := range [][]moveSide{read.beneath, read.above} {
+		for _, side := range sides {
+			if side.issue != "" && !slices.Contains(issues, side.issue) {
+				issues = append(issues, side.issue)
+			}
 		}
 	}
 	return issues
@@ -611,9 +636,12 @@ func (read moveRead) parentIssue() string {
 	return read.above[0].issue
 }
 
-// standingKind reports whether a node the graph addresses as kind reads its issue off its part_of
-// chain (refs.StandingKinds): a lens, a finding, a risk or a constraint.
-func standingKind(kind string) bool { return slices.Contains(refs.StandingKinds(), kind) }
+// standingNodeKinds are the kinds whose node reads its issue off its part_of chain
+// (refs.StandingKinds): a lens, a finding, a risk and a constraint.
+var standingNodeKinds = refs.StandingKinds()
+
+// standingKind reports whether a node the graph addresses as kind is of standingNodeKinds.
+func standingKind(kind string) bool { return slices.Contains(standingNodeKinds, kind) }
 
 // moveReadStatement is the read of a move of the node the store keys as $1 and $2 under the node
 // its tuples name $3 and $4: the moved node and every node its current part_of tuples hold beneath
@@ -683,15 +711,11 @@ func readMove(ctx context.Context, q queryer, moved, parent moveNode) (moveRead,
 	if err := rows.Err(); err != nil {
 		return moveRead{}, fmt.Errorf("read the subtree of %s and the chain of %s: %w", moved.named, parent.named, err)
 	}
-	var seq int64
-	err = q.QueryRow(ctx, currentPlacementStatement, moved.stored, moved.id).Scan(&read.parentKind, &read.parentID, &seq)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-	case err != nil:
-		return moveRead{}, fmt.Errorf("read where %s stands: %w", moved.named, err)
-	default:
-		read.placementSeq = &seq
+	placed, seq, err := currentPlacement(ctx, q, moved)
+	if err != nil {
+		return moveRead{}, err
 	}
+	read.parentKind, read.parentID, read.placementSeq = placed.kind, placed.id, seq
 	if read.placementSeq == nil && moved.stored == graphstore.KindIssue {
 		if err := q.QueryRow(ctx, childOfPlacementStatement, moved.id).Scan(&read.placementSeq); err != nil {
 			return moveRead{}, fmt.Errorf("read the child_of %s hangs from: %w", moved.named, err)
@@ -773,9 +797,9 @@ func lockNodeRouteOwners[T any](ctx context.Context, tx pgx.Tx, key string, read
 // take, under which only a lens, a finding or a risk stand (refuseRemovableParent, 409
 // PARENT_DOCUMENT_REMOVABLE); and last a parent the walk of the issue it stands under does not
 // reach (refuseUnreachedParent, 409 PARENT_NOT_REACHED).
-func (s *server) refuseMoveParent(ctx context.Context, tx pgx.Tx, key string, moved, parent moveNode, read moveRead) error {
+func refuseMoveParent(ctx context.Context, tx pgx.Tx, key string, moved, parent moveNode, read moveRead) error {
 	for _, node := range read.beneath {
-		if node.kind == parent.stored && node.id == parent.id {
+		if refs.StoredKindOf(node.kind) == parent.stored && node.id == parent.id {
 			return errorf(http.StatusBadRequest, codeInvalidPointer,
 				"the move of %s under %s would make a cycle: %s stands in the subtree of %s, so it cannot hold it",
 				moved.named, parent.named, parent.named, moved.named)
@@ -860,17 +884,11 @@ func refuseRemovableParent(ctx context.Context, q queryer, moved, parent moveNod
 	}
 	admitted := []string{graphstore.KindLens}
 	if at > 0 {
-		for _, between := range read.above[:at] {
-			if !slices.Contains(reasoningKinds, between.kind) {
-				admitted = nil
-				break
-			}
-		}
-		if admitted != nil && read.above[at-1].kind != graphstore.KindLens {
+		admitted = reasoningKinds
+		if read.above[at-1].kind != graphstore.KindLens || slices.ContainsFunc(read.above[:at], func(between moveSide) bool {
+			return !slices.Contains(reasoningKinds, between.kind)
+		}) {
 			admitted = nil
-		}
-		if admitted != nil {
-			admitted = reasoningKinds
 		}
 	}
 	where := fmt.Sprintf("%s, which is or stands under the node of the document %s, a document a removal could take", parent.named, document.id)
@@ -879,7 +897,10 @@ func refuseRemovableParent(ctx context.Context, q queryer, moved, parent moveNod
 			"the %s %s may not stand under %s: a removal of the document would leave it live behind no row, and only %s stands there, so nothing was moved",
 			moved.word(), moved.named, where, admittedWords(admitted))
 	}
-	for _, node := range read.beneath[1:] {
+	for _, node := range read.beneath {
+		if refs.StoredKindOf(node.kind) == moved.stored && node.id == moved.id {
+			continue
+		}
 		if !slices.Contains(reasoningKinds, node.kind) {
 			return errorf(http.StatusConflict, codeParentDocumentRemovable,
 				"the %s %s may stand under %s, but its subtree holds a node of a kind that may not stand there: only a lens, a finding or a risk stands under such a document, so nothing was moved",
@@ -971,12 +992,11 @@ func moveSiblings(ctx context.Context, q queryer, parent moveNode) ([]moveSiblin
 }
 
 // movePlace is where a move puts its node among the ranked children of its parent: the rank it
-// gives it and whether it holds one, the ranked sibling it now follows (nil for none), and the
-// ranked children of the parent in their new order, the moved node among them, each with its block
-// and its document.
+// gives it, "" for a node that holds none, the ranked sibling it now follows (nil for none), and
+// the ranked children of the parent in their new order, the moved node among them, each with its
+// block and its document.
 type movePlace struct {
 	rank     string
-	ranked   bool
 	follows  *string
 	siblings []moveSibling
 }
@@ -1022,11 +1042,12 @@ func placeAmongSiblings(ctx context.Context, q queryer, move nodeMoveRequest, mo
 		if err != nil {
 			return movePlace{}, err
 		}
-		if ok && refs.StoredKindOf(kind) == moved.stored && id == moved.id {
+		stored := refs.StoredKindOf(kind)
+		if ok && stored == moved.stored && id == moved.id {
 			return movePlace{}, refuseAfter("it is the moved node itself")
 		}
 		lower = slices.IndexFunc(siblings, func(sibling moveSibling) bool {
-			return ok && sibling.kind == refs.StoredKindOf(kind) && sibling.id == id
+			return ok && sibling.kind == stored && sibling.id == id
 		})
 		if lower < 0 {
 			return movePlace{}, refuseAfter(fmt.Sprintf("it is no ranked child of %s: after names a node that holds a rank and stands under the parent the moved node has once the move is taken", parent.named))
@@ -1063,7 +1084,7 @@ func placeAmongSiblings(ctx context.Context, q queryer, move nodeMoveRequest, mo
 	if next := lower + 1; next < len(siblings) && inBand(siblings[next]) {
 		above = siblings[next].rank
 	}
-	place := movePlace{rank: rank.Between(below, above), ranked: true}
+	place := movePlace{rank: rank.Between(below, above)}
 	if lower >= 0 {
 		follows := storeAddress(graphstore.AddressKind(siblings[lower].kind, siblings[lower].id), siblings[lower].id)
 		place.follows = &follows
@@ -1082,14 +1103,12 @@ func afterWords(after *string) string {
 
 // movedBlock is what a move reads of a block of a document it moves: the artifact whose row holds
 // it (the document, or an issue room's tree), the document whose text holds it, that document's
-// ref_key and band, the block's id and type, the placement its node holds, and whether the move
-// changed its text.
+// ref_key and band, the block's id and type, and the placement its node holds.
 type movedBlock struct {
 	artifact, document, refKey string
 	band                       byte
 	issue                      string
 	id, typ, placement         string
-	textChanged                bool
 }
 
 // movedBlockStatement reads movedBlock of the block whose node the store keys as $1 and $2.
@@ -1125,20 +1144,19 @@ func readMovedBlock(ctx context.Context, q queryer, moved moveNode) (*movedBlock
 	return &block, nil
 }
 
-// parentAttributeTypes are the typed blocks whose type declares the parent attribute
-// (pmdoc.ParentAttribute), whose text a move makes name the block's new parent.
-var parentAttributeTypes = []string{"requirement", "criterion", "check", "plan_task"}
-
 // moveBlockText writes the text of the move of block where Markdown can show its new place, and
 // a typed block's parent attribute, into the document that holds it (docs.Service.MoveBlockText),
 // under the room locks, and, where that changed the document, records the move's stored block in
 // the transaction (docs.Service.HoldStoredBlock) and writes the document's version, whose
-// artifact.version it answers, as the edit route writes one (SnapshotVersion,
-// commitArtifactVersionEvent), which moves the document's open approval request. The text nests
+// artifact.version it answers, as the edit route writes one (writeNodeRouteVersion), which moves
+// the document's open approval request; changed is that it changed the document. The text nests
 // under the document's own top level - the issue's node for an issue's spec, Verification, plan
 // or tree fragment, the document's node for any other - and under a block of the same document's
-// text; under any other parent it keeps its place (pmdoc.NodeTextMove.Nest).
-func (s *server) moveBlockText(documentCtx context.Context, tx pgx.Tx, ledger *docs.Ledger, move nodeMoveRequest, moved, parent moveNode, block *movedBlock, placed movePlace) (*model.Event, error) {
+// text; under any other parent it keeps its place (pmdoc.NodeTextMove.Nest). A move whose body
+// names a parent makes the parent attribute of a typed block whose type declares one name that
+// parent, or takes it out where the attribute can name none; a move that keeps the parent keeps
+// the attribute as it stands.
+func (s *server) moveBlockText(documentCtx context.Context, tx pgx.Tx, ledger *docs.Ledger, move nodeMoveRequest, moved, parent moveNode, block *movedBlock, placed movePlace) (event *model.Event, changed bool, err error) {
 	text := pmdoc.NodeTextMove{Block: block.id}
 	top := graphstore.KindArtifact
 	topID := block.refKey
@@ -1156,7 +1174,7 @@ func (s *server) moveBlockText(documentCtx context.Context, tx pgx.Tx, ledger *d
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 		case err != nil:
-			return nil, fmt.Errorf("read the document of %s: %w", parent.named, err)
+			return nil, false, fmt.Errorf("read the document of %s: %w", parent.named, err)
 		case document == block.document:
 			text.Nest, text.Container = true, blockID
 		}
@@ -1170,7 +1188,7 @@ func (s *server) moveBlockText(documentCtx context.Context, tx pgx.Tx, ledger *d
 			text.Siblings = append(text.Siblings, sibling.block)
 		}
 	}
-	if slices.Contains(parentAttributeTypes, block.typ) {
+	if move.parent != nil {
 		text.RewriteParent = true
 		switch parent.kind {
 		case refs.BlockNodeKind, graphstore.KindAsk, graphstore.KindComment, graphstore.KindMessage:
@@ -1179,36 +1197,44 @@ func (s *server) moveBlockText(documentCtx context.Context, tx pgx.Tx, ledger *d
 			}
 		}
 	}
-	changed, err := s.deps.Docs.MoveBlockText(documentCtx, block.document, text, move.writer)
+	changed, err = s.deps.Docs.MoveBlockText(documentCtx, block.document, text, move.writer)
 	var emptied *pmdoc.ContainerEmptiedError
 	if errors.As(err, &emptied) {
 		owner, _, _ := strings.Cut(moved.id, "#")
 		kind := strings.ReplaceAll(emptied.Type, "_", " ")
-		return nil, errorf(http.StatusConflict, codeContainerWouldEmpty,
+		return nil, false, errorf(http.StatusConflict, codeContainerWouldEmpty,
 			"the move of %s would leave the %s %s#%s with no block of its own: %s; nothing was moved, and the %s itself moves or goes whole",
 			moved.named, kind, owner, emptied.Container, emptied.Error(), kind)
 	}
 	var unplaced *pmdoc.TextPlaceError
 	if errors.As(err, &unplaced) {
-		return nil, errorf(http.StatusBadRequest, codeInvalidPointer,
+		return nil, false, errorf(http.StatusBadRequest, codeInvalidPointer,
 			"the move of %s under %s is refused: %s, so nothing was moved", moved.named, parent.named, unplaced.Error())
 	}
 	if err != nil || !changed {
-		return nil, err
+		return nil, false, err
 	}
-	block.textChanged = true
 	if err := s.deps.Docs.HoldStoredBlock(documentCtx, moved.id, refs.StoredBlock{ParentKind: parent.stored, ParentID: parent.id, Rank: placed.rank}); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	written, err := s.deps.Docs.SnapshotVersion(docs.WithDeferredBlockIndex(documentCtx), block.document, move.writer)
+	event, err = s.writeNodeRouteVersion(documentCtx, docs.WithDeferredBlockIndex(documentCtx), tx, ledger, block.document, move.writer)
+	return event, true, err
+}
+
+// writeNodeRouteVersion writes the version of the document a node route changed the text of,
+// through versionCtx (docs.Service.SnapshotVersion), and, where it wrote one, the artifact.version
+// of it (commitArtifactVersionEvent), which moves the document's open approval request, and which
+// it answers: nil where no version was written.
+func (s *server) writeNodeRouteVersion(documentCtx, versionCtx context.Context, tx pgx.Tx, ledger *docs.Ledger, document string, writer model.Actor) (*model.Event, error) {
+	written, err := s.deps.Docs.SnapshotVersion(versionCtx, document, writer)
 	if err != nil || !written.Wrote {
 		return nil, err
 	}
-	artifact, err := loadArtifactRowByID(documentCtx, tx, block.document)
+	artifact, err := loadArtifactRowByID(documentCtx, tx, document)
 	if err != nil {
 		return nil, err
 	}
-	return s.commitArtifactVersionEvent(documentCtx, tx, ledger, ownerForArtifact(artifact), move.writer, artifact.ID, artifact.Name, written, nil)
+	return s.commitArtifactVersionEvent(documentCtx, tx, ledger, ownerForArtifact(artifact), writer, artifact.ID, artifact.Name, written, nil)
 }
 
 // moveWrite is the write a move makes once every rule passed, at graphstore.NoEvent, dated at and
@@ -1224,7 +1250,6 @@ type moveWrite struct {
 	to        moveNode
 	reparents bool
 	rank      string
-	ranked    bool
 	stored    bool
 	block     *movedBlock
 	at        time.Time
@@ -1232,11 +1257,11 @@ type moveWrite struct {
 	marks     []string
 }
 
-// queueNodeMove puts write on b: its tuples (graphstore.QueueWrite), the projection row of a
-// block, the marks, after the tuples so their sequence is the last one the write drew, the read of
-// the placement_seq the new part_of took, and the head rows of what it states
-// (graphstore.QueueHeads). marked holds, for each issue of marks, whether its mark took; seq the
-// new placement_seq.
+// queueNodeMove puts write on b: its tuples (graphstore.QueueWrite), the new part_of naming the
+// parent as a tuple names its far end (farEndOf), the projection row of a block, the marks, after
+// the tuples so their sequence is the last one the write drew (queueQueryMarks), the read of the
+// placement_seq the new part_of took, and the head rows of what it states (graphstore.QueueHeads).
+// marked holds, for each issue of marks, whether its mark took; seq the new placement_seq.
 func queueNodeMove(b *store.WriteBatch, write moveWrite, marked map[string]*bool, seq **int64) {
 	tuple := func(kind, toKind, toID string, asserted bool) graphstore.Tuple {
 		return graphstore.Tuple{
@@ -1249,9 +1274,9 @@ func queueNodeMove(b *store.WriteBatch, write moveWrite, marked map[string]*bool
 		if write.from.kind != "" {
 			tuples = append(tuples, tuple(graphstore.TuplePartOf, write.from.kind, write.from.id, false))
 		}
-		tuples = append(tuples, tuple(graphstore.TuplePartOf, write.to.stored, write.to.id, true))
+		tuples = append(tuples, tuple(graphstore.TuplePartOf, write.to.kind, write.to.id, true))
 	}
-	if write.ranked {
+	if write.rank != "" {
 		tuples = append(tuples, tuple(refs.AttributeRank, graphstore.KindValue, write.rank, true))
 	}
 	if write.stored {
@@ -1264,7 +1289,7 @@ func queueNodeMove(b *store.WriteBatch, write moveWrite, marked map[string]*bool
 	if write.block != nil && write.reparents {
 		var parent *string
 		if write.to.kind == refs.BlockNodeKind {
-			if owner, id, cut := strings.Cut(write.to.id, "#"); cut && owner+"#"+id == write.to.id && strings.HasPrefix(write.moved.id, owner+"#") {
+			if owner, id, cut := strings.Cut(write.to.id, "#"); cut && strings.HasPrefix(write.moved.id, owner+"#") {
 				parent = &id
 			}
 		}
@@ -1273,16 +1298,12 @@ func queueNodeMove(b *store.WriteBatch, write moveWrite, marked map[string]*bool
 			where node_kind = $1 and node_address = $2 and parent_block_id is distinct from $3`,
 			write.moved.stored, write.moved.id, parent)
 	}
-	for _, issue := range write.marks {
-		took := false
-		marked[issue] = &took
-		docs.QueueQueryMark(b, issue, graphstore.NoEvent, &took)
-	}
+	queueQueryMarks(b, write.marks, marked)
 	if write.reparents {
 		b.Queue("read the placement_seq of "+write.moved.id, `
 			select max(t.seq) from graph_tuples t
 			where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = $4 and t.to_id = $5 and t.asserted`,
-			write.moved.stored, write.moved.id, graphstore.TuplePartOf, write.to.stored, write.to.id).QueryRow(func(row pgx.Row) error {
+			write.moved.stored, write.moved.id, graphstore.TuplePartOf, write.to.kind, write.to.id).QueryRow(func(row pgx.Row) error {
 			var placement int64
 			if err := row.Scan(&placement); err != nil {
 				return err
@@ -1292,4 +1313,27 @@ func queueNodeMove(b *store.WriteBatch, write moveWrite, marked map[string]*bool
 		})
 	}
 	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+}
+
+// queueQueryMarks queues on b the mark of the queries of each issue of marks owed, at
+// graphstore.NoEvent, which a converted issue takes (docs.QueueQueryMark), and holds in marked, for
+// each, whether its mark took once the batch ran.
+func queueQueryMarks(b *store.WriteBatch, marks []string, marked map[string]*bool) {
+	for _, issue := range marks {
+		took := false
+		marked[issue] = &took
+		docs.QueueQueryMark(b, issue, graphstore.NoEvent, &took)
+	}
+}
+
+// takenMarks is each issue of marks whose mark took, as queueQueryMarks held it in marked, in the
+// order of marks: the issues whose queries the route drains after its COMMIT.
+func takenMarks(marks []string, marked map[string]*bool) []string {
+	var taken []string
+	for _, issue := range marks {
+		if took := marked[issue]; took != nil && *took {
+			taken = append(taken, issue)
+		}
+	}
+	return taken
 }
