@@ -1,0 +1,178 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "startWaitsForPod",
+        "startWaitsForPod.*",
+        "stepRole"
+      ],
+      "addValues": {
+        "architect.pendingTask.phase": [
+          "step"
+        ],
+        "heldFrom": [
+          "step"
+        ],
+        "phase": [
+          "step"
+        ],
+        "workers.*.claim.pendingTask.phase": [
+          "step"
+        ]
+      }
+    },
+    {
+      "answer": "register",
+      "removeValues": {
+        "role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.startWaitsForPod",
+        "issues.*.startWaitsForPod.*",
+        "issues.*.stepRole"
+      ],
+      "addValues": {
+        "issues.*.architect.pendingTask.phase": [
+          "step"
+        ],
+        "issues.*.heldFrom": [
+          "step"
+        ],
+        "issues.*.phase": [
+          "step"
+        ],
+        "issues.*.workers.*.claim.pendingTask.phase": [
+          "step"
+        ]
+      },
+      "removeValues": {
+        "paused.waitsOn.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ],
+        "strandedClaims.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ],
+        "wakesWaiting.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/phase/backward",
+      "addFieldPaths": [
+        "returnTo"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "strandedClaims.*.role",
+      "values": [],
+      "open": true
+    },
+    {
+      "answer": "state",
+      "keyPath": "wakesWaiting.*.role",
+      "values": [],
+      "open": true
+    },
+    {
+      "answer": "state",
+      "keyPath": "paused.waitsOn.*.role",
+      "values": [],
+      "open": true
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.heldFrom",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "heldFrom",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "register",
+      "keyPath": "role",
+      "values": [],
+      "open": true
+    }
+  ]
+}

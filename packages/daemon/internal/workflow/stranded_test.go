@@ -122,6 +122,7 @@ var strandedNow = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 // that ran out of StrandedReleaseWake with no turn of the woken role is the pod that never came
 // back, and nothing else will take that wake again.
 func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *testing.T) {
+	t.Parallel()
 	issues := []record.Issue{
 		strandedIssue("LEGION-1", "LEGION-1", phase.Implementing),
 		strandedIssue("LEGION-2", "LEGION-2", phase.Testing),
@@ -188,6 +189,7 @@ func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *tes
 // claim, so a queued start of that phase takes it out of the report, and a tree that does not run
 // strands nothing of its own.
 func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
+	t.Parallel()
 	until := time.Now().Add(time.Hour)
 	held := strandedIssue("LEGION-3", "LEGION-3", phase.Held)
 	held.Hold = &record.Hold{From: phase.Reviewing}
@@ -337,6 +339,7 @@ func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
 // `suspendedBy: released` on its row, so the report both names it and names its move as the
 // workflow start it needs, never as a pod still coming back from a wake.
 func TestStrandedLeavesOutTheWorkersTheRuleResumes(t *testing.T) {
+	t.Parallel()
 	issues := []record.Issue{
 		strandedIssue("LEGION-1", "LEGION-1", phase.Implementing),
 		strandedIssue("LEGION-2", "LEGION-2", phase.Testing),
@@ -410,6 +413,7 @@ func names(claims []supervise.Claim) []string {
 // A large fleet has hundreds of suspended claims after an operator action. Stranded reads their
 // queued starts in bounded batches rather than issuing one outbox and one claims query per role.
 func TestStrandedReadsRoleRunsInBatches(t *testing.T) {
+	t.Parallel()
 	const claimsCount = 401
 	store := &strandedStore{claims: map[claim.Token]supervise.Claim{}}
 	claims := make([]supervise.Claim, 0, claimsCount)

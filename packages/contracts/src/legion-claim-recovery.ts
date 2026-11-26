@@ -14,9 +14,9 @@ import { isStepRole } from "./legion-roles";
 
 const nonEmptyString = z.string().min(1);
 
-/** The role of a claim of an issue: one of Legion's six or a role of the deployment (contract
- * 297), a name of the step grammar but the controller's (`isStepRole`). `legion-api.ts` reads its
- * claims' roles through this one schema too. */
+/** The role of a claim of an issue: one of Legion's six or a role of the deployment (the deployment
+ * roles' contract entry), a name of the step grammar but the controller's (`isStepRole`).
+ * `legion-api.ts` reads its claims' roles through this one schema too. */
 export const legionStepRole = z.string().refine(isStepRole, {
   message: "a role of the step grammar, ^[a-z][a-z0-9-]{0,31}$, and not the controller",
 });
@@ -27,13 +27,13 @@ export const legionStepRole = z.string().refine(isStepRole, {
  * refusal of the controller's own claim, belongs to the operator's door, and this one never
  * gives it.
  *
- * `claim` (contract 298) names the claim by its token, as a notice of provider errors names it:
- * two claims of one issue can hold one role — the agent of a key on a step of another role,
- * beside that role's own claim of an earlier version of the plan, or two agents at two steps of
- * the role — and `issue` and `role` alone reach the one that works the role's step that started
- * last. The daemon refuses a token that is no claim of `issue` (`INVALID_CLAIM`) and a claim that
- * holds another role (`CLAIM_NOT_OF_ROLE`).
- * Leave it out for the step's worker: a daemon below 298 refuses the member as unknown.
+ * `claim` (the stranded token's contract entry) names the claim by its token, as a notice of
+ * provider errors names it: two claims of one issue can hold one role — the agent of a key on a
+ * step of another role, beside that role's own claim of an earlier version of the plan, or two
+ * agents at two steps of the role — and `issue` and `role` alone reach the one that works the
+ * role's step that started last. The daemon refuses a token that is no claim of `issue`
+ * (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`). Leave it out for
+ * the step's worker: a daemon below that entry refuses the member as unknown.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim

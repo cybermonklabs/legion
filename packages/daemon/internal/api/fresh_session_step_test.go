@@ -173,8 +173,8 @@ func TestAControllersFreshSessionWhoseStepMovesUnderItRestartsNoOtherAgentsStep(
 // Key a's agent, `…-implementer`, works the tester's step of LEGION-209, and the tester's own
 // claim of an earlier version of the plan, `…-tester`, is live beside it: two claims of one role.
 // A notice of provider errors names the tester's own claim by its token, and the controller asks a
-// fresh session of that claim (ClaimRequest.Claim, contract 298). The route reaches the claim the
-// body names: the tester's own claim is back in a new session, and key a's agent, the step's
+// fresh session of that claim (ClaimRequest.Claim, the stranded token's entry). The route reaches
+// the claim the body names: the tester's own claim is back in a new session, and key a's agent, the step's
 // worker, is left as it was, suspended on its session. The named claim works no step, so no start
 // of the tester's step is queued for it, and the answer says the phase was not restarted. Naming
 // no claim still reaches the step's worker. A body naming a claim of another issue, or a claim

@@ -1307,7 +1307,7 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	}
 	switch {
 	case handoff.Verdict == "":
-	case handoff.Role != "" && !claim.IsBuiltin(handoff.Role):
+	case claim.IsDeploymentRole(handoff.Role):
 		text += fmt.Sprintf(" Step %d (%s) %s: %s.", handoff.StepPlace, handoff.Role, reportedLabel, handoff.Verdict)
 		if summary := strings.TrimSpace(handoff.Summary); summary != "" {
 			text += " " + sentence(summary)

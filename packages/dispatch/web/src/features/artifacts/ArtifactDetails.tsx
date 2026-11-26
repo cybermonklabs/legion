@@ -204,6 +204,7 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
                 beforeContent.isError || afterContent.isError ? (
                   <p className={`text-sm ${dangerText}`}>Could not load versions to compare.</p>
                 ) : isText(beforeContent.data) && isText(afterContent.data) ? (
+                  // The exact characters a change swaps: the reading list's `change-view-diff`.
                   <ChangeView
                     after={afterContent.data.markdown}
                     before={beforeContent.data.markdown}

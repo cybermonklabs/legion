@@ -183,6 +183,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
 		},
 		{
+			Name: "private_name_rules_file", Default: "`LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, else no private-name rule runs", RequiredBy: "no",
+			Description: "The deployment's private-name rule file, in gitleaks' rule format, which the daemon reads and compiles at boot and hands to every launch, so that every role's leak guard refuses a name it matches in a write to a public repository; it overrides `LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, and a daemon of an earlier release refuses the key, so a deployment that may roll back sets the variable instead.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.PrivateNameRulesFile = v }),
+		},
+		{
 			Name: "provider_keys", Default: "the agents' Oh My Pi receives no provider credential", RequiredBy: "no",
 			Description: "The provider credentials every agent's Oh My Pi receives in its environment: each variable Oh My Pi reads mapped to the key of the providers Secret that holds it, or, under `runtime: tmux`, to a secretsd key or a `file:/abs/path` the daemon reads once at boot.",
 			Read:        reads(readProviderKeys, func(f *fileConfig, v []ProviderKey) { f.ProviderKeys = v }),
@@ -582,7 +587,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "projects.<KEY>.experiments.<NAME>", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",
-			Description: "Which of the project's new units the experiment draws: `off` none, `on` every one into `on_variant`, `random` a draw among the variants by weight; the draw is made once and the unit keeps it."},
+			Description: "The arm each of the project's new units is given: `off` no arm, `on` the one `on_variant` names, `random` one drawn among the variants by weight; the draw is made once and the unit keeps it."},
 		{Name: "unit", Default: "`tree`", RequiredBy: "no",
 			Description: "What the experiment draws one at a time: a whole `tree`, or each `issue` on its own."},
 		{Name: "roles", Default: "every issue role", RequiredBy: "no",

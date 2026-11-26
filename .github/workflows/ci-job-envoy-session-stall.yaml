@@ -65,6 +65,7 @@ jobs:
           cache: false
       # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's
       # e2e-local.sh does.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -74,6 +75,11 @@ jobs:
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts

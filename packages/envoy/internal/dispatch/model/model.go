@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -24,10 +25,27 @@ const (
 	ScopeApprove = "approve"
 )
 
-// Scopes is every OAuth scope this deployment knows, in the order a credential holding both
-// carries them: the whole set a person's own credential holds, and the set a mint gives a token
-// when its body names none. Read it, never write it — every such credential shares this one
-// slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
+// ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
+// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs it or ScopePerson to write a Legion
+// issue's status, to take the legion label off an issue, or to move a Legion issue out from
+// under every labelled issue, but for the status write of the architect of an issue above
+// (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
+// Dispatch reads it from the broker's answer (brokerTokenActor).
+//
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
+// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
+// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
+// is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
+// one string.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
+// in the order a credential holding both carries them: the whole set a person's own credential
+// holds, and the set a mint gives a token when its body names none. Read it, never write it —
+// every such credential shares this one slice, as every surface shares DISPATCH_SCOPES in
+// @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
 // ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
@@ -41,7 +59,8 @@ const ScopeRead = "read"
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
-// scopes that credential holds. A browser's cookie is the person themselves acting, so it names
+// scopes of Scopes that credential holds (api's actScopes: a Legion daemon's ScopeLegionStatus is
+// never recorded). A browser's cookie is the person themselves acting, so it names
 // no agent and carries none of this.
 //
 // Scopes is a snapshot of the credential as it stood at the act, and is never read back from the
@@ -73,6 +92,9 @@ func (a *ActorAct) Holds(scope string) bool {
 // which this package's callers and its tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
+	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
+	// alone where the broker granted it, which the broker does for a Legion daemon's own token
+	// only (brokerTokenActor). No credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -434,8 +456,15 @@ type Project struct {
 	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
 	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
 	// carries no member, so a client that does not know the member reads the same project.
-	DefaultRepo *string   `json:"default_repo,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	DefaultRepo *string `json:"default_repo,omitempty"`
+	// ProvenSessions is the project's setting that a session's credential must prove the
+	// session: when it is on, an architect's write of an issue's spec or Verification document
+	// passes only on a credential that proves the architect's session, and a role-holder
+	// publication only on one that proves legion-daemon:<project>
+	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
+	// present, so a reader never has to tell an absent setting from one that is off.
+	ProvenSessions bool      `json:"proven_sessions"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // The two visibilities a project has (projects.visibility). Every full member sees a public
@@ -621,16 +650,26 @@ var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepS
 // row rather than on a read shape of the api package's own (display_trees.go), because no event
 // payload carries a priority: `priority.updated` names the id and the change alone
 // (PriorityEventPayload).
+//
+// DescriptionTreeExact stands beside DescriptionTree, present exactly where it is. It is true
+// where Parse takes the description whole, so a writer's editor may take its markdown; the tree
+// still resets the attributes the server owns (pmdoc.ReadForDisplay), so an answered ask in it
+// draws open, and it is never a text to write back. It is false where Parse refuses a block of
+// the description or the whole of it - a block of HTML, a description past the element limit or
+// nested past the mark bound - which the tree draws as no write would store it
+// (pmdoc.DisplayExact): a writer's editor then shows the tree read-only, since an editor filled
+// from it and written back writes that reading over the text.
 type Priority struct {
-	ID              string      `json:"id"`
-	Title           string      `json:"title"`
-	Description     string      `json:"description"`
-	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
-	Owner           string      `json:"owner"`
-	Rank            string      `json:"rank"`
-	State           string      `json:"state"`
-	MadeAt          time.Time   `json:"made_at"`
-	MadeBy          Actor       `json:"made_by"`
+	ID                   string      `json:"id"`
+	Title                string      `json:"title"`
+	Description          string      `json:"description"`
+	DescriptionTree      DisplayTree `json:"description_tree,omitempty"`
+	DescriptionTreeExact *bool       `json:"description_tree_exact,omitempty" description:"Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is."`
+	Owner                string      `json:"owner"`
+	Rank                 string      `json:"rank"`
+	State                string      `json:"state"`
+	MadeAt               time.Time   `json:"made_at"`
+	MadeBy               Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
@@ -713,10 +752,11 @@ type WorkUnderNoPriority struct {
 	Issues    []PriorityIssue `json:"issues"`
 }
 
-// PriorityWorkParked is the second fault: an issue that advances a live priority and stands in
-// `backlog` or `icebox`. Count is every such issue; ByPriority counts them by priority id, an
-// issue advancing two priorities counted under each, so the counts may add to more than Count;
-// Issues carries the 50 moved there most recently.
+// PriorityWorkParked is the second fault: an open issue in `backlog` or `icebox` whose own row
+// names a live priority that no issue above it carries; a child that only inherits a priority, or
+// restates one an issue above it carries, is none. Count is every such issue; ByPriority counts
+// them by each priority so named, an issue naming two counted under each, so the counts may add
+// to more than Count; Issues carries the 50 moved there most recently.
 type PriorityWorkParked struct {
 	Count      int             `json:"count"`
 	ByPriority map[string]int  `json:"by_priority"`
@@ -1071,15 +1111,20 @@ type SearchAsk struct {
 	Resolution *AskResolution     `json:"resolution,omitempty"`
 }
 
-// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
-// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
-// payload gains a tree field. A search hit's ask and a person's answer history both answer with
-// it.
+// AskAnswerWithTree is an answer a read gives with the trees of its texts: its own text, and the
+// label of each option it chose. It is the read's own shape rather than fields on AskAnswer
+// itself: the answer is an event payload's shape, and no payload gains a tree field. A search
+// hit's ask, a person's answer history, an ask's thread and the ask itself all answer with it.
 type AskAnswerWithTree struct {
 	AskAnswer
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
 	TextTree DisplayTree `json:"text_tree,omitempty"`
+	// SelectedTrees is the ProseMirror tree each label of Selected is shown as, at that label's
+	// own index, present only for a caller that sent `Dispatch-Trees: 1` and only where Selected
+	// holds a label. A label is the label of an option the ask held when it was answered, which
+	// the ask's write stored the tree of; it may be one the ask has since renamed or removed.
+	SelectedTrees []DisplayTree `json:"selected_trees,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -2627,7 +2672,15 @@ type MyReplyRow struct {
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
-	Subject string  `json:"subject"`
+	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
+	// Inbox draws for the row. SubjectTree is that line read as the document a reader is shown,
+	// present only for a caller that sent `Dispatch-Trees: 1` - the Inbox draws the row's line
+	// through the one renderer every body is drawn with, so without the tree beside it the
+	// browser would parse the line itself (web/src/features/inbox/ThreadTitle.tsx). The tree
+	// stands on this row rather than on a read shape of its own because no event payload
+	// carries a reply row: this shape is the replies read's alone.
+	Subject     string      `json:"subject"`
+	SubjectTree DisplayTree `json:"subject_tree,omitempty"`
 	// EditedAt is the time the author of the thread's root post last edited it, absent on a root
 	// never edited. An ask's thread has no such root and never carries it.
 	EditedAt *time.Time `json:"edited_at,omitempty"`
@@ -3308,7 +3361,7 @@ type Comment struct {
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
 // reference (none for a block of a direct message, which has no address), its id, its stored
-// excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
+// excerpt (its text as refs.BlockExcerpt cuts it, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 //
 // EditedAt, DeletedAt and DeletedBy are the marks of the quoted post, read from its own row, so a
@@ -3828,7 +3881,9 @@ type HandoffRecordedEventPayload struct {
 // the merge's place, and Report the handoff its ending role named, each null where the run has
 // none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
 // the retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are the
+// experiment a draw put the issue in and the variant it drew there, each null where the record
+// holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
 type StepRecord struct {
 	ID           string     `json:"id"`
 	Issue        string     `json:"issue"`
@@ -3849,6 +3904,8 @@ type StepRecord struct {
 	Report       *string    `json:"report"`
 	Rating       *int       `json:"rating"`
 	RatingReason *string    `json:"rating_reason"`
+	Experiment   *string    `json:"experiment"`
+	Variant      *string    `json:"variant"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.
@@ -3904,7 +3961,9 @@ type PlanRating struct {
 // work started before Legion wrote plans or that Legion never ran), the rating of each of its
 // retros in the order they ran, the earliest start and the latest end of its step records and the
 // whole seconds between them (each null where no record holds one, and the seconds null too where
-// that end is before that start), and its count of step records of kind step that failed.
+// that end is before that start), its count of step records of kind step that failed, and the
+// experiment a draw put it in and the variant it drew there, as the step records of its newest run
+// name them (each null where they name none).
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`
@@ -3915,6 +3974,8 @@ type FinishedIssue struct {
 	EndedAt         *time.Time   `json:"ended_at"`
 	DurationSeconds *int64       `json:"duration_seconds"`
 	FailedSteps     int          `json:"failed_steps"`
+	Experiment      *string      `json:"experiment"`
+	Variant         *string      `json:"variant"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest

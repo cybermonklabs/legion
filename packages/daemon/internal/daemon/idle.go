@@ -135,7 +135,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 			view.PodUID = podUID
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion())
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -722,10 +722,10 @@ func checkClaim(view pods.IdleView, live []store.ReleasedClaim) store.ReleasedCl
 // leftPodCloseRows is the close of a pod whose issue left the workflow as outbox rows
 // (workflow.LeftPodClose). A pod with no live claim gets the issue's Sandbox suspension alone
 // (leftPodStopRows). A pod with a live claim gets one row first, and no other: the workspace check
-// (record.IssueWorkspaceCheck with CloseRoles), read through a live claim of the open phase's role,
-// else the first live claim, which queues the stops and the suspension only where the read
-// finds nothing that origin does not hold (checkLeftPodWorkspace), since those delete a disk a role
-// worked on. The rows carry no release and the store writes them with no mark
+// (record.IssueWorkspaceCheck with CloseRoles), read through checkClaim's claim (the open phase's
+// worker if live, else the first live claim), which queues the stops and the suspension only where
+// the read finds nothing that origin does not hold (checkLeftPodWorkspace), since those delete a
+// disk a role worked on. The rows carry no release and the store writes them with no mark
 // (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	if len(decision.Claims) == 0 {

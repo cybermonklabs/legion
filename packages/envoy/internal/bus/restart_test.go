@@ -41,7 +41,7 @@ func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
 
 	srv.Stop(t)
 	srv.Start(t)
-	waitFor(t, 30*time.Second, "the client to reconnect", client.Connected)
+	waitFor(t, "the client to reconnect", client.Connected)
 	var putErr error
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
@@ -65,7 +65,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 	t.Cleanup(client.Close)
 
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to notice the server is gone", func() bool { return !client.Connected() })
+	waitFor(t, "the client to notice the server is gone", func() bool { return !client.Connected() })
 	item := contracts.Envelope{
 		EventID:       "evt-publish-while-reconnecting",
 		Source:        "agent",
@@ -88,7 +88,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 	if err := observer.Flush(); err != nil {
 		t.Fatalf("flush subscription: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the client to reconnect", client.Connected)
+	waitFor(t, "the client to reconnect", client.Connected)
 	select {
 	case message := <-received:
 		t.Fatalf("the publish that failed was sent after the reconnect: %s", message.Data)
@@ -109,7 +109,7 @@ func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
 	t.Cleanup(client.Close)
 
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 	restarted := make(chan struct{})
 	go func() {
 		defer close(restarted)
@@ -141,7 +141,8 @@ func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
 // down: the reconnect closes it, quietly, instead of re-subscribing or logging a failure.
 func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	srv, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 		t.Fatal("the delivery never reached its handler")
 	}
 
-	logs := captureBusLogs(t)
+	logs := clientLogs.fromHere()
 	drained := make(chan error, 1)
 	go func() { drained <- client.Drain(15 * time.Second) }()
 	time.Sleep(200 * time.Millisecond)
@@ -181,9 +182,27 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	}
 }
 
-// busLogs collects the default slog logger's JSON records for one test.
+// busLogs reads the JSON records a logger of one test's own writes (captureBusLogs): every record
+// since the logger was made, or, for a reader fromHere returned, since that call.
 type busLogs struct {
-	logtest.Buffer
+	written *logtest.Buffer
+	from    int
+	// logger writes the records. The test gives it to each client whose lines it reads
+	// (bus.WithLogger), so it reads its own clients' lines alone and can run in parallel with the
+	// package's other tests.
+	logger *slog.Logger
+}
+
+// String is every record logged since the reader's start, one per line.
+func (l *busLogs) String() string {
+	return l.written.String()[l.from:]
+}
+
+// fromHere is a reader of the records l's logger writes from now on, for a test that reads what
+// its clients log after a step it takes once they are connected. slog's JSON handler writes each
+// record in one Write, so the reader starts at the start of a record.
+func (l *busLogs) fromHere() *busLogs {
+	return &busLogs{written: l.written, from: l.written.Len(), logger: l.logger}
 }
 
 func (l *busLogs) errorLine() string {
@@ -250,11 +269,11 @@ func (l *busLogs) count(name, msg string) int {
 	return found
 }
 
-func captureBusLogs(t *testing.T) *busLogs {
-	t.Helper()
-	logs := &busLogs{}
-	logtest.SetDefault(t, slog.NewJSONHandler(logs, nil))
-	return logs
+// captureBusLogs is a logger of the test's own, writing JSON records, and the reader of what it
+// writes.
+func captureBusLogs() *busLogs {
+	written := &logtest.Buffer{}
+	return &busLogs{written: written, logger: slog.New(slog.NewJSONHandler(written, nil))}
 }
 
 // A reconnect in place keeps every subscription nats.go restored. After a server restart, nats.go
@@ -264,8 +283,10 @@ func captureBusLogs(t *testing.T) *busLogs {
 // push binding, which refuses the new bind with "consumer is already bound to a subscription" and
 // logs a resubscribe failure at ERROR (LEGION-278).
 func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -289,7 +310,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 		return nil
 	})
 
-	logs := captureBusLogs(t)
+	logs := clientLogs.fromHere()
 	srv.Stop(t)
 	srv.Start(t)
 	select {
@@ -318,7 +339,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 	if err := client.Conn.Publish(roleSubject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish to the role lane: %v", err)
 	}
-	waitFor(t, 10*time.Second, "both deliveries after the restart", func() bool {
+	waitFor(t, "both deliveries after the restart", func() bool {
 		return durableDeliveries.Load() >= 1 && roleDeliveries.Load() >= 1
 	})
 	time.Sleep(time.Second)
@@ -352,7 +373,8 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			// The stall is measured on this clock, so the test moves the grace itself rather than
 			// waiting out a minute of it.
 			clock := &reconnectErrClock{now: time.Now()}
-			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReconnectErrClock(clock.Now))
+			clientLogs := captureBusLogs()
+			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReconnectErrClock(clock.Now), bus.WithLogger(clientLogs.logger))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -374,7 +396,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 				return errors.New("rewatch interest cache: nats: connection closed")
 			})
 
-			logs := captureBusLogs(t)
+			logs := clientLogs.fromHere()
 			srv.Stop(t)
 			srv.Start(t)
 			select {
@@ -385,7 +407,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			if !tc.stop {
 				const retried = "envoy nats reconnect hook failed; it is retried"
 				const uncovered = "envoy nats reconnect hooks have not succeeded"
-				waitFor(t, 15*time.Second, "the failed run reported at WARN", func() bool {
+				waitFor(t, "the failed run reported at WARN", func() bool {
 					return logs.lineAt("WARN", retried) != ""
 				})
 				if line := logs.lineAt("WARN", retried); !strings.Contains(line, "connection closed") {
@@ -398,7 +420,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 				// them again with backoff, up to 30 s between attempts, so the ERROR comes with the
 				// next run rather than at once.
 				clock.Advance(bus.RepairGrace)
-				waitFor(t, 40*time.Second, "the uncovered hooks reported at ERROR past bus.RepairGrace", func() bool {
+				waitFor(t, "the uncovered hooks reported at ERROR past bus.RepairGrace", func() bool {
 					return logs.lineAt("ERROR", uncovered) != ""
 				})
 				if line := logs.lineAt("ERROR", uncovered); !strings.Contains(line, "connection closed") {

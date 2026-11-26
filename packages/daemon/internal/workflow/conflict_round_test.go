@@ -104,6 +104,7 @@ func recordedHead(t *testing.T, pool *pgxpool.Pool) string {
 // is counted: the cap's message and its notice go once for each value review_round_cap holds
 // (recordRound, record.PhaseRow.CapTold), and this row told the value 3 when it reached it.
 func TestConflictRoundsCostTheCapNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := workBackEngine(3)
 	seedWorkBackIssue(t, pool, conflictedHead)
@@ -204,6 +205,7 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 // against is the mark the record holds. The round itself is the review App's request for changes,
 // because that is what opens a review round at all in this release (recordRound).
 func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// clearing is what happens between the mark and the round; no fact at all for the row

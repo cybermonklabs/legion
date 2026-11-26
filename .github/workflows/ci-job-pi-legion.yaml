@@ -108,6 +108,7 @@ jobs:
           token: ''
           cache: false
       # go-daemon, shared with typecheck and daemon-go.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -173,12 +174,18 @@ jobs:
       # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
       # license cannot be determined) and stages this plugin's six skills. The listing shows the
       # tarball ships those, its agents/, and nothing of the Envoy plugin's: no envoy.js, none of
-      # its skills.
+      # its skills. The manifest declares this tree's daemon API contract as
+      # `legion.daemonApiVersion` (scripts/daemon-contract.sh), as every pack writes it: the
+      # committed manifest names none, and the daemon built from this tree requires it.
       - name: Pack pi-legion
         run: |
-          jq '.omp.extensions = ["dist/legion.js"]' package.json > "$RUNNER_TEMP/package.json"
+          contract=$(bash ../../scripts/daemon-contract.sh)
+          jq --argjson contract "$contract" '.omp.extensions = ["dist/legion.js"] | .legion.daemonApiVersion = $contract' package.json > "$RUNNER_TEMP/package.json"
           mv "$RUNNER_TEMP/package.json" package.json
           bun pm pack --destination ../../out/pr-artifacts
+          tar -xzOf ../../out/pr-artifacts/*.tgz package/package.json \
+            | jq -e --argjson contract "$contract" '.legion.daemonApiVersion == $contract' > /dev/null \
+            || { echo "::error::the pi-legion tarball's package.json does not declare legion.daemonApiVersion $contract"; exit 1; }
           listing=$RUNNER_TEMP/pi-legion-listing
           tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
           for shipped in package/dist/legion.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/legion-worker/SKILL.md package/agents/deep-worker.md; do

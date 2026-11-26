@@ -453,7 +453,11 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	write := stepWrite(issue, drawn, step.place, step.role, step.typ, start.Agent, start.Starts)
 	write.PlanRating = &rating
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
@@ -518,8 +522,10 @@ const (
 // (leftItsPhase), but a hold of an owner's plan, which stands where its issue stands: a parent held
 // for its children at its retro, and a stopped task at the step the stop ended, whose report of
 // that step's run is the run the stop ended and is no left phase's, so a run of a left phase is
-// never also that run. w is the walk of issue's run and row the role's row of the run the
-// completion reports (Walk.completionRow).
+// never also that run. A left phase is reported only if its row holds this run's started task
+// (ranUnreported), not merely a claim that may have been created to look at a production check.
+// w is the walk of issue's run and row the role's row of the run the completion reports
+// (Walk.completionRow).
 func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fact intake.HandoffComplete, reported phase.Phase,
 	row record.PhaseRow) (pastReport, error) {
 	left, err := e.leftItsPhase(ctx, tx, issue, w, fact.Role, fact.Claim, reported, row)
@@ -537,12 +543,12 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 // lateReport is the refusal of fact, role's report of reported, a phase issue no longer stands in,
 // where issue's run has plan rows and a stop of its task ended the run the report is of. past is
 // the run the report is of (pastReportOf), and row the role's row of that run
-// (Walk.completionRow). The report of the phase a stop holds the issue from is late where it is of
-// the run the stop ended (ranUnreported); its first sentence is the reason the task stores
-// (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an event
-// ended, whatever step the task stands at now, which handoff takes as it takes one on an issue
-// with no plan rows (leftPhaseReported); one of no run; one of a run whose plan rows are gone; one
-// of the retro or the merge; one of a task whose issue left the workflow
+// (Walk.completionRow). The report of the phase a stop holds the issue from is late only where
+// row still holds this run's started task (ranUnreported); its first sentence is the reason the
+// task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
+// event ended, whatever step the task stands at now, which handoff takes as it takes one on an
+// issue with no plan rows (leftPhaseReported); one of no run; one of a run whose plan rows are
+// gone; one of the retro or the merge; one of a task whose issue left the workflow
 // (HANDOFF_NOT_CURRENT_PHASE); and one of a step other than the one the stop ended. The refusal
 // writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
 // handoff record (spendLateHandoff).

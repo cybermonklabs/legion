@@ -19,6 +19,7 @@ import (
 // and no open or merged pull request recorded. A pull request recorded closed is not an open one;
 // one recorded merged told the architect (pr-merged), and a completion moves the issue on it.
 func TestAMissingPullRequestIsToldOnlyWhileTheCompletionWaitsForOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		phase    phase.Phase

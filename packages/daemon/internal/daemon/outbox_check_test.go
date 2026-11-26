@@ -721,7 +721,7 @@ func TestACheckWakeRowAppliesItsWakeAndARequeuedRowAppliesAfresh(t *testing.T) {
 	facts := &outboxFactHandler{}
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
 
-	due := record.CheckWakeDue{Look: 1, OpenedAt: check.OpenedAt, Reason: "the deploy has not carried the merge"}
+	due := record.CheckWakeDue{Look: 1, OpenedAt: check.OpenedAt, WakeAt: check.OpenedAt.Add(2 * time.Hour), Reason: "the deploy has not carried the merge"}
 	row := mustOutboxRow(t, root.Key, due, time.Now())
 	row.ID = 71
 	for range 2 {
@@ -734,14 +734,14 @@ func TestACheckWakeRowAppliesItsWakeAndARequeuedRowAppliesAfresh(t *testing.T) {
 	if err := runner.execute(ctx, again); err != nil {
 		t.Fatalf("the check_wake row queued again = %v", err)
 	}
-	want := intake.CheckWakeDue{Issue: root.Key, Look: 1, OpenedAt: check.OpenedAt, Reason: "the deploy has not carried the merge"}
+	want := intake.CheckWakeDue{Issue: root.Key, Look: 1, OpenedAt: check.OpenedAt, WakeAt: due.WakeAt, Reason: "the deploy has not carried the merge"}
 	got := facts.facts()
 	if len(got) != 2 {
 		t.Fatalf("facts applied = %+v, want the row's once and the row queued again's", got)
 	}
 	for i, fact := range got {
 		wake, ok := fact.(intake.CheckWakeDue)
-		if !ok || wake.Issue != want.Issue || wake.Look != want.Look || !wake.OpenedAt.Equal(want.OpenedAt) || wake.Reason != want.Reason {
+		if !ok || wake.Issue != want.Issue || wake.Look != want.Look || !wake.OpenedAt.Equal(want.OpenedAt) || !wake.WakeAt.Equal(want.WakeAt) || wake.Reason != want.Reason {
 			t.Fatalf("fact %d = %+v, want %+v", i, fact, want)
 		}
 	}

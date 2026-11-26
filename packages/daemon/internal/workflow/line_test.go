@@ -56,6 +56,7 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 // release walks. Plan rows of another run of the issue are not its run's. Once its run has rows,
 // the walk is theirs: the task, its steps, its line, and where the task stands.
 func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Implementing)
@@ -186,6 +187,7 @@ func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status strin
 // an issue out of the workflow. The control writes issues.phase done and leaves the task's row
 // running at its merge, and the check fails.
 func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
+	t.Parallel()
 	moves := []struct {
 		trigger TriggerKind
 		place   record.TaskPlace
@@ -353,6 +355,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 // The same move to testing of an issue with no plan rows is served, as every pair of today's line
 // is (TestEveryBackwardEdgeAppliesThroughIntake).
 func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
@@ -395,6 +398,7 @@ func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
 // The twin: an issue with no plan rows walks today's line, where testing comes before reviewing,
 // so the tester's same move back to reviewing is refused there and moves nothing.
 func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
