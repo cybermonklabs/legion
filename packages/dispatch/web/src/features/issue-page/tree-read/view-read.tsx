@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
@@ -11,16 +19,15 @@ import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { bringOnScreen } from "../identity-block";
 import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
-import { isFilter } from "../presets";
 import { NextPageWords } from "../TreeRows";
 import { TAB_STOP_ROW } from "../tree-focus";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
+  outlineOf,
   outlineQuery,
   resetViews,
   subscribeTreeFreshness,
-  type TreeAnswer,
   useNextViewPage,
   useStartOutlineRead,
   useTreeRead,
@@ -75,6 +82,13 @@ export function ViewReadProvider({
   // Conversation's answer, watched and never sent here: whether it holds the checks of the issues
   // under this one says whether Verification's view read goes with the load (`sentWithLoad`).
   const conversation = useQuery({ ...outlineQuery(key, "conversation"), enabled: false }).data;
+  const holdsChildCheck = useMemo(
+    () =>
+      conversation?.nodes?.some(
+        (node) => node.supertag === "check" && node.issue !== undefined && node.issue !== key
+      ) ?? false,
+    [conversation, key]
+  );
   // Whether the views of a past load are dropped. No view is read before then: a view read as the
   // stage mounts would be dropped by that reset and read a second time.
   const [dropped, setDropped] = useState(false);
@@ -96,7 +110,10 @@ export function ViewReadProvider({
             filter={filter}
             issueKey={key}
             key={filter}
-            on={preset === filter || sentWithLoad(filter, preset, issue, conversation)}
+            on={
+              preset === filter ||
+              sentWithLoad(filter, preset, issue, conversation !== undefined, holdsChildCheck)
+            }
           />
         ))}
       {children}
@@ -106,29 +123,23 @@ export function ViewReadProvider({
 
 /** Whether a load of `preset` sends `filter`'s view read with it (`ViewReadProvider`): a load of
  *  Conversation or of a filter, for Plan always, for Spec where the issue is a child, and for
- *  Verification where the issue has children and Conversation's answer `conversation` holds no
- *  check of an issue under it, which is not known until that answer is held. */
+ *  Verification where the issue has children and Conversation's answer holds no check of an
+ *  issue under it, which is not known until that answer is held. */
 function sentWithLoad(
   filter: TreeFilter,
   preset: Preset,
   issue: IssueDetails,
-  conversation: TreeAnswer | undefined
+  conversationHeld: boolean,
+  holdsChildCheck: boolean
 ): boolean {
-  if (preset !== "conversation" && !isFilter(preset)) return false;
+  if (outlineOf(preset) !== "conversation") return false;
   switch (filter) {
     case "plan":
       return true;
     case "spec":
       return issue.parent !== null;
     case "verification":
-      return (
-        (issue.children ?? []).length > 0 &&
-        conversation !== undefined &&
-        !(conversation.nodes ?? []).some(
-          (node) =>
-            node.supertag === "check" && node.issue !== undefined && node.issue !== issue.key
-        )
-      );
+      return (issue.children ?? []).length > 0 && conversationHeld && !holdsChildCheck;
   }
 }
 

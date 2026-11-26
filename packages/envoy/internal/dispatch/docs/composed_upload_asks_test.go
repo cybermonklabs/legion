@@ -177,16 +177,14 @@ func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T)
 // The shape the orphaned answer was first measured in is wider than the two cases above: the
 // agent writes the question word for word, and rewrites the paragraph above the ask and the
 // paragraph below it, and puts a heading, a block of another type, above the ask. The alignment
-// the upload's write uses pairs the uploaded children with the live ones from both ends
-// (pmdoc.carryChildren). Both ends are a paragraph facing a paragraph, and the two are equally
-// changed, so the left end is taken first and the rewritten opening paragraphs are paired and
-// consumed. The heading then faces the live ask and is no pair for it, so the right end is taken
-// instead, pairing the rewritten closing paragraphs. That leaves the live ask at both ends at
-// once, and it is paired with the uploaded ask from the right. The pair is unchanged outside the
-// server state an upload resets, so the id is carried: a block of another type inserted above
-// the ask does not cost the ask its id, and the heading alone takes a fresh one. The row holding
-// the person's answer stays the issue's one row for the question, and the text read answers that
-// answer for the block in its asks member.
+// the upload's write uses (pmdoc.carryChildren) pairs each uploaded child with a live child it
+// leaves unchanged, wherever that child stands, before it pairs the changed ones by place. The
+// uploaded ask is unchanged from the live one outside the server state an upload resets, so the
+// two are paired and the id is carried, whatever the rewritten blocks around it pair with: a
+// block of another type inserted above the ask does not cost the ask its id, and the heading and
+// the two rewritten paragraphs take fresh ones. The row holding the person's answer stays the
+// issue's one row for the question, and the text read answers that answer for the block in its
+// asks member.
 func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
@@ -207,7 +205,7 @@ func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *tes
 		t.Fatalf("upload the body the agent composed around the ask: %v", err)
 	}
 	if ids := documentAskBlockIDs(t, service, artifactID); len(ids) != 1 || ids[0] != *ask.BlockID {
-		t.Errorf("the document after the upload holds the ask blocks %q, want the one block %q the answered ask was given on, which the alignment reaches from the end of the document", ids, *ask.BlockID)
+		t.Errorf("the document after the upload holds the ask blocks %q, want the one block %q the answered ask was given on, which the upload leaves unchanged outside its server state", ids, *ask.BlockID)
 	}
 
 	settleCurrentGeneration(t, service, artifactID)

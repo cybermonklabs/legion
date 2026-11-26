@@ -12,7 +12,7 @@ import (
 
 // blockProjections are the census's kinds of the document blocks (projections): a block against
 // its document_blocks row, the links out of a block against its block_refs rows, and the rank
-// and the text every block holds (dispatch://INFRA-1253/spec#b-r-one-tree), each against the
+// and the text every block holds (R1 of the issue-tree spec, `r-one-tree`), each against the
 // block's row, and the size every plan node holds against the opening line of its block's text,
 // the document each block of an issue room is in against its issue_room_blocks row (room_block),
 // and who wrote each block whose node records its authors against the version that first held it
@@ -23,7 +23,7 @@ import (
 // states, whose band its rank stands in and under whose top a top-level block hangs; every other
 // row's document is its own artifact. A row of a room any artifact of which owes its block index
 // (roomOwed) is counted owed, on neither side of the block, rank and text kinds, since the
-// reconciliation indexes the room whole (T12a of dispatch://INFRA-1253's plan).
+// reconciliation indexes the room whole (T12a of the issue-tree plan).
 var blockProjections = []projection{{
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
@@ -36,15 +36,18 @@ var blockProjections = []projection{{
 		" an authored node's row with no parent_block_id, and the row of a block a move of the node route placed" +
 		" (placement stored), states a part_of to no block of its artifact, and the node's part_of to anything but a" +
 		" block of its own artifact - its issue, a conversation node, another artifact's block, a lens - reads as that;" +
+		" a decision's row whose node holds a current from_ask to an ask of its document's issue whose row names its" +
+		" node states a part_of to that ask, read as the node side reads it, whatever its parent_block_id;" +
 		" a row of an issue room's tree artifact reads its document from its issue_room_blocks row, and one of a room" +
 		" that owes its block index is owed",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
 		`'`+refs.TupleInDocument+`>artifact:' || document.ref_key`,
-		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is not null then '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id
+		`'`+graphstore.TuplePartOf+`>' || coalesce(`+settledAsk("d", "a")+`,
+		      case when d.parent_block_id is not null then '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id
 		      when d.type in `+refs.AuthoredTypesSQL+` or `+storedRow("d")+` then '`+outsideArtifact+`' || a.ref_key
-		      else `+refs.DocumentTopSQL("document")+` end`,
+		      else `+refs.DocumentTopSQL("document")+` end)`,
 	) + `)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
@@ -136,6 +139,29 @@ var blockProjections = []projection{{
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,
 }, {
+	name:     "block_type",
+	nodeKind: refs.BlockNodeKind,
+	table:    "document_blocks",
+	note: "the type of every block of a document that owes no block index, which its node's supertag holds" +
+		" (R26 of the issue-tree spec, `r-block-type-supertag`): the row side is each row that names its node, and" +
+		" the digest is the supertag the row's type gives - the type itself for a typed block of the block schema," +
+		" block for any other kind, and for a reading block unless it stands in a decision or in an ask block whose" +
+		" ask holds an answer (refs.BlockTypeSupertagSQL) - against the supertag its node carries, so a typed block" +
+		" whose node carries block, and a paragraph whose node carries a type, are each a difference; a block of a" +
+		" document still owed its index, or of an issue room any artifact of which is, is on neither side, since the" +
+		" reconciliation restates its node, and a census of documents that all owe theirs reads none of this kind",
+	rows: `
+		select 'block_type ' || d.node_id, d.node_kind, d.node_address, md5(d.node_id || '|' || ` + refs.BlockTypeSupertagSQL("d") + `)
+		from document_blocks d
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
+	nodes: `
+		select n.id, md5(n.id || '|' || n.supertag)
+		from graph_nodes n
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
+	pastBound: `
+		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	emptyAgrees: true,
+}, {
 	name:     "block_text",
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_block_texts",
@@ -149,7 +175,7 @@ var blockProjections = []projection{{
 		" converted which no pass of this build's rule has stated, as the release before leaves every document it" +
 		" indexed, is on neither side and counted as unstated_rows, since only this build's pass writes its text",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
-	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
+	// the issue-tree spec), and text_sha256 only for a block no row of that table records the
 	// text of.
 	rows: `
 		select 'block_text ' || d.node_id, d.node_kind, d.node_address,
@@ -295,6 +321,28 @@ func storedRow(alias string) string {
 		order by t.seq desc limit 1) = '` + refs.PlacementStored + `', false)`
 }
 
+// settledAsk is the far end, written kind:id as statedLinks reads a link, of the part_of the
+// node of the document_blocks row alias stands under where that row is a decision that settles an
+// ask of its issue (R2 of the issue-tree spec, refs.DecisionFacts): its node holds a current
+// from_ask to an ask whose marked row is one of the issue of artifact, the row's own artifacts row,
+// and the decision stands under that ask's node whatever its parent_block_id says, since that
+// column keeps the block its text stands in. The far end is read as blockPlacedLinks reads a
+// part_of to an ask's node: the block of the row's own artifact that holds the ask, where its row
+// names one (askBlockID), else the ask's own address. It is null for every other row, whose parent
+// its own columns state.
+func settledAsk(alias, artifact string) string {
+	return `case when ` + alias + `.type = '` + refs.DecisionSupertag + `' then (
+		select coalesce('` + refs.BlockNodeKind + `:' || ` + artifact + `.ref_key || '#' || settled.block_id,
+		                '` + graphstore.KindAsk + `:' || settled.node_address)
+		from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = `+alias+`.node_kind and t.from_id = `+alias+`.node_address and t.kind = '`+refs.TupleFromAsk+`'
+		  and t.to_kind = '`+graphstore.KindAsk+`'`) + `) held
+		join asks settled on settled.node_kind = '` + graphstore.KindAsk + `' and settled.node_address = held.to_id
+		  and settled.issue_key = ` + artifact + `.issue_key
+		where held.asserted
+		order by held.to_id limit 1) end`
+}
+
 // blockAuthorsHeld is true of each document_blocks row d, with its artifacts row a, whose block's
 // authors the block_author kind holds, the one test both its sides read a block by: a row naming
 // its node whose type records its authors (refs.RecordsAuthorsSQL: an authored node, or a block of
@@ -343,7 +391,7 @@ var blockFirstAuthors = `
 var blockVersionAuthors = `select author.kind, author.id, v.created_at` + blockFirstAuthors
 
 // blockAuthorProjection is the census's kind of each block's authors (T7 of
-// dispatch://INFRA-1253's plan), held triple by triple over the blocks blockAuthorsHeld reads: each
+// the issue-tree plan), held triple by triple over the blocks blockAuthorsHeld reads: each
 // row is an authored_by of such a block's node to one author of the version that first held the
 // block (blockFirstAuthors), against every authored_by such a block's node states now while it is
 // present. So an authored node of a document that owes nothing and states no authored_by is a row

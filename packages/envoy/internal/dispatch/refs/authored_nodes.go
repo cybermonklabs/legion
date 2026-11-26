@@ -53,9 +53,12 @@ func writtenAtAcceptance(typ string) bool {
 // values, tuples and rows standing and appends none of them again. record is what the newest of
 // versions' rows says of the pass, holding the pass's own time (IndexedVersion.At), at which every
 // value and tuple it states is dated; blocks index into markdown, located are the mentions of
-// markdown (NewReader) and pointers its `block[]` values, as PlanBlocks takes them. Every read is
-// q's, in the write's read phase, and Queue writes it with the typed-node pass's, in one batch.
-func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record IndexedVersion, versions Versions, markdown string, blocks []model.ArtifactBlock, located []text.Located, pointers []Pointer, now time.Time) (DecisionIndexing, error) {
+// markdown (NewReader) and pointers its `block[]` values, as PlanBlocks takes them, and serverURL
+// is the deployment the version's text was read against, whose dashboard URLs each block's
+// excerpt is cut around (BlockExcerpt), as PlanBlocks cuts it (VersionBlocks.ServerURL). Every
+// read is q's, in the write's read phase, and Queue writes it with the typed-node pass's, in one
+// batch.
+func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record IndexedVersion, versions Versions, markdown string, blocks []model.ArtifactBlock, located []text.Located, pointers []Pointer, serverURL string, now time.Time) (DecisionIndexing, error) {
 	refKey := record.RefKey
 	nodes, _, _ := uniqueBlocks(blocks)
 	fits, _ := blockFits(refKey, nodes)
@@ -170,7 +173,7 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 		placement := b
 		var stated []graphstore.UncausedTuple
 		var standing map[string]blockFarEnd
-		if _, stated, standing, err = placement.planBlockParents(ctx, q, index, record, nodes, fits, fragments, nil, only, sources); err != nil {
+		if _, stated, standing, err = placement.planBlockParents(ctx, q, index, record, nodes, fits, fragments, askPlacements{}, only, sources); err != nil {
 			return DecisionIndexing{}, err
 		}
 		for at := range placement.placedIDs {
@@ -240,11 +243,11 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 		if kept {
 			joined = stored.joined
 		}
-		held[block.ID] = storedBlock{sum: hexSum, joined: joined, node: addresses[at], document: documents[at]}
+		held[block.ID] = storedBlock{sum: hexSum, joined: joined, node: addresses[at], supertag: TypeSupertag(block.Type), document: documents[at]}
 		changed[at], inserted[at] = true, !kept
 		version := b.versionOf(block.ID)
 		b.ids, b.types, b.sums = append(b.ids, block.ID), append(b.types, block.Type), append(b.sums, hexSum)
-		b.excerpts = append(b.excerpts, text.HeadRunes(body, BlockExcerptRunes))
+		b.excerpts = append(b.excerpts, BlockExcerpt(body, serverURL))
 		b.since, b.sinceAt = append(b.since, int32(version.Number)), append(b.sinceAt, version.At)
 		b.textIDs, b.texts = append(b.textIDs, block.ID), append(b.texts, &body)
 	}

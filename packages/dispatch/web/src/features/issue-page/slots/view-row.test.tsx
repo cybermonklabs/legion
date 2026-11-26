@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../../api/client";
 import { issueResultsQuery } from "../../../api/queries";
 import type { Comment, ReferenceTarget } from "../../../api/types";
+import * as viewport from "../../margin/margin-fixture";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -18,12 +19,13 @@ import {
   SPEC_SLUG,
 } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
+import type { TreeNode } from "../issue-tree";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
 import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { ProvidersSlot } from "./providers";
-import { ViewRowSlot } from "./view-row";
+import { ViewRowSlot, viewRowSignals } from "./view-row";
 
 /**
  * The view row's counts. Each is read off the issue's tree, which lacks the nodes of a read
@@ -424,10 +426,6 @@ test("with no filter the view row draws the real counts while the names read is 
   }
 });
 
-/** A phone's width, the 390 px pictures', below the 1024 px from which the Contents pane stands
- *  beside the stage. */
-const PHONE = 390;
-
 /** The Outline control the row draws below 1024 px: the one control of the row that opens a
  *  dialog, the Outline sheet (`contents-frame.tsx`). */
 const OUTLINE_CONTROL = 'button[aria-haspopup="dialog"]';
@@ -460,7 +458,7 @@ function renderRowAt(client: QueryClient, preset: Preset) {
 // stands beside each of those views and the row draws no Outline control.
 test("below 1024 px the view row draws the Outline control in Conversation, each filter and Graph, and its sheet draws the Contents list", async () => {
   const user = userEvent.setup();
-  for (const width of [PHONE, DESKTOP_WIDTH]) {
+  for (const width of [viewport.PHONE_WIDTH, DESKTOP_WIDTH]) {
     const restoreMatchMedia = stubViewport(width);
     const reads = answerReads();
     try {
@@ -497,4 +495,60 @@ test("below 1024 px the view row draws the Outline control in Conversation, each
       for (const spy of Object.values(reads)) spy.mockRestore();
     }
   }
+});
+
+/** The issue's own node as a filter loaded cold with no outline read draws it: no node under it,
+ *  and beside it the Spec view answer `spec` where one is held. */
+function coldRoot(spec?: TreeAnswer): TreeNode {
+  return {
+    alsoUnder: [],
+    children: [],
+    chips: [],
+    facts: [],
+    gaps: [],
+    held: 0,
+    id: KEY,
+    question: false,
+    replaced: false,
+    text: KEY,
+    transcluded: false,
+    type: "issue",
+    waiting: false,
+    ...(spec === undefined ? {} : { views: { spec } }),
+  };
+}
+
+// R4 and R13: Spec loaded cold below 1024 px sends its view read and no outline read, so the
+// outline's reads never all hold; its count is its view answer's own statements, and it draws
+// that count once the answer is held, as no other control draws one.
+test("a filter loaded cold with no outline read draws its own count from its view answer, and no other control a count", () => {
+  const spec = treeAnswer([
+    treeNode(KEY, "issue", null),
+    ...["r1", "r2"].map((id, position) =>
+      treeNode(id, "requirement", KEY, {
+        document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
+        role: "query",
+      })
+    ),
+  ]);
+  const cold = { filter: "", namesHeld: true, readsHeld: false, viewer: "alice" } as const;
+  expect(
+    viewRowSignals({ ...cold, preset: "spec", root: coldRoot(spec) }),
+    "Spec loaded cold does not count its view answer's statements"
+  ).toEqual({
+    conversation: undefined,
+    decisions: undefined,
+    graph: undefined,
+    plan: undefined,
+    spec: { count: 2 },
+    verification: undefined,
+  });
+  expect(
+    viewRowSignals({ ...cold, preset: "spec", root: coldRoot() }),
+    "Spec loaded cold draws a count before its view answer is held"
+  ).toBeUndefined();
+  expect(
+    viewRowSignals({ ...cold, preset: "conversation", root: coldRoot(spec) }),
+    "Conversation draws a count with the outline's reads out"
+  ).toBeUndefined();
 });

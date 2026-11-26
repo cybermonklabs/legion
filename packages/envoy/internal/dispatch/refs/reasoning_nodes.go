@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The nodes a piece of work is reasoned about with (spec requirements r-lens and
@@ -563,8 +562,9 @@ func PinnedParent(ctx context.Context, q Queryer, kind, id string) (*model.NodeP
 //
 // A finding is stored as a block, and of the store's blocks only one whose id names its lens
 // (graphstore.FindingIDSQL) is one. A finding is no block of any document, so it answers no
-// Document and no version; its BlockID is its own block id, and its text is cut as a document
-// block's stored excerpt is (BlockExcerptRunes), which an edge at it shows whole.
+// Document and no version; its BlockID is its own block id, and its text is read whole and cut
+// where it is named, as a document block's stored excerpt is cut (BlockExcerpt, around the
+// reader's deployment: resolvedNode.name), which an edge at it shows whole.
 //
 // Its parent is that far end, as every loader's is the node it belongs to. A block of a document
 // that a version removed, a retired document and a block of one, and a block of a comment or a
@@ -624,7 +624,6 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		}
 		if kind == graphstore.KindLensBlock {
 			_, node.BlockID, _ = graphstore.ParseFindingID(node.ID)
-			body = text.HeadRunes(body, BlockExcerptRunes)
 		}
 		if err := setMadeAndChanged(&node, madeBy, madeAt, nil, nil, storedActors); err != nil {
 			rows.Close()

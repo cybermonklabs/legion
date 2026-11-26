@@ -211,7 +211,7 @@ func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 			written[index].Document = document.fragment
 		}
 	}
-	_, won, write, _, err := IndexBlocks(ctx, f.tx, document.artifact, versions, markdown, written, nil, pointers, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, f.tx, document.artifact, versions, markdown, written, nil, pointers, "", TypedFacts{})
 	if err != nil || !won {
 		f.t.Fatalf("index version %d of the plan of %s: won %t, %v", document.versions, key, won, err)
 	}
@@ -364,10 +364,10 @@ func orderOf(nodes []OrderedNode, needs func(OrderedNode) []OrderNode) ([]OrderN
 // holds plan nodes; the plan nodes need plan nodes of their own issue and of the issue above,
 // CORE-1's p2 needs the issue CORE-2, and CORE-3 needs CORE-2 and OTHR-1, an issue of another
 // project. Each plan is markdown, every need and size written in its plan node's opening line
-// (`size="2"`), indexed by the block index pass. The answer holds every issue as its start and
+// (`size="2h"`), indexed by the block index pass. The answer holds every issue as its start and
 // its done and every plan node, each once, after every node it needs, with the size its line
-// writes beside it, none where it writes none, and its issue the one its part_of chain reaches:
-// a1 stands under a requirement of CORE-2. A parent holding a child is no cycle,
+// writes beside it in whole minutes, none where it writes none, and its issue the one its part_of
+// chain reaches: a1 stands under a requirement of CORE-2. A parent holding a child is no cycle,
 // and its done sits after each child's done; a plan node sits after its issue's start and before
 // its issue's done; a sibling waiting on a sibling keeps its order; and p2, which needs CORE-2,
 // comes back after every plan node of CORE-2 and after CORE-2's done. OTHR-1 is a fixed node
@@ -404,16 +404,16 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		f.issue("OTHR-1", "")
 		f.convert("CORE-3")
 		f.plan("CORE-1",
-			orderTask("p1", "1"), orderTask("p2", "", "CORE-2"),
-			orderTask("p3", "2", "CORE-1#p1"), orderTask("p4", "2", "CORE-1#p1"), orderTask("p5", "0.5", "CORE-1#p3", "CORE-1#p4"),
-			orderTask("p6", "1"))
+			orderTask("p1", "1h"), orderTask("p2", "", "CORE-2"),
+			orderTask("p3", "2h", "CORE-1#p1"), orderTask("p4", "2h", "CORE-1#p1"), orderTask("p5", "30m", "CORE-1#p3", "CORE-1#p4"),
+			orderTask("p6", "1h"))
 		aPlan := []orderBlock{
-			orderRequirement("r1"), {id: "a1", typ: planTaskType, serves: "r1", size: "2"}, orderTask("a2", "1.25", "CORE-2#a1"),
-			orderRequirement("r2"), {id: "a3", typ: planTaskType, serves: "r2", size: "1"},
+			orderRequirement("r1"), {id: "a1", typ: planTaskType, serves: "r1", size: "1h30m"}, orderTask("a2", "45m", "CORE-2#a1"),
+			orderRequirement("r2"), {id: "a3", typ: planTaskType, serves: "r2", size: "1h"},
 		}
 		f.plan("CORE-2", aPlan...)
-		f.plan("CORE-3", orderTask("b1", "3", "CORE-1#p1"))
-		f.plan("CORE-5", orderTask("e1", "1"))
+		f.plan("CORE-3", orderTask("b1", "3h", "CORE-1#p1"))
+		f.plan("CORE-5", orderTask("e1", "1h"))
 		f.needs("CORE-3", "CORE-2", "OTHR-1")
 		f.overtake(BlockNodeKind, f.address("CORE-1", "p6"))
 		f.overtake(BlockNodeKind, f.address("CORE-2", "r2"))
@@ -461,7 +461,7 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		after(b1, p("p1"), "a child's plan node that needs a plan node of its parent comes back after it")
 
 		sizes := map[OrderNode]string{
-			p("p1"): "1", p("p2"): "", p("p3"): "2", p("p4"): "2", p("p5"): "0.5", a("a1"): "2", a("a2"): "1.25", b1: "3",
+			p("p1"): "60", p("p2"): "", p("p3"): "120", p("p4"): "120", p("p5"): "30", a("a1"): "90", a("a2"): "45", b1: "180",
 			issueStart("CORE-1"): "", issueDone("CORE-1"): "",
 		}
 		for name, size := range sizes {
@@ -555,7 +555,7 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		// edit takes a2's size out of its opening line, which leaves a2 no size value.
 		edited := slices.Clone(aPlan)
 		edited[2] = orderTask("a2", "", "CORE-2#a1")
-		f.plan("CORE-2", append(edited, orderTask("a5", "1", "CORE-1#p2"))...)
+		f.plan("CORE-2", append(edited, orderTask("a5", "1h", "CORE-1#p2"))...)
 		cycled := f.read(orderAuthor, "CORE-1")
 		requireOrderStands(t, cycled)
 		wantCycle := [][]OrderNode{{p("p2"), issueDone("CORE-2"), a("a5")}}
@@ -575,8 +575,8 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		if value, held, err := graphstore.CurrentValue(ctx, f.tx, BlockNodeKind, a("a2").ID, AttributePlanSize); err != nil || held {
 			t.Errorf("a2 holds the size value %q (held %t, %v) after the edit that took it out, want none", value, held, err)
 		}
-		if size := orderNamed(t, cycled, a("a1")).Size; size != "2" {
-			t.Errorf("a1, whose size the edit kept, comes back with the size %q, want 2", size)
+		if size := orderNamed(t, cycled, a("a1")).Size; size != "90" {
+			t.Errorf("a1, whose size the edit kept, written 1h30m, comes back with the size %q, want 90 minutes", size)
 		}
 	})
 
@@ -587,11 +587,11 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 			f.issue(child, "ACME-1")
 		}
 		f.plan("ACME-1",
-			orderTask("q1", "1", "ACME-1#q2"), orderTask("q2", "1", "ACME-1#q1"),
-			orderTask("q3", "1", "ACME-2"), orderTask("q4", "1", "ACME-3"), orderTask("q5", "1", "ACME-1#q5"),
-			orderTask("q6", "1", "ACME-1#q1"), orderTask("q7", "1"))
-		f.plan("ACME-2", orderTask("d1", "1", "ACME-1#q3"), orderTask("d2", "1"))
-		f.plan("ACME-4", orderTask("f1", "1", "ACME-1#q4"))
+			orderTask("q1", "1h", "ACME-1#q2"), orderTask("q2", "1h", "ACME-1#q1"),
+			orderTask("q3", "1h", "ACME-2"), orderTask("q4", "1h", "ACME-3"), orderTask("q5", "1h", "ACME-1#q5"),
+			orderTask("q6", "1h", "ACME-1#q1"), orderTask("q7", "1h"))
+		f.plan("ACME-2", orderTask("d1", "1h", "ACME-1#q3"), orderTask("d2", "1h"))
+		f.plan("ACME-4", orderTask("f1", "1h", "ACME-1#q4"))
 		f.needs("ACME-3", "ACME-4")
 
 		answer := f.read(orderAuthor, "ACME-1")
@@ -612,8 +612,8 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		}
 		for _, cycle := range answer.Cycles {
 			for _, node := range cycle {
-				if node.Kind == BlockNodeKind && node.Size != "1" {
-					t.Errorf("%+v of a cycle comes back with the size %q, want its own", node.OrderNode, node.Size)
+				if node.Kind == BlockNodeKind && node.Size != "60" {
+					t.Errorf("%+v of a cycle comes back with the size %q, want its own, 60 minutes", node.OrderNode, node.Size)
 				}
 			}
 		}

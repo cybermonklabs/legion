@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // catchupBucket is the bucket the rows below create on a cluster, one per row.
@@ -287,9 +289,9 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 	}
 	const unlimited = 1 << 30
 	watcher := newRaiseWatcher(js, 3, unlimited, nil)
-	// A hang guard: a start that waited for the copies would wait until this context ended.
-	ctx, cancel := context.WithTimeout(countedReads(t.Context()), time.Minute)
-	defer cancel()
+	// A hang guard: a start that waited for the copies would wait until this context ended. It has
+	// no span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := countedReads(testwait.Context(t))
 	if _, err := EnsureKeyValue(ctx, conn, watcher, config); err != nil {
 		t.Fatalf("ensure the bucket a start raises nothing on: %v", err)
 	}
@@ -366,7 +368,7 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
 	watcher := newRaiseWatcher(js, 3, 1<<30, nil)
-	_, err := ensureKeyValue(context.Background(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the error = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -383,7 +385,7 @@ func TestAMemberThatNeverAppliesACreateEndsAtTheCallersContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	reads := 0
-	_, err := awaitBucketApplied(ctx, catchupBucket, bucketMissing, func() (struct{}, error) {
+	_, err := awaitBucketApplied(ctx, slog.Default(), catchupBucket, bucketMissing, func() (struct{}, error) {
 		reads++
 		return struct{}{}, nats.ErrBucketNotFound
 	})

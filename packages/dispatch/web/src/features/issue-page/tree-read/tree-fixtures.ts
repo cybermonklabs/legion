@@ -234,6 +234,15 @@ export function treeAnswer(
   };
 }
 
+/** A tree page with the cursor of the next page and, when given, the count after this page. */
+export function pagedAnswer(
+  page: TreeAnswer,
+  cursor: string | null,
+  remaining?: number
+): TreeAnswer {
+  return { ...page, cursor, ...(remaining === undefined ? {} : { remaining }) };
+}
+
 /** The tree read's stub for a case whose view is drawn off the whole tree, as before the page
  *  holds its view read (`presets.ts`'s `presetView`): the whole tree answers `answer`, and each
  *  view of it never answers. */

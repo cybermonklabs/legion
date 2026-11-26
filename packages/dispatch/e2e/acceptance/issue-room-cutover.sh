@@ -44,15 +44,17 @@
 # runs them. An issue this head creates then holds no document_rooms row and its spec socket is
 # admitted to the spec's own room; once the baseline stops, the conversion converts it.
 #
-# Third pass, over an emptied database: the deferral. The driver takes the block index's lease
-# (docs.BlockIndexLease: pg_try_advisory_lock(1280266064, hashtext('block-index')), as
-# duty.Exclusive takes it) on a psql session of its own and keeps it. Through the earlier release
-# it writes X1, whose Verification document of more than 2,000 blocks that write leaves to the
+# Third pass, over an emptied database: the deferral. The driver takes the block index's lease and
+# the reference forms drain's (lib.sh's hold_index_leases: pg_advisory_lock(1280266064,
+# hashtext('block-index')) and the same of 'refs-forms', as duty.Exclusive takes each) on psql
+# sessions of its own and keeps them, since the drain indexes a document through the block index's
+# own index and would index what the block index left owed. Through the earlier release it writes
+# X1, whose Verification document of more than 2,000 blocks that write leaves to the
 # reconciliation (document_block_versions.version reads null), and X2, of a few blocks a document.
-# It boots this head without the hold and with no wait for the backfill. While the lease is held,
-# the dry run and the real run each print X1 and X2 deferred, each naming a document of its issue
-# that owes its block index, the server's log holds the step's deferred line for each, and both
-# read converted: false. It gives the lease back and runs no command: both read converted: true
+# It boots this head without the hold and with no wait for the backfill. While the leases are
+# held, the dry run and the real run each print X1 and X2 deferred, each naming a document of its
+# issue that owes its block index, the server's log holds the step's deferred line for each, and
+# both read converted: false. It gives both back and runs no command: both read converted: true
 # within 300 s, and the store census reads no difference.
 #
 # The sockets speak the Hocuspocus framing the browser's provider speaks, through a Bun program
@@ -94,7 +96,7 @@ USAGE
 . "$(dirname "${BASH_SOURCE[0]}")/seed-corpus.sh"
 
 require_env DATABASE_URL PROJECT BASELINE_SHA
-require_commands bun cmp curl git go grep head jq ln mkfifo psql tail
+require_commands bun cmp curl git go grep head jq ln psql tail
 readonly driver=issue-room-cutover.sh
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 project="$PROJECT"
@@ -116,9 +118,6 @@ base_commit="$(git -C "$checkout" rev-parse --verify --quiet "${BASELINE_SHA}^{c
   exit 2
 }
 readonly base_commit
-# The block index's lease (docs.BlockIndexLease), as duty.Exclusive takes it: the namespace
-# 0x4C4F4F50 (leaseNamespace in internal/dispatch/duty/exclusive.go) and the lease's name.
-readonly lease_namespace=1280266064 lease_name=block-index
 # The blocks of X1's Verification document: more than the 2,000 a write indexes in its own request
 # (deferBlockIndexBlocks), so that write leaves it to the reconciliation.
 readonly deferred_blocks=2100
@@ -128,24 +127,16 @@ work_dir
 mkdir "$work/capture" "$work/bin"
 stamp="$(date +%s)-$$"
 readonly stamp
-# The application_name of the driver's own psql session that holds the block index's lease.
-readonly lease_session="issue-room-cutover-lease-$stamp"
 sections=0
 peer_pid=""
 peer_in=""
 peer_out=""
 beside_pid=""
 other_pid=""
-lease_pid=""
-lease_fd=""
 cleanup() {
   local code=$?
   issue_room_cutover_peer_stop
-  [[ -z "$lease_fd" ]] || exec {lease_fd}>&-
-  if [[ -n "$lease_pid" ]]; then
-    kill "$lease_pid" 2>/dev/null || true
-    wait "$lease_pid" 2>/dev/null || true
-  fi
+  drop_index_leases
   baseline_stop_pid "$beside_pid"
   baseline_stop_pid "$other_pid"
   tree_stop_head
@@ -706,49 +697,6 @@ issue_room_cutover_holds() {
   jq -e --arg id "$3" 'any(.[]; .id == $id)' <<<"${reply#blocks "$1" }" >/dev/null
 }
 
-# issue_room_cutover_take_lease SECTION: takes the block index's lease on a psql session of the
-# driver's own, kept open on a pipe and named by its application_name, and reads it granted to
-# that session in pg_locks; a try the lease's holder refuses is made again every 2 s for at most
-# 300 s.
-issue_room_cutover_take_lease() {
-  local section="$1" deadline=$((SECONDS + tree_wait_seconds))
-  mkfifo "$work/lease.in"
-  PGAPPNAME="$lease_session" env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -X -q -At \
-    <"$work/lease.in" >"$work/lease.out" 2>&1 &
-  lease_pid=$!
-  exec {lease_fd}>"$work/lease.in"
-  while true; do
-    printf "select pg_try_advisory_lock(%d, hashtext('%s'));\n" "$lease_namespace" "$lease_name" >&"$lease_fd"
-    sleep "$tree_poll_seconds"
-    issue_room_cutover_lease_held "$section"
-    [[ "$answer" == 0 ]] || break
-    ((SECONDS < deadline)) ||
-      fail "$section" "take the block index's lease" "after ${tree_wait_seconds} s the driver's session holds it not: $(tail -n 5 "$work/lease.out")"
-  done
-  pass "$section" "the driver's own psql session holds the block index's lease (pg_try_advisory_lock($lease_namespace, hashtext('$lease_name')))"
-}
-
-# issue_room_cutover_lease_held SECTION: how many grants of the block index's lease the driver's
-# own session holds, in answer.
-issue_room_cutover_lease_held() {
-  query "$1" "read the lease the driver's session holds in pg_locks" "
-    select count(*) from pg_locks l join pg_stat_activity a on a.pid = l.pid
-    where a.application_name = '$lease_session' and l.locktype = 'advisory' and l.granted
-      and l.classid = $lease_namespace and l.objid = hashtext('$lease_name')::oid and l.objsubid = 2"
-}
-
-# issue_room_cutover_give_lease SECTION: gives the lease back and ends that session.
-issue_room_cutover_give_lease() {
-  printf 'select pg_advisory_unlock_all();\n' >&"$lease_fd"
-  exec {lease_fd}>&-
-  lease_fd=""
-  wait "$lease_pid" 2>/dev/null || true
-  lease_pid=""
-  issue_room_cutover_lease_held "$1"
-  [[ "$answer" == 0 ]] || fail "$1" "give the block index's lease back" "the driver's session still holds $answer grants of it"
-  pass "$1" "the driver gave the block index's lease back and ended its session"
-}
-
 # issue_room_cutover_owed ISSUE: a document of ISSUE that owes its block index, in owed, empty
 # where none does.
 issue_room_cutover_owed() {
@@ -1209,7 +1157,7 @@ beside_pid="$beside_boot_pid"
 base="$beside_boot_url"
 tree_sign_in "$section" "$person_login"
 tree_create_project "$section" "$project" "The deferral of an issue's conversion"
-issue_room_cutover_take_lease "$section"
+hold_index_leases "$section"
 issue_room_cutover_write_issue "$section" "An issue whose Verification document is left to the reconciliation" deferred-large "$deferred_blocks"
 large="$written" large_verification="$written_verification"
 issue_room_cutover_write_issue "$section" "An issue of a few blocks a document" deferred-small
@@ -1231,7 +1179,7 @@ for run in dry real; do
   for issue in "$large" "$small"; do
     issue_room_cutover_outcome "$work/deferral-$run.out" "$issue"
     [[ "$outcome" == deferred ]] ||
-      fail "$section" "the $run run prints $issue deferred while the lease is held" "it prints $outcome: ${outcome_line:-no line}"
+      fail "$section" "the $run run prints $issue deferred while the leases are held" "it prints $outcome: ${outcome_line:-no line}"
     issue_room_cutover_names_document "$outcome_line" "$issue" ||
       fail "$section" "the $run run's deferral of $issue names a document of $issue that owes its block index" "its line: $outcome_line"
   done
@@ -1250,11 +1198,11 @@ for issue in "$large" "$small"; do
   issue_room_cutover_converted "$section" "$issue"
   if [[ "$converted" != false ]]; then
     issue_room_cutover_owed "$issue"
-    fail "$section" "$issue reads converted: false while the lease is held" "it reads converted: $converted while ${owed:-no document} of it owes its block index"
+    fail "$section" "$issue reads converted: false while the leases are held" "it reads converted: $converted while ${owed:-no document} of it owes its block index"
   fi
 done
-pass "$section" "$large and $small read converted: false while the lease is held"
-issue_room_cutover_give_lease "$section"
+pass "$section" "$large and $small read converted: false while the leases are held"
+give_index_lease "$section"
 deadline=$((SECONDS + tree_wait_seconds))
 while true; do
   stayed=""
@@ -1268,7 +1216,7 @@ while true; do
       "after ${tree_wait_seconds} s these still read converted: false:$stayed"
   sleep "$tree_poll_seconds"
 done
-pass "$section" "with the lease given back and no command run, the step converted $large and $small"
+pass "$section" "with the leases given back and no command run, the step converted $large and $small"
 issue_room_cutover_census_reads_zero "$section" "the conversion's census of $large and $small reads zero" "$large" "$small"
 sections=$((sections + 1))
 

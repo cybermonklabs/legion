@@ -100,7 +100,9 @@ import (
 // there next is dated later still. Where the
 // store holds a node already, live or gone, no first node is written: a live one is stated gone,
 // and a gone one (an earlier document's, whose address a build before this one took again) is
-// left as it is, rather than moved live at a created_at that may predate its gone statement.
+// left as it is, rather than moved live at a created_at that may predate its gone statement. The
+// first node stays for good: a rollback to any earlier release, and a write an older build makes
+// in any later roll, still reach it.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -257,7 +259,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 const artifactRemovalLockTimeout = `set local lock_timeout = '5s'`
 
 // removedDocumentNodes states the removed document's node gone, and the node of each version of it
-// the store holds (R16 of dispatch://INFRA-1253: a document and its versions are nodes of its
+// the store holds (R16 of the issue-tree spec: a document and its versions are nodes of its
 // issue's tree, and one removed is no longer present in it), as the block index states a block a
 // version no longer holds gone (refs.IndexBlocks): through the store's own node write, a restating
 // write of each node whose state is gone, which moves the state and keeps the visibility, and
@@ -569,9 +571,15 @@ type artifactClear struct {
 // do cascade are left to the artifact row's own delete, and the reference rows, which carry no
 // key either, to package refs
 // (refs.ForgetDocument). document_search_backfill's one row is not cleared, though it carries an
-// artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
-// the document, and the boot's fill reads that row every time, so deleting it when the cursor
-// named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
+// artifact_id: that id is the keyset cursor of the search fill a process of the release before
+// runs at each boot, a position in the fill and not a row of the document, and deleting it when
+// the cursor named the removed document left no such process able to start
+// (#4224).
+//
+// The one statement that names document_search runs its delete only where the table stands
+// (documentSearchClear): this build reads no row of it and writes none but this delete, and the
+// root's own pull request drops it (R17 of the issue-tree spec), so the build a rollback
+// from the root reaches removes a document with no table to clear.
 //
 // Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
@@ -595,9 +603,23 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "stored updates", statement: `delete from doc_updates where artifact_id = $1`, args: id},
 		{what: "snapshots", statement: `delete from doc_snapshots where artifact_id = $1`, args: id},
 		{what: "checkpoints", statement: `delete from doc_checkpoints where artifact_id = $1`, args: id},
-		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
+		{what: "search rows", statement: documentSearchClear(artifact.ID)},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
 		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},
 	}
+}
+
+// documentSearchClear is the removal's delete of the removed document's document_search row
+// (migration 20261101182447), run only where to_regclass finds the table, under the name the
+// delete itself resolves: a DO block, whose body PL/pgSQL plans when a statement of it first runs,
+// so the delete is never planned over a database the root's pull request has dropped the table
+// from. A DO block takes no parameter, so the document's id is written into it as a literal
+// (store.QuoteLiteral): it is the artifacts row's own uuid, which the removal read.
+func documentSearchClear(artifactID string) string {
+	return `do $$ begin
+		if to_regclass('document_search') is not null then
+			delete from document_search where artifact_id = ` + store.QuoteLiteral(artifactID) + `::uuid;
+		end if;
+	end $$`
 }

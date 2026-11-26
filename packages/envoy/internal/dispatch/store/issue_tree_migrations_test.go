@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// issueTreeMigrationName is the name every migration of dispatch://INFRA-1253 takes,
+// issueTreeMigrationName is the name every migration of the issue-tree spec takes,
 // <timestamp>_issue_tree_<what>.up.sql, so the test finds the set by its name and a migration
 // that branch adds joins the set with no edit here.
 var issueTreeMigrationName = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.up\.sql$`)

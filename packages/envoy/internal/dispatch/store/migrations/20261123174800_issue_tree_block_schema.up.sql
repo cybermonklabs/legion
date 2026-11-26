@@ -10,7 +10,10 @@
 --   `plan_task`, after each type's other attributes: the one place a node's parent is written
 --   where its rendering cannot give it;
 -- - `requirement`'s `serves`, a `block[]` with the targets criterion and requirement;
--- - `plan_task`'s `size`, of the kind `days`, after `needs` and `steps`.
+-- - `plan_task`'s `size`, of the kind `minutes`, after `needs` and `steps`: a duration its block's
+--   text writes in hours and minutes (`45m`, `2h`, `1h30m`), which its node holds in whole minutes;
+-- - `plan_task`'s `skills` and `docs`, each of the kind `string[]` with no default, after `size`:
+--   the skills and the repository paths its implementer should read.
 --
 -- It also widens `plan_task`'s `needs`, which every version has read: its `scope` of `document`
 -- goes, so it names a plan task of its issue or of an issue above it, and it gains `items` of
@@ -85,7 +88,8 @@ where kind = 'supertag' and id = 'criterion';
 -- and its position beside it. None is named for a base attribute, so each store name is its own
 -- name (pmdoc/schemanodes.StoreName). A position is the attribute's place among its type's
 -- attributes, counted from 0: check holds six before parent, and plan_task three - serves, needs
--- and steps - before size. The store holds none of the six before this runs.
+-- and steps - before size, then skills and docs, then parent. The store holds none of the eight
+-- before this runs.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
 values
   ('attribute', 'check/parent', 'attribute', 'project', 'live',
@@ -94,11 +98,17 @@ values
   ('attribute', 'criterion/parent', 'attribute', 'project', 'live',
    '{"kind": "block[]", "items": ["ask", "comment", "message"], "since": 7, "creatable_since": 7, "name": "parent", "store_name": "parent", "position": 0}',
    now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0),
+  ('attribute', 'plan_task/docs', 'attribute', 'project', 'live',
+   '{"kind": "string[]", "since": 7, "creatable_since": 7, "name": "docs", "store_name": "docs", "position": 5}',
+   now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0),
   ('attribute', 'plan_task/parent', 'attribute', 'project', 'live',
-   '{"kind": "block[]", "items": ["ask", "comment", "message"], "since": 7, "creatable_since": 7, "name": "parent", "store_name": "parent", "position": 4}',
+   '{"kind": "block[]", "items": ["ask", "comment", "message"], "since": 7, "creatable_since": 7, "name": "parent", "store_name": "parent", "position": 6}',
    now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0),
   ('attribute', 'plan_task/size', 'attribute', 'project', 'live',
-   '{"kind": "days", "since": 7, "creatable_since": 7, "name": "size", "store_name": "size", "position": 3}',
+   '{"kind": "minutes", "since": 7, "creatable_since": 7, "name": "size", "store_name": "size", "position": 3}',
+   now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0),
+  ('attribute', 'plan_task/skills', 'attribute', 'project', 'live',
+   '{"kind": "string[]", "since": 7, "creatable_since": 7, "name": "skills", "store_name": "skills", "position": 4}',
    now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0),
   ('attribute', 'requirement/parent', 'attribute', 'project', 'live',
    '{"kind": "block[]", "items": ["ask", "comment", "message"], "since": 7, "creatable_since": 7, "name": "parent", "store_name": "parent", "position": 1}',
@@ -122,10 +132,14 @@ values
   ('attribute', 'check/parent', 'visibility', 'value', 'project', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'criterion/parent', 'state', 'value', 'live', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'criterion/parent', 'visibility', 'value', 'project', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'state', 'value', 'live', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'visibility', 'value', 'project', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'state', 'value', 'live', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'visibility', 'value', 'project', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'state', 'value', 'live', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'visibility', 'value', 'project', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'state', 'value', 'live', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'visibility', 'value', 'project', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/parent', 'state', 'value', 'live', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/parent', 'visibility', 'value', 'project', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/serves', 'state', 'value', 'live', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
@@ -137,8 +151,10 @@ insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, sou
 values
   ('attribute', 'check/parent', 'attribute_of', 'supertag', 'check', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'criterion/parent', 'attribute_of', 'supertag', 'criterion', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'attribute_of', 'supertag', 'plan_task', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'attribute_of', 'supertag', 'plan_task', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'attribute_of', 'supertag', 'plan_task', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'attribute_of', 'supertag', 'plan_task', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/parent', 'attribute_of', 'supertag', 'requirement', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/serves', 'attribute_of', 'supertag', 'requirement', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true);
 
@@ -166,19 +182,31 @@ values
   ('attribute', 'criterion/parent', 'store_name', 'value', 'parent', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/needs', 'item_versions', 'value', '{"issue": {"since": 7, "creatable_since": 7}}', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/needs', 'items', 'value', '["issue"]', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'kind', 'value', 'string[]', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'name', 'value', 'docs', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'position', 'value', '5', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/docs', 'store_name', 'value', 'docs', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'items', 'value', '["ask", "comment", "message"]', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'kind', 'value', 'block[]', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'name', 'value', 'parent', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
-  ('attribute', 'plan_task/parent', 'position', 'value', '4', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/parent', 'position', 'value', '6', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/parent', 'store_name', 'value', 'parent', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
-  ('attribute', 'plan_task/size', 'kind', 'value', 'days', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/size', 'kind', 'value', 'minutes', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'name', 'value', 'size', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'position', 'value', '3', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'plan_task/size', 'store_name', 'value', 'size', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'kind', 'value', 'string[]', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'name', 'value', 'skills', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'position', 'value', '4', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
+  ('attribute', 'plan_task/skills', 'store_name', 'value', 'skills', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/parent', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/parent', 'items', 'value', '["ask", "comment", "message"]', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),
   ('attribute', 'requirement/parent', 'kind', 'value', 'block[]', now(), '{"kind": "system", "id": "block-schema-issue-tree"}', 0, null, true),

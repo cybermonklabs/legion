@@ -64,23 +64,30 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// Thirteen entries take no owner lock - six exceptions, since cmd/dispatch-seed's three loaders
-// share one, the boot rename pass's three statement builders share another and the migration
-// runners' four writers of their version tables share a third - and each says why. One, the
-// naming of a filed_from comment's node (stateFiledFromNode), holds its issue's owner lock and
-// not the comment's, and says why. Everything else on the list holds the item's owner, which is
-// what makes the advisory lock at refs.LockItemOwner enough: those that take it in a transaction
-// they open are rows of the lock table, which proves it by holding it
-// (item_row_owner_lock_test.go), and those that write inside a transaction their caller opened
-// rest on the lock that caller took, which no test here or there drives; the gap map
-// (itemRowLockNoRow) names each with why, and TestTheLockTablePlacesEveryWriterTheCensusNames
-// keeps every entry in one of the two. That any of them still takes or holds it is read off no
-// entry here.
+// Eighteen entries take no owner lock - seven exceptions, since cmd/dispatch-seed's three loaders
+// share one, the boot rename pass's three statement builders share another, the migration
+// runners' four writers of their version tables share a third and the broker's hold store's five
+// writers share a fourth - and each says why. One, the naming of a filed_from comment's node
+// (stateFiledFromNode), holds its issue's owner lock and not the comment's, and says why.
+// Everything else on the list holds the item's owner, which is what makes the advisory lock at
+// refs.LockItemOwner enough: those that take it in a transaction they open are rows of the lock
+// table, which proves it by holding it (item_row_owner_lock_test.go), and those that write inside
+// a transaction their caller opened rest on the lock that caller took, which no test here or there
+// drives; the gap map (itemRowLockNoRow) names each with why, and
+// TestTheLockTablePlacesEveryWriterTheCensusNames keeps every entry in one of the two. That any of
+// them still takes or holds it is read off no entry here.
 var itemRowWriters = map[string]map[string]string{
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
 		"writeComments": seedLoaderException,
 		"writeMessages": seedLoaderException,
+	},
+	"internal/cipher/natshold/store.go": {
+		"DeleteCohort": holdTableException,
+		"Move":         holdTableException,
+		"PutCutover":   holdTableException,
+		"PutRecord":    holdTableException,
+		"Restore":      holdTableException,
 	},
 	"internal/dispatch/api/ask_asked_of.go": {
 		"putAskAskedOf": "the ask's owner lock, taken with the read of the owner it guards " +
@@ -157,6 +164,9 @@ var itemRowWriters = map[string]map[string]string{
 			"own transaction before the row is read (refs.LockItemOwner)",
 	},
 	"internal/dispatch/docs/anchor_refresh.go": {
+		"Queue": "the owner lock of each orphaned comment's issue, which the node DELETE that queues " +
+			"it takes before it reads them (deleteNode's lockNodeRouteOwners over readDeleteLocks' " +
+			"docs.NodeAnchorIssues), refusing an orphan of an issue it did not lock",
 		"refreshAnchors": "the document's owner lock, which the version write that calls it " +
 			"holds (lockArtifactOwner, writeVersionTx)",
 	},
@@ -179,6 +189,11 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/docs/decision_restore.go": {
 		"moveRows": "the issue's owner lock, which the decisions step's restore takes first in the " +
 			"transaction it opens (restoreIssueDecisions, lockArtifactOwner)",
+	},
+	"internal/dispatch/docs/issue_conversion.go": {
+		"moveAsks": "the issue's owner lock, which the conversion takes first in the transaction it " +
+			"runs in (issueConversion.run, store.LockOwner); the asks and comments it moves hang on " +
+			"the issue's documents, whose owner is the issue (store.OwnerOf)",
 	},
 	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
@@ -271,6 +286,17 @@ const versionTableException = "none, and none to take: the table is a migration 
 	"broker_schema_migrations), never an item row; the runner writes it under the store's " +
 	"migration lock, and the test helpers in a test's own database"
 
+// holdTableException is why the broker's hold store's writers are on the census with no lock. Its
+// tables are the NATS writer hold's (nats_hold, nats_hold_log, nats_hold_records,
+// nats_hold_record_deletes and nats_cutover, migration 0044 of the broker's store), which
+// natshold.Store names at run time with its schema (Store.table), so this scan cannot read them
+// (unspelledTableWrites). None is an item row, and they live in the broker's database, which no
+// item's owner lock reaches.
+const holdTableException = "none, and none to take: the tables are the broker's NATS writer " +
+	"hold tables (nats_hold, nats_hold_log, nats_hold_records, nats_hold_record_deletes, " +
+	"nats_cutover), which natshold.Store names at run time with its schema, never an item row, " +
+	"in the broker's database, which no item's owner lock reaches"
+
 // TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus holds the names half of the invariant the
 // advisory owner lock rests on: every writer of a comment, a message, an ask or one of their
 // block-state rows takes that item's owner lock (itemOwnerLockRule), and this half is that every
@@ -283,8 +309,8 @@ const versionTableException = "none, and none to take: the table is a migration 
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the thirteen entries here that take no
-// owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
+// does not drive (itemRowLockNoRow names each with why), and the eighteen entries here that take
+// no owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
 //
@@ -414,8 +440,11 @@ var itemRowLockNoRow = map[string]map[string]string{
 			"the lock table's row for that backfill drives a comment's row, whose pin is " +
 			"pinCommentAnchorBlock, and an ask's pin is the same transaction over the asks table",
 	},
-	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
-	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
+	"internal/dispatch/docs/anchor_refresh.go": {
+		"Queue":          itemRowCallersTransaction,
+		"refreshAnchors": itemRowCallersTransaction,
+	},
+	"internal/dispatch/docs/approval_ask.go": {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
 		"createAskBlock":     itemRowCallersTransaction,
 		"reconcileAskBlocks": itemRowCallersTransaction,
@@ -424,6 +453,12 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"moveRows": "runs in the decisions step's restore of one issue, a background pass no " +
 			"request makes; its lock-step driver holds the restore behind the issue's owner lock " +
 			"(docs' TestTheDecisionsStepsWritersTakeTheStoreLockOrder)",
+	},
+	"internal/dispatch/docs/issue_conversion.go": {
+		"moveAsks": "runs in the issue room step's conversion of one issue (docs.ConvertIssue), a " +
+			"background pass no request makes, in the transaction that takes the issue's owner lock " +
+			"before anything else; the store's lock-step register names its site " +
+			"(storetest/lockstep's sites.go, graphstore's TestEveryStoreWriteTakesOneLockOrder)",
 	},
 	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "a boot pass of graphcensus.Backfill, no request's; its lock-step test " +
@@ -450,6 +485,13 @@ var itemRowLockNoRow = map[string]map[string]string{
 	},
 	"internal/dispatch/api/broadcasts.go":       {"writeBroadcast": itemRowNoOwnerLock},
 	"internal/dispatch/docs/decided_wording.go": {"restoreWordings": itemRowNoOwnerLock},
+	"internal/cipher/natshold/store.go": {
+		"DeleteCohort": itemRowNoOwnerLock,
+		"Move":         itemRowNoOwnerLock,
+		"PutCutover":   itemRowNoOwnerLock,
+		"PutRecord":    itemRowNoOwnerLock,
+		"Restore":      itemRowNoOwnerLock,
+	},
 	"internal/pgmigrate/identity.go": {
 		"Record":     itemRowNoOwnerLock,
 		"writeFixes": itemRowNoOwnerLock,

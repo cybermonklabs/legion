@@ -1,6 +1,6 @@
 package intake_test
 
-//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch seedRedeliveredIssue testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)
+//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch seedRedeliveredIssue testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
 
 import (
 	"bytes"
@@ -91,6 +91,7 @@ func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Reso
 // admits envoy rows in processed_events and holds its GitHub rows to exactly the redelivered
 // delivery (redeliveredGitHubEvents).
 func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	binaries := builtEnvoyBinaries(t)
 

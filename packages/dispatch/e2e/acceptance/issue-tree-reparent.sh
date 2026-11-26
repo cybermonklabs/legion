@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# The check c-reparent-and-state of dispatch://INFRA-1253, the cases of the move route: a person or
+# The issue-tree check c-reparent-and-state, the cases of the move route: a person or
 # an agent moves a node of an issue's tree through PATCH /api/v1/issues/{key}/nodes/{id} (R7), with
 # `{id}` the node's store address as one percent-encoded path segment, the body {parent, after} and
 # an If-Match naming the node's placement_seq as a quoted entity tag. It runs against a server of
 # this head serving alone, so every issue it creates is born converted, on the database that server
 # serves, and seeds every issue it reads.
 #
-#   subtree  Alice writes two criteria K1 and K2, a requirement R1 under K1 and two checks under R1,
-#            and moves R1 under K2: one part_of appended to K2, one retracted from K1, no tuple of
-#            either check, both checks under R1 in their order, and their serves tuples as they were.
+#   subtree  Alice writes, under the spec's memo callout, two criteria K1 and K2, a requirement R1
+#            under K1 and two checks under R1, and moves R1 under K2: one part_of appended to K2, one
+#            retracted from K1, no tuple of either check, both checks under R1 in their order, and
+#            their serves tuples as they were. Every move taken answers its parent, the ranked
+#            sibling the store holds it right after (or null) and its placement_seq.
 #   refusals A parent inside the moving subtree and a parent in another tree are refused 400
 #            INVALID_POINTER, a stale If-Match 412, each storing nothing; the move kept R1's words.
 #            Lenses L1 (pre-mortem on K1), L2 (pre-mortem on K2, triggered by L1) and a risk under
@@ -18,9 +20,11 @@
 #   constraint A constraint moves only under an issue node: under R1 400 INVALID_POINTER, under the
 #            child issue's node 200, and the child's constraints list it then.
 #   ask      The route moves no ask: 400 NODE_NOT_MOVABLE, its part_of still the spec's, and the store
-#            census reads no ask_parent difference and no tree mismatch.
+#            census, run whatever the move answered, reads no ask_parent difference and no tree
+#            mismatch.
 #   child    A block under the child issue's node is 400 INVALID_POINTER, a comment is 400
-#            NODE_NOT_MOVABLE and stays listed under the issue, and L3 moves under the child.
+#            NODE_NOT_MOVABLE and stays listed under the issue, both trees read whatever the move
+#            answered, and L3 moves under the child.
 #   removable No move puts a node where a removal of a document would leave it live behind no row:
 #            U (one empty version) and W (text), the constraint under U 400 INVALID_POINTER, L4 onto
 #            U 200 with U's row as its artifact_id, a finding onto U 409 PARENT_DOCUMENT_REMOVABLE,
@@ -28,8 +32,8 @@
 #            409 after a comment cites U.
 #   depth    The rule holds two levels down, and reads the moved node's whole subtree (L5).
 #   rowless  A document node whose row has gone counts as removable: V's row is deleted by SQL as
-#            main's removal deletes it, under the block-index lease, and the move under V's node is
-#            409 PARENT_DOCUMENT_REMOVABLE, not 404.
+#            main's removal deletes it, under the block-index lease and the forms drain's, and the
+#            move under V's node is 409 PARENT_DOCUMENT_REMOVABLE, not 404.
 #   state    A requirement with a plan node set overtaken leaves the coverage gaps and the plan view.
 #   outline  The outline's moves through PATCH alone, chaining each answer's placement_seq; the text
 #            passes keep every stored place; the input refusals; the route rows.
@@ -37,12 +41,12 @@
 #   request  An open approval request on the spec query node names the version the drain writes.
 #
 # Inputs: DATABASE_URL (the database the server serves, on this machine: the driver reads the store
-# through psql, deletes V's rows there and holds the block-index lease there), DISPATCH_URL (the
-# server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (the agent bearer, read here and never printed),
-# PROJECT (an existing project key) and DEV_SIGNIN_LOGIN (the login the server's dev sign-in route
-# signs in: `alice`). `envoy-dispatch` of this head is on PATH, for the census. Each unmet input is
-# exit 2. The agent bearer closes every issue the driver made when the run ends, also when a check
-# fails.
+# through psql, deletes V's rows there and holds the block-index and forms drain leases there),
+# DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (the agent bearer, read here and
+# never printed), PROJECT (an existing project key) and DEV_SIGNIN_LOGIN (the login the server's dev
+# sign-in route signs in: `alice`). `envoy-dispatch` of this head is on PATH, for the census. Each
+# unmet input is exit 2. The agent bearer closes every issue the driver made when the run ends, also
+# when a check fails.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` on stderr and the script exits 1. It prints no SKIP line. The
@@ -101,15 +105,11 @@ work_dir
 tree_init
 
 keys=()
-lease_pid=""
 moves=0
 cleanup() {
   local code=$? issue
   trap - EXIT INT TERM
-  if [[ -n "$lease_pid" ]]; then
-    kill "$lease_pid" 2>/dev/null || true
-    wait "$lease_pid" 2>/dev/null || true
-  fi
+  drop_index_leases
   for issue in "${keys[@]}"; do
     close_issue "$issue"
   done
@@ -228,10 +228,35 @@ rp_moved_tuples() {
   pass "$1" "the move of $2 appended one part_of to $5 and retracted the one to $4"
 }
 
+# rp_preceding SECTION ADDRESS PARENT: the ranked child of PARENT that the node at ADDRESS now
+# follows - the child just before it by rank, compared byte for byte, of any band - as a store
+# address (a block's node id, every other node `<kind>/<id>`), or `null` where it follows none or
+# holds no rank, in rp_before. It reads the store, as the move's answer must agree with it.
+rp_preceding() {
+  rp_store "$3"
+  with_vars "$1" "read the ranked child of $3 that $2 follows" \
+    "select coalesce((select o.before from (
+       select s.child, lag(s.child) over (order by s.rank collate \"C\") as before from (
+         select distinct on (t.from_kind, t.from_id) t.asserted,
+                case when t.from_kind = 'block' then t.from_id else t.from_kind || '/' || t.from_id end as child,
+                (select case when x.asserted then x.to_id end from graph_tuples x
+                  where x.from_kind = t.from_kind and x.from_id = t.from_id and x.kind = 'rank' and x.to_kind = 'value'
+                  order by x.seq desc limit 1) as rank
+         from graph_tuples t
+         where t.kind = 'part_of' and t.to_kind = :'kind' and t.to_id = :'id'
+         order by t.from_kind, t.from_id, t.seq desc) s
+       where s.asserted and s.rank is not null) o
+     where o.child = :'node'), 'null')" \
+    kind="$rp_kind" id="$rp_id" node="$2"
+  rp_before="$answer"
+}
+
 # rp_move SECTION AS KEY ADDRESS PARENT [AFTER]: moves ADDRESS under PARENT (after AFTER, where it is
-# given: `null` for first) with the If-Match of its placement_seq, wants 200 with parent and
-# placement_seq, and checks the tuples (rp_moved_tuples) where the parent changed. It leaves the
-# answer's placement_seq in rp_placed.
+# given: `null` for first) with the If-Match of its placement_seq, wants 200 with parent, the
+# sibling it now follows and placement_seq, and checks the tuples (rp_moved_tuples) where the parent
+# changed. The sibling the answer names is the one the store holds right before the node
+# (rp_preceding), and where AFTER names a node, that node. It leaves the answer's placement_seq in
+# rp_placed.
 rp_move() {
   local section="$1" as="$2" key="$3" address="$4" parent="$5" after="${6:-}" from mark body
   rp_parents "$section" "$address"
@@ -251,6 +276,16 @@ rp_move() {
   expect "$section" "the move of $address answers its parent" "\"$parent\"" .parent
   rp_placed="$(jq -er '.placement_seq | numbers' "$work/body")" ||
     fail "$section" "the move of $address answers its placement_seq" "PATCH of $address answered without placement_seq for the next If-Match: $(body)"
+  rp_preceding "$section" "$address" "$parent"
+  case "$after" in
+    "" | null) ;;
+    *)
+      [[ "$rp_before" == "$after" ]] ||
+        fail "$section" "the move of $address after $after stands right after it" "it stands after $rp_before among the ranked children of $parent"
+      ;;
+  esac
+  expect "$section" "the move of $address answers the sibling it now follows, $rp_before" \
+    "$(jq -cn --arg a "$rp_before" 'if $a == "null" then null else $a end')" .after
   moves=$((moves + 1))
   [[ "$from" == "$parent" ]] || rp_moved_tuples "$section" "$address" "$mark" "$from" "$parent"
 }
@@ -269,28 +304,47 @@ rp_named() {
   esac
 }
 
-# rp_refused SECTION AS KEY ADDRESS PARENT STATUS CODE [WORDS…]: the move of ADDRESS under PARENT
-# answers STATUS CODE naming each of WORDS, and appends no tuple out of ADDRESS; its part_of stays.
-rp_refused() {
-  local section="$1" as="$2" key="$3" address="$4" parent="$5" want="$6" code="$7" mark before word
+# rp_refusal SECTION AS KEY ADDRESS PARENT STATUS CODE [WORDS…]: sends the move of ADDRESS under
+# PARENT with the If-Match of its placement_seq (0 for a node that holds none, a refusal that comes
+# before that test), and reads whether it answers STATUS CODE naming each of WORDS, appends no tuple
+# out of ADDRESS and leaves its part_of where it stood. It fails nothing: rp_problem holds what it
+# found wrong, empty where nothing was, so a caller reads what the check reads whatever the move
+# answered before it fails.
+rp_refusal() {
+  local section="$1" as="$2" key="$3" address="$4" parent="$5" want="$6" code="$7" mark before word got
   shift 7
+  rp_problem=""
   rp_parents "$section" "$address"
   before="$rp_parent"
   rp_tag "$section" "$address" any
   rp_seq "$section"
   mark="$rp_mark"
   rp_patch "$as" "$key" "$address" "$rp_placed" "$(jq -cn --arg p "$parent" '{parent: $p}')"
-  [[ "$status" == "$want" && "$(jq -r '.code // ""' "$work/body")" == "$code" ]] ||
-    fail "$section" "the move of $address under $parent is refused" \
-      "the move of $address under $parent answered $status $(jq -r '.code // ""' "$work/body" 2>/dev/null), want $want $code: $(body)"
-  for word in "$@"; do
-    jq -e --arg w "$(rp_named "$word")" '.error | contains($w)' "$work/body" >/dev/null ||
-      fail "$section" "the refusal of the move of $address under $parent names $word" "it reads: $(body)"
-  done
-  rp_untouched "$section" "the refused move of $address under $parent stores nothing" "$address" "$mark"
+  got="$(jq -r '.code // ""' "$work/body" 2>/dev/null)" || got=""
+  if [[ "$status" != "$want" || "$got" != "$code" ]]; then
+    rp_problem="the move of $address under $parent answered $status${got:+ $got}, want $want $code: $(body)"
+  else
+    for word in "$@"; do
+      jq -e --arg w "$(rp_named "$word")" '.error | contains($w)' "$work/body" >/dev/null ||
+        rp_problem+="${rp_problem:+; }the refusal of the move of $address under $parent names no $word: $(body)"
+    done
+  fi
+  rp_since "$section" "$address" "$mark"
+  [[ -z "$answer" ]] || rp_problem+="${rp_problem:+; }the move of $address under $parent appended the tuples $answer out of it"
   rp_parents "$section" "$address"
   [[ "$rp_parent" == "$before" ]] ||
-    fail "$section" "the refused move of $address under $parent keeps its part_of" "the refused move of $address under $parent changed its part_of to $rp_parent"
+    rp_problem+="${rp_problem:+; }the refused move of $address under $parent changed its part_of to $rp_parent"
+}
+
+# rp_refused SECTION AS KEY ADDRESS PARENT STATUS CODE [WORDS…]: rp_refusal, failing on what it
+# found wrong: the move of ADDRESS under PARENT answers STATUS CODE naming each of WORDS, and
+# appends no tuple out of ADDRESS; its part_of stays.
+rp_refused() {
+  local section="$1" address="$4" parent="$5" want="$6" code="$7"
+  rp_refusal "$@"
+  [[ -z "$rp_problem" ]] ||
+    fail "$section" "the move of $address under $parent is refused $want $code, storing nothing" "$rp_problem"
+  shift 7
   pass "$section" "the move of $address under $parent answers $want $code, naming $*, and stores nothing"
 }
 
@@ -395,7 +449,11 @@ rp_same_pointers() {
 # --- subtree: a subtree moves with one appended tuple ------------------------------------------------
 
 section=subtree
-spec="The memo of the reparent check, $stamp.
+# The spec opens with a callout, its memo (R14), which stays the issue's first child through every
+# move (bands).
+spec=":::callout{#memo kind=\"note\" title=\"\"}
+The memo of the reparent check, $stamp.
+:::
 
 :::criterion{#k1}
 The first criterion holds a requirement.
@@ -409,7 +467,7 @@ rp_issue "$section" "Reparent check" "$spec"
 # Not readonly: the move helpers take a local `key`, which a readonly name refuses.
 key="$rp_key"
 readonly spec_doc="$rp_spec"
-readonly k1="$(rp_block "$key" k1)" k2="$(rp_block "$key" k2)" r1="$(rp_block "$key" r1)"
+readonly k1="$(rp_block "$key" k1)" k2="$(rp_block "$key" k2)" r1="$(rp_block "$key" r1)" memo="$(rp_block "$key" memo)"
 rp_edit "$section" "alice writes R1 under K1" "$spec_doc" "$(jq -cn --arg m ":::requirement{#r1 parent=\"dispatch://$key/spec#b-k1\"}
 The moved requirement keeps its words.
 :::" '[{op: "insert", after: "block:k1", markdown: $m}]')"
@@ -559,14 +617,25 @@ readonly ask="ask/$answer"
 rp_parents "$section" "$ask"
 ask_parent="$rp_parent"
 [[ -n "$ask_parent" ]] || fail "$section" "the ask stands under the spec" "it holds no part_of"
-rp_refused "$section" person "$key" "$ask" "$k2" 400 NODE_NOT_MOVABLE "${ask#ask/}"
+rp_refusal "$section" person "$key" "$ask" "$k2" 400 NODE_NOT_MOVABLE "${ask#ask/}"
+problems="$rp_problem"
+rp_parents "$section" "$ask"
+[[ "$rp_parent" == "$ask_parent" ]] ||
+  problems+="${problems:+; }the ask's part_of names $rp_parent after the move of $ask, want $ask_parent, the spec's node"
+# The census runs whatever the move answered, so a move it took shows as the difference it leaves.
 tree_envoy_dispatch_status census --store
-grep -q '^census: store kind=ask_parent difference' "$work/out" &&
-  fail "$section" "the census reads no ask_parent difference" "the census reads an ask_parent difference after the move of $ask: $(grep -m1 '^census: store kind=ask_parent difference' "$work/out")"
-line="$(grep -m1 '^census: versions' "$work/out")" || fail "$section" "the census prints its versions line" "envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/out")"
-[[ "$line" == *" tree_mismatch=0"* && "$line" == *" tree_mismatch_repaired=0"* ]] ||
-  fail "$section" "the census reads no tree mismatch" "the census reads $(grep -o 'tree_mismatch=[0-9]*' <<<"$line") $(grep -o 'tree_mismatch_repaired=[0-9]*' <<<"$line"), want 0 and 0: $line"
-pass "$section" "the census reads no ask_parent difference, and tree_mismatch=0 tree_mismatch_repaired=0"
+if line="$(grep -m1 '^census: store kind=ask_parent difference' "$work/out")"; then
+  problems+="${problems:+; }the census reads an ask_parent difference after the move of $ask: $line"
+fi
+if line="$(grep -m1 '^census: versions' "$work/out")"; then
+  [[ "$line" == *" tree_mismatch=0"* && "$line" == *" tree_mismatch_repaired=0"* ]] ||
+    problems+="${problems:+; }the census reads $(grep -o 'tree_mismatch=[0-9]*' <<<"$line" || true) $(grep -o 'tree_mismatch_repaired=[0-9]*' <<<"$line" || true), want 0 and 0: $line"
+else
+  problems+="${problems:+; }envoy-dispatch census --store printed no versions line and exited $tree_envoy_status: $(tail -n 20 "$work/out")"
+fi
+[[ -z "$problems" ]] ||
+  fail "$section" "the route moves no ask, and the census reads no ask_parent difference and no tree mismatch" "$problems"
+pass "$section" "the move of $ask answers 400 NODE_NOT_MOVABLE storing nothing, its part_of names $ask_parent, and the census reads no ask_parent difference, and tree_mismatch=0 tree_mismatch_repaired=0"
 
 # --- child: a block, a comment and a lens under the child issue's node --------------------------------
 
@@ -576,11 +645,20 @@ tree_person_send POST "/api/v1/issues/$key/comments" '{"body": "A remark on the 
 tree_want 201 "$section" "alice comments on $key"
 tree_field "$section" "alice comments on $key" .id
 readonly comment="comment/$tree_value"
-rp_refused "$section" person "$key" "$comment" "issue/$child" 400 NODE_NOT_MOVABLE "${comment#comment/}" comment
+rp_refusal "$section" person "$key" "$comment" "issue/$child" 400 NODE_NOT_MOVABLE "${comment#comment/}" comment
+problems="$rp_problem"
+# Both trees are read whatever the move answered.
 rp_tree "$section" "$key"
-jq -e --arg c "${comment#comment/}" '[.nodes[] | select(.kind == "comment" and .id == $c)] | length == 1' "$work/tree.json" >/dev/null ||
-  fail "$section" "the comment is listed under $key" "the comment $comment is listed by the tree of neither $key nor $child"
-pass "$section" "the comment is listed by the tree of $key, where it stood"
+in_key="$(jq -r --arg c "${comment#comment/}" '[.nodes[] | select(.kind == "comment" and .id == $c)] | length' "$work/tree.json")"
+rp_tree "$section" "$child"
+in_child="$(jq -r --arg c "${comment#comment/}" '[.nodes[] | select(.kind == "comment" and .id == $c)] | length' "$work/tree.json")"
+if [[ "$in_key" != 1 && "$in_child" == 0 ]]; then
+  problems+="${problems:+; }the comment $comment is listed by the tree of neither $key nor $child"
+elif [[ "$in_key" != 1 ]]; then
+  problems+="${problems:+; }the comment $comment is listed by the tree of $child, want $key, where it stood"
+fi
+[[ -z "$problems" ]] || fail "$section" "the route moves no comment, which stays listed under $key" "$problems"
+pass "$section" "the move of $comment answers 400 NODE_NOT_MOVABLE storing nothing, and the tree of $key lists it, where it stood"
 rp_move "$section" person "$key" "$l3" "issue/$child"
 rp_tree "$section" "$child"
 jq -e --arg l "${l3#lens/}" '[.nodes[] | select(.kind == "lens" and .id == $l)] | length == 1' "$work/tree.json" >/dev/null ||
@@ -591,7 +669,7 @@ pass "$section" "L3 is listed by the tree of $child"
 
 section=removable
 rp_upload "$section" "$key" "U $stamp" ""
-readonly u_doc="$rp_doc" u_node="artifact/$rp_ref"
+readonly u_doc="$rp_doc" u_ref="$rp_ref" u_node="artifact/$rp_ref"
 rp_upload "$section" "$key" "W $stamp" "W holds writing."
 readonly w_node="artifact/$rp_ref"
 rp_refused "$section" person "$child" "$constraint" "$u_node" 400 INVALID_POINTER
@@ -605,7 +683,7 @@ rp_move "$section" person "$key" "$l4" "$u_node"
 rp_value "$section" "$l4" artifact_id
 [[ "$answer" == "$u_doc" ]] || fail "$section" "L4 records U's row as its artifact_id" "it records '$answer', want $u_doc"
 pass "$section" "L4 records U's row $u_doc as its artifact_id"
-rp_refused "$section" person "$key" "$f1" "$u_node" 409 PARENT_DOCUMENT_REMOVABLE "$f1" finding "$u_node"
+rp_refused "$section" person "$key" "$f1" "$u_node" 409 PARENT_DOCUMENT_REMOVABLE "$f1" finding "$u_node" "$u_ref"
 rp_move "$section" person "$key" "$f1" "$l4"
 rp_edit "$section" "alice writes R9 under K1" "$spec_doc" "$(jq -cn --arg m ":::requirement{#r9 parent=\"dispatch://$key/spec#b-k1\"}
 A requirement with nothing under it.
@@ -613,9 +691,9 @@ A requirement with nothing under it.
 readonly r9="$(rp_block "$key" r9)"
 rp_refused "$section" person "$key" "$r9" "$l4" 409 PARENT_DOCUMENT_REMOVABLE "$r9" requirement
 rp_move "$section" person "$key" "$r9" "$w_node"
-tree_person_send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg u "dispatch://$rp_ref" '{body: ("This cites " + $u + " and leaves it empty.")}')"
+tree_person_send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg u "dispatch://$(rp_named "$u_node")" '{body: ("This cites " + $u + " and leaves it empty.")}')"
 tree_want 201 "$section" "alice writes a comment citing U"
-rp_refused "$section" person "$key" "$r9" "$l4" 409 PARENT_DOCUMENT_REMOVABLE "$r9" requirement
+rp_refused "$section" person "$key" "$r9" "$l4" 409 PARENT_DOCUMENT_REMOVABLE "$r9" requirement "$u_ref"
 
 # --- depth: the rule holds two levels down, and reads the whole subtree ------------------------------
 
@@ -626,8 +704,8 @@ rp_lens "$section" "$key" "dispatch://$key/spec#b-k1" trade-off
 readonly l5="$rp_lens"
 rp_move "$section" person "$key" "$r9" "$l5"
 for parent in "$u_node" "$l4"; do
-  rp_refused "$section" person "$key" "$l5" "$parent" 409 PARENT_DOCUMENT_REMOVABLE "$l5" lens "its subtree holds a node of a kind that may not stand there"
-  jq -e --arg r "$r9" '.error | contains($r) | not' "$work/body" >/dev/null ||
+  rp_refused "$section" person "$key" "$l5" "$parent" 409 PARENT_DOCUMENT_REMOVABLE "$l5" lens "$parent" "$u_ref" "its subtree holds a node of a kind that may not stand there"
+  jq -e --arg a "$r9" --arg b "$(rp_named "$r9")" '.error | (contains($a) or contains($b)) | not' "$work/body" >/dev/null ||
     fail "$section" "the refusal of the move of $l5 under $parent leaves the subtree's node unnamed" \
       "the refusal of the move of $l5 under $parent reads $(jq -r .error "$work/body"), want the subtree's node of a kind that may not stand there, unnamed"
 done
@@ -638,14 +716,11 @@ pass "$section" "the refusals of L5 name L5, U's node and U, and not the require
 section=rowless
 rp_upload "$section" "$key" "V $stamp" ""
 readonly v_doc="$rp_doc" v_ref="$rp_ref" v_node="artifact/$rp_ref"
-# The lease of the block index's tick, held on a psql session of the driver's own, so no tick and no
-# sweep of one states V's node gone while the move reads it.
-coproc lease { env -u PGHOSTADDR psql "$database_url" -X -q -At 2>&1; }
-lease_pid="$lease_PID"
-printf "select pg_try_advisory_lock(1280266064, hashtext('block-index'));\n" >&"${lease[1]}"
-read -r -t 60 held <&"${lease[0]}" || fail "$section" "take the block-index lease" "the psql session answered nothing"
-[[ "$held" == t ]] || fail "$section" "take the block-index lease" "pg_try_advisory_lock answered '$held': a tick holds it"
-pass "$section" "the driver holds the block-index lease"
+# The block index's lease and the reference forms drain's (lib.sh's hold_index_leases), held on
+# psql sessions of the driver's own, so no tick, no sweep of one and no pass of the drain, which
+# indexes a document through the block index's own index, states V's node gone while the move
+# reads it.
+hold_index_leases "$section"
 psql_run "$section" "delete V's rows as main's removal deletes them" -v doc="$v_doc" <<'SQL'
 begin;
 delete from artifact_versions where artifact_id = :'doc'::uuid;
@@ -666,10 +741,7 @@ want_value "$section" "V's node is live and no artifacts row stands at its addre
   "select (select state from graph_nodes where kind = 'artifact' and id = '$v_ref') || '|' || (select count(*) from artifacts where ref_key = '$v_ref')"
 # With no row, the loader names V's node by the address the move gave, and V by its ref_key.
 rp_refused "$section" person "$key" "$r9" "$v_node" 409 PARENT_DOCUMENT_REMOVABLE "$r9" requirement "$v_ref"
-exec {lease[1]}>&-
-wait "$lease_pid" 2>/dev/null || true
-lease_pid=""
-pass "$section" "the driver released the block-index lease"
+give_index_lease "$section"
 
 # --- state: a dead branch stops counting as open ------------------------------------------------------
 
@@ -762,7 +834,15 @@ rp_parents "$section" "$p2_comment"
 [[ "$rp_parent" == "$p2" ]] || fail "$section" "the comment hangs under P2" "it hangs under $rp_parent"
 with_vars "$section" "read the newest version of the tree artifact" "select max(number) from artifact_versions where artifact_id = :'doc'::uuid" doc="$tree_doc"
 tree_version="$answer"
-with_vars "$section" "read P3's row" "select md5(text_sha256 || '|' || coalesce(changed_version::text, '')) from document_blocks where node_id = :'node'" node="$p3"
+# rp_row SECTION NODE: what a move of NODE keeps of its text, in answer: the md5 of its row's text
+# digest and changed_version and of its Keep, the kept_by and kept_text_sum tuples of its node.
+rp_row() {
+  with_vars "$1" "read the row and the Keep of $2" \
+    "select md5(coalesce((select text_sha256 || '|' || coalesce(changed_version::text, '') from document_blocks where node_id = :'node' limit 1), '')
+       || '|' || coalesce((select string_agg(kind || ':' || to_id || ':' || asserted::text, ',' order by seq) from graph_tuples
+                           where from_kind = 'block' and from_id = :'node' and kind in ('kept_by', 'kept_text_sum')), ''))" node="$2"
+}
+rp_row "$section" "$p3"
 p3_row="$answer"
 rp_seq "$section"
 p3_mark="$rp_mark"
@@ -808,9 +888,9 @@ rp_since "$section" "$p3" "$p3_mark"
 if tr ',' '\n' <<<"$answer" | grep -qE '^(text|text_parent|text_rank):'; then
   fail "$section" "the moves of P3 write no text value, text_parent or text_rank" "they appended $answer"
 fi
-with_vars "$section" "read P3's row" "select md5(text_sha256 || '|' || coalesce(changed_version::text, '')) from document_blocks where node_id = :'node'" node="$p3"
-[[ "$answer" == "$p3_row" ]] || fail "$section" "P3's text digest and changed_version stay" "its row moved"
-pass "$section" "Markdown keeps P3 flat: no version, no text tuple, its digest and changed_version unchanged"
+rp_row "$section" "$p3"
+[[ "$answer" == "$p3_row" ]] || fail "$section" "P3's text digest, changed_version and Keep stay" "its row or its Keep moved"
+pass "$section" "Markdown keeps P3 flat: no version, no text tuple, its digest, changed_version and Keep unchanged"
 # A check up and down among the checks under R1, then a criterion, a requirement and a plan task in
 # and out.
 rp_move "$section" person "$key" "$c1" "$r1" "$c2"
@@ -886,16 +966,10 @@ rp_value "$section" "$c1" placement
 [[ "$rp_parent" == "$r4" && "$answer" == authored ]] ||
   fail "$section" "the edit places C1 under R4, authored" "the check $c1 still stands under $rp_parent with the placement '$answer' after the edit that names $r4"
 pass "$section" "the edit places C1 under R4 with the placement authored"
-# The removal of P2 from the text places the stored P3 by its text again.
-rp_edit "$section" "alice deletes P2 from the room's text" "$tree_doc" "$(jq -cn --arg b "${p2#*#}" '[{op: "delete", block: $b}]')"
-corpus_wait_indexed "$section"
-rp_tree "$section" "$key" spec
-p3_parent="$(jq -r --arg n "$p3" '.nodes[] | select(.id == $n) | .parent.id // ""' "$work/tree.json")"
-[[ -n "$p3_parent" ]] || fail "$section" "P3 stands in the tree read after P2's removal" "P3 is missing from the tree read after P2's deletion"
-rp_value "$section" "$p3" placement
-[[ "$answer" == text ]] || fail "$section" "P3 takes the placement text" "it holds '$answer' under $p3_parent"
-pass "$section" "P3 stands under $p3_parent with the placement text"
-# The input refusals, each storing nothing.
+# The input refusals, each storing nothing: no If-Match, a stale one, a body that names no move,
+# and three afters that name no ranked sibling of the check's band - a node that is no child of the
+# parent, the comment under P2, which holds no rank, and a requirement under K1, which stands in the
+# spec's band where the check stands in the Verification document's.
 rp_tag "$section" "$c2"
 c2_tag="$rp_placed"
 rp_seq "$section"
@@ -905,65 +979,102 @@ rp_patch person "$key" "$c2" "" "$(jq -cn --arg p "$r1" '{parent: $p, after: nul
 expect "$section" "a PATCH with no If-Match is 428 PRECONDITION_REQUIRED" '"PRECONDITION_REQUIRED"' .code
 rp_patch person "$key" "$c2" "$((c2_tag - 1))" "$(jq -cn --arg p "$r1" '{parent: $p, after: null}')"
 tree_want 412 "$section" "a stale tag is refused"
+expect "$section" "a stale tag is 412 PRECONDITION_FAILED" '"PRECONDITION_FAILED"' .code
 rp_patch person "$key" "$c2" "$c2_tag" '{}'
 tree_want 400 "$section" "a body with neither parent nor after is refused"
 expect "$section" "a body with neither parent nor after is 400 MOVE_INPUT" '"MOVE_INPUT"' .code
-for after in "$k1" "${p2_comment}" "$r9"; do
-  rp_patch person "$key" "$c2" "$c2_tag" "$(jq -cn --arg p "$r1" --arg a "$after" '{parent: $p, after: $a}')"
+for pair in "$r1 $k1" "$p2 $p2_comment" "$k1 $r3"; do
+  read -r under after <<<"$pair"
+  rp_patch person "$key" "$c2" "$c2_tag" "$(jq -cn --arg p "$under" --arg a "$after" '{parent: $p, after: $a}')"
   [[ "$status" == 400 && "$(jq -r .code "$work/body")" == INVALID_POINTER ]] ||
-    fail "$section" "an after of $after is refused" "it answered $status: $(body)"
+    fail "$section" "an after of $after under $under is refused" "it answered $status: $(body)"
   jq -e '.error | contains("after")' "$work/body" >/dev/null || fail "$section" "the refusal of an after of $after names after" "it reads $(body)"
 done
 rp_untouched "$section" "the refused inputs store nothing" "$c2" "$mark"
 pass "$section" "no If-Match 428, a stale one 412, an empty body 400 MOVE_INPUT, three bad afters 400 INVALID_POINTER naming after, each storing nothing"
+# The removal of P2 from the text places the stored P3 by its text again.
+rp_edit "$section" "alice deletes P2 from the room's text" "$tree_doc" "$(jq -cn --arg b "${p2#*#}" '[{op: "delete", block: $b}]')"
+corpus_wait_indexed "$section"
+rp_tree "$section" "$key" spec
+p3_parent="$(jq -r --arg n "$p3" '.nodes[] | select(.id == $n) | .parent.id // ""' "$work/tree.json")"
+[[ -n "$p3_parent" ]] || fail "$section" "P3 stands in the tree read after P2's removal" "P3 is missing from the tree read after P2's deletion"
+rp_value "$section" "$p3" placement
+[[ "$answer" == text ]] || fail "$section" "P3 takes the placement text" "it holds '$answer' under $p3_parent"
+pass "$section" "P3 stands under $p3_parent with the placement text"
 
 # --- bands: after: null puts a node first in its own band -----------------------------------------------
 
 section=bands
-# rp_band_order SECTION NODE: under the issue, NODE stands after every node of an earlier band and
-# first in its own band; the memo stands first of all.
+# rp_band_order SECTION NODE BAND: under the issue, NODE holds a rank of BAND, the first byte its
+# document gives every rank of it (RankBandSpec 1, RankBandTree 2, RankBandVerification 3,
+# RankBandPlan 4, RankBandOther 5 in refs/block_nodes.go); it stands after every ranked child of an
+# earlier band and first in its own band, but in the spec's band right after the memo; and the memo
+# stands first of all. The children are read from the store, each a block's node id and its rank.
 rp_band_order() {
-  with_vars "$1" "read the children of $key by rank" \
+  local section="$1" node="$2" want="$3" order mine band first
+  with_vars "$section" "read the ranked children of $key" \
     "select string_agg(s.from_id || '=' || s.rank, ',' order by s.rank collate \"C\") from (
        select distinct on (t.from_kind, t.from_id) t.from_id, t.asserted,
               (select to_id from graph_tuples x where x.from_kind = t.from_kind and x.from_id = t.from_id and x.kind = 'rank' order by seq desc limit 1) as rank
        from graph_tuples t where t.kind = 'part_of' and t.to_kind = 'issue' and t.to_id = :'key' and t.from_kind = 'block'
        order by t.from_kind, t.from_id, t.seq desc) s
      where s.asserted and s.rank is not null" key="$key"
-  local order="$answer" mine band first=""
-  mine="$(tr ',' '\n' <<<"$order" | grep -F -- "$2=" | head -n1)" || fail "$1" "$2 holds a rank under $key" "the children read $order"
+  order="$answer"
+  mine="$(tr ',' '\n' <<<"$order" | awk -F= -v n="$node" '$1 == n { print; exit }')"
+  [[ -n "$mine" ]] || fail "$section" "$node holds a rank under $key" "the children read $order"
   band="${mine#*=}"
   band="${band:0:1}"
-  first="$(tr ',' '\n' <<<"$order" | grep -E "=${band}" | head -n1)"
-  [[ "$first" == "$mine" ]] || fail "$1" "$2 goes first in its band $band" "the band reads $(tr ',' '\n' <<<"$order" | grep -E "=${band}" | paste -sd, -)"
-  [[ "$(tr ',' '\n' <<<"$order" | head -n1)" == "$memo="* ]] || fail "$1" "the memo stays first" "the children read $order"
-  pass "$1" "$2 stands first in band $band, after every earlier band, the memo first: $order"
+  [[ "$band" == "$want" ]] || fail "$section" "$node holds a rank of band $want" "its rank ${mine#*=} stands in band $band"
+  first="$(tr ',' '\n' <<<"$order" | awk -F= -v b="$band" -v m="$memo" 'substr($2, 1, 1) == b && $1 != m { print; exit }')"
+  [[ "$first" == "$mine" ]] ||
+    fail "$section" "$node goes first in its band $band" "the band reads $(tr ',' '\n' <<<"$order" | awk -F= -v b="$band" 'substr($2, 1, 1) == b' | paste -sd, -)"
+  [[ "$(tr ',' '\n' <<<"$order" | head -n1)" == "$memo="* ]] || fail "$section" "the memo stays first" "the children read $order"
+  pass "$section" "$node stands first in band $band, after every earlier band, the memo first: $order"
 }
-with_vars "$section" "read the memo of $key" \
-  "select node_id from document_blocks where artifact_id = coalesce((select room from document_rooms where artifact_id = :'doc'::uuid), :'doc'::uuid) and excerpt like 'The memo of the reparent check%'" doc="$spec_doc"
-readonly memo="$answer"
-for node in "$r3" "$p1" "$c2" "$t5"; do
+for pair in "$r3 1" "$p1 2" "$c2 3" "$t5 4"; do
+  read -r node band <<<"$pair"
   rp_move "$section" person "$key" "$node" "issue/$key" null
-  rp_band_order "$section" "$node"
+  rp_band_order "$section" "$node" "$band"
 done
+# The last band: an uploaded document's blocks stand under the document's node, which the skeleton
+# does not open, so both are moved under the issue and read from the store. The second paragraph
+# goes first, last in its band, so the first, moved with after null, has a sibling of its band to
+# precede.
 rp_upload "$section" "$key" "Notes $stamp" "The notes hold one paragraph that moves.
 
 A second paragraph of the notes."
-readonly notes_ref="$rp_ref"
+readonly notes_doc="$rp_doc"
 corpus_wait_indexed "$section"
-with_vars "$section" "read the first block of the notes" "select node_id from document_blocks where artifact_id = :'doc'::uuid and excerpt like 'The notes hold%'" doc="$rp_doc"
+# rp_notes_block SECTION WORDS: the node id of the block of the notes whose text begins with WORDS,
+# in answer, read in the room the notes are edited in.
+rp_notes_block() {
+  with_vars "$1" "read the block of the notes that reads '$2'" \
+    "select coalesce((select d.node_id from document_blocks d where d.artifact_id = coalesce((select room from document_rooms where artifact_id = :'doc'::uuid), :'doc'::uuid)
+       and d.excerpt like :'words' || '%' limit 1), '')" doc="$notes_doc" words="$2"
+  [[ -n "$answer" ]] || fail "$1" "read the block of the notes that reads '$2'" "no block of the notes reads it"
+}
+rp_notes_block "$section" "A second paragraph of the notes"
+readonly notes_second="$answer"
+rp_notes_block "$section" "The notes hold"
 readonly notes_block="$answer"
+rp_move "$section" person "$key" "$notes_second" "issue/$key"
 rp_move "$section" person "$key" "$notes_block" "issue/$key" null
-rp_band_order "$section" "$notes_block"
+rp_band_order "$section" "$notes_block" 5
+rp_preceding "$section" "$notes_second" "issue/$key"
+[[ "$rp_before" == "$notes_block" ]] ||
+  fail "$section" "the first block of the notes precedes the other block of its band" "the second block of the notes follows $rp_before"
+pass "$section" "the first block of the notes stands first in band 5, before $notes_second"
 
 # --- request: the open request on the spec query names the drained version -------------------------------
 
 section=request
+with_vars "$section" "read the spec's newest version" "select max(number) from artifact_versions where artifact_id = :'doc'::uuid" doc="$spec_doc"
+readonly before_move="$answer"
 tree_person_send POST "/api/v1/artifacts/$spec_doc/approval-requests" '{}'
-[[ "$status" == 201 || "$status" == 200 ]] || fail "$section" "open an approval request on $key's spec" "it answered $status: $(body)"
-tree_field "$section" "open an approval request on $key's spec" .ask.id
+[[ "$status" == 201 || "$status" == 200 ]] || fail "$section" "open an approval request on $key's spec query node" "it answered $status: $(body)"
+tree_field "$section" "open an approval request on $key's spec query node" .ask.id
 readonly request="$tree_value"
-rp_move "$section" person "$key" "$r9" "$k2"
+rp_move "$section" person "$key" "$r4" "$k2"
 deadline=$((SECONDS + 60))
 while true; do
   query "$section" "read whether $key's queries are owed" "select count(*) from issue_query_marks where issue_key = '$key'"
@@ -975,8 +1086,10 @@ with_vars "$section" "read the request and the spec's newest version" \
   "select coalesce((select artifact_version::text from asks where id = :'ask'::uuid), '') || '|' || (select max(number) from artifact_versions where artifact_id = :'doc'::uuid)" \
   ask="$request" doc="$spec_doc"
 IFS='|' read -r named newest <<<"$answer"
-[[ "$named" == "$newest" ]] || fail "$section" "the request on the spec query names the drained version" "the request on $key's spec names version $named after the drain, want $newest"
-pass "$section" "the request $request names version $named, the newest"
+((newest > before_move)) || fail "$section" "the drain writes a version of the spec query" "the spec query of $key stands at version $newest, $before_move before the move of $r4"
+[[ "$named" == "$newest" ]] ||
+  fail "$section" "the request on the spec query names the drained version" "the request on $spec_doc names version $named after the drain, want $newest"
+pass "$section" "the request $request names version $named, the newest, which the drain wrote after the move of $r4"
 
 # --- routes: the node routes this head serves -------------------------------------------------------------
 

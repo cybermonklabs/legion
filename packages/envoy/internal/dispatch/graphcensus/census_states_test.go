@@ -74,7 +74,7 @@ func TestCensusCountsEveryNodeThatIsNotGone(t *testing.T) {
 	moveStates(t, database, document, moves...)
 	requireStatesHeld(t, database, document, states)
 	// The spec's row and its two versions are written by SQL, as a build before their nodes wrote
-	// them (dispatch://INFRA-1253): the backfill gives each its node, and reads no block row, every
+	// them (the issue-tree spec): the backfill gives each its node, and reads no block row, every
 	// one of which the index named, so the census below reads the blocks as the index left them.
 	if _, err := Backfill(ctx, database, io.Discard); err != nil {
 		t.Fatalf("backfill the spec and its versions: %v", err)
@@ -124,7 +124,7 @@ func indexStatesVersion(t *testing.T, database *store.Store, document preStoreDo
 		t.Fatalf("begin the index of version %d: %v", version, err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, written, _, err := refs.IndexBlocks(ctx, tx, document.artifactID, refs.OneVersion(document.artifactID, version, time.Now().UTC()), markdown, blocks, nil, nil, refs.TypedFacts{})
+	_, won, written, _, err := refs.IndexBlocks(ctx, tx, document.artifactID, refs.OneVersion(document.artifactID, version, time.Now().UTC()), markdown, blocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("index version %d of %s: %v", version, document.refKey, err)
 	}
@@ -144,7 +144,8 @@ type stateMove struct{ id, state string }
 
 // moveStates writes each block's node at its new state through the store's writer, in one
 // transaction, as a route that moves a node's state does: the row moves and a state tuple is
-// appended beside it.
+// appended beside it. Every block it moves is a requirement, whose node carries its type's
+// supertag (refs.TypeSupertag), as the index pass wrote it.
 func moveStates(t *testing.T, database *store.Store, document preStoreDocument, moves ...stateMove) {
 	t.Helper()
 	ctx := context.Background()
@@ -152,7 +153,7 @@ func moveStates(t *testing.T, database *store.Store, document preStoreDocument, 
 	nodes := make([]graphstore.Node, len(moves))
 	for index, move := range moves {
 		nodes[index] = graphstore.Node{
-			Kind: refs.BlockNodeKind, ID: document.refKey + "#" + move.id, Supertag: refs.BlockSupertag,
+			Kind: refs.BlockNodeKind, ID: document.refKey + "#" + move.id, Supertag: refs.TypeSupertag("requirement"),
 			Visibility: graphstore.VisibilityProject, State: move.state, Project: "CORE",
 			MadeAt: at, MadeBy: censusWriter, SourceEvent: graphstore.NoEvent,
 		}

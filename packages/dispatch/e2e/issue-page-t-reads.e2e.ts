@@ -1,14 +1,15 @@
 /** the rows count the tree and view reads the page sends the server and draw each filter from
  *  the view it answers */
 
-import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import { coverageNotes, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { getIssue } from "./api";
-import { seedWholeIssue } from "./issue-layout-seed";
-import { closeDetails, openDetails, phase } from "./issue-page";
+import { createIssueArtifact, getIssue, getIssueCoverage } from "./api";
+import { seedNoChildren, seedWholeIssue } from "./issue-layout-seed";
+import { closeDetails, gotoIssue, issuePage, openDetails, phase } from "./issue-page";
 import { nodeRow } from "./issue-page-g";
 import { fixtureSeed, seedKeys } from "./issue-page-t";
 import {
+  awaitIndexedCoverage,
   checksOutOfPlace,
   editNoticesSent,
   firstLoad,
@@ -29,6 +30,7 @@ import {
 import {
   besideViewRead,
   blocksReads,
+  coverageIndexEventGate,
   decisionsReadOf,
   decisionsViewGate,
   headerStatus,
@@ -87,9 +89,10 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       "the first load sends one tree read with no view"
     ).toBe(1);
     expect(blocksReads(load), "the first load sends no blocks read").toEqual([]);
-    expect(load.length, "the first load sends at most 40 requests under /api/").toBeLessThanOrEqual(
-      LOAD_BOUND
-    );
+    expect(
+      load.length,
+      `the first load sends at most ${LOAD_BOUND} requests under /api/`
+    ).toBeLessThanOrEqual(LOAD_BOUND);
     // The view reads R4 sends with a load of Conversation for this seed's issue, which is a child
     // (the seed files it under a parent) and a parent whose Conversation's answer holds no check
     // of a child: Plan's always, Spec's for a child, Verification's for such a parent.
@@ -185,6 +188,36 @@ test("the first load reads the tree once and a filter its view once, and the loa
       expect(blocks, "Decisions reads no blocks").toEqual([]);
       await releaseFilter(page, "decisions");
     }
+  });
+});
+
+// SLOW(>=2s): the page opens over deferred coverage and waits for the next block-index pass.
+test("the line that says a version is still being indexed goes without a reload @owed", async ({
+  browser,
+}) => {
+  owedUnless(coverageIndexEventGate);
+  test.setTimeout(ROW_MS);
+  await phase(browser, seedNoChildren, async (page, seeded) => {
+    // An upload beyond the server's block bound defers indexing to the reconciliation.
+    const name = "index-sample.md";
+    const content = Array.from({ length: 2_001 }, (_, index) => `- Item ${index + 1}`).join("\n");
+    await createIssueArtifact(seeded.key, { content, name });
+    const [pending] = coverageNotes(await getIssueCoverage(seeded.key)).filter((line) =>
+      line.startsWith(`${name} version `)
+    );
+    expect(pending, "the uploaded document's coverage did not defer").toBeDefined();
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    const notices = issuePage(page)
+      .locator("[data-coverage-note]")
+      .filter({ hasText: pending ?? "" });
+    await expect(notices.first(), "the page does not show the pending coverage line").toBeVisible();
+    let navigated = false;
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigated = true;
+    });
+    await awaitIndexedCoverage(seeded.key);
+    await expect(notices, "the indexed document still draws its coverage line").toHaveCount(0);
+    expect(navigated, "the page reloaded to clear the coverage line").toBe(false);
   });
 });
 

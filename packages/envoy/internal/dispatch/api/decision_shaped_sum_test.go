@@ -9,7 +9,7 @@ import (
 )
 
 // A decision's words are its own text without its `shaped` attribute, which is a relation out of
-// the decision and no word of it (R8 and R32 of dispatch://INFRA-1253's spec), and every sum of
+// the decision and no word of it (R8 and R32 of the issue-tree spec), and every sum of
 // them goes through refs.DecisionWords. So a write of `shaped` alone stales no Keep: alice keeps
 // d1 at the text_sha256 the Decisions read answers, and a `retype` that writes d1's `shaped` and
 // keeps its words leaves that read's text_sha256, its changed_version and its words as they were,

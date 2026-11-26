@@ -382,17 +382,18 @@ var entryFactKinds = []string{
 // document the block index has indexed lists its decisions in those document_blocks rows (type
 // `decision`); one that owes that index (document_block_versions.version null) lists them as
 // well in the nodes the typed-node pass placed in it in the write's own transaction
-// (refs.IndexDecisionNodes): the current part_of tuples into the document's own node, through
-// graph_tuples_as_of_in, and the nodes its block_refs rows name (a decision's decided_by, shaped
-// and from_ask), keyed by its room. Each candidate is then read by its own key, the present nodes
-// of the `decision` supertag kept: a node at any state but gone, so a proposed, settled or
-// overtaken decision, ask or reading is drawn wherever its node is (R5 and R12 of the node-states
-// plan this branch carries). An entry's document is the one holding its block, read as
-// decisionread reads it: the artifact keying the block's rows - a block node's address opens with
-// its ref_key, an ask's is its block_artifact_id - mapped to the document whose fragment holds the
-// block, or, for a decision of a document that owes its block index whose block the room's index
-// names no document of yet, the document the read found its node in (refs.BlockDocumentOrSQL),
-// which the statement answers last and decisionread is given (decisionread.Node.Document).
+// (refs.PlanDecisionNodes, written by refs.DecisionIndexing.Queue): the current part_of tuples
+// into the document's own node, through graph_tuples_as_of_in, and the nodes its block_refs rows
+// name (a decision's decided_by, shaped and from_ask), keyed by its room. Each candidate is then
+// read by its own key, the present nodes of the `decision` supertag kept: a node at any state
+// but gone, so a proposed, settled or overtaken decision, ask or reading is drawn wherever its
+// node is (R5 and R12 of the node-states plan this branch carries). An entry's document is the
+// one holding its block, read as decisionread reads it: the artifact keying the block's rows - a
+// block node's address opens with its ref_key, an ask's is its block_artifact_id - mapped to the
+// document whose fragment holds the block, or, for a decision of a document that owes its block
+// index whose block the room's index names no document of yet, the document the read found its
+// node in (refs.BlockDocumentOrSQL), which the statement answers last and decisionread is given
+// (decisionread.Node.Document).
 func decisionEntriesRead() string {
 	return `
 		with documents as (
@@ -861,6 +862,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	if onNode {
 		keep, event, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
 	} else {
+		// kept for one release: heading-keep
 		keep, event, err = s.keepDecisionHeading(r.Context(), tx, actor, document, decision)
 	}
 	if err != nil {

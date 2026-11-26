@@ -21,6 +21,7 @@ const phaseEntryVerbatimVersion = 20261114061900
 // whose task is sent as written whatever the mark says. A mark written after it reads back as it
 // was written, through a store reopened as a daemon restart reopens it.
 func TestThePhaseEntryVerbatimMigrationLeavesEveryRowUnmarkedAndTheMarkRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseEntryVerbatimVersion-1)

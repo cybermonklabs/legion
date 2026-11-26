@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"container/heap"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -81,13 +82,18 @@ type OrderNode struct {
 
 // OrderedNode is one node of the tree the ordered read answers: its name; the issue it stands
 // under, an issue half's own key and a plan node's the first issue its part_of chain reaches; its
-// size, "" for an issue half and for a plan node whose author gave none; and every node it waits
-// on, sorted (compareOrderNodes), the fixed nodes among them, and no overtaken one.
+// size, the whole number of minutes a plan node holds (AttributePlanSize) written in decimal, ""
+// for an issue half and for a plan node whose author gave none; the skills and the docs a plan
+// node's implementer should read (AttributePlanSkills, AttributePlanDocs), each in the order its
+// author wrote them and an empty list for a plan node that holds none, never nil, and nil for an
+// issue half; and every node it waits on, sorted (compareOrderNodes), the fixed nodes among them,
+// and no overtaken one.
 type OrderedNode struct {
 	OrderNode
-	Issue string
-	Size  string
-	Needs []OrderNode
+	Issue        string
+	Size         string
+	Skills, Docs []string
+	Needs        []OrderNode
 }
 
 // TreeOrder is the order the whole tree of one issue runs in (PlanOrder).
@@ -127,9 +133,9 @@ const planOrderDepth = authoredChainDepth
 // It reads the tree in two statements beside IssueDescendants', however large: the walk down
 // the current part_of tuples into each issue (graph_tuples_inbound), through every node who may
 // see and never into an issue, which answers each issue's parent and each plan node with its
-// issue, its current size value (graph_tuples_values), which the block index states from the
-// node's opening line (AttributePlanSize), and whether it or a node above it is overtaken; and one
-// read of every current needs tuple out of those nodes (graph_tuples_current).
+// issue, its current size, skills and docs values (graph_tuples_values), which the block index
+// states from the node's opening line (planBlockValues), and whether it or a node above it is
+// overtaken; and one read of every current needs tuple out of those nodes (graph_tuples_current).
 //
 // It orders by Tarjan's strongly connected components, iteratively, so a long chain costs no
 // depth of the stack: every component of more than one node, or of one node that needs itself,
@@ -173,13 +179,15 @@ type planIssue struct {
 	needs     []Target
 }
 
-// planNode is one plan node of the tree: the issue it stands under, its size, whether it or a
-// node above it is overtaken, and the far ends of its needs tuples.
+// planNode is one plan node of the tree: the issue it stands under, its size, its skills and its
+// docs (OrderedNode), whether it or a node above it is overtaken, and the far ends of its needs
+// tuples.
 type planNode struct {
-	issue     string
-	size      string
-	overtaken bool
-	needs     []Target
+	issue        string
+	size         string
+	skills, docs []string
+	overtaken    bool
+	needs        []Target
 }
 
 // readPlanTree reads the tree of root, whose descendants are descendants, in one statement: the
@@ -207,7 +215,8 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 			  and `+VisibleNodeOfRow("held.from_kind", "held.from_id", "n", "$3")+`
 		)
 		select found.issue, found.parent, found.id, found.root, found.overtaken,
-		       case when sized.asserted then sized.value end
+		       case when sized.asserted then sized.value end, case when skilled.asserted then skilled.value end,
+		       case when documented.asserted then documented.value end
 		from (
 			select below.issue, below.parent, below.id, below.depth, below.depth = 0 as root, below.overtaken
 			from below
@@ -221,6 +230,18 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 			  and t.kind = '`+AttributePlanSize+`' and t.to_kind = '`+graphstore.KindValue+`'
 			order by t.seq desc limit 1
 		) sized on true
+		left join lateral (
+			select t.to_id as value, t.asserted from graph_tuples t
+			where not found.root and t.from_kind = '`+BlockNodeKind+`' and t.from_id = found.id
+			  and t.kind = '`+AttributePlanSkills+`' and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) skilled on true
+		left join lateral (
+			select t.to_id as value, t.asserted from graph_tuples t
+			where not found.root and t.from_kind = '`+BlockNodeKind+`' and t.from_id = found.id
+			  and t.kind = '`+AttributePlanDocs+`' and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) documented on true
 		order by found.id, found.depth, found.issue
 	`, append([]string{root}, descendants...), planOrderDepth, VisibilityArg(who))
 	if err != nil {
@@ -228,9 +249,9 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 	}
 	tree := &planTree{root: root, issues: map[string]*planIssue{}, plans: map[string]*planNode{}}
 	var issue, id string
-	var parent, size *string
+	var parent, size, skills, docs *string
 	var isIssue, overtaken bool
-	if _, err := pgx.ForEachRow(rows, []any{&issue, &parent, &id, &isIssue, &overtaken, &size}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &parent, &id, &isIssue, &overtaken, &size, &skills, &docs}, func() error {
 		switch {
 		case isIssue:
 			held := &planIssue{overtaken: overtaken}
@@ -244,6 +265,13 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 			held := &planNode{issue: issue, overtaken: overtaken}
 			if size != nil {
 				held.size = *size
+			}
+			var err error
+			if held.skills, err = planList(id, AttributePlanSkills, skills); err != nil {
+				return err
+			}
+			if held.docs, err = planList(id, AttributePlanDocs, docs); err != nil {
+				return err
 			}
 			tree.plans[id] = held
 		}
@@ -262,6 +290,21 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 		}
 	}
 	return tree, nil
+}
+
+// planList is the list the value text of the plan node address's attribute name holds, a JSON
+// array of strings as the node's opening line writes a `string[]` attribute (planBlockValues), and
+// an empty list, never nil, where the node holds no value of it (text is nil), so every reader
+// answers a list.
+func planList(address, name string, text *string) ([]string, error) {
+	if text == nil {
+		return []string{}, nil
+	}
+	list := []string{}
+	if err := json.Unmarshal([]byte(*text), &list); err != nil {
+		return nil, fmt.Errorf("read the %s of plan node %s, %q: %w", name, address, *text, err)
+	}
+	return list, nil
 }
 
 // readNeeds reads every current needs tuple out of the tree's issues and plan nodes, in one
@@ -401,7 +444,8 @@ func (tree *planTree) order() TreeOrder {
 	answer := func(node OrderNode) OrderedNode {
 		ordered := OrderedNode{OrderNode: node, Issue: issue[node]}
 		if node.Kind == BlockNodeKind {
-			ordered.Size = tree.plans[node.ID].size
+			plan := tree.plans[node.ID]
+			ordered.Size, ordered.Skills, ordered.Docs = plan.size, plan.skills, plan.docs
 		}
 		for _, waited := range tree.waits(node) {
 			if gone[waited] {

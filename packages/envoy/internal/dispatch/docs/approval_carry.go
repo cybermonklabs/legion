@@ -260,6 +260,8 @@ type decisionStepCases struct {
 }
 
 // any reports whether the version is the decisions step's own write.
+//
+// kept for one release: decisions-step
 func (steps decisionStepCases) any() bool {
 	return steps.restore || steps.conversion
 }
@@ -279,6 +281,8 @@ func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context
 
 // decisionStepCasesOf is the phases ctx's mark names, and what their write added, zero for a
 // context the step did not mark.
+//
+// kept for one release: decisions-step
 func decisionStepCasesOf(ctx context.Context) decisionStepCases {
 	steps, _ := ctx.Value(decisionStepWriteKey{}).(decisionStepCases)
 	return steps
@@ -426,10 +430,12 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // carries nothing by their cases (restoreCase, conversionCase), which no route can reach. Its
 // reads run where it is called, the route's read phase, and its writes are queued there, as
 // carryApproval's are; the events it appends reach the ledger of the transaction it runs in
-// (eventSink), which publishes them after its Commit, beside the version move's own. Where the
-// upload's own pass gave the version its version_renders row (IndexDocumentReferences), its writes
-// run after that row (carryAfterRender), so the review it inserts pins the row's digest; an upload
-// of the approved text writes that row itself first, with the approval's digest (carryRestored).
+// (eventSink), which publishes them after its Commit, beside the version move's own. Its writes
+// keep their place, before the version's artifact.version, which the upload appends after it
+// (R14): the review it inserts pins the digest of the version's stored markdown while the
+// version's record digest is owed, and the fill after the commit repins it to the record
+// (fillOwedDigests); an upload of the approved text writes the version's row itself first, with
+// the approval's digest (carryRestored).
 func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
@@ -443,9 +449,7 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 			return skipUnreadableVersion(artifactID, number, err)
 		}
 	}
-	return carryAfterRender(ctx, tx, artifactID, number, func() error {
-		return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
-	})
+	return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
 }
 
 // carryNewestApproval carries newest, the document's newest review and an approval of version A,
@@ -490,8 +494,10 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	}
 	input := carryInput{
 		approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered,
+		// kept for one release: decisions-step
 		decided: decidedAskBlocks(shown), steps: steps,
 	}
+	// kept for one release: decisions-step
 	if steps.restore {
 		input.restored = restoredAskBlocks(approved, tree, steps.restored, steps.restoredShaped)
 	}
@@ -1217,9 +1223,10 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// own (refs.NewReader), planned here and written in the step below, after the update whose
 	// row they describe. A version write that moved the request first has planned its parts
 	// already, and this plan runs against what that one leaves, so the answer takes a revision
-	// of its own.
+	// of its own. The answer holds the parts alone, so the step reconciles the question's
+	// references after them too and settles the forms queue there (questionReconciled false).
 	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
-		answered, answer.At, model.ReferenceChanges{})
+		answered, answer.At, false, model.ReferenceChanges{})
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}

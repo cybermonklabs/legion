@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -25,10 +26,27 @@ const (
 	ScopeApprove = "approve"
 )
 
-// Scopes is every OAuth scope this deployment knows, in the order a credential holding both
-// carries them: the whole set a person's own credential holds, and the set a mint gives a token
-// when its body names none. Read it, never write it — every such credential shares this one
-// slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
+// ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
+// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs it or ScopePerson to write a Legion
+// issue's status, to take the legion label off an issue, or to move a Legion issue out from
+// under every labelled issue, but for the status write of the architect of an issue above
+// (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
+// Dispatch reads it from the broker's answer (brokerTokenActor).
+//
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
+// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
+// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
+// is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
+// one string.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
+// in the order a credential holding both carries them: the whole set a person's own credential
+// holds, and the set a mint gives a token when its body names none. Read it, never write it —
+// every such credential shares this one slice, as every surface shares DISPATCH_SCOPES in
+// @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
 // ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
@@ -42,7 +60,8 @@ const ScopeRead = "read"
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
-// scopes that credential holds. A browser's cookie is the person themselves acting, so it names
+// scopes of Scopes that credential holds (api's actScopes: a Legion daemon's ScopeLegionStatus is
+// never recorded). A browser's cookie is the person themselves acting, so it names
 // no agent and carries none of this.
 //
 // Scopes is a snapshot of the credential as it stood at the act, and is never read back from the
@@ -74,6 +93,9 @@ func (a *ActorAct) Holds(scope string) bool {
 // which this package's callers and its tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
+	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
+	// alone where the broker granted it, which the broker does for a Legion daemon's own token
+	// only (brokerTokenActor). No credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -409,12 +431,21 @@ func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
 	return &deleted, &actor, nil
 }
 
-// AnchorInput selects document text by quote or identifies a browser-owned mark.
+// AnchorInput selects document text by quote or identifies a browser-owned mark, or, for a
+// comment's write, selects the text of a node by quote.
 type AnchorInput struct {
-	// Artifact is required: an anchor naming no document is refused (400 INVALID_ANCHOR,
-	// api.resolveAnchor). The tag is read by the OpenAPI emitter, which requires a field of a
-	// request body only where the handler refuses a body without it (api/openapi.go).
-	Artifact   string  `json:"artifact" required:"true"`
+	// Artifact is the document the anchor is on. An anchor naming neither it nor Node is refused
+	// (400 INVALID_ANCHOR, api.resolveAnchor), and so is one naming both.
+	Artifact string `json:"artifact,omitempty"`
+	// Node, in place of Artifact, is the node of a comment's issue whose text the anchor quotes -
+	// a lens, a finding, a risk, a constraint or a result - by its store address, as
+	// /nodes/{id} takes it, or its dispatch:// address (this issue's spec R31). Quote is then
+	// required, and Occurrence counts the quote's matches in the node's text. A mark_id or a
+	// block_id beside it, a node of another kind, one the caller may not see under the issue, one
+	// reserved for its author, a gone one, and a quote the node's text does not hold at that
+	// occurrence are each refused 400 INVALID_ANCHOR naming the field (api.resolveNodeAnchor). An
+	// ask takes no node.
+	Node       string  `json:"node,omitempty"`
 	Quote      *string `json:"quote,omitempty"`
 	Occurrence *int    `json:"occurrence,omitempty"`
 	MarkID     *string `json:"mark_id,omitempty"`
@@ -634,16 +665,26 @@ var GatedStepsKnown = []string{GatedStepCriteria, GatedStepSpec}
 // row rather than on a read shape of the api package's own (display_trees.go), because no event
 // payload carries a priority: `priority.updated` names the id and the change alone
 // (PriorityEventPayload).
+//
+// DescriptionTreeExact stands beside DescriptionTree, present exactly where it is. It is true
+// where Parse takes the description whole, so a writer's editor may take its markdown; the tree
+// still resets the attributes the server owns (pmdoc.ReadForDisplay), so an answered ask in it
+// draws open, and it is never a text to write back. It is false where Parse refuses a block of
+// the description or the whole of it - a block of HTML, a description past the element limit or
+// nested past the mark bound - which the tree draws as no write would store it
+// (pmdoc.DisplayExact): a writer's editor then shows the tree read-only, since an editor filled
+// from it and written back writes that reading over the text.
 type Priority struct {
-	ID              string      `json:"id"`
-	Title           string      `json:"title"`
-	Description     string      `json:"description"`
-	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
-	Owner           string      `json:"owner"`
-	Rank            string      `json:"rank"`
-	State           string      `json:"state"`
-	MadeAt          time.Time   `json:"made_at"`
-	MadeBy          Actor       `json:"made_by"`
+	ID                   string      `json:"id"`
+	Title                string      `json:"title"`
+	Description          string      `json:"description"`
+	DescriptionTree      DisplayTree `json:"description_tree,omitempty"`
+	DescriptionTreeExact *bool       `json:"description_tree_exact,omitempty" description:"Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is."`
+	Owner                string      `json:"owner"`
+	Rank                 string      `json:"rank"`
+	State                string      `json:"state"`
+	MadeAt               time.Time   `json:"made_at"`
+	MadeBy               Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
@@ -726,10 +767,11 @@ type WorkUnderNoPriority struct {
 	Issues    []PriorityIssue `json:"issues"`
 }
 
-// PriorityWorkParked is the second fault: an issue that advances a live priority and stands in
-// `backlog` or `icebox`. Count is every such issue; ByPriority counts them by priority id, an
-// issue advancing two priorities counted under each, so the counts may add to more than Count;
-// Issues carries the 50 moved there most recently.
+// PriorityWorkParked is the second fault: an open issue in `backlog` or `icebox` whose own row
+// names a live priority that no issue above it carries; a child that only inherits a priority, or
+// restates one an issue above it carries, is none. Count is every such issue; ByPriority counts
+// them by each priority so named, an issue naming two counted under each, so the counts may add
+// to more than Count; Issues carries the 50 moved there most recently.
 type PriorityWorkParked struct {
 	Count      int             `json:"count"`
 	ByPriority map[string]int  `json:"by_priority"`
@@ -896,14 +938,14 @@ type Issue struct {
 	Labels   []string `json:"labels"`
 	Parent   *string  `json:"parent"`
 	// BlockedBy and Needs are the issue keys this issue waits on, of any project, sorted: one
-	// relation, the needs tuples of the issue (dispatch://INFRA-1253 R10), answered by the
+	// relation, the needs tuples of the issue (R10 of the issue-tree spec), answered by the
 	// issue_links rows that project them, under both spellings through this release, since a
 	// reader of the release before reads blocked_by.
 	BlockedBy []string `json:"blocked_by"`
 	Needs     []string `json:"needs" required:"false"`
 	// DuplicateOf is the key of the issue of this issue's project it repeats, and FiledFrom the
 	// canonical reference of the ask, comment or message it was filed out of
-	// (dispatch://INFRA-1253 R9), each the far end of the issue's duplicate_of or filed_from tuple
+	// (R9 of the issue-tree spec), each the far end of the issue's duplicate_of or filed_from tuple
 	// and null where it holds none.
 	DuplicateOf *string `json:"duplicate_of" required:"false"`
 	FiledFrom   *string `json:"filed_from" required:"false"`
@@ -1100,15 +1142,20 @@ type SearchAsk struct {
 	Resolution *AskResolution     `json:"resolution,omitempty"`
 }
 
-// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
-// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
-// payload gains a tree field. A search hit's ask and a person's answer history both answer with
-// it.
+// AskAnswerWithTree is an answer a read gives with the trees of its texts: its own text, and the
+// label of each option it chose. It is the read's own shape rather than fields on AskAnswer
+// itself: the answer is an event payload's shape, and no payload gains a tree field. A search
+// hit's ask, a person's answer history, an ask's thread and the ask itself all answer with it.
 type AskAnswerWithTree struct {
 	AskAnswer
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
 	TextTree DisplayTree `json:"text_tree,omitempty"`
+	// SelectedTrees is the ProseMirror tree each label of Selected is shown as, at that label's
+	// own index, present only for a caller that sent `Dispatch-Trees: 1` and only where Selected
+	// holds a label. A label is the label of an option the ask held when it was answered, which
+	// the ask's write stored the tree of; it may be one the ask has since renamed or removed.
+	SelectedTrees []DisplayTree `json:"selected_trees,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -1122,10 +1169,11 @@ type SearchResult struct {
 	Artifact *SearchArtifact `json:"artifact,omitempty"`
 	ID       string          `json:"id"`
 	// BlockID is the block of the hit whose own text matched, read from the window of blocks the
-	// meaning leg found (INFRA-370): for a document the block of the document, for a comment or
-	// a message a block of its body, for an ask the part of its question, options or answer. It
-	// is nil on an issue hit, which has no blocks, and on a hit only the keyword list found,
-	// which matched the item's whole text rather than one of its windows.
+	// meaning leg found (#2679), or for a document from the blocks whose nodes the keyword
+	// list found (node_search): for a document the block of the document, for a comment or a
+	// message a block of its body, for an ask the part of its question, options or answer. It is
+	// nil on an issue hit, which has no blocks, and on a comment, an ask or a message only the
+	// keyword list found, which matched the item's whole text rather than one of its windows.
 	BlockID *string `json:"block_id,omitempty"`
 	Snippet string  `json:"snippet"`
 	// SnippetTree is the ProseMirror tree the snippet is shown as, with the match marked
@@ -1587,13 +1635,13 @@ type Artifact struct {
 	// `decisions`, until the decisions step retires it. A document of
 	// an issue born converted carries no role in its row: its role is projected from the query
 	// value of its node (graphstore.QueryNode), `verification`, `plan` or `decisions`, the spec's
-	// `spec` projecting none (dispatch://INFRA-1253 R8, decision 2 of its plan).
+	// `spec` projecting none (R8 of the issue-tree spec, decision 2 of its plan).
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	// Room is the artifact id of the room the document is edited in, which a socket opened on the
 	// document's own id is admitted to: its document_rooms row's room, the issue's tree artifact,
-	// for a document of an issue room, and its own id otherwise (dispatch://INFRA-1253 R5, D3 of
+	// for a document of an issue room, and its own id otherwise (R5 of the issue-tree spec, D3 of
 	// its plan). Fragment is the fragment of that room's Yjs document that holds the document,
 	// which the page's editor binds: the document's own id for a document of an issue room, and
 	// ArtifactFragmentOwn otherwise, the tree artifact itself included. Every artifact this build
@@ -2157,7 +2205,7 @@ type ArtifactHumanEditedEventPayload struct {
 // the block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded), which the blocks route
 // sets and nothing that only indexes blocks does. Document is, for a block of an issue room
 // indexed under the issue's tree artifact, the artifact id of the document whose fragment of the
-// room holds it (dispatch://INFRA-1253 R5), which the block index states as the block's
+// room holds it (R5 of the issue-tree spec), which the block index states as the block's
 // in_document; "" for a block of the indexed document itself. No route answers it. TextTree is
 // the display tree of the block's whole slice of the markdown (From to To), the text the block
 // index stores for it, which the blocks routes answer only to a caller that sent
@@ -2855,7 +2903,15 @@ type MyReplyRow struct {
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
-	Subject string  `json:"subject"`
+	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
+	// Inbox draws for the row. SubjectTree is that line read as the document a reader is shown,
+	// present only for a caller that sent `Dispatch-Trees: 1` - the Inbox draws the row's line
+	// through the one renderer every body is drawn with, so without the tree beside it the
+	// browser would parse the line itself (web/src/features/inbox/ThreadTitle.tsx). The tree
+	// stands on this row rather than on a read shape of its own because no event payload
+	// carries a reply row: this shape is the replies read's alone.
+	Subject     string      `json:"subject"`
+	SubjectTree DisplayTree `json:"subject_tree,omitempty"`
 	// EditedAt is the time the author of the thread's root post last edited it, absent on a root
 	// never edited. An ask's thread has no such root and never carries it.
 	EditedAt *time.Time `json:"edited_at,omitempty"`
@@ -3532,11 +3588,43 @@ type Comment struct {
 	// RepliesToBlock is the node id comments.replies_to_block stores, null for a comment that
 	// names no block; ReplyBlock is read from it, and only for a comment that names one.
 	RepliesToBlock *string `json:"-"`
+	// NodeAnchor is the anchor comments.node_anchor stores for a comment on the text of a node
+	// (this issue's spec R31), nil for every other comment; Anchor is nil on such a comment. No
+	// read of a comment answers it under this name and no event carries it: a deployed client
+	// parses a comment with the strict CommentSchema, so only a read asked with
+	// ?node_anchor=true answers the member node_anchor (CommentNodeAnchor).
+	NodeAnchor *NodeAnchor `json:"-"`
+}
+
+// NodeAnchor is a comment's anchor on the text of a node that is no block of a document - a lens,
+// a finding, a risk, a constraint or a result (this issue's spec R31) - as comments.node_anchor
+// stores it: the node as graph_nodes keys it (a finding is kind block, id lens/<uuid>#<block id>),
+// the words it quotes, the zero-based match of those words in the node's text it names, as a
+// quote beside block_id counts its matches in one block, and whether a write of the node's text
+// dropped that match or a DELETE took the node gone.
+type NodeAnchor struct {
+	NodeKind   string `json:"node_kind"`
+	NodeID     string `json:"node_id"`
+	Quote      string `json:"quote"`
+	Occurrence int    `json:"occurrence"`
+	Orphaned   bool   `json:"orphaned"`
+}
+
+// CommentNodeAnchor is the member node_anchor a comments read asked with ?node_anchor=true answers
+// on each comment whose anchor names a node or a block (R31): that node by its store kind and id,
+// with its node state, gone for a node deleted since; the quote; the occurrence, null for a
+// document anchor, which stores none; and the orphaned mark as stored. A reader tells a deleted
+// node from the node's own state, since orphaned says only that the quoted words left its text.
+type CommentNodeAnchor struct {
+	Node       IssueTreeAnchorNode `json:"node"`
+	Quote      string              `json:"quote"`
+	Occurrence *int                `json:"occurrence"`
+	Orphaned   bool                `json:"orphaned"`
 }
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
 // reference (none for a block of a direct message, which has no address), its id, its stored
-// excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
+// excerpt (its text as refs.BlockExcerpt cuts it, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 //
 // EditedAt, DeletedAt and DeletedBy are the marks of the quoted post, read from its own row, so a
@@ -4056,7 +4144,9 @@ type HandoffRecordedEventPayload struct {
 // the merge's place, and Report the handoff its ending role named, each null where the run has
 // none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
 // the retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are the
+// experiment a draw put the issue in and the variant it drew there, each null where the record
+// holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
 type StepRecord struct {
 	ID           string     `json:"id"`
 	Issue        string     `json:"issue"`
@@ -4077,6 +4167,8 @@ type StepRecord struct {
 	Report       *string    `json:"report"`
 	Rating       *int       `json:"rating"`
 	RatingReason *string    `json:"rating_reason"`
+	Experiment   *string    `json:"experiment"`
+	Variant      *string    `json:"variant"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.
@@ -4132,7 +4224,9 @@ type PlanRating struct {
 // work started before Legion wrote plans or that Legion never ran), the rating of each of its
 // retros in the order they ran, the earliest start and the latest end of its step records and the
 // whole seconds between them (each null where no record holds one, and the seconds null too where
-// that end is before that start), and its count of step records of kind step that failed.
+// that end is before that start), its count of step records of kind step that failed, and the
+// experiment a draw put it in and the variant it drew there, as the step records of its newest run
+// name them (each null where they name none).
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`
@@ -4143,6 +4237,8 @@ type FinishedIssue struct {
 	EndedAt         *time.Time   `json:"ended_at"`
 	DurationSeconds *int64       `json:"duration_seconds"`
 	FailedSteps     int          `json:"failed_steps"`
+	Experiment      *string      `json:"experiment"`
+	Variant         *string      `json:"variant"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest
@@ -4344,7 +4440,7 @@ type GraphExcerpt struct {
 // behind them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy
 // of an interaction, a lens, a finding, a risk and a constraint), which the view answers from the
 // tuples alone, and an issue's duplicate_of and filed_from, which the store holds alone too
-// (dispatch://INFRA-1253 R9). blocked_by is the kind graph_edges names an issue's wait on an issue
+// (R9 of the issue-tree spec). blocked_by is the kind graph_edges names an issue's wait on an issue
 // by through this release, in its old arm and its tuple arm alike, the kind a process of the
 // release before reads that wait by; this build's references read answers the same wait as needs
 // (EdgeKindNeeds) and takes either spelling in its kind filter (R10). A typed block's `block[]`
@@ -4356,7 +4452,7 @@ var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to
 	EdgeKindNeeds, "duplicate_of", "filed_from"}
 
 // EdgeKindNeeds is the kind of a wait, an issue's on an issue and a plan node's on a plan node
-// alike (dispatch://INFRA-1253 R10): a structural kind of GraphEdgeKinds and the name of the
+// alike (R10 of the issue-tree spec): a structural kind of GraphEdgeKinds and the name of the
 // plan_task's `block[]` attribute, the one name both families of edge hold.
 const EdgeKindNeeds = "needs"
 

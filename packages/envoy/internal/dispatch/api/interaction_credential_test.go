@@ -281,7 +281,7 @@ func requireARunIsReadByTheCredentialThatRecordedIt(t *testing.T, handler http.H
 	// reads the run there at all.
 	target := refs.Target{Kind: graphstore.KindInteraction, ID: run}
 	for _, reader := range []interactionCredential{alice, bob, cookie, shared} {
-		excerpted, err := refs.ExcerptedNodes(ctx, pool, reader.actor, []refs.Target{target})
+		excerpted, err := refs.ExcerptedNodes(ctx, pool, reader.actor, []refs.Target{target}, "")
 		if err != nil {
 			t.Fatalf("read the run's words as %s: %v", reader.name, err)
 		}

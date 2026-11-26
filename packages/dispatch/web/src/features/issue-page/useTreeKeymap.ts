@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useRef } from "react";
 
+import { inputMethodKey } from "../../lib/input-method-key";
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
@@ -10,7 +11,6 @@ import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { type DrawnRow, type PageRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
-import { inputMethodKey } from "./useNodeEditing";
 
 /**
  * The tree's keyboard: every key of the issue page's key table that acts on the tree itself. The
@@ -52,6 +52,8 @@ import { inputMethodKey } from "./useNodeEditing";
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
   readonly container: RefObject<HTMLElement | null>;
+  /** What the key list says `z` does, when it does not cycle how much of the tree is drawn. */
+  readonly cycleLabel?: string;
   /** Whether a row of the tree is being edited, which Escape in its editor leaves
    *  (`tree-leave-caret`). */
   readonly editing: boolean;
@@ -682,10 +684,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       id: "tree-cycle",
       keys: "z",
-      label:
-        tree.onPin === undefined
-          ? "Unfold every row you folded"
-          : "Cycle how much of the tree is drawn",
+      label: tree.cycleLabel ?? "Cycle how much of the tree is drawn",
       run: () => {
         tree.onReport("");
         tree.onCycle();

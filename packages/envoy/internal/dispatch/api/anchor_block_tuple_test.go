@@ -353,7 +353,7 @@ const blockScopedSpec = "The tide turns at noon.\n\n:::callout{#tide}\nThe tide 
 	":::callout{#calm}\nThe sea is calm.\n:::\n"
 
 // An anchor's block_id has the server find the quote inside that block alone and count occurrence
-// within it (R8 of dispatch://INFRA-1253, T17b of its plan). Over a document that is its own room,
+// within it (R8 of the issue-tree spec, T17b of its plan). Over a document that is its own room,
 // a quote written once above the callout tide and once inside it anchors inside it by block_id with
 // no occurrence, and the comment's anchored_in names the block comments.anchor stores; a quote
 // written twice inside the block is ambiguous there with no occurrence, and an occurrence past the

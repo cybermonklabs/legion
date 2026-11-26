@@ -17,7 +17,7 @@ import (
 
 // A Keep a release before this one wrote on a decision that carries `shaped` holds a sum over the
 // decision's words with `shaped` among them, which this build's refs.DecisionWords leaves out (R32
-// of dispatch://INFRA-1253's spec): read by this build, such a Keep no longer matches, and its
+// of the issue-tree spec): read by this build, such a Keep no longer matches, and its
 // decision would wait for review again though nobody changed a word of it. The Keep pass of the
 // backfill (backfillKeepSums) rewrites each Keep whose stored sum is that old sum to the sum of the
 // same words without `shaped`, so a Keep that matched before still matches, and leaves every other
@@ -174,7 +174,7 @@ func countOwedKeeps(ctx context.Context, q graphstore.Queryer) (int64, error) {
 	return owed, err
 }
 
-// backfillKeepSums is the backfill's Keep pass (R32 of dispatch://INFRA-1253's spec): it walks
+// backfillKeepSums is the backfill's Keep pass (R32 of the issue-tree spec): it walks
 // every Keep, a batch at a time, and rewrites each one whose decision carries `shaped` and whose
 // stored sum is the sum of its decision's words with `shaped` (keptSum.owed) to the sum of the same
 // words without it, the sum every read of the decision answers now (writeKeepSumBatch). A Keep

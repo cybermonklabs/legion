@@ -349,6 +349,9 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	specChangedAt := versionOf(t, database, child.PrimaryArtifactID, specV2.Number).CreatedAt
 	designChangedAt := versionOf(t, database, design.ID, 2).CreatedAt
 	ofHead := &model.NodeParent{Kind: "comment", ID: anchored.ID, Ref: childRef + "/comment/" + anchored.ID}
+	// A reply to a reply hangs under the comment it answers, and a reply to the head under the head
+	// (R8's reply-parent rule).
+	ofReply := &model.NodeParent{Kind: "comment", ID: reply.ID, Ref: childRef + "/comment/" + reply.ID}
 	ofDesign := &model.NodeParent{Kind: "artifact", ID: design.ID, Ref: designRef}
 	itemRef := func(kind, id string) string { return childRef + "/" + kind + "/" + id }
 	unchanged := func(by []string, at time.Time, parent *model.NodeParent, version *int) nodeFacts {
@@ -367,7 +370,7 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 		{"C's spec", specRef, nodeFacts{MadeBy: alice, MadeAt: &specMadeAt, ChangedBy: alice, ChangedAt: &specChangedAt, Parent: ofChild}},
 		{"the anchored comment", itemRef("comment", anchored.ID), unchanged(alice, anchored.CreatedAt, ofSpec, new(1))},
 		{"the reply", itemRef("comment", reply.ID), unchanged(alice, reply.CreatedAt, ofHead, nil)},
-		{"the reply to the reply", itemRef("comment", replyToReply.ID), unchanged(alice, replyToReply.CreatedAt, ofHead, nil)},
+		{"the reply to the reply", itemRef("comment", replyToReply.ID), unchanged(alice, replyToReply.CreatedAt, ofReply, nil)},
 		{"the ask on C", itemRef("ask", ask.ID), unchanged(session, ask.CreatedAt, ofChild, nil)},
 		{"the comment in the ask's thread", itemRef("comment", inThread.ID), unchanged(alice, inThread.CreatedAt, &model.NodeParent{Kind: "ask", ID: ask.ID, Ref: itemRef("ask", ask.ID)}, nil)},
 		{"the anchored ask", itemRef("ask", anchoredAsk.ID), unchanged(alice, anchoredAsk.CreatedAt, ofSpec, new(1))},

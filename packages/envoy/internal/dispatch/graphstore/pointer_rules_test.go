@@ -162,11 +162,14 @@ func pointerBlockRow(t *testing.T, ctx context.Context, database *store.Store, a
 // it held (abandonRefusedWrite). A block's type is read off its document_blocks row whether or
 // not that row names its node yet. A second has_kind of a lens is ErrLensKindAsserted. Write
 // (QueueWrite) and Caused (QueueCaused) each hold the rule, Caused as well after PlanUncaused and
-// QueueNodes, and WriteArms refuses a ruled tuple it cannot check. A retarget of a lens's kind
-// appends a retraction and an assertion and touches no part_of tuple; a retarget of a
-// pre-mortem's away from pre-mortem is ErrLensKindKept in one body whether a risk hangs under it
-// or not, and a retarget to pre-mortem is taken. Two writes asserting a kind of one kindless lens
-// queue at the lens's row, and the second is refused.
+// QueueNodes, and WriteArms refuses a ruled tuple it cannot check. A has_kind retracted with none in
+// its place is refused out of a lens that stays live, the write restating it live or not, and taken
+// out of a lens the same write states gone, a pre-mortem among them, as R7's delete retracts every
+// tuple out of a node it takes. A retarget of a lens's kind appends a retraction and an assertion
+// and touches no part_of tuple; a retarget of a pre-mortem's away from pre-mortem is
+// ErrLensKindKept in one body whether a risk hangs under it or not, and a retarget to pre-mortem
+// is taken. Two writes asserting a kind of one kindless lens queue at the lens's row, and the
+// second is refused.
 func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 	fixture := newPointerFixture(t)
 	database := fixture.database
@@ -238,6 +241,12 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 			{name: "Write, a has_kind retracted with none asserted in its place",
 				write: tuplesOnly(retracted(pointerTuple(KindLens, lensTradeOff, TupleHasKind, KindLensKind, kindTradeOff))),
 				kind:  TupleHasKind, names: pointerNames{from: []string{KindLens}}, retracted: true},
+			{name: "Write, a has_kind retracted with none asserted in its place out of a lens the write restates live",
+				write: func(ctx context.Context, tx pgx.Tx) error {
+					return Write(ctx, tx, []Node{pointerNode(KindLens, lensTradeOff)},
+						[]Tuple{retracted(pointerTuple(KindLens, lensTradeOff, TupleHasKind, KindLensKind, kindTradeOff))})
+				},
+				kind: TupleHasKind, names: pointerNames{from: []string{KindLens}}, retracted: true},
 			{name: "Write, a lens triggered by itself",
 				write: tuplesOnly(pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensInversion)),
 				kind:  TupleTriggeredBy, names: triggerNames(lensInversion, lensInversion)},
@@ -399,6 +408,21 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 		defer tx.Rollback(ctx)
 		if err := Retarget(ctx, tx, place, KindLens, lensPreMortemBare); err == nil {
 			t.Error("a retarget of a risk's part_of was taken, want it left to the parent route")
+		}
+	})
+
+	t.Run("a lens the write states gone", func(t *testing.T) {
+		for _, lens := range []struct{ id, kind string }{
+			{"lens-trade-off-deleted", kindTradeOff}, {"lens-pre-mortem-deleted", LensKindPreMortem},
+		} {
+			kind := pointerTuple(KindLens, lens.id, TupleHasKind, KindLensKind, lens.kind)
+			writeInOneTransaction(t, ctx, database.Pool, []Node{pointerNode(KindLens, lens.id)}, []Tuple{kind}, "the lens "+lens.id)
+			gone := pointerNode(KindLens, lens.id)
+			gone.State = StateGone
+			writeInOneTransaction(t, ctx, database.Pool, []Node{gone}, []Tuple{retracted(kind)}, "the delete of the lens "+lens.id)
+			if held, err := CurrentOut(ctx, database.Pool, KindLens, lens.id, []string{TupleHasKind}); err != nil || len(held) != 0 {
+				t.Errorf("the deleted lens %s holds has_kind %+v (%v), want none", lens.id, held, err)
+			}
 		}
 	})
 

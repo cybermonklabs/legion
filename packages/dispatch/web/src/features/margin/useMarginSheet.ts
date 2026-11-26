@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import type { WriteBounds } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
@@ -174,7 +174,7 @@ export function useMarginSheet(): MarginSheetModel {
     documentRoute === undefined
       ? routeArtifactSlug === undefined
         ? primarySpec(issue.data)
-        : issue.data?.artifacts?.find((artifact) => artifact.slug === routeArtifactSlug)
+        : artifactAtAddress(issue.data?.artifacts, routeArtifactSlug)
       : documentArtifact.data;
   const visibleArtifactId = visibleArtifact?.id;
   // The compose of the document the margin shows (`composes`): the one the reader has open there

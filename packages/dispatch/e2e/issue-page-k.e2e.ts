@@ -45,7 +45,7 @@ import {
   seedPlanMarks,
   stepLayouts,
 } from "./issue-page-k";
-import { refuseTreeRead } from "./issue-page-t-tree";
+import { refuseTreeRead, TREE_PATH } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 
@@ -160,13 +160,13 @@ async function expectPlainView(page: Page, where: string): Promise<void> {
  *  are built from (`tree-read/tree-read.ts`' `blocksOf`), of whatever issue it reads: each of its
  *  pages. */
 const BLOCKS_READ = (url: URL): boolean =>
-  /^\/api\/v1\/issues\/[^/]+\/tree$/.test(url.pathname) && url.searchParams.get("view") === "plan";
+  TREE_PATH.test(url.pathname) && url.searchParams.get("view") === "plan";
 
-/** Before the reads it needs answer: opened with every document's blocks read held, `path`
+/** Before the reads it needs answer: opened with the Plan view's read of the tree held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
  *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`, which
  *  draws the view's tasks, its switch and its empty line once the plan's and the spec's blocks
- *  reads have answered); let go, it draws the chart. */
+ *  have answered); let go, it draws the chart. */
 async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
   const held = Promise.withResolvers<void>();
   let asked = 0;
@@ -555,10 +555,13 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
       "a line of the axis stands outside the head row's middle cell"
     ).toEqual([]);
 
-    // The box: 1300 px wide, 22 px under the view row, and 120 px above the page's foot.
+    // At 1440 px the Contents pane stands beside Plan, leaving the view 1068 px.
     const column = page.getByTestId("issue-column");
     const box = await boxOf(planBody(page), "the view's box at 1440 px");
-    expect(box.width, "the view's box is not 1300 px wide at 1440 px").toBeCloseTo(1300, 0);
+    expect(box.width, "the view is not 1068 px wide beside Contents at 1440 px").toBeCloseTo(
+      1068,
+      0
+    );
     expect(
       Math.abs(box.y - (await boxOf(column, "the issue's column")).y - 22),
       "the view's box is not 22 px under the view row at 1440 px"
@@ -653,8 +656,8 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     );
     await expectPlainView(page, "the steps");
 
-    // The same order on a phone, in both views, where the page fits in one direction, in
-    // a box 10 px under the view row and 10 px in from each side of the column.
+    // The same order on a phone, in both views. The three sentences start 10 px below the view
+    // row. Plan follows their 16 px bottom margin and stays 10 px in from each side.
     await page.setViewportSize(PHONE_K);
     await expectIssuePageDrawn(page);
     await expect
@@ -662,10 +665,17 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
         message: "the steps' order is not the same at 390 px",
       })
       .toEqual(stepped);
+    const synopsis = column.getByTestId("issue-three-things");
+    await expect(synopsis).toBeVisible();
+    const synopsisBox = await boxOf(synopsis, "the three sentences above Plan at 390 px");
     const phoneBox = await boxOf(planBody(page), "the view's box at 390 px");
     expect(
-      Math.abs(phoneBox.y - (await boxOf(column, "the issue's column")).y - 10),
-      "the view's box is not 10 px under the view row at 390 px"
+      Math.abs(synopsisBox.y - (await boxOf(column, "the issue's column")).y - 10),
+      "the three sentences do not start 10 px under the view row at 390 px"
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(phoneBox.y - (synopsisBox.y + synopsisBox.height) - 16),
+      "Plan is not 16 px below the three sentences at 390 px"
     ).toBeLessThanOrEqual(1);
     expect(
       Math.abs(phoneBox.width - 342),
@@ -813,11 +823,12 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       })
       .toBe(false);
 
-    // Enter on a step goes to its task in the conversation.
+    // Enter on a step goes to its task's address in the conversation, which Conversation draws
+    // no row of, so the address opens the filter of its kind, Plan, at that task.
     await nodeRow(page, step(T.loose)).first().focus();
     await page.keyboard.press("Enter");
-    await expect(page, `Enter on ${T.loose} does not go to it in the conversation`).toHaveURL(
-      new RegExp(`/issues/${seeded.key}#b-${T.loose}$`)
+    await expect(page, `Enter on ${T.loose} does not go to its address in Plan`).toHaveURL(
+      new RegExp(`${planPath(seeded.key)}#b-${T.loose}$`)
     );
 
     // Back on /plan, Tab goes from "Chart" to "Steps", then into the chart at its first step;

@@ -138,7 +138,7 @@ func keepSumCensus(t *testing.T, databaseURL string) int64 {
 
 // The boot's backfill rewrites the stored sum of each Keep a release before this one made on a
 // decision that carries shaped, where that sum is the sum of the decision's words with shaped,
-// which this build leaves out of them (R32 of dispatch://INFRA-1253's spec): the check
+// which this build leaves out of them (R32 of the issue-tree spec): the check
 // c-keep-sum-pass.
 //
 // A process of this build writes, as alice, an issue whose spec holds requirement r1 and decisions

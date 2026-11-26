@@ -854,6 +854,8 @@ func (s *Service) reconcileAskBlocks(
 	// kept for one release: roll-window-attributes
 	// kept for one release: stored-ask-state
 	twoBuilds := false
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	if len(blocks)+len(invalidBlocks) > 0 {
 		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
 			return settlementReconciliation{}, err
@@ -865,6 +867,7 @@ func (s *Service) reconcileAskBlocks(
 	// settlement writes - one it restores - is written as it states it.
 	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
+	// kept for one release: stored-ask-state
 	if !twoBuilds && len(rows)+len(sources) > 0 {
 		ids := make([]string, 0, len(rows)+len(sources))
 		for _, ask := range rows {
@@ -993,8 +996,9 @@ func (s *Service) reconcileAskBlocks(
 			// The new ask's parts, beside its own references: both named by the ask.opened, and
 			// read through the one reader. The parts are planned here and written after the
 			// row's own insert, which this transaction has queued (createAskBlock), since every
-			// part row names its ask.
-			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, changes)
+			// part row names its ask, and after the question's reconciliation just queued
+			// (questionReconciled).
+			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, true, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
@@ -1032,10 +1036,12 @@ func (s *Service) reconcileAskBlocks(
 			reconciled.answers = append(reconciled.answers, settledAnswer{ask: ask.ID, eventType: eventType, held: held})
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved. The parts are written
-			// after the restoring update, which this transaction has queued.
+			// after the restoring update, which this transaction has queued. The restoration holds
+			// the parts alone, so their step reconciles the question's references after them too
+			// and settles the forms queue there (questionReconciled false).
 			restoredAt := refs.AskPartsAt(ask)
 			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL),
-				ask, restoredAt, model.ReferenceChanges{})
+				ask, restoredAt, false, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
 			}
@@ -1102,8 +1108,9 @@ func (s *Service) reconcileAskBlocks(
 			// The block's wording is now the row's: its parts are that wording too, read through
 			// the one reader, and the ask.edited names what they moved beside the ask's own
 			// references. The parts are written after the queued update that gives the row that
-			// wording, which the row this plans from carries already (edited_at).
-			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, changes)
+			// wording, which the row this plans from carries already (edited_at), and after the
+			// question's reconciliation queued above (questionReconciled).
+			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, true, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}
@@ -1126,6 +1133,7 @@ func (s *Service) reconcileAskBlocks(
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
 		kept := ask
+		// kept for one release: stored-ask-state
 		if !stated {
 			kept = shown(ask)
 		}

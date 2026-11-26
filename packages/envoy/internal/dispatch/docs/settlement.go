@@ -215,7 +215,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	// A room entry point that takes a document's id resolves it first: a document converted into
 	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
 	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they
-	// stood (dispatch://INFRA-1253 R5).
+	// stood (R5 of the issue-tree spec).
 	if resolved, err := roomOf(parent, s.store.Pool, room); err == nil && resolved != room {
 		if !s.shuttingDown(room) {
 			s.scheduleSettle(resolved)
@@ -621,6 +621,7 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	}
 	// What settlement writes of the answers it keeps in step while another build serves is weighed
 	// against the document as settlement read it, before any other repair is planned on it.
+	// kept for one release: roll-window-attributes
 	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
@@ -1124,9 +1125,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
 	st.finishSlots()
-	// The drain writes the versions of the queries this settlement left owed, before its events
-	// are published, and what it appended is published after them, which it follows in the log; a
-	// drain that fails leaves the mark to the block-index tick.
+	// The fill records the record digests this settlement's versions left owed (fillOwed), and
+	// the drain writes the versions of the queries it left owed, each in a transaction of its own
+	// before its events are published, and what they appended is published after them, which it
+	// follows in the log; a fill or a drain that fails leaves its work to the block-index tick.
+	filled := s.fillOwed(ctx, ledger.takeFills())
 	var drained []model.Event
 	if marked {
 		drained = s.DrainOwedQueries(ctx, *st.owner.IssueKey)
@@ -1134,7 +1137,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	for _, event := range st.published {
 		s.events.Publish(event)
 	}
-	for _, event := range drained {
+	for _, event := range slices.Concat(filled, drained) {
 		s.events.Publish(event)
 	}
 	st.reconciliation.logCopiedBlocks(room)
@@ -1192,7 +1195,7 @@ type roomVersion struct {
 // readRoomVersions reads, in one statement through q, the latest markdown version of each of
 // documents, beside it: the documents of an issue room, its tree artifact first
 // (roomLayout.documents). Each document of a room keeps its own history (D6 of
-// dispatch://INFRA-1253's plan), and a block of the room records a version of its own document.
+// the issue-tree plan), and a block of the room records a version of its own document.
 func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roomVersion, error) {
 	rows, err := q.Query(ctx, `
 		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name
@@ -1365,8 +1368,9 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // room's order with its blocks' ranges (fragmentsText), at the version of each fragment's document
 // - the one just written, or its latest - so each block records its own document's version and the
 // pass clears the mark the version trigger set on each version it writes (refs.IndexBlocks'
-// fence); then carries each version's approval, once that pass has stated it (carryAfterRender),
-// a restore's carry before the versions' artifact.version events (carryRestored).
+// fence); then carries each version's approval once that pass has stated it, its writes before the
+// versions' artifact.version events (R14), a restore's behind a row of the approval's digest
+// (carryRestored).
 // Each version's node follows the pass's block nodes, and each
 // version's artifact.version event names its own document and causes what the pass stated of
 // that document's blocks, with the version's node, stamping the links its blocks inserted at that
@@ -1437,20 +1441,18 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 	if err != nil {
 		return err
 	}
-	// Each version's approval carry runs once the room's pass has stated it, so its writes run
-	// after the version_renders row that pass gives it (carryAfterRender), and the review it
-	// inserts pins that row's digest; a carry to a version that restores the approved text keeps
-	// its writes here, before the artifact.version events below, behind a row of the approval's
-	// digest the write phase holds to the version's record (carryRestored). Each version's move ran
-	// in its write, before the pass, so an open request names the version by now. A closed issue's
-	// version carries nothing.
+	// Each version's approval carry runs once the room's pass has stated it, its writes before the
+	// artifact.version events below (R14): the review it inserts pins the digest of the version's
+	// stored markdown while the version's record digest is owed, and the fill after the commit
+	// repins it to the record (fillOwedDigests); a carry to a version that restores the approved
+	// text writes behind a row of the approval's digest the write phase holds to the version's
+	// record (carryRestored). Each version's move ran in its write, before the pass, so an open
+	// request names the version by now. A closed issue's version carries nothing.
 	if !st.issueClosed {
 		for _, write := range writes {
 			document, version, fragment := write.fragment.document, write.result.version, write.fragment
-			if err := carryAfterRender(ctx, tx, document, version.Number, func() error {
-				return s.carryApproval(ctx, tx, document, version,
-					renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx))
-			}); err != nil {
+			if err := s.carryApproval(ctx, tx, document, version,
+				renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx)); err != nil {
 				return err
 			}
 		}

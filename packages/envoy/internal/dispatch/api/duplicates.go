@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const duplicateHeadlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", HighlightAll=true"
@@ -146,13 +147,15 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 
 // duplicateScoreQuery scores the project's open issues against the new text's picked rarest
 // words: the share of the picked weight that a candidate's title vector and its primary
-// document's latest vector hold together.
+// document's blocks hold together.
 //
 // The statement drives from term_weights, one row per picked lexeme and its idf, into
-// issues.search and into document_search (migration 20261101182447, one row per document holding
-// its latest version's vector), so each term is one probe of a GIN index and no candidate's spec
-// vector is read more than once per term. project_key, the status and the ancestors are filters
-// on the rows those index scans produced, never the driving predicate.
+// issues.search and into node_search (migration 20261125160000_issue_tree_node_search, one row
+// per block node holding its text's vector), so each term is one probe of a GIN index and no
+// candidate's spec is read more than once per term. A block's node is read as a block of its
+// document (refs.NodeSearchDocumentSQL), so a term one of a primary document's blocks holds is a
+// term its issue holds. project_key, the status and the ancestors are filters on the rows those
+// index scans produced, never the driving predicate.
 //
 // Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
 // per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
@@ -160,9 +163,9 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // spec, and a project's specs are long. The per-term join does its work inside the index and is
 // bounded by the picker's own relatedMatchBudget.
 //
-// A term that matches both a candidate's title and its spec counts once: the two arms are joined
-// with `union`, which takes distinct (key, lexeme, idf) before the sum, and idf is a function of
-// the lexeme.
+// A term that matches both a candidate's title and its spec, or more than one block of its spec,
+// counts once: the two arms are joined with `union`, which takes distinct (key, lexeme, idf)
+// before the sum, and idf is a function of the lexeme.
 //
 // A candidate's headline marks the words of its title the new text shares: its query is the
 // shared lexemes, as the title rule it replaces built it.
@@ -186,8 +189,8 @@ hits as (
   union
   select i.key, w.lexeme, w.idf
     from term_weights w
-    join document_search d on d.search @@ w.tq
-    join artifacts a on a.id = d.artifact_id and a.kind = 'doc' and a.is_primary
+    join node_search s on s.search @@ w.tq
+    join artifacts a on a.id = ` + refs.NodeSearchDocumentSQL("s") + ` and a.kind = 'doc' and a.is_primary
     join issues i on i.key = a.issue_key
    where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
 ),
@@ -217,20 +220,20 @@ select s.key, i.title, i.status, s.shared, s.score,
 // would answer on a difference in construction rather than in words. A title's are
 // title_lexemes() (migration 0088), the function the issues trigger writes issues.title_lexemes
 // with. A spec's are the document vector artifact_versions_search() builds, which 0058's trigger
-// writes on every version and 20261101182454's trigger copies into document_search for the
-// primary document's latest version: search_vector, with an empty head, over
-// search_document_text of the stored markdown, its ask blocks removed and then search_text
-// (20261121060636; 0058 built the same vector with to_tsvector, which search_vector only leaves
-// for text too long to hold in one tsvector). The spec this side reads is the new one as Dispatch
-// would store it, rendered by storedMarkdown, because the stored vector is of the rendering and
-// not of the request's markdown. tsvector_to_array answers a vector's lexemes sorted and each
-// once, as title_lexemes does, so array equality is set equality here.
+// writes on every version, read off the primary document's latest version that holds markdown
+// (documentLatestVersionSQL, the version document_search held of it): search_vector, with an
+// empty head, over search_document_text of the stored markdown, its ask blocks removed and then
+// search_text (20261121060636; 0058 built the same vector with to_tsvector, which search_vector
+// only leaves for text too long to hold in one tsvector). The spec this side reads is the new one
+// as Dispatch would store it, rendered by storedMarkdown, because the stored vector is of the
+// rendering and not of the request's markdown. tsvector_to_array answers a vector's lexemes
+// sorted and each once, as title_lexemes does, so array equality is set equality here.
 //
 // A spec is compared whether or not either side has one, which covers the architect's rule for
 // both: with no spec on either side the two empty sets are equal and the titles decide, and with
 // one on either side the specs must hold the same lexemes too. An issue whose primary document
-// has no vector - a file upload, a document of ask blocks alone - is read as the empty set, which
-// is what document_search holds for it.
+// has no vector - a file upload, a document of ask blocks alone - is read as the empty set, as
+// is one with no version that holds markdown.
 //
 // A title that yields no lexemes at all, every word of it a stopword, matches nothing: there is
 // no text to be a copy of. Without that guard it would name every other such issue in the
@@ -253,7 +256,7 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
     on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
    and i.title_lexemes = n.title_lex
   left join artifacts a on a.issue_key = i.key and a.kind = 'doc' and a.is_primary
-  left join document_search d on d.artifact_id = a.id
+  left join lateral (` + documentLatestVersionSQL("a") + `) d on true
  where cardinality(n.title_lex) > 0
    and coalesce(tsvector_to_array(d.search), '{}') = n.spec_lex
  order by i.updated_at desc

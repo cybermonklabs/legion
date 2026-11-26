@@ -29,9 +29,9 @@ import { type ApiRequests, expectLoadSettled } from "./traffic";
  * rows keep their helpers in files of their own, as every set of the page's rows does, and reuse
  * the readers and locators of `e2e/issue-page-g.ts`, copying none of them. This file holds what
  * the recorder (`e2e/tools/issue-page-t-record.ts`) reads the page with, and the recorder runs on
- * a base that holds F's page and not the tree read, so nothing here names a module of the tree
- * read or a type of its answer: what reads the tree read and the rows' gates are in
- * `e2e/issue-page-t-tree.ts`, and the steps and comparisons the rows share are in
+ * a base whose page builds its tree from the old reads and holds no tree read, so nothing here
+ * names a module of the tree read or a type of its answer: what reads the tree read and the rows'
+ * gates are in `e2e/issue-page-t-tree.ts`, and the steps and comparisons the rows share are in
  * `e2e/issue-page-t-rows.ts`.
  *
  * `drawnRowReadings` reads every `[data-node-row]` of `[data-issue-page]` as `NodeRow.tsx`
@@ -58,12 +58,13 @@ import { type ApiRequests, expectLoadSettled } from "./traffic";
  *   body's facts, each by the label its `<dt>` draws and the value its `<dd>` draws.
  * - `counts`: what a folded row counts (`[data-node-count]`), then the body's line of what the
  *   coverage read counts for a requirement.
- * - `body`: what the row draws beyond its line. The recorder read it on F's page, which drew it on
- *   the focused row alone, with the focus on each row in turn as the tree's keys put it there
- *   (`drawnRowReadings`; `focusRow` does it by id, which a node drawn under two parents shares, so
- *   this moves it by place). The rows read it from each row's face with no focus
- *   (`drawnRowFaces`), since the page draws on every unfolded row what that body drew (R11), and
- *   a row whose face holds nothing draws no face and reads no author line, no line and no fact.
+ * - `body`: what the row draws beyond its line. The recorder read it on the page that built its
+ *   tree from the old reads, which drew it on the focused row alone, with the focus on each row
+ *   in turn as the tree's keys put it there (`drawnRowReadings`; `focusRow` does it by id, which
+ *   a node drawn under two parents shares, so this moves it by place). The rows read it from
+ *   each row's face with no focus (`drawnRowFaces`), since the page draws on every unfolded row
+ *   what that body drew (R11), and a row whose face holds nothing draws no face and reads no
+ *   author line, no line and no fact.
  *   Either way: who made the node where the line names nobody ("Author unknown") or names an
  *   agent by its role's word (its whole title), the words drawn whole, an ask's options with
  *   their own words and its answer, and every other line `[data-node-body]` draws. Never a
@@ -228,9 +229,10 @@ export async function drawnRowReadings(
 
 /**
  * Every row of the page in drawing order, each with the body its face draws, read with no focus
- * and in one pass over the page (R11): the page draws on every unfolded row's face what F's page
- * drew in the focused row's body, and a row whose face holds nothing reads no author line, no
- * line and no fact. One reading of the rows at this instant, as `drawnRowReadings`' is.
+ * and in one pass over the page (R11): the page draws on every unfolded row's face what the page
+ * that built its tree from the old reads drew in the focused row's body, and a row whose face
+ * holds nothing reads no author line, no line and no fact. One reading of the rows at this
+ * instant, as `drawnRowReadings`' is.
  */
 export async function drawnRowFaces(page: Page): Promise<RowReading[]> {
   const drawn = await page.evaluate(readPageRows, {

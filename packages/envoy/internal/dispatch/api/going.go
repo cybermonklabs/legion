@@ -504,20 +504,20 @@ func (s *server) readGoingStream(ctx context.Context, requestID string, after in
 // The read of the run's own address, `dispatch://interaction/<uuid>`, is a second view of the same
 // frames, and answers what this does rather than deciding it again (refs' interactionFrames): for a
 // run the same test calls withdrawn (graphstore.RunWithdrawnSQL), the node's frames are this one
-// frame, at the sequence of the run's stored ending, or, where the run has stored none, at the
-// sequence this call would store it at (graphstore.RunNextSequenceSQL), and none of the frames the
-// run stored. That read writes nothing.
+// frame, the one value both read (graphstore.RunWithdrawal), at the sequence of the run's stored
+// ending, or, where the run has stored none, at the sequence this call would store it at
+// (graphstore.RunNextSequenceSQL), and none of the frames the run stored. That read writes
+// nothing.
 func (s *server) goingWithdrawal(ctx context.Context, requestID string, state goingRunState) (goingEvent, error) {
-	withdrawal := going.Fault(contracts.GoingErrorAnswerWithdrawn)
 	ending := state.Terminal
 	if ending == 0 {
-		stored, err := endGoingRun(ctx, s.deps.Store.Pool, requestID, withdrawal)
+		stored, err := endGoingRun(ctx, s.deps.Store.Pool, requestID, graphstore.RunWithdrawal)
 		if err != nil {
 			return goingEvent{}, err
 		}
 		ending = stored.Sequence
 	}
-	return goingEvent{Sequence: ending, Event: withdrawal}, nil
+	return goingEvent{Sequence: ending, Event: graphstore.RunWithdrawal}, nil
 }
 
 // recordGoingPosts records, as the run's, each comment and issue message among hits that texts

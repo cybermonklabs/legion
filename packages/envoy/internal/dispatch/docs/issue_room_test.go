@@ -36,7 +36,7 @@ type issueRoom struct {
 }
 
 // createIssueRoom writes, by SQL, an issue DOC-<number> converted into its room (R5 and R6 of
-// dispatch://INFRA-1253): its spec, verification-md and plan-md documents, each with a first
+// the issue-tree spec): its spec, verification-md and plan-md documents, each with a first
 // version and no stored room history of its own; its tree artifact, of kind tree, with an empty
 // first version as every document is created with; its issue_trees row; a document_rooms row from
 // each document to the tree; and the room's first stored update, as a conversion's seed writes
@@ -333,11 +333,11 @@ func TestAHeldSocketOnAnOldRoomIsRefusedOnceItsDocumentMoves(t *testing.T) {
 	}
 }
 
-// A schema version change goes through INFRA-1149's schema switch (c-one-room): with a client held
-// on the issue's room through each of its ways in - the tree artifact's uuid and each converted
-// document's - the installed version moves, every document socket of the room closes with the code
-// a browser reads as "the schema moved", each client connects again and is admitted to the issue's
-// room at the installed version, and no editor of the room is left read-only.
+// A schema version change goes through the graph-store spec's schema switch (c-one-room): with a
+// client held on the issue's room through each of its ways in - the tree artifact's uuid and each
+// converted document's - the installed version moves, every document socket of the room closes with
+// the code a browser reads as "the schema moved", each client connects again and is admitted to the
+// issue's room at the installed version, and no editor of the room is left read-only.
 func TestASchemaSwitchClosesEverySocketOfTheIssueRoom(t *testing.T) {
 	ctx := context.Background()
 	pmdoctest.UseBlockSchema(t, installedSchema(t))
@@ -643,7 +643,7 @@ func requireRoomCensus(t *testing.T, database *store.Store, what string) {
 }
 
 // A block of an issue room knows its document, and a reconciliation of the room reads the whole
-// room (T12a of dispatch://INFRA-1253's plan, the migrations paragraph of its spec version 106).
+// room (T12a of the issue-tree plan, the migrations paragraph of its spec version 106).
 // The room's settlement writes one version of each document whose fragment's rendering changed,
 // with that document's own artifact.version event, and indexes the room once under its tree
 // artifact: each block has its issue_room_blocks row naming its fragment's document, an

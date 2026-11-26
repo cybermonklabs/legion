@@ -203,8 +203,8 @@ func everyArtifactIDColumn(t *testing.T, database *store.Store) []artifactColumn
 // names, so the census reads past them. document_search_backfill.artifact_id is the search fill's
 // keyset cursor (migration 20261101182501): a position in the fill, the highest document id the
 // pass has covered, and not a record of that document. A removal leaves it where it is, because
-// the boot's fill reads that one row every time and the keyset goes on from an id whether or not
-// a document still has it (dispatch://INFRA-4018).
+// the fill a process of the release before runs at each boot reads that one row every time and
+// the keyset goes on from an id whether or not a document still has it (#4224).
 var censusExempt = []artifactColumn{{table: "document_search_backfill", column: "artifact_id"}}
 
 // assertNoRowNamesTheDocument is the census: no row of the catalogue names the removed document.
@@ -955,22 +955,21 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 	return appends
 }
 
-// Removing the document the search fill's cursor names leaves the fill's progress row as it was,
-// and the boot's fill still runs after it (dispatch://INFRA-4018). document_search_backfill holds
-// one row (migration 20261101182501), whose artifact_id is the keyset cursor: the highest document
-// id the pass has covered, and no row of that document's. A removal that deleted it where the
-// cursor equals the removed id left the table empty, and store.FillDocumentSearch, which the boot
-// runs before the server serves (cmd/dispatch/main.go), then failed its read of the row, so no
-// process could start again.
+// Removing the document the search fill's cursor names leaves the fill's progress row as it was
+// (#4224). document_search_backfill holds one row (migration 20261101182501), whose
+// artifact_id is the keyset cursor: the highest document id the pass has covered, and no row of
+// that document's. A removal that deleted it where the cursor equals the removed id left the table
+// empty, and the fill, which the boot of a process of the release before runs before it serves,
+// then failed its read of the row, so no such process could start again. This build runs no fill
+// (R17 of the issue-tree spec), and a rollback reaches the release before, which does.
 //
 // The cursor is set rather than reached by a pass, since which document a pass ends on is the
 // order of random ids: a finished pass names its last document, and a running one the last
 // document of the batch it committed. Both states are cases here, each on a database of its own.
-// Each reads the row, runs the census while the cursor still holds the removed id, and then runs
-// the fill; the row and the fill report with Errorf, so a failure of the first still reports the
-// last. The census is the removal's own (assertNoRowNamesTheDocument), and it holds every other
-// row to naming the document no more: only the cursor, which censusExempt says is a position in
-// the fill, may keep the removed id.
+// Each reads the row and runs the census while the cursor still holds the removed id; the row
+// reports with Errorf, so a failure of it still reports the census. The census is the removal's
+// own (assertNoRowNamesTheDocument), and it holds every other row to naming the document no more:
+// only the cursor, which censusExempt says is a position in the fill, may keep the removed id.
 func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1001,9 +1000,6 @@ func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *
 					rows, cursor, done, document.ID, pass.done)
 			}
 			assertNoRowNamesTheDocument(t, database, document.ID)
-			if _, err := database.FillDocumentSearch(ctx); err != nil {
-				t.Errorf("the boot's fill after the removal of the document its cursor names: %v", err)
-			}
 		})
 	}
 }

@@ -71,7 +71,7 @@ import (
 const censusSigningKey = "store-census-signing-key"
 
 // censusKinds are the kinds this child moves, as the census names them, the rank and the text of
-// every block dispatch://INFRA-1253's block index states (graphcensus' block_rank and block_text,
+// every block the issue-tree spec's block index states (graphcensus' block_rank and block_text,
 // which the backfill's drain and the reconciliation after it give every block the older build
 // indexed), the size it gives every plan node (graphcensus' block_size, whose row side is every
 // block of a document that owes no index, a block that writes no size among them), the document
@@ -86,7 +86,7 @@ const censusSigningKey = "store-census-signing-key"
 // checking is read by a person before this test agrees with it.
 var censusKinds = []string{
 	"comment", "block", "block_ref", "block_rank", "block_text", "block_size", "room_block", "block_author",
-	"person", "session", "role", "page", "artifact", "version", "artifact_reference",
+	"person", "session", "role", "page", "artifact", "version", "artifact_reference", "node_search",
 }
 
 // censusUnseededKinds are the census's kinds this run writes no row of, which a store may hold
@@ -1277,7 +1277,7 @@ func censusCommentTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []pr
 
 // censusBlockTuples is what every block row states: the document it is a block of, and the block
 // that holds it, which document_blocks spells as parent_block_id, or for a block no block holds
-// its document's top (dispatch://INFRA-1253's refs.DocumentTopSQL, the one statement the block
+// its document's top (the issue-tree spec's refs.DocumentTopSQL, the one statement the block
 // index and the census read it by): the issue for a block of an issue's spec, Verification or plan
 // document, and the document's own node for an upload or a project's document. The document is
 // the one refs.BlockDocumentSQL reads, as the block index and the census read it: for a row of an

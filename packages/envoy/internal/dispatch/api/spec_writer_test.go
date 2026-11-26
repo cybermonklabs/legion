@@ -1,5 +1,5 @@
-// spec_writer_test.go holds the behavior tests of R1 of INFRA-4764: on an issue Legion runs, a
-// version of the spec or the Verification document from a writer who is no person and no
+// spec_writer_test.go holds the behavior tests of R1 of the spec-writer spec: on an issue Legion
+// runs, a version of the spec or the Verification document from a writer who is no person and no
 // architect of the issue, or of an issue above it, is refused with 403
 // DOCUMENT_WRITER_NOT_ARCHITECT on every route that writes one (spec_writer.go). Its rig
 // (specWriterServer, specWriterRig) builds a project of its own for each run, and uses only routes
@@ -208,6 +208,7 @@ func specWriteInventory() []specWriteRow {
 			title := "A worker's issue under " + at.issue.key
 			at.rig.requireRefused(t, specWriteAttempt{
 				what: fmt.Sprintf("%s's create of an issue under %s", at.writer, at.issue.key),
+				kind: specWriteKindCreate,
 				send: func(t *testing.T) *httptest.ResponseRecorder {
 					return at.rig.send(t, at.writer, http.MethodPost, "/api/v1/issues", map[string]any{
 						"project": at.rig.project, "title": title, "parent": at.issue.key, "force": true,
@@ -235,6 +236,7 @@ func specWriteInventory() []specWriteRow {
 				refusal.issues = []string{moved, at.issue.key}
 				at.rig.requireRefused(t, specWriteAttempt{
 					what: fmt.Sprintf("%s's move of its root %s under %s", at.writer, moved, at.issue.key),
+					kind: specWriteKindMove,
 					send: func(t *testing.T) *httptest.ResponseRecorder {
 						return at.rig.send(t, at.writer, http.MethodPatch, "/api/v1/issues/"+moved, map[string]any{"parent": at.issue.key})
 					},
@@ -265,6 +267,7 @@ func specWriteInventory() []specWriteRow {
 			run: func(t *testing.T, at specWriteAt) {
 				at.rig.requireRefused(t, specWriteAttempt{
 					what: fmt.Sprintf("%s's removal of the label legion from %s", at.writer, at.issue.key),
+					kind: specWriteKindTakeOut,
 					send: func(t *testing.T) *httptest.ResponseRecorder {
 						return at.rig.send(t, at.writer, http.MethodPatch, "/api/v1/issues/"+at.issue.key, map[string]any{"labels": []string{}})
 					},
@@ -307,6 +310,7 @@ func specWriteInventory() []specWriteRow {
 				refusal.issues = []string{at.rig.c.key, at.rig.d.key}
 				at.rig.requireRefused(t, specWriteAttempt{
 					what: fmt.Sprintf("%s's status change of %s with unlink_children", at.writer, at.issue.key),
+					kind: specWriteKindTakeOut,
 					send: func(t *testing.T) *httptest.ResponseRecorder {
 						return at.rig.send(t, at.writer, http.MethodPost, "/api/v1/issues/"+at.issue.key+"/status-change",
 							map[string]any{"status": "in_progress", "unlink_children": true})
@@ -373,6 +377,7 @@ func (at specWriteAt) requireCloseRefused(t *testing.T, send func(t *testing.T) 
 	withdrawn := at.rig.eventCount(t, at.issue.key, "ask.withdrawn")
 	at.rig.requireRefused(t, specWriteAttempt{
 		what:    fmt.Sprintf("%s's close of %s", at.writer, at.issue.key),
+		kind:    specWriteKindClose,
 		send:    send,
 		refusal: at.refusal(),
 	})
@@ -397,6 +402,7 @@ func (at specWriteAt) requireReopenRefused(t *testing.T, send func(t *testing.T)
 	asks := at.rig.eventCount(t, at.issue.key, "ask.%")
 	at.rig.requireRefused(t, specWriteAttempt{
 		what:    fmt.Sprintf("%s's reopen of %s", at.writer, at.issue.key),
+		kind:    specWriteKindReopen,
 		send:    send,
 		refusal: at.refusal(),
 	})
@@ -420,6 +426,7 @@ func (at specWriteAt) requireParentWriteRefused(t *testing.T, parent *string) {
 	}
 	at.rig.requireRefused(t, specWriteAttempt{
 		what: fmt.Sprintf("%s's write of %s's parent to %s", at.writer, at.issue.key, specWriterParentName(parent)),
+		kind: specWriteKindTakeOut,
 		send: func(t *testing.T) *httptest.ResponseRecorder {
 			return at.rig.send(t, at.writer, http.MethodPatch, "/api/v1/issues/"+at.issue.key, map[string]any{"parent": parent})
 		},
@@ -467,6 +474,9 @@ type specWriterRigShape struct {
 	grandchild bool
 	// unclaimed adds V, a root of P with the label legion that no publication names.
 	unclaimed bool
+	// secondProject adds Q, a second project with no issue and no publication of its own, for a
+	// test that files its own issues there.
+	secondProject bool
 	// unmarked adds Q, a second project that no publication marked, holding W, a root with the
 	// label legion, and X, a root with no label.
 	unmarked bool
@@ -501,7 +511,8 @@ type specWriterRig struct {
 	project                                       string
 	r, c, d, u2, g, v                             specWriterIssue
 	rArchitect, rImplementer, cArchitect, cTester string
-	// q is the key of the unmarked project Q, and w and x are its issues (specWriterRigShape).
+	// q is the key of the second project Q (secondProject, unmarked), and w and x are its issues in
+	// the shape unmarked (specWriterRigShape).
 	q    string
 	w, x specWriterIssue
 	// asks are the ids of the block asks the rig wrote, by block id (specWriterBlockID).
@@ -576,9 +587,11 @@ func (s *specWriterServer) tree(t *testing.T, shape specWriterRigShape) *specWri
 	if shape.unclaimed {
 		rig.v = rig.file(t, "unclaimed", "", []string{"legion"})
 	}
-	if shape.unmarked {
+	if shape.secondProject || shape.unmarked {
 		rig.q = project + "Q"
 		createAdviceProject(t, s.handler, rig.q)
+	}
+	if shape.unmarked {
 		rig.w = rig.fileIn(t, rig.q, "unmarked", "", []string{"legion"})
 		rig.x = rig.fileIn(t, rig.q, "other", "", nil)
 	}
@@ -799,16 +812,55 @@ func specWriterAlsoAbove(to string) string {
 	return "that is also an architect of " + to + " or of an issue above it"
 }
 
-// specWriteAttempt is one write of a run, and what its refusal names.
+// specWriteAttempt is one write of a run, its kind, and what its refusal names.
 type specWriteAttempt struct {
 	what    string
+	kind    specWriteKind
 	send    func(t *testing.T) *httptest.ResponseRecorder
 	refusal specWriteRefusal
 }
 
+// specWriteKind is what a refused write does, which decides the sentence its refusal ends with
+// (ending). The zero kind is a write of a document.
+type specWriteKind int
+
+const (
+	// specWriteKindDocument writes a version of a document: an upload, an edit or a named version
+	// of it, or the reword, the retraction or the resolution of a block ask in it.
+	specWriteKindDocument specWriteKind = iota
+	// specWriteKindCreate creates an issue under a parent.
+	specWriteKindCreate
+	// specWriteKindClose closes an issue.
+	specWriteKindClose
+	// specWriteKindReopen reopens an issue.
+	specWriteKindReopen
+	// specWriteKindMove moves an issue under a parent.
+	specWriteKindMove
+	// specWriteKindTakeOut takes an issue out of Legion: the removal of the label legion, a write of
+	// the issue's parent, or an unlink by unlink_children.
+	specWriteKindTakeOut
+)
+
+// The two sentences a refusal of the check ends with: specWriterAskEnding for a move and a
+// take-out, and specWriterProposeEnding for every other write. The proof refusal holds neither.
+const (
+	specWriterAskEnding     = " A suggestion or a comment cannot carry this write: ask one of the writers this message names, a person by `dispatch ask`."
+	specWriterProposeEnding = " Propose the change with a suggestion or a comment."
+)
+
+// ending is the sentence the refusal of a write of kind ends with, and the sentence it does not
+// hold.
+func (kind specWriteKind) ending() (ends, never string) {
+	if kind == specWriteKindMove || kind == specWriteKindTakeOut {
+		return specWriterAskEnding, specWriterProposeEnding
+	}
+	return specWriterProposeEnding, specWriterAskEnding
+}
+
 // requireRefused sends each attempt in order, then fails t unless each was refused with 403
-// DOCUMENT_WRITER_NOT_ARCHITECT naming what its refusal names, and the project holds the issues,
-// the document versions and the issue events it held before the first.
+// DOCUMENT_WRITER_NOT_ARCHITECT naming what its refusal names and ending with the sentence of its
+// kind, and the project holds the issues, the document versions and the issue events it held
+// before the first.
 func (rig *specWriterRig) requireRefused(t *testing.T, attempts ...specWriteAttempt) {
 	t.Helper()
 	before := rig.snapshot(t)
@@ -818,14 +870,16 @@ func (rig *specWriterRig) requireRefused(t *testing.T, attempts ...specWriteAtte
 	}
 	rig.quiet(t)
 	for index, attempt := range attempts {
-		requireSpecWriteRefused(t, attempt.what, responses[index], attempt.refusal)
+		requireSpecWriteRefused(t, attempt, responses[index])
 	}
 	rig.requireUnchanged(t, attempts[0].what, before)
 }
 
-// requireSpecWriteRefused fails t unless response is the check's refusal naming want.
-func requireSpecWriteRefused(t *testing.T, what string, response *httptest.ResponseRecorder, want specWriteRefusal) {
+// requireSpecWriteRefused fails t unless response is the check's refusal of attempt: it names what
+// attempt's refusal names, and it ends with the sentence of attempt's kind (specWriteKind.ending).
+func requireSpecWriteRefused(t *testing.T, attempt specWriteAttempt, response *httptest.ResponseRecorder) {
 	t.Helper()
+	what, want := attempt.what, attempt.refusal
 	var refusal refusalAnswer
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if response.Code != http.StatusForbidden || refusal.Code != specWriterRefusalCode {
@@ -849,6 +903,13 @@ func requireSpecWriteRefused(t *testing.T, what string, response *httptest.Respo
 		if strings.Contains(refusal.Error, phrase) {
 			t.Errorf("%s: the refusal %q says %q, want it not to", what, refusal.Error, phrase)
 		}
+	}
+	ends, never := attempt.kind.ending()
+	if !strings.HasSuffix(refusal.Error, ends) {
+		t.Errorf("%s: the refusal %q does not end %q", what, refusal.Error, strings.TrimSpace(ends))
+	}
+	if strings.Contains(refusal.Error, never) {
+		t.Errorf("%s: the refusal %q says %q, want it not to", what, refusal.Error, strings.TrimSpace(never))
 	}
 }
 
@@ -1168,6 +1229,7 @@ func TestSpecWriteChecksACreateOnlyUnderAParent(t *testing.T) {
 	title := "A worker's issue under " + rig.u2.key
 	rig.requireRefused(t, specWriteAttempt{
 		what:    "C's tester's create of an issue with the label legion under " + rig.u2.key,
+		kind:    specWriteKindCreate,
 		send:    rig.creating(rig.cTester, title, rig.u2.key, legion),
 		refusal: rig.refusalOn(rig.u2, "spec.md", rig.cTester),
 	})
@@ -1178,6 +1240,7 @@ func TestSpecWriteChecksACreateOnlyUnderAParent(t *testing.T) {
 	moved.issues = []string{root, rig.u2.key}
 	rig.requireRefused(t, specWriteAttempt{
 		what: "C's tester's move of its root " + root + " under " + rig.u2.key,
+		kind: specWriteKindMove,
 		send: func(t *testing.T) *httptest.ResponseRecorder {
 			return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/issues/"+root, map[string]any{"parent": rig.u2.key})
 		},
@@ -1373,6 +1436,7 @@ func TestSpecWriteChecksTheCloseAndTheReopen(t *testing.T) {
 		// does not hold, and then R, whose reopen it refuses C's architect.
 		rig.requireRefused(t, specWriteAttempt{
 			what: "C's architect's move of " + rig.r.key + " and the issues under it to backlog",
+			kind: specWriteKindReopen,
 			send: func(t *testing.T) *httptest.ResponseRecorder {
 				return rig.send(t, rig.cArchitect, http.MethodPost, "/api/v1/issues/"+rig.r.key+"/status-change",
 					map[string]any{"status": "backlog", "include_children": true})
@@ -1405,12 +1469,13 @@ func TestSpecWriteChecksAMoveUnderAParent(t *testing.T) {
 	}
 	refusal := rig.refusalOn(rig.c, "spec.md", rig.cTester)
 	refusal.issues = []string{root, rig.c.key}
-	rig.requireRefused(t, specWriteAttempt{what: "C's tester's move of its root " + root + " under " + rig.c.key, send: move(rig.cTester), refusal: refusal})
+	rig.requireRefused(t, specWriteAttempt{what: "C's tester's move of its root " + root + " under " + rig.c.key, kind: specWriteKindMove, send: move(rig.cTester), refusal: refusal})
 	if parent := rig.issueRow(t, root).parent; parent != nil {
 		t.Errorf("the refused move left %s under %s, want it still a root", root, *parent)
 	}
 	rig.requireRefused(t, specWriteAttempt{
 		what:    "C's architect's move of " + root + " under " + rig.c.key,
+		kind:    specWriteKindMove,
 		send:    move(rig.cArchitect),
 		refusal: specWriteRefusal{issues: []string{root}, document: "spec.md", writer: rig.cArchitect},
 	})
@@ -1464,6 +1529,7 @@ func TestSpecWriteChecksAMoveOnBothChains(t *testing.T) {
 		what := fmt.Sprintf("%s's move of %s under %s", architect.name, rig.d.key, architect.parent.key)
 		rig.requireRefused(t, specWriteAttempt{
 			what:    what,
+			kind:    specWriteKindMove,
 			send:    move(architect.session, architect.parent),
 			refusal: rig.refusalOn(rig.d, "spec.md", architect.session),
 		}, rig.editAttempt(architect.session, rig.d, "spec.md"))
@@ -1473,12 +1539,14 @@ func TestSpecWriteChecksAMoveOnBothChains(t *testing.T) {
 	daemonsMove.issues = []string{rig.d.key, rig.c.key}
 	rig.requireRefused(t, specWriteAttempt{
 		what:    "the Legion daemon's move of " + rig.d.key + " under " + rig.c.key,
+		kind:    specWriteKindMove,
 		send:    move(daemon, rig.c),
 		refusal: daemonsMove,
 	})
 	requireUnder(t, "the daemon's refused move", rig.r)
 	rig.requireRefused(t, specWriteAttempt{
 		what:    "the Legion daemon's move of " + rig.d.key + " under " + rig.u2.key,
+		kind:    specWriteKindMove,
 		send:    move(daemon, rig.u2),
 		refusal: rig.refusalOn(rig.d, "spec.md", daemon),
 	})
@@ -1546,13 +1614,14 @@ func TestSpecWriteChecksTheLabelledIssuesOfAMovedSubtree(t *testing.T) {
 		edit.refusal = onY(architect.session)
 		moved := edit.refusal
 		moved.says = []string{specWriterAlsoAbove(architect.parent.key)}
-		rig.requireRefused(t, specWriteAttempt{what: what, send: move(architect.session, architect.parent), refusal: moved}, edit)
+		rig.requireRefused(t, specWriteAttempt{what: what, kind: specWriteKindMove, send: move(architect.session, architect.parent), refusal: moved}, edit)
 		requireRoot(t, "the refused "+what)
 	}
 	ysMove := rig.refusalOn(rig.c, "spec.md", yArchitect)
 	ysMove.issues = []string{rig.u2.key, rig.c.key}
 	rig.requireRefused(t, specWriteAttempt{
 		what:    "Y's architect's move of " + rig.u2.key + " under " + rig.c.key,
+		kind:    specWriteKindMove,
 		send:    move(yArchitect, rig.c),
 		refusal: ysMove,
 	})
@@ -1623,6 +1692,7 @@ func TestSpecWriteChecksAMovedSubtreeWhereverItsNewParentIs(t *testing.T) {
 			what := fmt.Sprintf("%s's move of %s under %s", architect, rig.u2.key, own.key)
 			rig.requireRefused(t, specWriteAttempt{
 				what: what,
+				kind: specWriteKindMove,
 				send: func(t *testing.T) *httptest.ResponseRecorder {
 					return rig.sendAs(t, architect, http.MethodPatch, "/api/v1/issues/"+rig.u2.key, map[string]any{"parent": own.key})
 				},
@@ -1632,6 +1702,105 @@ func TestSpecWriteChecksAMovedSubtreeWhereverItsNewParentIs(t *testing.T) {
 				t.Errorf("the refused %s left %s under %s, want it still a root", what, rig.u2.key, *parent)
 			}
 		})
+	}
+}
+
+// TestSpecWriteChecksAMovedSubtreeWithinItsProject: an issue's chain ends at the first parent of
+// another project, as at a root (issueChainSQL), so the moved subtree a move is checked on is the
+// issues reached from the moved issue through parents of its own project. On a rig with R and its
+// child C in P, U2, a root of P with no label, and the second project Q, U2 holds two issues of Q:
+// Y, with the label legion, whose own architect the daemon of Q publishes, and Z, with no label,
+// which holds N, an issue of P with the label legion. R's architect's move of U2 under C is taken:
+// Y's chain is Y alone, and N's chain is N alone, since N's parent Z is of another project, so the
+// move changes no chain of either. R's architect's edit of Y's spec after the move is refused,
+// since Y's architects are still Y's own.
+func TestSpecWriteChecksAMovedSubtreeWithinItsProject(t *testing.T) {
+	server := newSpecWriterServer(t, testServerOptions{})
+	rig := server.rig(t, specWriterRigShape{unlabelled: true, secondProject: true})
+	y := rig.fileIn(t, rig.q, "labelled", rig.u2.key, []string{"legion"})
+	z := rig.fileIn(t, rig.q, "foreign", rig.u2.key, nil)
+	rig.file(t, "nested", z.key, []string{"legion"})
+	yArchitect := "ses-y-architect-" + strings.ToLower(rig.q)
+	rig.publish(t, y.key, []issueRoleHolder{{Role: "architect", Session: yArchitect}})
+	rig.quiet(t)
+
+	what := fmt.Sprintf("R's architect's move of %s under %s", rig.u2.key, rig.c.key)
+	rig.requireTaken(t, what, http.StatusOK, func(t *testing.T) *httptest.ResponseRecorder {
+		return rig.sendAs(t, rig.rArchitect, http.MethodPatch, "/api/v1/issues/"+rig.u2.key, map[string]any{"parent": rig.c.key})
+	})
+	if parent := rig.issueRow(t, rig.u2.key).parent; parent == nil || *parent != rig.c.key {
+		t.Fatalf("%s left %s under %s, want it under %s", what, rig.u2.key, specWriterParentName(parent), rig.c.key)
+	}
+	edit := rig.editAttempt(rig.rArchitect, y, "spec.md")
+	edit.refusal = specWriteRefusal{issues: []string{y.key}, document: "spec.md", writer: rig.rArchitect, architects: []string{yArchitect}}
+	rig.requireRefused(t, edit)
+}
+
+// TestSpecWriteJudgesARowUnderAParentOfAnotherProjectAsARoot: a parent of another project is not on
+// the chain of the row a create or a move leaves (issueChainSQL), so the check judges the row as a
+// root of its own project, which it does not judge, as it does not judge a create under no parent.
+// Both projects are marked: P by the rig's publication, and the second project Q by the publication
+// of M's own architect, M a root of Q with the label legion. C's tester's create of an issue of Q
+// with the label legion under C, which Legion runs, is taken, and so is its move under C of O, a
+// root of Q with no label and no issue under it. The server logs no refusal for either. The check
+// of the moved subtree still judges every move: C's tester's move of M under C is refused on M's
+// own chain, naming M, its spec, C's tester and M's architect, and M stays a root. That refusal
+// does not say that the writer must also be an architect of C or of an issue above it, since the
+// check of C's chain did not judge the move.
+func TestSpecWriteJudgesARowUnderAParentOfAnotherProjectAsARoot(t *testing.T) {
+	server := newSpecWriterServer(t, testServerOptions{})
+	rig := server.rig(t, specWriterRigShape{secondProject: true})
+	m := rig.fileIn(t, rig.q, "labelled", "", []string{"legion"})
+	o := rig.fileIn(t, rig.q, "plain", "", nil)
+	mArchitect := "ses-m-architect-" + strings.ToLower(rig.q)
+	rig.publish(t, m.key, []issueRoleHolder{{Role: "architect", Session: mArchitect}})
+	rig.quiet(t)
+	for _, project := range []string{rig.project, rig.q} {
+		if !rig.marked(t, project) {
+			t.Fatalf("rig: %s is not marked, want both projects marked", project)
+		}
+	}
+	logged := captureLog(t)
+	// refusals are the lines the server logged for the check's refusals since the capture began.
+	refusals := func() []string {
+		var lines []string
+		for line := range strings.Lines(logged.String()) {
+			if strings.Contains(line, specWriterRefusalLine) {
+				lines = append(lines, strings.TrimSpace(line))
+			}
+		}
+		return lines
+	}
+
+	rig.requireCreated(t, "C's tester's create of an issue of "+rig.q+" with the label legion under "+rig.c.key, rig.c.key,
+		rig.creatingIn(rig.cTester, rig.q, "A worker's issue of "+rig.q+" under "+rig.c.key, rig.c.key, []string{"legion"}))
+	what := fmt.Sprintf("C's tester's move of %s under %s", o.key, rig.c.key)
+	rig.requireTaken(t, what, http.StatusOK, func(t *testing.T) *httptest.ResponseRecorder {
+		return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/issues/"+o.key, map[string]any{"parent": rig.c.key})
+	})
+	if parent := rig.issueRow(t, o.key).parent; parent == nil || *parent != rig.c.key {
+		t.Errorf("%s left %s under %s, want it under %s", what, o.key, specWriterParentName(parent), rig.c.key)
+	}
+	if lines := refusals(); len(lines) > 0 {
+		t.Errorf("the server logged a refusal of the create or of the move under %s:\n%s", rig.c.key, strings.Join(lines, "\n"))
+	}
+
+	rig.requireRefused(t, specWriteAttempt{
+		what: fmt.Sprintf("C's tester's move of %s under %s", m.key, rig.c.key),
+		kind: specWriteKindMove,
+		send: func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/issues/"+m.key, map[string]any{"parent": rig.c.key})
+		},
+		refusal: specWriteRefusal{
+			issues: []string{m.key}, document: "spec.md", writer: rig.cTester, architects: []string{mArchitect},
+			saysNot: []string{specWriterAlsoAbove(rig.c.key)},
+		},
+	})
+	if parent := rig.issueRow(t, m.key).parent; parent != nil {
+		t.Errorf("the refused move left %s under %s, want it still a root", m.key, *parent)
+	}
+	if len(refusals()) == 0 {
+		t.Errorf("the server logged no refusal of the refused move of %s, so the log this test reads holds no line of the check", m.key)
 	}
 }
 
@@ -1679,6 +1848,7 @@ func TestSpecWriteDecidesAMovedSubtreesLabelInSQL(t *testing.T) {
 			}
 			rig.requireRefused(t, specWriteAttempt{
 				what:    what,
+				kind:    specWriteKindMove,
 				send:    move,
 				refusal: specWriteRefusal{issues: []string{y.key}, document: "spec.md", writer: rig.rArchitect, architects: []string{yArchitect}},
 			})
@@ -1710,6 +1880,7 @@ func TestSpecWriteChecksAWriteThatTakesAnIssueOutOfLegion(t *testing.T) {
 		editD := rig.editAttempt(rig.cTester, rig.d, "spec.md")
 		rig.requireRefused(t, specWriteAttempt{
 			what: "C's tester's removal of the label legion from " + rig.r.key,
+			kind: specWriteKindTakeOut,
 			send: func(t *testing.T) *httptest.ResponseRecorder {
 				return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/issues/"+rig.r.key, map[string]any{"labels": []string{}})
 			},
@@ -1725,6 +1896,7 @@ func TestSpecWriteChecksAWriteThatTakesAnIssueOutOfLegion(t *testing.T) {
 		refusal.issues = []string{rig.c.key, rig.d.key}
 		rig.requireRefused(t, specWriteAttempt{
 			what: "C's tester's status change of " + rig.r.key + " with unlink_children",
+			kind: specWriteKindTakeOut,
 			send: func(t *testing.T) *httptest.ResponseRecorder {
 				return rig.send(t, rig.cTester, http.MethodPost, "/api/v1/issues/"+rig.r.key+"/status-change", unlink)
 			},
@@ -2190,9 +2362,15 @@ func (rig *specWriterRig) sendAs(t *testing.T, writer, method, path string, body
 }
 
 // creating is writer's create (sendAs) of an issue of P titled title with a spec of its own, under
-// parent when it is not empty and with labels.
+// parent when it is not empty and with labels (creatingIn).
 func (rig *specWriterRig) creating(writer, title, parent string, labels []string) func(t *testing.T) *httptest.ResponseRecorder {
-	body := map[string]any{"project": rig.project, "title": title, "spec": "The spec of " + title + ".\n", "force": true}
+	return rig.creatingIn(writer, rig.project, title, parent, labels)
+}
+
+// creatingIn is writer's create (sendAs) of an issue of project titled title with a spec of its
+// own, under parent when it is not empty and with labels.
+func (rig *specWriterRig) creatingIn(writer, project, title, parent string, labels []string) func(t *testing.T) *httptest.ResponseRecorder {
+	body := map[string]any{"project": project, "title": title, "spec": "The spec of " + title + ".\n", "force": true}
 	if parent != "" {
 		body["parent"] = parent
 	}
@@ -2299,12 +2477,7 @@ func (rig *specWriterRig) requireRefusedWith(t *testing.T, status int, code stri
 // versionsOf is how many versions the document id holds.
 func (rig *specWriterRig) versionsOf(t *testing.T, id string) int {
 	t.Helper()
-	var count int
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select count(*) from artifact_versions where artifact_id = $1`, id).Scan(&count); err != nil {
-		t.Fatalf("count the versions of %s: %v", id, err)
-	}
-	return count
+	return uploadedVersionCount(t, rig.database, id)
 }
 
 // commentState is a comment's row as it is stored: whether it is resolved, and, for a suggestion,
@@ -2478,8 +2651,9 @@ func (rig *specWriterRig) setProvenSessions(t *testing.T, project string, on boo
 
 // requireUnproven sends attempt, then fails t unless the check refused it with its proof refusal -
 // 403 DOCUMENT_WRITER_NOT_ARCHITECT naming the issue, the document when the refusal names one, the
-// writer's session and the project, and saying that the request's credential does not prove that
-// session - and the project holds what it held before it.
+// writer's session and the project, saying that the request's credential does not prove that
+// session, and holding neither sentence the check's other refusals end with - and the project
+// holds what it held before it.
 func (rig *specWriterRig) requireUnproven(t *testing.T, attempt specWriteAttempt) {
 	t.Helper()
 	var response *httptest.ResponseRecorder
@@ -2505,6 +2679,11 @@ func (rig *specWriterRig) requireUnproven(t *testing.T, attempt specWriteAttempt
 	if !strings.Contains(message, "records proven sessions") || !strings.Contains(message, "does not prove session "+want.writer) {
 		t.Errorf("%s: the refusal %q does not say that the project records proven sessions and the credential does not prove session %s",
 			attempt.what, message, want.writer)
+	}
+	for _, ending := range []string{specWriterAskEnding, specWriterProposeEnding} {
+		if strings.Contains(message, ending) {
+			t.Errorf("%s: the proof refusal %q says %q, want it not to", attempt.what, message, strings.TrimSpace(ending))
+		}
 	}
 }
 

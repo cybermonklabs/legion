@@ -473,7 +473,7 @@ test("the rail's Priorities entry carries no number where no priority exists", a
   try {
     const entry = await screen.findByRole("link", { name: /^Priorities/ });
     await waitFor(() => expect(sidebar.listPriorities).toHaveBeenCalledWith({ summary: true }));
-    expect(entry.textContent).toBe("PrioritiesEvery project's priorities, and the work on none");
+    expect(entry.textContent).toBe("PrioritiesPriorities and the work under them");
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();

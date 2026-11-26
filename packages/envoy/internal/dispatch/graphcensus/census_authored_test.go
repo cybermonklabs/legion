@@ -38,7 +38,7 @@ func requireRowDifference(t *testing.T, what string, report *StoreReport, name, 
 }
 
 // The store census holds an authored node's place and its authors by the rules the block index
-// writes them by (T7 of dispatch://INFRA-1253's plan). Beside a store it agrees with, a document
+// writes them by (T7 of the issue-tree plan). Beside a store it agrees with, a document
 // of the issue holds a criterion whose parent is a person's comment and a requirement under the
 // issue, first written in a version bob wrote, who wrote nothing else. The census agrees: each
 // row's null parent_block_id stands for a part_of to no block of its artifact (the comment, the
@@ -93,7 +93,7 @@ func TestTheCensusHoldsAnAuthoredNodesPlaceAndItsAuthors(t *testing.T) {
 			t.Fatalf("begin %s: %v", what, err)
 		}
 		defer tx.Rollback(ctx)
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, checks, refs.OneVersion(checks, version, at), markdown, blocks, nil, pointers, refs.TypedFacts{})
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, checks, refs.OneVersion(checks, version, at), markdown, blocks, nil, pointers, "", refs.TypedFacts{})
 		if err != nil || !won {
 			t.Fatalf("%s: won %t, %v", what, won, err)
 		}
@@ -252,7 +252,7 @@ func censusPass(t *testing.T, database *store.Store, what string, pass func(ctx 
 // blockIndex is a pass of the block index alone over versions of artifact.
 func blockIndex(artifact string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock) func(context.Context, pgx.Tx) (graphstore.Uncaused, error) {
 	return func(ctx context.Context, tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, refs.TypedFacts{})
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, "", refs.TypedFacts{})
 		if err == nil && !won {
 			err = errLostFence
 		}
@@ -315,7 +315,7 @@ func typedIndex(artifact string, number int, at time.Time, version renderedVersi
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, version.markdown, version.blocks, version.located, version.pointers, facts)
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, version.markdown, version.blocks, version.located, version.pointers, "https://dispatch.example", facts)
 		if err == nil && !won {
 			err = errLostFence
 		}
@@ -361,7 +361,7 @@ func requireAuthoredBy(t *testing.T, database *store.Store, what, address, super
 }
 
 // The census holds no author of a block of an issue room that has stood in more than one fragment
-// (T7 and T12a of dispatch://INFRA-1253's plan): its text rows, keyed by the room's tree, record
+// (T7 and T12a of the issue-tree plan): its text rows, keyed by the room's tree, record
 // versions of more than one document and no row says which, so no row tells the version that
 // first held it. x is written in the spec's fragment at the spec's version 4, which alice wrote,
 // and moved into the Verification document's fragment at that document's version 2, which carol
@@ -406,7 +406,7 @@ func TestTheCensusHoldsNoAuthorOfARoomBlockThatMovedBetweenFragments(t *testing.
 }
 
 // The census leaves a reading out of both sides of block_author by one attribute, the block's
-// type (T7 of dispatch://INFRA-1253's plan): a reading's authored_by is the typed-node pass's,
+// type (T7 of the issue-tree plan): a reading's authored_by is the typed-node pass's,
 // naming the one actor who introduced it (refs.TypedSources.Authors), which no row the census
 // reads holds. A reading of a decision, in a version alice and bob wrote, is credited to alice
 // alone; then, beside a requirement whose authors the census does hold, either it stops being a
@@ -434,7 +434,7 @@ func TestTheCensusLeavesAReadingOutOfBothSidesByItsType(t *testing.T) {
 			version := renderVersion(t, parsedTree(t, first))
 			at := censusVersion(t, database, checks, 1, version.markdown, alice, bob)
 			censusPass(t, database, "the index of version 1", typedIndex(checks, 1, at, version, alice))
-			requireAuthoredBy(t, database, "the requirement", refKey+"#r1", refs.BlockSupertag, "alice", "bob")
+			requireAuthoredBy(t, database, "the requirement", refKey+"#r1", "requirement", "alice", "bob")
 			requireAuthoredBy(t, database, "the reading of the decision", refKey+"#g1", refs.ReadingSupertag, "alice")
 			requireBlockAuthorsAgree(t, "the census of version 1", storeCensusOf(t, database))
 

@@ -1,15 +1,21 @@
-import { expect, test } from "bun:test";
-import { screen, within } from "@testing-library/react";
+import { beforeAll, expect, test } from "bun:test";
+import { screen, waitFor, within } from "@testing-library/react";
 
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries } from "../../__tests__/query-provider";
-import type { Artifact, ArtifactApproval } from "../../api/types";
+import type { ArtifactApprovalWithTrees, ArtifactWithTrees } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ApprovalSteps } from "./ApprovalSteps";
 import type { StepEntry } from "./gated-steps";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const SPEC_ID = "artifact-spec";
 const VERIFICATION_ID = "artifact-verification";
 
-function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
+function doc(id: string, name: string, approval?: ArtifactApprovalWithTrees): ArtifactWithTrees {
   return {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
@@ -27,11 +33,11 @@ function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
   };
 }
 
-function specEntry(approval?: ArtifactApproval): StepEntry {
+function specEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
 }
 
-function verificationEntry(approval?: ArtifactApproval): StepEntry {
+function verificationEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
   return {
     document: doc(VERIFICATION_ID, "verification.md", approval),
     label: "Verification",
@@ -78,7 +84,7 @@ test("lists one named item per entry, in the entries' order, under one Approvals
 });
 
 test("each approval state reads as that step's state", () => {
-  const cases: Array<[ArtifactApproval, string]> = [
+  const cases: Array<[ArtifactApprovalWithTrees, string]> = [
     [{ latest_version: 1, state: "draft" }, "Not requested"],
     [{ latest_version: 1, state: "awaiting" }, "Awaiting approval"],
     [{ latest_version: 3, state: "approved", version: 3 }, "Approved v3"],
@@ -104,7 +110,7 @@ test("a step with no document and a document with no approval both read Not requ
     expect(within(stepItem(view, "criteria")).getByText("Not requested")).not.toBeNull();
     expect(within(stepItem(view, "spec")).getByText("Not requested")).not.toBeNull();
     // Nothing to open: no review was ever given on either document.
-    expect(screen.queryAllByRole("button").length).toBe(0);
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
   } finally {
     view.unmount();
   }
@@ -144,7 +150,7 @@ test("a draft primary document reads `Not requested` and carries no actions", ()
   }
 });
 
-test("a changes-requested step says who sent it back, on which version, and why", () => {
+test("a changes-requested step says who sent it back, on which version, and why", async () => {
   const view = renderSteps([
     verificationEntry({
       by: { id: "alice", kind: "user" },
@@ -157,8 +163,11 @@ test("a changes-requested step says who sent it back, on which version, and why"
   ]);
   try {
     const line = view.container.querySelector('[data-approval-step-reason="criteria"]');
-    expect(line?.textContent).toBe(
-      "Verification: alice requested changes on v2 · Name the rollback step."
+    // The reason is the reviewer's own text, drawn by the renderer once its engine has answered.
+    await waitFor(() =>
+      expect(line?.textContent).toBe(
+        "Verification: alice requested changes on v2 · Name the rollback step."
+      )
     );
     // The whole reason is readable on a phone: no tooltip standing in for clipped text.
     expect(line?.getAttribute("title")).toBeNull();
@@ -169,7 +178,7 @@ test("a changes-requested step says who sent it back, on which version, and why"
   }
 });
 
-test("a reason line leaves out an absent reason and an absent reviewer", () => {
+test("a reason line leaves out an absent reason and an absent reviewer", async () => {
   const view = renderSteps([
     verificationEntry({
       by: { id: "alice", kind: "user" },
@@ -188,10 +197,69 @@ test("a reason line leaves out an absent reason and an absent reviewer", () => {
     expect(
       view.container.querySelector('[data-approval-step-reason="criteria"]')?.textContent
     ).toBe("Verification: alice requested changes on v2");
-    expect(view.container.querySelector('[data-approval-step-reason="spec"]')?.textContent).toBe(
-      "Spec: Changes requested on v4 · Split the rollout."
+    await waitFor(() =>
+      expect(view.container.querySelector('[data-approval-step-reason="spec"]')?.textContent).toBe(
+        "Spec: Changes requested on v4 · Split the rollout."
+      )
     );
   } finally {
+    view.unmount();
+  }
+});
+
+// The reason is markdown its reviewer wrote, and the Reviews dialog draws it by the renderer: so
+// does this line, where a link in it is a link and its words are the words. Drawn as the
+// characters it is, the line ends `· See [the plan](https://example.test/plan) **first**.`.
+test("a reason that holds markdown is drawn by the renderer", async () => {
+  const view = renderSteps([
+    specEntry({
+      latest_version: 4,
+      reason: "See [the plan](https://example.test/plan) **first**.",
+      state: "changes_requested",
+      version: 4,
+    }),
+  ]);
+  try {
+    const line = view.container.querySelector('[data-approval-step-reason="spec"]');
+    await waitFor(() =>
+      expect(line?.textContent).toBe("Spec: Changes requested on v4 · See the plan first.")
+    );
+    expect(within(line as HTMLElement).getByRole("link", { name: "the plan" })).toHaveAttribute(
+      "href",
+      "https://example.test/plan"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reason is a stored text, and the issue read sends the reading the server made of it
+// (`reason_tree`): the line draws that tree and parses nothing on the page's thread. The tree
+// here reads differently from the markdown beside it, so a line drawn from a parse of the
+// markdown would end `the rollback step.` and count a parse.
+test("a changes-requested step's reason is drawn from the tree the issue read sends", async () => {
+  const tree = displayTree("Name the **rollback** step, as v1 had it.");
+  const parses = countEngineParses();
+  const view = renderSteps([
+    specEntry({
+      latest_version: 2,
+      reason: "Name the **rollback** step.",
+      reason_tree: tree,
+      state: "changes_requested",
+      version: 2,
+    }),
+  ]);
+  try {
+    const line = view.container.querySelector('[data-approval-step-reason="spec"]');
+    await waitFor(() =>
+      expect(line?.textContent).toBe(
+        "Spec: Changes requested on v2 · Name the rollback step, as v1 had it."
+      )
+    );
+    expect(line?.querySelector("strong")?.textContent).toBe("rollback");
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
     view.unmount();
   }
 });

@@ -126,11 +126,12 @@ type Ledger struct {
 	// artifacts is the address of each artifacts row this transaction creates and has not
 	// written yet, by artifact id (RegisterPendingArtifact), and issues the key of each issues
 	// row it creates and has not written yet (RegisterPendingIssue): the two rows a write
-	// indexing its own new issue's spec cites before either exists (refs.Pending). queries holds
-	// the id of each of those artifacts rows whose node this transaction writes as a query node
-	// (graphstore.QueryNode), which the nodes of its versions read (ReadVersionOwner).
+	// indexing its own new issue's spec cites before either exists (refs.Pending). queries holds,
+	// by the id of each of those artifacts rows whose node this transaction writes as a query node
+	// (graphstore.QueryNode), that node's query, which the nodes of its versions read
+	// (ReadVersionOwner) and which names the record that covers its versions (readCovered).
 	artifacts map[string]refs.DocumentAddress
-	queries   map[string]struct{}
+	queries   map[string]string
 	issues    map[string]struct{}
 	// rooms holds, per document whose stored history this transaction has queued a write to, the
 	// state its queued writes leave it in (pendingRoom).
@@ -207,19 +208,34 @@ type Ledger struct {
 	// (asks.PlanSettleAfter) rather than from the tables.
 	settledAsks map[string]asks.Settled
 	// stated holds each version a pass of this transaction stated (recordStatedVersions), whose
-	// version_renders row the write phase's end writes (writeStatedRenders) where a query's record
-	// covers it. covered is the query whose record covers each stated version that is a query
-	// version this build's version write made, of a document of a query's band (readCovered), read
-	// once the queue is sealed and before the write phase's first batch is sent
-	// (readStatedDocuments).
+	// version_renders row the write phase writes where it renders from the tree (readCovered).
+	// covered is, for each stated version that renders from the tree, the issue and the query
+	// whose record covers it - a query version this build's version write made - or the issue
+	// alone, with no query, for a version of a document no query record covers (an upload, a
+	// project's document, the issue room's own fragment); read once the queue is sealed and before
+	// the write phase's first batch is sent (readStatedDocuments).
 	stated  []statedVersion
 	covered map[statedVersion]queryOf
-	// rendered is the write phase's second part: the writes of the carries to a version whose
-	// version_renders row the first part's end writes (carryAfterRender), which run once that row
-	// stands, so the review a carry inserts pins the digest its row records. toRendered is set while
-	// such a carry runs, and routes its writes there (write).
-	rendered   []WriteStep
-	toRendered bool
+	// fills is each issue whose query versions this transaction's write phase left with their
+	// record's digest owed (queueStatedRenders), in the order the write phase met them, whose fill
+	// runs once the transaction has committed and before its events are published
+	// (fillOwedDigests).
+	fills []string
+	// deferred is each version this transaction queued that renders from the tree and that no pass
+	// of it stated - one whose write left its blocks to the block-index reconciliation, or left an
+	// issue room owed - whose version_renders row the write phase inserts with no time, no seq and
+	// no digest, for the first pass that states it to fill (readStatedDocuments,
+	// queueStatedRenders; R15).
+	deferred []statedVersion
+	// mismatched is each version a reconciliation's pass of this transaction stated from a tree
+	// that does not render as the version's stored markdown, byte for byte (recordTreeMismatch),
+	// taken out of stated: its row takes no time, no seq and no digest, and is marked
+	// tree_mismatch instead (writeStatedRenders, queueTreeMismatch; R15). firstStated is each
+	// version whose version_renders row took its time from this transaction's write phase
+	// (firstStatedOn), in the order the rows were written, which the reconciliation's pass carries
+	// an approval to once the rows stand (carryFirstStated; R14).
+	mismatched  []statedVersion
+	firstStated []statedVersion
 	// restores holds each carry to a version that restores the approved text and takes its
 	// version_renders row in this transaction (carryRestored): its writes run in their place in
 	// the write phase, before the version's artifact.version, behind a savepoint the write phase
@@ -352,24 +368,18 @@ func batchFor(ctx context.Context, tx pgx.Tx) *store.WriteBatch {
 
 // write runs step in tx: queued on ctx's ledger (queueFor), so its statements join the write
 // phase's batch in the order the transaction made its writes - in its place but as a step the
-// write phase can drop while a restore carry runs (carryRestored, restoredCarry.step), or in the
-// phase's second part, after the version_renders rows, while any other carry to a version that
-// takes one runs (carryAfterRender), and in either as a step the write phase drops with the
-// restore carries an approval request's answer read (answerOn, answeringStep); on that batch at
-// once while the write phase builds it (batchFor); or else at once, as a batch of its own
-// (store.RunWrite), where nothing queues it. Every write a document operation makes goes through
-// it.
+// write phase can drop while a restore carry runs (carryRestored, restoredCarry.step), and as a
+// step the write phase drops with the restore carries an approval request's answer read
+// (answerOn, answeringStep); on that batch at once while the write phase builds it (batchFor); or
+// else at once, as a batch of its own (store.RunWrite), where nothing queues it. Every write a
+// document operation makes goes through it.
 func write(ctx context.Context, tx pgx.Tx, step WriteStep) error {
 	if ledger := queueFor(ctx, tx); ledger != nil {
 		step = ledger.answeringStep(step)
-		switch {
-		case ledger.restoring != nil:
-			ledger.queue = append(ledger.queue, ledger.restoring.step(step))
-		case ledger.toRendered:
-			ledger.rendered = append(ledger.rendered, step)
-		default:
-			ledger.queue = append(ledger.queue, step)
+		if ledger.restoring != nil {
+			step = ledger.restoring.step(step)
 		}
+		ledger.queue = append(ledger.queue, step)
 		return nil
 	}
 	if batch := batchFor(ctx, tx); batch != nil {
@@ -409,20 +419,25 @@ func queueWrites(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 // or a step that fails before it has queued its statements, once those queued before it have run
 // - stops it, and runQueue returns that error as it came, so a caller still tells a typed error -
 // a unique violation, ErrDocumentTooLarge, a guarded update's refusal - apart with errors.Is and
-// errors.As. It seals the queue first, and then reads which query's record covers each version a
-// pass of the transaction stated (readStatedDocuments): a query version this build's version write
-// made, of a document of a query's band (readCovered). It reads before the first batch is sent, so
-// that read holds no transaction id the batch takes. Once the batch has run, it writes the
-// version_renders row of each stated version such a record covers (writeStatedRenders), whose
-// record is read from the store as the batch left it, and then sends the write phase's second
-// part, the writes of the carries to those versions (carryAfterRender), as a batch of its own, so
-// the reviews they insert pin the digests those rows record. A transaction whose passes stated no
-// version such a record covers runs nothing between its batch and its commit.
+// errors.As. It seals the queue first, and then reads which versions a pass of the transaction
+// stated render from the tree, and which query's record covers each (readStatedDocuments,
+// readCovered). It reads before the first batch is sent, so that read holds no transaction id the
+// batch takes.
+//
+// A transaction that commits through Commit or a settlement's commit keeps main's window - its
+// reads, then one batch and its COMMIT (R15) - whatever its passes stated: the batch's last steps
+// insert the version_renders row of each version that renders from the tree, with the cut it
+// takes in SQL and its record's digest owed where a query's record covers it
+// (queueStatedRenders), and the fill of that digest runs once the transaction has committed
+// (fillOwedDigests). A ledger whose writes run at once (joinAtOnce) sends those rows as a batch of
+// their own once its empty queue has run. A background pass's ledger (queueWrites), whose pass
+// states a version in its own transaction, writes each row with its record's digest once the
+// batch has run (writeStatedRenders), reading the record from the store as the batch left it.
 //
 // A transaction that holds a restore carry (carryRestored) splits its batch at the insert of the
 // first version such a carry pins: the steps before it go as one batch, the rest behind a
 // savepoint, with the version_renders rows, as writeRestored decides them, and after's statements
-// then go as a batch of their own, before the second part.
+// then go as a batch of their own. That is the restore's window the owner approved (R14).
 func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error) error {
 	l.sealed = true
 	queue := l.queue
@@ -435,6 +450,7 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 	for _, restore := range l.restores {
 		restoredFrom = min(restoredFrom, restore.from)
 	}
+	owes := l.owesDigests()
 	// The batch is built for ctx, so the write phase is made for the run of the command bar ctx
 	// carries (store.WithRun), and the store's writers that queue on it name what it changed.
 	batch := store.NewWriteBatch(ctx)
@@ -443,12 +459,17 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 			return batch.SendFailed(ctx, l.writer, err)
 		}
 	}
-	if restored {
+	switch {
+	case restored:
 		if err := batch.Send(ctx, l.writer); err != nil {
 			return err
 		}
 		if err := l.writeRestored(ctx, queue[restoredFrom:]); err != nil {
 			return err
+		}
+	case owes && l.writer != nil:
+		if err := l.queueStatedRenders(&batch); err != nil {
+			return batch.SendFailed(ctx, l.writer, err)
 		}
 	}
 	if after != nil {
@@ -462,23 +483,25 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 	if err := batch.Send(ctx, l.writer); err != nil {
 		return err
 	}
-	if !restored {
-		if _, err := l.writeStatedRenders(ctx); err != nil {
-			return err
-		}
-	}
-	if len(l.rendered) == 0 {
+	switch {
+	case restored:
 		return nil
+	case !owes:
+		_, err := l.writeStatedRenders(ctx)
+		return err
+	case l.writer == nil:
+		return store.RunWrite(ctx, l.tx, l.queueStatedRenders)
 	}
-	rendered := l.rendered
-	l.rendered = nil
-	second := store.NewWriteBatch(ctx)
-	for _, step := range rendered {
-		if err := step(&second); err != nil {
-			return second.SendFailed(ctx, l.writer, err)
-		}
-	}
-	return second.Send(ctx, l.writer)
+	return nil
+}
+
+// owesDigests reports whether the ledger's transaction leaves the record digests of the versions
+// its passes stated owed until a fill after its COMMIT (queueStatedRenders, fillOwedDigests): a
+// transaction a caller joined (Join, joinAtOnce), which commits through Commit, and a settlement's
+// own (ownTx), whose commit runs the fill too. A background pass's ledger (queueWrites) records
+// each digest in its own transaction.
+func (l *Ledger) owesDigests() bool {
+	return l.tx != nil || l.ownTx
 }
 
 // restoredCarry is a carry to a version that restores the approved text and takes its
@@ -942,18 +965,19 @@ func pendingAnchorsOf(ctx context.Context, artifactID string) []*PendingAnchor {
 // writes, or runs later in its write phase, while the document's own work names the artifact's id
 // from the start, so a read of the document's address here takes it from the ledger rather than
 // from the row (addressOfDocument). The caller records the address the queued insert writes
-// (refs.DocumentAddress), and query where the node it writes of the document is a query node
-// (graphstore.QueryNode), which makes each version of it a query version (ReadVersionOwner).
-func (l *Ledger) RegisterPendingArtifact(artifactID string, address refs.DocumentAddress, query bool) {
+// (refs.DocumentAddress), and query, the query of the node it writes of the document where that
+// node is a query node (graphstore.QueryNode), "" where it is none: a query makes each version of
+// the document a query version (ReadVersionOwner), whose record that query's is (readCovered).
+func (l *Ledger) RegisterPendingArtifact(artifactID string, address refs.DocumentAddress, query string) {
 	if l.artifacts == nil {
 		l.artifacts = make(map[string]refs.DocumentAddress)
 	}
 	l.artifacts[artifactID] = address
-	if query {
+	if query != "" {
 		if l.queries == nil {
-			l.queries = make(map[string]struct{}, 1)
+			l.queries = make(map[string]string, 1)
 		}
-		l.queries[artifactID] = struct{}{}
+		l.queries[artifactID] = query
 	}
 }
 
@@ -1009,14 +1033,13 @@ func (l *Ledger) PendingDocument(id string) (refs.DocumentAddress, bool) {
 	return address, pending
 }
 
-// pendingQuery reports whether the artifacts row of uuid id this transaction writes is the
-// document of a query node it writes (RegisterPendingArtifact).
-func (l *Ledger) pendingQuery(id string) bool {
+// pendingQuery is the query of the query node this transaction writes of the artifacts row of
+// uuid id it writes (RegisterPendingArtifact), "" where the node it writes is no query node.
+func (l *Ledger) pendingQuery(id string) string {
 	if l == nil {
-		return false
+		return ""
 	}
-	_, query := l.queries[id]
-	return query
+	return l.queries[id]
 }
 
 // PendingRoom is the issue room the document of ref_key refKey is edited in, where this
@@ -1116,12 +1139,18 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // already stored, whose row the reader reads for itself (refs.ScopeOf). It is read only if a
 // part holds a `#` candidate, and a route that reconciles the ask's question too hands the same
 // one to both readers, so the two of them read it once.
+//
+// questionReconciled says the route queued the reconciliation of the ask's question before this
+// call, so the parts' statements settle the ask's row of the forms queue; a route that writes the
+// parts alone - an answer, a resolution, a restoration - passes false, and the parts' step
+// reconciles the question's references after them and settles it there (planAskPartsCounted).
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
 	document *refs.PendingDocument,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
 	if l.writer == nil {
@@ -1139,7 +1168,7 @@ func (l *Ledger) QueueAskParts(
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, serverURL, document)
-	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
+	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -1408,6 +1437,8 @@ func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger
 // advisory lock (takeRestoreLock) whose reads must see its own writes - an ask row it moved, a
 // version it wrote before the event that names it, a node it stated - and which no request waits
 // on, as the block-id backfill is (backfillBlockIDs). Every other caller joins with Join.
+//
+// kept for one release: decisions-step
 func (s *Service) joinAtOnce(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx}
 	return withLedger(ctx, ledger), ledger
@@ -1480,18 +1511,21 @@ func collectVersionText(ctx context.Context, artifactID, markdown string) {
 
 // Commit runs the transaction's write phase (its queue, one batch with the settlement credit's
 // statements after it), then the steps registered to follow that batch (AfterWrites), and commits
-// it, then credits, releases and publishes what its document operations recorded (see Ledger),
-// closes this process's instance of each issue room a document joined in it (closeJoinedRooms),
-// publishes the events they appended, so a caller's own events, published after Commit returns,
-// follow them, and stores the display trees of the versions' markdown (storeVersionTrees). A
-// statement of the write phase that fails, a callback that refuses its result, or a step after the
-// batch that fails, stops it: the transaction rolls back, nothing reaches a room, and Commit
-// returns the first such error unchanged. When the commit itself returns an error its outcome is
-// unknown, so the rooms the transaction wrote are failed and reload the durable document.
+// it; then fills the record digests its write phase left owed (fillOwed), each issue's in a
+// transaction of its own; then credits, releases and publishes what its document operations
+// recorded (see Ledger), closes this process's instance of each issue room a document joined in it
+// (closeJoinedRooms), publishes the events they appended and those of the fills, so a caller's own
+// events, published after Commit returns, follow them, and stores the display trees of the
+// versions' markdown (storeVersionTrees). A statement of the write phase that fails, a callback
+// that refuses its result, or a step after the batch that fails, stops it: the transaction rolls
+// back, nothing reaches a room, and Commit returns the first such error unchanged. When the commit
+// itself returns an error its outcome is unknown, so the rooms the transaction wrote are failed
+// and reload the durable document.
 func (l *Ledger) Commit(ctx context.Context) error {
 	if err := l.commit(ctx); err != nil {
 		return err
 	}
+	l.events = append(l.events, l.service.fillOwed(ctx, l.takeFills())...)
 	l.publish()
 	l.closeJoinedRooms(ctx)
 	l.publishEvents()
@@ -1500,6 +1534,14 @@ func (l *Ledger) Commit(ctx context.Context) error {
 		l.service.scheduleSettle(copy)
 	}
 	return nil
+}
+
+// takeFills is each issue whose record digests the ledger's committed write phase left owed
+// (fills), once: the caller that runs their fill takes them.
+func (l *Ledger) takeFills() []string {
+	fills := l.fills
+	l.fills = nil
+	return fills
 }
 
 // closeJoinedRooms closes this process's instance of each issue room the committed transaction
@@ -1611,9 +1653,16 @@ func (l *Ledger) commit(ctx context.Context) error {
 		captures = append(captures, flushCapture(flush))
 	}
 	// Each write leaves its room a shadow (roomShadow), installed by the commit under its state's
-	// lock, after the flushes' classes are marked stored.
+	// lock, after the flushes' classes are marked stored. The shadow's document is the write's
+	// fork, so here is the last point the fork is the write's own, where its rendering is checked
+	// (checkRendering): once the commit drops the document's advisory lock, the room's worker
+	// stores the browser updates that lock held back and measures each on the shadow
+	// (roomShadow.measure), before the publish or after it.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
+		if l.service.checkRendering != nil {
+			l.service.checkRendering("commit", write)
+		}
 		if shadow := write.newShadow(); shadow != nil {
 			captures = append(captures, roomCapture{room: artifactID, capture: authorCapture{state: write.state}, shadow: shadow})
 		}
@@ -1834,6 +1883,7 @@ func (l *Ledger) Discard() {
 	l.queue = nil
 	l.restores, l.restoring = nil, nil
 	l.afterWrites = nil
+	l.fills = nil
 	for _, artifactID := range l.order {
 		l.service.finishLiveWrite(l.live[artifactID])
 	}

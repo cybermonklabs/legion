@@ -100,6 +100,15 @@ var placementIfMatch = routeHeader{
 		`placement_seq is 412 PRECONDITION_FAILED`,
 }
 
+// deleteIfMatch is the If-Match header of a node's delete: the placement_seq of the node, as the
+// move names it (placementIfMatch), which the delete itself must send and its dry run reads not.
+var deleteIfMatch = routeHeader{
+	Name: "If-Match",
+	Description: `the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a ` +
+		`quoted entity tag ("123"), which the delete itself must send: none is 428 PRECONDITION_REQUIRED, and a tag that is ` +
+		`no longer the node's placement_seq is 412 PRECONDITION_FAILED; the dry run (dry_run=true) reads none`,
+}
+
 // --- the query-parameter structs -------------------------------------------------------------
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
@@ -115,6 +124,18 @@ var placementIfMatch = routeHeader{
 type projectArtifactsQuery struct {
 	// Unlinked, `true`, lists only the project's documents that belong to no issue.
 	Unlinked bool `query:"unlinked"`
+}
+
+// nodeDeleteQuery is DELETE /api/v1/issues/{key}/nodes/{id}'s query (node_delete.go).
+type nodeDeleteQuery struct {
+	// DryRun, `true`, writes nothing and answers {count}, the number of nodes the delete would take
+	// that a read of the issue's tree returns to the caller, after every refusal the delete reads
+	// before it writes; any value but true or false is 400 DELETE_INPUT.
+	DryRun bool `query:"dry_run"`
+	// ExpectedCount is the count the dry run answered, which the delete itself must name (400
+	// DELETE_INPUT without it) and takes or refuses: a count that has moved since is 409
+	// DELETE_COUNT_MOVED, carrying the count now. The dry run reads none.
+	ExpectedCount int `query:"expected_count"`
 }
 
 // relatedQuery is GET /api/v1/projects/{key}/related's query: the related-item check an issue
@@ -218,6 +239,12 @@ type issueListQuery struct {
 	// issue above them states, over every project; `none` lists those that advance no live
 	// priority and `any` those that advance one, which is every other issue.
 	Advances []string `query:"advances"`
+	// Own, `true`, keeps, of the issues the Advances values answer, those whose own row names a
+	// priority a value matches and no issue above them carries it: a child that only inherits a
+	// priority, or restates one an issue above it carries, is left out, and `none`, which
+	// matches no priority, keeps nothing. Without an Advances value it filters nothing.
+	// `advances=any&own=true` over backlog and icebox is the second fault of GET /api/v1/priorities.
+	Own bool `query:"own"`
 	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
 	// the issue was moved there and who moved it. A listing without it reads neither.
 	Moved bool `query:"moved"`
@@ -404,9 +431,9 @@ type searchRouteQuery struct {
 	Offset int `query:"offset"`
 }
 
-// searchResultsRouteQuery is GET /api/v1/search/results's query, all nine members: the four
-// searchRouteQuery names and the five a build released before them does not serve, which is why
-// that path exists. The nine are written out rather than embedded because the emitter reads a
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all ten members: the four
+// searchRouteQuery names and the six a build released before them does not serve, which is why
+// that path exists. The ten are written out rather than embedded because the emitter reads a
 // query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
 type searchResultsRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
@@ -432,6 +459,10 @@ type searchResultsRouteQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
 	Offset int `query:"offset"`
+	// Kind ranks, counts and pages the kinds it names and no others, repeated once per kind;
+	// with none named every kind the index holds is searched. A kind outside the five is
+	// 400 INVALID_QUERY (searchIndexedKinds, parseSearchKinds).
+	Kind []string `query:"kind" enum:"issue,document,comment,ask,message"`
 }
 
 // relatedChecksQuery is GET /api/v1/related-checks's query.
@@ -467,6 +498,13 @@ type sessionAnswersQuery struct {
 	Since string `query:"since"`
 	// MaxChars bounds how much of each item's text the answer carries.
 	MaxChars int `query:"max_chars"`
+}
+
+// knownSessionsQuery is GET /api/v1/agents/known's query.
+type knownSessionsQuery struct {
+	// ID is one session id asked about, repeated: 1 to contracts.KnownSessionsMax of them, each a
+	// session id (text.IsSessionID) of at most knownSessionIDMax bytes, the longest text names.
+	ID []string `query:"id"`
 }
 
 // issueAsksQuery is GET /api/v1/issues/{key}/asks's query.
@@ -538,6 +576,14 @@ type openAsksQuery struct {
 type issueCommentsQuery struct {
 	// Artifact scopes the comments to one document of the issue.
 	Artifact string `query:"artifact"`
+	// NodeAnchor asks for each comment's node_anchor (R31 of the issue-tree spec).
+	NodeAnchor bool `query:"node_anchor"`
+}
+
+// commentReadQuery is GET /api/v1/comments/{id}'s query.
+type commentReadQuery struct {
+	// NodeAnchor asks for the comment's node_anchor (R31 of the issue-tree spec).
+	NodeAnchor bool `query:"node_anchor"`
 }
 
 // credentialApproverQuery is the query GET /api/v1/credential-requests and
@@ -632,8 +678,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
-	// tree, so the row names that read: the document describes the body the handler sends, and
-	// a client generated from it holds the field a reader draws.
+	// tree and whose Not architectural rows carry their reasons', so the row names that read: the
+	// document describes the body the handler sends, and a client generated from it holds the
+	// field a reader draws.
 	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
 	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
@@ -774,8 +821,10 @@ var routeShapes = map[string]routeShape{
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"GET /api/v1/issues/{key}/events": {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
+	// An issue's references read answers issueReferencesRead, whose rows carry their names'
+	// trees, so the row names that read for the reason the architecture row above gives.
 	"GET /api/v1/issues/{key}/references": {
-		Status: http.StatusOK, Response: model.IssueReferences{}, Params: issueReferencesQuery{},
+		Status: http.StatusOK, Response: issueReferencesRead{}, Params: issueReferencesQuery{},
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},
@@ -824,8 +873,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": {
 		Status: http.StatusCreated, Response: model.HandoffSummary{}, Request: createHandoffInput{},
 	},
-	"GET /api/v1/issues/{key}/handoffs":                {Status: http.StatusOK, Response: []model.HandoffSummary{}},
-	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/issues/{key}/handoffs": {Status: http.StatusOK, Response: []model.HandoffSummary{}},
+	// The two reads of one handoff with its body answer handoffRead, whose field_trees carries
+	// the tree of each text the body's card draws.
+	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: handoffRead{}},
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
@@ -863,6 +914,13 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: nodeMoved{}, Request: nodeMoveInput{},
 		Headers: []routeHeader{placementIfMatch},
 	},
+	// The delete of a node and its subtree, and its dry run (node_delete.go): the count, and the
+	// count now where the expected_count it confirms has moved.
+	"DELETE /api/v1/issues/{key}/nodes/{id}": {
+		Status: http.StatusOK, Response: nodeDeleted{}, Request: actorInput{}, OptionalRequest: true,
+		Params: nodeDeleteQuery{}, Headers: []routeHeader{deleteIfMatch},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: deleteCountMoved{}}},
+	},
 	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
 	// The pre-mortem conversion (premortem_convert.go): the map from each
 	// risk to its checks, read entry by entry, and the report the command prints too.
@@ -880,6 +938,9 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/steps/{id}/rating": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
 	},
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepExperimentInput{},
+	},
 	"GET /api/v1/issues/{key}/steps": {Status: http.StatusOK, Response: model.IssueSteps{}},
 	"PUT /api/v1/issues/{key}/plans/{id}": {
 		Status: http.StatusOK, Response: model.PlanRecord{}, Request: planRecordInput{},
@@ -887,7 +948,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/projects/{key}/plans": {
 		Status: http.StatusOK, Response: model.ProjectPlans{}, Params: projectPlansQuery{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: handoffRead{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"GET /api/v1/messages/{id}/history": {
@@ -946,6 +1007,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
 	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/agents/known": {
+		Status: http.StatusOK, Response: knownSessions{}, Params: knownSessionsQuery{},
+	},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
@@ -953,6 +1017,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/agents/{session_id}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},
+	"GET /api/v1/agents/{session_id}/artifacts": {Status: http.StatusOK, Response: []artifactRead{}},
 	"POST /api/v1/agents/{session_id}/artifacts": {
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		// The upload reads JSON or multipart as the issue and project forms do, but a
@@ -987,14 +1052,14 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: resolveAskInput{}},
 	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
-		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
+		Status: http.StatusOK, Response: []nodeAnchoredComment{}, Params: issueCommentsQuery{},
 	},
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
-	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
+	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: nodeAnchoredCommentRead{}, Params: commentReadQuery{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"GET /api/v1/comments/{id}/history":  {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 	"POST /api/v1/comments/{id}/deliveries": {

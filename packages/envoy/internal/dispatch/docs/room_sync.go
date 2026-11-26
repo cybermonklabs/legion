@@ -571,7 +571,7 @@ const announceDocumentRoomsStatement = `select pg_notify('` + documentRoomsChann
 
 // AnnounceDocumentRooms tells every envoy-dispatch process that documents now have their
 // document_rooms rows naming room, which tx has just written: the conversion of an issue into its
-// issue room (dispatch://INFRA-1253 R6), or a document joining an issue room. Every process then
+// issue room (R6 of the issue-tree spec), or a document joining an issue room. Every process then
 // closes its room of each of those documents, whose sockets reconnect and are admitted to room
 // (ServeHTTP), and its room of room itself, whose layout the move changed and whose next load reads
 // the new one (documentRoomsMoved). The process whose transaction seeded a joining document's

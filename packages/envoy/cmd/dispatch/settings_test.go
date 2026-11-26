@@ -1600,6 +1600,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PROOF_ORIGINS": func(t *testing.T) {
+			const public, inCluster = "https://dispatch.example", "http://dispatch.internal.example:8766"
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "}); !slices.Equal(boot.ProofOrigins, []string{public, inCluster}) {
+				t.Errorf("ProofOrigins = %q, want each entry trimmed", boot.ProofOrigins)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " "}); boot.ProofOrigins != nil {
+				t.Errorf("a blank value: ProofOrigins = %q, want none", boot.ProofOrigins)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + ",," + inCluster}, "DISPATCH_PROOF_ORIGINS entry 2 of 3 is empty")
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "/"}, `DISPATCH_PROOF_ORIGINS entry 1 of 1 is "`+public+`/"`)
+			// What the verifier main builds takes from it is TestDispatchReadsItsProofOrigins'.
+		},
 		"DISPATCH_EMBEDDER": func(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.Embedder.Place != embed.PlaceBedrock {
 				t.Errorf("unset: Embedder.Place = %q, want bedrock", boot.Embedder.Place)
@@ -2280,6 +2292,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.NewIssueSession != "" {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
+		},
+		"DISPATCH_LEGION_STATUS_SCOPE": func(t *testing.T) {
+			// on turns the refusal on and is handed to the router, which passes it to the API's
+			// dependencies (routes.BuildAppContext). The router shows no dependencies, so the case
+			// checks the hand-off to it, as the DISPATCH_NATS_DISABLED case does. Unset and off
+			// leave it off. Any other value refuses the boot and names the value, so a misspelt on
+			// never leaves the refusal off in silence.
+			boot := resolveWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "on"})
+			if !boot.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: LegionStatusScope false")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: the router is handed LegionStatusScope = false, want true")
+			}
+			for name, overrides := range map[string]map[string]string{
+				"unset": {},
+				"off":   {"DISPATCH_LEGION_STATUS_SCOPE": "off"},
+			} {
+				boot := resolveWith(t, overrides)
+				if boot.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: LegionStatusScope true", name)
+				}
+				if options := appContextOptions(boot, routes.AppContextOptions{}); options.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: the router is handed LegionStatusScope = true, want false", name)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "yes"}, `DISPATCH_LEGION_STATUS_SCOPE="yes"`)
 		},
 		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
 			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule

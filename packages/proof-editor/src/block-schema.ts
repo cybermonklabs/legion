@@ -201,20 +201,37 @@ export function typedBlockContent(type: BlockTypeSchema, admitted: readonly stri
 /** The item kinds a `block[]` attribute's `items` may name (pmdoc's validateAttributeSchema). */
 const ITEM_KINDS: readonly string[] = ['ask', 'comment', 'message', 'issue'];
 
-// A duration in days as markdown writes one, and every spelling of it that is zero (pmdoc's
-// daysPattern and zeroDays).
-const DAYS = /^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$/;
-const ZERO_DAYS = /^0(?:\.0{1,2})?$/;
+// A duration as markdown writes one: a whole number of hours, a whole number of minutes, or both
+// with the hours first, each number positive, with no sign and no leading zero (pmdoc's
+// minutesPattern). It also matches the empty string, which minutesValueProblem refuses.
+const MINUTES = /^(?:([1-9][0-9]*)h)?(?:([1-9][0-9]*)m)?$/;
+
+/** The longest duration a `minutes` attribute holds, in minutes (pmdoc's MaxMinutes). */
+const MAX_MINUTES = 10000;
+
+// The most digits a number of a duration may have: a number of six is past MAX_MINUTES whatever
+// its unit (pmdoc's minutesDigits).
+const MINUTES_DIGITS = 5;
 
 /**
- * Why `value` is no `days` attribute's value, in the document service's wording (pmdoc's
- * validateDays, the value quoted with `JSON.stringify` where Go uses `%q`), or undefined when it is
- * one: a positive number of days with at most two digits after its point, `0.25`, `1` or `2.5`,
- * kept as its author wrote it.
+ * Why `value` is no `minutes` attribute's value, in the document service's wording (pmdoc's
+ * Minutes, the value quoted with `JSON.stringify` where Go uses `%q`), or undefined when it is
+ * one: a whole number of hours, a whole number of minutes, or both with the hours first, `45m`,
+ * `2h` or `1h30m`, of at most MAX_MINUTES minutes, kept as its author wrote it.
  */
-export function daysValueProblem(value: string): string | undefined {
-  if (DAYS.test(value) && !ZERO_DAYS.test(value)) return undefined;
-  return `${JSON.stringify(value)} is not a duration in days: a positive number with at most two digits after its point, such as 0.25, 1 or 2.5`;
+export function minutesValueProblem(value: string): string | undefined {
+  const match = MINUTES.exec(value);
+  if (value === '' || match === null) {
+    return `${JSON.stringify(value)} is not a duration: a whole number of hours, a whole number of minutes, or both with the hours first, such as 45m, 2h or 1h30m`;
+  }
+  const past = `${JSON.stringify(value)} is more than ${MAX_MINUTES} minutes, the longest a duration may be`;
+  let total = 0;
+  for (const [digits, unit] of [[match[1], 60], [match[2], 1]] as const) {
+    if (digits === undefined) continue;
+    if (digits.length > MINUTES_DIGITS) return past;
+    total += Number(digits) * unit;
+  }
+  return total > MAX_MINUTES ? past : undefined;
 }
 
 function parseAttribute(typeName: string, name: string, attribute: BlockAttributeSchema, value: string): string | boolean | string[] {
@@ -223,8 +240,8 @@ function parseAttribute(typeName: string, name: string, attribute: BlockAttribut
     case 'actor':
     case 'timestamp':
       return value;
-    case 'days': {
-      const problem = daysValueProblem(value);
+    case 'minutes': {
+      const problem = minutesValueProblem(value);
       if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
       return value;
     }

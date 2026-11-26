@@ -12,7 +12,7 @@ import (
 // The three migrations of the document-search table: 20261101182447 creates it with its GIN
 // index, 20261101182454 adds the function and the trigger that keep it at each document's latest
 // version, and 20261101182501 creates the one row that records how far the boot's fill of it has
-// got (store.FillDocumentSearch).
+// got, which a process of the release before runs and this build does not.
 const (
 	documentSearchTable    = 20261101182447
 	documentSearchTrigger  = 20261101182454
