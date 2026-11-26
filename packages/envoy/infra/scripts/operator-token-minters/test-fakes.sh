@@ -271,7 +271,7 @@ case "${args[*]}" in
     # A world marked review-refuse-holding or review-short-holding (a subject, as the record's
     # last field writes it) refuses, or answers one review short, the one call that asks about
     # that subject, whichever batch that is (row cz's later-batch items). awk reads the whole file:
-    # a grep -q that stops at the first line, under pipefail, can end cut with SIGPIPE.
+    # a grep -q that stops at its first match, under pipefail, can end cut with SIGPIPE.
     holding() { [ -s "$dir/$1" ] && awk -F '\t' -v s="$(cat "$dir/$1")" '$7 == s { f = 1 } END { exit !f }' "$dir/review-requests-$calls.tsv"; }
     ! holding review-refuse-holding ||
       forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
