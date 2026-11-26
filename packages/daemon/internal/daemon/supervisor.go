@@ -427,10 +427,11 @@ func (s *supervisor) supervised() []*supervise.Machine {
 // (supervised), for a reader inside a fact's transaction: Create holds mu across the store's
 // AdmitClaim, which waits on the fact lock (intake.SerializeFacts), so a reader holding that lock
 // and waiting on mu would wait on a Create that waits on it, which nothing in PostgreSQL can see
-// or break. A machine's published view names its claim without its lock either (View).
+// or break. A machine's published claim names it without its lock either (Machine.Published),
+// and is shared rather than copied, since this reads its token alone.
 func (s *supervisor) supervisedMachine(token claim.Token) (*supervise.Machine, bool) {
 	for _, machine := range s.supervised() {
-		if machine.View().Token == token {
+		if machine.Published().Token == token {
 			return machine, true
 		}
 	}

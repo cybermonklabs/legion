@@ -1,8 +1,9 @@
 // Package exchange decides what a verified subject token entitles its holder to write in
 // Dispatch: the claims a minted Dispatch access token carries — the session that is writing, the
 // person it acts for or the service it is, and its list of projects, either the one its
-// operator's entry names or the ones a trade acting as its person asked for, or none at all for
-// a token that only reads — and, beside them, the principal the session name belongs to.
+// operator's entry names, the whole list a job's entry names, or the ones a trade acting as its
+// person asked for, or none at all for a token that only reads — and, beside them, the principal
+// the session name belongs to.
 //
 // It is the policy half of the RFC 8693 token exchange and nothing else. It verifies no token,
 // reads no configuration, takes no clock and makes no call: it is handed entries someone else
@@ -15,19 +16,27 @@
 //   - a pod's Kubernetes service-account token, where an entry keyed on the account subject
 //     (system:serviceaccount:<namespace>:<name>) gives the person and the project, or no project
 //     for an entry that names none (<service account>==<person>), or neither for an entry that
-//     names no person, whose token acts as the account itself (<service account>==), or a read
-//     entry keyed on it gives a service and the session its token reads as, and the token must
-//     carry the pod it is bound to;
+//     names no person, whose token acts as the account itself (<service account>==), or a job
+//     list, or a read entry keyed on it gives a service and the session its token reads as, and
+//     the token must carry the pod it is bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
-//     repository, the workflow's path and the ref it ran on gives the project and the person;
+//     repository, the workflow's path and the ref it ran on gives the project and the person, or
+//     a job list;
 //   - a machine's Google identity token, where an entry keyed on the account's email address
 //     gives the service, may pin the Compute Engine project and instance names the machine may
-//     carry, and may give a person and a project as a pod's entry does;
+//     carry, and may give a person and a project as a pod's entry does, or a job list;
 //   - a person's own Google identity token, carried with the machine's as the actor token, where
 //     the Workspace domain decides the person and that same machine entry decides the box they
 //     may sign in from;
 //   - a dev box session's machine credential, which no entry lists, because the person is the
 //     approver the credential already records.
+//
+// An entry of the first three kinds that names a job list (JobProjects) names no person: the
+// job's own identity writes. Its token names that identity as its service — the account subject,
+// the workflow as <repository>/<path>@<ref>, the Google account's address — and no person, and
+// carries the entry's scope and whole list whatever the trade names: one project under
+// ProjectScopeNamed, or under ProjectScopePublic every public project and the private projects
+// the list names. A request naming a project the list does not name is refused.
 //
 // The principal is the caller's standing identity, never the instance asking: the listed account
 // for a pod, the listed workflow for a run, the listed Google account for a machine, the person
@@ -64,8 +73,8 @@ import (
 // (ErrNoActorToken), mint the machine's token on a Compute Engine instance or unpin its entry
 // (ErrNoComputeEngine), run the machine where its entry allows (ErrMachineNotAllowed), of a
 // registration, leave an entry that fixes a session alone (ErrSessionFixed), ask for no project
-// but the one an operator's entry gives (ErrProjectsFixed), or ask for no project at all for a
-// token that names no person (ErrProjectsNoPerson).
+// but those an operator's entry gives (ErrProjectsFixed), or ask for no project at all for a
+// token that names no person and no job list (ErrProjectsNoPerson).
 var (
 	ErrNoEntry           = errors.New("exchange: no entry lists this identity")
 	ErrNoPodBinding      = errors.New("exchange: the subject token is bound to no pod")
@@ -114,12 +123,15 @@ const (
 	ProjectScopeUnset ProjectScope = iota
 	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person, or
 	// as the account itself for an account entry naming no person, and Claims.Projects holds the
-	// entry's one project, or none for an account entry naming none.
+	// entry's one project, or none for an account entry naming none. It is also a job entry's
+	// whose list names one project (JobProjects): such a token names the job as its service and
+	// no person, and Claims.Projects holds that one project, never none.
 	ProjectScopeNamed
 	// ProjectScopePerson is a token that acts as its person: Claims.Projects holds the projects
 	// its trade asked for, none or more, which the exchange holds to what Dispatch says that
 	// person may see before it mints (internal/cipher/oauth). It is what a person's own
-	// credential gets, and what a machine whose entry names no person gets, with no project.
+	// credential gets, and what a machine whose entry names neither a person nor a job list gets,
+	// with no project.
 	ProjectScopePerson
 	// ProjectScopeNone is a token that may write no project and names none: it holds the OAuth
 	// scope oauthwire.ScopeRead and nothing else, so it reads only the routes a resource server
@@ -128,6 +140,11 @@ const (
 	// ProjectScopeUnset's, because 'writes nothing' is a decision this package made and 'never
 	// decided' is not one.
 	ProjectScopeNone
+	// ProjectScopePublic is a job entry's token whose list opens with public (JobProjects): it
+	// names the job as its service and no person, it reaches every public project, which no
+	// list names, and Claims.Projects holds the private projects the entry lists, 0 to
+	// oauthwire.MaxProjects of them, whatever the trade named. It holds no OAuth scope.
+	ProjectScopePublic
 )
 
 // ComputeEngine is the instance a Google identity token was minted on, the `google` →
@@ -333,6 +350,8 @@ func (s ProjectScope) String() string {
 		return "the projects its person may see that it names"
 	case ProjectScopeNone:
 		return "no project: reads only"
+	case ProjectScopePublic:
+		return "every public project and the private projects its entry names"
 	default:
 		return "no project scope"
 	}
@@ -348,22 +367,46 @@ type Claims struct {
 	// is set.
 	Person string
 	// Service is the service a token that names no person is: the fleet a machine belongs to,
-	// which is what a machine whose entry names no person gets instead of a person, the service
-	// a read entry names, or the account of an account entry that names no person, spelled as
-	// the entry spells it (system:serviceaccount:<namespace>:<name>), which Dispatch records
-	// that token's writes under. It is empty for every other decision, each of which acts for a
+	// which is what a machine whose entry names neither a person nor a job list gets instead of
+	// a person, the service a read entry names, the account of an account entry that names no
+	// person, which Dispatch records that token's writes under, or a job entry's listed identity,
+	// each spelled as the entry spells it — a pod's account subject,
+	// system:serviceaccount:<namespace>:<name>, a workflow's <repository>/<path>@<ref>, or a
+	// Google account's address. It is empty for every other decision, each of which acts for a
 	// person.
 	Service string
-	// Scope is what Projects means, and is always one of ProjectScopeNamed, ProjectScopePerson or
-	// ProjectScopeNone: every constructor sets it, so a reader never has to read an empty list as
-	// any of them. ProjectScopeNone is a read entry's, and is the one scope under which the
-	// minted token holds the OAuth scope oauthwire.ScopeRead.
+	// Scope is what Projects means, and is always one of ProjectScopeNamed, ProjectScopePerson,
+	// ProjectScopeNone or ProjectScopePublic: every constructor sets it, so a reader never has to
+	// read an empty list as any of them. ProjectScopeNone is a read entry's, and is the one scope
+	// under which the minted token holds the OAuth scope oauthwire.ScopeRead. A job entry's is
+	// its list's (JobProjects.Scope): ProjectScopeNamed or ProjectScopePublic, the latter a job
+	// entry's alone.
 	Scope ProjectScope
 	// Projects is the token's list of projects, sorted, each once: the entry's one project for a
 	// ProjectScopeNamed token (none for an account entry naming none), for a ProjectScopePerson
-	// token the projects its trade asked for, nil for none, and nil for a ProjectScopeNone token,
+	// token the projects its trade asked for, nil for none, for a job entry's token its entry's
+	// whole list whatever the trade asked for (one project under ProjectScopeNamed, the private
+	// projects under ProjectScopePublic, nil for none), and nil for a ProjectScopeNone token,
 	// which names no project. The slice is this Claims' own.
 	Projects []string
+	// Job is whether a job entry made this decision, which grant sets from the entry's job list
+	// (JobProjects.Listed), so a job's token names the entry's listed identity as its service, no
+	// person and the list's projects. Like Principal it is no claim of the minted token: the
+	// exchange reads it to refuse a job's trade that asks for read (oauth's decide), since the
+	// broker narrows no job's token.
+	Job bool
+	// LegionStatus is true for the token of a Legion daemon's own entry: an account entry that
+	// names a project and fixes the session oauthwire.LegionDaemonSessionPrefix + that project, compared
+	// exactly, case included. Such a token is ProjectScopeNamed and holds the OAuth scope
+	// oauthwire.ScopeLegionStatus too (oauth.writeProjectScope), which Dispatch reads as leave to
+	// write a Legion issue's status. Pod alone sets it, and reads the session the entry fixes,
+	// never Session: an entry that fixes no session takes Session from the request, which may
+	// name any session. So a pod whose request names legion-daemon:<its project> gets no
+	// LegionStatus, and neither does an entry that fixes the daemon session of another project or
+	// that names no project. No other decision sets it: a job entry, whose Project is empty, a read
+	// entry, a workflow, a machine, a person's sign-in and a dev box never do, whatever session
+	// they carry.
+	LegionStatus bool
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
 	// token naming a session another principal writes under, unless the broker pairs the caller's
@@ -385,8 +428,9 @@ type Claims struct {
 	// whether or not the token names it, and is empty for every other decision. Like Principal
 	// and Instance it is no claim of the minted token: it is what the launcher credential the
 	// exchange mints for that machine records as its service, which a credential keyed by a
-	// subject must carry. Service holds the same string when the entry names no person, and
-	// nothing when it names one, so a reader that wants the fleet of every machine reads this.
+	// subject must carry. Service holds the same string when the entry names neither a person
+	// nor a job list, the account's address when it names a job list, and nothing when it names a
+	// person, so a reader that wants the fleet of every machine reads this.
 	Fleet string
 	// Actor is the machine acting for the person in a delegation (RFC 8693 Section 2.1): the
 	// Google account the request's actor token names, as BROKER_VM_SERVICES lists it. It is set
@@ -407,8 +451,10 @@ type Reservation struct {
 }
 
 // AccountEntry lists one Kubernetes service account and what a pod running as it may write.
-// Account is required, and Person is required of an entry that names a project; Project and
-// Session are not.
+// Account is required. Person is required of an entry that names a project, and Job and Person
+// are never both set: an entry names the person its pods act for, with a project or none, or a
+// job list, or neither, for an entry whose pods act as the account itself. Session is not
+// required.
 type AccountEntry struct {
 	// Account is the subject a pod's projected token carries,
 	// system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard.
@@ -420,12 +466,17 @@ type AccountEntry struct {
 	// Person is who the account's pods act for, or empty for an entry that names no project
 	// either: such an entry's tokens act as the account itself, which they name as their service
 	// (Claims.Service) and Dispatch records their writes under. An entry that names a project
-	// names its person, so no token held to a project is personless.
+	// names its person, so no account entry's token held to a project is personless.
 	Person string
+	// Job, when set, is the job list of an entry that names no person and no project: its pods'
+	// tokens name Account as their service and carry the list (BROKER_EXCHANGE_JOB_ACCOUNTS).
+	Job JobProjects
 	// Session, when set, is the session name every token minted for this account carries, and a
 	// request naming any other is refused. It is how a long-running service keeps writing under
 	// one name it does not get to choose per request. The name is one of the set's Reservations,
 	// held for the account however many of its pods exchange and refused to every other caller.
+	// oauthwire.LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own
+	// (Claims.LegionStatus).
 	Session string
 }
 
@@ -453,8 +504,9 @@ type ReadEntry struct {
 }
 
 // WorkflowEntry lists one GitHub workflow of one repository on one ref, and what a run of it may
-// write. Every field but Session is required: nothing is wildcarded by leaving a field out, so an
-// entry that names no ref matches no run rather than every one of them.
+// write. Repository, Workflow and Ref are required, and so are Project and Person, or Job in
+// their place: nothing is wildcarded by leaving a field out, so an entry that names no ref
+// matches no run rather than every one of them. Session is not required.
 type WorkflowEntry struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string
@@ -467,6 +519,10 @@ type WorkflowEntry struct {
 	Project string
 	// Person is who the run acts for.
 	Person string
+	// Job, when set, is the job list of an entry that names no person and no project: its runs'
+	// tokens name the workflow, <Repository>/<Workflow>@<Ref>, as their service and carry the
+	// list (BROKER_EXCHANGE_JOB_WORKFLOWS).
+	Job JobProjects
 	// Session, when set, is the session name every token minted for this workflow carries, as
 	// AccountEntry.Session is for an account.
 	Session string
@@ -483,13 +539,16 @@ type WorkflowEntry struct {
 //
 // Project and Person go together too: an entry that names them mints a token that acts for that
 // person and writes that one project, exactly as an AccountEntry does for a pod, and an entry
-// that names neither mints a token that names its service and no person at all.
+// that names neither mints a token that names its service and no person at all. An entry that
+// names a job list names neither of them: its token names the account's address as its service
+// and carries the list.
 type GoogleEntry struct {
 	// Account is the service account's email address, the `email` claim of its identity tokens,
 	// named exactly: there is no wildcard.
 	Account string
 	// Service is the service a machine of this account is, which the minted token names when the
-	// entry names no person.
+	// entry names neither a person nor a job list, and which the launcher credential of every
+	// machine of the account records (Claims.Fleet).
 	Service string
 	// CloudProject, when set, is the Google Cloud project the machine must run in, compared
 	// exactly with the token's google.compute_engine.project_id.
@@ -501,8 +560,12 @@ type GoogleEntry struct {
 	// with Person and with nothing else.
 	Project string
 	// Person, when set, is who the machine's token acts for. An entry that names none mints a
-	// token that names Service and no person.
+	// token that names Service and no person, or the account when it names a job list.
 	Person string
+	// Job, when set, is the job list of an entry that names no person and no project: its
+	// machines' tokens name Account as their service and carry the list, and the launcher
+	// credential each exchange mints still records Service (BROKER_VM_EXCHANGE_JOB_ACCOUNTS).
+	Job JobProjects
 	// Session, when set, is the session name every token minted for this account carries, as
 	// AccountEntry.Session is for an account.
 	Session string
@@ -522,16 +585,32 @@ type Set struct {
 	google       map[string]GoogleEntry
 	signInDomain string
 	reservations []Reservation
-	// mapped is the person and project each listed principal's entry gives it, for
-	// MappedProjects; a Google entry naming no person, an account entry naming no person and a
-	// read entry map their principal to neither.
+	// mapped is the person and projects each listed principal's entry gives it, for
+	// MappedProjects; a Google entry naming no person and no job list, an account entry naming no
+	// person and no job list, and a read entry map their principal to neither, and a job entry to
+	// its list and no person.
 	mapped map[string]mapping
 }
 
 // mapping is what an operator's entry gives the tokens of its principal: a person and one
-// project, a person and no project, or, for a Google entry naming no person, an account entry
-// naming no person and a read entry, neither.
-type mapping struct{ person, project string }
+// project or none, a job entry's list and no person, or, for a Google entry naming no person and
+// no job list, an account entry naming no person and no job list and a read entry, neither. The
+// slice is the set's own and is never handed out.
+type mapping struct {
+	person   string
+	projects []string
+}
+
+// mappingOf is what an entry naming person, project and job gives its principal's tokens.
+func mappingOf(person, project string, job JobProjects) mapping {
+	switch {
+	case job.Listed():
+		return mapping{projects: job.Projects()}
+	case project == "":
+		return mapping{person: person}
+	}
+	return mapping{person: person, projects: []string{project}}
+}
 
 // NewSet validates every entry and builds the set the exchange decides against. It refuses,
 // naming the entry it refuses: an empty or blank required field, an account or repository that is
@@ -543,7 +622,17 @@ type mapping struct{ person, project string }
 // nothing clear about which machines it means, and one that names a person without a project, or
 // a project without a person, says nothing clear about what they may write. An account entry
 // that names a project and no person is refused, naming that rule: an entry that names a project
-// names its person, so no token held to a project is personless.
+// names its person, so no account entry's token held to a project is personless.
+//
+// An entry names a person and its project, or a job list (JobProjects), and NewSet refuses one
+// that names a job list beside a person or a project, of every kind, since its tokens could not
+// both act for that person and be the job. A workflow entry that names neither is refused as one
+// that names no person is. An account entry that names neither acts as the account itself, and
+// a Google entry that names neither is a machine that is its service and nothing else. A job
+// entry's fixed session is held to the rule every fixed session is, and reserved for its
+// principal as every other is. Its list needs no check here, since only ParseJobProjects builds
+// one; an identity a job entry and an entry naming a person both list is an identity listed
+// twice.
 //
 // reads are the read entries, which list Kubernetes service accounts as accounts does. An
 // account both lists name is refused, naming its read entry, for the reason an identity listed
@@ -582,7 +671,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if !oauthwire.AccountSubject.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
-		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, true); err != nil {
+		if err := checkGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, true); err != nil {
 			return nil, err
 		}
 		if _, listed := set.accounts[entry.Account]; listed {
@@ -592,7 +681,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			return nil, err
 		}
 		set.accounts[entry.Account] = entry
-		set.mapped[AccountPrincipal(entry.Account)] = mapping{person: entry.Person, project: entry.Project}
+		set.mapped[AccountPrincipal(entry.Account)] = mappingOf(entry.Person, entry.Project, entry.Job)
 	}
 	for i, entry := range reads {
 		where := fmt.Sprintf("read entry %d, %q", i+1, entry.Account)
@@ -628,7 +717,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if strings.TrimSpace(entry.Ref) == "" {
 			return nil, fmt.Errorf("exchange: %s: the ref is required, since an entry with no ref matches no run", where)
 		}
-		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
+		if err := checkGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
 			return nil, err
 		}
 		key := workflowKey{entry.Repository, entry.Workflow, entry.Ref}
@@ -644,7 +733,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			return nil, err
 		}
 		set.workflows[key] = entry
-		set.mapped[principal] = mapping{person: entry.Person, project: entry.Project}
+		set.mapped[principal] = mappingOf(entry.Person, entry.Project, entry.Job)
 	}
 	for i, entry := range machines {
 		where := fmt.Sprintf("google entry %d, %q", i+1, entry.Account)
@@ -660,14 +749,16 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if _, err := path.Match(entry.Instance, ""); err != nil {
 			return nil, fmt.Errorf("exchange: %s: the instance-name pattern %q is not a pattern: %w", where, entry.Instance, err)
 		}
-		if (entry.Project == "") != (entry.Person == "") {
+		if !entry.Job.Listed() && (entry.Project == "") != (entry.Person == "") {
 			return nil, fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
 		}
-		if entry.Person != "" {
-			if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
+		if entry.Job.Listed() || entry.Person != "" {
+			if err := checkGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
 				return nil, err
 			}
 		} else if entry.Session != "" && !ValidSession(entry.Session) {
+			// An entry naming neither a person nor a job list is a machine that is its service and
+			// nothing else, so its session is all there is to check.
 			return nil, fmt.Errorf("exchange: %s: %s", where, sessionRule)
 		}
 		if _, listed := set.google[entry.Account]; listed {
@@ -677,7 +768,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			return nil, err
 		}
 		set.google[entry.Account] = entry
-		set.mapped[GooglePrincipal(entry.Account)] = mapping{person: entry.Person, project: entry.Project}
+		set.mapped[GooglePrincipal(entry.Account)] = mappingOf(entry.Person, entry.Project, entry.Job)
 	}
 	return set, nil
 }
@@ -691,19 +782,18 @@ func (s *Set) Reservations() []Reservation {
 
 // MappedProjects is the person and the projects an operator's entry gives the tokens of
 // principal (AccountPrincipal, GooglePrincipal, or a workflow's), and false for a principal no
-// entry lists, a person's own among them. A Google entry naming no person, an account entry
-// naming no person, and a read entry, answer neither, and true. It is how a reader holding no
-// token — a release for a pod or a machine — reads the list that pod's or that machine's token
-// would carry. The slice is the caller's own.
+// entry lists, a person's own among them. A Google entry naming no person and no job list, an
+// account entry naming no person and no job list, and a read entry, answer neither, and true. A
+// job entry answers no person and its whole list: a named list's one project, or a public list's
+// private projects, beside which its token reaches every public project. It is how a reader
+// holding no token — a release for a pod or a machine — reads the list that pod's or that
+// machine's token would carry. The slice is the caller's own.
 func (s *Set) MappedProjects(principal string) (person string, projects []string, ok bool) {
 	entry, listed := s.mapped[principal]
 	if !listed {
 		return "", nil, false
 	}
-	if entry.project == "" {
-		return entry.person, nil, true
-	}
-	return entry.person, []string{entry.project}, true
+	return entry.person, slices.Clone(entry.projects), true
 }
 
 // ProjectsForAccount is the projects this configuration gives a token minted for one account,
@@ -740,31 +830,84 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 		ErrProjectsFixed, identity, project, oauthwire.JoinProjects(asked))
 }
 
-// checkGrant refuses what every entry that grants a write shares: a person that is blank, which
-// would mint a token answerable to nobody, and a fixed session name no request could name back.
-// The project is required too, except of an account entry (account set), which may name a person
-// and no project — the shared public-session account's entry, minting named tokens that name no
-// project (a pod account many people launch must never act as one person's own token) — or name
-// neither, when its tokens act as the account itself (Pod). An account entry that names a project
-// names its person, so no token held to a project is personless; every other entry names a
-// person, since its tokens act for someone. A person or a project that is blank without being
-// empty is refused everywhere, and so is a project that is no project key: every token the entry
-// mints names it, the exchange stores and reads that list through oauthwire.ParseProjects, which
-// takes only project keys, so an entry naming anything else would boot and then fail every trade.
-func checkGrant(where, project, person, session string, account bool) error {
-	if !(account && project == "") && strings.TrimSpace(project) == "" {
-		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project", where)
-	}
-	if project != "" {
-		if err := oauthwire.ValidProjects([]string{project}); err != nil {
-			return fmt.Errorf("exchange: %s: the entry's project %v", where, err)
+// jobProjects is the list a job entry's token carries: the entry's whole list, whatever the
+// request names, since the entry is the deployment's grant to the job and a trade may neither
+// widen nor narrow it. A request may name no project, or keys of the list; one naming any other
+// key is refused, a public project's under a public list included, since the broker cannot tell
+// a public project's key from one no project holds. The slice is the caller's own.
+func jobProjects(identity string, job JobProjects, asked []string) ([]string, error) {
+	listed := job.Projects()
+	for _, key := range asked {
+		if !slices.Contains(listed, key) {
+			return nil, fmt.Errorf("%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name",
+				ErrProjectsFixed, identity, job, key)
 		}
 	}
-	switch {
-	case account && person == "" && project != "":
-		return fmt.Errorf("exchange: %s: an account entry names no person only when it names no project either: an entry that names a project names its person, so no token held to a project is personless", where)
-	case !(account && person == "") && strings.TrimSpace(person) == "":
-		return fmt.Errorf("exchange: %s: the person is required, since the entry's tokens act for someone", where)
+	return listed, nil
+}
+
+// grant sets in c what an operator's entry naming person and project, or the job list job, gives
+// its token: for a person, Person, ProjectScopeNamed and the entry's one project or none
+// (entryProjects); for an account entry naming neither a person nor a job list, service as
+// Service, ProjectScopeNamed and no project, since its token acts as the account itself; for a
+// job list, service as Service, the list's scope and its whole list (jobProjects). identity is
+// the caller as a refusal of the request's projects names it, and service the identity a token
+// naming no person names, which Pod, Workflow and Google each spell their own way. It refuses
+// what those two refuse, and c is then the caller's to drop.
+func (c *Claims) grant(identity, service, person, project string, job JobProjects, asked []string) error {
+	var err error
+	if job.Listed() {
+		c.Job, c.Service, c.Scope = true, service, job.Scope()
+		c.Projects, err = jobProjects(identity, job, asked)
+	} else {
+		c.Person, c.Scope = person, ProjectScopeNamed
+		if person == "" {
+			// Only an account entry names neither a person nor a job list here (NewSet), and it
+			// names no project either (checkGrant): the account is the service its token names in
+			// place of a person, and what Dispatch records its writes under.
+			c.Service = service
+		}
+		c.Projects, err = entryProjects(identity, project, asked)
+	}
+	return err
+}
+
+// checkGrant refuses what an entry's grant cannot be, deciding first whether it names the job
+// list job. An entry that names one is refused a person or a project beside it, since an entry
+// names a person and its project, or a job list, and never both; the list itself needs no check,
+// since only ParseJobProjects builds one. Every other entry but an account entry naming no
+// project is refused an empty person, which would mint a token answerable to nobody, so a
+// workflow entry that names neither a person nor a job list is refused here. Its project is
+// required too, except of an account entry (account set), which may name a person and no project
+// — the shared public-session account's entry, minting named tokens that name no project (a pod
+// account many people launch must never act as one person's own token) — or name neither, when
+// its tokens act as the account itself (Pod). An account entry that names a project names its
+// person, so no account entry's token held to a project is personless. A person or a project that
+// is blank without being empty is refused everywhere, and so is a project that is no project key:
+// every token the entry mints names it, the exchange stores and reads that list through
+// oauthwire.ParseProjects, which takes only project keys, so an entry naming anything else would
+// boot and then fail every trade. Every entry, of either kind, is refused a fixed session name no
+// request could name back.
+func checkGrant(where, person, project string, job JobProjects, session string, account bool) error {
+	if job.Listed() {
+		if person != "" || project != "" {
+			return fmt.Errorf("exchange: %s: the entry names the job list %s beside a person or a project (person %q, project %q); an entry names a person and its project, or a job list, and never both", where, job, person, project)
+		}
+	} else {
+		if !(account && project == "") && strings.TrimSpace(project) == "" {
+			return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project; an entry names a person and its project, or a job list", where)
+		}
+		if project != "" {
+			if err := oauthwire.ValidProjects([]string{project}); err != nil {
+				return fmt.Errorf("exchange: %s: the entry's project %v", where, err)
+			}
+		}
+		switch {
+		case account && person == "" && project != "":
+			return fmt.Errorf("exchange: %s: an account entry names no person only when it names no project either: an entry that names a project names its person, so no account entry's token held to a project is personless", where)
+		case !(account && person == "") && strings.TrimSpace(person) == "":
+			return fmt.Errorf("exchange: %s: the person is required, since a token acts for someone unless its entry names a job list", where)
+		}
 	}
 	if session != "" && !ValidSession(session) {
 		return fmt.Errorf("exchange: %s: %s", where, sessionRule)
@@ -807,6 +950,13 @@ func checkGrant(where, project, person, session string, account bool) error {
 // of a token that writes nothing: the entry's service and session, ProjectScopeNone, and no
 // person, no project and no Instance. Its token names no person, so a request of its pod naming
 // a project is refused (ErrProjectsNoPerson), as a machine's whose entry names no person is.
+//
+// A job entry's pods are answered with a token that names the account as its service and no
+// person, with the entry's scope and whole list whatever the request names (jobProjects), and
+// Instance as any entry's: the pod uid where the entry fixes no session, so a job pod registers
+// as a person's pod does, and none where it fixes one.
+//
+// Pod answers LegionStatus for a Legion daemon's own entry alone (Claims.LegionStatus).
 func (s *Set) Pod(token map[string]any, session string, projects []string) (Claims, error) {
 	account, err := claimString(token, "sub")
 	if err != nil {
@@ -829,21 +979,21 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 		return Claims{Session: name, Service: listing.read.Service, Scope: ProjectScopeNone, Principal: AccountPrincipal(account)}, nil
 	}
 	entry := listing.account
-	named, err := entryProjects(account, entry.Project, projects)
-	if err != nil {
+	claims := Claims{Session: name, Principal: AccountPrincipal(account)}
+	if err := claims.grant(account, account, entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return Claims{}, err
 	}
-	claims := Claims{Session: name, Person: entry.Person, Scope: ProjectScopeNamed, Projects: named, Principal: AccountPrincipal(account)}
-	if entry.Person == "" {
-		// An entry naming no person names no project either (checkGrant), and its token acts as
-		// the account: the account is the service it names in place of a person, and what
-		// Dispatch records its writes under.
-		claims.Service = account
-	}
+	claims.LegionStatus = isLegionDaemon(entry)
 	if entry.Session == "" {
 		claims.Instance = uid
 	}
 	return claims, nil
+}
+
+// isLegionDaemon reports whether entry is a Legion daemon's own entry (Claims.LegionStatus).
+func isLegionDaemon(entry AccountEntry) bool {
+	project, fixesDaemonSession := strings.CutPrefix(entry.Session, oauthwire.LegionDaemonSessionPrefix)
+	return fixesDaemonSession && entry.Project != "" && project == entry.Project
 }
 
 // podListing is the entry that lists a pod's account: its AccountEntry, or, when readOnly is set,
@@ -915,6 +1065,10 @@ func (s *Set) Registration(account, podUID, session string) error {
 // The principal is that listed workflow, not the run: every run of it is one holder, so the next
 // run of a release workflow keeps writing under the name the run before it held, however soon
 // after it starts.
+//
+// A job entry's runs are answered with a token that names the workflow as its service,
+// <repository>/<path>@<ref>, which is its principal without the kind, and no person, with the
+// entry's scope and whole list whatever the request names (jobProjects).
 func (s *Set) Workflow(token map[string]any, session string, projects []string) (Claims, error) {
 	repository, err := claimString(token, "repository")
 	if err != nil {
@@ -948,11 +1102,11 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 	if err != nil {
 		return Claims{}, err
 	}
-	named, err := entryProjects(repository+"/"+workflow, entry.Project, projects)
-	if err != nil {
+	claims := Claims{Session: name, Principal: workflowPrincipal(key)}
+	if err := claims.grant(repository+"/"+workflow, workflowIdentity(key), entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return Claims{}, err
 	}
-	return Claims{Session: name, Person: entry.Person, Scope: ProjectScopeNamed, Projects: named, Principal: workflowPrincipal(key)}, nil
+	return claims, nil
 }
 
 // Google answers the claims for a machine's Google identity token, from the claims Google puts in
@@ -984,6 +1138,11 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 // alone — a resource server holds a token naming no person to what a service may do — which is
 // why the service is a claim of its own rather than an absence to be read, and why a request of
 // such a machine naming a project is refused rather than read.
+//
+// An entry that names a job list mints a token that names the account's address as its service
+// and no person, with the entry's scope and whole list whatever the request names (jobProjects).
+// Fleet is still the entry's service, so the launcher credential its exchange mints records the
+// service it would for any machine of the account.
 func (s *Set) Google(token map[string]any, session string, projects []string) (Claims, error) {
 	identity := ReadGoogleIdentity(token)
 	if identity.Account == "" {
@@ -1003,19 +1162,18 @@ func (s *Set) Google(token map[string]any, session string, projects []string) (C
 	if err != nil {
 		return Claims{}, err
 	}
-	claims := Claims{Session: name, Scope: ProjectScopePerson, Principal: GooglePrincipal(identity.Account), Fleet: entry.Service}
-	if entry.Person == "" {
+	claims := Claims{Session: name, Principal: GooglePrincipal(identity.Account), Fleet: entry.Service}
+	if !entry.Job.Listed() && entry.Person == "" {
 		if len(projects) > 0 {
 			return Claims{}, fmt.Errorf("%w: %s is the service %s and names no person, and the request named %s",
 				ErrProjectsNoPerson, identity.Account, entry.Service, oauthwire.JoinProjects(projects))
 		}
-		claims.Service = entry.Service
+		claims.Service, claims.Scope = entry.Service, ProjectScopePerson
 		return claims, nil
 	}
-	if claims.Projects, err = entryProjects(identity.Account, entry.Project, projects); err != nil {
+	if err := claims.grant(identity.Account, identity.Account, entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return Claims{}, err
 	}
-	claims.Person, claims.Scope = entry.Person, ProjectScopeNamed
 	return claims, nil
 }
 
@@ -1192,8 +1350,12 @@ func (s *Set) Machine(credential, approver, session string, projects []string) (
 // token proves.
 func AccountPrincipal(account string) string { return "account:" + account }
 
-func workflowPrincipal(key workflowKey) string {
-	return "workflow:" + key.repository + "/" + key.workflow + "@" + key.ref
+func workflowPrincipal(key workflowKey) string { return "workflow:" + workflowIdentity(key) }
+
+// workflowIdentity is a listed workflow as an operator reads one, <repository>/<path>@<ref>: its
+// principal without the kind, and the service a job workflow's token names.
+func workflowIdentity(key workflowKey) string {
+	return key.repository + "/" + key.workflow + "@" + key.ref
 }
 
 // GooglePrincipal is a Google account's spelling: the fleet a machine's own identity belongs to.

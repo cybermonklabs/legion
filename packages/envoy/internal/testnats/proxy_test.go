@@ -34,7 +34,7 @@ func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected,
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 	proxy := StartProxy(t, URL(t))
 	conn, disconnected, reconnected := proxiedClient(t, proxy)
-	if err := conn.FlushTimeout(time.Second); err != nil {
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)
 	}
 
@@ -67,7 +67,7 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 
 	proxy.Restore()
 	testwait.Receive(t, "the client's reconnect after the restore", reconnected)
-	if err := conn.FlushTimeout(time.Second); err != nil {
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush after the restore: %v", err)
 	}
 	fresh, err := natsgo.Connect(proxy.URL(), natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
@@ -113,7 +113,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 	}
 
 	proxy.Restore()
-	if err := conn.FlushTimeout(2 * time.Second); err != nil {
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush after the restore: %v", err)
 	}
 	select {
@@ -132,7 +132,7 @@ func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 	proxy := StartProxy(t, URL(t), ProxyLatency(rtt))
 	conn, _, _ := proxiedClient(t, proxy)
 	started := time.Now()
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)
 	}
 	if took := time.Since(started); took < rtt {

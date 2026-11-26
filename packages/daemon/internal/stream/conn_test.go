@@ -535,7 +535,7 @@ func TestATurnThatEndedInAProviderErrorStillReportsItsResult(t *testing.T) {
 // Oh My Pi's class of a failure reaches the supervisor with the rest of the error object: a
 // gateway relays OpenAI's cyber-policy refusal as a 503, which on its status alone is "not now",
 // and only the code says that sending the same content again is refused again (supervise's
-// holdsTheIssue). The line is the shape Oh My Pi's promptError writes, verbatim.
+// classifyProviderError). The line is the shape Oh My Pi's promptError writes, verbatim.
 func TestAPromptResultCarriesItsCodeToTheSupervisor(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)

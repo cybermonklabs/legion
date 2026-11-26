@@ -1,0 +1,5 @@
+kind: Changed
+body: The note `dispatch claim` prints on a Legion issue, at a claim and at a release, says that Dispatch refuses a status written there from a credential without the `person` or `legion-status` scope where `DISPATCH_LEGION_STATUS_SCOPE` is on, but for `done`, `backlog`, `icebox` or `triage` from an architect of an issue above with its own broker token, and that the daemon undoes it otherwise.
+time: 2026-11-20T09:15:15.781302896Z
+custom:
+    Issue: pr4601

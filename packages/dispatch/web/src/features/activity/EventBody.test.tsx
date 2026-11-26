@@ -1,12 +1,19 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import type { AskAnswer, DispatchEvent } from "../../api/types";
+import type { AskAnswer, DispatchEvent, DisplayTree } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { EventBody, EventEditedMark } from "./EventBody";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const markdownMessage: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
@@ -102,11 +109,128 @@ test("EventBody shows the answer a change replaced, struck through", async () =>
   const view = render(<EventBody event={changed} />);
 
   try {
-    const was = await screen.findByText("was: Ship - Go now.");
-    expect(was.closest("s")).not.toBeNull();
+    // The replaced answer's options and text are each drawn by the renderer, so the line is
+    // read as the words it shows rather than as one text node.
+    await waitFor(() =>
+      expect(view.container.querySelector("s")?.textContent).toBe("was: Ship - Go now.")
+    );
     const { previous_answer: _dropped, ...first } = changed.payload;
     view.rerender(<EventBody event={{ ...changed, payload: first }} />);
-    expect(screen.queryByText(/^was:/)).toBeNull();
+    expect(view.container.querySelector("s")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Each label the replaced answer chose is drawn from the tree the event carries for it, by its
+// place in that answer's list (`payload.previous_answer.selected.<i>`), never parsing the label:
+// the trees here read `soon` and `Went` where the labels' markdown says `now` and `Wait`, and the
+// second names an option the ask no longer holds. The option tree the event carries for the
+// first label's option is not what draws it. The answer's text is drawn by the renderer as ever.
+test("EventBody draws a replaced answer's options from their trees and its text as rendered markdown", async () => {
+  await warmMarkdownRenderer();
+  const changed: Extract<DispatchEvent, { type: "ask.answered" }> = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-09-11T00:00:00Z",
+    id: 6,
+    issue_key: "CORE-1",
+    notify: true,
+    payload: {
+      anchor: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      answer: { at: "2026-09-11T00:00:00Z", selected: ["Hold"], text: null, user: "alice" },
+      author: { id: "session-1", kind: "session" },
+      created_at: "2026-09-10T00:00:00Z",
+      edited_at: null,
+      id: "ask-6",
+      issue_key: "CORE-1",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [{ label: "Ship [now](https://example.test/now)" }, { label: "Hold" }],
+      previous_answer: {
+        at: "2026-09-10T12:00:00Z",
+        selected: ["Ship [now](https://example.test/now)", "**Wait**"],
+        text: "**Go** now.",
+        user: "alice",
+      },
+      question: "Publish?",
+      state: "answered",
+      urgency: "med",
+    },
+    seq: 6,
+    trees: {
+      "payload.options.0.label": displayTree(
+        "Ship [later](https://example.test/later)"
+      ) as DisplayTree,
+      "payload.previous_answer.selected.0": displayTree(
+        "Ship [soon](https://example.test/soon)"
+      ) as DisplayTree,
+      "payload.previous_answer.selected.1": displayTree("**Went**") as DisplayTree,
+    },
+    type: "ask.answered",
+  };
+  const view = render(<EventBody event={changed} />);
+
+  try {
+    await waitFor(() =>
+      expect(view.container.querySelector("s")?.textContent).toBe("was: Ship soon, Went - Go now.")
+    );
+    expect(
+      [...view.container.querySelectorAll("s strong")].map((bold) => bold.textContent)
+    ).toEqual(["Went", "Go"]);
+    expect(view.container.querySelector("s a")?.getAttribute("href")).toBe(
+      "https://example.test/soon"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// An event with no body of its own is drawn as its one line, and a question that line quotes is
+// read by the one reader: its formatting is gone and a link in it is its words. Drawn as the
+// characters it is, the line reads `Ask edited: Publish [the plan](https://example.test/plan)?`.
+test("EventBody draws the question an event's line quotes as its plain words", async () => {
+  const edited: Extract<DispatchEvent, { type: "ask.edited" }> = {
+    actor: { id: "session-1", kind: "session" },
+    created_at: "2026-09-11T00:00:00Z",
+    id: 7,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      anchor: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      answer: null,
+      author: { id: "session-1", kind: "session" },
+      created_at: "2026-09-10T00:00:00Z",
+      edited_at: "2026-09-11T00:00:00Z",
+      edited_by: { id: "session-1", kind: "session" },
+      id: "ask-7",
+      issue_key: "CORE-1",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [],
+      previous: { multiple: false, options: [], question: "Draft?", urgency: "med" },
+      question: "Publish [the plan](https://example.test/plan)?",
+      state: "open",
+      urgency: "med",
+    },
+    seq: 7,
+    type: "ask.edited",
+  };
+  const view = render(<EventBody event={edited} />);
+
+  try {
+    await waitFor(() => expect(view.container.textContent).toBe("Ask edited: Publish the plan?"));
   } finally {
     view.unmount();
   }
@@ -307,8 +431,9 @@ test("EventBody reads a null selected list on an answer and its previous answer 
   const view = render(<EventBody event={stored} />);
 
   try {
-    const was = await screen.findByText("was: Go now.");
-    expect(was.closest("s")).not.toBeNull();
+    await waitFor(() =>
+      expect(view.container.querySelector("s")?.textContent).toBe("was: Go now.")
+    );
     expect(screen.getByText("Hold it.")).not.toBeNull();
   } finally {
     view.unmount();

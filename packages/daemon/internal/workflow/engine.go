@@ -132,17 +132,22 @@ type Config struct {
 	// requests each, asked for by number). issues is
 	// never empty. Nil asks for none, as ReadMergeState's nil does.
 	ReadBaseMergeStates func(repo, base string, issues []string)
-	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
-	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
-	// in internal/daemon), which paces every wake the daemon causes together — the role processes
-	// supervision launches (supervise.WakePace) and the catch-up the outbox writes in place of a
-	// launch, which is the one wake this engine reserves (claimReady, for an intake.ClaimReady
-	// the outbox's start row marked paced). nil is the pacing off, which is this package's
-	// convention for a collaborator a deployment does not have, as NoteUnread is: the catch-up is
-	// then due at once, exactly as every other catch-up is. The engine reads no configuration of
-	// the pacing and knows no limiter; what the rate and the burst were is the outbox's to log,
-	// where the wake runs (the daemon's wakeRan).
-	Reserve func(now time.Time) time.Time
+	// HoldCatchUp is told the outbox row of a catch-up the engine wrote held, once the fact that
+	// wrote it has committed (claimReady, for an intake.ClaimReady the outbox's start row marked
+	// paced): the daemon joins that row to its wake pacing's queue, where it waits its turn with
+	// the role processes supervision launches, and makes it due when the pacer lets it out (the
+	// daemon's catchUpPacing). nil is the pacing off, which is this package's convention for a
+	// collaborator a deployment does not have, as NoteUnread is: the catch-up is then due at
+	// once, exactly as every other catch-up is. The engine reads no configuration of the pacing
+	// and knows no pacer; what the rate and the burst were is the outbox's to log, where the wake
+	// runs (the daemon's wakeRan).
+	HoldCatchUp func(id int64, issue string)
+	// MessageMarked is told the claim a listener's report marked for a waiting Envoy message, with
+	// the mark the store holds, once the report's fact has committed (listenerWake): the daemon
+	// posts it to the claim's machine, whose waiting wake moves to the pacing's message queue
+	// (supervise.MessageMarked). nil tells nobody, and the mark still stands in the store for the
+	// next launch and the next boot to read.
+	MessageMarked func(token claim.Token, mark time.Time)
 	// Hooks are the deployment's hooks (`hooks`, config.Config.Hooks), each put in front of the
 	// roles it names every Every moves back of what it selects. The empty list fires nothing:
 	// the one hook a deployment that writes no key runs is the configuration's default
@@ -310,6 +315,11 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.closed(ctx, tx, fact)
 	case intake.PullRequestDequeued:
 		return e.dequeued(ctx, tx, fact)
+	case intake.PullRequestReviewRequests:
+		// It records nothing: the read it asks for (askMergeState) counts the requests.
+		return intake.Result{}, nil
+	case intake.PullRequestMergeStateUnread:
+		return e.mergeStateUnread(ctx, tx, fact)
 	case intake.MergeQueueReadDone:
 		return e.mergeQueueReadDone(ctx, tx, fact)
 	case intake.ConflictConfirmDone:
@@ -885,7 +895,11 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	// workflow's leave and what came after it left it. The new run's starts hand each its task;
 	// whether a start brings a stopped claim back is supervise's table to decide, and a start
 	// resumes the recorded session, or a new one once supervise's Machine.forgetSession has dropped
-	// it. These starts ask for no new session themselves.
+	// it. These starts ask for no new session themselves, and decide nothing: none of them
+	// launches again the agent of a claim held for OpenAI's cyber-policy refusal
+	// (supervise.ErrHeldForCyberPolicy), and the outbox's refusal of the start of its phase holds
+	// the issue for the architect above it (the daemon outbox's heldStartRefused), whose retry
+	// starts that agent again in a new session.
 	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
 	if err != nil {
 		return err
@@ -956,18 +970,17 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 }
 
 // leftItsPhase says whether role's completion of a phase its issue has already left is recorded
-// rather than refused: the daemon started role on this issue, which is what gives it the claim the
-// completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
-// (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
-// on without it - the review event taking reviewing on - and its handoff is the findings the next
-// phase reads, which a refusal would lose. Four completions are not: one from a role whose handoff
-// already stands, which is reporting a phase it finished a second time; one from a role the daemon
-// never started on this issue, which has held no phase of it to report; any while the issue stands
-// where no role works - parked, closed or held - which is past recording work at all; and any
-// while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
-// completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
-// there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
-// while no role was named for that phase. The two holds of an owner's plan are read where their
+// rather than refused. ranUnreported decides whether this run still owes its report.
+// The daemon may have moved the issue on without this completion, such as on a review event.
+// Its handoff gives the next phase findings a refusal would lose. Four completions remain refused:
+// one from a role whose handoff already stands, which reports a phase it finished a second time;
+// one from a role the daemon never started on this issue, which has held no phase to report;
+// any while no role works the issue's phase - parked, closed or held - which is past recording
+// work at all; and any while it stands at admitted. Admitted is the architect's own phase
+// (phase.RoleFor), which completes nothing (handoff), and it comes before every phase a worker
+// works, so no worker's phase there is one the issue moved on from: the guard keeps the refusal
+// a completion at admitted had while no role was named for that phase.
+// The two holds of an owner's plan are read where their
 // issue stands (record.StandsAt), so each report of a run an event ended before the hold is taken
 // as it is without the hold. A parent held for its children stands at its retro: the pass of its
 // last step moved it there in place of the retro, as an approval moves an issue into accepting, so
@@ -988,13 +1001,12 @@ func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return e.ranUnreported(ctx, tx, issue, role, token)
 }
 
-// ranUnreported says whether role's completion naming token reports a run of role the daemon
-// started on issue at its generation, which is what gives it the claim token
-// (record.Store.RoleRun), with no completion of that run reported yet (record.PhaseRow.Completed).
-// That is a completion of a phase the issue no longer stands in that arrives after the daemon
-// ended the run without it: one it records (leftItsPhase), or, for a task with plan rows, one of
-// the run its task's stop ended, which it refuses as late (lateReport). A completion naming no
-// claim reports no run.
+// ranUnreported says whether role started its step in this run and has not reported it.
+// EntryTask is the durable start: enter writes it with the entry, generation clears remove it,
+// and a carried run keeps it. Entry alone survives a clear, and a claim can exist only for a
+// production check's look. Neither proves a started step. A completion without a token reports
+// no run. The first late report is recorded by leftItsPhase, or refused and spent by lateReport
+// when the task's stop ended that started step.
 func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	if token == "" {
 		return false, nil
@@ -1003,11 +1015,7 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil || row.Completed() {
 		return false, err
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
-	if err != nil {
-		return false, err
-	}
-	return run.Claim != nil, nil
+	return row.EntryTask != "", nil
 }
 
 // pastCompletion answers role's completion of reported, a phase issue no longer stands in, in one
@@ -1247,12 +1255,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // failure of that role between looks counts the same (failedBetweenLooks), and either is told.
 //
 // A claim that failed on OpenAI's cyber-policy refusal (supervise.CauseCyberPolicy) is the
-// exception to each "starts it again" above: no start of the daemon's own relaunches it
-// (supervise.ErrHeldForCyberPolicy), so the three notices that promise one, a child's own
-// architect's, a role's outside its issue's phase and the checking role's of a production check
-// (checkRoleFailedReason), say so and name the operator's `legion claims retry` instead
-// (cyberPolicyNoRestart). A held phase is held as for any cause, and its retry, the architect's or
-// a person's decision, relaunches the claim.
+// exception to each "starts it again" above: no start of the daemon's own launches its agent again
+// (supervise.ErrHeldForCyberPolicy), so a notice that would promise one says that the role does
+// not start again by itself instead (noStartOfItsOwn), and nothing of the cause or of who brings it
+// back: agents are told what they do, which is the same for every failure. A held phase is held
+// as for any cause, and its retry, the architect's or a person's decision, starts the agent in a
+// new session. A role outside its issue's phase holds nothing now, and the start of its phase,
+// should the issue come to it, holds the issue then (the daemon outbox's heldStartRefused).
 func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFailed) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1269,12 +1278,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return intake.Result{}, err
 		}
-		reason := fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)
-		if fact.Cause == supervise.CauseCyberPolicy {
-			reason = fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and %s", issue.Key, cyberPolicyNoRestart)
+		again := noStartOfItsOwn(fact)
+		if again == "" {
+			again = fmt.Sprintf("the daemon starts it again at %s's next phase start", issue.Key)
 		}
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
-			Reason: reason})
+			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and %s", issue.Key, again)})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would, and counts it a failed look, so the next look is named a backoff
@@ -1318,11 +1327,8 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
 		reason := fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)
-		if fact.Cause == supervise.CauseCyberPolicy {
-			reason += ", and " + cyberPolicyNoRestart
-		}
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
-			Reason: reason})
+			Reason: joinReason(reason, noStartOfItsOwn(fact))})
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -1351,13 +1357,37 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		Failure: failure, Reason: deathReason(fact, failure != nil)})
 }
 
-// cyberPolicyNoRestart is what a worker-died notice says in place of the daemon's own next start
-// for a claim that failed on OpenAI's cyber-policy refusal (claimFailed): no start of the
-// daemon's own relaunches such a claim (supervise.ErrHeldForCyberPolicy), since the relaunch
-// would send the session's content to OpenAI again, so the notice names the operator's command
-// that does. The held phase's retry, which a held issue's notice already offers, relaunches it
-// too.
-const cyberPolicyNoRestart = "it failed on OpenAI's cyber_policy refusal of its session's content, so no start of the daemon's own relaunches it: an operator's `legion claims retry` does, with --fresh-session to leave the refused session behind"
+// noStartOfItsOwn is the clause a worker-died notice of a claim that failed on OpenAI's
+// cyber-policy refusal (supervise.CauseCyberPolicy) says in place of a start of the daemon's own
+// that will not come, and "" for a fact of any other cause: a child's own architect's and a role's
+// outside its issue's phase (claimFailed), and the checking role's of a production check
+// (checkRoleFailedReason). It is the one place that cause is read for a notice. No start of the
+// daemon's own launches such a claim's agent again (supervise.ErrHeldForCyberPolicy), and the
+// clause says that and no more: it names neither the cause's mechanics nor who brings the agent
+// back, since the notice goes to an agent, which acts on a failure the same way whatever failed
+// it. The operator's command lives in the operator's surfaces (supervise.RetryCommand). Two
+// notices carry no clause, since neither promises a start: the held phase's, whose retry the
+// architect decides and which starts the agent in a new session (supervise's freshSession), and the
+// tree architect's, which the controller answers by restarting the tree, whose promotion starts
+// the architect's agent in a new session (StartPromotedArchitect).
+func noStartOfItsOwn(fact intake.ClaimFailed) string {
+	if fact.Cause != supervise.CauseCyberPolicy {
+		return ""
+	}
+	return "it does not start again by itself"
+}
+
+// joinReason is a worker-died's reason with clause after it (noStartOfItsOwn), joined as
+// deathReason joins its own parts, and either alone where the other is empty.
+func joinReason(reason, clause string) string {
+	switch {
+	case clause == "":
+		return reason
+	case reason == "":
+		return clause
+	}
+	return reason + "; " + clause
+}
 
 // deathReason is what a worker-died notice says of how a claim ended: the whole reason on the two
 // paths that build none of their own — the tree architect's and the held phase's — and the start

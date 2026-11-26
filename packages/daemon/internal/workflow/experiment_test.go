@@ -91,6 +91,7 @@ func experimentEngine(t *testing.T, declared []config.Experiment, source func(ui
 // beside it is no part of any of it: a tree's answer is drawn once for the whole tree when the
 // tree is opened, so nothing here writes one.
 func TestAnIssueExperimentIsDrawnForEachIssueOfATree(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
 	engine := experimentEngine(t, append([]config.Experiment{planLength}, treeMemory...), scriptedSource(t, 0, 1, 0))
@@ -128,6 +129,7 @@ func TestAnIssueExperimentIsDrawnForEachIssueOfATree(t *testing.T) {
 // when it is read (refusingSource); the fresh child at the end, LEGION-210, recorded through
 // recordChild by a third engine, drawing, which declares the same experiment, is drawn.
 func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
 	declaring := experimentEngine(t, nil, refusingSource(t))

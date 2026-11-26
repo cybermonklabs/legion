@@ -720,11 +720,11 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
 // droppedStrandedState, droppedWaitAnswer, droppedLineKind, droppedCapabilitySource,
-// droppedHoldReason, droppedHeldWord and droppedFailureCause are what the rows of valueStrips name
-// as dropped. They are named rather than written in the rows because the tests that read the
-// daemon's log and the mixed pod's body name a row by them (narrowing_test.go,
-// shaped_answers_test.go). Each names what its row takes by the table's rule rather than by
-// today's value, so the line stays true of a value the table declares later.
+// droppedHoldReason and droppedHeldWord are what the rows of valueStrips name as dropped. They are
+// named rather than written in the rows because the tests that read the daemon's log and the mixed
+// pod's body name a row by them (narrowing_test.go, shaped_answers_test.go). Each names what its
+// row takes by the table's rule rather than by today's value, so the line stays true of a value the
+// table declares later.
 const (
 	droppedStrandedState    = "the entries of strandedClaims in a state this caller does not admit"
 	droppedWaitAnswer       = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
@@ -732,7 +732,6 @@ const (
 	droppedCapabilitySource = "the source of every capability row of a source this caller does not admit"
 	droppedHoldReason       = "the holdReason of every issue held for a reason this caller does not admit"
 	droppedHeldWord         = "the word and heldBy of every row of admission.held whose word this caller does not admit, served as unclassified"
-	droppedFailureCause     = "the claim views' failure cause and pending cause of a word this caller does not admit, served as an older word that stands for it"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1724,57 +1723,6 @@ func withoutUnadmittedHeldWords(state State, restore int) (State, bool) {
 	return state, true
 }
 
-// withoutUnadmittedFailureCauses is the issue whose claim views name no failure cause restore's
-// reader does not admit, in `failure.cause` or in `pendingCause`. It follows the declared table
-// (answers.go's failureCauses, with the values entries add to its rows) and takes any word the
-// table holds back from restore (fieldArrivals.heldBack says which words and why): today the
-// `cyber_policy` of cyberPolicyContract, whose value strip this is
-// (contract_20261125174608_cyber-policy.go), and tomorrow any word the table gives a later
-// arrival. A reader from recordFieldsContract up to that contract reads both with a `z.enum` of
-// the seven words before it and refuses the whole body for another. The four fields, the
-// architect's and each worker's, take one list, so the architect's `failure.cause` answers for
-// all four.
-//
-// The word is rewritten rather than dropped, as withoutUnadmittedHeldWords rewrites a held row:
-// `cause` is no optional key of a failure record that reader would take as absent, and an older
-// word does stand for the newer one (failureCauseStandIn). Every other key of the view and of
-// its failure record stays, the sentence that names `cyber_policy` among them, since `detail` is
-// a string any reader takes whole.
-//
-// An issue whose views name no such word is returned as it is, with no copy made; a view it
-// rewrites gets a failure record of its own, so the state the source answered is left as it was.
-// It reports whether it rewrote a view, which is what the log line of this strip is written from
-// (tookOff).
-func withoutUnadmittedFailureCauses(issue Issue, restore int) (Issue, bool) {
-	arrivals := arrivalsAt(issueKeyPath + "architect.failure.cause")
-	unadmitted := func(cause supervise.FailureCause) bool {
-		return cause != "" && arrivals.heldBack(string(cause), restore)
-	}
-	return withEachClaimView(issue, func(view ClaimView) ClaimView {
-		if view.Failure != nil && unadmitted(view.Failure.Cause) {
-			failure := *view.Failure
-			failure.Cause = failureCauseStandIn(failure.Cause)
-			view.Failure = &failure
-		}
-		if unadmitted(view.PendingCause) {
-			view.PendingCause = failureCauseStandIn(view.PendingCause)
-		}
-		return view
-	})
-}
-
-// failureCauseStandIn is the word an older reader is served for a failure cause it does not admit
-// (withoutUnadmittedFailureCauses): `provider_error` for `cyber_policy`, since a cyber-policy
-// refusal is a provider error that cannot clear and that reader was told it under that word, and
-// `unrecorded`, the word for a failure whose cause the reader was not told, for any word the table
-// names no stand-in for. Both arrived with the field, so every reader that knows it admits them.
-func failureCauseStandIn(cause supervise.FailureCause) supervise.FailureCause {
-	if cause == supervise.CauseCyberPolicy {
-		return supervise.CauseProviderError
-	}
-	return supervise.CauseUnrecorded
-}
-
 // fieldArrivals is one enumerated field of the declared table as a value strip reads it: the
 // contract the field itself arrived at, and the contract each of its values did (arrivalsOf).
 type fieldArrivals struct {
@@ -1824,9 +1772,8 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 // arrivalsAt is the arrivals of the state's enumerated field at keyPath, which a value strip
 // reads: read once, when the registry is built, from that field's row of EnumeratedFields, so
 // the values an entry adds to the field are held back as the frozen ones are (contracts.go).
-// The strips read `strandedClaims.*.state`, `answeredBy`, the waiting line's `kind`, a capability
-// row's `source`, an issue's `holdReason` and a held row's `reason` (answers.go's strandedStates,
-// waitAnswers, lineKinds, capabilitySources, holdReasons and heldReasons). The state's row
+// Each strip names the field it reads where it calls this, the frozen ones in this file and an
+// entry's in its entry file, so no list here goes stale when an entry adds a strip. The state's row
 // answers for the record's too: an issue's field is one field at two key paths (answers.go's
 // enumeratedFields), both rows take the one list, and shapeIssue shapes the issue behind both
 // answers. A key path no row of the state declares is a strip reading nothing, and panics.

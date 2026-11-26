@@ -747,9 +747,14 @@ export function ompCapabilityHost(): CapabilityHost {
         import("@oh-my-pi/pi-coding-agent/extensibility/settings"),
         hostSettings(),
       ]);
-      // The host answers one `{path, scope}` entry per extension; the check reads the path alone.
-      const entries = await discoverExtensionPaths([], cwd, cfgDisabledExtensions.get(settings));
-      return entries.map((entry) => entry.path);
+      // The host answers one `{path, scope}` entry per extension, and a host before
+      // 18.18.6-sami.20261124-152326 a bare path; the check reads the path alone.
+      const entries: readonly (string | { readonly path: string })[] = await discoverExtensionPaths(
+        [],
+        cwd,
+        cfgDisabledExtensions.get(settings)
+      );
+      return entries.map((entry) => (typeof entry === "string" ? entry : entry.path));
     },
     loadSkills: async (cwd) => {
       const [{ loadSkills }, { cfgDisabledExtensions, cfgSkills }, settings] = await Promise.all([

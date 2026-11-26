@@ -69,7 +69,7 @@ function nativesCacheRoot(): string {
  * Which natives a binary writes is its own choice: the pin writes only the variant its CPU
  * selects, and earlier binaries wrote every variant they embed. So the check reads what was
  * extracted rather than demanding each embedded name. What it refuses is a file that is not a
- * whole native of this binary: the binary writes each native to a `.tmp.<pid>.<ms>` file and
+ * whole native of this binary: the binary writes each native to a `.tmp.<pid>.<uuid>` file and
  * renames it only once it is whole, so a failed write leaves nothing (refused as an empty
  * extraction), or a leftover temporary file when the cleanup fails too (refused by its name), and
  * anything that is not a regular file, or not at its embedded size, is refused as well. Among the
