@@ -138,7 +138,9 @@ func (p *brokerProxy) calls() []proxyCall {
 // With denyFrom set, the ask of that number and every later one is denied, as a broker whose
 // policy no longer allows the names answers. With valuesErr set, every release fails with it after
 // the grant was made. Revoke fails on a context that has ended, as cipher.Session.Revoke's HTTP
-// call does, answers revokeErr where it is set, and fails its first revokeFailures calls.
+// call does, answers revokeErr where it is set, and fails its first revokeFailures calls. With
+// retryWait set, every Revoke call after the first waits that long before it ends its grant, and
+// fails if its context ends first: a broker slow to answer a retry.
 type fakeBroker struct {
 	proxy          *brokerProxy
 	lifetime       time.Duration
@@ -151,6 +153,7 @@ type fakeBroker struct {
 	valuesErr      error
 	revokeErr      error
 	revokeFailures int
+	retryWait      time.Duration
 
 	mu       sync.Mutex
 	asked    int
@@ -231,6 +234,19 @@ func (b *fakeBroker) Revoke(ctx context.Context, id string) error {
 		b.mu.Unlock()
 		return errors.New("the broker could not end the grant")
 	}
+	wait := b.retryWait
+	if b.attempts == 1 {
+		wait = 0
+	}
+	b.mu.Unlock()
+	if wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	b.mu.Lock()
 	b.revoked = append(b.revoked, id)
 	b.mu.Unlock()
 	b.proxy.setLive("pw-"+id, false)

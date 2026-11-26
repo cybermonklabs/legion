@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
@@ -260,17 +261,35 @@ func TestNoMapStartsNoForwarder(t *testing.T) {
 }
 
 // A launch spec may not set HTTPS_PROXY or https_proxy where the deployment puts a role's GitHub
-// behind the proxy: the runtime sets both for such a role.
+// behind the proxy: the runtime sets both for such a role. They are reserved beside whatever the
+// deployment's exchange reserves (PodExchange), dispatch_token_broker's DISPATCH_TOKEN_BROKER
+// included, and not at all where no github map is set.
 func TestTheProxyVariablesAreTheRuntimesWhereTheMapIsSet(t *testing.T) {
-	r := proxiedRuntime(t)
-	for _, name := range []string{"HTTPS_PROXY", "https_proxy"} {
-		if !r.specOwned()[name] {
-			t.Errorf("specOwned leaves %s to a launch spec where the github map is set", name)
-		}
-	}
-	r.agentSecrets.GitHub = nil
-	if r.specOwned()["HTTPS_PROXY"] {
-		t.Error("specOwned takes HTTPS_PROXY where no github map is set")
+	for _, tc := range []struct {
+		name     string
+		audience string
+		broker   bool
+	}{
+		{name: "no exchange"},
+		{name: "an exchange identity", audience: testExchangeAudience},
+		{name: "an exchange identity under dispatch_token_broker", audience: testExchangeAudience, broker: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := proxiedRuntime(t)
+			r.agentSecrets.ExchangeAudience, r.dispatch.Broker = tc.audience, tc.broker
+			proxied := r.specOwned()
+			r.agentSecrets.GitHub = nil
+			unproxied := r.specOwned()
+			if unproxied["HTTPS_PROXY"] || unproxied["https_proxy"] {
+				t.Error("specOwned takes a proxy variable where no github map is set")
+			}
+			want := maps.Clone(unproxied)
+			want["HTTPS_PROXY"], want["https_proxy"] = true, true
+			if !maps.Equal(proxied, want) {
+				t.Errorf("specOwned with the github map set is %v, want what it takes without the map and the two proxy variables: %v",
+					slices.Sorted(maps.Keys(proxied)), slices.Sorted(maps.Keys(want)))
+			}
+		})
 	}
 }
 

@@ -57,6 +57,23 @@ func TestAFailedRevokeAtTheStopIsTriedAgain(t *testing.T) {
 	requireEveryGrantRevoked(t, r.broker)
 }
 
+// TestARetryAtTheStopWithNoAskInFlightHasTheLandedWaitToo: with no ask in flight, the stop's
+// first revocation of the grant it holds fails at once, and the broker takes revokeBound plus half
+// of landedBound to end it on the retry. The second pass, which waited for no ask, has
+// landedBound beside its revokeBound, so the retry ends the grant within stopBound.
+//
+// The named revert: give the second pass revokeBound alone whether or not it waited for an ask
+// (N12 of the final review's round 7), and the retry's time limit ends before the broker answers.
+func TestARetryAtTheStopWithNoAskInFlightHasTheLandedWaitToo(t *testing.T) {
+	r := newRig(t, func(_ *Config, b *fakeBroker) { b.revokeFailures, b.retryWait = 1, revokeBound+landedBound/2 })
+	r.awaitGrant()
+	r.shutdown()
+	if attempts := r.broker.revokeAttempts(); attempts != 2 {
+		t.Errorf("the stop tried %d revocations; want the failed one and one retry", attempts)
+	}
+	requireEveryGrantRevoked(t, r.broker)
+}
+
 // stallingWriter is a log sink whose writes of a line holding match block until free is called,
 // as a role's stderr does when nothing drains it; stalled is closed when the first such write
 // begins. Every other line is kept.
