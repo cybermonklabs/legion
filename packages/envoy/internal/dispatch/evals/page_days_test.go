@@ -32,7 +32,7 @@ const pageNamingRounds = 3 + 1 + owedRounds
 // pageTrace is a tracer (storetest.TracedStore) that counts, on the pool it traces, the reads of
 // deploy runs by their creation from a moment on (applyReads: the apply runs of a day, of a list of
 // days' windows, and of the days before a day its deploys can ship), and the commits of the
-// transactions that wrote day rows (dayCommits).
+// transactions that wrote day rows (dayCommits): that inserted, updated or deleted one.
 type pageTrace struct {
 	mu         sync.Mutex
 	applyReads int
@@ -47,7 +47,8 @@ func (p *pageTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pg
 	switch {
 	case strings.Contains(statement, "delivery_runs r") && strings.Contains(statement, "coalesce(r.created_at, r.started_at) >="):
 		p.applyReads++
-	case strings.Contains(statement, "insert into eval_days (project_key"):
+	case strings.Contains(statement, "insert into eval_days (project_key"), strings.Contains(statement, "update eval_days "),
+		strings.Contains(statement, "delete from eval_days "):
 		p.writing[conn] = true
 	case strings.EqualFold(statement, "commit"):
 		if p.writing[conn] {
@@ -91,12 +92,12 @@ func oneApplyADay(deliveries deliverytest.Fixture) []int64 {
 
 // TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit: over thirty days of the delivery
 // history, once every day is walked, the production job of one deploy run of each day completes a
-// minute later, and one pass writes the days the change names, more than twenty. The pass reads
-// deploy runs by their creation at most twice for each round of naming (pageNamingRounds): once
-// for the windows of the round's days, however many, and once for the days before them their
-// deploys can ship; where it read every deploy run created from each day it named on, one read of
-// each day. It commits the days' rows in one transaction, and so logs one eval_days change of each
-// eval it moved, which a view of the rows is sent as one delta.
+// minute later, and one pass writes the days the change names, at least twenty. The pass reads
+// deploy runs by their creation at least once and at most twice for each round of naming
+// (pageNamingRounds): once for the windows of the round's days, however many, and once for the days
+// before them their deploys can ship; where it read every deploy run created from each day it named
+// on, one read of each day. It commits the days' rows in one transaction, and so logs one eval_days
+// change of each eval it moved.
 func TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -121,6 +122,9 @@ func TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit(t *testing.
 	if most := 2 * pageNamingRounds; trace.applyReads > most {
 		t.Errorf("the pass read deploy runs by their creation %d times for the %d days it wrote, where %d rounds of naming read them at most %d times",
 			trace.applyReads, len(days), pageNamingRounds, most)
+	}
+	if trace.applyReads == 0 {
+		t.Errorf("the pass read deploy runs by their creation no time for the %d days it wrote, so the count of those reads judges nothing", len(days))
 	}
 	if trace.dayCommits != 1 {
 		t.Errorf("the pass committed day rows in %d transactions, want the page's days in one", trace.dayCommits)
@@ -201,6 +205,17 @@ func (s *statementTimes) top(n int) []string {
 		lines = append(lines, fmt.Sprintf("%v in %d: %s", s.total[shape].Round(time.Millisecond), s.count[shape], shape))
 	}
 	return lines
+}
+
+// statements is how many statements s has counted while on.
+func (s *statementTimes) statements() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	total := 0
+	for _, count := range s.count {
+		total += count
+	}
+	return total
 }
 
 // The run ids of the timed load: a day's deploy runs are timedDeployRuns + day*1000 + n, its
@@ -328,6 +343,9 @@ func TestAPagesDeliveryDaysAreTimed(t *testing.T) {
 		"%v; one more day adds a median %v (marginal %v, per day %v)", days, median(manys).Round(time.Millisecond),
 		median(perDay).Round(100*time.Microsecond), median(ones).Round(time.Millisecond), median(marginal).Round(100*time.Microsecond),
 		marginal, perDay)
+	if len(marginal) == 0 {
+		t.Errorf("no round's pass of every day's change wrote more delivery days than its pass of one day's, so the times measure no day's cost")
+	}
 	if times != nil {
 		times.mu.Lock()
 		times.on = false
