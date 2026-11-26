@@ -263,7 +263,7 @@ func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
 		{
 			name: "a URL's credentials in the part the cut drops",
 			text: "start https://u:" + planted + "@h.example/x " + middle + " end",
-			want: "start https://h.example/x " + middle[:keep-1-len("start https://h.example/x ")] + "…" + middle[:keep-len(" end")] + " end",
+			want: "start https://[a URL with credentials]/x " + middle[:keep-1-len("start https://[a URL with credentials]/x ")] + "…" + middle[:keep-len(" end")] + " end",
 		},
 		{
 			name: "a text of exactly the bound kept whole",
