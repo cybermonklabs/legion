@@ -117,7 +117,7 @@ import { seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
 import { hasReadingPane } from "./reading-pane";
 import { sessionIds } from "./session-ids";
-import { expandedState, settledState } from "./settled";
+import { expandedState, settledState, settledValue } from "./settled";
 import {
   closeControlPanel,
   drawnControlNames,
@@ -6182,12 +6182,17 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       ["reading view", readingView(page)],
     ]);
     if (shown === "no band") return "Later (0)";
-    const read =
-      shown === "band"
-        ? band
-        : inboxList(page).getByRole("button", { includeHidden: true, name: /^Later \(\d+\)/ });
-    if ((await read.count()) === 0) return "Later (0)";
-    return /Later \(\d+\)/.exec((await read.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
+    if (shown === "band") {
+      return /Later \(\d+\)/.exec((await band.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
+    }
+    // In the reading view the band is in the hidden list, which `settledState` reads as not shown,
+    // so its words are read until two reads a poll apart agree; no band there is `Later (0)`.
+    return settledValue("the Inbox's Later band in the hidden list", async () => {
+      const words = await inboxList(page)
+        .getByRole("button", { includeHidden: true, name: /^Later \(\d+\)/ })
+        .allTextContents();
+      return /Later \(\d+\)/.exec(words.join(" ").replace(/\s+/g, " "))?.[0] ?? "Later (0)";
+    });
   };
   // Each Snooze pick defers one more question, two at each width, so Later counts one more.
   const laterAfter = (picks: number) => new RegExp(`^Later \\(${2 * step + picks}\\)$`);
