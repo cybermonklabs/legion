@@ -77,8 +77,10 @@ func TestTheEvalDayRefresherCatchesUpInTheDispatchProcess(t *testing.T) {
 		}
 		mergeFirst, mergeLast, mergeRows := seriesSpan(t, database, deliveries.Project, evals.SlugMergeToProduction, measures.SeriesMinutes)
 		workFirst, workLast, workRows := seriesSpan(t, database, legion.Project, evals.SlugLegionWorkTime, "hours")
+		// The project's own unowned-p0 row of today (repo ''); the count is also stored for each
+		// repository that holds a counted issue, whose rows this wait does not count.
 		var unowned int
-		if err := database.Pool.QueryRow(t.Context(), `select count(*) from eval_days where eval_id = $1 and day = $2`,
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from eval_days where eval_id = $1 and day = $2 and repo = ''`,
 			evals.EvalID(deliveries.Project, evals.SlugUnownedP0), today).Scan(&unowned); err != nil {
 			t.Fatalf("read the unowned-p0 row: %v", err)
 		}
