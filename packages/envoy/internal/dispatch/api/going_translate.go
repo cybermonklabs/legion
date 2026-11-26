@@ -814,8 +814,13 @@ var goingRefVersion = regexp.MustCompile(`/artifact/[^/#@]+@v([1-9][0-9]*)$`)
 const goingIssueReadEvents = 10
 
 // goingParseReadRef reads value as a read's reference (goingReadRef), false where it names nothing
-// a read reads.
+// a read reads. An issue's log, its children and its comments are read first (goingParseReadOf):
+// text.ParseRef reads `dispatch://KEY/log`, `/activity` and `/children` as the issue itself, as
+// the dashboard draws a link to a tab of its page, where a read of them reads that part.
 func goingParseReadRef(value, serverURL string) (goingReadRef, bool) {
+	if read, named := goingParseReadOf(value); named {
+		return read, true
+	}
 	if ref, parsed := text.ParseRef(value, serverURL); parsed {
 		read := goingReadRef{Ref: ref}
 		if ref.Kind == "artifact" {
@@ -825,6 +830,12 @@ func goingParseReadRef(value, serverURL string) (goingReadRef, bool) {
 		}
 		return read, true
 	}
+	return goingReadRef{}, false
+}
+
+// goingParseReadOf reads value as a reference to an issue's log (or its activity), its children
+// or its comments, `dispatch://KEY/<part>`, false for any other value.
+func goingParseReadOf(value string) (goingReadRef, bool) {
 	rest, scheme := strings.CutPrefix(value, "dispatch://")
 	key, of, below := strings.Cut(rest, "/")
 	if !scheme || !below {
