@@ -239,6 +239,7 @@ func TestEveryOtherRefusalStaysPermanent(t *testing.T) {
 	}{
 		{"an unregistered pod session", 400, "invalid_grant", description, false},
 		{"the broker's rate limit", 429, "invalid_request", "too many token requests", false},
+		{"a broker, or a proxy before it, that did not take the request", 408, "invalid_request", "the stand-in answered this trade", false},
 		{"a proof outside the skew window", 400, "invalid_dpop_proof", "", false},
 		{"a nonce the broker wanted", 400, "use_dpop_nonce", "", false},
 		{"no entry lists the account", 400, "invalid_grant", "no entry lists the account this token names", true},

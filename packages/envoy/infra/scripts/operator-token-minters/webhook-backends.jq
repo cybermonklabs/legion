@@ -15,14 +15,17 @@
 # that carries the Service's labels joins it and can mount its TLS Secret; the writes to the Service,
 # its Endpoints and EndpointSlices and its Secrets; and the writes to its ConfigMaps, from which an
 # injector reads the template it adds to a pod. Each such webhook's Service is listed in `services`,
-# for admission_power to read; one that calls a URL is listed in `urls`. A
-# selector is read against kubernetes.io/metadata.name alone, which the API server sets to the
-# namespace's name: any other requirement can match, since a namespace's other labels can change,
-# and an objectSelector can match a pod made to fit it. A rule can match a cluster-scoped object
-# unless its scope is Namespaced: with scope Cluster it can, and with scope * (the default) it can
-# when a resource it names is `*`, is cluster-scoped in a group it names ($cluster_names), or is
-# namespaced in none of them ($names). So a namespaced resource with no create verb, which $names
-# leaves out, counts as cluster-scoped: that judges more webhooks, never fewer.
+# for admission_power to read; one that calls a URL is listed in `urls`. Every webhook's Service,
+# judged or not, is listed in `backends`, for broker-fence.sh: entry into a backend's pod changes
+# what its webhook does to every object it admits. Each list writes a webhook's id and Service from
+# the one walk below. A selector is read against kubernetes.io/metadata.name alone, which the API
+# server sets to the namespace's name: any other requirement can match, since a namespace's other
+# labels can change, and an objectSelector can match a pod made to fit it. A rule can match a
+# cluster-scoped object unless its scope is Namespaced: with scope Cluster it can, and with scope *
+# (the default) it can when a resource it names is `*`, is cluster-scoped in a group it names
+# ($cluster_names), or is namespaced in none of them ($names). So a namespaced resource with no
+# create verb, which $names leaves out, counts as cluster-scoped: that judges more webhooks, never
+# fewer.
 include "custom";
 def can_match($ns):
   (.namespaceSelector // {}) as $s
@@ -53,12 +56,16 @@ discovered($names) as $namespaced | discovered($cluster_names) as $cluster
  + [(["", "services"], ["", "endpoints"], ["discovery.k8s.io", "endpointslices"], ["", "secrets"], ["", "configmaps"]) as [$g, $res]
     | ("create", "update", "patch") | {verb: ., group: $g, resource: $res, sub: ""}]) as $ways
 | [.items[] | (.kind // "") as $kind | .metadata.name as $config | .webhooks[]? | . as $w
-  | select(any(.rules[]?; cluster_rule($namespaced; $cluster)) or any($guarded[]; . as $ns | $w | can_match($ns)))
-  | {id: "\($kind) \($config)/\(.name)", service: .clientConfig.service, url: .clientConfig.url}]
-| {urls: [.[] | select(.service == null) | {id, url: (.url // "no URL and no Service")}],
-   services: [.[] | select(.service != null) | {id, ns: .service.namespace, name: .service.name}],
-   rights: ([.[] | select(.service != null) | . as $h | $h.service.namespace as $ns | $ways[]
-     | {verb, group, resource, sub, ns: $ns, name: "",
-        label: "\(.verb) \(.resource)\(if .sub != "" then "/" + .sub else "" end)\(if .group != "" then "." + .group else "" end) in \($ns), backing the webhook \($h.id)"}]
+  | "\($kind) \($config)/\(.name)" as $id
+  | {id: $id, url: .clientConfig.url,
+     backend: (.clientConfig.service | if . == null then null else {id: $id, ns: .namespace, name: .name} end),
+     judged: (any(.rules[]?; cluster_rule($namespaced; $cluster)) or any($guarded[]; . as $ns | $w | can_match($ns)))}] as $hooks
+| [$hooks[] | select(.judged)] as $judged
+| {backends: [$hooks[] | .backend // empty],
+   urls: [$judged[] | select(.backend == null) | {id, url: (.url // "no URL and no Service")}],
+   services: [$judged[] | .backend // empty],
+   rights: ([$judged[] | .backend // empty | . as $b | $ways[]
+     | {verb, group, resource, sub, ns: $b.ns, name: "",
+        label: "\(.verb) \(.resource)\(if .sub != "" then "/" + .sub else "" end)\(if .group != "" then "." + .group else "" end) in \($b.ns), backing the webhook \($b.id)"}]
      | unique_by([.verb, .group, .resource, .sub, .ns])
      | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}))}

@@ -70,6 +70,20 @@ import {
 import { DISPATCH_KEY_PATTERN, isStepRole, LEGION_ROLES, roleToken } from "./legion-roles";
 import { PlanRatingCases } from "./plan-rating-cases";
 
+test("a look's report names its check and carries no step's record or commit", () => {
+  const report = {
+    grantId: "grant",
+    summary: "looked",
+    verdict: "pending",
+    checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+    wakeAt: "2026-10-19T09:00:00Z",
+  };
+  expect(LegionHandoffCompleteRequest.parse(report)).toEqual(report);
+  for (const fields of [{ commit: "c0ffee" }, { handoffId: "handoff" }, { handoffVersion: 1 }]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...report, ...fields }).success).toBeFalse();
+  }
+});
+
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
 // `legionRepositories` exactly as contract 152 holds it (`legion-api.ts` before INFRA-4401, with
@@ -264,9 +278,11 @@ const schemas: Record<string, z.ZodType> = {
       values: z.array(
         z.strictObject({ value: z.string().min(1), since: z.number().int().positive() })
       ),
-      // The contract from which the field is no enumeration: a reader there takes any value of
-      // a grammar no list holds. Absent for a field enumerated at every contract.
-      until: z.number().int().positive().optional(),
+      // The contract from which the field is no enumeration (`EnumeratedField.OpenFrom`), which
+      // an entry fixture's `open: true` sets at the entry's number: a reader there takes any
+      // value of a grammar no list holds. Absent for a field enumerated at every contract. The
+      // numbered entries' rows open no field, so this file holds it on no row.
+      openFrom: z.number().int().positive().optional(),
     })
   ),
   // Nor this one: what the daemon serves every contract it supports
@@ -284,10 +300,11 @@ const schemas: Record<string, z.ZodType> = {
   // `domains` is the other half of a record: for each field of that answer the daemon's table
   // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
   // values whose arrival is at or below that contract — what a reader there admits, and not
-  // what any sample body carries. An answer with no such field writes `{}`. The rule it stands
-  // for is that a value refuses a reader as a key does: a body carrying a value the reader's
-  // enumeration does not name is refused whole, which is why the record carries the domain and
-  // the daemon serves an unadmitted value down.
+  // what any sample body carries. A field open at that contract (`openFrom` at or below it)
+  // holds no domain there, since its reader takes any value. An answer with no such field writes
+  // `{}`. The rule it stands for is that a value refuses a reader as a key does: a body carrying
+  // a value the reader's enumeration does not name is refused whole, which is why the record
+  // carries the domain and the daemon serves an unadmitted value down.
   "contract-shapes.json": z.array(
     z.strictObject({
       contract: z.number().int().positive(),
@@ -677,6 +694,12 @@ function enumeratedFields(roots: Record<string, z.ZodType>): {
 // it, so the row is passed over here; a row no record carries at all is compared as any other,
 // and fails.
 //
+// A row open at or below this build's contract (`openFrom`) is a field this build's reader takes
+// any value of, a word of a grammar no list holds, so this module reads it with no `z.enum` and
+// the case holds it to that. The row's values are what readers below `openFrom` admit, which
+// their own schemas hold. The four rows of a claim's role are such rows from the deployment
+// roles' contract entry, which this module reads by the role grammar (`legionStepRole`).
+//
 // The rows and the records are this build's (`daemon-api-records.ts`): `enumerated-fields.json`
 // and `contract-shapes.json`, which hold the numbered entries', with the rows and the records
 // each entry fixture adds over them, so a value an entry adds is compared as one the file holds.
@@ -709,6 +732,13 @@ test("every enumerated field the daemon declares holds this build's own values",
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and ANSWER_SCHEMAS names no schema for that answer`
     ).toBeDefined();
     const read = members.get(field);
+    if (row.openFrom !== undefined && row.openFrom <= build.contract) {
+      expect(
+        read,
+        `the daemon opens \`${row.keyPath}\` of the ${row.answer} answer at ${row.openFrom}, at or below this build's contract ${build.contract}, and this module still reads it with a z.enum`
+      ).toBeUndefined();
+      continue;
+    }
     expect(
       read,
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and this module reads it with no z.enum`
@@ -813,7 +843,10 @@ test("the example entry fixtures compose the one record expected of them", () =>
 test("an entry row that adds one enumerated value twice is refused, naming the entry", () => {
   const examples = path.join(import.meta.dir, "..", "testdata", "entry-fixture-examples");
   const base: ContractRecords = JSON.parse(readFileSync(path.join(examples, "base.json"), "utf8"));
-  expect(base.enumeratedFields.map((row) => row.keyPath)).toEqual(["issues.*.phase"]);
+  expect(base.enumeratedFields.map((row) => row.keyPath)).toEqual([
+    "issues.*.phase",
+    "issues.*.role",
+  ]);
   // A row the base holds, and a row no record before it declares.
   for (const keyPath of ["issues.*.phase", "issues.*.kind"]) {
     const entry = {
@@ -830,6 +863,40 @@ test("an entry row that adds one enumerated value twice is refused, naming the e
       `entry 20261126000000_twice (contract ${base.contract + 1}) adds \`merging\` to \`${keyPath}\` of the state answer in enumerated-fields.json, and that row holds it already`
     );
   }
+});
+
+// An entry opens a row of `enumerated-fields.json` that a row before it declares and no entry
+// before it opened, as the daemon's gate requires (`withEnumeratedRows` in `internal/api`): a row
+// no record before it declares is refused, naming the entry, and so is an entry that opens a row
+// an entry before it opened. The first opening of the base's `issues.*.role` is taken, open from
+// the entry's number, which is the control: the refusals are of the two conditions alone.
+test("an entry row that opens no row, or an open one, is refused, naming the entry", () => {
+  const examples = path.join(import.meta.dir, "..", "testdata", "entry-fixture-examples");
+  const base: ContractRecords = JSON.parse(readFileSync(path.join(examples, "base.json"), "utf8"));
+  const opening = (name: string, number: number, keyPath: string) => ({
+    name,
+    number,
+    fixture: {
+      answers: [],
+      routes: [],
+      answerRows: [],
+      enumeratedRows: [{ answer: "state", keyPath, values: [], open: true as const }],
+    },
+  });
+  const first = opening("20261126000000_open", base.contract + 1, "issues.*.role");
+  const opened = composeEntries(base, [first]).at(-1)?.enumeratedFields;
+  expect(opened?.find((row) => row.keyPath === "issues.*.role")?.openFrom).toBe(base.contract + 1);
+  expect(opened?.find((row) => row.keyPath === "issues.*.phase")?.openFrom).toBeUndefined();
+
+  expect(() =>
+    composeEntries(base, [opening("20261126000000_open", base.contract + 1, "issues.*.kind")])
+  ).toThrow(
+    `entry 20261126000000_open (contract ${base.contract + 1}) opens \`issues.*.kind\` of the state answer in enumerated-fields.json, and the rows before it hold no such row`
+  );
+  const again = opening("20261126000001_again", base.contract + 2, "issues.*.role");
+  expect(() => composeEntries(base, [first, again])).toThrow(
+    `entry 20261126000001_again (contract ${base.contract + 2}) opens \`issues.*.role\` of the state answer in enumerated-fields.json, and that row is open from ${base.contract + 1} already`
+  );
 });
 
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
@@ -1433,16 +1500,16 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
     headUpdatedAt: "2026-09-22T08:58:40Z",
     checkRuns: 0,
   });
-  // Stuck: GitHub holds the head on a check or a review the repository requires, the architect
-  // and the reviewer have been told, and the marks name the head and state told of.
+  // Stuck: GitHub answers that the head is behind its base, a state the round does not end on;
+  // the architect and the reviewer have been told, and the marks name the head and state told of.
   expect(stuck.mergeWait).toEqual({
     waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-    mergeState: "blocked",
+    mergeState: "behind",
     stateReadAt: "2026-09-22T09:16:12Z",
     headUpdatedAt: "2026-09-20T14:05:33Z",
     checkRuns: 2,
     toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-    toldState: "blocked",
+    toldState: "behind",
   });
 
   const told = stuck.mergeWait;

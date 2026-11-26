@@ -67,12 +67,12 @@ func TestFailureCausesGolden(t *testing.T) {
 // and of a pause stop with an enumeration of Legion's six roles, and the band of that contract
 // serves it the claims of claim.Roles alone (shaping.go's withoutDeploymentRoleClaims), whatever
 // roles the deployment defines. From that contract the three fields, and a registration's `role`,
-// take any role of the role grammar (claim.IsRole), which no list of values records
-// (answers.go's enumeratedFields), so no row of EnumeratedFields holds what this test holds. So
-// claim.Roles must be those six, named here one by one: a role added to claim.Roles would pass the
-// band and reach a reader whose enumeration refuses the whole state for it. And the band is held
-// to them: a claim of each of the six is kept in each of the three lists, and a claim of a role
-// of the deployment is dropped from each.
+// take any role of the role grammar (claim.IsRole): the entry opens their rows there
+// (EnumeratedField.OpenFrom), and the six their rows hold below it are answers.go's floorRoles,
+// not claim.Roles. So claim.Roles must be those six, named here one by one: a role added
+// to claim.Roles would pass the band and reach a reader whose enumeration refuses the whole state
+// for it. And the band is held to them: a claim of each of the six is kept in each of the three
+// lists, and a claim of a role of the deployment is dropped from each.
 func TestEveryRoleAnOlderReaderIsServedIsOneItsEnumerationNames(t *testing.T) {
 	olderReaders := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}

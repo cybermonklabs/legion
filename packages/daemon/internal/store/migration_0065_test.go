@@ -18,6 +18,7 @@ import (
 // start it already was. A row
 // that never had it is untouched.
 func TestTheSuperviseMigrationStripsTheQuiesceKeyFromQueuedRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 64)

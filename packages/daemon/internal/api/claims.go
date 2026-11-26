@@ -52,7 +52,10 @@ type Supervisor interface {
 // (registerLaunchedController), and only under `controller: daemon`. A token no launch minted may
 // be the controller capability `legion controller start` fetched, which registers the project's
 // controller (registerController), and only under `controller: operator`: a daemon that launches
-// its own controller registers no other, so such a token is the unknown one it is.
+// its own controller registers no other, so such a token is the unknown one it is. A claim of a
+// role the deployment defines that registers from a plugin below deploymentRolesContract's entry
+// is refused once its machine has recorded the registration, since that plugin cannot read the
+// claim's role in the answer.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	var req claim.RegisterRequest
 	if !s.readRegisterBody(w, r, &req) || !s.requireFields(w, r,
@@ -109,6 +112,27 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := m.Claim()
+	// The answer's `role` is the claim's own role, and a plugin below deploymentRolesContract's
+	// entry reads it with an enumeration of Legion's six, so it refuses the whole answer for a
+	// role the deployment defines. A registration from such a plugin is stale, and gets here only
+	// where the machine let it stand because no relaunch can move the process onto the current
+	// plugin (supervise's staleRegistration); every other stale registration was refused above.
+	// The role cannot be left out of the answer, as the state's band leaves out a stranded claim
+	// of such a role, so that plugin is answered a refusal it reads, after the machine recorded
+	// the registration, which keeps the machine's record of the process true. The plugin's own
+	// declaration is read, not its header: a plugin states the same number in the header from
+	// shapedAnswersContract on, and one below that states none.
+	if !claim.IsBuiltin(c.Role) && req.PluginContract < entryNumber(deploymentRolesContract) {
+		first := entryNumber(deploymentRolesContract)
+		s.log.Warn("api: refused the registration of a role of the deployment from a plugin below "+
+			"the contract that reads such a role", "claim", c.Token, "role", c.Role,
+			"generation", launch.Generation, "pluginContract", req.PluginContract, "contract", first)
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("the role %s is one this deployment "+
+			"defines, and pi-legion speaks daemon API contract %d, which reads a claim's role as "+
+			"one of Legion's six; a plugin of contract %d or later registers it",
+			c.Role, req.PluginContract, first))
+		return
+	}
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
 	s.writeAnswer(w, r, AnswerRegister, http.StatusOK, claim.RegisterResponse{

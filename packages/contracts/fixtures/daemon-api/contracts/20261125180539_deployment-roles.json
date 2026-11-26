@@ -23,6 +23,19 @@
       }
     },
     {
+      "answer": "register",
+      "removeValues": {
+        "role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ]
+      }
+    },
+    {
       "answer": "state",
       "addKeyPaths": [
         "issues.*.startWaitsForPod",
@@ -41,6 +54,32 @@
         ],
         "issues.*.workers.*.claim.pendingTask.phase": [
           "step"
+        ]
+      },
+      "removeValues": {
+        "paused.waitsOn.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ],
+        "strandedClaims.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ],
+        "wakesWaiting.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
         ]
       }
     }
@@ -61,6 +100,24 @@
       "values": [
         "step"
       ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "strandedClaims.*.role",
+      "values": [],
+      "open": true
+    },
+    {
+      "answer": "state",
+      "keyPath": "wakesWaiting.*.role",
+      "values": [],
+      "open": true
+    },
+    {
+      "answer": "state",
+      "keyPath": "paused.waitsOn.*.role",
+      "values": [],
+      "open": true
     },
     {
       "answer": "state",
@@ -110,6 +167,12 @@
       "values": [
         "step"
       ]
+    },
+    {
+      "answer": "register",
+      "keyPath": "role",
+      "values": [],
+      "open": true
     }
   ]
 }

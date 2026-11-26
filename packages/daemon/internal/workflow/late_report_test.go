@@ -256,6 +256,7 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Reviewing)
 		reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleReviewer, Claim: reviewer, Entry: 1, EntryTask: "review this change"})
 		reviewRequestsChanges(t, pool, engine, root.Key)
 		assertPhase(t, pool, phase.Implementing)
 

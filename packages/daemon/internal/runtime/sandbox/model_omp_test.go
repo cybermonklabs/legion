@@ -94,6 +94,7 @@ func requestSystem(body []byte) string {
 // (launcherCommand), since a missing file would fail no launch and leave the agent without its
 // prompt.
 func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
@@ -180,6 +181,7 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 // checking but explains nothing about role resolution: the flag rides every launch because the
 // operator's current role is resolved per launch (TestAgentArgvCarriesTheConfiguredModel).
 func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
@@ -356,6 +358,7 @@ func TestAResumeNamingItsModelOutlivesADroppedSavedModel(t *testing.T) {
 // providers: the role's own model answers 429 with a `retry-after` past `retry.maxDelayMs`, which
 // is Oh My Pi's signal to stop waiting, and the chain's next model answers the turn.
 func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
@@ -420,6 +423,7 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 // against an overlay that omits the role; the deployment's guard is the operator's, and
 // deploy/kubernetes/operator-route/README.md says so.
 func TestMeasuredNoDefaultRoleLaunchesOnABuiltInModel(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")

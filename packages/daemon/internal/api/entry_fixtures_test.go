@@ -72,7 +72,8 @@ func rewritingFixtures() bool {
 //	    "typedSettings": [{"key": "<settings key>"}]
 //	  }],
 //	  "enumeratedRows": [{                   the rows it adds to enumerated-fields.json, with no since
-//	    "answer": "<AnswerID>", "keyPath": "<key path>", "values": ["<value>"]
+//	    "answer": "<AnswerID>", "keyPath": "<key path>", "values": ["<value>"],
+//	    "open": true                         present only where the entry opens the row
 //	  }]
 //	}
 //
@@ -82,8 +83,11 @@ func rewritingFixtures() bool {
 // the routes and the typed settings the entry adds to that row, and that row's own noBody. A typed
 // setting is its key alone: it is typed from the entry on. A row of enumeratedRows names a field
 // and the values the entry adds to it, each arriving at the entry's number; a field no row before
-// it declares is a new row. answers.json and enumerated-fields.json hold the numbered entries' rows
-// alone, so these two lists are where a reader with no Go toolchain finds an entry's rows.
+// it declares is a new row. `"open": true` says the entry ends the field's enumeration at its own
+// number, the row's openFrom (EnumeratedField.OpenFrom): such a row is one a row before it
+// declares and no entry before it opened, and holds no value unless the entry adds one too.
+// answers.json and enumerated-fields.json hold the numbered entries' rows alone, so these two
+// lists are where a reader with no Go toolchain finds an entry's rows.
 type entryFixture struct {
 	Answers        []answerChange       `json:"answers"`
 	Routes         []routeChange        `json:"routes"`
@@ -123,11 +127,13 @@ type entryTypedSetting struct {
 	Key string `json:"key"`
 }
 
-// entryEnumeratedRow is one row an entry adds to enumerated-fields.json (entryFixture).
+// entryEnumeratedRow is one row an entry adds to enumerated-fields.json (entryFixture), and Open
+// whether the entry opens the field at its own number.
 type entryEnumeratedRow struct {
 	Answer  AnswerID `json:"answer"`
 	KeyPath string   `json:"keyPath"`
 	Values  []string `json:"values"`
+	Open    bool     `json:"open,omitempty"`
 }
 
 // The words of a change: an answer or a route the entry adds, or one it removes.
@@ -166,9 +172,10 @@ type answerRecord struct {
 // composeEntries is the record of each entry's number, in the order of entries: base, the record
 // of the contract before the first of them, with the fixture of each entry up to that one applied
 // in turn. Each operation of a fixture has one condition, read against the record before the
-// entry: an added key path, field path, domain value, answer, route or row is absent from it, and
-// a removed one present. A fixture that breaks one is refused, naming the entry and the operation,
-// because it was written over another set of entries than the ones before it here; so is a fixture
+// entry: an added key path, field path, domain value, answer, route or row is absent from it, a
+// removed one present, and an opened row present and open from no contract yet. A fixture that
+// breaks one is refused, naming the entry and the operation, because it was written over another
+// set of entries than the ones before it here; so is a fixture
 // that says something no operation can mean (an added answer with no noBody, a removed one that
 // names a key path, an answer or a route named twice). The TypeScript `composeEntries` is this
 // function, and the two are held to one set of example fixtures.
@@ -461,8 +468,9 @@ func withAnswerRows(entry numberedFixture, rows []Answer, refused func(string, .
 }
 
 // withEnumeratedRows is rows with entry's rows of enumerated-fields.json added, each value arriving
-// at the entry's number and each row's values sorted by value, and refused names a row that adds a
-// value the row before it holds.
+// at the entry's number and each row's values sorted by value, and each row it opens open from
+// that number, and refused names a row that adds a value the row before it holds, and a row it
+// opens that the rows before it do not hold or that an entry before it opened.
 func withEnumeratedRows(entry numberedFixture, rows []EnumeratedField, refused func(string, ...any) error) ([]EnumeratedField, error) {
 	after := cloneEnumeratedFields(rows)
 	named := make([]string, len(entry.fixture.EnumeratedRows))
@@ -477,6 +485,17 @@ func withEnumeratedRows(entry numberedFixture, rows []EnumeratedField, refused f
 		row := EnumeratedField{Answer: added.Answer, KeyPath: added.KeyPath}
 		if at >= 0 {
 			row = after[at]
+		}
+		if added.Open {
+			if at < 0 {
+				return nil, refused("opens `%s` of the %s answer in enumerated-fields.json, "+
+					"and the rows before it hold no such row", added.KeyPath, added.Answer)
+			}
+			if row.OpenFrom != 0 {
+				return nil, refused("opens `%s` of the %s answer in enumerated-fields.json, "+
+					"and that row is open from %d already", added.KeyPath, added.Answer, row.OpenFrom)
+			}
+			row.OpenFrom = entry.number
 		}
 		for _, value := range added.Values {
 			if slices.ContainsFunc(row.Values, func(held EnumeratedValue) bool { return held.Value == value }) {
@@ -678,7 +697,9 @@ func answerRowsOf(before, at []Answer, number int) ([]entryAnswerRow, error) {
 }
 
 // enumeratedRowsOf is the rows of enumerated-fields.json an entry at number adds to before, as at
-// holds them (entryFixtureOf).
+// holds them (entryFixtureOf): the values each row gains at number, and each row at opens at
+// number. A row whose opening moves otherwise is refused: one that at opens at another number, or
+// that before holds open and at does not, or open from another number.
 func enumeratedRowsOf(before, at []EnumeratedField, number int) ([]entryEnumeratedRow, error) {
 	rows := []entryEnumeratedRow{}
 	for _, was := range before {
@@ -706,7 +727,17 @@ func enumeratedRowsOf(before, at []EnumeratedField, number int) ([]entryEnumerat
 			}
 			row.Values = append(row.Values, value.Value)
 		}
-		if len(row.Values) > 0 {
+		switch {
+		case is.OpenFrom == was.OpenFrom:
+		case was.OpenFrom == 0 && is.OpenFrom == number && was.KeyPath != "":
+			row.Open = true
+		default:
+			return nil, fmt.Errorf("`%s` of the %s answer is open from %d before the entry at %d "+
+				"and from %d at it, which an entry fixture cannot write: an entry opens a row a row "+
+				"before it declares, at its own number", is.KeyPath, is.Answer, was.OpenFrom, number,
+				is.OpenFrom)
+		}
+		if len(row.Values) > 0 || row.Open {
 			rows = append(rows, row)
 		}
 	}
