@@ -68,7 +68,7 @@ func (s slowAccess) States(ctx context.Context, projects []string) (map[string]p
 // deadline. The control is a Dispatch that answers at once: the approval is granted, writing its
 // own row, and the second row is the one written after it.
 func TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds the judge's row to JudgeRowReserve, the one second of a run no read of Dispatch may spend, a product latency the load of the package's parallel tests could push past (LogJudged on the run's context at judge_bound_test.go:109); the scan cannot see it, since the bound is a context's deadline, not a measured time.
 	for _, c := range []struct {
 		name    string
 		takes   time.Duration
