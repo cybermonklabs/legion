@@ -806,7 +806,7 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	var asked []appauth.AppRole
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
-			asked = append(asked, appauth.AppRoleFor(role))
+			asked = append(asked, appOf(role))
 			return bot, nil
 		}}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
