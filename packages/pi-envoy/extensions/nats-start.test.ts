@@ -1,10 +1,10 @@
 // The rows on a session's NATS connection at its start and after it: the first dial and its
 // retries, the relay subject and the live view's control subject the session opens on it, and the
-// registration that names why a relay is missing. They have a file of their own so that
-// `envoy.test.ts` stays below the size Biome reads a file up to (1 MiB by default). Their
-// `describe` is "envoy OMP extension", the one `envoy.test.ts` uses, so a row's full name is the
-// same in every file. The rows on the broker trade a dial presents are in
-// `nats-broker-trade.test.ts`. All three files share one harness (`../test/extension-harness`).
+// registration that names why a relay is missing. They have a file of their own, which holds the
+// rows of this subject and stays under 1,000 lines. Their `describe` is "envoy OMP extension",
+// the one `envoy.test.ts` uses, so a row's full name is the same in every file. The rows on the
+// broker trade a dial presents are in `nats-broker-trade.test.ts`. All three files share one
+// harness (`../test/extension-harness`).
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,9 +26,6 @@ import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
   forwardedRoleEnvelope,
-  natsStandInConnect,
-  natsState,
-  responseWithRegistration,
   sessionContext,
   setNatsConnectForTests,
   settle,
@@ -37,6 +34,7 @@ import {
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
+import { natsStandInConnect, natsState, responseWithRegistration } from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 useExtensionHarness();

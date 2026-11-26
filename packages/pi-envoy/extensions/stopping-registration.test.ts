@@ -5,14 +5,13 @@ import { onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
-  response,
-  responseWithRegistration,
   sessionContext,
   settle,
   until,
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
+import { claimGranted, response, responseWithRegistration } from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 // A stopping session registers nothing and is told nothing (R24 of dispatch://INFRA-3589), also
@@ -20,25 +19,14 @@ import type { SessionContext } from "../test/stand-in-host";
 // (`registerWithRelay`'s `stopping`), and it makes no role move once its stop began: a move that
 // runs or waits its turn when the stop begins claims nothing after that and tells nothing, and
 // `envoy_role_set` is refused. The rows drive the extension through the harness that
-// `envoy.test.ts` uses. They live in a file of their own, since `envoy.test.ts` is close to the
-// file size above which Biome checks nothing in it. Each row of a path the stop overtakes has a
-// control row after it: the same stand-in with no stop begun, which shows what the row finds
-// absent.
+// `envoy.test.ts` uses. They live in a file of their own, which holds the rows of this subject
+// and stays under 1,000 lines. Each row of a path the stop overtakes has a control row after it:
+// the same stand-in with no stop begun, which shows what the row finds absent.
 
 useExtensionHarness();
 
 /** The role the rows below hold. */
 const ROLE = "legion-controller";
-
-/** The listener's grant of a claim of `ROLE` to `session`. */
-function claimGranted(session: string): Response {
-  return response({
-    session_id: session,
-    machine_id: "test",
-    dir: "/tmp/envoy-omp-test",
-    topics: [`notifications.role.${ROLE}`],
-  });
-}
 
 /** The listener's answer to a read of `ROLE` that finds no live holder. */
 function noHolder(): Response {
@@ -241,7 +229,7 @@ async function roleSession(query: string, session: string) {
       }
       return failing
         ? Response.json({ error: "the listener failed" }, { status: 500 })
-        : claimGranted(session);
+        : claimGranted(session, ROLE);
     }
     if (handsBackRole(path, init)) {
       holds = false;
@@ -704,7 +692,7 @@ test("envoy_role_set called once the stop has begun is refused naming the stop a
   globalThis.fetch = async (input, init) => {
     const path = new URL(input.toString()).pathname;
     if (stopBegan && path.startsWith("/v1/roles/")) roleCallsAfterStop.push(path);
-    if (path === "/v1/roles/set") return claimGranted(session);
+    if (path === "/v1/roles/set") return claimGranted(session, ROLE);
     // The stop's last call, held so that the stop still runs when the tool is called.
     if (deregisters(session, path, init)) await heldOn(heldDeletes);
     return responseWithRegistration(input, init, {});

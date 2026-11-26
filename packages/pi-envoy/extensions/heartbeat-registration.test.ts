@@ -1,9 +1,9 @@
 // The rows on the registration a session's heartbeat sends: the refresh that goes on while a
 // regain hook, a pass, a role move or a whole stall does not settle, and the tmux place each
-// registration carries. They have a file of their own so that `envoy.test.ts` stays below the
-// size Biome reads a file up to (1 MiB by default). Their `describe` is "envoy OMP extension", the
-// one `envoy.test.ts` uses, so a row's full name is the same in every file. Both files share one
-// harness (`../test/extension-harness`).
+// registration carries. They have a file of their own, which holds the rows of this subject and
+// stays under 1,000 lines. Their `describe` is "envoy OMP extension", the one `envoy.test.ts`
+// uses, so a row's full name is the same in every file. Both files share one harness
+// (`../test/extension-harness`).
 import { describe, expect, setSystemTime, test } from "bun:test";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
@@ -13,14 +13,13 @@ import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
   realReadTmuxPlace,
-  response,
-  responseWithRegistration,
   sessionContext,
   settle,
   tmuxPlaceState,
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
+import { response, responseWithRegistration } from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 useExtensionHarness();

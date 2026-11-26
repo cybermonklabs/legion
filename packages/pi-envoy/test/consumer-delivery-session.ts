@@ -12,15 +12,8 @@ import type { SessionContext as HostSessionContext, PiApi } from "@legion/pi-sha
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { REPLAY_NOTICE_ENTRY } from "../src/missed-messages";
 import type { EnvoyModule } from "./envoy-module";
-import {
-  createPi,
-  natsState,
-  pushNatsStatus,
-  response,
-  sessionContext,
-  settle,
-  until,
-} from "./extension-harness";
+import { createPi, sessionContext, settle, until } from "./extension-harness";
+import { natsState, pushNatsStatus, response } from "./listener-stand-in";
 import type { SessionContext } from "./stand-in-host";
 
 /** The host's own context, for the two members the stand-in host's type does not name. */

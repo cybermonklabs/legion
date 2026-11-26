@@ -16,10 +16,6 @@ import type { EnvoyModule } from "../test/envoy-module";
 import {
   configDirectory,
   createPi,
-  natsStandInConnect,
-  natsState,
-  responseWithRegistration,
-  rowFetch,
   sessionContext,
   setNatsConnectForTests,
   topLevelSession,
@@ -27,6 +23,12 @@ import {
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
+import {
+  natsStandInConnect,
+  natsState,
+  responseWithRegistration,
+  rowFetch,
+} from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 useExtensionHarness();

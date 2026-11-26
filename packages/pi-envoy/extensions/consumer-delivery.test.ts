@@ -4,8 +4,8 @@
 // new epoch, a gap, and a relayed subscription removal. The rows on the outage report are in
 // `consumer-delivery-outage.test.ts`, and the rows on the card a frame becomes are in
 // `consumer-delivery-cards.test.ts`. Each of the three files has the `describe` "consumer
-// delivery". They are apart from `envoy.test.ts` so that it stays below the size Biome reads a
-// file up to (1 MiB by default), and apart from each other so that each stays under 1,000 lines.
+// delivery". They are apart from `envoy.test.ts` and from each other so that each file holds the
+// rows of one subject and stays under 1,000 lines.
 // They boot one session (`../test/consumer-delivery-session`) on one harness
 // (`../test/extension-harness`).
 import { describe, expect, test } from "bun:test";
@@ -23,17 +23,19 @@ import {
 } from "../test/consumer-delivery-session";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
-  busOutageAnswer,
   createPi,
-  natsState,
-  response,
-  responseWithRegistration,
-  type SubscriptionControls,
   sessionContext,
   settle,
   until,
   useExtensionHarness,
 } from "../test/extension-harness";
+import {
+  busOutageAnswer,
+  natsState,
+  response,
+  responseWithRegistration,
+  type SubscriptionControls,
+} from "../test/listener-stand-in";
 
 useExtensionHarness();
 

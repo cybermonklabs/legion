@@ -11,21 +11,20 @@ import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
-  response,
-  responseWithRegistration,
   sessionContext,
   settle,
   until,
   useExtensionHarness,
 } from "../test/extension-harness";
+import { claimGranted, response, responseWithRegistration } from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 // A session whose stop has begun registers, unsubscribes and claims nothing, writes no ledger
 // entry and tells its pane nothing (R24 of dispatch://INFRA-3589), whichever path is still
 // running when the stop begins: the stop gates of `../src/stop-gates` and the client's, and the
 // guards of the paths no gate covers. The rows drive the extension through the harness that
-// `envoy.test.ts` uses, in a file of their own, since `envoy.test.ts` is close to the file size
-// above which Biome checks nothing in it.
+// `envoy.test.ts` uses, in a file of their own, which holds the rows of this subject and stays
+// under 1,000 lines.
 
 useExtensionHarness();
 
@@ -462,27 +461,22 @@ const CONTROLLER_ROLE = "legion-acme-controller";
 const CONTROLLER_NOTICE = "notifications.legion.ACME.controller";
 
 /**
- * A session of a fresh instance of the entry (the `query` tag) that holds `CONTROLLER_ROLE`. Its
- * fetch records each request on `fetched`, method first, and holds the stop's DELETE on the wire
- * (`heldDeletes`), so that the stop still runs when the subscription is asked for.
+ * A session of a fresh instance of the entry (the `query` tag) that holds `role`. Its fetch hands
+ * each request's path and init to `onRequest` first, and answers with what that returns. Where
+ * that returns nothing, the listener grants the role's claim (`claimGranted`) and answers every
+ * other request as it answers a registration.
  */
-async function controllerSession(query: string, session: string) {
-  const heldDeletes: (() => void)[] = [];
-  const fetched: string[] = [];
+async function sessionHoldingRole(
+  query: string,
+  session: string,
+  role: string,
+  onRequest: (path: string, init: RequestInit | undefined) => Promise<Response | undefined>
+) {
   globalThis.fetch = async (input, init) => {
     const path = new URL(input.toString()).pathname;
-    fetched.push(`${init?.method ?? "GET"} ${path}`);
-    if (path === "/v1/roles/set") {
-      return response({
-        session_id: session,
-        machine_id: "test",
-        dir: "/tmp/envoy-omp-test",
-        topics: [`notifications.role.${CONTROLLER_ROLE}`],
-      });
-    }
-    if (init?.method === "DELETE" && path === `/v1/sessions/${session}`) {
-      await heldOn(heldDeletes);
-    }
+    const answer = await onRequest(path, init);
+    if (answer !== undefined) return answer;
+    if (path === "/v1/roles/set") return claimGranted(session, role);
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
@@ -491,7 +485,30 @@ async function controllerSession(query: string, session: string) {
   const context = host(session, [], [], []);
   await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
-  await claimEnvoyRole(session, CONTROLLER_ROLE, context);
+  await claimEnvoyRole(session, role, context);
+  return { fixture, context };
+}
+
+/**
+ * A session that holds `CONTROLLER_ROLE` (`sessionHoldingRole`). Its fetch records each request on
+ * `fetched`, method first, and holds the stop's DELETE on the wire (`heldDeletes`), so that the
+ * stop still runs when the subscription is asked for.
+ */
+async function controllerSession(query: string, session: string) {
+  const heldDeletes: (() => void)[] = [];
+  const fetched: string[] = [];
+  const { fixture, context } = await sessionHoldingRole(
+    query,
+    session,
+    CONTROLLER_ROLE,
+    async (path, init) => {
+      fetched.push(`${init?.method ?? "GET"} ${path}`);
+      if (init?.method === "DELETE" && path === `/v1/sessions/${session}`) {
+        await heldOn(heldDeletes);
+      }
+      return undefined;
+    }
+  );
   return {
     fixture,
     context,
@@ -608,38 +625,6 @@ function logLines(logging: () => boolean): { readonly lines: string[]; readonly 
   return { lines, stop };
 }
 
-/** A session that holds `role`, whose fetch answers the stop's hand-back of it with `handBack`
- *  once `stopBegan` reads true. */
-async function sessionHoldingRole(
-  query: string,
-  session: string,
-  role: string,
-  stopBegan: () => boolean,
-  handBack: () => Promise<Response>
-) {
-  globalThis.fetch = async (input, init) => {
-    const path = new URL(input.toString()).pathname;
-    if (path === "/v1/roles/set") {
-      return response({
-        session_id: session,
-        machine_id: "test",
-        dir: "/tmp/envoy-omp-test",
-        topics: [`notifications.role.${role}`],
-      });
-    }
-    if (stopBegan() && path === "/v1/interests/unsubscribe") return handBack();
-    return responseWithRegistration(input, init, {});
-  };
-  // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
-  const fixture = createPi();
-  const context = host(session, [], [], []);
-  await envoyExtension(fixture.pi);
-  await fixture.handlers.get("session_start")?.({}, context);
-  await claimEnvoyRole(session, role, context);
-  return { fixture, context };
-}
-
 // The stop's own lines are written while the stop runs (R24 of dispatch://INFRA-3589): the stop
 // writes them to the host's logger, which no tell gate holds (`releaseRoleClaims`,
 // `HandBackLedger.handBackAll`), and every line of the extension's own goes through the gate,
@@ -651,8 +636,10 @@ test("a stop whose hand-back the listener refuses logs the stop's own line, and 
     "stop-hand-back-refused",
     "ses_stop_hand_back_refused",
     "reviewer",
-    () => stopBegan,
-    async () => Response.json({ error: "the listener refused the release" }, { status: 400 })
+    async (path) =>
+      stopBegan && path === "/v1/interests/unsubscribe"
+        ? Response.json({ error: "the listener refused the release" }, { status: 400 })
+        : undefined
   );
   try {
     stopBegan = true;
@@ -674,8 +661,8 @@ test("a stop whose release does not answer in its share of the stop logs the sto
     "stop-release-unanswered",
     "ses_stop_release_unanswered",
     "reviewer",
-    () => stopBegan,
-    async () => {
+    async (path) => {
+      if (!stopBegan || path !== "/v1/interests/unsubscribe") return undefined;
       await heldOn(heldReleases);
       return response({});
     }

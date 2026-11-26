@@ -552,8 +552,8 @@ func TestNamesSystemSubject(t *testing.T) {
 
 // grantTable is every grant this package builds, keyed by the call that builds it: the function's
 // name, with its argument in parentheses where it takes one. TestTheGrantTableNamesEveryGrant holds
-// it to natsgrant.go's declarations, so a new grant function fails that test until it is listed
-// here, and every test that walks the table walks the new grant too.
+// it to the declarations of the package's non-test files, so a new grant function fails that test
+// until it is listed here, and every test that walks the table walks the new grant too.
 func grantTable(t *testing.T) map[string]natsgrant.Permissions {
 	t.Helper()
 	session, err := natsgrant.Session("ses_a")
@@ -580,31 +580,41 @@ func grantTable(t *testing.T) map[string]natsgrant.Permissions {
 	return grants
 }
 
-// Every exported function natsgrant.go declares that returns Permissions, read from the source by
-// go/ast, has a row in grantTable, and every row names one of them: a grant added to the package
-// is walked by every test that reads the table, or this test names it.
+// Every exported function a non-test .go file of the package declares that returns Permissions,
+// read from the source by go/ast, has a row in grantTable, and every row names one of them: a grant
+// added to the package, in natsgrant.go or in a file beside it such as lanes.go, is walked by every
+// test that reads the table, or this test names it.
 func TestTheGrantTableNamesEveryGrant(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "natsgrant.go", nil, 0)
+	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
-	declared := map[string]bool{}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil {
+	files := token.NewFileSet()
+	declared := map[string]string{}
+	for _, entry := range entries {
+		path := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		if result, ok := fn.Type.Results.List[0].Type.(*ast.Ident); ok && result.Name == "Permissions" {
-			declared[fn.Name.Name] = true
+		file, err := parser.ParseFile(files, path, nil, 0)
+		require.NoError(t, err)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil {
+				continue
+			}
+			if result, ok := fn.Type.Results.List[0].Type.(*ast.Ident); ok && result.Name == "Permissions" {
+				declared[fn.Name.Name] = path
+			}
 		}
 	}
-	require.NotEmpty(t, declared, "natsgrant.go declares no grant function: the reading enumerated nothing")
+	require.NotEmpty(t, declared, "the package's files declare no grant function: the reading enumerated nothing")
 	listed := map[string]bool{}
 	for call := range grantTable(t) {
 		name, _, _ := strings.Cut(call, "(")
-		require.True(t, declared[name], "grantTable lists %s, which natsgrant.go does not declare as a grant", call)
+		require.NotEmpty(t, declared[name], "grantTable lists %s, which no file of the package declares as a grant", call)
 		listed[name] = true
 	}
-	for name := range declared {
-		require.True(t, listed[name], "natsgrant.go declares the grant %s, which grantTable does not list", name)
+	for name, path := range declared {
+		require.True(t, listed[name], "%s declares the grant %s, which grantTable does not list", path, name)
 	}
 }
 

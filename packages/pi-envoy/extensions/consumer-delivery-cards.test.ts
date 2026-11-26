@@ -11,13 +11,13 @@ import { REPLAY_DELIVERED_ENTRY } from "../src/missed-messages";
 import { AGENT, bootConsumer, peer, SESSION } from "../test/consumer-delivery-session";
 import {
   ledgerSeam,
-  response,
   sessionContext,
   settle,
   targetedDispatchEnvelope,
   until,
   useExtensionHarness,
 } from "../test/extension-harness";
+import { response } from "../test/listener-stand-in";
 
 useExtensionHarness();
 

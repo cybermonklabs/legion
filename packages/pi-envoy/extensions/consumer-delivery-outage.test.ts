@@ -15,7 +15,8 @@ import {
   type Registration,
   SESSION,
 } from "../test/consumer-delivery-session";
-import { natsState, settle, until, useExtensionHarness } from "../test/extension-harness";
+import { settle, until, useExtensionHarness } from "../test/extension-harness";
+import { natsState } from "../test/listener-stand-in";
 
 useExtensionHarness();
 

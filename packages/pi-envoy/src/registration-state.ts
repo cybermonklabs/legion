@@ -371,61 +371,17 @@ export interface RegistrationState {
   readonly roleSettledSession: () => string;
 }
 
-/**
- * The registration state, which `createRegistrationState` owns and hands nothing else: the one
- * role hold, the refusals and notice subjects of the role, and the sessions a pass converged. The
- * named operations and a queued task's handle write it.
- */
-interface RegistrationRecord {
-  // The one role this process holds at the listener, and the session id the listener names for
-  // it, which a pass that keeps the role for another session supersedes by naming it.
-  claimedRoleTopic: string | undefined;
-  claimedRoleSessionID: string | undefined;
-  // Whether that hold came back from a hand-back a session event left rather than from a claim the
-  // listener granted: nothing has checked it at the listener since, so a pass claims it softly,
-  // naming it, before trusting it.
-  holdUnconfirmed: boolean;
-  // Per session, a role the listener refused to that session's automatic claim because another
-  // live session holds it: that holder is the newer one, so no pass claims the role for that
-  // session again until a session event lands on it or the process restarts. A refusal naming
-  // this session's own id is never one of them: that is another process's standing claim under
-  // this id, which the listener grants the moment it stops renewing it, so neither `claimRole`
-  // nor `reassertRole` records it and the next pass asks again.
-  readonly refusedRoles: Map<string, string>;
-  // The role a plugin last opened role-bound notices for: a pass that claims that role back after
-  // a role end closed them says they stay closed until that plugin claims it again.
-  roleNoticesFor: string | undefined;
-  // Notice subjects this session takes only while it holds `claimedRoleTopic`. They are never
-  // registered with the listener, so a resumed process cannot recover them: the role's claim is
-  // their only source, and a role end closes them.
-  readonly roleNoticeSubjects: Set<string>;
-  // The session whose agent subject, registration and Dispatch binding the last pass converged to.
-  establishedSession: string;
-  // The session whose role the last pass decided.
-  roleSettledFor: string;
-  // The sessions whose agent subject this process may have open.
-  readonly agentSessions: Set<string>;
-  // The session whose agent subject, stream watch and registered interests a pass opened in full.
-  inboundOpenFor: string;
-}
-
 export function createRegistrationState(deps: RegistrationStateDeps): RegistrationState {
   const clientInstanceID = newClientInstanceID();
 
-  // The role hold, the refusals and notice subjects of the role, and the sessions a pass
-  // converged, which a queued task's handle writes too (`RegistrationRecord`).
-  const state: RegistrationRecord = {
-    claimedRoleTopic: undefined,
-    claimedRoleSessionID: undefined,
-    holdUnconfirmed: false,
-    refusedRoles: new Map<string, string>(),
-    roleNoticesFor: undefined,
-    roleNoticeSubjects: new Set<string>(),
-    establishedSession: "",
-    roleSettledFor: "",
-    agentSessions: new Set<string>(),
-    inboundOpenFor: "",
-  };
+  // The one role this process holds at the listener, and the session id the listener names for
+  // it, which a pass that keeps the role for another session supersedes by naming it.
+  let claimedRoleTopic: string | undefined;
+  let claimedRoleSessionID: string | undefined;
+  // Whether that hold came back from a hand-back a session event left rather than from a claim the
+  // listener granted: nothing has checked it at the listener since, so a pass claims it softly,
+  // naming it, before trusting it.
+  let holdUnconfirmed = false;
   // The holds this process gave up and still owes the listener: both books, their keys, the
   // release itself and the reading of a refused claim against an abandoned hold.
   const holds = createHandBackLedger({
@@ -433,6 +389,20 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     clientInstanceID,
     warn: (message, context) => deps.log.warn(message, context),
   });
+  // Per session, a role the listener refused to that session's automatic claim because another
+  // live session holds it: that holder is the newer one, so no pass claims the role for that
+  // session again until a session event lands on it or the process restarts. A refusal naming
+  // this session's own id is never one of them: that is another process's standing claim under
+  // this id, which the listener grants the moment it stops renewing it, so neither `claimRole`
+  // nor `reassertRole` records it and the next pass asks again.
+  const refusedRoles = new Map<string, string>();
+  // The role a plugin last opened role-bound notices for: a pass that claims that role back after
+  // a role end closed them says they stay closed until that plugin claims it again.
+  let roleNoticesFor: string | undefined;
+  // Notice subjects this session takes only while it holds `claimedRoleTopic`. They are never
+  // registered with the listener, so a resumed process cannot recover them: the role's claim is
+  // their only source, and a role end closes them.
+  const roleNoticeSubjects = new Set<string>();
   // Counts role ends, so a role-bound subscription still opening when its role ended can tell.
   let roleEnds = 0;
   // When the listener last accepted a registration, and the session it was accepted for. A
@@ -440,21 +410,28 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   // reads as no registration at all; a session that never had one reads as older than any age.
   let registeredFor = "";
   let registeredAt = -Infinity;
+  // The session whose agent subject, registration and Dispatch binding the last pass converged to.
+  let establishedSession = "";
+  // The session whose role the last pass decided.
+  let roleSettledFor = "";
+  // The sessions whose agent subject this process may have open.
+  const agentSessions = new Set<string>();
+  // The session whose agent subject, stream watch and registered interests a pass opened in full.
+  let inboundOpenFor = "";
 
-  const heldRole = (): string | undefined =>
-    state.claimedRoleTopic?.slice(ROLE_TOPIC_PREFIX.length);
-  const isRoleBound = (subject: string): boolean => state.roleNoticeSubjects.has(subject);
+  const heldRole = (): string | undefined => claimedRoleTopic?.slice(ROLE_TOPIC_PREFIX.length);
+  const isRoleBound = (subject: string): boolean => roleNoticeSubjects.has(subject);
 
   // The session stops holding its role: close the notice subjects it took for it, so a holder
   // another session replaced stops taking the role's wakes, and take them out of the listener's
   // registry with them.
   const endRole = (): void => {
-    const held = state.claimedRoleSessionID ?? "";
-    const closed = [...state.roleNoticeSubjects];
-    state.claimedRoleTopic = undefined;
-    state.claimedRoleSessionID = undefined;
+    const held = claimedRoleSessionID ?? "";
+    const closed = [...roleNoticeSubjects];
+    claimedRoleTopic = undefined;
+    claimedRoleSessionID = undefined;
     roleEnds += 1;
-    state.roleNoticeSubjects.clear();
+    roleNoticeSubjects.clear();
     if (closed.length > 0) deps.closeSubjects(held, closed);
   };
 
@@ -491,8 +468,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   ): Promise<void> => {
     const movedOff = previousTopic === topic ? undefined : previousTopic;
     if (movedOff !== undefined) endRole();
-    state.claimedRoleTopic = topic;
-    state.claimedRoleSessionID = sessionID;
+    claimedRoleTopic = topic;
+    claimedRoleSessionID = sessionID;
     recordClaim?.();
     if (movedOff !== undefined && previousHoldID) {
       await holds.handBackOrAbandon(movedOff, previousHoldID, {
@@ -559,10 +536,10 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     const handBackHeldRole = async (tellUser: boolean): Promise<RoleEnded | undefined> => {
       guard();
       const role = heldRole();
-      const holdID = state.claimedRoleSessionID;
-      const topic = state.claimedRoleTopic;
+      const holdID = claimedRoleSessionID;
+      const topic = claimedRoleTopic;
       if (role === undefined || topic === undefined) return undefined;
-      const pluginHeld = state.roleNoticeSubjects.size > 0;
+      const pluginHeld = roleNoticeSubjects.size > 0;
       endRole();
       if (holdID !== undefined && holdID !== "") {
         await holds.handBackOrAbandon(topic, holdID, { role, sessionID: holdID });
@@ -599,9 +576,9 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         ) {
           return false;
         }
-        state.claimedRoleTopic = hold.topic;
-        state.claimedRoleSessionID = hold.id;
-        state.holdUnconfirmed = true;
+        claimedRoleTopic = hold.topic;
+        claimedRoleSessionID = hold.id;
+        holdUnconfirmed = true;
         return true;
       });
       // Refused during the last hand-back, or at the break inside it: the restore this task made
@@ -617,8 +594,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       const id = actingFor();
       guard();
       const topic = ROLE_TOPIC_PREFIX + role;
-      const previousTopic = state.claimedRoleTopic;
-      const previousHoldID = state.claimedRoleSessionID;
+      const previousTopic = claimedRoleTopic;
+      const previousHoldID = claimedRoleSessionID;
       const result = await deps.client().setRole({
         sessionID: id,
         role,
@@ -646,8 +623,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         );
       }
       if (result.claimed) {
-        state.refusedRoles.delete(id);
-        state.holdUnconfirmed = false;
+        refusedRoles.delete(id);
+        holdUnconfirmed = false;
         // The listener names this claim's session for the role now, so no hold of it this process
         // gave up is left to hand back or wait on (one under this same id would end the new hold).
         holds.forgetHoldsOf(topic);
@@ -688,7 +665,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           : deps.sessionOpen(id)
             ? undefined
             : "the session moved on before the refusal was recorded";
-        if (notRecorded === undefined && !waitingOnReap) state.refusedRoles.set(id, role);
+        if (notRecorded === undefined && !waitingOnReap) refusedRoles.set(id, role);
         deps.log.warn(
           notRecorded !== undefined
             ? `envoy: role held by another live session; ${notRecorded}`
@@ -722,7 +699,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       // Whether this process still holds the role the re-assertion was decided for: a session
       // event can end it while the listener is read or claimed, and the task that ends it owns
       // the role from there.
-      const stillHolds = (): boolean => state.claimedRoleTopic === topic;
+      const stillHolds = (): boolean => claimedRoleTopic === topic;
       const holding = await client.getRole(role).then(
         (info) => info,
         (error: unknown) => {
@@ -756,7 +733,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           return { decided: true };
         }
         endRole();
-        state.refusedRoles.set(id, role);
+        refusedRoles.set(id, role);
         deps.log.warn("envoy: role re-assertion refused; held by another live session", {
           role,
           sessionID: id,
@@ -829,30 +806,30 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       },
       markEstablished: (id) => {
         guard();
-        state.establishedSession = id;
+        establishedSession = id;
       },
       forgetOtherAgentSessions: (host) => {
         guard();
         const closed: string[] = [];
-        for (const other of state.agentSessions) {
+        for (const other of agentSessions) {
           if (other === host) continue;
           closed.push(other);
-          state.agentSessions.delete(other);
-          if (state.inboundOpenFor === other) state.inboundOpenFor = "";
+          agentSessions.delete(other);
+          if (inboundOpenFor === other) inboundOpenFor = "";
         }
         return closed;
       },
       markAgentSessionOpen: (id) => {
         guard();
-        state.agentSessions.add(id);
+        agentSessions.add(id);
       },
       markInboundOpen: (id) => {
         guard();
-        state.inboundOpenFor = id;
+        inboundOpenFor = id;
       },
       markRoleSettled: (id) => {
         guard();
-        state.roleSettledFor = id;
+        roleSettledFor = id;
       },
       handBackHeldRole,
       settleEndedHolds,
@@ -860,8 +837,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       reassertRole,
       noteNoticesClosed: (role) => {
         guard();
-        if (state.roleNoticesFor !== role || state.roleNoticeSubjects.size > 0) return;
-        state.roleNoticesFor = undefined;
+        if (roleNoticesFor !== role || roleNoticeSubjects.size > 0) return;
+        roleNoticesFor = undefined;
         deps.notify(
           `envoy: role ${role} is held again, but the notices a plugin opened for it stay closed until that plugin claims it again on its next session switch or restart`,
           "warning"
@@ -934,18 +911,18 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     },
     handBackAllHolds: (log) =>
       holds.handBackAll(
-        state.claimedRoleTopic === undefined || !state.claimedRoleSessionID
+        claimedRoleTopic === undefined || !claimedRoleSessionID
           ? undefined
-          : { topic: state.claimedRoleTopic, id: state.claimedRoleSessionID },
+          : { topic: claimedRoleTopic, id: claimedRoleSessionID },
         (message, context) => log.warn(message, context)
       ),
     clearRefusal: (sessionID) => {
-      state.refusedRoles.delete(sessionID);
+      refusedRoles.delete(sessionID);
     },
     endUnwantedRole: (host, recordedRole, lineage) => {
       const held = heldRole();
-      const topic = state.claimedRoleTopic;
-      const holdID = state.claimedRoleSessionID;
+      const topic = claimedRoleTopic;
+      const holdID = claimedRoleSessionID;
       if (held === undefined || topic === undefined || holdID === undefined) return;
       const carried = holdID === host || lineage.includes(holdID);
       const wanted = recordedRole === undefined ? carried : recordedRole === held;
@@ -956,33 +933,33 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     markRoleBoundSubjects: (subjects, role) => {
       const marked: string[] = [];
       for (const subject of subjects) {
-        if (state.roleNoticeSubjects.has(subject)) continue;
-        state.roleNoticeSubjects.add(subject);
+        if (roleNoticeSubjects.has(subject)) continue;
+        roleNoticeSubjects.add(subject);
         marked.push(subject);
       }
-      state.roleNoticesFor = role;
+      roleNoticesFor = role;
       return marked;
     },
     unmarkRoleBoundSubjects: (subjects) => {
-      for (const subject of subjects) state.roleNoticeSubjects.delete(subject);
+      for (const subject of subjects) roleNoticeSubjects.delete(subject);
     },
     recordClaimAfterDeadline: holds.recordEndedHold,
     adoptClaimAfterSessionMoved: moveHold,
 
     heldRole,
-    holdsRoleTopic: (topic) => state.claimedRoleTopic === topic,
-    holdSessionID: () => state.claimedRoleSessionID,
+    holdsRoleTopic: (topic) => claimedRoleTopic === topic,
+    holdSessionID: () => claimedRoleSessionID,
     isRoleBound,
-    roleBoundSubjects: () => [...state.roleNoticeSubjects],
+    roleBoundSubjects: () => [...roleNoticeSubjects],
     roleSnapshot: (topic) => ({
       roleBound: expandSubscriptionTopics([topic]).some(isRoleBound),
       endsBefore: roleEnds,
     }),
-    refusalFor: (sessionID) => state.refusedRoles.get(sessionID),
+    refusalFor: (sessionID) => refusedRoles.get(sessionID),
     roleEndCount: () => roleEnds,
-    holdIsUnconfirmed: () => state.holdUnconfirmed,
-    establishedFor: () => state.establishedSession,
-    inboundOpenSession: () => state.inboundOpenFor,
-    roleSettledSession: () => state.roleSettledFor,
+    holdIsUnconfirmed: () => holdUnconfirmed,
+    establishedFor: () => establishedSession,
+    inboundOpenSession: () => inboundOpenFor,
+    roleSettledSession: () => roleSettledFor,
   };
 }
