@@ -2066,6 +2066,9 @@ async function keepAnOlderBuildsComment(page: Page, issue: string, body: string)
   );
   const posts = watchWrites(page, "POST", path, isCommentBody);
   await page.goto(`/issues/${issue}/conversation`);
+  // On a cold page the press waits behind the download of the kinds of write, and the poll after
+  // it has only the default time, so that download is in before the press.
+  await fetchedChunk(page, WRITE_KINDS_CHUNK);
   await sendComment(page, body);
   await expect.poll(() => posts.length, "the comment never went out").toBeGreaterThan(0);
   await keptAsAnOlderBuild(page);
