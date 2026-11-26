@@ -58,17 +58,17 @@ func socketDeadline(t *testing.T) time.Time {
 const socketDeadlineMargin = 30 * time.Second
 
 // documentDialer is the dialer a test opens a document socket with: gorilla's DefaultDialer, but
-// with its handshake bounded by what the test binary's own deadline leaves after dialMargin
-// (testwait.Left), and not by DefaultDialer's fixed 45 s. The server's whole admission of the
-// socket runs inside that handshake - the issue read, the document's admission, the room's load
-// and the browser's registration (Service.authorize) all come before its 101 - and takes as long as
-// the store and the machine take, so a dial that is merely slow on a loaded machine is not read as
-// one that failed. It is safe on a goroutine other than the test's: a deadline already used up is
-// reported with t.Error, and the dial then fails at once.
+// with its handshake bounded by what the test binary's own deadline leaves after
+// socketDeadlineMargin (testwait.Left), and not by DefaultDialer's fixed 45 s. The server's whole
+// admission of the socket runs inside that handshake - the issue read, the document's admission,
+// the room's load and the browser's registration (Service.authorize) all come before its 101 - and
+// takes as long as the store and the machine take, so a dial that is merely slow on a loaded
+// machine is not read as one that failed. It is safe on a goroutine other than the test's: a
+// deadline already used up is reported with t.Error, and the dial then fails at once.
 func documentDialer(t *testing.T) *gws.Dialer {
 	t.Helper()
 	dialer := *gws.DefaultDialer
-	left, err := testwait.Left(t, dialMargin)
+	left, err := testwait.Left(t, socketDeadlineMargin)
 	if err != nil {
 		t.Error(err.Error())
 		// Zero would mean no bound at all; the smallest one fails the dial at once.
@@ -77,10 +77,6 @@ func documentDialer(t *testing.T) *gws.Dialer {
 	dialer.HandshakeTimeout = left
 	return &dialer
 }
-
-// dialMargin is what documentDialer leaves of the test binary's deadline for a failed dial's test
-// to report in and run its cleanups, the margin testwait's own waits leave.
-const dialMargin = 30 * time.Second
 
 // awaitServerClose reads connection, discarding every frame, until the server ends the socket,
 // and fails the test, naming what, when the read ended on socketDeadline instead. The two ends
