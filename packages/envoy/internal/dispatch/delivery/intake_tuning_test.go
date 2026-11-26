@@ -43,7 +43,7 @@ func TestProductionsIntakeTuningIsTheShippedTimersAndNoHook(t *testing.T) {
 	if reflect.ValueOf(tuning.createDurable).Pointer() != reflect.ValueOf(addDurable).Pointer() {
 		t.Error("production's createDurable is not addDurable, the create that sends the durable to the stream")
 	}
-	if tuning.stopArmed.Load() != nil || tuning.beforeRelease.Load() != nil {
+	if tuning.stopArmed.Load() != nil || tuning.beforeRelease.Load() != nil || tuning.attempted.Load() != nil {
 		t.Error("production's tuning carries a test's hook")
 	}
 	if tuning.log != slog.Default() {
