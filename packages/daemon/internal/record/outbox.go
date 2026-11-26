@@ -76,8 +76,8 @@ const (
 	// versions approved now, and queues the starts that tell them. Its issue column is the tree's
 	// root.
 	OutboxKindDesignChanges OutboxKind = "design_changes"
-	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
-	// row (RoleHoldersPublish).
+	// OutboxKindRoleHoldersPublish publishes the role sessions of one issue whose claims hold their
+	// roles onto its Dispatch row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 	// OutboxKindMergeHoldsChanged tells the merger of an issue in merging that the project's merge
 	// holds document changed (MergeHoldsChanged).
@@ -1763,11 +1763,12 @@ type DesignNewsReconcile struct{}
 
 func (DesignNewsReconcile) OutboxKind() OutboxKind { return OutboxKindDesignChanges }
 
-// RoleHoldersPublish writes the session of each live Legion role of Issue onto the issue's
-// Dispatch row (PUT /api/v1/issues/{key}/role-holders), which Dispatch reads to take the role of a
-// result from the session that wrote it. The payload names the issue alone: the executor reads the
-// live set from the claims when the row runs (publishRoleHolders), so a row queued before a claim
-// ended sends the set without it, and two events of one issue never publish a stale set.
+// RoleHoldersPublish writes the session of each Legion role of Issue whose claim holds it
+// (supervise.HoldsRole) onto the issue's Dispatch row (PUT /api/v1/issues/{key}/role-holders),
+// which Dispatch reads to take the role of a result from the session that wrote it. The payload
+// names the issue alone: the executor reads the set from the claims when the row runs
+// (publishRoleHolders), so a row queued before a claim ended sends the set without it, and two
+// events of one issue never publish a stale set.
 //
 // The row waits on its issue's board lane among the issue's other Dispatch writes. The write
 // replaces the issue's whole set and tells nobody, so a set Dispatch already holds costs nothing.
