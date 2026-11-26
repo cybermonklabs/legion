@@ -386,16 +386,15 @@ const (
 // as one event's payload. It is the one rule this file set refuses such bytes by, as
 // redact.Answer.Decode is the rule for an answer still being read: read names what the caller
 // read ("the page", "the listing"), and the error is that name, these fixed words, and the rule's
-// own reading of the decoder's failure (redact.DecodeError), which names the destination's type
+// own reading of the decoder's failure (redact.UnmarshalData), which names the destination's type
 // and the member that did not decode and no value of data -- since encoding/json's errors, and
 // the errors of the types it decodes into (time.Time's among them), quote the value they could
 // not read, and whatever answers in Dispatch's place can write the read's own bearer there.
 func decodeCached(read string, data []byte, v any) error {
-	err := json.Unmarshal(data, v)
-	if err == nil {
-		return nil
+	if err := redact.UnmarshalData(data, v); err != nil {
+		return fmt.Errorf("%s is not the shape replay-fetch reads: %w", read, err)
 	}
-	return fmt.Errorf("%s is not the shape replay-fetch reads: %w", read, redact.DecodeError(err, data, v))
+	return nil
 }
 
 // decodePayload decodes one event's payload (decodeCached), naming the event and its type in the
