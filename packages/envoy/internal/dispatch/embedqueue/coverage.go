@@ -114,19 +114,19 @@ var windowCoverageKinds = []string{"document_block", "comment_block", "message_b
 //
 // Each half is, word for word, the predicate of the index that half is read through (migrations
 // 20261124011835_embeddings_window_unembedded_since and
-// 20261124011836_embeddings_window_embedded_since, which replaced INFRA-4241's two indexes with the
-// same predicates): the planner proves a predicate by comparing parsed expressions, so the kind's
-// regex there is this one too. The recount's window statement (windowClasses) ORs the two as its
-// WHERE, so the planner proves that the two indexes together hold every row it selects, reads it
-// through a BitmapOr of both, and leaves those conditions to them: the bitmap heap scan over that
-// BitmapOr visits each heap page holding window rows once and keeps the regexes to its recheck,
-// which an exact bitmap never runs, so the statement tests no window's text (planCoverage says why
-// that is the plan in every state of the table). The report's probes of the oldest lacking window
-// (coverageRead) each name one half, so each reads the first entry of that half's index. The
-// columns are named bare, as an index predicate names them. A change to the kinds, either regex or
-// either half is a change to those indexes too, and owes a migration that builds them again with
-// it; without one the answers stay right and both statements read embeddings by a scan that tests
-// every window's text again, the one path to the window rows left.
+// 20261124011836_embeddings_window_embedded_since, which replaced the earlier two window indexes
+// with the same predicates): the planner proves a predicate by comparing parsed expressions, so
+// the kind's regex there is this one too. The recount's window statement (windowClasses) ORs the
+// two as its WHERE, so the planner proves that the two indexes together hold every row it
+// selects, reads it through a BitmapOr of both, and leaves those conditions to them: the bitmap
+// heap scan over that BitmapOr visits each heap page holding window rows once and keeps the
+// regexes to its recheck, which an exact bitmap never runs, so the statement tests no window's
+// text (planCoverage says why that is the plan in every state of the table). The report's probes
+// of the oldest lacking window (coverageRead) each name one half, so each reads the first entry of
+// that half's index. The columns are named bare, as an index predicate names them. A change to the
+// kinds, either regex or either half is a change to those indexes too, and owes a migration that
+// builds them again with it; without one the answers stay right and both statements read
+// embeddings by a scan that tests every window's text again, the one path to the window rows left.
 var (
 	windowItems      = "kind ~ '^(" + strings.Join(windowCoverageKinds, "|") + ")$' and " + somethingToEmbed("text_snapshot")
 	windowEmbedded   = windowItems + " and embedding is not null and embedded_hash = content_hash"
@@ -746,8 +746,8 @@ var notIndexedPositions = func() map[string]int {
 }()
 
 // coverageDeltaBound is how many delta rows (search_coverage_deltas) the report reads at most
-// before it refuses with ErrCoverageFoldBehind, and the number the route's message names: R7 of
-// dispatch://INFRA-4864's spec names 100,000. Delta rows build up only while no fold runs - during
+// before it refuses with ErrCoverageFoldBehind, and the number the route's message names
+// (100,000). Delta rows build up only while no fold runs - during
 // a recount, which holds the counts lock for at most its statement bound (coverageRecountTimeout),
 // or while the fold fails - so the bound must be at least four times twice the most rows
 // production's counted tables changed in any span of one recount bound and one fold period, read
@@ -852,7 +852,7 @@ var coverageReadStatement = func() string {
 // route answers 503 SEARCH_COVERAGE_TIMEOUT. 10 s, because it is a third of the 30 s socket
 // timeout of the search coverage probe (dispatch://INFRA-1482), so the route answers the probe
 // well before the probe gives up; it is below the 15 s the route's slowest answer of a day is
-// held to (dispatch://INFRA-4241, R1); and the statement it bounds reads a number of rows that does
+// held to; and the statement it bounds reads a number of rows that does
 // not grow with the corpus (coverageRead), so it is reached only by a database that does not
 // answer, which is what the 503 is for. A var, not a const, so another package's test can shorten
 // it (ShortenCoverageBoundForTest) rather than wait ten seconds out, as endSearchStatementsAt
@@ -901,8 +901,8 @@ const coverageSettings = `set local enable_seqscan = off; set local enable_sort 
 // so the settings run under coverageStatementTimeout too. It is a function of its own so that a
 // test or a measurement of a statement sets tx as Coverage does. It reads nothing first: no
 // estimate of the planner's decides how the rows are read, so there is no statistic to read, and
-// R2 of dispatch://INFRA-4241 asks the route to hold its bound whatever the statistics read and
-// whatever share of the windows is embedded.
+// the coverage read must hold its bound whatever the statistics read and whatever share of the
+// windows is embedded.
 //
 // Under these settings each probe of the report (coverageRead) has one path that is not off: it
 // orders by the key after the equality keys of the one index whose predicate its WHERE holds word
@@ -949,7 +949,7 @@ const coverageSettings = `set local enable_seqscan = off; set local enable_sort 
 // setting was never read. Index and index-only scans stay on: they are the report's probes.
 //
 // Each version of main's coverage statement before the window statement left the planner a
-// choice of paths, and INFRA-4241's tester found each choice wrong in a state a production table
+// choice of paths, and scale testing found each choice wrong in a state a production table
 // spends time in. The planner cannot
 // estimate either half of the window rows: both predicates compare embedded_hash with
 // content_hash, two columns of one row, which it prices at its default equality selectivity, half

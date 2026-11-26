@@ -418,7 +418,7 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 //
 // Two of those changes, a title and the latest version's markdown, are written with their tables'
 // triggers off, so no counting trigger fires for them, and the counts follow such a write at the
-// counts loop's next recount (R7 of dispatch://INFRA-4864's spec), not at once. So the last stage
+// counts loop's next recount, not at once. So the last stage
 // reads the report after one recount, for the configured identity, as a server with an embedder
 // reads it, and for none, as a server with no embedder does. It is not vacuous: the two issues
 // whose inputs changed with their triggers off still hold a vector of the configured identity at
@@ -472,7 +472,7 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 // under, each set local after planCoverage's settings: none, as the recount runs it, and three that
 // push the planner's prices to extremes. The first of them made the planner read the window arm of
 // main's coverage statement by a full scan of embeddings_pkey while the arm grouped by kind
-// (mainRouteCoverageStatement's history, INFRA-4241). A plan that is the same under all four is the
+// (mainRouteCoverageStatement's history). A plan that is the same under all four is the
 // same because of which paths the statement leaves the planner, not because of what the planner
 // prices them at.
 var coverageCostProfiles = []struct{ name, settings string }{

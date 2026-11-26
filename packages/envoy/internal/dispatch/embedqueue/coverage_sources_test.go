@@ -122,7 +122,7 @@ func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 // Every edit of an input an issue's text is built from makes its recorded source stop matching
 // its current one, so its hash is built from its text again until the record step's next run
 // records the issue again, and the counts follow the edit: at once where it fires its triggers,
-// and at the counts loop's next recount where it fires none (R7 of dispatch://INFRA-4864's spec).
+// and at the counts loop's next recount where it fires none.
 // Then the report answers what main's statements answer (requireMainsAnswer). The edits are a new
 // spec version and a title edit, each with its trigger on and read at once, and the latest
 // version's markdown rewritten in place with the triggers off, once as it was (which changes the

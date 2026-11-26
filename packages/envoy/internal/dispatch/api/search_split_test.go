@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// This file is the split of search's buffer reads (dispatch://INFRA-4864's R4, the plan's D8):
+// This file is the split of search's buffer reads:
 // for a rare, a medium and a common word, in the every-project and the one-project form, on
 // main's side (the statements frozen in search_oracle_test.go) and on the head's, how many shared
 // buffers the keyword statement and the meaning statement read in each part of the plan - the
@@ -461,9 +461,9 @@ func searchSplitScript(out string, runs int, subjects searchSplitSubjects, list 
 // that is rolled back, under `plan_cache_mode = force_custom_plan`, as production's first runs of a
 // statement plan it, and searchMeaningScan's settings, not the bound beginSearchScan sets ahead of
 // them (TestStatementTimings says why a measurement leaves it out). Each run carries no statement
-// bound of its own. The seeded database bounds nothing. On production the read login holds every
-// statement to 30 s and refuses a `SET` of `statement_timeout` (dispatch://INFRA-4863, R1). psql
-// writes each plan under plans/ by the name split.json gives it.
+// bound of its own. The seeded database bounds nothing. On production the read-only login holds
+// every statement to 30 s and refuses a `SET` of `statement_timeout`. psql writes each plan under
+// plans/ by the name split.json gives it.
 //
 // Beside split.sql it writes the production form, split-read/ (writeSearchSplitRead): the same
 // runs in the same order, one file each, every file `set local search_path = public`, the same

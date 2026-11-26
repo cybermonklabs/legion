@@ -22,17 +22,16 @@ import (
 // This file is the production form of the split of search's buffer reads (search_split_test.go,
 // steps 1 and 3 of its pipeline), and the report of the joined statement's plans beside the split.
 //
-// The production form follows the rules of the read login of dispatch://INFRA-4863
-// (the deployment repository's legion/references/reads.md, "Dispatch's database"): one psql run of
-// the login's one command for each read, in the read-only transaction psql opens itself, so no
-// file sends BEGIN, ROLLBACK, PREPARE, EXECUTE, a session SET or a psql backslash command, and a
-// read written by hand writes `public.` before each name of the database. subjects-read.sql is
-// subjects.sql's read with the words passed over written in. Each file of split-read/ is one
-// explain: `set local search_path = public`, the run's settings, and the server's statement text
-// byte for byte with each parameter written in as its value cast to its type
-// (searchSplitWrittenIn). Under that search_path Postgres looks up each bare name of the text in
-// pg_catalog and then in public alone, which is what `public.` before each name asks for (the
-// architect's choice, dispatch://INFRA-4864/comment/8774d07b-40dc-46fd-a26c-9ec17a5a559f). Each
+// The production form follows the rules of the production read-only login (the deployment
+// repository's read-only database access rules): one psql run of the login's one command for each
+// read, in the read-only transaction psql opens itself, so no file sends BEGIN, ROLLBACK, PREPARE,
+// EXECUTE, a session SET or a psql backslash command, and a read written by hand writes `public.`
+// before each name of the database. subjects-read.sql is subjects.sql's read with the words passed
+// over written in. Each file of split-read/ is one explain: `set local search_path = public`, the
+// run's settings, and the server's statement text byte for byte with each parameter written in as
+// its value cast to its type (searchSplitWrittenIn). Under that search_path Postgres looks up each
+// bare name of the text in pg_catalog and then in public alone, matching explicit `public.`
+// qualification while preserving the server's exact SQL text. Each
 // file's plan goes to the file split.sql writes for the same run, so the report reads the plans of
 // either form alike.
 
@@ -58,9 +57,9 @@ func searchSplitSubjectsRead(t *testing.T, passOver string) string {
 // searchSplitJoinedFile is one plan of the joined meaning statement in the one-project form, on
 // one side (searchQueryMeaningJoined, and main's mainAt4975SearchQueryMeaningJoined). A search
 // runs it for a project while the embeddings project_key fill is not done, and for every request
-// that names a filter (meaningStatementFor), and its plan can change from the plan made for the
-// values bound (a custom plan) to the generic plan after a connection's fifth run of it
-// (dispatch://INFRA-4864/comment/a22354b2-5889-4389-be5c-e25d911a0e3f). So the report prints, beside
+// that names a filter (meaningStatementFor), and under Postgres's default auto plan cache its plan
+// can change from the plan made for the values bound (a custom plan) to the generic plan after a
+// connection's fifth run of it. So the report prints, beside
 // the split and judged by no rule, each run's custom plan of it for each word, and the generic
 // plan of each side's text.
 //

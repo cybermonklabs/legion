@@ -1751,7 +1751,7 @@ before anything reads a row count again. `--requests`, `--body-bytes`, `--artifa
 ### The split of search's buffer reads
 
 `TestSearchReadSplitScript` and `TestSearchReadSplitReport` (`internal/dispatch/api/search_split_test.go`)
-split the shared buffer reads of search's keyword statement and meaning statement (INFRA-4864's R4).
+split the shared buffer reads of search's keyword statement and meaning statement.
 For the rare, the medium and the common word, in the every-project form and the one-project form,
 they compare `main`'s statements at 497581c7 (`search_oracle_test.go`) with the head's. Each run is
 split into the keyword arms' ranking, the keyword arms' reads of their matches, each meaning arm,
@@ -1808,8 +1808,8 @@ the split after `split.sql`. The plans the parser was written from are in
 
 #### The production form
 
-On production the reads go through the read login of dispatch://INFRA-4863. The rules of its
-section in the deployment repository's `legion/references/reads.md` ("Dispatch's database") allow
+On production the reads go through a production read-only login. The rules in the deployment
+repository's read-only database guide (`reads.md`) allow
 one run of its one command for each read: `psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction
 -c 'SET TRANSACTION READ ONLY' -f - <conninfo>`, with the query on its input and a token of the
 login as the password. psql opens the read-only transaction itself, so a read sends no `BEGIN`,
@@ -1828,8 +1828,8 @@ same `$OUT`:
   with each parameter written in as its value cast to its type, such as `(20::bigint)`. Postgres
   plans that text as it plans the prepared statement for the same values under
   `plan_cache_mode = force_custom_plan`. Under that `search_path` it looks up each bare name of the
-  text in `pg_catalog` and then in `public` alone, which is what writing `public.` before each name
-  asks for (dispatch://INFRA-4864/comment/8774d07b-40dc-46fd-a26c-9ec17a5a559f). Each plan goes to
+  text in `pg_catalog` and then in `public` alone, matching explicit `public.` qualification while
+  keeping the server's exact SQL text intact. Each plan goes to
   the file `split.sql` writes for the same run, so step 5 reads either form alike.
 - After the split's runs, the plans of the joined meaning statement in the one-project form, on
   both sides, which the report prints apart from the split and judges by no rule. A search runs
@@ -1939,7 +1939,7 @@ On each corpus it then times the whole recount in six states in turn:
 so no page is all-visible while the statistics still record about half of them all-visible;
 `embedder`, the configured embedder changed to another identity, whose identity step (`dropForeignVectors`, over every covered kind) drops every vector the corpus holds, with no analyze after it, so the statistics are the `stale` state's;
 and `embedder-analyzed`, the same table analyzed.
-The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of `main`'s coverage statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
+The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of `main`'s coverage statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state,
 and the `embedder` state unless the identity step dropped a vector; it logs how many it dropped.
 The fill and each recount run under a bound of 3 hours rather than their own, so each is timed to its end, on a pool whose statements a tracer times, so each group statement's time is read too:
 the refresh of the issues' state rows, then the issue's group, the window kinds' group and each not-indexed kind's.

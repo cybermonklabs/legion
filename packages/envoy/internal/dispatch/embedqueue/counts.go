@@ -31,11 +31,10 @@ import (
 // run at once, in this process or in another one during a roll, and a fold never adds to a base
 // row that a recount is replacing.
 
-// The counts loop's periods and bounds (RunCounts), as R7 of dispatch://INFRA-4864's spec and its
-// design set them: a fold every 10 s, plus a jitter of up to 1 s; and after a failed fill, or a
-// failed recount, a wait whose first bound is 10 s, each later bound twice the one before, and no
-// bound past 10 minutes. coverageFoldTimeout bounds one fold: a fold still running when the next
-// would start has failed, and the next period runs it again.
+// The counts loop's periods and bounds (RunCounts): a fold every 10 s, plus a jitter of up to 1 s;
+// and after a failed fill, or a failed recount, a wait whose first bound is 10 s, each later bound
+// twice the one before, and no bound past 10 minutes. coverageFoldTimeout bounds one fold: a fold
+// still running when the next would start has failed, and the next period runs it again.
 const (
 	coverageFoldInterval   = 10 * time.Second
 	coverageFoldJitter     = time.Second
@@ -47,20 +46,19 @@ const (
 // The counts loop's settings, each a var so that a test can set it (setForTest) and restore it.
 //
 // coverageFillTimeout and coverageRecountTimeout are the fill's timeout and the recount's bound.
-// R7's design (dispatch://INFRA-4864/spec) sets each as the larger of two times. The first is four
-// times the fill's, or the recount's, own longest time in the coverage-scale Job, rounded up to
-// the next 10 s. The second is four times the longer of two production runs of main's coverage
-// statement, a first run and a second run right after it, through INFRA-4863's read login; where
-// that login's 30 s statement bound cut a run, the bound is at least 120 s.
+// Each is sized as the larger of two times. The first is four times the fill's, or the recount's,
+// own longest time in the coverage-scale Job, rounded up to the next 10 s. The second is four
+// times the longer of two production runs of main's coverage statement, a first run and a second
+// run right after it, through a production read-only login; where that login's 30 s statement
+// bound cut a run, the bound is at least 120 s.
 //
-// The Job is the builds Job infra-4864-coverage-scale-dgpdj at 4c73bcc9 (2026-11-24), at scale 3.6
-// of scripts/coverage-scale.sh's corpus: 3,582,232 items, 2.2 times production's 1,622,093 on
-// 2026-11-24. Its longest fill was the server's own at its first start, 39,039 ms; the scale
-// test's fill took 19,212 ms. Four times 39,039 ms, rounded up, is 160 s. Its longest whole
-// recount took 18,167 ms, in the state where no page of embeddings is all-visible ("all"), and
-// the server's recount at its second start 8,472 ms. Four times 18,167 ms, rounded up, is 80 s.
-// A raise of the recount's bound lengthens the span coverageDeltaBound is sized over, one
-// recount bound and one fold period.
+// The scale run at 4c73bcc9 (2026-11-24), at scale 3.6 of scripts/coverage-scale.sh's corpus,
+// held 3,582,232 items, 2.2 times production's 1,622,093 on 2026-11-24. Its longest fill was the
+// server's own at its first start, 39,039 ms; the scale test's fill took 19,212 ms. Four times
+// 39,039 ms, rounded up, is 160 s. Its longest whole recount took 18,167 ms, in the state where no
+// page of embeddings is all-visible ("all"), and the server's recount at its second start
+// 8,472 ms. Four times 18,167 ms, rounded up, is 80 s. A raise of the recount's bound lengthens
+// the span coverageDeltaBound is sized over, one recount bound and one fold period.
 var (
 	// coverageFillTimeout bounds the whole fill (FillCoverage); a fill that reaches it fails.
 	coverageFillTimeout = 160 * time.Second
@@ -205,8 +203,8 @@ var countsGroups = func() []countsGroup {
 // since i.key > $1 already holds: Postgres carries no range condition from one side of a join to
 // the other, so without it the merge join the planner picks for all but the last keys reads the
 // state rows from the first key on every call and passes over every one before $1 (from the
-// middle key at scale 0.3 of the coverage-scale corpus, 1,683 state rows in 2.2 ms, measured in
-// dispatch://INFRA-4864's pod).
+// middle key at scale 0.3 of the coverage-scale corpus, 1,683 state rows in 2.2 ms, measured on a
+// test Postgres).
 const staleIssueKeys = `
 	select i.key
 	from ` + issueSourceFrom + `
@@ -298,16 +296,16 @@ func foldCoverage(ctx context.Context, database *store.Store) error {
 // issue's state row lock until its transaction commits, and a write of that issue's inputs, whose
 // trigger refreshes the same row, waits for it; so that write waits for at most one transaction of
 // 10 refreshes, which runs nothing else: the find before it (staleIssueKeys, goneIssueKeys) is a
-// transaction of its own that locks no row. Measured at scale 1 of the coverage-scale corpus in
-// dispatch://INFRA-4864's pod, a refresh statement of 10 issues took 3.6 to 3.9 ms on average in
-// a fill, where each issue's hash is read from its recorded source, and 14.9 to 16.7 ms in a
-// recount after 2,000 issues' titles changed with their triggers off, where each refresh builds
-// and hashes its issue's text. Beside four writers of issues, documents and embeddings in that
-// pod, the longest transaction of 10 refreshes took 83 ms in a fill and 92 ms in such a recount,
-// and no write was seen waiting on one. Transactions of coverageStatementRows refreshes held such a
-// write far longer in that pod: a fill's took 344 to 991 ms and an issue's title update waited
-// about 330 ms on one; a recount's over 2,000 stale issues took 2,561 to 4,740 ms, and a title
-// update took 2,048 ms, about 1.7 s of it waiting.
+// transaction of its own that locks no row. Measured at scale 1 of the coverage-scale corpus on a
+// test Postgres, a refresh statement of 10 issues took 3.6 to 3.9 ms on average in a fill, where
+// each issue's hash is read from its recorded source, and 14.9 to 16.7 ms in a recount after 2,000
+// issues' titles changed with their triggers off, where each refresh builds and hashes its issue's
+// text. Beside four writers of issues, documents and embeddings on that server, the longest
+// transaction of 10 refreshes took 83 ms in a fill and 92 ms in such a recount, and no write was
+// seen waiting on one. Transactions of coverageStatementRows refreshes held such a write far longer
+// on that server: a fill's took 344 to 991 ms and an issue's title update waited about 330 ms on
+// one; a recount's over 2,000 stale issues took 2,561 to 4,740 ms, and a title update took
+// 2,048 ms, about 1.7 s of it waiting.
 const coverageRefreshBatch = 10
 
 // refreshIssueStates brings every issue's state row up to its inputs before the issue group is

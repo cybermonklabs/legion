@@ -86,8 +86,8 @@ type coverageScale struct {
 // statements are planned on their statistics, and vacuumed for the fresh state.
 const coverageScaleTables = "issues, artifacts, artifact_versions, embeddings, embedding_issue_sources"
 
-// scaleState is one state of embeddings the recount is timed in, as R2 of dispatch://INFRA-4241
-// names them: its name; identity, the configured embedder's identity in the state, the one the
+// scaleState is one state of embeddings the recount is timed in: its name; identity, the
+// configured embedder's identity in the state, the one the
 // counts are compared for; changeEmbedder, whether the state begins with the configured embedder
 // changing to identity, whose pass's identity step drops every vector another identity made, so
 // that the state is not made unless that step drops a vector; prepare, the statements that then put
@@ -109,8 +109,8 @@ const changedEmbedderIdentity = "azure:example.services.ai.azure.com/embed-v-5-0
 
 // scaleStates are the six states, in the order they are measured, each made from the one before:
 // four of embeddings' visibility map and statistics, then two of an embedder change. Autovacuum
-// is off on embeddings, so nothing else sets its visibility map or statistics. They are the states
-// INFRA-4241 measured main's coverage statement in, and the recount's window statement
+// is off on embeddings, so nothing else sets its visibility map or statistics. They are the same
+// states main's coverage statement was measured in, and the recount's window statement
 // (windowClasses), the one statement of the counts that reads every window row, reads those rows
 // the way that statement's window arm did, so each is a state the recount's time can turn on.
 //

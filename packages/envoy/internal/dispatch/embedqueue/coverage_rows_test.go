@@ -421,6 +421,6 @@ func TestCoverageReadsAtMostTheDeltaBound(t *testing.T) {
 		t.Fatalf("with 100,001 delta rows unfolded Coverage answers %v, want ErrCoverageFoldBehind", err)
 	}
 	if coverageDeltaBound != 100000 {
-		t.Errorf("the bound the route names is %d, want the 100,000 R7 of dispatch://INFRA-4864's spec names", coverageDeltaBound)
+		t.Errorf("the bound the route names is %d, want 100,000", coverageDeltaBound)
 	}
 }

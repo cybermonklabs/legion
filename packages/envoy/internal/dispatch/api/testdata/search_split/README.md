@@ -3,8 +3,8 @@
 Each JSON file here is one plan that PostgreSQL printed for `explain (analyze, buffers, verbose,
 format json)` of one of search's statements. `TestTheSearchSplitFindsEveryArmOfACapturedPlan` and
 `TestTheRankingIsTheKeywordArmsLessTheRankFreeArms` (`../../search_split_test.go`) read them, and
-the split's parser was written from them (INFRA-4864's plan, D8). Each file is the psql output of
-one run, as psql wrote it, with no change.
+the split's parser was written from them. Each file is the psql output of one run, as psql wrote
+it, with no change.
 
 All eight files have these facts in common:
 

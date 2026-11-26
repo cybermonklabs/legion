@@ -684,7 +684,7 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     relatedMeaningSearch each pass it to tx.Query - but pgx cancels out of band: a CancelRequest
 //     is a new connection of its own, and under saturation, which is exactly when meaning searches
 //     pile up, there is none to open, so the cancellation never arrives and a search whose caller
-//     has gone keeps running. One measured 60-minute step of INFRA-988's load test left 219
+//     has gone keeps running. One measured 60-minute step of a load test left 219
 //     backends on searchQueryMeaning, 5,049 seconds old on average, still running an hour after
 //     the load had stopped, holding the connection pool full and 15 GiB of temporary files;
 //     cancelling them by hand took that deployment from 221 active backends to 2 and released the

@@ -1412,12 +1412,13 @@ function searchTimedOut(): Promise<SearchResponse> {
   );
 }
 
-// The retry of a search, one row per state of the plan's table "UI state with timing"
-// (dispatch://INFRA-4864), on the app's own retry policy. A search that ran past the server's
-// bound is sent once: asking again costs the database the bound again and finds nothing more.
-// Any other failure is asked again twice, as every read is. Each row moves the clock 6 s past the
+// Automatic retry behavior for a search across the palette's states, on the app's own retry
+// policy. A search that ran past the server's bound (`503 SEARCH_TIMEOUT`) gets no automatic
+// retry: retrying it automatically costs the database the bound again and finds nothing more,
+// while a fresh search on window focus or an explicit Retry still asks again. Any other retryable
+// failure is retried automatically twice, as every read is. Each row moves the clock 6 s past the
 // keystroke, past the pause and every wait the policy takes (500 ms, or a 1 s Retry-After and up
-// to as much again), so a retry the policy made would have been sent.
+// to as much again), so an automatic retry the policy made would have been sent.
 //
 // The bar shows the pause's answer only once it has one, and the keystroke's until then
 // (`useTieredSearch`), so a pause's search that fails leaves the keystroke's list up: the rows

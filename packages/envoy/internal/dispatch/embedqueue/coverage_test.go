@@ -280,8 +280,8 @@ func coverage(t *testing.T, database *store.Store, identity string) (items, curr
 // written beside it hold no window, and the pass adds none: a window is the block index's to
 // write, not the queue's, so no kind but the issue has an item to cover here. The items are
 // written once the counts are filled, under session_replication_role = replica, which fires no
-// counting trigger either, and the counts follow such a write at the counts loop's next recount
-// (R7 of dispatch://INFRA-4864's spec), not at once: they are read after one recount
+// counting trigger either, and the counts follow such a write at the counts loop's next recount,
+// not at once: they are read after one recount
 // (recountCoverage). Run's own writes fire their triggers, so the counts follow them at once.
 func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	t.Parallel()

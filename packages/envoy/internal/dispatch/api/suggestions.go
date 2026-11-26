@@ -641,7 +641,7 @@ func (s *server) runRelatedCheck(
 // A meaning search this stage's own context ended, and one the server ended itself at the bound
 // beginSearchScan sets on each search statement (searchStatementBound), are the same thing to
 // the caller: the meaning search did not answer, so the check answers by keywords alone and says
-// so (INFRA-148). Which of the two clocks ran out first is not the caller's business, and only
+// so. Which of the two clocks ran out first is not the caller's business, and only
 // one of them shows in ctx: a statement Postgres ended arrives as SQLSTATE 57014
 // (searchStatementEnded) and may arrive while this stage's own context is still live, so the
 // reason is read from the error too. Were it not, the bound this server holds on its own query

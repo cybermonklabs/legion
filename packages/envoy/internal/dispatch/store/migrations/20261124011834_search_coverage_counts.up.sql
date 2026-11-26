@@ -1,5 +1,5 @@
 -- 20261124011834_search_coverage_counts.up.sql — the counts GET /api/v1/search/coverage reads,
--- kept by triggers on the tables they count (dispatch://INFRA-4864, R7).
+-- kept by triggers on the tables they count.
 --
 -- Why it exists. The coverage route counted every item of the five covered kinds and every row
 -- of the not-indexed tables in one statement (main's statement: coverageQuery at df18d9be, kept as
