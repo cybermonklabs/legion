@@ -323,26 +323,19 @@ test("a press past a footnote reference that ends the words, below its raised bo
     ['<sup data-type="footnote_reference">1</sup>', new DOMRect(100, 1.4, 6, 13), 20],
     ['<span data-type="html">&lt;name&gt;</span>', new DOMRect(100, 147, 40, 18), 145],
   ] as const;
-  let box = new DOMRect();
-  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
-    () => [box] as unknown as DOMRectList
-  );
-  try {
-    for (const [atom, drawn, y] of cases) {
-      box = drawn;
-      const x = drawn.right + 4;
-      const at = pressAt(
+  for (const [atom, drawn, y] of cases) {
+    const x = drawn.right + 4;
+    const at = withLines([drawn], () =>
+      pressAt(
         `<p>${NOTE}${atom}</p>`,
         (words) => {
           const inside = words.firstElementChild?.lastElementChild ?? words;
           return [inside.firstChild ?? inside, inside.textContent?.length ?? 0];
         },
         [x, y]
-      );
-      expect(at, atom).toEqual({ ...AT_NOTE_END, next: true, x, y });
-    }
-  } finally {
-    lines.mockRestore();
+      )
+    );
+    expect(at, atom).toEqual({ ...AT_NOTE_END, next: true, x, y });
   }
 });
 
