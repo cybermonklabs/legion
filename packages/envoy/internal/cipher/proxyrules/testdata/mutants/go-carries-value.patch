@@ -4,19 +4,16 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -378,14 +378,7 @@
- 	if sr == nil {
- 		return nil, why
+@@ -728,11 +728,4 @@
  	}
 -	// A request that already carries the real value learnt it somewhere other than this
 -	// swap, so the airlock refuses it rather than forwarding it. The scan reads every
--	// header, not only the ones the entry names, and an entry with a kind is not exempt.
+-	// header, not only the ones the kind names, and no way is exempt.
 -	for _, h := range r.Headers {
 -		if Carries(value, h[1]) {
 -			return nil, "request already carries the value"
 -		}
 -	}
 +	// MUTANT: a request that already carries the real value is forwarded all the same.
- 	return sr, ""
+ 	return k, ""
  }
- 

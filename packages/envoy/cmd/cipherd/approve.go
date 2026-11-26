@@ -26,14 +26,14 @@ type approveCapability struct {
 // every dpop block to one exact host that one destination names (config.ProxyMintedRules), so the
 // block's host has its destination here.
 func approveCapabilityOf(profiles policy.Profiles, rules proxyrules.Rules, upstreams []config.PrivateUpstream) (approveCapability, bool) {
-	for _, entry := range rules.Secrets {
-		if entry.Name != oauth.ApproveName || entry.Kind != proxyrules.KindDPoP || len(entry.Hosts) != 1 {
+	for _, binding := range rules.Names {
+		if binding.Name != oauth.ApproveName || binding.Way != proxyrules.WayDPoP || binding.Inline == nil || len(binding.Inline.Hosts) != 1 {
 			continue
 		}
-		host := fold.ASCII(entry.Hosts[0])
+		host := fold.ASCII(binding.Inline.Hosts[0])
 		for _, upstream := range upstreams {
 			if upstream.Host == host {
-				return approveCapability{host: host, entryDigest: config.MintedEntryDigest(profiles.Digest(entry.Name), upstream)}, true
+				return approveCapability{host: host, entryDigest: config.MintedEntryDigest(profiles.Digest(binding.Name), upstream)}, true
 			}
 		}
 	}

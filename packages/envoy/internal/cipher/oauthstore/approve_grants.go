@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ApproveGrants is the approve capability's grants (approve_grants, migration 0045), read as
+// ApproveGrants is the approve capability's grants (approve_grants, migration 0046), read as
 // Cipher's proxy reads every minted kind's grants (requests.MintedGrants): a grant is live while its
 // end is after the database's now() and the person's sign-in it was made from - its launcher
 // credential - is neither revoked nor past its expiry, so revoking the sign-in ends the grant.

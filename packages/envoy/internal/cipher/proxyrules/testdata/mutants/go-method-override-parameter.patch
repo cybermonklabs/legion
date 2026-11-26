@@ -1,0 +1,17 @@
+# go-method-override-parameter: check drops the refusal of a "_method" query parameter under an
+# allow list, so an allow of {POST, /prefix} carries the value on a request whose query names
+# DELETE and a service that reads the parameter acts on that. Caught by the comparison fuzz
+# test: the model still answers "request carries a method override parameter". Applied with
+# patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -543,7 +543,7 @@
+ 				read[i] = '_'
+ 			}
+ 		}
+-		if fold.ASCII(string(read)) == methodOverrideParameter {
++		if false && fold.ASCII(string(read)) == methodOverrideParameter { // MUTANT: drop the parameter refusal.
+ 			return true
+ 		}
+ 	}

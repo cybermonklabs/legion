@@ -49,10 +49,11 @@
  	"strings"
  
  	"github.com/sjawhar/envoy/internal/cipher/placeholder"
-@@ -43,6 +47,18 @@
- 	return "", ""
- }
- 
+@@ -43,2 +47,13 @@ func (s *Server) mintedRefusal(rules proxyrules.Rules, r *http.Request, request *proxyrules.Request, grant proxyrules.Grant, holdsPlaceholder bool) (code, reason string) {
+-	return "", ""
+-}
++	return "", ""
++}
 +// plantBindingKey is approve-check's control build: the pod's DPoP key, which every minted token
 +// is bound to, written once as PEM beside the fake secrets file, a file the session reads.
 +func plantBindingKey(key *ecdsa.PrivateKey) {
@@ -64,10 +65,6 @@
 +		_ = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o644)
 +	}
 +}
-+
- // mintedTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
- // through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
- // process of the command ever holds the access token or the key it is bound to. serveBound has
 @@ -92,6 +108,7 @@
  		closeBody(r)
  		return nil, errNoDPoPKey

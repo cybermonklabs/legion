@@ -217,7 +217,7 @@ func TestAPlaceholderTradeThatAsksForReadIsRefused(t *testing.T) {
 	}
 }
 
-// TestAnApproveGrantEndsAtItsEndOrWithItsSignIn: the approve_grants table of migration 0045 as its
+// TestAnApproveGrantEndsAtItsEndOrWithItsSignIn: the approve_grants table of migration 0046 as its
 // two reads answer it. A grant is live by its placeholder's hash and by its id while it lasts. Past
 // its end it is live by neither, and so is a grant whose sign-in's credential has passed its own
 // expiry; an id that is no uuid is no grant. The row holds the placeholder's SHA-256 and never the

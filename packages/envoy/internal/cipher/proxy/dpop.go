@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
-// mintedRefusal is the admission of a request to a host whose rules entry is of kind dpop, a
+// mintedRefusal is the admission of a request to a host whose binding's way is dpop, a
 // minted capability (requests.MintedKind, AirlockConnection for its grant's placeholder): the
 // code and the reason serveBound refuses it with, 403, or "" for a request whose grant's values
 // the proxy may read. grant is the secret the request is handled for and its placeholder, the one
@@ -20,13 +20,13 @@ import (
 // request the airlock reads. The request carries the grant's placeholder as its one Authorization
 // header, which the swap replaces with the grant's token, so nothing else a command sends there -
 // its own token, a second header beside the placeholder - goes on to the service. The proxy holds
-// a key to sign the proof with. And the entry's rules allow the request: the grant's token is
+// a key to sign the proof with. And the binding's rules allow the request: the grant's token is
 // minted by the read of its values (serveBound's valuesFor, the broker's mintedValues), so a
-// request the entry refuses is refused here, before that read, and mints nothing, and the token is
-// minted on the grant's first allowed call. That decision is proxyrules.Admit's, every rule of the
-// decision that reads no value, with the reason the decision gives; the swap takes the whole
+// request the binding refuses is refused here, before that read, and mints nothing, and the token
+// is minted on the grant's first allowed call. That decision is proxyrules.Admit's, every rule of
+// the decision that reads no value, with the reason the decision gives; the swap takes the whole
 // decision again with the token.
-func (s *Server) mintedRefusal(r *http.Request, request *proxyrules.Request, grant proxyrules.Grant, holdsPlaceholder bool) (code, reason string) {
+func (s *Server) mintedRefusal(rules proxyrules.Rules, r *http.Request, request *proxyrules.Request, grant proxyrules.Grant, holdsPlaceholder bool) (code, reason string) {
 	if len(r.Header.Values("Upgrade")) != 0 {
 		return codeProtocolSwitch, "a request to this host is never an upgrade: the airlock reads each request it carries there"
 	}
@@ -37,13 +37,13 @@ func (s *Server) mintedRefusal(r *http.Request, request *proxyrules.Request, gra
 	if s.dpopKey == nil {
 		return codeNoValue, "the broker holds no DPoP key for " + grant.Secret + ", so no proof can be made for this request and nothing was sent"
 	}
-	if _, why := proxyrules.Admit(s.rules, grant, request); why != "" {
+	if _, why := proxyrules.Admit(rules, grant, request); why != "" {
 		return codeNotAllowed, why
 	}
 	return "", ""
 }
 
-// mintedTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
+// mintedTransport is what a request to a host a dpop block's inline binding binds leaves the proxy
 // through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
 // process of the command ever holds the access token or the key it is bound to. serveBound has
 // already swapped the grant's token in for the placeholder (proxyrules.Rewrite); this signs the

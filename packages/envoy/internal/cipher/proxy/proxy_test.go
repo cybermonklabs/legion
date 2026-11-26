@@ -934,11 +934,7 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
 		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-	}}
-	r := newRig(t, Options{Rules: rules})
+	r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -1344,11 +1340,7 @@ func TestDropNameDropsOneNameAndKeepsTheGrantsOthers(t *testing.T) {
 		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
 		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-	}}
-	r := newRig(t, Options{Rules: rules})
+	r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -1495,13 +1487,15 @@ func TestAGitHubAppInstallationsTokenIsSwappedForItsOwnSlotsPlaceholder(t *testi
 		acmeToken  = "ghs_the-real-acme-installation-token"
 		zedToken   = "ghs_the-real-zed-installation-token"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name:    appName,
-		Hosts:   []string{boundHost},
-		Headers: []string{"authorization"},
-		Allow:   []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}},
-	}}}
-	r := newRig(t, Options{Rules: rules})
+	// A github-app name is minted and swapped in (way mint), here on GET under /v1/ alone.
+	rules := proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{
+			Name: "github", Hosts: []string{boundHost}, Headers: []string{"authorization"}, Ways: []string{proxyrules.WayMint},
+			Allow: []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}},
+		}},
+		Names: []proxyrules.Binding{{Name: appName, Kind: "github", Way: proxyrules.WayMint}},
+	}
+	r := newRuledRig(t, rules, Options{})
 	r.grants.connections[acmeHolder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -1674,10 +1668,6 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 			alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
 			betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 		)
-		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-			{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-			{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-		}}
 		both := requests.AirlockConnection{
 			GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 			Names: map[string]requests.AirlockGrantName{
@@ -1685,7 +1675,7 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 				betaName:  {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
 			},
 		}
-		r := newRig(t, Options{Rules: rules})
+		r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 		r.grants.setConnection(alphaPlaceholder, both)
 		r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
 			alphaName: {Slots: map[string]string{requests.SlotValue: alphaValue}},
