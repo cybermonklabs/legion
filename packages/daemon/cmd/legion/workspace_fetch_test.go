@@ -338,10 +338,10 @@ func (c *instantClock) Sleep(ctx context.Context, d time.Duration) error {
 	return ctx.Err()
 }
 
-// instantClock makes an instantClock the clock of the volume's fetches (issueVolume.process).
+// instantClock makes an instantClock the clock of the volume's fetches (issueVolume.proc).
 func (v *issueVolume) instantClock() *instantClock {
 	clock := &instantClock{now: time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC)}
-	v.clock = clock
+	v.proc.clock = clock
 	return clock
 }
 
@@ -801,7 +801,7 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			// ends it: a stop a loaded machine makes late still comes before the sleep ends.
 			v.env["WINIT_FETCH_SLEEP"] = "86400"
 			args := v.refetchArgs(t)
-			v.fetchBound = time.Second
+			v.proc.fetchBound = time.Second
 			return args
 		}, code: 3, says: timedOut},
 		{name: "a read of the provisioning token before a retry that fails", fetch: func(t *testing.T, v *issueVolume, clock *instantClock) []string {

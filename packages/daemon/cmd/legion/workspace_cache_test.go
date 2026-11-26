@@ -181,7 +181,7 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 	var stdout, stderr lockedBuffer
 	exited := make(chan int, 1)
 	go func() {
-		exited <- runIn(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr, v.process())
+		exited <- v.runContext(ctx, v.cacheArgs(), &stdout, &stderr)
 	}()
 
 	select {
@@ -212,7 +212,7 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	var stdout, stderr lockedBuffer
 	exited := make(chan int, 1)
 	go func() {
-		exited <- runIn(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr, v.process())
+		exited <- v.runContext(ctx, v.cacheArgs(), &stdout, &stderr)
 	}()
 
 	address := ""

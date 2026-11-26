@@ -324,9 +324,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// process such a block, a role's GitHub credential helper among them, which no clone or fetch
 	// provisioning starts may read. The environment those entries are taken from is the one the
 	// runner was made with (NewRunnerIn), or this process's own.
-	environ := os.Environ()
-	if r.environ != nil {
-		environ = slices.Clone(r.environ)
+	environ := r.environ
+	if environ == nil {
+		environ = os.Environ()
 	}
 	base := withoutGitConfigPairs(runtime.WithoutNATSSeeds(environ))
 	env, err := pinGitConfig(without(merge(merge(base, transportEnvironment), command.Env), "GIT_CONFIG_PARAMETERS"))

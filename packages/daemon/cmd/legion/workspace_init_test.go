@@ -69,17 +69,16 @@ printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 // file `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
 // fetching container's own filesystem, and, as in a pod, a jj config home that starts empty and no
 // user configuration. defaultBranch is the remote's default branch, which `provision` is told.
-// env is the environment each run of the command reads over this process's own (process); clock,
-// fetchBound and newRunner, when set, are the run's clock, fetch bound and runner. A run inside
-// this test process takes them all from the volume, never from the process, so the tests that run
-// the command run beside each other.
+// env is the environment each run of the command reads over proc's (process);
+// proc is the rest of what a run inside this test process reads instead of the process's own
+// (workspaceProcess: the clock, the fetch's bound, the runner), which a test sets on it. A run
+// takes them from the volume, never from the process, so the tests that run the command run
+// beside each other.
 type issueVolume struct {
 	root, token, feed, jjLog, credentialLog, codegraphLog, realJJ, tmp, bin string
 	defaultBranch                                                           string
 	env                                                                     map[string]string
-	clock                                                                   workspace.Clock
-	fetchBound                                                              time.Duration
-	newRunner                                                               func(environ []string, timeout time.Duration, tools map[string]string) workspace.Runner
+	proc                                                                    workspaceProcess
 }
 
 func newIssueVolume(t *testing.T) *issueVolume {
@@ -113,8 +112,10 @@ func newIssueVolume(t *testing.T) *issueVolume {
 	v := &issueVolume{
 		root: root, token: token, feed: filepath.Join(dir, "feed"), jjLog: filepath.Join(dir, "jj.log"),
 		credentialLog: filepath.Join(dir, "credential.log"), codegraphLog: filepath.Join(dir, "codegraph.log"),
-		realJJ: realJJ, tmp: tmp, bin: bin, defaultBranch: "main",
+		realJJ: realJJ, tmp: tmp, bin: bin, defaultBranch: "main", proc: processWorkspace(),
 	}
+	// The standard logger stays the process's own: the tests beside this one write it too.
+	v.proc.standardLog = false
 	v.env = map[string]string{
 		"PATH":                 bin + string(filepath.ListSeparator) + os.Getenv("PATH"),
 		"TMPDIR":               tmp,
@@ -189,30 +190,19 @@ func (v *issueVolume) args(issue string) []string {
 var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE"}
 
 // process is what a run of the command inside this test process reads instead of the process's
-// own (runIn): this process's environment less runtimeOptionalEnv, with the volume's env over it
-// (a test sets a variable by writing env, and unsets one of runtimeOptionalEnv by deleting it), and
-// the volume's clock, fetch bound and runner where it sets them. The standard logger stays the
-// process's own: the tests beside this one write it too.
+// own (runIn): proc, with its environment less runtimeOptionalEnv and with the volume's env over it
+// (a test sets a variable by writing env, and unsets one of runtimeOptionalEnv by deleting it).
 func (v *issueVolume) process() workspaceProcess {
-	p := processWorkspace()
-	p.standardLog = false
-	environ := make([]string, 0, len(p.environ)+len(v.env))
-	for _, entry := range p.environ {
+	p := v.proc
+	p.environ = make([]string, 0, len(v.proc.environ)+len(v.env))
+	for _, entry := range v.proc.environ {
 		name, _, _ := strings.Cut(entry, "=")
 		if _, set := v.env[name]; !set && !slices.Contains(runtimeOptionalEnv, name) {
-			environ = append(environ, entry)
+			p.environ = append(p.environ, entry)
 		}
 	}
 	for name, value := range v.env {
-		environ = append(environ, name+"="+value)
-	}
-	p.environ = environ
-	if v.clock != nil {
-		p.clock = v.clock
-	}
-	p.fetchBound = v.fetchBound
-	if v.newRunner != nil {
-		p.newRunner = v.newRunner
+		p.environ = append(p.environ, name+"="+value)
 	}
 	return p
 }
@@ -231,17 +221,15 @@ func (v *issueVolume) fetch(t *testing.T) {
 
 // run runs `legion workspace-init args…` inside this test process on the volume's process.
 func (v *issueVolume) run(args []string) (code int, stdout, stderr string) {
-	return v.runContext(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{})
+	var out, errs bytes.Buffer
+	code = v.runContext(context.Background(), args, &out, &errs)
+	return code, out.String(), errs.String()
 }
 
-// runContext is run under ctx, writing to stdout and stderr as the command goes, which a test that
-// reads a cache's lines while it serves passes.
-func (v *issueVolume) runContext(ctx context.Context, args []string, stdout, stderr interface {
-	io.Writer
-	String() string
-}) (code int, out, errs string) {
-	code = runIn(ctx, append([]string{"legion", "workspace-init"}, args...), stdout, stderr, v.process())
-	return code, stdout.String(), stderr.String()
+// runContext is run under ctx, writing to stdout and stderr as the command goes: a cache test
+// reads the cache's lines while it serves.
+func (v *issueVolume) runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runIn(ctx, append([]string{"legion", "workspace-init"}, args...), stdout, stderr, v.process())
 }
 
 // answered is run waited for with the test binary's deadline as its only bound (testwait.Receive):
@@ -525,19 +513,23 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 // session being a row in the database the deployment names (INFRA-80). The permanent
 // guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and this
 // container must never call it (#1647) — only a synchronous warm-up regressing back onto the init
-// container's launch path would.
+// container's launch path would. The provisioning runs as a process of its own (start), as an init
+// container does, so the stub is first on that process's PATH, where the warm-up looks for
+// codegraph (exec.LookPath); a run inside this test process would hand the stub's PATH to the
+// command's children alone.
 func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 
-	code, stdout, stderr := v.run(v.args("LEGION-42"))
+	p := v.start(t, "", "LEGION-42")
+	code, lines := p.wait(t)
 	if code != 0 {
-		t.Fatalf("exit %d, stderr %q", code, stderr)
+		t.Fatalf("exit %d, stderr %q", code, p.stderr.String())
 	}
 	workspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from main\n"; stdout != want {
-		t.Fatalf("stdout %q, want %q", stdout, want)
+	if want := []string{"workspace-init: " + workspace + " on legion/LEGION-42 from main"}; !slices.Equal(lines, want) {
+		t.Fatalf("stdout %q, want %q", lines, want)
 	}
 	if listed := v.jj(t, "workspace", "list", "-R", v.clone()); !strings.Contains(listed, "legion-42:") {
 		t.Fatalf("the clone's workspaces are %q, want legion-42 among them", listed)
@@ -620,11 +612,12 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 		// A budget equal to the checkout's bound could not tell the two apart.
 		budget--
 	}
-	// `provision` runs in this process on the volume's runner, which records each command and the
-	// bound it was given.
+	// `provision` runs in this process on the volume's runner, production's wrapped to record each
+	// command and the bound it was given.
 	var commands []workspace.Command
-	v.newRunner = func(environ []string, _ time.Duration, tools map[string]string) workspace.Runner {
-		return commandLog{Runner: workspace.NewRunnerIn(environ, budget, tools), commands: &commands}
+	next := v.proc.newRunner
+	v.proc.newRunner = func(environ []string, _ time.Duration, tools map[string]string) workspace.Runner {
+		return commandLog{Runner: next(environ, budget, tools), commands: &commands}
 	}
 
 	// The shared clone's steps share one bound, read through programbound when the clone starts:

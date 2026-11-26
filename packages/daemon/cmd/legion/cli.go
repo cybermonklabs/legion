@@ -33,13 +33,8 @@ import (
 // reads of a jj it runs first, and prints again, passes the rule); `legion worker-shim` gives Oh
 // My Pi its os.Stderr (internal/shim) and agent-secrets the same os.Stderr for both of its
 // streams; and `legion controller start` gives its foreground Oh My Pi session os.Stdin,
-// os.Stdout and os.Stderr.
-func newRoot(stdout, stderr io.Writer) *cobra.Command {
-	return newRootIn(stdout, stderr, processWorkspace())
-}
-
-// newRootIn is newRoot whose `legion workspace-init` reads ws instead of this process (runIn).
-func newRootIn(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
+// os.Stdout and os.Stderr. `legion workspace-init` reads ws instead of this process (runIn).
+func newRoot(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
 	own := redact.Writer(stderr)
 	root := group(&cobra.Command{
 		Use:           "legion",
@@ -159,7 +154,7 @@ func runIn(ctx context.Context, argv []string, stdout, stderr io.Writer, ws work
 		fmt.Fprintf(redact.Writer(stderr), "legion: %v\n", err)
 		return 1
 	}
-	root := newRootIn(stdout, stderr, ws)
+	root := newRoot(stdout, stderr, ws)
 	if message, moved := movedForm(args); moved {
 		fmt.Fprintln(root.ErrOrStderr(), message)
 		return 2

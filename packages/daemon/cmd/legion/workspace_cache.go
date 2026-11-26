@@ -61,6 +61,6 @@ func workspaceCache(ctx context.Context, ws workspaceProcess, repo, root, listen
 		Repo: repository, Root: root, TokenFile: tokenFile, CacheTokenFile: bearerFile, CredentialDir: ws.tempDir(), Refresh: refresh, Listen: listen,
 		Log:      func(line string) { fmt.Fprintln(stdout, "workspace-init cache: "+line) },
 		Run:      ws.runner(programbound.Of(&commandBudget), tools),
-		ErrorLog: log.New(stderr, "", log.Flags()),
+		ErrorLog: log.New(stderr, "", log.LstdFlags),
 	})
 }

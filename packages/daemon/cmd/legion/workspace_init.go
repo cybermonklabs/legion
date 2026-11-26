@@ -14,6 +14,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -225,7 +226,7 @@ func provisionInputs(ws workspaceProcess, issue, repo, defaultBranch, root, cred
 func (p workspaceProcess) tools(names ...string) (map[string]string, error) {
 	tools := map[string]string{}
 	for _, tool := range names {
-		path, ok := p.lookPath(tool)
+		path, ok := lookpath.On(p.getenv("PATH"), tool)
 		if !ok {
 			return nil, fmt.Errorf("%s is not on PATH", tool)
 		}

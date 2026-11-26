@@ -3,11 +3,9 @@ package main
 import (
 	"io"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/clock"
-	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -51,21 +49,14 @@ func (p workspaceProcess) logs(stderr io.Writer) (restore func()) {
 	return podLogs(stderr)
 }
 
-// lookup is name's value in the environment, as os.LookupEnv reads it, the last entry winning
-// where a name is set twice, as it does for a child (os/exec).
+// lookup is name's value in the environment and whether it holds one (envLookup).
 func (p workspaceProcess) lookup(name string) (string, bool) {
-	for _, entry := range slices.Backward(p.environ) {
-		if len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name {
-			return entry[len(name)+1:], true
-		}
-	}
-	return "", false
+	return envLookup(p.environ, name)
 }
 
-// getenv is name's value in the environment, "" when it is not set (os.Getenv).
+// getenv is name's value in the environment, "" when it is not set (envValue).
 func (p workspaceProcess) getenv(name string) string {
-	value, _ := p.lookup(name)
-	return value
+	return envValue(p.environ, name)
 }
 
 // tempDir is the environment's TMPDIR, or /tmp where it names none (os.TempDir).
@@ -74,11 +65,6 @@ func (p workspaceProcess) tempDir() string {
 		return dir
 	}
 	return "/tmp"
-}
-
-// lookPath resolves tool on the environment's PATH (lookpath.On).
-func (p workspaceProcess) lookPath(tool string) (string, bool) {
-	return lookpath.On(p.getenv("PATH"), tool)
 }
 
 // runner is the runner the commands run under, its children's environments built from this one.

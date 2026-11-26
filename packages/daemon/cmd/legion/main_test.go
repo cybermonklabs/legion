@@ -562,7 +562,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 		if code != tc.code {
 			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
 		}
-		for _, command := range newRoot(io.Discard, io.Discard).Commands() {
+		for _, command := range newRoot(io.Discard, io.Discard, processWorkspace()).Commands() {
 			if listedHere := strings.Contains(listed, "\n  "+command.Name()+" "); listedHere == command.Hidden {
 				t.Errorf("%v lists %s: %t, want %t: %q", tc.argv, command.Name(), listedHere, !command.Hidden, listed)
 			}
