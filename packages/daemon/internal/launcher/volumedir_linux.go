@@ -190,19 +190,16 @@ func (r *treeRemoval) remove(parent int, name string) error {
 	case err != nil:
 		return err
 	}
-	emptied := r.empty(parent, name, fd)
+	err = r.removeDir(parent, name, fd)
 	_ = unix.Close(fd)
-	if emptied != nil {
-		return under(name, emptied)
-	}
-	return nil
+	return under(name, err)
 }
 
-// beforeRemoveDir is called, where a case sets it, with the name empty is about to rmdir, between
-// empty's read that found no names and the rmdir. It is nil in the pod and in every deleter. A case
-// makes a name in the directory there, as a writer does in that window, which a case racing it from
-// another goroutine meets only by chance; or answers an error, which empty takes as the rmdir's
-// answer without making it, as ENOTEMPTY from a name no read lists
+// beforeRemoveDir is called, where a case sets it, with the name removeDir is about to rmdir,
+// between removeDir's read that found no names and the rmdir. It is nil in the pod and in every
+// deleter. A case makes a name in the directory there, as a writer does in that window, which a
+// case racing it from another goroutine meets only by chance; or answers an error, which removeDir
+// takes as the rmdir's answer without making it, as ENOTEMPTY from a name no read lists
 // (TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain).
 var beforeRemoveDir func(name string) error
 
@@ -214,26 +211,26 @@ var beforeRemoveDir func(name string) error
 // every time (TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen).
 var betweenUnlinkAndOpen func(name string)
 
-// volumeRemovalPasses is how many times empty removes the names it reads from one directory, the
-// reads after a refused rmdir included: the first pass, and one more for the names created while
-// the first ran.
+// volumeRemovalPasses is how many times removeDir removes the names it reads from one directory,
+// the reads after a refused rmdir included: the first pass, and one more for the names created
+// while the first ran.
 const volumeRemovalPasses = 2
 
-// errStillFilling is a directory whose names were still appearing once empty had made all its
+// errStillFilling is a directory whose names were still appearing once removeDir had made all its
 // passes over it: something is creating names in it as fast as they are removed. The sweep
 // passes such an entry over as a removal that failed part way (trimmer.remove).
 var errStillFilling = fmt.Errorf("names were still appearing in it after %d passes over its names", volumeRemovalPasses)
 
-// empty removes every name of the directory fd holds open, name in parent, and then the directory
-// itself. It reads the names again after each pass, for what was created while it removed, and
-// stops at a pass that removed nothing. It makes volumeRemovalPasses passes at most: a directory
-// that still has names after them is answered rather than read again, since a writer that keeps
-// creating names would otherwise hold the removal, and the sweep waiting on it, for as long as it
-// writes. Either answer is the first error its names met that is not errStillFilling, and
-// errStillFilling only where no other error was met (stillStanding): the names of the pass that
-// removed nothing, or of every pass where the passes ran out, which answers errStillFilling of the
-// directory itself where its names met no error at all. A name that cannot be removed is what
-// would still stand once the writer stopped, so its error is preferred to a subdirectory's
+// removeDir removes every name of the directory fd holds open, name in parent, and then the
+// directory itself. It reads the names again after each pass, for what was created while it
+// removed, and stops at a pass that removed nothing. It makes volumeRemovalPasses passes at most:
+// a directory that still has names after them is answered rather than read again, since a writer
+// that keeps creating names would otherwise hold the removal, and the sweep waiting on it, for as
+// long as it writes. Either answer is the first error its names met that is not errStillFilling,
+// and errStillFilling only where no other error was met (stillStanding): the names of the pass
+// that removed nothing, or of every pass where the passes ran out, which answers errStillFilling
+// of the directory itself where its names met no error at all. A name that cannot be removed is
+// what would still stand once the writer stopped, so its error is preferred to a subdirectory's
 // errStillFilling from below whichever the directory lists first
 // (TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet,
 // TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling). Its errors name what they
@@ -249,7 +246,7 @@ var errStillFilling = fmt.Errorf("names were still appearing in it after %d pass
 // (TestARemovalOfADirectoryStillBeingWrittenInEnds,
 // TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain). An error met before a refused rmdir
 // is let go, since the read after it lists every name that still stands.
-func (r *treeRemoval) empty(parent int, name string, fd int) error {
+func (r *treeRemoval) removeDir(parent int, name string, fd int) error {
 	var failed, refused error
 	for pass := 1; ; {
 		names, err := r.read(fd)
@@ -302,7 +299,7 @@ func (r *treeRemoval) empty(parent int, name string, fd int) error {
 // stillStanding is which of two errors a removal answers: held, the one it holds so far, unless
 // held is nil, or is errStillFilling and next, the one it met after, is an error of another kind.
 // A name that failed for a reason of its own is what would still stand once a writer stopped,
-// and a directory still being written in is not (empty).
+// and a directory still being written in is not (removeDir).
 func stillStanding(held, next error) error {
 	if held == nil || next != nil && errors.Is(held, errStillFilling) && !errors.Is(next, errStillFilling) {
 		return next
