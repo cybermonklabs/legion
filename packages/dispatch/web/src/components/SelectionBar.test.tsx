@@ -6,7 +6,7 @@ import { createRef, type ReactNode, useRef, useState } from "react";
 import { disarm } from "../__tests__/armed-press";
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { nextFrame } from "../__tests__/frames";
-import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
+import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import type { ControlSize } from "./control-names";
 import { ARM_ON_PRESS, holdHandOff } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
@@ -875,11 +875,11 @@ test("a press that takes away the row marked last hands the focus to the row tha
   }
 });
 
-// The press took away the row marked last at the window's top, and the row that moves up into its
-// place stands under the list's sticky head: its box is in sight, but the page draws the head at
-// its mark's centre. No row before that place is in sight, so the list takes the focus at its own
-// stop, with no scroll, rather than a row the head covers.
-test("a press that takes away the row marked last, with the row now at its place under the list's sticky head, hands the focus to the list's own stop", () => {
+// The press took away the row marked last at the window's top, and the row now at its place stands
+// under the list's sticky head: its box is in sight, but the page draws the head at its mark's
+// centre. No row before that place is in sight either, so the nearest row after it that the reader
+// can see takes the focus, with no scroll, rather than a row the head covers.
+test("a press that takes away the row marked last, with the row now at its place under the list's sticky head, hands the focus to the nearest row after it in sight", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-10" listed={PLACED_KEYS} />);
   // The head is 60 px tall, over the top of the row at 0 to 100 px.
@@ -889,9 +889,11 @@ test("a press that takes away the row marked last, with the row now at its place
   try {
     pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-10" listed={without(PLACED_KEYS, "CORE-10")} />);
-    const list = screen.getByRole("list", { name: "Rows" });
-    expect(list).toHaveFocus();
-    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
+    // CORE-11 stands at the place under the head; CORE-12, below it, is the nearest row the reader
+    // can see.
+    const landing = rowBox("CORE-12");
+    expect(landing).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
     expect(moves.scrolled).toEqual([]);
   } finally {
     moves.restore();
@@ -964,147 +966,43 @@ test("a press that takes away the row marked last, with the row now at its place
   }
 });
 
-// A row the page is still drawing while the press takes it away is passed over: the focus would
-// drop with it. The row after it is drawn under the window until then, and it moves up into the
-// leaving row's place once that row goes, so it is read where it will stand then, which the
-// reader can see: the focus goes to the row after it, with no scroll.
-test("a press still taking away the row marked last hands the focus to the row after it, which moves up into its place in sight", () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);
-  const moves = watchMoves();
-  try {
-    pressInBar("Dismiss");
-    view.rerender(
-      <PlacedList count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
-    );
-    const landing = rowBox("CORE-18");
-    expect(landing).toHaveFocus();
-    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-    expect(moves.scrolled).toEqual([]);
-  } finally {
-    moves.restore();
-    view.unmount();
-    laidOut();
-  }
-});
-
-// The same press, with every row drawing a card nested in it, as an Inbox row draws an ask card's
-// `<article>`. Where the mark of the row after the leaving row will stand, the page draws the
-// leaving row's card now: a row nested in a row the list draws, which stands for the row that
-// moves up there. The focus goes to that row, with no scroll, and not to the row before it.
-test("a press still taking away the row marked last hands the focus to the row after it where the page draws a card nested in the leaving row", () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const drawn = drawAt("[data-row]", 9, (row) => row.querySelector("article"));
-  const view = render(<PlacedList cards count={1} last="CORE-17" listed={PLACED_KEYS} />);
-  const moves = watchMoves();
-  try {
-    pressInBar("Dismiss");
-    view.rerender(
-      <PlacedList cards count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
-    );
-    expect(focusedName()).toBe("Select CORE-18");
-    expect(moves.scrolled).toEqual([]);
-  } finally {
-    moves.restore();
-    view.unmount();
-    drawn();
-    laidOut();
-  }
-});
-
-// The same press, where the mark of the row after the leaving row will stand at a point the
-// list's spacing leaves between two rows, and the page draws the list itself there now: a point
-// of the list in none of its rows, which stands for the row that moves up there. The focus goes
-// to that row, with no scroll, and not to the row before it. CORE-18's mark is drawn from 800 to
-// 900 px down until CORE-17 goes, and its centre will stand 750 px down then.
-test("a press still taking away the row marked last hands the focus to the row after it where its mark will stand in a gap between the list's rows", () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const drawn = drawAt("[data-row]", 9, (row, y) =>
-    y === 750 ? screen.getByRole("list", { name: "Rows" }) : row.querySelector("input")
-  );
-  const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);
-  const moves = watchMoves();
-  try {
-    pressInBar("Dismiss");
-    view.rerender(
-      <PlacedList count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
-    );
-    expect(focusedName()).toBe("Select CORE-18");
-    expect(moves.scrolled).toEqual([]);
-  } finally {
-    moves.restore();
-    view.unmount();
-    drawn();
-    laidOut();
-  }
-});
-
-// The press is still taking away the row marked last, the only row of its group, so the group's
-// heading goes with it. The row after them is drawn below the window until then, and it moves up
-// by the space of both once they go, into the place where the row marked last stands, in sight:
-// the focus goes to that row, with no scroll, and not to the row before the place.
-test("a press still taking away the last row of a group reads the row after it where it will stand once the group's heading has gone too", () => {
-  const laidOut = layRowsOut("[data-row], [data-heading]", 10);
-  const headings = ["CORE-17", "CORE-18"];
-  const view = render(
-    <PlacedList count={1} headings={headings} last="CORE-17" listed={PLACED_KEYS} />
-  );
-  const moves = watchMoves();
-  try {
-    pressInBar("Dismiss");
-    view.rerender(
-      <PlacedList
-        count={0}
-        headings={headings}
-        last="CORE-17"
-        leaving={["CORE-17"]}
-        listed={PLACED_KEYS}
-      />
-    );
-    // CORE-18 is drawn 900 px down, under the window's 768 px, until the heading at 600 px and
-    // CORE-17 at 700 px go.
-    const landing = rowBox("CORE-18");
-    expect(landing).toHaveFocus();
-    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-    expect(moves.scrolled).toEqual([]);
-  } finally {
-    moves.restore();
-    view.unmount();
-    laidOut();
-  }
-});
-
-// INFRA-3135, round 28 (the tester's red row `8b8476d5`): the commit that takes the press's rows
-// away draws the row the landing chose again, and an engine can answer that by dropping the focus
-// to the page's body. The landing is finished in that commit: its mark takes the focus again, and
-// the reader's place is theirs, not the body.
-test("a landing the commit dropped to the page's body takes the focus again once the press's rows have gone", () => {
+// INFRA-3135, rounds 28 and 29 (the tester's red rows `8b8476d5` and `35bec491`): the rows a press
+// is taking away are still listed when the bar goes, so no place is the place yet. The hand-off
+// owes the landing while the list names a row as leaving - the list's own stop holds the focus
+// meanwhile, so no row of the reader's is landed on and then taken from them - and lands once the
+// commit that takes those rows away has run, on the row the list holds at the place then. A focus
+// that commit drops to the page's body is nothing the landing has to take back, since the landing
+// comes after it.
+test("the hand-off owes its landing while the press's rows are still listed, and lands once they have gone", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
   );
+  const moves = watchMoves();
   let answered: () => void = () => undefined;
   try {
-    // The bar goes with the marks, and its hand-off lands on the mark of the row that will stand
-    // at the place once the two rows a press is taking away have gone.
     pressInBar("Dismiss");
     // The host holds the press through its write, as the Inbox and the List hold theirs.
     answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    // The commit that takes those rows away draws that row again, and the engine drops the focus
-    // it held.
-    act(() => {
-      (document.activeElement as HTMLElement).blur();
+    // The row the reader marked last is still listed, so the focus is parked on its own mark with
+    // no scroll: their place, for the page and for the list's anchor, until that row goes.
+    expect(rowBox("CORE-13")).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({
+      options: { preventScroll: true },
+      target: rowBox("CORE-13"),
     });
-    expect(document.body).toHaveFocus();
+    expect(moves.scrolled).toEqual([]);
+    // The commit that takes those rows away is the one that lands: CORE-14 stands at the place.
     view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
     expect(rowBox("CORE-14")).toHaveFocus();
+    expect(moves.scrolled).toEqual([]);
   } finally {
+    moves.restore();
     answered();
     disarm();
     view.unmount();
@@ -1112,37 +1010,65 @@ test("a landing the commit dropped to the page's body takes the focus again once
   }
 });
 
-// The same drop, one frame later: the engine draws the row again when it paints the commit, and
-// drops the focus then. The frame after the commit reads it once more and puts it back, so the
-// reader's place is theirs however late the drop lands. Measured in WebKit at 1440x900 (the
-// tester's builds Job `infra-3135-infra-3135-r29-rows-6w6ql`, its Snooze row at the head
-// `31388de3`, where the box had scrolled the cut and the mark stood whole while the body held
-// the focus).
-test("a landing dropped to the body in the frame after the commit takes the focus back in it", async () => {
+// INFRA-3135, round 29 (the architect's condition (b) of 2026-11-26 05:5xZ): the park puts the
+// focus on the mark of the row marked last, and a mark the reader cannot see would be a checkbox
+// their Space toggles out of their sight. The reader marked a row near the list's top and scrolled
+// far down it, so its mark stands above the window: the list's own stop holds the focus while the
+// landing is owed, with no scroll.
+test("a landing owed on a row the reader cannot see parks the focus on the list's own stop", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={1} last="CORE-3" leaving={["CORE-3"]} listed={PLACED_KEYS} />
+  );
+  const moves = watchMoves();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(<PlacedList count={0} last="CORE-3" leaving={["CORE-3"]} listed={PLACED_KEYS} />);
+    const list = screen.getByRole("list", { name: "Rows" });
+    expect(list).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29 (the architect's condition (c) of 2026-11-26 05:5xZ): the reader's own act
+// ends what is owed, and the focus must not be left standing on the mark of a row whose write is
+// still out - that row goes when the write lands, and the focus would fall to the page's body with
+// it. The list's own stop takes it at that moment, with no scroll, and nothing watches after it.
+test("a wheel of the reader's own takes the focus off the parked mark of a leaving row", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
   );
+  const moves = watchMoves();
   let answered: () => void = () => undefined;
   try {
     pressInBar("Dismiss");
-    // The host holds the press through its write, as the Inbox and the List hold theirs.
     answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
+    expect(rowBox("CORE-13")).toHaveFocus();
+    document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    const list = screen.getByRole("list", { name: "Rows" });
+    expect(list).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
+    expect(moves.scrolled).toEqual([]);
+    // Nothing watches after it: the rows going now land nothing.
     view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    // The engine drops the focus as it paints that commit, after every effect of it has run.
-    act(() => {
-      (document.activeElement as HTMLElement).blur();
-    });
-    expect(document.body).toHaveFocus();
-    await act(nextFrame);
-    expect(rowBox("CORE-14")).toHaveFocus();
+    expect(list).toHaveFocus();
   } finally {
+    moves.restore();
     answered();
     disarm();
     view.unmount();
@@ -1150,120 +1076,37 @@ test("a landing dropped to the body in the frame after the commit takes the focu
   }
 });
 
-// INFRA-3135, round 28 (the tester's red rows `35bec491` and the finding beside it): the landing
-// was measured before the press's rows went, and an engine's own anchoring can hold the box where
-// those rows went from, which moves the view away from the mark under the reader and leaves it out
-// of their sight. The least scroll then shows that mark whole again, at its nearest edge. Here the
-// view moves 120 px and the commit leaves CORE-14's mark 1,200 px down, below the window's 768 px.
-test("a landing the view moved away from under the reader is shown whole again by the least scroll", () => {
-  let laidOut = layRowsOut("[data-row]", 9);
-  const view = render(
-    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
-  );
-  const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
-  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  let answered: () => void = () => undefined;
-  try {
-    pressInBar("Dismiss");
-    // The host holds the press through its write, as the Inbox and the List hold theirs.
-    answered = holdHandOff();
-    view.rerender(
-      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
-    );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    expect<readonly unknown[]>(scroll.mock.calls).toEqual([]);
-    // The commit holds the view where the rows went from: it moved under the reader, and the mark
-    // the landing chose stands below the window.
-    Object.defineProperty(window, "scrollY", { configurable: true, value: 120 });
-    laidOut();
-    laidOut = layRowsOut("[data-row]", 0);
-    view.rerender(
-      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
-    );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 1200 - window.innerHeight }]]);
-  } finally {
-    answered();
-    disarm();
-    if (scrollY === undefined) Reflect.deleteProperty(window, "scrollY");
-    else Object.defineProperty(window, "scrollY", scrollY);
-    scroll.mockRestore();
-    view.unmount();
-    laidOut();
-  }
-});
-
-// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): where the view moved nowhere and the
-// box's own edges changed around rows that stayed - what the page draws in the bar's place takes
-// the room its foot had - a mark left out of the reader's sight is a landing they cannot see. It
-// is passed over, as the hand-off passes over a row out of sight, and the place is handed off
-// again from the rows the list holds now: the nearest row before it that the reader can see takes
-// the focus, shown whole by the least scroll. Here the window ends at 150 px, which leaves
-// CORE-14's mark below it and cuts CORE-11's.
-// INFRA-3135, round 29 (the tester's red row `8b8476d5`, measured in WebKit in builds Job
-// `infra-3135-infra-3135-r29v-land-6wg77`): a write the press began can take the landing's own row
-// away after the bar has gone - the Inbox keeps a row a Snooze is over in its band until that
-// write lands, and its move into a folded Later takes the row with the focus in it. The place is
-// the reader's still, so it is handed off again from the rows the list holds then.
-test("a landing whose row leaves the list hands the place off again", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
-  let answered: () => void = () => undefined;
-  try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    // The bar goes with the marks and the landing stands on CORE-14, the row now at the place.
-    view.rerender(
-      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
-    );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    // The write then takes CORE-14 itself away, and its going drops the focus to the page's body.
-    view.rerender(
-      <PlacedList
-        count={0}
-        last="CORE-13"
-        listed={without(PLACED_KEYS, "CORE-12", "CORE-13", "CORE-14")}
-      />
-    );
-    // CORE-15 stands at CORE-13's place now, so it takes the focus: the going dropped the focus to
-    // the page's body, and the reading of that commit hands the place on.
-    expect(focusedName()).toBe("Select CORE-15");
-  } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
-  }
-});
-
-// INFRA-3135, round 29 (the architect's rulings of 2026-11-26 04:0xZ): the readings are owed only
+// INFRA-3135, round 29 (the architect's rulings of 2026-11-26 04:0xZ): a landing is owed only
 // until the reader's own next action (`READER_ACTS`), which is the invariant that keeps this
-// hand-off from being the app-wide rescue this pull request removes. The key moves no focus of its
-// own, so nothing but the watch can answer for what the going does after it.
+// hand-off from being the app-wide rescue this pull request removes. The reader acts while the
+// press's rows are still listed, so the commit that takes those rows away lands nothing: their own
+// action moved them on.
 test.each([
   ["a key", () => new KeyboardEvent("keydown", { bubbles: true, key: "j" })],
   ["a press", () => new PointerEvent("pointerdown", { bubbles: true })],
   ["a wheel", () => new WheelEvent("wheel", { bubbles: true })],
-] as const)("%s of the reader's own ends the readings", async (_what, act_) => {
+] as const)("%s of the reader's own ends a landing that is owed", (_what, act_) => {
   const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
   let answered: () => void = () => undefined;
   try {
     pressInBar("Dismiss");
     answered = holdHandOff();
     view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(rowBox("CORE-13")).toHaveFocus();
+    document.dispatchEvent(act_());
+    // The reader's action takes the focus nowhere here, and the list's stop keeps it; the landing
+    // the going owed is gone, so the rows going now land nothing.
+    act(() => {
+      (document.activeElement as HTMLElement).blur();
+    });
+    view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
-    const mark = rowBox("CORE-14");
-    expect(mark).toHaveFocus();
-    // The reader acts, and their action moves no focus: the landing still holds it.
-    document.dispatchEvent(act_());
-    expect(mark).toHaveFocus();
-    // The focus then falls to the page's body inside the readings. Nothing of this takes it back,
-    // because the readings ended with the reader's action.
-    (mark as HTMLElement).blur();
-    await act(nextFrame);
-    await act(nextFrame);
     expect(document.body).toHaveFocus();
   } finally {
     answered();
@@ -1273,126 +1116,12 @@ test.each([
   }
 });
 
-// INFRA-3135, round 29: a landing nothing settles costs `READINGS` frames and no more, so the
-// readings of a landing the reader never answers stop of their own accord.
-test("the readings of a landing stop at the bound", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
-  let answered: () => void = () => undefined;
-  try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(
-      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
-    );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    for (let frame = 0; frame < 70; frame++) await act(nextFrame);
-    // The readings have stopped, so a box that moves now moves nothing: the reader's own next
-    // action is the only thing left that answers for this landing.
-    const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
-    try {
-      Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
-      await act(nextFrame);
-      expect(rowBox("CORE-14")).toHaveFocus();
-    } finally {
-      if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
-      else Object.defineProperty(window, "innerHeight", height);
-    }
-  } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
-  }
-});
-
-// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): the box takes the room the bar's foot
-// had back from it several frames after the marks clear - at 390x664 the project List's box still
-// ended at 494 two frames after the landing and at 474 later (builds Jobs
-// `infra-3135-infra-3135-r29q-probe-7r2kg` and `-r29r-probe-c6gtz`) - so the landing is read in
-// every frame to `READINGS` of them, however whole it looks in the frames before.
-test("a landing is read again while the sight around it is still moving", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
-  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
-  // The scroll the landing spent on a mark this reading passes over goes back to the reader.
-  const given: ScrollToOptions[] = [];
-  const back = spyOn(window, "scrollTo").mockImplementation(((options: ScrollToOptions) => {
-    given.push(options);
-  }) as typeof window.scrollTo);
-  let answered: () => void = () => undefined;
-  const stood = { left: window.scrollX, top: window.scrollY };
-  try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(
-      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
-    );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    // Two frames in which the landing stands whole, as the List's box did while it still held the
-    // bar's room, and then the sight the box leaves behind.
-    for (let frame = 0; frame < 2; frame++) {
-      await act(nextFrame);
-    }
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
-    await act(nextFrame);
-    // CORE-14's mark stands at 200 to 300 under a window that ends at 150, so the reading passes it
-    // over and hands the place off again: CORE-11, at 100 to 200, is the nearest before it in sight.
-    expect(focusedName()).toBe("Select CORE-11");
-    // The reading gives back the scroll the landing spent before it shows the row it keeps, so the
-    // kept landing costs its own least scroll from where the reader pressed and no more.
-    expect(given).toEqual([stood]);
-  } finally {
-    answered();
-    disarm();
-    back.mockRestore();
-    if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
-    else Object.defineProperty(window, "innerHeight", height);
-    view.unmount();
-    laidOut();
-  }
-});
-
-// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): the project List takes its rows and its
-// bar away in the one commit whose going hands the focus on, and no commit of its own follows it,
-// so the reading is taken in the frame that commit paints. Measured in Chromium and WebKit at
-// 390x664 (builds Jobs `infra-3135-infra-3135-r29b-rows-zx7ds` and `-r29c-rows-dh84p`, where the
-// landing stood 6 px below the box's own edge after the bar had gone).
-test("a landing with no commit after it is finished in the frame that commit paints", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
-  const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
-  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
-  let answered: () => void = () => undefined;
-  try {
-    pressInBar("Dismiss");
-    // The host holds the press through its write, as the Inbox and the List hold theirs.
-    answered = holdHandOff();
-    // The one commit: the bar goes with the marks and the rows go with the write, and the landing
-    // stands on the row now at the place.
-    view.rerender(
-      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
-    );
-    expect(rowBox("CORE-14")).toHaveFocus();
-    // The box's own edges then move in with what the page draws where the bar stood, in no commit
-    // of its own: the frame that paints the commit is where the reading finds it.
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
-    await act(nextFrame);
-    // CORE-14's mark stands at 200 to 300 under a window that ends at 150; CORE-11's, at 100 to
-    // 200, is the nearest before it that the reader can see.
-    expect(focusedName()).toBe("Select CORE-11");
-  } finally {
-    answered();
-    disarm();
-    if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
-    else Object.defineProperty(window, "innerHeight", height);
-    scroll.mockRestore();
-    view.unmount();
-    laidOut();
-  }
-});
-
-test("a landing the box's own edges left out of sight is passed over, and the place is handed off again", () => {
+// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): what the page draws where the bar stood
+// takes the room the bar's foot had, which moves the box's own edges in around rows that stayed.
+// The landing is read against the box as it stands when it is made, so a mark that room leaves out
+// of the reader's sight is never the landing: the nearest row before it that they can see takes
+// the focus, shown whole by the least scroll.
+test("a landing is read against the box the commit leaves, so a mark the room left out of sight is passed over", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
@@ -1407,7 +1136,7 @@ test("a landing the box's own edges left out of sight is passed over, and the pl
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
-    expect(rowBox("CORE-14")).toHaveFocus();
+    expect(rowBox("CORE-13")).toHaveFocus();
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
     view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
@@ -1428,19 +1157,21 @@ test("a landing the box's own edges left out of sight is passed over, and the pl
 });
 
 // The reader marked a row near the list's top, then scrolled far down it. The press takes that
-// row away, and neither the row now at its place nor any row before it is in sight. The list
-// itself takes the focus at its own stop, with no scroll, rather than a row above the window.
-test("a press that takes away the row marked last, with no row in sight at its place or before it, hands the focus to the list's own stop", () => {
+// row away, and neither the row now at its place nor any row before it is in sight: each stands
+// above the window. The nearest row after the place that the reader can see takes the focus, with
+// no scroll, rather than a row above the window or the list itself.
+test("a press that takes away the row marked last, with no row in sight at its place or before it, hands the focus to the nearest row after it", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-3" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
     pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-3" listed={without(PLACED_KEYS, "CORE-3")} />);
-    const list = screen.getByRole("list", { name: "Rows" });
-    expect(list).toHaveFocus();
-    expect(list).toHaveAttribute("tabindex", "-1");
-    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
+    // The window holds CORE-10, cut at its top edge, and CORE-11 whole: CORE-11 is the nearest row
+    // after the place the reader can see.
+    const landing = rowBox("CORE-11");
+    expect(landing).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
     expect(moves.scrolled).toEqual([]);
   } finally {
     moves.restore();
@@ -1586,26 +1317,6 @@ test("with no row marked, a row in sight under the list's sticky head is passed 
   }
 });
 
-// With no row marked, a row a press is still taking away is passed over as well: the focus would
-// drop with it. The window's top row is that row, so the focus goes to the row below it.
-test("with no row marked, the first row in sight that a press is still taking away is passed over", () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
-  const moves = watchMoves();
-  try {
-    pressInBar("Dismiss");
-    view.rerender(<PlacedList count={0} last={null} leaving={["CORE-10"]} listed={PLACED_KEYS} />);
-    const landing = rowBox("CORE-11");
-    expect(landing).toHaveFocus();
-    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-    expect(moves.scrolled).toEqual([]);
-  } finally {
-    moves.restore();
-    view.unmount();
-    laidOut();
-  }
-});
-
 // With no row marked and no row in sight - the press emptied the list - the list itself takes
 // the focus at its own stop, with no scroll, and the focus does not drop onto the page's body.
 test("with no row marked and no row left, the bar gone with the focus hands it to the list's own stop", () => {
@@ -1616,6 +1327,7 @@ test("with no row marked and no row left, the bar gone with the focus hands it t
     view.rerender(<PlacedList count={0} last={null} listed={[]} />);
     const list = screen.getByRole("list", { name: "Rows" });
     expect(list).toHaveFocus();
+    expect(list).toHaveAttribute("tabindex", "-1");
     expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
     expect(moves.scrolled).toEqual([]);
   } finally {

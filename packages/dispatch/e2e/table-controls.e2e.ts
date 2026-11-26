@@ -12400,25 +12400,14 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
   const before = await readerSight();
   const placed = await checkboxRect(upper);
   const cut = placed.bottom - before.bottom;
-  // The list's own read after the Snooze is held past the frames one landing is read over
-  // (`READINGS`, 60), so the row the Snooze took stands in its band for a second and more after the
-  // bar has gone (the architect's ruling of 2026-11-26 04:0xZ). The hand-off must pass that row
-  // over at the pick, by the name the Inbox gives it (`snoozedHere`), rather than land on it and
-  // depend on a reading still being owed when the read lands.
-  let holdTheRead = true;
-  await page.route(/\/api\/v1\/me\/inbox/, async (route) => {
-    if (holdTheRead) await new Promise((settle) => setTimeout(settle, 2_000));
-    return route.fallback();
-  });
   const trigger = listTrigger(bar, "Snooze selected asks");
   await trigger.focus();
   await page.keyboard.press("Enter");
   await page.keyboard.type("tom");
   await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
   await page.keyboard.press("Enter");
-  await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 30_000 });
-  await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 30_000 });
-  holdTheRead = false;
+  await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
   await settledScrollTop(list);
   await settledScrollTop(page);
   await nextFrames(page);

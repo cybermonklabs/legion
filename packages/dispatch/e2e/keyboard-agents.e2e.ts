@@ -593,6 +593,9 @@ test.describe("agents page", () => {
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-2");
+      // Main asserts the composer's own text after a pick: the pick writes the row's issue and
+      // leaves the draft as the reader left it, which is the mention the row typed.
+      await expect(field).toHaveValue(`${plannerMention} `);
       // The field is emptied first, since Escape over a written composer is its own discard
       // prompt.
       await field.fill("");
@@ -605,10 +608,6 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      // Main asserts the composer's own text here too: a pick of an issue writes the row's issue
-      // and leaves the draft as the reader left it. This row emptied the draft above, before
-      // Escape, so the text it leaves alone is the empty one.
-      await expect(field).toHaveValue("");
     } finally {
       await context.close();
     }

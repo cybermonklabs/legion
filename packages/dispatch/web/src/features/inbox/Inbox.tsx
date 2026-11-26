@@ -1880,10 +1880,16 @@ function InboxBody({
   // WebKit, eight times in eight repeats (builds Job `infra-3135-infra-3135-r29t-snp-vfht5`, which
   // read the hand-off's own answer). The name stands from the pick until the row leaves its band,
   // so the landing passes it over whatever the read's own pace.
+  /** Whether a press of the reader's is taking this row off the view: the one answer the bar's
+   *  hand-off is given and the one the hand's own hold reads (`seen`, below). A row named here is
+   *  never kept on the page for the hand in it: the hold that keeps a row under the reader's hand
+   *  would keep this one for the focus the hand-off parked on it, and the write that takes it away
+   *  would never land. */
+  const leavingNow = (id: string): boolean => dismissedHere(id) || snoozedHere.current.has(id);
   const landAtPlace = useLastMarkedPlace({
     control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
     lastMarked,
-    leaving: (id) => dismissedHere(id) || snoozedHere.current.has(id),
+    leaving: leavingNow,
     list: () => listScroller.current,
     order: () => rows().map((row) => row.dataset.inboxRow ?? ""),
     shown: bulkBarShown,
@@ -1912,7 +1918,11 @@ function InboxBody({
   // column does with a selected question the server takes away is `paneRow`
   // (`pane-selection.ts`). A row the reader dismissed under their own hand is not held either:
   // they asked for it to go, so it goes at once and the next row takes its place; and a row they
-  // answered goes once the server has recorded the answer.
+  // answered goes once the server has recorded the answer. A row a Snooze of theirs is over goes
+  // the same way, press by press the same rows the bar's hand-off is told of (`leavingNow`): the
+  // hand-off parks the focus on the mark of the row they marked last while its write is out, and a
+  // hold that read the hand alone would keep that row for that focus and never let the write
+  // land.
   //
   // The hold is told which rows the typed text excludes rather than being handed the narrowed
   // list: a row the reader's own typing drops must go at once, even with the pointer resting on
@@ -1927,7 +1937,7 @@ function InboxBody({
   const heldUnderWords =
     heldBefore !== undefined && heldBefore.id === handId && heldBefore.words === typed;
   const seen =
-    handId === undefined || handId === answered.current || dismissedHere(handId)
+    handId === undefined || handId === answered.current || leavingNow(handId)
       ? undefined
       : presented.current.find(
           (placed) =>

@@ -688,49 +688,6 @@ export const CLIPPING_OVERFLOW: Record<string, true> = {
   scroll: true,
 };
 
-/** Where the view the reader sees a control through stands: every box around it that clips it
- *  (`clippingBoxes`) with the window, each with its scroll. */
-export type ScrollPlaces = readonly {
-  readonly box: Element | null;
-  readonly left: number;
-  readonly top: number;
-}[];
-
-/** Where the view around `element` stands now, for a landing to give back the scroll it spends if
- *  the row it landed on is passed over later (`putScrollBack`). The window is the entry whose box
- *  is null. */
-export function takeScrollOf(element: Element): ScrollPlaces {
-  const places: { box: Element | null; left: number; top: number }[] = [
-    { box: null, left: window.scrollX, top: window.scrollY },
-  ];
-  for (const box of clippingBoxes(element)) {
-    places.push({ box, left: box.scrollLeft, top: box.scrollTop });
-  }
-  return places;
-}
-
-/** Puts the view back where `places` found it, leaving a box that has left the page alone. A box
- *  whose content has shrunk clamps the scroll it is given, as any scroll of it does. */
-export function putScrollBack(places: ScrollPlaces): void {
-  for (const { box, left, top } of places) {
-    if (box === null) window.scrollTo({ left, top });
-    else if (box.isConnected) {
-      box.scrollTop = top;
-      box.scrollLeft = left;
-    }
-  }
-}
-
-/** How far the view the reader sees `element` through has been scrolled: the offsets of every
- *  box that clips it (`clippingBoxes`) and the window's own, added. Two readings of it tell a
- *  view that moved under the reader - a commit's own anchoring moving a box - from one whose
- *  edges changed around rows that stayed where they were. */
-export function viewScrollOf(element: Element): number {
-  let scrolled = 0;
-  for (const { top } of takeScrollOf(element)) scrolled += top;
-  return scrolled;
-}
-
 /** The boxes around `element` that clip what overflows them, nearest first: every ancestor whose
  *  overflow clips (`CLIPPING_OVERFLOW`), short of the body and the root, whose overflow is the
  *  viewport's. `clips` keeps whether each ancestor read clips, so a walk that measures many

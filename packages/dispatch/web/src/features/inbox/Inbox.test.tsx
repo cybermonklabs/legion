@@ -4015,6 +4015,101 @@ test("a bulk Dismiss of a marked thread above the focused row leaves the window'
   }
 });
 
+// INFRA-3135, round 29 (the architect's condition (a) of 2026-11-26 05:5xZ): the bar's hand-off
+// parks the focus on the mark of the row the reader marked last while that row's write is out, and
+// the Inbox holds the row the reader's hand is in. A hold that read the hand alone would hold this
+// row for the hand-off's own focus, the write would never be let go of, and the landing would never
+// be made: the hold reads the same rows the hand-off is told of (`leavingNow`), so the row goes and
+// the landing lands on the row at its place.
+test("a bulk Dismiss lets the row it is taking away go though the hand-off parked the focus in it", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  const laidOut = layRowsDown(0);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    const order = rowIds();
+    const marked = order.slice(2, 4);
+    // The upper thread is marked last, as a reader marking upward does.
+    for (const id of [...marked].reverse()) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+
+    const parked = markOf(marked[0] as string);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    // The bar goes while the rows are still listed, so the focus is parked on the mark of the row
+    // marked last, which the press is taking away (`components/SelectionBar.tsx`).
+    await waitFor(() => expect(moves.focused.map((move) => move.target)).toContain(parked));
+    // The write is still out, and the rows go all the same.
+    await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
+    const landing = markOf(order[4] as string);
+    await waitFor(() => expect(landing).toHaveFocus());
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 2 });
+    });
+    unmount();
+    moves.restore();
+    laidOut();
+    reads();
+  }
+});
+
+// The same park and the same hold, under the bar's Snooze: the Inbox keeps a snoozed row in the
+// band the reader saw it in until the write lands, so the park stands on that row for as long as
+// the write is out. Once the write lands and the read drops the row, the hold lets it go and the
+// landing is made.
+test("a bulk Snooze lets the row it is taking away go though the hand-off parked the focus in it", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landed = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landed.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const laidOut = layRowsDown(0);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Question 12?");
+    const order = rowIds();
+    const marked = order[2] as string;
+    await user.click(markOf(marked));
+    await screen.findByText("1 selected");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+    // The row is still in its band while the write is out, so the focus is parked on its own mark
+    // (`components/SelectionBar.tsx`).
+    const parked = markOf(marked);
+    await waitFor(() => expect(moves.focused.map((move) => move.target)).toContain(parked));
+
+    await act(async () => {
+      landed.resolve();
+      await landed.promise;
+    });
+    await waitFor(() => expect(rowIds()).not.toContain(marked));
+    const landing = markOf(order[3] as string);
+    await waitFor(() => expect(landing).toHaveFocus());
+  } finally {
+    unmount();
+    moves.restore();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // The bar's Dismiss over two threads the reader marked and then scrolled above the window. Their
 // whole space goes, so every row after them moves up by it: the row now at the place of the row
 // marked last, and the next one, end wholly above the window. The bar's hand-off reads each row
@@ -4040,9 +4135,12 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
 
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
+    // The landing waits for the foot's own pass, which gives the list the room the bar's foot had
+    // back at a frame of its own (`hooks/useFootInset.ts`).
+    await afterFrameAndTasks();
     // The two rows after the marked ones end above the window, and the third ends at its top
-    // edge and shows none of itself: the fourth, which will stand at the window's top, is the
-    // nearest the reader will see.
+    // edge and shows none of itself: the fourth, which stands at the window's top, is the nearest
+    // the reader can see.
     const landing = markOf(order[7] as string);
     await waitFor(() => expect(landing).toHaveFocus());
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
@@ -4099,6 +4197,8 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
     expect(document.querySelector("[data-inbox-mark-all]")).toBeNull();
+    // The landing waits for the foot's own pass (`hooks/useFootInset.ts`).
+    await afterFrameAndTasks();
     const landing = markOf(order[8] as string);
     await waitFor(() => expect(landing).toHaveFocus());
     expect(window.scrollY).toBe(5 * LAID_ROW_PX - MARK_ALL_LINE);
