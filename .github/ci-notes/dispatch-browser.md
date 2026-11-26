@@ -1178,11 +1178,12 @@ set compared against a committed baseline, in light and in dark, at a desktop wi
 of them again at a phone width - twenty-three pages and six, so fifty-eight comparisons, in the
 `visual` and `visual-phone` projects - and each state of the command bar's design compared
 against its own, in the `visual-bar` project (packages/dispatch/e2e/going-bar.visual.e2e.ts):
-fourteen rows, one per state, which take twenty-seven shots, since ten of the rows shoot their
-state more than once, those of states 2, 3, 4 and 6 over the page and again in the panel at the
-side. Eighty-five baselines, which is the number of PNGs under
-`packages/dispatch/e2e/__screenshots__`: the pages' fifty-eight and the bar's twenty-seven (the
-upload's section below says how a new baseline reaches the tree).
+fourteen rows, one per state, which take twenty-eight shots, since eleven of the rows shoot their
+state more than once: among them, those of states 2, 3, 4 and 6 over the page and again in the
+panel at the side, and that of state 10 in the panel at its side width and again widened. Eighty-six
+baselines, which is the number of PNGs under `packages/dispatch/e2e/__screenshots__`: the pages'
+fifty-eight and the bar's twenty-eight (the upload's section below says how a new baseline
+reaches the tree).
 
 The bar's rows draw what only a model's answer makes, so the stack this job starts is the
 models lane's: packages/dispatch/e2e/visual-run.sh sets `DISPATCH_E2E_MODELS=fake` itself, so
