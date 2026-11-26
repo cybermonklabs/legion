@@ -162,8 +162,11 @@ func TestAVisibleKeptProjectAnswerExpiresWhileDispatchIsDown(t *testing.T) {
 
 	r.clock.advance(time.Nanosecond)
 	r.hidden(t, "PRIV", keptAda, "at the kept-answer bound")
-	if got := r.projectUnchecked(t, "visible"); got != 1 {
-		t.Fatalf(`broker_project_visibility_unchecked_total{kept="visible"} at the bound = %d, want 1: the expired answer is not served`, got)
+	if got := r.projectUnchecked(t, "stale"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="stale"} at the bound = %d, want 1: the expired answer is refused stale`, got)
+	}
+	if warned := r.warned(projectaccess.KeptStaleProjectMessage, keptAda); len(warned) != 1 {
+		t.Fatalf("the expired visible read logged %v; want one WARN %q", warned, projectaccess.KeptStaleProjectMessage)
 	}
 }
 
@@ -189,8 +192,43 @@ func TestAPublicKeptProjectAnswerExpiresWhileDispatchIsDown(t *testing.T) {
 
 	r.clock.advance(time.Nanosecond)
 	r.hidden(t, "PUB", keptAda, "at the kept-answer bound")
-	if got := r.projectUnchecked(t, "public"); got != 1 {
-		t.Fatalf(`broker_project_visibility_unchecked_total{kept="public"} at the bound = %d, want 1: the expired answer is not served`, got)
+	if got := r.projectUnchecked(t, "stale"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="stale"} at the bound = %d, want 1: the expired answer is refused stale`, got)
+	}
+	if warned := r.warned(projectaccess.KeptStaleProjectMessage, keptAda); len(warned) != 1 {
+		t.Fatalf("the expired public read logged %v; want one WARN %q", warned, projectaccess.KeptStaleProjectMessage)
+	}
+}
+
+// TestAKeptNoProjectAnswerExpiresWhileDispatchIsDown: while Dispatch is down, a kept no-project
+// answer (Dispatch answered a key as no project) serves until KeptAnswerTTL and not at it. At the
+// bound the broker refuses rather than reading the key as hiding nothing, since a private project
+// may have been made under it before the outage (Security[authz]). The refusal is counted and
+// logged stale.
+//
+// The fault: bounding only public and visible answers; the kept no-project answer is still served
+// as no project at the bound, and the test fails naming that read.
+func TestAKeptNoProjectAnswerExpiresWhileDispatchIsDown(t *testing.T) {
+	st := storetest.Open(t)
+	dispatch := projectaccesstest.NewServer(t, keptProjects(), keptKinds())
+	r := keepingClientOf(dispatch, st)
+	r.readAll(t, map[string][]string{keptAda: {"SHA"}})
+	dispatch.SetDown(true)
+
+	r.clock.advance(projectaccess.CacheTTL)
+	r.clock.advance(projectaccess.KeptAnswerTTL - projectaccess.CacheTTL - time.Nanosecond)
+	r.noProject(t, "SHA", keptAda, "a nanosecond before the kept-answer bound")
+	if got := r.projectUnchecked(t, "missing"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="missing"} before the bound = %d, want 1`, got)
+	}
+
+	r.clock.advance(time.Nanosecond)
+	r.hidden(t, "SHA", keptAda, "at the kept-answer bound")
+	if got := r.projectUnchecked(t, "stale"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="stale"} at the bound = %d, want 1: the expired no-project answer is refused stale`, got)
+	}
+	if warned := r.warned(projectaccess.KeptStaleProjectMessage, keptAda); len(warned) != 1 {
+		t.Fatalf("the expired no-project read logged %v; want one WARN %q", warned, projectaccess.KeptStaleProjectMessage)
 	}
 }
 
