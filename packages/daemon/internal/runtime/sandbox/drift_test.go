@@ -101,11 +101,11 @@ func shapedOptions(o *Options) {
 	o.Resources = PodResources{
 		Issue: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"),
+				corev1.ResourceCPU: resource.MustParse("4"), corev1.ResourceMemory: resource.MustParse("12Gi"),
 				corev1.ResourceEphemeralStorage: resource.MustParse("6Gi"),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"),
+				corev1.ResourceCPU: resource.MustParse("4"), corev1.ResourceMemory: resource.MustParse("12Gi"),
 				corev1.ResourceEphemeralStorage: resource.MustParse("80Gi"),
 			},
 		},
@@ -125,12 +125,12 @@ func shapedOptions(o *Options) {
 // which names no storage class: its disk stays on runtime.kubernetes.storage_class.
 const (
 	shapedGVisorShape = `{"image":"` + testImage + `",` +
-		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
+		`"resources":{"limits":{"cpu":"4","ephemeral-storage":"80Gi","memory":"12Gi"},"requests":{"cpu":"4","ephemeral-storage":"6Gi","memory":"12Gi"}},` +
 		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
 		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
 		`"disk":"200Gi"}`
 	shapedMicroVMShape = `{"image":"` + testImage + `",` +
-		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
+		`"resources":{"limits":{"cpu":"4","ephemeral-storage":"80Gi","memory":"12Gi"},"requests":{"cpu":"4","ephemeral-storage":"6Gi","memory":"12Gi"}},` +
 		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
 		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
 		`"disk":"200Gi",` +
@@ -138,13 +138,13 @@ const (
 		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
 		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
 	shapedMicroVMShapeWithoutMetadata = `{"image":"` + testImage + `",` +
-		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
+		`"resources":{"limits":{"cpu":"4","ephemeral-storage":"80Gi","memory":"12Gi"},"requests":{"cpu":"4","ephemeral-storage":"6Gi","memory":"12Gi"}},` +
 		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
 		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
 		`"disk":"200Gi",` +
 		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo"}}`
 	shapedKeptMicroVMShape = `{"image":"` + testImage + `",` +
-		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
+		`"resources":{"limits":{"cpu":"4","ephemeral-storage":"80Gi","memory":"12Gi"},"requests":{"cpu":"4","ephemeral-storage":"6Gi","memory":"12Gi"}},` +
 		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
 		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
 		`"disk":"200Gi",` +

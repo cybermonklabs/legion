@@ -614,28 +614,28 @@ func (m *Machine) adoptPodLoad() {
 // worker.
 //
 // A waiting try is a wake whose turn is the grant rather than a moment of the pacing's
-// (wake.podStartWait): it waits on the machine as a wake the pacing delays over no process does
-// (delayWake), holding the rest of the launch from that grant on (launchTries with the grant), and
-// the decision ends where launchTries returns at the gate, so nothing waits under the machine's
-// lock. The claim is written launching at this try's generation with no process already: the try
-// wrote it before its backoff (writeTry), and the launch let its process go before its first try
-// (launchNow). The grant reaches the machine as a timer's firing does: the gate posts notify at the
-// grant on a goroutine of its own (PodStarts.post), outside the gate's lock and holding no
-// machine's, and notify hands the machine a Timer of TimerPodStart (fire), whose decision runs the
-// launch on (podStartDue). The timer's entry is the arming that event is fenced by. The machine
-// records the hold (Machine.podStartWait), so whatever drops the wake takes the start out of the
-// gate at the end of its decision (endPodStartWait). The daemon's stop leaves the start where it
-// is, since the gate ends with the daemon, and a grant that reaches the machine after that stop
-// starts nothing (podStartDue).
+// (wake.podStartWait): it waits on the machine as a paced wake over no process does
+// (waitOnMachine), holding the rest of the launch from that grant on (launchTries with the grant),
+// and the decision ends where launchTries returns at the gate, so nothing waits under the
+// machine's lock. The claim is written launching at this try's generation with no process
+// already: the try wrote it before its backoff (writeTry), and the launch let its process go
+// before its first try (launchNow). The grant reaches the machine as a timer's firing does: the
+// gate posts notify at the grant on a goroutine of its own (PodStarts.post), outside the gate's
+// lock and holding no machine's, and notify hands the machine a Timer of TimerPodStart (fire),
+// whose decision runs the launch on (podStartDue). The timer's entry is the arming that event is
+// fenced by. The machine records the hold (Machine.podStartWait), so whatever drops the wake takes
+// the start out of the gate at the end of its decision (endPodStartWait). The daemon's stop leaves
+// the start where it is, since the gate ends with the daemon, and a grant that reaches the machine
+// after that stop starts nothing (podStartDue).
 //
 // The wake is a held try's (heldTryWake) that carries the hold of its pod's start
 // (wake.podStartWait): its run is the launch from that grant on while the wake carries the hold,
 // and a fresh try of the same launch, asked of the gate anew, once it carries none: the pause's
 // gate holds the wake in place of its wait where the project is paused at the grant
 // (podStartDue), and its let-out after the pause runs it (letOutHeldLaunch, runWake), without a
-// second token or wake line, since the launch passed the wake gate before it waited (wake.paid,
-// wake.ran). Its state is the claim's as the wait leaves it, launching, which a request that does
-// not wait restores once the pause's gate holds the wake (dropWakeFor).
+// second place in the pacing or a second wake line, since the launch passed the wake gate before
+// it waited (wake.paid, wake.ran). Its state is the claim's as the wait leaves it, launching,
+// which a request that does not wait restores once the pause's gate holds the wake (dropWakeFor).
 //
 // A restart finds a claim whose launch waited here stored launching with no process, as it
 // finds one the wake pacing delayed over no process: internal/daemon's supervisor.restore writes

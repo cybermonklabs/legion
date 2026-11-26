@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // The tree lifecycle (internal/treelifecycle) is the store's barrier between a tree's runnable
@@ -22,9 +23,9 @@ import (
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
 // cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced. turn is the moment the request
-// already reserved for this launch in the pacing (RequestSpawn.Turn), the zero time for every
-// request that reserved none (launchAfter).
+// its own event, so a request that carries no such field is paced. place is the place the
+// request's caller already took for this launch in the pacing (RequestSpawn.Place), nil for every
+// request that took none (launchAfter).
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -35,7 +36,7 @@ import (
 // process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
-func (m *Machine) revive(ctx context.Context, exempt bool, turn time.Time, admitted func()) error {
+func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
@@ -44,7 +45,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, turn time.Time, admit
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, true, turn, noEnd)
+	return m.launchAfter(ctx, false, exempt, true, place, noEnd)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -79,7 +80,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // the credit of a refused launch of this lane is one nothing is left waiting for: a credit is
 // taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a delayed
 // wake takes it off the machine before anything is rechecked (wakeNow, runDelayedLaunchNow), and
-// no decision of this package raises a launch over one still waiting (delayWake lists them).
+// no decision of this package raises a launch over one still waiting (endRefreshLane lists them).
 //
 // Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
 // retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
@@ -143,7 +144,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 // turn on. Its one caller is the refusal a delayed launch's turn meets (runWake), over a claim
 // that keeps its process with the launch that was to replace it gone: the delay disarmed the boot
 // interval, the registration deadline, the probe interval and the turn bound of that process
-// (delayWake), the claim keeps it and the wake is spent, so a booting process whose agent never
+// (waitOnMachine), the claim keeps it and the wake is spent, so a booting process whose agent never
 // registers would meet no deadline and a prompt the agent acknowledged would wait for its turn
 // on nothing.
 //

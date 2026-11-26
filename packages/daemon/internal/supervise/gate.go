@@ -371,6 +371,21 @@ func (m *Machine) reclaimCredit(credit *RefreshCredit) {
 // raises it to the end of the turn that runs it (laneWakeWaiting). The intent goes whatever the
 // decision did with it: it names one launch and no other, and a retry that still owes one carries
 // it in its own closure (retryHolding).
+//
+// So the credit outlives a delay of this lane's own kind and no other (dispatch://INFRA-2712 R1):
+// that wake is the one the credit was taken for, whether it is delayed for the first time or taken
+// up again (reserveWake, delayWakeAgain). A delay of any other kind replaces that wake — the second
+// launch raised over a claim whose refresh still waits, which reserveWake states — so the end of
+// that decision gives the credit back, since a credit whose wake is gone is worse than a credit
+// merely lost (RefreshGate).
+//
+// No decision of this package raises that second launch over a delayed refresh today: the lane
+// returns over a claim that already holds a wake of any kind, a stale registration raises nothing
+// over one whose launch waits, every observation and the stall backstop are held back while a
+// launch waits, and every path that lets the claim's process go drops the wake with it
+// (refreshPlugin, staleRegistration, judge, probe, backstopStalledTurn, letGo). A path that raises
+// one later is held to the rule here, at the end of its decision, and the delay records nothing
+// for it (waitOnMachine).
 func (m *Machine) endRefreshLane() {
 	if !m.laneWakeWaiting() {
 		m.releaseRefresh()

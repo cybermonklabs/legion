@@ -95,7 +95,7 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 	}
 	if m.launchWaits() {
 		m.log.Info("supervise: the process a waiting launch replaces is not read; its turn replaces that process",
-			"incarnation", m.claim.Locator.Incarnation, "due", m.wake.at)
+			"incarnation", m.claim.Locator.Incarnation, "due", m.wake.due())
 		return ProcessReplacedByLaunch
 	}
 	reading, cancel := context.WithTimeout(ctx, processReadBound)

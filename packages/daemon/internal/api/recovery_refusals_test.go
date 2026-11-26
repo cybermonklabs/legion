@@ -13,12 +13,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // The windows both of the controller's claim recoveries are read in, and the fixtures that
@@ -121,17 +121,11 @@ func delayedRelaunchCauses() []delayedRelaunchCause {
 //
 // The pacing is installed before the claim is created, because a machine takes its deps where
 // it is built, and it holds nothing until the verdict below: the launches that make the claim
-// ready run as they are raised. The turn it then gives is an hour away and this harness's clock
+// ready run as they are raised. The turn it then gives is minutes away and this harness's clock
 // fires no timer at all (stillClock), so the wake stays delayed for the rest of the test.
 func workingUnderADelayedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
-	var delay atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
-		if delay.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	delay := pacedUntilDelayed(h)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
 	release := conn.HoldCompact()
@@ -141,7 +135,7 @@ func workingUnderADelayedRelaunch(t *testing.T, h *harness, observation runtime.
 	}()
 	waitForCompacting(t, h, token)
 
-	delay.Store(true)
+	delay()
 	m, _ := h.supervisor.Machine(token)
 	locator := m.Claim().Locator
 	if locator == nil {
@@ -180,6 +174,26 @@ func workingUnderADelayedRelaunch(t *testing.T, h *harness, observation runtime.
 			view.SuspensionHeldBy)
 	}
 	return token
+}
+
+// pacedUntilDelayed sets the harness's wake pacing to a pacer on the machines' own clock that lets
+// every paced launch out at its join until delay is called, and delays every one after it: the
+// limiter's burst holds every launch the fixtures make before the delay, and delay reserves a whole
+// burst more, so every token is spent and a place joined after waits for a turn minutes out (one
+// for each launch the fixtures made, and one more), which a harness clock that fires no timer
+// (stillClock) never gives. It is set before any claim is created, because a machine takes its
+// deps where it is built. The burst is the pace the wake lines name.
+func pacedUntilDelayed(h *harness) (delay func()) {
+	const burst = 64
+	limiter := wakepace.New(1, burst, nil)
+	clock := h.supervisor.deps.Clock
+	pacer := supervise.NewPacer(limiter, clock)
+	h.supervisor.deps.WakePace = supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: 1, Burst: burst}
+	return func() {
+		for range burst {
+			limiter.Reserve(clock.Now())
+		}
+	}
 }
 
 // A claim whose relaunch waits its paced turn is a claim between states with a launch in
@@ -243,16 +257,10 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 // TheLaunchsTurn in supervise).
 func workingUnderADelayedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
-	var delay atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
-		if delay.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	delay := pacedUntilDelayed(h)
 	token := idleOnTheLadder(t, h)
 
-	delay.Store(true)
+	delay()
 	m, _ := h.supervisor.Machine(token)
 	stale := m.Claim()
 	stale.PluginContract = DaemonAPIVersion() - 1
@@ -1163,13 +1171,7 @@ func TestARecoveryStepThatMeetsADelayRaisedAfterItsViewNamesTheLaunchInFlight(t 
 	} {
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			var delay atomic.Bool
-			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
-				if delay.Load() {
-					return now.Add(time.Hour)
-				}
-				return now
-			}}
+			delay := pacedUntilDelayed(h)
 			token := readyImplementer(t, h)
 			m, _ := h.supervisor.Machine(token)
 			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
@@ -1179,7 +1181,7 @@ func TestARecoveryStepThatMeetsADelayRaisedAfterItsViewNamesTheLaunchInFlight(t 
 			if before.State != supervise.StateWorking || before.WakeWaiting != nil {
 				t.Fatalf("the view is of a claim %s with wake %+v, want one in a turn with nothing delayed", before.State, before.WakeWaiting)
 			}
-			delay.Store(true)
+			delay()
 			if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
 				Locator: *before.Locator, Kind: runtime.Gone, At: stillClock{}.Now(),
 			}}); err != nil {

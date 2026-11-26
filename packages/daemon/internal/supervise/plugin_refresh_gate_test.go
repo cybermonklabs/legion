@@ -250,7 +250,7 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 	kept := h.locator()
 
 	// The task is sent and the agent acknowledges it, which is what arms the bound the delay
-	// takes away (acked, delayWake).
+	// takes away (acked, waitOnMachine).
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
 	acked := h.wantPrompts(1)[0].DeliveryID
 
@@ -699,7 +699,7 @@ func (h *harness) taskTheAgentTook() string {
 // confirmed (turnEnded's resultPending branch, turnOver). The start names the delivery, as a
 // reconnecting shim's replay of a start it already saw does (turnStarted): a bare start inside a
 // delayed wake's wait is attributed to no delivery at all, because the delay disarmed the wait for
-// the prompt (delayWake).
+// the prompt (waitOnMachine).
 func (h *harness) turnEndsWithItsResultToCome(sent string) {
 	h.t.Helper()
 	h.must(StreamTurnStart{Claim: h.token, DeliveryID: sent})

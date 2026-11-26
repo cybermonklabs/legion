@@ -408,10 +408,11 @@ const pauseStoppedRole = claim.RoleImplementer
 
 var pauseLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// pacedUntil is a wake pacing that lets every paced launch out at letOut. An operator's resume is
-// not paced (supervise's exemptWake).
-func pacedUntil(letOut time.Time) supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(time.Time) time.Time { return letOut }}
+// pacedUntil is a wake pacing, built on the rig's clock, that lets the first paced launch out at
+// letOut (delayedFor, from the clock's time when the rig builds it). An operator's resume is not
+// paced (supervise's exemptWake).
+func pacedUntil(letOut time.Time) func(supervise.Clock) supervise.WakePace {
+	return func(clock supervise.Clock) supervise.WakePace { return delayedFor(clock, letOut.Sub(clock.Now())) }
 }
 
 // heldLaunchLetOut is what the round waits for while the wake pacing delays the held launch of
@@ -695,9 +696,9 @@ func TestALaunchUnderARoundWithNoProcessIsLaunchedOnce(t *testing.T) {
 		members []podUpdateRole
 		// resumeAt is when the claim is resumed.
 		resumeAt time.Time
-		// pace is the wake pacing, which delays the launch until a minute past the bound; the
-		// zero pace launches where the resume is made.
-		pace supervise.WakePace
+		// pace is the wake pacing, which delays the launch until a minute past the bound; nil
+		// launches where the resume is made.
+		pace func(supervise.Clock) supervise.WakePace
 		// alongside is a second launching claim, of the first's shape, resumed and launched at
 		// once with the first.
 		alongside claim.Role
@@ -772,7 +773,7 @@ func TestALaunchUnderARoundWithNoProcessIsLaunchedOnce(t *testing.T) {
 				rig.intoRoundPod(launching)
 				rig.handle(launching, rig.lookStart(launching))
 			}
-			if tc.pace.Reserve != nil {
+			if tc.pace != nil {
 				rig.wantLaunchDelayed(launching, launchTurn)
 				// The sweep before the bound, while the launch waits for its turn and no machine
 				// is in a decision.

@@ -46,13 +46,13 @@ const (
 
 // refreshDelayed is the window a plugin wave leaves most of a fleet in: a live claim whose plugin
 // this daemon does not speak, with the lane's relaunch reserved and waiting its paced turn over
-// the process the claim still runs (refreshPlugin, relaunchStale, delayWake). It answers the
+// the process the claim still runs (refreshPlugin, relaunchStale, waitOnMachine). It answers the
 // harness and the wake that waits.
 //
 // The walk to the state asked for spends the limiter's burst, so the relaunch raised after it
 // is one the pacing holds rather than one that runs where it is raised, which is the whole of
 // what these tests are about. The claim keeps the process it records and the state it is in,
-// because the delay writes neither (delayWake). PluginRelaunchable is left as the harness leaves
+// because the delay writes neither (waitOnMachine). PluginRelaunchable is left as the harness leaves
 // it, false: the lane's own pass never reads it — the daemon's pass and the registration path
 // do (refreshStalePlugins, staleRegistration) — so a test that walks a relaunched claim back to
 // ready has its registration accepted rather than refused for a contract this harness gives it
@@ -330,7 +330,7 @@ func TestTheRetryOfARefusedRefreshWaitsUnderTheLanesOwnKind(t *testing.T) {
 	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
 	h.m.deps.Store = store
 	// The window the refusal's retry answers: the claim live with no process of its own, which
-	// is where a delay that launched nothing leaves one (delayWake).
+	// is where a delay that launched nothing leaves one (waitOnMachine).
 	h.m.claim.State, h.m.claim.Locator = StateLaunching, nil
 
 	h.advance(waiting.At.Sub(h.clock.Now()))
@@ -352,12 +352,12 @@ func TestTheRetryOfARefusedRefreshWaitsUnderTheLanesOwnKind(t *testing.T) {
 	queueAhead(h, 4)
 	h.advance(testProbe)
 
-	retry := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim().PluginRelaunchFor; got != 0 {
 		t.Fatalf("the claim whose retry waits its turn is marked for %d, want no mark until that turn starts the process", got)
 	}
 
-	h.advance(retry.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	if got := h.claim().PluginRelaunchFor; got != refreshContract {
@@ -381,10 +381,10 @@ func (h *harness) wantRetryRunsUnderTheLanesKind(which string) {
 	queueAhead(h, 4)
 	h.advance(testProbe)
 
-	retry := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 	h.wantStarts(h.token, 1)
 
-	h.advance(retry.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	if got := h.store.load(h.token).PluginRelaunchFor; got != refreshContract {
@@ -503,9 +503,9 @@ func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *t
 	queueAhead(h, 4)
 	h.must(RequestRuleResume{Claim: h.token, Reason: "it owns its issue's phase"})
 
-	resumed := h.wantWaitingWake(WakeLaunch)
+	h.wantWaitingWake(WakeLaunch)
 
-	h.advance(resumed.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	h.wantWakeLine(h.token, "kind=launch", "waited=true")
@@ -583,19 +583,19 @@ func TestTheRetryOfARefusedRefreshTurnRefusedAgainWaitsUnderTheLanesOwnKind(t *t
 	h, _ := refreshRetryArmed(t)
 	// A wave of a daemon's own claims is queued ahead of the first retry, so the launch it
 	// raises waits a turn of its own: the refresh wake over a claim recording no process that
-	// this road is driven through (launchAfter, delayWake).
+	// this road is driven through (launchAfter, waitOnMachine).
 	queueAhead(h, 4)
 
 	h.advance(testProbe)
 
-	delayed := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 
 	// The store cannot answer the lifecycle check that wake's turn makes: the turn starts
 	// nothing and the retry it arms holds the intent the wake carried (runWake, retryHolding).
 	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
 	h.m.deps.Store = store
 
-	h.advance(delayed.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 1)
 	if held := h.m.View().WakeWaiting; held != nil {

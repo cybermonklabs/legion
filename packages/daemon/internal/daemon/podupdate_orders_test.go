@@ -161,6 +161,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // orderPause is the project's pause flag as the order table drives it (supervise.Deps.Paused):
@@ -1142,20 +1143,41 @@ var (
 // (wokenDelayed, delayPace): ten minutes into the round, before its bound.
 var delayedWakeLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// delayPace is a wake pacing that lets every paced launch out at once until delay is set, and
-// from then on lets each out at delayedWakeLetOut (supervise.WakePace): the tester's wakes before
-// the round run as each is raised, and the woken implementer's launch waits in the pacing with no
-// process and no pod, as a wave of wakes leaves it.
-type delayPace struct{ delay atomic.Bool }
+// delayPace is a wake pacing that lets every paced launch out at once until delay, and from then
+// on lets the next out at delayedWakeLetOut: the tester's wakes before the round run as each is
+// raised, and the woken implementer's launch waits in the pacing with no process and no pod, as a
+// wave of wakes leaves it. It is a pacer on the rig's clock over a limiter whose burst holds every
+// launch before the delay (delayBurst); delay spends what is left of the burst and spreads the
+// release after it to that moment. A fixed-moment Reserve, which these tests once handed the
+// machines, has no pacer equal.
+type delayPace struct {
+	clock   supervise.Clock
+	limiter *wakepace.Limiter
+	spread  atomic.Int64
+}
 
-// pace is the pacing a rig's machines read (podUpdateRigOptions.wakePace).
-func (p *delayPace) pace() supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-		if p.delay.Load() {
-			return delayedWakeLetOut
-		}
-		return now
-	}}
+// delayBurst is how many launches delayPace lets out at once before its delay.
+const delayBurst = 64
+
+// pace builds the pacing a rig's machines read (podUpdateRigOptions.wakePace) on the rig's clock.
+func (p *delayPace) pace(clock supervise.Clock) supervise.WakePace {
+	p.clock = clock
+	p.limiter = wakepace.New(1, delayBurst, func(time.Duration) time.Duration { return time.Duration(p.spread.Load()) })
+	pace := wakePaceOf(p.limiter, clock)
+	pace.Rate, pace.Burst = 1, delayBurst
+	return pace
+}
+
+// delay spends what is left of the burst at the clock's now, and spreads the next paced release to
+// delayedWakeLetOut. The first reservation past the burst is a paced release at the bucket's base,
+// and the one after it comes one interval later, which the spread moves to the let-out.
+func (p *delayPace) delay() {
+	now := p.clock.Now()
+	first := p.limiter.Reserve(now)
+	for !first.After(now) {
+		first = p.limiter.Reserve(now)
+	}
+	p.spread.Store(int64(delayedWakeLetOut.Sub(first.Add(p.limiter.Interval()))))
 }
 
 // suspendedTo is orderedTo for a member the daemon or the operator suspended before the round's
@@ -1202,7 +1224,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	var opts podUpdateRigOptions
 	pacing := &delayPace{}
 	if kind == wokenDelayed {
-		opts.wakePace = pacing.pace()
+		opts.wakePace = pacing.pace
 	}
 	rig := newPodUpdateRigWith(t, opts, podUpdateRole{role: implementer, state: supervise.StateQueued}, podUpdateRole{role: tester, state: supervise.StateQueued})
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -1311,7 +1333,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 			t.Fatalf("the resumed implementer is %s at %+v, want it launching in pod %s, its agent not registered", c.State, c.Locator, podUpdatePod)
 		}
 	case wokenDelayed:
-		pacing.delay.Store(true)
+		pacing.delay()
 		rig.intoPod(implementer, podUpdatePod)
 		launched := len(rig.launchesOf(implementer))
 		rig.handle(implementer, rig.wakeFor(implementer))

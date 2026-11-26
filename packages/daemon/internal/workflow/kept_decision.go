@@ -146,18 +146,36 @@ func (e *Engine) UnclaimedKeptTask(ctx context.Context, tx pgx.Tx, root record.I
 // no architect hands them over (HandOverKept). A nil kept enqueues payload as enqueueAt does.
 func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
 	kept *record.KeptDecisions, at time.Time) error {
+	if kept == nil {
+		row, err := queuedRow(ctx, tx, store, issue, payload, at)
+		if err != nil {
+			return err
+		}
+		return store.Enqueue(ctx, tx, row)
+	}
+	_, err := enqueueNamingID(ctx, tx, store, issue, tree, payload, kept, at)
+	return err
+}
+
+// enqueueNamingID is EnqueueNaming for a caller that needs the id of the row it writes: the row
+// is always written with that id kept (Store.EnqueueID), which refuses another project's key where
+// Store.Enqueue skips it, and kept, where it is not nil, is claimed for that row.
+func enqueueNamingID(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
+	kept *record.KeptDecisions, at time.Time) (int64, error) {
 	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
-		return err
-	}
-	if kept == nil {
-		return store.Enqueue(ctx, tx, row)
+		return 0, err
 	}
 	id, err := store.EnqueueID(ctx, tx, row)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return store.ClaimKeptDecisions(ctx, tx, tree, *kept, id)
+	if kept != nil {
+		if err := store.ClaimKeptDecisions(ctx, tx, tree, *kept, id); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }
 
 // EnqueueNaming is EnqueueNaming over the engine's store.
@@ -228,7 +246,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
+		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now); err != nil {
 			return err
 		}
 	}
