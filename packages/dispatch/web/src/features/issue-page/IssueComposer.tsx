@@ -760,6 +760,8 @@ function CriterionForm({
         <div className={`${pageComposer.line} flex-wrap`}>
           <MentionField
             body={line.text}
+            // The box's own words, as on its write line: what its keys do, and its picker's.
+            description={CONTROL_LABELS.composer_keys}
             disabled={line.pending}
             issueKey={issueKey}
             label={CONTROL_LABELS.write_criterion}
@@ -769,6 +771,7 @@ function CriterionForm({
             // Enter sends and Shift+Enter breaks the line, as on the box's other lines.
             onKeyDown={(event) => sendOnEnter(event, pickerOpen, line.send)}
             onPickerOpenChange={setPickerOpen}
+            pickerWords={PICKER}
             placeholder={placeholderOf("criterion", place.phone)}
             writing={dispatchWritingBox("issue-page-composer", "criterion")}
           />
