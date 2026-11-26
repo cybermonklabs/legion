@@ -50,6 +50,7 @@ import {
   type DrawnRow,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   nodeRow,
   PHONE,
@@ -164,10 +165,13 @@ const TYPED = {
 } as const;
 
 /** The page opened on issue `key` with every branch unfolded, so a node's row is drawn wherever
- *  the tree places it. */
+ *  the tree places it. The unfolding ends by leaving the focus for the page
+ *  (`unfoldEveryBranch`), and an opening that had not placed its focus yet would take it back
+ *  for its row, so the page's opening lands first (`expectOpeningLanded`). */
 async function openOutline(page: Page, key: string): Promise<void> {
   await gotoIssue(page, `/issues/${key}`);
   await expectIssuePageDrawn(page);
+  await expectOpeningLanded(page);
   await unfoldEveryBranch(page);
 }
 
@@ -582,10 +586,12 @@ test("a person writes a criterion under the words they are reading @phone", asyn
       })
       .toBe(true);
 
-    // (3) The same after a reload, and Spec draws it as a row, its count one higher.
+    // (3) The same after a reload, and Spec draws it as a row, its count one higher. The reload
+    // is a load, so the page's opening lands before the unfolding leaves the focus for the page.
     await page.reload();
     await issueRead(page);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     await expect
       .poll(() => parentOfRow(page, criterion), {
@@ -598,7 +604,9 @@ test("a person writes a criterion under the words they are reading @phone", asyn
     expect(await presetCountOf(page, "spec"), "Spec does not count the criterion").toBe(
       specBefore + 1
     );
-    await pickPreset(page, PRESET_NAMES.conversation);
+    // The outline drawn again places its opening once its reads have answered, so its load
+    // settles here, before (5)'s unfolding leaves the focus for the page.
+    await pickSettled(page, watchApiRequests(page), PRESET_NAMES.conversation);
     await expectIssuePageDrawn(page);
 
     // (4) The header's chip reads the version alice's approval stood at just before the send
@@ -866,7 +874,7 @@ test("a reading stands under what it reads and a child's check under the stateme
       await plainWordsOffences(page),
       "under Decisions an element but a kind tag reads a model's word, or the text holds a uuid"
     ).toEqual([]);
-    await pickPreset(page, PRESET_NAMES.conversation);
+    await pickSettled(page, traffic, PRESET_NAMES.conversation);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     expect(
@@ -1734,7 +1742,8 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
       "the criterion under the overtaken question draws a gap"
     ).toHaveCount(0);
 
-    // (3) The same in Graph, whose read holds no `kind=` filter and so holds the question's block
+    // (3) The same in Graph, whose read names no kind and so holds the question's block and its
+    // ask's node, and draws the question by the read id of the one it holds first
     // (`questionReadId`).
     await pickSettled(page, traffic, PRESET_NAMES.graph);
     const graphAnswer = await heldTreeAnswer(graph, "Graph's load", holdsOvertaken);
