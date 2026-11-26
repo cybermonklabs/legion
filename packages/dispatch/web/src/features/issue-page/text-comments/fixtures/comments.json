@@ -265,7 +265,7 @@
         "mark_id": "threadsS1[0]",
         "orphaned": false,
         "quote": "thread",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -331,7 +331,7 @@
         "mark_id": "threadsS1[1]",
         "orphaned": false,
         "quote": "words",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -397,7 +397,7 @@
         "mark_id": "threadsS1[2]",
         "orphaned": false,
         "quote": "answers",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -504,7 +504,7 @@
         "mark_id": "threadsS2[0]",
         "orphaned": false,
         "quote": "first",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -552,7 +552,7 @@
         "mark_id": "threadsS2[1]",
         "orphaned": false,
         "quote": "marker",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -600,7 +600,7 @@
         "mark_id": "agentComment",
         "orphaned": false,
         "quote": "planner's notes",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -650,7 +650,7 @@
         "mark_id": "resolvedThread",
         "orphaned": false,
         "quote": "settled question",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -702,7 +702,7 @@
         "mark_id": "orphanedThread",
         "orphaned": true,
         "quote": "temporary blue note",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -846,7 +846,7 @@
         "mark_id": "decisionComment",
         "orphaned": false,
         "quote": "space",
-        "version": 4
+        "version": 5
       },
       "answers": null,
       "artifact_id": null,
@@ -894,7 +894,7 @@
         "mark_id": "change",
         "orphaned": false,
         "quote": "narrow spacing",
-        "version": 4
+        "version": 5
       },
       "answers": null,
       "artifact_id": null,
@@ -942,7 +942,7 @@
         "mark_id": "pagedChildThread",
         "orphaned": false,
         "quote": "note 55",
-        "version": 4
+        "version": 5
       },
       "answers": null,
       "artifact_id": null,
@@ -1551,7 +1551,7 @@
         "mark_id": "threadsS1[0]",
         "orphaned": false,
         "quote": "thread",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -1627,7 +1627,7 @@
         "mark_id": "threadsS1[1]",
         "orphaned": false,
         "quote": "words",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -1703,7 +1703,7 @@
         "mark_id": "threadsS1[2]",
         "orphaned": false,
         "quote": "answers",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -1820,7 +1820,7 @@
         "mark_id": "threadsS2[0]",
         "orphaned": false,
         "quote": "first",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -1878,7 +1878,7 @@
         "mark_id": "threadsS2[1]",
         "orphaned": false,
         "quote": "marker",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -1936,7 +1936,7 @@
         "mark_id": "agentComment",
         "orphaned": false,
         "quote": "planner's notes",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -1996,7 +1996,7 @@
         "mark_id": "resolvedThread",
         "orphaned": false,
         "quote": "settled question",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -2058,7 +2058,7 @@
         "mark_id": "orphanedThread",
         "orphaned": true,
         "quote": "temporary blue note",
-        "version": 3
+        "version": 4
       },
       "answers": null,
       "artifact_id": null,
@@ -2232,7 +2232,7 @@
         "mark_id": "decisionComment",
         "orphaned": false,
         "quote": "space",
-        "version": 4
+        "version": 5
       },
       "answers": null,
       "artifact_id": null,
@@ -2290,7 +2290,7 @@
         "mark_id": "change",
         "orphaned": false,
         "quote": "narrow spacing",
-        "version": 4
+        "version": 5
       },
       "answers": null,
       "artifact_id": null,
@@ -2348,7 +2348,7 @@
         "mark_id": "pagedChildThread",
         "orphaned": false,
         "quote": "note 55",
-        "version": 4
+        "version": 5
       },
       "answers": null,
       "artifact_id": null,
@@ -2772,5 +2772,5 @@
     }
   ],
   "gate": "G2",
-  "recordedOn": "12b95870e6dbaa7ac05ef5388cdd02c9f72ee6f9"
+  "recordedOn": "aea248bb422de8f2b435ecfd6398fc78a94ec3ce"
 }
