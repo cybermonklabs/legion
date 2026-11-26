@@ -97,13 +97,61 @@ test("a copy through the fallback gives the focus back to the control that asked
     button.focus();
     const copied = await copyText("CORE-1");
     expect(copied).toBe(true);
-    expect(document.activeElement, "the copy's fallback left the focus on the page's body").toBe(button);
-    expect(String(window.getSelection()), "the copy's fallback dropped the reader's selection").toBe(
-      "Some words the reader selected."
+    expect(document.activeElement, "the copy's fallback left the focus on the page's body").toBe(
+      button
     );
+    expect(
+      String(window.getSelection()),
+      "the copy's fallback dropped the reader's selection"
+    ).toBe("Some words the reader selected.");
   } finally {
     words.remove();
     button.remove();
+    select.mockRestore();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+  }
+});
+
+// The tester's third starting state: a field held the focus, its caret after the second letter,
+// when the clipboard refused and the reader had not acted. The fallback's text box takes the focus
+// and the page's selection, and the copy gives the field back its focus and its caret, so the
+// reader's next key types where they left off.
+test("a copy through the fallback gives a field that held the focus its focus and its caret back", async () => {
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.reject(new Error("denied")) },
+  });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: () => true });
+  // A browser's `select()` focuses the text box and takes the selection; happy-dom's does neither.
+  const select = spyOn(HTMLTextAreaElement.prototype, "select").mockImplementation(function (
+    this: HTMLTextAreaElement
+  ) {
+    this.focus();
+    const range = document.createRange();
+    range.selectNodeContents(this);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  const field = document.createElement("input");
+  field.setAttribute("aria-label", "Elsewhere");
+  field.value = "abcd";
+  document.body.append(field);
+  try {
+    field.focus();
+    field.setSelectionRange(2, 2);
+    const copied = await copyText("CORE-1");
+    expect(copied).toBe(true);
+    expect(document.activeElement, "the copy's fallback took the focus from the field").toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([2, 2]);
+  } finally {
+    field.remove();
     select.mockRestore();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
     Object.defineProperty(document, "execCommand", {
