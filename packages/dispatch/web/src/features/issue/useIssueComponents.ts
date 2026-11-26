@@ -9,7 +9,7 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { componentsWritten } from "../../api/write-events";
-import { predictTree } from "../architecture/architecture-model";
+import { predictTree } from "../architecture/logic/architecture-model";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 

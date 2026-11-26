@@ -101,10 +101,10 @@ func seedDispatchClaim(t *testing.T, pool *pgxpool.Pool, issue, holder string) {
 }
 
 // awaitingRig is a slotted root whose architect handed question ask-q back, with a second root
-// waiting in line behind it, and the admission that decides them on every fact. cap is that
-// admission's cap, which counts the issues the daemon has started rather than the trees: a test
-// about the root alone takes 1, and one whose tree also starts a child of its own takes one row
-// an issue.
+// waiting in line behind it, and the admission that decides them on every pass (the pass rule,
+// Admission.Apply). cap is that admission's cap, which counts the issues the daemon has started
+// rather than the trees: a test about the root alone takes 1, and one whose tree also starts a
+// child of its own takes one row an issue.
 func awaitingRig(t *testing.T, pool *pgxpool.Pool, cap int) *Admission {
 	t.Helper()
 	seedSlotted(t, pool, "LEGION-208", "U")
