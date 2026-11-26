@@ -661,10 +661,16 @@ export function DecisionsPanel({
   const entries = view.data.entries ?? [];
   const questions = entries.filter((entry) => entry.answer_state === "open");
   const waiting = rows.filter((row) => row.decision.waiting_review);
-  // Yours: the ones a person decided, and the agent's that the reader kept — a Keep takes a
-  // decision out of "Waiting for your review", and a decision nothing holds would leave the tab.
+  // Yours: the ones a person decided - an answered ask, or a `decision` block its `decided_by`
+  // names a person for, since its `kind` is the node's shape and never who decided - and the
+  // agent's that the reader kept: a Keep takes a decision out of "Waiting for your review", and
+  // a decision nothing holds would leave the tab.
   const mine = rows.filter(
-    ({ decision }) => !decision.replaced && (decision.kind === "person" || decision.kept !== null)
+    ({ decision }) =>
+      !decision.replaced &&
+      (decision.kind === "person" ||
+        decision.entry.decided_by?.kind === "person" ||
+        decision.kept !== null)
   );
   const replaced = rows.filter((row) => row.decision.replaced);
   return (

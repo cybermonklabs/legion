@@ -139,6 +139,18 @@ test("an unsure decision is drawn in the unsure colour and says so; a person's s
   }
 });
 
+// A `decision` block is a person's decision where its decided_by names a person: kind is
+// `agent` for every block, the node's shape, and the card names who decided from decided_by.
+test("a decision block a person decided says it is a person's decision", () => {
+  const view = renderCard({ decided_by: { id: "alice", kind: "person" }, waiting_review: false });
+  try {
+    expect(screen.getByText("A person's decision")).toBeDefined();
+    expect(screen.queryByText("Agent's decision")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // The conversion of a decisions document moves a decision's `Unsure:` paragraph into its node's
 // `uncertainty` and `uncertainty_reason`, so its words hold that paragraph no more. The preview
 // runs the doubt on after the words, with the paragraph's words, as it ran the paragraph.

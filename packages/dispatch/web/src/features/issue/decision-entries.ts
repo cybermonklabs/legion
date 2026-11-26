@@ -22,7 +22,8 @@ export type DecisionsRead = Omit<IssueDecisions, "entries"> & {
   readonly entries?: IssueDecisions["entries"];
 };
 
-/** Whether an entry of the Decisions read is a decision: an agent's, or an ask a person answered.
+/** Whether an entry of the Decisions read is a decision: a `decision` block, whoever decided it,
+ *  or an ask a person answered.
  *  An open ask is a question, and a declined one decided nothing, so neither is a decision a view
  *  draws beside the nodes its `shaped` tuples reach, as the old `decisions` member never held
  *  them. */

@@ -4333,8 +4333,9 @@ type DecisionLink struct {
 }
 
 // Decision is one decision node of an issue as decisionread.Decisions answers it, the one reader
-// of a decision (plan H1): an agent's `decision` block, Kind "agent", or a person's answered ask,
-// Kind "person". Heading is the ask's question or the decision's first paragraph; Unsure is true
+// of a decision (plan H1): a `decision` block, Kind "agent" whoever decided it, or a person's
+// answered ask, Kind "person"; Kind is the node's shape, and a block's decided_by names who
+// decided it. Heading is the ask's question or the decision's first paragraph; Unsure is true
 // where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the node.
 // ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is the
 // sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's

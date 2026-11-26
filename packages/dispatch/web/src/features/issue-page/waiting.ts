@@ -25,8 +25,9 @@ import type { DocumentBlocks } from "./issue-tree";
  * A decision the reader asked to change waits on its agent and is not counted
  * (`decisionChanges`): `comments` are the issue's comments, and `documents` the blocks of its
  * documents the page has read (`undefined` where it has read none), which name the decision whose
- * block holds the block a Change was written in, as the tree reads them. A person's decision is
- * the answered ask, which waits for no review and is never counted here.
+ * block holds the block a Change was written in, as the tree reads them. A person's decision - the
+ * answered ask, or a `decision` block whose `decided_by` names a person - waits for no review
+ * (the server's `waiting_review` is false for it) and is never counted here.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -65,7 +66,7 @@ export function waitingOnReader(
     );
   const asks = open.length - approvals.length;
   const changes = decisionChanges(decisions, comments, issue, documents);
-  // An ask's entry never waits for review (`waiting_review`), so only an agent's decision counts.
+  // A person's decision never waits for review (`waiting_review`), so only an agent's counts.
   const reviewing =
     viewer === undefined
       ? 0

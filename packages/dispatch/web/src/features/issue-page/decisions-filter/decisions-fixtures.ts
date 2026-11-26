@@ -19,9 +19,9 @@ import type { DecisionsAsk } from "./decisions-parts";
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
  * an agent's decision a `decision` block of the spec, a person's decision the answered ask
- * itself, named by the ask's own address, and an ask its own id, so a tie resolves through the
- * page's own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) and not through a
- * rule written here.
+ * itself, named by the ask's own address, or a `decision` block whose `decided_by` names the
+ * person, and an ask its own id, so a tie resolves through the page's own rule for addressing a
+ * node (`tree-drafts.ts`'s `treeContext`) and not through a rule written here.
  */
 
 export const KEY = "CORE-1";
@@ -227,9 +227,14 @@ export function shaped(ref: string, stale = false): DecisionLink {
   };
 }
 
+/** A decision as a case writes it: the read's `Decision`, and who decided it where the case names
+ *  someone other than the decider `entryOf` gives it. */
+export type MadeDecision = Decision & { readonly decided_by?: DecisionEntry["decided_by"] };
+
 /** One agent's decision, a `decision` block of the spec, as the decisions read answers it: it
- *  waits for review unless the case says otherwise. */
-export function decision(block: string, partial: Partial<Decision> = {}): Decision {
+ *  waits for review unless the case says otherwise. A case that names a person in its
+ *  `decided_by` makes it that person's decision, which the server reads as waiting for none. */
+export function decision(block: string, partial: Partial<MadeDecision> = {}): MadeDecision {
   return {
     asks: [],
     block_id: block,
@@ -267,10 +272,15 @@ export function personDecision(id: string, partial: Partial<Decision> = {}): Dec
 /** The entry the decisions read answers beside `row` (`api/decisions.go`'s `decisionEntry`): an
  *  agent's decision by the block node of `spec`, the issue's spec, that holds it, with the asks its
  *  `from_ask` settles, a person's by the ask's own node, and each member the node holds none of
- *  null. */
-export function entryOf(row: Decision, spec: SpecDocument = SPEC_DOCUMENT): DecisionEntry {
+ *  null. Its `decided_by` is the row's where the case names one, else the server's for the node:
+ *  the person who answered an ask, by the `person` kind the server names a person with, and the
+ *  agent's session for a block. */
+export function entryOf(row: MadeDecision, spec: SpecDocument = SPEC_DOCUMENT): DecisionEntry {
   const person = row.kind === "person";
   const block = `${spec.ref_key}#${row.block_id}`;
+  const decider: DecisionEntry["decided_by"] = person
+    ? { id: READER, kind: "person" }
+    : { id: AGENT.id, kind: "session" };
   return {
     answer: null,
     answer_state: person ? "answered" : null,
@@ -278,7 +288,7 @@ export function entryOf(row: Decision, spec: SpecDocument = SPEC_DOCUMENT): Deci
     answered_by: null,
     changed_at: row.changed_at,
     changed_version: row.changed_version,
-    decided_by: person ? { id: READER, kind: "user" } : { id: AGENT.id, kind: "session" },
+    decided_by: row.decided_by === undefined ? decider : row.decided_by,
     declined: false,
     declined_note: null,
     document: person
@@ -326,7 +336,7 @@ type SpecDocument = Pick<Artifact, "id" | "ref_key" | "slug">;
  *  (`decisionDocumentId`), so a case whose issue read has a spec of its own passes it here: a
  *  server names no document of another issue. */
 export function decisionsRead(
-  made: readonly Decision[],
+  made: readonly MadeDecision[],
   spec: SpecDocument = SPEC_DOCUMENT
 ): IssueDecisions {
   return {

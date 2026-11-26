@@ -21,11 +21,12 @@ import (
 )
 
 // decisionEntry is one entry of the Decisions read's `entries`: the
-// node itself. node is the node that holds it - an ask's own node (kind ask), or an agent's
-// decision's block node (kind block) - and ref that node's dispatch:// address, which is where
+// node itself. node is the node that holds it - an ask's own node (kind ask), or a `decision`
+// block's node (kind block) - and ref that node's dispatch:// address, which is where
 // the entry links; document is the document whose block shows it, null for an ask on the issue
-// itself. kind says whose it is: `person` for an ask, which a person decides, `agent` for a
-// decision, and `declined` for an ask the person declined to answer, which records no decision.
+// itself. kind is the node's shape, and never says who decided: `person` for an ask, which a
+// person answers, `agent` for a `decision` block, whoever decided it, and `declined` for an ask
+// the person declined to answer, which records no decision. Who decided is decided_by below.
 //
 // An ask carries its wording from its row (question, options, urgency, multiple) and its answer
 // from its node (answer_state, answer, selected, answered_by, answered_at, resolution), each null
