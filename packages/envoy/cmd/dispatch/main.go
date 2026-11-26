@@ -537,8 +537,10 @@ func main() {
 	// events stored before that, in committed batches, for document_search's reason above
 	// (20261117100016's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
 	// session_titles alone, so a process that served with the table unfilled would name every
-	// session stored before this release by its id, while the release before this one, which
-	// serves until this process is ready, still names them.
+	// session stored before this release by its id. Production runs one replica under a
+	// Kubernetes Deployment's `strategy: Recreate` (README.md, "Database migrations"), so no
+	// process serves while this one migrates and fills: the old process has stopped, and this
+	// one listens only once the fill has ended.
 	if filled, err := database.FillSessionTitles(ctx); err != nil {
 		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
 		os.Exit(1)

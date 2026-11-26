@@ -1,9 +1,9 @@
 -- pgmigrate:non-transactional
 -- 20261117100010_issues_unowned_p0.up.sql
 --
--- The index behind the reads of the open P0 issues (dispatch://INFRA-2916, R13): the count of P0
--- issues with no owner, which the unowned-p0 eval and the delivery measures route answer (an
--- issue with priority 0, a status other than done, no claim and no route, the rule of
+-- The index behind the reads of the open P0 issues (dispatch://INFRA-2916, R13): the P0 issues
+-- with no owner, which the delivery measures route lists and delivery.CountUnownedP0 counts for one
+-- project (an issue with priority 0, a status other than done, no claim and no route, the rule of
 -- delivery.ListUnownedP0 and delivery.CountUnownedP0), and the delivery live hub's set of every
 -- open P0 issue's key (delivery.OpenP0Keys), which the hub reads each time it stands up its event
 -- feed and which marks the views a P0 issue's change moves. No index of issues holds priority, so

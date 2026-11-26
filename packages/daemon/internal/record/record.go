@@ -2821,9 +2821,10 @@ type QueuedSupervise struct {
 	Age      time.Duration
 }
 
-// RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
-// in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
+// RoleClaim is a claim as RoleRun reads it: its state, the word for what last failed it
+// (failure_cause), the tree it is in, who suspended it while it is suspended, the newest start
+// the outbox ran against it (last_start_row), the update round it is in (update_round), the write
+// mark its retirement took (retired_at_write_mark), the phase entry
 // it was last given work of (given_entry), the moment its agent last said it was ready
 // (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
 // handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
@@ -2835,7 +2836,13 @@ type QueuedSupervise struct {
 // reader of a run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and
 // readyWorkerTask).
 type RoleClaim struct {
-	State        supervise.ClaimState
+	State supervise.ClaimState
+	// FailureCause is the word for what failed the claim as its machine holds it
+	// (supervise.Claim.FailureCause; failure_cause and held_for read by supervise.DecodeCause),
+	// "" for a claim no failure is recorded on, which a retry's admission clears (supervise's
+	// retry). Its reader is the admission pass's repair, which passes over a claim held for
+	// OpenAI's cyber-policy refusal (HeldForCyberPolicy).
+	FailureCause supervise.FailureCause
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
@@ -2917,6 +2924,13 @@ type RoleClaim struct {
 	// confirmation where there is one.
 	Handshake supervise.EntryHandshake
 	Pending   *supervise.Delivery
+}
+
+// HeldForCyberPolicy is whether the claim is held for OpenAI's cyber-policy refusal, by the rule
+// the claim's machine holds it to (supervise.CyberPolicyHolds): no start the daemon makes by
+// itself launches its agent again.
+func (c RoleClaim) HeldForCyberPolicy() bool {
+	return supervise.CyberPolicyHolds(c.State, c.FailureCause)
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger
