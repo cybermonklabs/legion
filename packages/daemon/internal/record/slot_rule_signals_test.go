@@ -104,10 +104,11 @@ func TestASignalRuleDecidesInItsOwnModeAndTheDaemonsRuleInTheSnapshots(t *testin
 // rules (the replay's spec, R7), and the rule value says which: R10 above P0, the line's priority
 // order below it and admission by signals with the cap as a ceiling only. Of the rules the
 // repository keeps, signals and signals-backoff keep it, and no other does: the daemon's own rule
-// and before-p0 admit below P0 under the cap, p0-at-once and p0-idle start a P0 issue outside the
-// cap and admit below it under the cap, and the recorded windows' rules neither start one outside
-// the cap nor put priority first. A signal rule that loses any one of the three choices keeps it no
-// more, and the zero rule, the daemon's own, does not keep it.
+// and the other candidates built on it but before-p0 start a P0 issue outside the cap and admit
+// below it under the cap, before-p0 admits under the cap at every priority, and the recorded
+// windows' rules neither start one outside the cap nor put priority first. A signal rule that loses
+// any one of the three choices keeps it no more, and the zero rule, the daemon's own, does not keep
+// it.
 func TestOnlyTheSignalRulesKeepTheOwnersDirection(t *testing.T) {
 	t.Parallel()
 	keep := map[string]bool{"signals": true, "signals-backoff": true}

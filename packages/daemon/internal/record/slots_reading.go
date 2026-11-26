@@ -32,13 +32,22 @@ type BelowFirstWaiting struct {
 
 // SlotsReading is what the slots in use are spent on, as `legion state`, its JSON body
 // (api.Admission.Slots) and the controller's tick notice (Notice.Slots) all give it: the slots in
-// use and the cap, the holders counted by state (HolderState), the two readings of started work
-// that waits without a slot, and the holders that rank below the first issue that waits for a
-// slot. Line is the same reading as one sentence (SlotsLine), so the three surfaces print one
-// text.
+// use and the cap, how many of those holders are P0, the holders counted by state (HolderState),
+// the two readings of started work that waits without a slot, and the holders that rank below the
+// first issue that waits for a slot. Line is the same reading as one sentence (SlotsLine), so the
+// three surfaces print one text.
+//
+// Every holder is a slot in use and in one of the five states, a P0 holder too, so InUse can be
+// more than Cap and the five states add up to InUse.
 type SlotsReading struct {
-	InUse   int        `json:"inUse"`
-	Cap     int        `json:"cap"`
+	InUse int `json:"inUse"`
+	Cap   int `json:"cap"`
+	// P0 is how many of the holders are P0: the holders admission treats as P0, which start and
+	// hold their slot outside the cap (Issue.StartsNow). It is counted by SlotHolders.Add, which
+	// counts HoldersOf's P0 into `admission.p0Holders`, so the two numbers are one count of one
+	// record, and it is never a count of the holders that the priority placing them in the line
+	// (PlacingPriority) puts in the P0 band, which reads a tree root's too.
+	P0      int        `json:"p0"`
 	Working StateCount `json:"working"`
 	Stopped StateCount `json:"stopped"`
 	Person  StateCount `json:"person"`
@@ -91,7 +100,9 @@ type SlotHolder struct {
 // are holders, whose waiting line is line, in the line's own order, and whose started parents that
 // wait in awaiting_children holding no slot are waitingParents. Every reader of the reading builds
 // it here, the state projection and the admission pass's tick alike, so the text, the JSON and the
-// tick notice give the same numbers.
+// tick notice give the same numbers. Every holder counts in InUse and in one of the five states,
+// and P0 counts the holders that start outside the cap by the one rule that counts
+// `admission.p0Holders` (SlotHolders.Add).
 //
 // Each count's oldest time is the oldest of its members' known times: a holder's is the time it
 // entered its state (SlotHolder.Since), a member of the line's is the moment its work came back
@@ -113,11 +124,14 @@ func SlotsReadingOf(cap int, holders []SlotHolder, line []SlotsLineMember, waiti
 		HolderWorking: &reading.Working, HolderStopped: &reading.Stopped, HolderPerson: &reading.Person,
 		HolderIssue: &reading.Issue, HolderIdle: &reading.Idle,
 	}
+	var held SlotHolders
 	for _, holder := range holders {
+		held.Add(holder.Issue)
 		if count, known := counts[holder.State]; known {
 			count.add(holder.Since)
 		}
 	}
+	reading.P0 = held.P0
 	var first *SlotsLineMember
 	for i, member := range line {
 		if member.Entry.Holds {
@@ -195,14 +209,16 @@ const slotsLineMinute = "2006-01-02T15:04Z"
 // SlotsLine is the slots reading as one sentence, the line `legion state` prints after its
 // admission count line and the reading carries as Line:
 //
-//	slots: <inUse> of <cap> in use: <n> working (oldest <t>), <n> stopped (oldest <t>), <n> person (oldest <t>), <n> issue (oldest <t>), <n> idle (oldest <t>). Started work without a slot: <n> wait only for a slot (oldest <t>), <n> in all (oldest <t>). <n> holders rank below <KEY>, which waits for a slot.
+//	slots: <inUse> of <cap> in use (<p0> P0): <n> working (oldest <t>), <n> stopped (oldest <t>), <n> person (oldest <t>), <n> issue (oldest <t>), <n> idle (oldest <t>). Started work without a slot: <n> wait only for a slot (oldest <t>), <n> in all (oldest <t>). <n> holders rank below <KEY>, which waits for a slot.
 //
-// Each of the five states prints its number and the oldest time in it. A count with no known time
-// prints no oldest, a time prints as 2006-01-02T15:04Z, one holder reads "1 holder ranks below",
-// and where no issue waits for a slot the last sentence reads "No issue waits for a slot."
+// The number of P0 holders follows the slots in use and is always printed, `(0 P0)` among them,
+// as each of the five states prints its number when it is 0. Each of the five states prints its
+// number and the oldest time in it. A count with no known time prints no oldest, a time prints as
+// 2006-01-02T15:04Z, one holder reads "1 holder ranks below", and where no issue waits for a slot
+// the last sentence reads "No issue waits for a slot."
 func SlotsLine(r SlotsReading) string {
 	var line strings.Builder
-	fmt.Fprintf(&line, "slots: %d of %d in use: %s, %s, %s, %s, %s. ", r.InUse, r.Cap,
+	fmt.Fprintf(&line, "slots: %d of %d in use (%d P0): %s, %s, %s, %s, %s. ", r.InUse, r.Cap, r.P0,
 		r.Working.said("working"), r.Stopped.said("stopped"), r.Person.said("person"), r.Issue.said("issue"),
 		r.Idle.said("idle"))
 	fmt.Fprintf(&line, "Started work without a slot: %s, %s. ", r.WaitOnlyForSlot.said("wait only for a slot"),

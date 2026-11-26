@@ -13,10 +13,10 @@ ACME-4's chain is ACMEAUX-2's, whose history the window holds, and ACME-1 has no
 
 ## The runs
 
-**Under `main` and `p0-at-once`, refused.**
+**Under `main`, refused.**
 A rule with R10's start of a P0 issue outside the cap decides ACME-2's start by its resolved priority, which the window cannot give, so `legion replay run` refuses the window, and its refusal names ACMEAUX-1, the missing input.
 `main` is such a rule since cybermonklabs/legion#5488.
-`expect.json` gives each run under `refused`, with the text `ACMEAUX-1` that the refusal must hold, and gives no scorecard of it.
+`expect.json` gives the run under `refused`, with the text `ACMEAUX-1` that the refusal must hold, and gives no scorecard of it.
 
 **Under `before-p0`, which runs.**
 `before-p0` is `main` with no P0 issue started outside the cap: in every choice it is the rule this window was recorded under, `main` at `0d3786da`, before R10 reached the daemon.
@@ -27,8 +27,9 @@ The run gives neither: `expect.json` leaves `urgentWaits` out and gives `priorit
 
 ## What moved with cybermonklabs/legion#5488
 
-Since cybermonklabs/legion#5488 `main` starts a P0 issue outside the cap and reads the priority Dispatch resolves, so it is refused on this window as `p0-at-once` is: `expect.json` moves its run from `rules.main`, a scorecard, to `refused.main`, `ACMEAUX-1`.
+Since cybermonklabs/legion#5488 `main` starts a P0 issue outside the cap and reads the priority Dispatch resolves, so it is refused on this window as the candidate `p0-at-once` was: `expect.json` moves its run from `rules.main`, a scorecard, to `refused.main`, `ACMEAUX-1`.
 The scorecard worked above for the recorded rule moves with that rule's choices to `before-p0`, with no value changed but the rule's name.
+`refused` named `p0-at-once` too, with the same text, until the repository kept that rule no more: since that change it was `main` in every choice but its name.
 
 ## What the window shows
 
@@ -37,7 +38,7 @@ A replay that guesses the missing ancestor's priority, or reads ACME-2 as having
 ## The signals, worked by hand
 
 The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
-So at 09:00, the window's start, the run under `before-p0` writes each signal unrecorded (`null`) in `signalValues`; the runs under `main` and `p0-at-once` are refused, and write none.
+So at 09:00, the window's start, the run under `before-p0` writes each signal unrecorded (`null`) in `signalValues`; the run under `main` is refused, and writes none.
 The run limits all six signals (`limits`), and run.json echoes them; `before-p0` admits by no signal, so the limits decide nothing.
 
 - `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.

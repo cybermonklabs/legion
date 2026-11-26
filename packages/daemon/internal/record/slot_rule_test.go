@@ -17,7 +17,7 @@ var fortyHex = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // candidates of the comparison.
 var keptRuleNames = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "legion-v22.14.1", "keep-past-review", "blockers-first",
 	"returned-by-rank", "cover", "wait-grace", "wait-grace-1h", "returned-by-first-slot", "rework-first", "rework-first-keep", "arrival-order",
-	"before-p0", "p0-at-once", "idle-return-1h", "p0-idle", "signals", "signals-backoff"}
+	"before-p0", "idle-return-1h", "signals", "signals-backoff"}
 
 // Every rule the repository keeps names the commit of cybermonklabs/legion its choices come from,
 // so a reader of a replay's result can read the code that made them (record.SlotRule.Commit): the

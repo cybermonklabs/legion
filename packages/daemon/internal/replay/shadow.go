@@ -58,7 +58,7 @@ type shadow struct {
 	// makes (priorityWrite). It is the one place a replay supplies the daemon the resolved
 	// priority: once the daemon's record keeps the resolved_priority Dispatch serves of its own, the
 	// copy serves it there and the daemon's own reading of it takes this one's place. Nil under every
-	// other rule, whose copy shows each issue's own.
+	// other rule, whose copy shows each issue's own and no priority Dispatch resolved (showPriority).
 	priorities *resolvedPriorities
 }
 
@@ -524,9 +524,18 @@ func (s *shadow) made(iss *shadowIssue, kind string, actor jsonActor, payload js
 
 // showPriority shows iss at the priority Dispatch resolves for it at at, in place of its own,
 // where the copy shows the resolved priorities (shadow.priorities) and iss is an issue of the
-// project whose payload the copy holds.
+// project whose payload the copy holds. Where the copy does not, under a rule with no P0 start, it
+// shows iss at its own priority alone, as a Dispatch release before resolved_priority serves it:
+// with no resolved_priority and no priority_from, which the daemon's intake would read in place of
+// the issue's own (record.Issue.AdmissionPriority), so such a rule keeps its admissions and its
+// line on each issue's own priority where the record carries the one Dispatch resolved.
 func (s *shadow) showPriority(iss *shadowIssue, at time.Time) {
-	if s.priorities != nil && iss.payload != nil && iss.project == s.project {
+	if s.priorities == nil {
+		delete(iss.payload, "resolved_priority")
+		delete(iss.payload, "priority_from")
+		return
+	}
+	if iss.payload != nil && iss.project == s.project {
 		iss.payload["priority"] = mustJSON(s.priorities.at(iss.key, at).Level())
 	}
 }

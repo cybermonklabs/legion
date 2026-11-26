@@ -29,13 +29,15 @@ func slotsReadingSaid(t *testing.T, reading record.SlotsReading) string {
 }
 
 // The controller's tick notice carries the project's slots reading (spec R6): a tick applied
-// through intake.ApplyFact queues a tick notice whose `slots` counts the four holders by what each
+// through intake.ApplyFact queues a tick notice whose `slots` counts the five holders by what each
 // is doing — one at work, one held, one waiting on a person's answer to an ask, one that took its
-// slot and has had no turn yet — under a full cap, names the queued root that waits for a slot
-// and the three holders ranked below it, and carries the line that one function writes of it.
-// The notice is read back through the outbox payload's validator, as the executor reads it before
-// it publishes, and the reading is compared with the state's own over the same records: one
-// reading read two ways, so neither answer is copied from the other.
+// slot and has had no turn yet, and one that starts outside the cap because Dispatch resolves it
+// to P0 — under a full cap, so the slots in use stand at five of four and one of them is P0. It
+// names the queued root that waits for a slot and the three holders the cap counts ranked below
+// it, and carries the line that one function writes of it. The notice is read back through the
+// outbox payload's validator, as the executor reads it before it publishes, and the reading is
+// compared with the state's own over the same records: one reading read two ways, so neither
+// answer is copied from the other.
 func TestTickNoticeCarriesTheSlotsLine(t *testing.T) {
 	const slotCap = 4
 	pool := migratedPool(t)
@@ -61,6 +63,12 @@ func TestTickNoticeCarriesTheSlotsLine(t *testing.T) {
 	// A holder whose implementer has been in a turn for half an hour.
 	seedSlottedInPhase(t, pool, acmeProject, "ACME-5", "e", phase.Implementing, nil)
 	approvedGate(t, pool, "ACME-5")
+	// A holder that starts outside the cap, P0 by the priority Dispatch resolves for it with
+	// none of its own: it takes a slot beside the four the cap counts and has had no turn.
+	seedSlottedInPhase(t, pool, acmeProject, "ACME-6", "f", phase.Implementing, func(issue *record.Issue) {
+		issue.Resolved = record.Resolved{Priority: record.P0, From: "OTHER-9", Known: true}
+	})
+	approvedGate(t, pool, "ACME-6")
 	turnStart := fixedNow.Add(-30 * time.Minute)
 	records := claimStore(t, pool)
 	if err := records.PutClaim(context.Background(), supervise.Claim{Token: acmeToken(t, "ACME-5", claim.RoleImplementer),
@@ -79,20 +87,20 @@ func TestTickNoticeCarriesTheSlotsLine(t *testing.T) {
 		t.Fatalf("the tick notice carries no slots reading: %s", payload)
 	}
 	want := record.SlotsReading{
-		InUse: 4, Cap: slotCap,
+		InUse: 5, Cap: slotCap, P0: 1,
 		Working:           record.StateCount{Count: 1, Oldest: &turnStart},
 		Stopped:           record.StateCount{Count: 1},
 		Person:            record.StateCount{Count: 1, Oldest: &personSince},
-		Idle:              record.StateCount{Count: 1, Oldest: &fixedNow},
+		Idle:              record.StateCount{Count: 2, Oldest: &fixedNow},
 		BelowFirstWaiting: record.BelowFirstWaiting{Count: 3, First: "ACME-4"},
 	}
 	want.Line = record.SlotsLine(want)
 	if got, wanted := slotsReadingSaid(t, *notice.Slots), slotsReadingSaid(t, want); got != wanted {
 		t.Fatalf("the tick notice's slots = %s, want %s", got, wanted)
 	}
-	if !strings.HasPrefix(notice.Slots.Line, "slots: 4 of 4 in use: 1 working") ||
+	if !strings.HasPrefix(notice.Slots.Line, "slots: 5 of 4 in use (1 P0): 1 working") ||
 		!strings.Contains(notice.Slots.Line, "ACME-4, which waits for a slot.") {
-		t.Fatalf("the tick notice's line is %q, want the slots line naming 4 of 4 in use and ACME-4 waiting", notice.Slots.Line)
+		t.Fatalf("the tick notice's line is %q, want the slots line naming 5 of 4 in use, 1 of them P0, and ACME-4 waiting", notice.Slots.Line)
 	}
 	// The stored row is jsonb, which Postgres prints with its own spacing, so the payload is read as
 	// JSON rather than matched as text: it carries a slots object, and that object carries the line.

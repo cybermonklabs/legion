@@ -1541,6 +1541,7 @@ A report refuses a record or a run written before its scorecard held them, and s
 ## The slot rules
 
 A slot rule is code in the daemon, not a plugin, and a new candidate is a change to the daemon's code.
+The repository keeps eighteen rules: the daemon's own (`main`), the rules of three recorded windows (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and fourteen candidates.
 The daemon runs `main`, and a replay runs the rule that you name through the same admission pass.
 
 | Rule | What it is | Commit |
@@ -1560,9 +1561,7 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `rework-first-keep` | `rework-first` with the slot kept in accepting, retro and merging, as `keep-past-review` keeps it, so that the comparison reads the cost of returning work under the owner's order with and without that slot; a parent with an open child still moves into `awaiting_children` and gives its slot back, as under `main`. | `0d3786da` |
 | `arrival-order` | `main` with the line as one queue in the order in which its issues arrived, with no part ahead of another and no rank, which shows what the board's order changes. | `0d3786da` |
 | `before-p0` | `main` with no P0 issue started outside the cap, so that a P0 issue waits in the line as any issue does and the cap counts every holder, measured for reference. | `0d3786da` |
-| `p0-at-once` | `main` with an issue that Dispatch resolves to P0 started outside the cap, under the P0 bound, for the reason that an owner asked why a P0 issue cannot start at once; since cybermonklabs/legion#5488 it equals `main` in every choice but its name. | `0d3786da` |
-| `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the same owner's question, which now differs from `main` only for a holder that waits on a person, since under `main` a started parent already gives its slot back while it waits for its children (`awaiting_children`). | `0d3786da` |
-| `p0-idle` | `p0-at-once` and `idle-return-1h` together, so that the comparison reads whether the two answers add up or overlap; since cybermonklabs/legion#5488 it equals `idle-return-1h` in every choice but its name. | `0d3786da` |
+| `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the reason that an owner asked why a P0 issue cannot start at once; it now differs from `main` only for a holder that waits on a person, since under `main` a started parent already gives its slot back while it waits for its children (`awaiting_children`). | `0d3786da` |
 | `signals` | `main` with R10's start of a P0 issue outside the cap and admission by signals below P0: the next issue in the line's priority order starts while each signal that has a limit is under it and the holders below P0 are fewer than the ceiling, which the cap becomes, at the pass of an event or of a signal's deadline and never at the tick. | `0d3786da` |
 | `signals-backoff` | `signals` with an allowance that falls to 90% at each project-limit refusal or kill (rounded down, minimum 1) and rises by 1 each quiet hour up to the ceiling. | `0d3786da` |
 
@@ -1782,35 +1781,7 @@ before-p0 (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
-p0-at-once (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
-  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
-  a link wait gives the slot back: true
-  a children wait gives the slot back: true
-  a wait gives the slot back after: 0s
-  a wait stops the phase under way: true
-  the line's order: returned_oldest_first
-  the line stands by priority first: true
-  a start takes: own_slot
-  a conflicting head: merge_forward
-  the slot goes back at the ready mark: false
-  a P0 starts outside the cap: true
-  an idle wait on children or a person gives the slot back after: 0s
-
 idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
-  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
-  a link wait gives the slot back: true
-  a children wait gives the slot back: true
-  a wait gives the slot back after: 0s
-  a wait stops the phase under way: true
-  the line's order: returned_oldest_first
-  the line stands by priority first: true
-  a start takes: own_slot
-  a conflicting head: merge_forward
-  the slot goes back at the ready mark: false
-  a P0 starts outside the cap: true
-  an idle wait on children or a person gives the slot back after: 1h0m0s
-
-p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
   a link wait gives the slot back: true
   a children wait gives the slot back: true
@@ -1990,14 +1961,14 @@ Under each rule that keeps one of these tables, `returned-by-first-slot` among t
 That read keeps no first slot and no arrival, and reads the ones that the start state kept.
 The passes keep the rest.
 
-### `before-p0`, `p0-at-once`, `idle-return-1h`, `p0-idle` and the priority
+### `before-p0`, `idle-return-1h` and the priority
 
 An owner asked why a P0 issue cannot start at once.
-These candidates give the comparison what each answer does to P0 and P1 work and to the rest of the line.
-Each is `main` with one choice changed, or two for `p0-idle`, so each carries the commit of `main`.
+`main` now carries that start, and these candidates give the comparison the reference without it and the idle return beside it.
+Each is `main` with one choice changed, so each carries the commit of `main`.
 
 The record keeps each issue's own Dispatch priority, P0 to P3 or none (`record.Issue.Priority`), as the newest Dispatch event, listing or detail read shows it.
-Under a recorded rule and `before-p0`, a replay gives each issue the priority that its recorded Dispatch events show: the start state writes each record with the priority of its newest event before the window's start, each event that the replay applies carries its own, and each boot's listing carries the priority of the replay's copy of Dispatch.
+Under a recorded rule and `before-p0`, a replay gives each issue its own priority as its recorded Dispatch events show it: the start state writes each record with the priority of its newest event before the window's start, each event that the replay applies carries its own and no resolved priority, and each boot's listing carries the priority of the replay's copy of Dispatch.
 So `main` and every candidate order the line by priority in a replay, as the daemon does, and the rules of the recorded windows do not.
 Under a rule with the new P0 start, `main` and every candidate built on it but `before-p0`, the replay gives each issue the priority Dispatch resolves for it in place of its own ([The priority Dispatch resolves](#the-priority-dispatch-resolves)).
 
@@ -2007,7 +1978,7 @@ P0 comes first, and an entry that has neither priority comes after P3.
 Within one band, the line keeps the rule's order, under `main` the returned issues first, oldest first, and then the issues that have not started, by rank.
 The comparison ran this order as the candidate `priority-first` before that change reached `main`, and `main` is that rule now.
 
-`p0-at-once`, and `main` since cybermonklabs/legion#5488, start an issue that Dispatch resolves to P0 outside the cap.
+`main`, since cybermonklabs/legion#5488, and every candidate built on it but `before-p0`, start an issue that Dispatch resolves to P0 outside the cap.
 The cap counts only the holders that did not start outside it, so where the admission pass would start such an issue but for the cap, it starts it, whatever the number of slots in use.
 The P0 bound limits how many such issues hold a slot at once: with a bound in force, such an issue starts only while fewer of them than the bound hold a slot, and at the bound it waits in the line where its priority places it.
 With no bound, every such issue that waits only for a slot starts.
@@ -2018,9 +1989,9 @@ Below P0, the cap holds as under `main`.
 The stall measure and the read of a free slot count the holders as the promotion counts them, so a P0 that the promotion starts is a line that moves, and a P0 holder fills no slot of the cap.
 The pass logs each such start as `admission starts a P0 issue outside the cap`, and each such issue held at the bound as `admission holds a P0 issue at the P0 bound`, each with the issue, the P0 holders, the other holders, the cap and the bound.
 
-`main` starts a P0 issue outside the cap as `p0-at-once` does since cybermonklabs/legion#5488, which brought that start to the daemon: one implementation of it, `record.Issue.StartsNow` and the holders `record.HoldersOf` counts, which the rule's field turns on or off (`record.SlotRule.StartsNow`).
+`main` starts a P0 issue outside the cap since cybermonklabs/legion#5488, which brought that start to the daemon: one implementation of it, `record.Issue.StartsNow` and the holders `record.HoldersOf` counts, which the rule's field turns on or off (`record.SlotRule.StartsNow`).
 `before-p0` is the reference without that start, and the rules of the recorded windows start none, so under them the cap counts every holder, a P0 holder too.
-`p0-at-once` and `p0-idle` equal `main` and `idle-return-1h` but for their names, and go in a later change.
+Before cybermonklabs/legion#5488 reached `main`, the comparison ran that start as the candidate `p0-at-once` and together with `idle-return-1h` as `p0-idle`; once `main` and `idle-return-1h` carried it, those two rules went.
 
 `idle-return-1h` gives back the slot of a holder that waits on its children or on a person, when none of its roles had a turn for an hour.
 A holder waits on its children while an issue beneath it in its tree is still in the workflow.
@@ -2039,8 +2010,6 @@ cybermonklabs/legion#3206 took those releases away.
 Its rule asked whether any agent of an issue had work, which read six states, and on one day it judged wrong five times: slots stood with their architects idle and their next step with a person, while other issues waited.
 The cap was then made to count the work that a project has in hand, a spec in a person's queue among it.
 `idle-return-1h` asks no state of the work: it reads the time since the holder's last turn, and only of a holder that waits on its children or on a person.
-
-`p0-idle` is `p0-at-once` and `idle-return-1h` together, so that the comparison reads whether the two answers add up or overlap.
 
 The admission pass logs a slot that an idle holder gave back with the reason `idle_return`.
 The line timeline places such a holder in the returned part as it places an issue after a release for a wait.
@@ -2061,6 +2030,7 @@ A replay reads it from the record as the measures and the rules need it (`resolv
 - Before an issue's first such event, as in every event of a Dispatch release before `resolved_priority`, the replay reconstructs it from the window's own events: each issue above it at its own priority, read at the window's start and at each change of a priority, a parent or a recorded value of the issue or of an issue above it (assumption 51).
 
 Under a rule with the new P0 start, the replay's copy of Dispatch serves that priority as each issue's priority, so the daemon's mirror holds it.
+Under a rule with no P0 start, the copy serves each issue's own priority with no `resolved_priority` or `priority_from`, as a Dispatch release before them serves it, so a recorded value of `resolved_priority` reaches no such rule.
 The start state records each issue at the one standing just before the window's start, each event the copy applies shows the one standing at its moment, and where an issue above an issue changes, the copy applies at that moment an `issue.updated` of the issue, as Dispatch appends one on each issue whose resolved priority a write to another issue moves.
 The daemon's own rule, `record.PriorityOf` and the cap's counts then read the resolved priority with no change of the daemon: an issue that resolves to none has a tree root that resolves to none, its root standing on its chain.
 Once the daemon's record keeps the resolved priority that Dispatch serves, the copy serves it in that field in place of the own priority, the one place of the replay that supplies it.
@@ -2166,7 +2136,7 @@ So the pass in which a hold begins or ends gives its slots by the rank that the 
 `legion state` says what each holder of a slot does now, in one line under its admission line:
 
 ```text
-slots: 4 of 4 in use: 2 working (oldest 2026-10-05T10:12Z), 0 stopped, 1 person (oldest 2026-10-05T08:20Z), 0 issue, 1 idle (oldest 2026-10-05T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-05T09:58Z), 2 in all (oldest 2026-10-05T07:41Z). 2 holders rank below ACME-14, which waits for a slot.
+slots: 4 of 4 in use (0 P0): 2 working (oldest 2026-10-05T10:12Z), 0 stopped, 1 person (oldest 2026-10-05T08:20Z), 0 issue, 1 idle (oldest 2026-10-05T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-05T09:58Z), 2 in all (oldest 2026-10-05T07:41Z). 2 holders rank below ACME-14, which waits for a slot.
 ```
 
 [Running Legion](/legion/legion/running-legion/#observe) says what each state and each count of that line means, and what `legion state --json` carries of it.

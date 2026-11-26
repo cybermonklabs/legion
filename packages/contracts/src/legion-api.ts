@@ -1148,17 +1148,21 @@ const legionStateCount = z.object({
 });
 
 /** `api.SlotsReading` (`record.SlotsReading`) — what the slots in use are spent on:
- * `inUse` of `cap`; the holders counted by what each is doing (`working`, `stopped`, `person`,
- * `issue`, `idle`); the two readings of started work that waits without a slot,
+ * `inUse` of `cap`; `p0`, how many of those holders are P0, the count `admission.p0Holders` gives,
+ * which start outside the cap, so `inUse` can be more than `cap`; the holders counted by what each
+ * is doing (`working`, `stopped`, `person`, `issue`, `idle`), which add up to `inUse`, P0 holders
+ * included; the two readings of started work that waits without a slot,
  * `waitOnlyForSlot` (the line's returned members holding no slot and in no row of `blocked`) and
  * `startedWithoutSlot` (every returned member holding no slot); `belowFirstWaiting`, how many
  * holders rank below the first issue that waits for a slot and that issue's key as `first`, absent
  * where none waits; and `line`, the reading as the one sentence `legion state` prints after its
- * admission count line and the tick notice carries too. A caller below the slots-reading entry is served no reading
- * (`withoutSlotsReading`). */
+ * admission count line and the tick notice carries too, which gives the P0 holders after the
+ * slots in use (`slots: 160 of 157 in use (3 P0): …`). A caller below the slots-reading entry is
+ * served no reading (`withoutSlotsReading`). */
 const legionSlotsReading = z.object({
   inUse: z.number().int().nonnegative().optional(),
   cap: z.number().int().nonnegative().optional(),
+  p0: z.number().int().nonnegative().optional(),
   working: legionStateCount.optional(),
   stopped: legionStateCount.optional(),
   person: legionStateCount.optional(),

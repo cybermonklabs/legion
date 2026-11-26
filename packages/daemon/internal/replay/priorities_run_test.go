@@ -2,6 +2,7 @@ package replay
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,8 +22,7 @@ import (
 // fact of a replay under each rule that reads each issue's own priority — the three of the
 // recorded windows and before-p0 — the daemon's record of ACME-2 carries no priority, and the slot
 // goes to ACME-1, as the record gave it; under main, which starts a P0 outside the cap since
-// cybermonklabs/legion#5488, and p0-at-once, it carries P1, the resolved one, and the slot goes to
-// ACME-2.
+// cybermonklabs/legion#5488, it carries P1, the resolved one, and the slot goes to ACME-2.
 func TestOnlyARuleWithTheNewP0StartReadsTheResolvedPriority(t *testing.T) {
 	t.Parallel()
 	dsn := replayDSN(t)
@@ -37,7 +37,6 @@ func TestOnlyARuleWithTheNewP0StartReadsTheResolvedPriority(t *testing.T) {
 		{"legion-v22.14.1", record.NoPriority, "ACME-1"},
 		{record.MainRule.Name, record.P1, "ACME-2"},
 		{"before-p0", record.NoPriority, "ACME-1"},
-		{"p0-at-once", record.P1, "ACME-2"},
 	} {
 		t.Run(run.rule, func(t *testing.T) {
 			t.Parallel()
@@ -68,6 +67,92 @@ func TestOnlyARuleWithTheNewP0StartReadsTheResolvedPriority(t *testing.T) {
 			}
 			if got, want := result.Scorecard.FirstSlot, map[string]time.Time{run.first: clock(10, 0)}; len(got) != 1 || !got[run.first].Equal(want[run.first]) {
 				t.Errorf("under %s the replay gives the first slots %v, want %s's at 10:00 alone", run.rule, got, run.first)
+			}
+		})
+	}
+}
+
+// A rule that starts no P0 issue outside the cap keeps its admissions and its line on each issue's
+// own priority (spec R10: each recorded rule keeps its release's own admissions and order, by each
+// issue's own priority) on a window whose events carry the priority Dispatch resolved as on one
+// whose events carry none. p0-recorded-descendant-update holds ACME-1 and ACME-2, neither with a
+// priority of its own and each the root of its own tree: ACME-1 takes the one slot at 09:05, and
+// ACME-2, filed at 09:10 under ACMEAUX-1, carries resolved_priority 1, and from Dispatch's update
+// at 09:30 resolved_priority 0. After every fact of a replay under legion-v20.42.5, a recorded
+// rule, and under before-p0, main with no P0 issue started outside the cap, each issue's record
+// gives admission its own priority, none (record.Issue.AdmissionPriority, which the start outside
+// the cap and the cap's count read); the line places each entry in the band its own priority
+// gives, none, under before-p0, whose line stands by priority first, as under legion-v20.42.5,
+// whose line stands by none; ACME-2 is the line after the last fact; and the one slot given is
+// ACME-1's at 09:05, as the record gave it. A replay that hands such a rule the recorded
+// resolved_priority gives ACME-2 P0 from 09:30, and under before-p0 places it in the P0 band.
+func TestARuleWithNoP0StartReadsEachIssuesOwnPriorityWhereTheRecordCarriesTheResolvedOne(t *testing.T) {
+	t.Parallel()
+	dsn := replayDSN(t)
+	window := fixtureWindow(t, "p0-recorded-descendant-update")
+	for _, name := range []string{"legion-v20.42.5", "before-p0"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			rule := replayedRule(t, name)
+			records := record.NewStore()
+			facts := 0
+			seen := map[string]bool{}
+			var failures, line []string
+			fail := func(what string) {
+				if !seen[what] {
+					seen[what] = true
+					failures = append(failures, fmt.Sprintf("from fact %d, %s", facts, what))
+				}
+			}
+			look := func(ctx context.Context, pool *store.Pool, _ *shadow) error {
+				facts++
+				return pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+					issues, err := records.LiveIssues(ctx, tx, window.Project)
+					if err != nil {
+						return err
+					}
+					slots, err := records.Slots(ctx, tx)
+					if err != nil {
+						return err
+					}
+					lineFacts, err := record.ReadLineFactsUnder(ctx, tx, records, window.Project, issues, window.GateSteps, rule)
+					if err != nil {
+						return err
+					}
+					for _, issue := range issues {
+						if got := issue.AdmissionPriority(); got != record.NoPriority {
+							fail(fmt.Sprintf("%s's record gives admission the priority %q, want none, its own", issue.Key, got))
+						}
+					}
+					entries, _ := record.Waiting(issues, slots, lineFacts)
+					line = line[:0]
+					for _, entry := range entries {
+						line = append(line, entry.Issue.Key)
+						if entry.Priority != record.NoPriority {
+							fail(fmt.Sprintf("the line places %s in the band %q, want none, the band of its own priority", entry.Issue.Key, entry.Priority))
+						}
+					}
+					return nil
+				})
+			}
+			result, err := Run(context.Background(), RunConfig{Window: window, Rule: rule, Branch: MainBranch, Seed: 1, Slowdown: 1,
+				PGDSN: dsn, Out: t.TempDir(), afterFact: look})
+			if err != nil {
+				t.Fatalf("replay the window under %s: %v", name, err)
+			}
+			if facts == 0 {
+				t.Fatalf("the replay under %s applied no fact, so nothing was read", name)
+			}
+			for _, failure := range failures {
+				t.Errorf("under %s, %s", name, failure)
+			}
+			if !slices.Equal(line, []string{"ACME-2"}) {
+				t.Errorf("under %s the line after the last fact is %v, want [ACME-2]", name, line)
+			}
+			for card, got := range map[string]map[string]time.Time{"snapshot": result.Scorecard.FirstSlot, "line": result.LineScorecard.FirstSlot} {
+				if len(got) != 1 || !got["ACME-1"].Equal(clock(9, 5)) {
+					t.Errorf("under %s the %s scorecard gives the first slots %v, want ACME-1's at 09:05 alone", name, card, got)
+				}
 			}
 		})
 	}

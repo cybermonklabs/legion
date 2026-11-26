@@ -60,9 +60,10 @@ func (s slotsStateSource) State(ctx context.Context, tx pgx.Tx) (api.State, []su
 }
 
 // slotsLinePattern is the slots line as the spec writes it (R6), with a group for every number
-// and every oldest time it prints. A count with no known time prints no oldest, and the last
-// sentence names the first issue that waits for a slot or says that none waits.
-var slotsLinePattern = regexp.MustCompile(`^slots: (\d+) of (\d+) in use: ` +
+// and every oldest time it prints, the number of P0 holders after the slots in use included. A
+// count with no known time prints no oldest, and the last sentence names the first issue that
+// waits for a slot or says that none waits.
+var slotsLinePattern = regexp.MustCompile(`^slots: (\d+) of (\d+) in use \((\d+) P0\): ` +
 	`(\d+) working(?: \(oldest ([^)]+)\))?, (\d+) stopped(?: \(oldest ([^)]+)\))?, ` +
 	`(\d+) person(?: \(oldest ([^)]+)\))?, (\d+) issue(?: \(oldest ([^)]+)\))?, ` +
 	`(\d+) idle(?: \(oldest ([^)]+)\))?\. ` +
@@ -97,17 +98,21 @@ func slotsLineMinute(at *time.Time) string {
 // state route. The text line `legion state` prints, the `admission.slots` of `legion state
 // --json` and the `slots` of the tick notice the tick queued give the same number and the same
 // oldest time for each of the five states, for both readings of started work without a slot, and
-// for the holders below the first issue that waits for one; and the JSON gives the numbers worked
-// out by hand from the records below.
+// for the holders below the first issue that waits for one, and the same number of P0 holders,
+// which is also the `admission.p0Holders` of the state; and the JSON gives the numbers worked out
+// by hand from the records below.
 //
-// The records, at 2026-11-16T09:00Z under a cap of four, all four slots held: ACME-1 at work, its
-// implementer in a turn for fifty minutes; ACME-2 held from implementing; ACME-3 waiting on a
-// person's answer to an ask for two hours; ACME-4 resting, its implementer's last turn ended
-// twenty minutes ago. In the line: ACME-7, released for a wait 150 minutes ago and still waiting
-// on a link, so it is in reading (b) and holds nothing back; ACME-6, released for a wait 100
-// minutes ago whose link has finished, so it is in both readings and is the first issue that waits
-// for a slot; and ACME-5, a root waiting for its tree to be opened. ACME-6 ranks below ACME-1 and
-// above the other three holders.
+// The records, at 2026-11-16T09:00Z under a cap of four, six slots held, four of them counted by
+// the cap: ACME-1 at work, its implementer in a turn for fifty minutes; ACME-2 held from
+// implementing; ACME-3 waiting on a person's answer to an ask for two hours; ACME-4 resting, its
+// implementer's last turn ended twenty minutes ago. Two more holders start outside the cap,
+// ACME-8 at work, P0 by the priority Dispatch resolves for it from another issue, and ACME-9
+// resting, P0 by its own priority, so the slots in use stand above the cap and two of them are
+// P0. In the line: ACME-7, released for a wait 150 minutes ago and still waiting on a link, so it
+// is in reading (b) and holds nothing back; ACME-6, released for a wait 100 minutes ago whose
+// link has finished, so it is in both readings and is the first issue that waits for a slot; and
+// ACME-5, a root waiting for its tree to be opened. ACME-6 ranks below ACME-1 and above the
+// other three holders the cap counts, and below the two P0 holders, which the line places first.
 func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_cmd_slots")
@@ -172,7 +177,7 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 		}
 	}
 
-	seed("the four holders", func(tx pgx.Tx) error {
+	seed("the six holders", func(tx pgx.Tx) error {
 		if err := running(tx, root("ACME-1", "in_progress", phase.Implementing, "a"), true, true); err != nil {
 			return err
 		}
@@ -187,10 +192,24 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 		if err := running(tx, asking, false, true); err != nil {
 			return err
 		}
-		return running(tx, root("ACME-4", "in_progress", phase.Implementing, "e"), true, true)
+		if err := running(tx, root("ACME-4", "in_progress", phase.Implementing, "e"), true, true); err != nil {
+			return err
+		}
+		// The two holders the cap does not count: P0 by the priority Dispatch resolves for it,
+		// with none of its own, and P0 by its own priority.
+		resolved := root("ACME-8", "in_progress", phase.Implementing, "h")
+		resolved.Resolved = record.Resolved{Priority: record.P0, From: "OTHER-9", Known: true}
+		if err := running(tx, resolved, true, true); err != nil {
+			return err
+		}
+		own := root("ACME-9", "in_progress", phase.Implementing, "i")
+		own.Priority = record.P0
+		return running(tx, own, true, true)
 	})
 	claimOf("ACME-1", legionclaim.RoleImplementer, supervise.StateWorking, before(50*time.Minute), time.Time{})
 	claimOf("ACME-4", legionclaim.RoleImplementer, supervise.StateIdle, before(40*time.Minute), before(20*time.Minute))
+	claimOf("ACME-8", legionclaim.RoleImplementer, supervise.StateWorking, before(30*time.Minute), time.Time{})
+	claimOf("ACME-9", legionclaim.RoleImplementer, supervise.StateIdle, before(30*time.Minute), before(10*time.Minute))
 	seed("the line", func(tx pgx.Tx) error {
 		// Each released root took a slot and gave it back for its wait, which is the one write of
 		// the mark (record.Store.ReleaseSlotForWait).
@@ -265,7 +284,8 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 	text := stateOutput()
 	var served struct {
 		Admission struct {
-			Slots *record.SlotsReading `json:"slots"`
+			P0Holders *int                 `json:"p0Holders"`
+			Slots     *record.SlotsReading `json:"slots"`
 		} `json:"admission"`
 	}
 	if err := json.Unmarshal([]byte(stateOutput("--json")), &served); err != nil {
@@ -281,6 +301,9 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 	if tickReading == nil {
 		t.Errorf("the tick notice carries no slots: %s", row.Payload)
 	}
+	if served.Admission.P0Holders == nil {
+		t.Errorf("legion state --json carries no admission.p0Holders")
+	}
 	if len(lines) != 1 {
 		t.Errorf("legion state printed %d slots lines, want one:\n%s", len(lines), text)
 	}
@@ -290,11 +313,11 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 
 	// The JSON gives the numbers the records give.
 	want := record.SlotsReading{
-		InUse: 4, Cap: slotCap,
-		Working:            record.StateCount{Count: 1, Oldest: new(before(50 * time.Minute))},
+		InUse: 6, Cap: slotCap, P0: 2,
+		Working:            record.StateCount{Count: 2, Oldest: new(before(50 * time.Minute))},
 		Stopped:            record.StateCount{Count: 1},
 		Person:             record.StateCount{Count: 1, Oldest: new(before(2 * time.Hour))},
-		Idle:               record.StateCount{Count: 1, Oldest: new(before(20 * time.Minute))},
+		Idle:               record.StateCount{Count: 2, Oldest: new(before(20 * time.Minute))},
 		WaitOnlyForSlot:    record.StateCount{Count: 1, Oldest: new(before(100 * time.Minute))},
 		StartedWithoutSlot: record.StateCount{Count: 2, Oldest: new(before(150 * time.Minute))},
 		BelowFirstWaiting:  record.BelowFirstWaiting{Count: 3, First: "ACME-6"},
@@ -305,6 +328,13 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 	// The tick notice gives the same reading, its line included.
 	if got, stated := slotsReadingJSON(t, *tickReading, true), slotsReadingJSON(t, *jsonReading, true); got != stated {
 		t.Errorf("the tick notice's slots = %s and legion state --json's admission.slots = %s: one reading of one state", got, stated)
+	}
+	// The P0 holders are one count wherever they are read: the reading's `p0` in the JSON and in
+	// the tick notice, and the state's own `admission.p0Holders`, which counts them with the same
+	// rule (record.SlotHolders.Add) over the same records.
+	if got := *served.Admission.P0Holders; got != jsonReading.P0 || tickReading.P0 != jsonReading.P0 {
+		t.Errorf("the P0 holders are admission.p0Holders %d, the tick notice's slots.p0 %d and legion state --json's admission.slots.p0 %d: one count",
+			got, tickReading.P0, jsonReading.P0)
 	}
 
 	// The text is the JSON's line, printed as the first line after the admission count line, and
@@ -339,15 +369,17 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 	}{
 		{what: "in use", count: r.InUse, n: number(1)},
 		{what: "the cap", count: r.Cap, n: number(2)},
-		{what: "working", count: r.Working.Count, n: number(3), oldest: r.Working.Oldest, printedTime: parts[4]},
-		{what: "stopped", count: r.Stopped.Count, n: number(5), oldest: r.Stopped.Oldest, printedTime: parts[6]},
-		{what: "person", count: r.Person.Count, n: number(7), oldest: r.Person.Oldest, printedTime: parts[8]},
-		{what: "issue", count: r.Issue.Count, n: number(9), oldest: r.Issue.Oldest, printedTime: parts[10]},
-		{what: "idle", count: r.Idle.Count, n: number(11), oldest: r.Idle.Oldest, printedTime: parts[12]},
-		{what: "wait only for a slot", count: r.WaitOnlyForSlot.Count, n: number(13), oldest: r.WaitOnlyForSlot.Oldest, printedTime: parts[14]},
-		{what: "started without a slot in all", count: r.StartedWithoutSlot.Count, n: number(15), oldest: r.StartedWithoutSlot.Oldest,
-			printedTime: parts[16]},
-		{what: "holders below the first waiting issue", count: r.BelowFirstWaiting.Count, n: number(17)},
+		{what: "P0 holders", count: r.P0, n: number(3)},
+		{what: "admission.p0Holders", count: *served.Admission.P0Holders, n: number(3)},
+		{what: "working", count: r.Working.Count, n: number(4), oldest: r.Working.Oldest, printedTime: parts[5]},
+		{what: "stopped", count: r.Stopped.Count, n: number(6), oldest: r.Stopped.Oldest, printedTime: parts[7]},
+		{what: "person", count: r.Person.Count, n: number(8), oldest: r.Person.Oldest, printedTime: parts[9]},
+		{what: "issue", count: r.Issue.Count, n: number(10), oldest: r.Issue.Oldest, printedTime: parts[11]},
+		{what: "idle", count: r.Idle.Count, n: number(12), oldest: r.Idle.Oldest, printedTime: parts[13]},
+		{what: "wait only for a slot", count: r.WaitOnlyForSlot.Count, n: number(14), oldest: r.WaitOnlyForSlot.Oldest, printedTime: parts[15]},
+		{what: "started without a slot in all", count: r.StartedWithoutSlot.Count, n: number(16), oldest: r.StartedWithoutSlot.Oldest,
+			printedTime: parts[17]},
+		{what: "holders below the first waiting issue", count: r.BelowFirstWaiting.Count, n: number(18)},
 	} {
 		if check.n != check.count {
 			t.Errorf("the slots line gives %s as %d and the JSON as %d: %q", check.what, check.n, check.count, line)
@@ -357,7 +389,7 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 				slotsLineMinute(check.oldest), line)
 		}
 	}
-	if parts[18] != r.BelowFirstWaiting.First {
-		t.Errorf("the slots line names %q as the first issue that waits for a slot and the JSON %q: %q", parts[18], r.BelowFirstWaiting.First, line)
+	if parts[19] != r.BelowFirstWaiting.First {
+		t.Errorf("the slots line names %q as the first issue that waits for a slot and the JSON %q: %q", parts[19], r.BelowFirstWaiting.First, line)
 	}
 }

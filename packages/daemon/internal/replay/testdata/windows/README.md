@@ -25,18 +25,18 @@ This file gives the conventions every window is written and worked by, once: the
 | `sign-off-held-by-grandchild` | a root's sign-off held behind a member of its tree that is no Dispatch child of it, which a cover holds under `cover` | `main`, `cover` |
 | `one-minute-wait` | a wait on another issue that lasts one minute gives the slot back, or keeps it for a grace | `main`, `wait-grace` |
 | `root-idle-while-children-run` | a tree root holds its slot with no turn while its children run, and under `main` waits for them in `awaiting_children` | `main`, `legion-v22.14.1` |
-| `p0-at-a-full-cap` | a P0 starts at a full regular cap with no P0 bound, but waits under the reference rule | `main`, `p0-at-once`, `before-p0` |
-| `p0-at-its-bound` | the first P0 fills a bound of one, and the pass refuses the second P0 in first place | `main`, `p0-at-once` |
-| `urgent-work-waits` | the first `todo`, a priority raise and the run-out determine the waits of P0 and P1 work | `main`, `p0-at-once` |
+| `p0-at-a-full-cap` | a P0 starts at a full regular cap with no P0 bound, but waits under the reference rule | `main`, `before-p0` |
+| `p0-at-its-bound` | the first P0 fills a bound of one, and the pass refuses the second P0 in first place | `main` |
+| `urgent-work-waits` | the first `todo`, a priority raise and the run-out determine the waits of P0 and P1 work | `main` |
 | `conflict-in-accepting` | a conflict in accepting returns work to implementing | `legion-v20.42.5` |
 | `conflict-in-retro` | a conflict in retro returns work to implementing | `legion-v20.42.5` |
 | `signal-crosses-with-no-event` | the tick still starts P0 and returns a slot, but only the signal deadline starts lower-priority work | `main`, `signals` |
 | `no-crossing-due` | no deadline is due at first, and a new kill moves the pending deadline before it fires | `signals` |
-| `p0-inherited-across-projects` | at a full cap, a child that inherits P0 from another project's ancestor starts, an explicit P1 child waits, and an ancestor's raise moves a waiting issue to P0 at that moment | `main`, `p0-at-once` |
-| `p0-inherited-ancestor-missing` | the same window without the required ancestor's record: each rule with the new P0 start is refused, naming it | `before-p0`; `main` and `p0-at-once` refused |
-| `p0-inherited-from-the-nearest-ancestor` | a child with no priority of its own takes its parent's P0, not the P2 of the top issue of its chain, and starts at a full cap | `main`, `p0-at-once` |
-| `p0-recorded-descendant-update` | Dispatch's recorded update of a child whose own priority stays null and whose resolved priority becomes P0 starts it at a full cap | `main`, `p0-at-once` |
-| `one-free-slot-opposite-order` | one free slot and two issues below P0 in opposite order under the recorded rule and by resolved priority | `main`, `p0-at-once` |
+| `p0-inherited-across-projects` | at a full cap, a child that inherits P0 from another project's ancestor starts, an explicit P1 child waits, and an ancestor's raise moves a waiting issue to P0 at that moment | `main` |
+| `p0-inherited-ancestor-missing` | the same window without the required ancestor's record: each rule with the new P0 start is refused, naming it | `before-p0`; `main` refused |
+| `p0-inherited-from-the-nearest-ancestor` | a child with no priority of its own takes its parent's P0, not the P2 of the top issue of its chain, and starts at a full cap | `main` |
+| `p0-recorded-descendant-update` | Dispatch's recorded update of a child whose own priority stays null and whose resolved priority becomes P0 starts it at a full cap | `main` |
+| `one-free-slot-opposite-order` | one free slot and two issues below P0 in opposite order under the recorded rule and by resolved priority | `main` |
 | `git-store-verdicts` | on the branch that asks git, a read that the store answers with a conflict where the record shows none, and a read that it answers clean where the record shows a conflict | `legion-v20.42.5`, `main` |
 | `git-unanswered-reads` | on the branch that asks git, one read of each kind that git cannot answer, which the generator answers | `main` |
 | `merge-event-time` | a merge lands in the replay's base at GitHub's merge event, not at its committer's time | `main` |
@@ -46,12 +46,13 @@ This file gives the conventions every window is written and worked by, once: the
 | `drawn-work-conflict` | drawn work keeps its source's recorded conflict on the main branch, and draws it by its source's profile on the branch that draws | `main`, on two branches |
 | `random-experiment` | a workflow experiment in the `random` mode is drawn for each issue the daemon records, keyed to no issue: the run names those draws as unkeyed, and a comparison pairs no run of the window | `main` |
 
-The three windows of R10, the start of a P0 issue outside the cap, run it under `p0-at-once` and under `main`, which starts a P0 issue outside the cap since cybermonklabs/legion#5488.
-Their expected values under `main` are those of the run under `p0-at-once`, the two rules differing only in name.
+The three windows of R10, the start of a P0 issue outside the cap, run it under `main`, which starts a P0 issue outside the cap since cybermonklabs/legion#5488.
+They and the five windows of the priority Dispatch resolves below also ran it under `p0-at-once`, the candidate that started a P0 issue outside the cap before that change; once `main` was that rule in every choice but its name, the repository kept `p0-at-once` no more, and its rows went from each `expect.json`, each the same as the row under `main` but for the rule's name.
 
 The five windows of R10 that rest on the priority Dispatch resolves for an issue, spec v36's four and the nearest-ancestor row of spec v49 (`p0-inherited-from-the-nearest-ancestor`), read it as Dispatch resolves it: an issue's own, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels.
-`main`, since cybermonklabs/legion#5488, and `p0-at-once` read the resolved priority for the P0 start and the line's order; the recorded rule these windows ran, `main` before that change and `before-p0` now, starts an issue outside the cap on no priority and orders its line by the issue's own priority, else its tree root's; and the measures read the resolved priority under every rule, so `urgentWaits` and `priorityTakenBanded` count an issue at its resolved priority under every rule.
+`main`, since cybermonklabs/legion#5488, reads the resolved priority for the P0 start and the line's order; the recorded rule these windows ran, `main` before that change and `before-p0` now, starts an issue outside the cap on no priority and orders its line by the issue's own priority, else its tree root's; and the measures read the resolved priority under every rule, so `urgentWaits` and `priorityTakenBanded` count an issue at its resolved priority under every rule.
 Their record names an issue's parent in another project, ACMEAUX, as its events do; `p0-recorded-descendant-update` is Dispatch's record from a release that serves `resolved_priority`, and the four others are from before it, so the replay reconstructs the resolved priority from the window's parent chains.
+Under a rule with no P0 start the replay's copy of Dispatch serves each issue's own priority with no `resolved_priority` or `priority_from`, so a recorded value of `p0-recorded-descendant-update` reaches no such rule (`TestARuleWithNoP0StartReadsEachIssuesOwnPriorityWhereTheRecordCarriesTheResolvedOne`).
 
 The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "The branch that asks git, and the generator's profile" below gives it.
 `drawn-skipped-loop` and `drawn-boot-earlier-phase` hold no git input and exercise the generator's legacy merge count.
@@ -100,7 +101,7 @@ The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "T
     A window that holds no record of a signal names it unrecorded, and the rules that admit by no signal decide nothing by its limit.
 
   - `refused` (optional): `{"<rule>": "<text>"}`, each rule under which `legion replay run` must refuse the window, on the window's branch, with an error that holds the text, in place of a `Scorecard` in `rules` and of `checks`.
-    `p0-inherited-ancestor-missing` names `main` and `p0-at-once`, each a rule with the new P0 start, whose refusal must name `ACMEAUX-1`, the ancestor whose history the window lacks.
+    `p0-inherited-ancestor-missing` names `main`, a rule with the new P0 start, whose refusal must name `ACMEAUX-1`, the ancestor whose history the window lacks.
 
 The values of `expect.json` are those of `scorecard.json`, the snapshot timeline (`replay.md`, the files of `legion replay run`): the timeline the replay builds from the store as each admission pass leaves it, not `scorecard-line.json`, the one `BuildTrace` builds again from the replay's own log lines.
 The two may differ by the reconstruction error the tool reports; these windows hold the exact one.
