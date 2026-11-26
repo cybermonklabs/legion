@@ -67,7 +67,7 @@ func readAttempts(t *testing.T, attempts *GitHubReadAttempts) map[githubreads.Re
 	return keyed
 }
 
-// The table holds a row to what GET /healthz may answer: one of the four reads, a cause of at most
+// The table holds a row to what GET /healthz may answer: one of the five reads, a cause of at most
 // 1,024 bytes, a cause exactly when the attempt failed.
 func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 	t.Parallel()
@@ -101,7 +101,7 @@ func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 		read:       string(githubreads.ArchitectureImport),
 		constraint: "github_read_attempts_cause_when_failed",
 	}, {
-		name:       "a read that is none of the four",
+		name:       "a read that is none of the five",
 		read:       "intake",
 		succeeded:  true,
 		constraint: "github_read_attempts_read_check",
@@ -119,6 +119,34 @@ func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 	// The cause at the limit is kept.
 	if err := NewGitHubReadAttempts(database.Pool).Record(ctx, githubreads.DeliveryReconcile, false, strings.Repeat("a", githubreads.CauseLimit)); err != nil {
 		t.Fatalf("record a cause of exactly %d bytes: %v", githubreads.CauseLimit, err)
+	}
+}
+
+// The check on `read` admits every read githubreads names, the code survival run's among them
+// (migration 20261126103900), which the record's first migration did not: each read of
+// githubreads.Reads records an attempt and comes back as the row it was written as, and the table
+// holds one row for each. It fails when Reads names none.
+func TestTheGitHubReadAttemptsTableAdmitsEveryRead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	attempts := NewGitHubReadAttempts(migratedEmptyStore(t).Pool)
+	reads := githubreads.Reads()
+	if len(reads) == 0 {
+		t.Fatal("githubreads.Reads names no read, so no read was checked")
+	}
+	for _, read := range reads {
+		if err := attempts.Record(ctx, read, false, "GET https://api.github.com/repos/acme/web: status 503"); err != nil {
+			t.Errorf("record an attempt of %s: %v", read, err)
+		}
+	}
+	recorded := readAttempts(t, attempts)
+	for _, read := range reads {
+		if got, found := recorded[read]; !found || got.Succeeded || got.Cause == "" {
+			t.Errorf("the record of %s reads %+v (found %t), want the failed attempt it was written as", read, got, found)
+		}
+	}
+	if len(recorded) != len(reads) {
+		t.Errorf("the record holds %d rows (%v), want one for each of the %d reads", len(recorded), recorded, len(reads))
 	}
 }
 

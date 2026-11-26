@@ -29,17 +29,18 @@ import (
 // GET /healthz spell it.
 type Read string
 
-// The four reads, one for each loop that reads GitHub under a lease.
+// The five reads, one for each loop that reads GitHub under a lease.
 const (
 	WebhookRedelivery  Read = "webhook_redelivery"
 	ArchitectureImport Read = "architecture_import"
 	DeliveryReconcile  Read = "delivery_reconcile"
 	CIReconcile        Read = "ci_reconcile"
+	CodeSurvival       Read = "code_survival"
 )
 
-// Reads returns the four reads in the order GET /healthz names them.
+// Reads returns the five reads in the order GET /healthz names them.
 func Reads() []Read {
-	return []Read{WebhookRedelivery, ArchitectureImport, DeliveryReconcile, CIReconcile}
+	return []Read{WebhookRedelivery, ArchitectureImport, DeliveryReconcile, CIReconcile, CodeSurvival}
 }
 
 // CauseLimit is the most bytes a recorded cause holds, which the table's check holds it to too. A

@@ -1,9 +1,10 @@
 kind: Changed
 body: |-
-    The worker image's test PostgreSQL (`legion-testpg`) allows 507 connections, up from 503,
-    because a Dispatch process now opens up to 121 Postgres connections (one more lease-pool
-    connection, for the production signals): `testlimits.ServerConnections` is 504, four processes
-    at 121 and the suite's own 20, plus PostgreSQL's default 3 superuser slots.
+    The worker image's test PostgreSQL (`legion-testpg`) allows 511 connections, up from 503,
+    because a Dispatch process now opens up to 122 Postgres connections (two more lease-pool
+    connections, one for the production signals and one for the code survival run):
+    `testlimits.ServerConnections` is 508, four processes at 122 and the suite's own 20, plus
+    PostgreSQL's default 3 superuser slots.
 time: 2026-11-26T07:28:49Z
 custom:
     Issue: INFRA-3206

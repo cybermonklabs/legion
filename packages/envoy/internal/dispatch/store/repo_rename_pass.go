@@ -38,6 +38,13 @@ import (
 //     is how the record of production events names each pull request a row ships or blames
 //     (production_events.pull_requests), and, after `revert:`, a revert row's source_ref.
 //
+// The code survival results (migration 20261126103753_code_survival) are fields of the pass:
+// code_repos.repo, code_changes.repo and code_days.repo, each a name that the table's check holds
+// in lower case, as the pair's new name is. code_pairs.repo has no line of its own. A pair's key
+// (repo, adder_sha) references its adder's (repo, sha) in code_changes on update cascade and on
+// delete cascade, so the write of code_changes.repo moves each change's pairs with it, and the
+// delete of a change that a collision removes takes its pairs.
+//
 // Beside those fields the pass writes only the stale marks of the eval figures' cuts a rename
 // moves (markRenamedCuts). It writes no other column, updated_at included, and appends no event.
 // It never writes repo_projects, the event log, the text of documents, comments, asks and
@@ -897,6 +904,42 @@ var repoRenameLines = []repoRenameLine{
 			return []repoRenameStep{
 				collisions(r, "production_deploy_rules"),
 				nameWrite(r, "production_deploy_rules", "repo"),
+			}
+		},
+	},
+	{
+		// What the code survival measurement keeps for a repository (migration
+		// 20261126103753): its row in code_repos, one row in code_changes for each measured
+		// change and one in code_days for each replayed day, each its own line. A row under the
+		// old name whose twin the new name holds is deleted, and the twin stays; a deleted change
+		// takes its pairs with it (ON DELETE CASCADE), and the pairs of each change the pass
+		// moves follow it (ON UPDATE CASCADE), so no step names code_pairs. A pair's key is the
+		// adder's, so a pair never meets a collision of its own. Each table's check holds its
+		// repository in lower case, and RepoRename spells the new name in lower case, so the
+		// write meets the check.
+		fields: "code_repos.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "code_repos"),
+				nameWrite(r, "code_repos", "repo"),
+			}
+		},
+	},
+	{
+		fields: "code_changes.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "code_changes", "sha"),
+				nameWrite(r, "code_changes", "repo"),
+			}
+		},
+	},
+	{
+		fields: "code_days.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "code_days", "day"),
+				nameWrite(r, "code_days", "repo"),
 			}
 		},
 	},

@@ -952,7 +952,7 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 // this process does not run, whatever the record holds of it; unknown before the copy of the
 // record has loaded; no_attempt for a read the record holds no attempt of; and succeeded or failed
 // from the attempt it holds, with that attempt's time in UTC, and the cause of a failed one. `at`
-// and `cause` are present and null wherever the state carries neither, and the four keys come in
+// and `cause` are present and null wherever the state carries neither, and the keys come in
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
@@ -1012,6 +1012,52 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 	})
 }
 
+// /healthz names the code survival read as the fifth entry of github, after the four before it: a
+// process that runs it names the state of its newest recorded attempt (failed with its time and
+// cause, or no_attempt while the record holds none), and one that does not run it names off,
+// whatever the record holds of it.
+func TestHealthzNamesTheCodeSurvivalRead(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	if reads := githubreads.Reads(); len(reads) != 5 || reads[4] != githubreads.CodeSurvival || string(githubreads.CodeSurvival) != "code_survival" {
+		t.Fatalf("githubreads.Reads = %q, want the four reads before it and code_survival last", reads)
+	}
+	failedAt := time.Date(2026, 11, 26, 4, 5, 6, 789012000, time.UTC)
+	cause := "GET https://api.github.com/repos/acme/widgets/commits/0123456789abcdef0123456789abcdef01234567: status 503: unavailable"
+	attempted := loadedGitHubReadCopy(t, []githubreads.Recorded{{Read: githubreads.CodeSurvival, At: failedAt, Cause: cause}})
+	unattempted := loadedGitHubReadCopy(t, nil)
+	state := func(state string) map[string]any { return map[string]any{"state": state, "at": nil, "cause": nil} }
+	failed := map[string]any{"state": "failed", "at": failedAt.Format(time.RFC3339Nano), "cause": cause}
+	runs := func(codeSurvival bool) map[githubreads.Read]bool {
+		return map[githubreads.Read]bool{
+			githubreads.WebhookRedelivery:  true,
+			githubreads.ArchitectureImport: true,
+			githubreads.DeliveryReconcile:  true,
+			githubreads.CIReconcile:        true,
+			githubreads.CodeSurvival:       codeSurvival,
+		}
+	}
+	// the four reads before it hold no attempt in either copy.
+	answer := func(codeSurvival map[string]any) map[string]map[string]any {
+		return map[string]map[string]any{
+			"webhook_redelivery":  state("no_attempt"),
+			"architecture_import": state("no_attempt"),
+			"delivery_reconcile":  state("no_attempt"),
+			"ci_reconcile":        state("no_attempt"),
+			"code_survival":       codeSurvival,
+		}
+	}
+
+	_, health := probeGitHubReads(t, database, &gitHubReads{recordCopy: attempted, runs: runs(true)})
+	requireGitHubReads(t, "with the code survival read run and its attempt recorded", health.GitHub, answer(failed))
+
+	_, health = probeGitHubReads(t, database, &gitHubReads{recordCopy: unattempted, runs: runs(true)})
+	requireGitHubReads(t, "with the code survival read run and no attempt recorded", health.GitHub, answer(state("no_attempt")))
+
+	_, health = probeGitHubReads(t, database, &gitHubReads{recordCopy: attempted, runs: runs(false)})
+	requireGitHubReads(t, "with the code survival read not run", health.GitHub, answer(state("off")))
+}
+
 // loadedGitHubReadCopy is a copy of the record of GitHub reads whose first load read rows, as
 // githubreads.Copy.Run leaves it at start. It runs until the test ends.
 func loadedGitHubReadCopy(t *testing.T, rows []githubreads.Recorded) *githubreads.Copy {
@@ -1046,7 +1092,7 @@ func probeGitHubReads(t *testing.T, database *store.Store, reads *gitHubReads) (
 	return response.Code, health
 }
 
-// requireGitHubReads requires github to hold the four reads in githubreads.Reads' order, each
+// requireGitHubReads requires github to hold every read in githubreads.Reads' order, each
 // entry exactly the want of its key: its state, and its at and cause, present when null.
 func requireGitHubReads(t *testing.T, when string, github json.RawMessage, want map[string]map[string]any) {
 	t.Helper()

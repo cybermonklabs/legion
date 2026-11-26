@@ -108,6 +108,18 @@ const renamedRepositoriesSeed = `
 	insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals) values
 		('INFRA', 'cybermonklabs/legion', 2, '2026-01-03', '2026-01-01', '{INFRA/a}'),
 		('SMOKE', 'sjawhar/legion-smoke', 1, '2026-01-03', '2026-01-01', '{SMOKE/b}');
+	insert into code_repos (repo, branch, state) values
+		('sjawhar/legion', 'main', 'readable'),
+		('sjawhar/legion-smoke', 'main', 'readable');
+	insert into code_changes (repo, sha, day, committed_at, pr_number, head_ref, author, added, alive, removed_by_non_pr) values
+		('sjawhar/legion', repeat('a', 40), '2026-01-01', '2026-01-01T10:00:00Z', 1, 'legion/INFRA-1', 'alice', 10, 6, 2),
+		('sjawhar/legion-smoke', repeat('b', 40), '2026-01-01', '2026-01-01T11:00:00Z', 2, 'smoke/1', 'alice', 5, 5, 0);
+	insert into code_pairs (repo, adder_sha, remover_sha, remover_pr, remover_head_ref, remover_author, lines, days_between) values
+		('sjawhar/legion', repeat('a', 40), repeat('c', 40), 3, 'legion/INFRA-2', 'bob', 2, 0.5),
+		('sjawhar/legion-smoke', repeat('b', 40), repeat('c', 40), 3, 'smoke/2', 'bob', 1, 1);
+	insert into code_days (repo, day, commits, digest, state) values
+		('sjawhar/legion', '2026-01-01', 2, decode(repeat('ab', 32), 'hex'), 'replayed'),
+		('sjawhar/legion-smoke', '2026-01-01', 1, decode(repeat('cd', 32), 'hex'), 'replayed');
 	insert into events (project_key, seq, type, actor, payload, notify) values
 		('INFRA', 1, 'settings.repo_project.updated', '{"kind":"user","id":"alice"}',
 			'{"repo":"SJawhar/Legion","project":"INFRA","renamed_to":"CybermonkLabs/Legion"}', false);
@@ -139,7 +151,13 @@ var renamedRepositoriesAfter = map[string]string{
 		"search=authors=octocat excluded=cybermonklabs/legion,sjawhar/legion-smoke deploy=cybermonklabs/legion",
 	`select string_agg(project_key || '=' || repo, ' ' order by project_key) from architecture_sources`: "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
 	`select string_agg(cursor_repository, ' ' order by cursor_repository) from ci_reconcile_passes`:     "cybermonklabs/legion sjawhar/dotfiles",
-	`select string_agg(project_key || '=' || repo, ' ' order by project_key) from eval_days_defaults`:   "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
+	// The code survival results: the three tables that name a repository, and the pairs, which no
+	// line names and which follow their change's key.
+	`select string_agg(repo || '=' || state, ' ' order by repo) from code_repos`:                                             "cybermonklabs/legion=readable sjawhar/legion-smoke=readable",
+	`select string_agg(repo || '=' || left(sha, 1), ' ' order by repo) from code_changes`:                                    "cybermonklabs/legion=a sjawhar/legion-smoke=b",
+	`select string_agg(repo || '=' || left(adder_sha, 1) || '>' || left(remover_sha, 1), ' ' order by repo) from code_pairs`: "cybermonklabs/legion=a>c sjawhar/legion-smoke=b>c",
+	`select string_agg(repo || '@' || day || '=' || commits, ' ' order by repo) from code_days`:                              "cybermonklabs/legion@2026-01-01=2 sjawhar/legion-smoke@2026-01-01=1",
+	`select string_agg(project_key || '=' || repo, ' ' order by project_key) from eval_days_defaults`:                        "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
 	// The cut of the old name, in each spelling a row holds it in, and of the new name, of each
 	// project whose published default the pass moves from the old name, or that holds stored
 	// figures of the old name: at generation 1, or at the next where a mark stands, for every eval,
@@ -285,6 +303,7 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,
 		"delivery_settings.deploy_repo": 1, "delivery_settings.excluded_repos": 1, "delivery_reconcile_progress.scope": 2,
 		"architecture_sources.repo": 1, "ci_reconcile_passes.cursor_repository": 1, "eval_days_defaults.repo": 1,
+		"code_repos.repo": 1, "code_changes.repo": 1, "code_days.repo": 1,
 	} {
 		if written[field] != want {
 			t.Errorf("logged %v rows of %s, want %v (every line: %v)", written[field], field, want, written)
@@ -460,13 +479,30 @@ const renameCollisionsSeed = `
 		from architecture_sources s
 		join (values ('sjawhar/legion', 'old-api'), ('sjawhar/legion', 'old-store'), ('cybermonklabs/legion', 'new-api')) c(repo, id)
 			on c.repo = s.repo;
+	insert into code_repos (repo, branch, state) values
+		('sjawhar/legion', 'old', 'readable'),
+		('cybermonklabs/legion', 'new', 'readable');
+	insert into code_changes (repo, sha, day, committed_at, pr_number, head_ref, author, added, alive, removed_by_non_pr) values
+		('sjawhar/legion', repeat('a', 40), '2026-01-01', '2026-01-01T10:00:00Z', 1, 'old', 'alice', 10, 6, 2),
+		('cybermonklabs/legion', repeat('a', 40), '2026-01-01', '2026-01-01T10:00:00Z', 1, 'new', 'alice', 10, 6, 2),
+		('sjawhar/legion', repeat('b', 40), '2026-01-01', '2026-01-01T11:00:00Z', 2, 'moved', 'alice', 5, 5, 0);
+	insert into code_pairs (repo, adder_sha, remover_sha, remover_pr, remover_head_ref, remover_author, lines, days_between) values
+		('sjawhar/legion', repeat('a', 40), repeat('c', 40), 3, 'old-remover', 'bob', 2, 0.5),
+		('cybermonklabs/legion', repeat('a', 40), repeat('c', 40), 3, 'new-remover', 'bob', 2, 0.5),
+		('sjawhar/legion', repeat('b', 40), repeat('c', 40), 3, 'moved-remover', 'bob', 1, 1);
+	insert into code_days (repo, day, commits, digest, state) values
+		('sjawhar/legion', '2026-01-01', 1, decode(repeat('ab', 32), 'hex'), 'replayed'),
+		('cybermonklabs/legion', '2026-01-01', 2, decode(repeat('cd', 32), 'hex'), 'replayed'),
+		('sjawhar/legion', '2026-01-02', 3, decode(repeat('ef', 32), 'hex'), 'replayed');
 `
 
 // Where the new name gives a row the key of another row, the row under the new name stays, in
 // whatever case it is, and the row under the old name is deleted and logged with its table and
 // key. A run with a twin goes with its jobs while the twin keeps its own, and a run with no twin
-// is moved with its jobs. A source with a twin goes with its components. Of two rows under the
-// old name with one key, one stays and takes the new name.
+// is moved with its jobs. A source with a twin goes with its components. A code survival change
+// with a twin goes with its pairs while the twin keeps its own, and a change with none moves with
+// its pairs; a code_repos row and a code_days row with a twin are deleted and the twin stays. Of
+// two rows under the old name with one key, one stays and takes the new name.
 func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renameCollisionsSeed)
@@ -474,21 +510,25 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 
 	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
 
-	if pass.Deleted != 9 || pass.Failures != 0 || pass.Left != noneLeft {
-		t.Fatalf("the pass = %+v, want 9 rows deleted, no failure and nothing left", pass)
+	if pass.Deleted != 12 || pass.Failures != 0 || pass.Left != noneLeft {
+		t.Fatalf("the pass = %+v, want 12 rows deleted, no failure and nothing left", pass)
 	}
 	for query, want := range map[string]string{
-		`select string_agg(issue_key || ' ' || url, ' | ' order by url) from issue_external_links where url like '%/issues/5'`: "INFRA-2 https://github.com/cybermonklabs/legion/issues/5",
-		`select string_agg(url, ' | ') from issue_external_links where url ilike '%/pull/9'`:                                   "https://github.com/cybermonklabs/legion/pull/9",
-		`select string_agg(repo || ' ' || head_sha, ' | ' order by number) from pull_request_heads where number = 7`:           "cybermonklabs/legion new",
-		`select string_agg(repo, ' | ') from pull_request_heads where number = 9`:                                              "cybermonklabs/legion",
-		`select string_agg(repo || ' ' || on_branch, ' | ') from branch_commits`:                                               "cybermonklabs/legion true",
-		`select string_agg(repo || ' ' || title, ' | ') from delivery_pull_requests`:                                           "CybermonkLabs/Legion New",
-		`select string_agg(repo || '#' || run_id || ' ' || head_sha, ' | ' order by run_id) from delivery_runs`:                "cybermonklabs/legion#100 new | cybermonklabs/legion#101 moved",
-		`select string_agg(repo || '#' || run_id || ' ' || name, ' | ' order by run_id, name) from delivery_run_jobs`:          "cybermonklabs/legion#100 twin-build | cybermonklabs/legion#101 moved-build",
-		`select string_agg(repo || ' ' || job_names::text, ' | ' order by job_names) from delivery_run_warnings`:               "cybermonklabs/legion {deploy} | cybermonklabs/legion {other}",
-		`select string_agg(repo || ' ' || branch, ' | ') from architecture_sources`:                                            "cybermonklabs/legion new",
-		`select string_agg(id, ' | ' order by id) from components`:                                                             "new-api",
+		`select string_agg(issue_key || ' ' || url, ' | ' order by url) from issue_external_links where url like '%/issues/5'`:      "INFRA-2 https://github.com/cybermonklabs/legion/issues/5",
+		`select string_agg(url, ' | ') from issue_external_links where url ilike '%/pull/9'`:                                        "https://github.com/cybermonklabs/legion/pull/9",
+		`select string_agg(repo || ' ' || head_sha, ' | ' order by number) from pull_request_heads where number = 7`:                "cybermonklabs/legion new",
+		`select string_agg(repo, ' | ') from pull_request_heads where number = 9`:                                                   "cybermonklabs/legion",
+		`select string_agg(repo || ' ' || on_branch, ' | ') from branch_commits`:                                                    "cybermonklabs/legion true",
+		`select string_agg(repo || ' ' || title, ' | ') from delivery_pull_requests`:                                                "CybermonkLabs/Legion New",
+		`select string_agg(repo || '#' || run_id || ' ' || head_sha, ' | ' order by run_id) from delivery_runs`:                     "cybermonklabs/legion#100 new | cybermonklabs/legion#101 moved",
+		`select string_agg(repo || '#' || run_id || ' ' || name, ' | ' order by run_id, name) from delivery_run_jobs`:               "cybermonklabs/legion#100 twin-build | cybermonklabs/legion#101 moved-build",
+		`select string_agg(repo || ' ' || job_names::text, ' | ' order by job_names) from delivery_run_warnings`:                    "cybermonklabs/legion {deploy} | cybermonklabs/legion {other}",
+		`select string_agg(repo || ' ' || branch, ' | ') from architecture_sources`:                                                 "cybermonklabs/legion new",
+		`select string_agg(id, ' | ' order by id) from components`:                                                                  "new-api",
+		`select string_agg(repo || ' ' || branch, ' | ') from code_repos`:                                                           "cybermonklabs/legion new",
+		`select string_agg(repo || ' ' || left(sha, 1) || ' ' || head_ref, ' | ' order by sha) from code_changes`:                   "cybermonklabs/legion a new | cybermonklabs/legion b moved",
+		`select string_agg(repo || ' ' || left(adder_sha, 1) || ' ' || remover_head_ref, ' | ' order by adder_sha) from code_pairs`: "cybermonklabs/legion a new-remover | cybermonklabs/legion b moved-remover",
+		`select string_agg(repo || ' ' || day || ' ' || commits, ' | ' order by day) from code_days`:                                "cybermonklabs/legion 2026-01-01 2 | cybermonklabs/legion 2026-01-02 3",
 	} {
 		if got := readText(t, store, query); got != want {
 			t.Errorf("%s\n= %s\nwant %s", query, got, want)
@@ -507,7 +547,7 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 	}
 	want := map[string]int{
 		"issue_external_links": 2, "pull_request_heads": 2, "branch_commits": 1, "delivery_pull_requests": 1,
-		"delivery_runs": 1, "delivery_run_warnings": 1, "architecture_sources": 1,
+		"delivery_runs": 1, "delivery_run_warnings": 1, "architecture_sources": 1, "code_repos": 1, "code_changes": 1, "code_days": 1,
 	}
 	if len(deleted) != len(want) {
 		t.Errorf("logged deletions %v, want %v", deleted, want)

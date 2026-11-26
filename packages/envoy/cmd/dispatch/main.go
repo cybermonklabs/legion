@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
+	"github.com/sjawhar/envoy/internal/dispatch/codesurvival"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/dashboard"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -903,6 +904,10 @@ func main() {
 	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
 	// process's count is the same with the setting off.
 	parentStatusFixLeases := reserve("parent status fix")
+	// The code survival run (codesurvival.Lease): a leased loop like the rest, reserved here so that
+	// this process's count is the same whatever work it finds. Its loop takes this reservation when
+	// it starts: until a loop does, the connection is reserved and no consumer holds it.
+	_ = reserve(codesurvival.Lease)
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -1499,6 +1504,8 @@ func main() {
 			githubreads.ArchitectureImport: appCtx.Architecture().HasApp(),
 			githubreads.DeliveryReconcile:  reconcile.HasApp(),
 			githubreads.CIReconcile:        reconciler != nil,
+			// No loop of this server records the code survival read yet, so it reads off.
+			githubreads.CodeSurvival: false,
 		}}
 	}
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
@@ -2499,7 +2506,7 @@ type issuers struct {
 	serviceTokens *oidc.LazyVerifier
 }
 
-// gitHubReads is what /healthz names the GitHub reads from (githubreads): which of the four this
+// gitHubReads is what /healthz names the GitHub reads from (githubreads): which of them this
 // process runs, and its copy of the record of each read's newest attempt. main builds it only
 // where a GitHub App is configured, and nil names none (`github: null`).
 type gitHubReads struct {
@@ -2567,10 +2574,11 @@ type gitHubReadsMember struct {
 	ArchitectureImport gitHubReadEntry `json:"architecture_import"`
 	DeliveryReconcile  gitHubReadEntry `json:"delivery_reconcile"`
 	CIReconcile        gitHubReadEntry `json:"ci_reconcile"`
+	CodeSurvival       gitHubReadEntry `json:"code_survival"`
 }
 
 // member is the github member of one answer, nil where no App is configured. It reads the copy
-// once, so the four entries come from one load, and reads nothing else.
+// once, so the entries come from one load, and reads nothing else.
 func (g *gitHubReads) member() *gitHubReadsMember {
 	if g == nil {
 		return nil
@@ -2584,6 +2592,7 @@ func (g *gitHubReads) member() *gitHubReadsMember {
 		ArchitectureImport: entry(githubreads.ArchitectureImport),
 		DeliveryReconcile:  entry(githubreads.DeliveryReconcile),
 		CIReconcile:        entry(githubreads.CIReconcile),
+		CodeSurvival:       entry(githubreads.CodeSurvival),
 	}
 }
 
@@ -2712,14 +2721,15 @@ func proofOrigins(serverURL string, added []string) []string {
 // sign-in asserts `signin: true` itself.
 //
 // Where a GitHub App is configured, `github` names each GitHub read Dispatch makes under a lease
-// (githubreads), `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and
-// `ci_reconcile` in that order, each with its newest attempt's `state`, `at` and `cause`; with no
-// App it is null. The state is `succeeded` when that attempt sent GitHub requests and noted no
-// failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
-// this process has read the record, and `off` where this process does not run the read (no App
-// private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
-// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
-// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// (githubreads), `webhook_redelivery`, `architecture_import`, `delivery_reconcile`,
+// `ci_reconcile` and `code_survival` in that order, each with its newest attempt's `state`, `at`
+// and `cause`; with no App it is null. The state is `succeeded` when that attempt sent GitHub
+// requests and noted no failure, `failed` when it noted one, `no_attempt` while the record holds
+// none, `unknown` before this process has read the record, and `off` where this process does not
+// run the read (no App private key, or no NATS for the redelivery sweep and the CI reconcile).
+// `at` is when a succeeded or failed attempt was recorded, by the database's clock, and `cause` a
+// failed one's first failure, cut to githubreads.CauseLimit bytes; each is null where the state
+// carries none.
 // It never decides `ok` or the status: a process serves everything but GitHub's own reads while
 // GitHub fails, so failing the probe would take every server process out of service for an outage
 // each of them serves through. It is read from this process's copy of the record

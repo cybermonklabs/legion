@@ -11,7 +11,7 @@ import (
 )
 
 // gitHubReadAttemptTimeout bounds each statement of GitHubReadAttempts: one row written, or the
-// four rows read, which a healthy database answers in milliseconds.
+// rows read, one for each read, which a healthy database answers in milliseconds.
 const gitHubReadAttemptTimeout = 5 * time.Second
 
 // GitHubReadAttempts is the record of each GitHub read's newest attempt (migration

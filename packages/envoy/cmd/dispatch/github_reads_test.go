@@ -140,6 +140,7 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 // architecture source), names all four failed, each with a cause that names a request of its own
 // loop. A loop left without its recorder leaves its entry no_attempt, and two loops given each
 // other's names put a cause under the wrong key; either fails naming the entry.
+// The fifth read, code_survival, reads off: no loop of this server records it yet.
 //
 // The test settings bring every loop's pass inside the test's window: the sweep's and the CI
 // reconcile's intervals, and a first pass at start for the delivery reconcile and the
@@ -172,9 +173,12 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL, Env: env})
 	process.waitHealthy(t)
 
+	// The loops this server starts, each of which records its own read. code_survival is not one:
+	// no loop of this server records it yet, so its entry reads off.
+	loops := []githubreads.Read{githubreads.WebhookRedelivery, githubreads.ArchitectureImport, githubreads.DeliveryReconcile, githubreads.CIReconcile}
 	answer := process.waitForGitHubReads(t, func(answer healthzAnswer) string {
 		var missing []string
-		for _, read := range githubreads.Reads() {
+		for _, read := range loops {
 			if lack := failedOn503(answer, read); lack != "" {
 				missing = append(missing, lack)
 			}
@@ -184,6 +188,9 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	t.Logf("/healthz with every GitHub read failed: %d %s", answer.status, answer.body)
 	if answer.status != http.StatusOK || !answer.OK {
 		t.Fatalf("/healthz with every GitHub read failed = %d %s, want 200 with ok true", answer.status, answer.body)
+	}
+	if entry := answer.reads[string(githubreads.CodeSurvival)]; entry.State != "off" || entry.At != nil || entry.Cause != nil {
+		t.Errorf("%s of a read no loop of this server records is not off with at and cause null: %s", githubreads.CodeSurvival, answer.body)
 	}
 	// What a request of each loop names: the sweep's listing, the CI reconcile's default repository
 	// (GitHub-cased where GitHub named it), the delivery settings' deploy repository, and the
@@ -195,7 +202,7 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 		githubreads.DeliveryReconcile:  {"acme/deploy"},
 		githubreads.CIReconcile:        {ciReconcileRow},
 	}
-	for _, read := range githubreads.Reads() {
+	for _, read := range loops {
 		cause := *answer.reads[string(read)].Cause
 		if !slices.ContainsFunc(names[read], func(name string) bool { return strings.Contains(strings.ToLower(cause), strings.ToLower(name)) }) {
 			t.Errorf("%s's cause names no request of its own loop, want one naming any of %q: %s", read, names[read], cause)
