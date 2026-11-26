@@ -41,7 +41,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 		return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
 	}
 	if given.taken {
-		return intake.Result{Added: given.stored.Version.Added}, e.addGiver(ctx, tx, fact, given.stored.Version)
+		return intake.Result{}, e.addGiver(ctx, tx, fact, given.stored.Version)
 	}
 	if earlier := given.passedOver; earlier != nil {
 		if err := e.store.DeletePlan(ctx, tx, fact.Issue, earlier.Generation); err != nil {
@@ -586,12 +586,12 @@ func stopsEnded(fact intake.PlanGiven, given givenVersion, written writtenVersio
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after
 // the route read it unrecorded, still waits there for the issue's first step: the issue stands
 // before that step (beforeItsWork), and its generation holds no plan the step keeps — none, or
-// only one earlier owners gave (record.GivenByEarlierOwners), which the step passes over
-// (passOverEarlierOwners) — so the step takes the newest plan its owner gave, or passes it over
-// too for an issue whose group takes none (planFirstStep). A sub-owner starts only once its task
-// runs, so no sub-owner's version waits at generation 0. Once a plan of the generation is the one
-// its run walks, the default steps the step wrote or a plan of its owner's, the run went on without
-// the one given at generation 0.
+// only one an earlier owner gave, which the step passes over (record.PlansOfEarlierOwners,
+// passOverEarlierOwners) — so the step takes the newest plan its owner gave, or passes it over too
+// for an issue whose group takes none (planFirstStep). A sub-owner starts only once its task runs,
+// so no sub-owner's version waits at generation 0. Once a plan of the generation is the one its run
+// walks, the default steps the step wrote or a plan of its owner's, the run went on without the one
+// given at generation 0.
 // versionRefusal reads the group only after this judgement, so a plan given at generation 0 for an
 // issue whose group takes none is answered PLAN_STALE_GENERATION once its run went on, and
 // PLAN_NOT_TAKEN while it still waits.
@@ -603,7 +603,11 @@ func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	if err != nil || stored == nil {
 		return err == nil, err
 	}
-	return record.GivenByEarlierOwners(ctx, e.store, tx, stored.Version, issue)
+	earlier, err := record.PlansOfEarlierOwners(ctx, e.store, tx, issue)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(earlier, func(version record.PlanVersion) bool { return version.Generation == issue.Generation })
 }
 
 // sameVersion says whether next is held, the version in force, as its owner gave it: an owner's

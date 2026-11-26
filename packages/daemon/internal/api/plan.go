@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -13,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
@@ -114,14 +117,14 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 	})
 }
 
-// registerPlan is register_plan. It authorizes the owner (planOwner), reads the
-// document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
-// reads the plan's blocks at the version given, each need as the task it names (planAt, through
-// plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
-// carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
-// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
-// a later version are the workflow's, and is answered with the tasks the workflow's apply says the
-// version added (registeredPlan).
+// registerPlan is register_plan. It authorizes the owner (planOwner), reads the document's approval
+// for the version Dispatch has and the issue carrying it (documentOfIssue), reads the plan's blocks
+// at the version given, each need as the task it names (planAt, through plan.FromBlocks), and
+// refuses with one reason for each cause of a plan this release does not carry out (plan.Supported)
+// or no release can (plan.Validate); each of those answers records nothing. A plan both take is
+// recorded as intake.PlanGiven, its needs as task ids, whose rules of a later version are the
+// workflow's. A new version's apply answers its added tasks; where the workflow takes the version
+// already in force, the route reads that version's recorded additions after it applies.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version.
 // No id decides whether a registration is one already taken (intake.ApplyFact applies every
@@ -188,11 +191,34 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
 	}
-	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
-		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim},
-		AnswerPlanRegister, func(result intake.Result) any {
-			return PlanRegisterResponse{Plan: registeredPlan(given, result.Added)}
-		})
+	fact := intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim}
+	if s.pool == nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
+		return
+	}
+	result, err := s.apply(r.Context(), "api", fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version), fact)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
+		return
+	}
+	if result.Refusal != nil {
+		s.writeRefusal(w, r, result.Refusal)
+		return
+	}
+	if result.Added == nil {
+		var held bool
+		if err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			result.Added, held, err = s.records.PlanVersionHeld(ctx, tx, fact.Issue, fact.Generation, fact.Plan.ArtifactID, fact.Plan.Version)
+			return err
+		}); err != nil {
+			s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not read the plan registration")
+			return
+		} else if !held {
+			result.Added = nil
+		}
+	}
+	s.writeAnswer(w, r, AnswerPlanRegister, http.StatusOK, PlanRegisterResponse{Plan: registeredPlan(given, result.Added)})
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, or for the sub-owner of
