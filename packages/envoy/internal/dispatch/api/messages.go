@@ -643,6 +643,7 @@ func (s *server) createStoredMessage(
 		graphstore.QueueNodes(b, stored.written)
 		failpoint.Queue(b, fails)
 		nodeKind, nodeAddress := stored.rowNode()
+		// kept for one release: user-threads-triggers
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address, threads_recorded)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
@@ -1258,6 +1259,7 @@ func (s *server) listAgentConversation(w http.ResponseWriter, r *http.Request) {
 // listAgentMessages answers GET /api/v1/agents/{session_id}/messages, which a page of the release
 // before the conversation read calls: the same rows, so that page keeps working through a roll
 // and after a rollback.
+// kept for one release: inbox-old-reads
 func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 	s.answerAgentConversation(w, r)
 }

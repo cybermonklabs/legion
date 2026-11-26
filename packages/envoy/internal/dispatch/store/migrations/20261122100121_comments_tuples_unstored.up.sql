@@ -15,6 +15,7 @@
 -- It is a performance index: no constraint and no later migration depends on it. A failed
 -- concurrent build leaves an INVALID index of this name on comments, which the runner drops with
 -- DROP INDEX CONCURRENTLY and builds again on the next attempt.
+-- kept for one release: inbox-roll-catch-up
 create index concurrently if not exists comments_tuples_unstored
     on comments (id)
     where not tuples_stored;

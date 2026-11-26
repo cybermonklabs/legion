@@ -2796,6 +2796,7 @@ type MyReplyRow struct {
 // database time of the one snapshot every row was read in, which is what a mark-all passes back as
 // its read mark. NextCursor is where the next state=dismissed page resumes, empty when the page
 // that answered it was the last.
+// kept for one release: inbox-old-reads
 type MyRepliesResponse struct {
 	Rows       []MyReplyRow `json:"rows"`
 	Total      int          `json:"total"`

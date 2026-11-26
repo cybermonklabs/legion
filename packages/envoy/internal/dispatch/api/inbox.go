@@ -12,6 +12,7 @@ import (
 // "" (no filter), "unassigned", or "login" with the canonical email of a person who has signed
 // in. `me` is the caller; a named person is canonicalised first so a shared `?assignee=Alice@…`
 // link never 400s.
+// kept for one release: inbox-old-reads
 func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller model.Actor) (mode, login string, err error) {
 	switch value := strings.TrimSpace(raw); value {
 	case "":
@@ -29,6 +30,7 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 	}
 }
 
+// kept for one release: inbox-old-reads
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {

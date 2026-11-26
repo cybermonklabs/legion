@@ -1787,6 +1787,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		if !plan.stored.unprojected {
 			graphstore.QueueNodes(b, plan.stored.written)
 		}
+		// kept for one release: user-threads-triggers
 		b.Queue("", `
 			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, tuples_stored, threads_recorded, created_at)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true, $14)

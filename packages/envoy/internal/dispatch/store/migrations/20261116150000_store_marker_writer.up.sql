@@ -53,6 +53,7 @@
 -- the census answers 0.
 set local lock_timeout = '500ms';
 
+-- kept for one release: older-writer-unmark
 create or replace function store_marker_unmarked_by_older_writer() returns trigger language plpgsql as $$
 begin
   if current_setting('dispatch.store_marker_writer', true) is distinct from 'on' then
@@ -72,41 +73,49 @@ $$;
 -- for the expression. A BEFORE trigger's WHEN reads the session's setting as the function does, so
 -- the row written is the same either way. The function keeps its own test, so a trigger that calls
 -- it without the WHEN still unmarks only an older build's update.
+-- kept for one release: older-writer-unmark
 create trigger comment_deliveries_store_marker before update on comment_deliveries
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function store_marker_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger message_deliveries_store_marker before update on message_deliveries
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function store_marker_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger comment_blocks_store_marker before update on comment_blocks
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function store_marker_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger message_blocks_store_marker before update on message_blocks
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function store_marker_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger ask_blocks_store_marker before update on ask_blocks
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function store_marker_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger comment_block_refs_store_marker before update on comment_block_refs
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function store_marker_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger message_block_refs_store_marker before update on message_block_refs
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function store_marker_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger ask_block_refs_store_marker before update on ask_block_refs
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')

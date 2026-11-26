@@ -103,7 +103,7 @@ type BlockIndexTick struct {
 	// (readEventsAfterCursor).
 	ObjectNodes int
 	OrphansGone int
-	InboxRows   int
+	InboxRows   int // kept for one release: inbox-roll-catch-up
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int

@@ -154,6 +154,7 @@ var fallbackSessionsOwed = `
 // reached, for the block-index tick (rollPasses): a build before this one's outbox publishes a copy
 // with no event and states nothing, so no event the tick reads names such a session. Each takes
 // its node as backfillSessions gives one only a row names: at the sentinel, at the earliest copy.
+// kept for one release: inbox-roll-catch-up
 func fallbackSessionsPass() inboxPass {
 	return inboxPass{
 		kind:      "fallback_sessions",

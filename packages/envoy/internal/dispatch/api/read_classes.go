@@ -144,9 +144,9 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/messages/{id}":                                          {Writes: readWritesNothing},
 	"GET /api/v1/messages/{id}/blocks":                                   {Writes: readWritesNothing},
 	"GET /api/v1/messages/{id}/history":                                  {Writes: readWritesNothing},
-	"GET /api/v1/inbox":                                                  {Writes: readWritesNothing},
+	"GET /api/v1/inbox":                                                  {Writes: readWritesNothing}, // kept for one release: inbox-old-reads
 	"GET /api/v1/me/answers":                                             {Writes: readWritesNothing},
-	"GET /api/v1/me/replies":                                             {Writes: readWritesNothing},
+	"GET /api/v1/me/replies":                                             {Writes: readWritesNothing}, // kept for one release: inbox-old-reads
 	"GET /api/v1/search":                                                 {Writes: readWritesNothing},
 	"GET /api/v1/search/results":                                         {Writes: readWritesNothing},
 	"GET /api/v1/search/coverage":                                        {Writes: readWritesNothing},
@@ -159,7 +159,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/agents/known":                                           {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/answers":                            {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/conversation":                       {Writes: readWritesNothing},
-	"GET /api/v1/agents/{session_id}/messages":                           {Writes: readWritesNothing},
+	"GET /api/v1/agents/{session_id}/messages":                           {Writes: readWritesNothing}, // kept for one release: inbox-old-reads
 	"GET /api/v1/agents/{session_id}/artifacts":                          {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}":                   {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {Writes: readWritesNothing},

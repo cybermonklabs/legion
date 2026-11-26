@@ -310,6 +310,7 @@ func parseThreadOwner(rawIssue, rawArtifact string) (issue string, artifact *str
 }
 
 // parseMyRepliesOwner reads the optional ?issue= or ?artifact= of GET /api/v1/me/replies.
+// kept for one release: inbox-old-reads
 func parseMyRepliesOwner(r *http.Request) (issue string, artifact *string, err error) {
 	query := r.URL.Query()
 	return parseThreadOwner(query.Get("issue"), query.Get("artifact"))
@@ -357,6 +358,7 @@ func parseThreadKinds(values []string) (reply, agent bool, err error) {
 // ?kind= splits into one empty string, which is how this route names none, so the empties are
 // dropped here rather than skipped by the parser: the mark-all reads its kinds off a JSON list,
 // where "" is a value the caller wrote and the route refuses.
+// kept for one release: inbox-old-reads
 func parseMyRepliesKinds(r *http.Request) (reply, agent bool, err error) {
 	named := []string{}
 	for _, value := range strings.Split(r.URL.Query().Get("kind"), ",") {
@@ -375,6 +377,7 @@ func parseMyRepliesKinds(r *http.Request) (reply, agent bool, err error) {
 }
 
 // parseMyRepliesState reads ?state=: unread, the default, inbox or dismissed.
+// kept for one release: inbox-old-reads
 func parseMyRepliesState(r *http.Request) (state string, err error) {
 	switch value := strings.TrimSpace(r.URL.Query().Get("state")); value {
 	case "":
@@ -397,12 +400,14 @@ type myRepliesCursor struct {
 }
 
 // myRepliesCursorOf is the cursor a page answers for the row it ended on.
+// kept for one release: inbox-old-reads
 func myRepliesCursorOf(row model.MyReplyRow) string {
 	return row.DismissedAt.UTC().Format(time.RFC3339Nano) + "," + row.ThreadID
 }
 
 // parseMyRepliesCursor reads one ?cursor=, which is a cursor this route answered: the dismissal
 // mark and the thread id it names, as myRepliesCursorOf writes them.
+// kept for one release: inbox-old-reads
 func parseMyRepliesCursor(raw string) (*myRepliesCursor, error) {
 	at, thread, found := strings.Cut(raw, ",")
 	refusal := errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor is one this route answered in next_cursor")
@@ -429,6 +434,7 @@ func parseMyRepliesCursor(raw string) (*myRepliesCursor, error) {
 // Each state refuses the other's parameters rather than ignoring them, as GET /api/v1/issues
 // refuses a cursor (parseIssuePage): answering a cursor request with the first page, or a limit
 // request with 200 rows, would hand the caller rows it cannot tell from the ones it asked for.
+// kept for one release: inbox-old-reads
 func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, cursor *myRepliesCursor, err error) {
 	query := r.URL.Query()
 	if state == myRepliesStateDismissed {
@@ -504,6 +510,7 @@ func parseLimitOffset(query url.Values) (limit *int, offset int, err error) {
 // error of its own to report. One block over a per-kind callback would hide four differences
 // behind one parameter list to save six lines. The unpaged total is the one line the two would
 // have shared, and it is taken once, after both.
+// kept for one release: inbox-old-reads
 func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -658,6 +665,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 // answer's total needs when the read is paged. The Dismissed view has no count - its total is the
 // page it answers (listMyReplies) - so it answers an empty count for that state, which that read
 // never asks for. The Agent half's own statements are myAgentPageQuery's (api/replies_agent.go).
+// kept for one release: inbox-old-reads
 func myRepliesQueries(state string, from *myRepliesCursor) (count, page string) {
 	switch state {
 	case myRepliesStateInbox:
@@ -685,6 +693,7 @@ func myRepliesPageArgs(countArgs []any, reach *int, from *myRepliesCursor) []any
 // myRepliesOrderOf is the time a row is ordered by in one state: the newest write somebody else
 // made in the thread, or, in the Dismissed view, the moment it was dismissed. A row of either kind
 // in that state carries a mark, since each half reads only its dismissed rows.
+// kept for one release: inbox-old-reads
 func myRepliesOrderOf(state string, row model.MyReplyRow) time.Time {
 	if state == myRepliesStateDismissed && row.DismissedAt != nil {
 		return *row.DismissedAt
@@ -695,6 +704,7 @@ func myRepliesOrderOf(state string, row model.MyReplyRow) time.Time {
 // readMyReplyRows reads one state's Reply rows under the parameters myRepliesPageArgs built, then
 // the answer of each row whose newest write by somebody else is its ask's answer
 // (answerReplyRows).
+// kept for one release: inbox-old-reads
 func (s *server) readMyReplyRows(
 	ctx context.Context, tx pgx.Tx, query string, args []any,
 ) ([]model.MyReplyRow, error) {

@@ -367,6 +367,7 @@ var olderEditedItems = map[string]olderEdited{
 // (takingPart), and its mention is stated again under the edit's event, beside it. An item whose
 // marker does not mark it yet (olderEditedItems) is the comment pointer pass's or the messages
 // pass's, which reads the text the item holds then. It answers how many tuples it handed the store.
+// kept for one release: events-inbox-owed
 func writeOlderEdit(ctx context.Context, tx pgx.Tx, edited olderEdited, event queuedEvent) (int64, error) {
 	var body, visibility string
 	var madeBy []byte

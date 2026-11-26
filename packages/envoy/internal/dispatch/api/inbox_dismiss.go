@@ -161,6 +161,7 @@ const inboxRestoreLockAgentRoots = `
 // this transaction has touched the marks, reads the owed row and sets the column from the mark as
 // it now stands. A root this restore's own delete reached was settled by the trigger already, and
 // the settle writes nothing of it.
+// kept for one release: agent-dismissed-owed
 const inboxRestoreSettleAgentRoots = `
 	select user_agent_thread_dismissed_settle(root)
 	from unnest($1::uuid[]) as root`
@@ -986,6 +987,7 @@ func (s *server) dismissInboxAgentThreads(
 	if err := rows.Err(); err != nil {
 		return written, fmt.Errorf("dismiss the inbox's agent threads: %w", err)
 	}
+	// kept for one release: agent-dismissed-owed
 	if plan.restore {
 		// The roots step 2 took, settled now that the caller's marks are deleted, and never
 		// before (inboxRestoreSettleAgentRoots).

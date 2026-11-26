@@ -318,6 +318,7 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 			if commented, err = refs.CommentsNamingNoNode(queued, tx, comments, causes); err != nil {
 				return false, objectPassDebt{}, err
 			}
+			// kept for one release: inbox-roll-catch-up
 			if err := graphcensus.HoldCommentCatchUp(queued, tx, comments); err != nil {
 				return false, objectPassDebt{}, err
 			}
@@ -368,6 +369,7 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	}
 	// The rest of the backfill's write for the comments the events name, which reads what the
 	// batch appended and so follows it.
+	// kept for one release: inbox-roll-catch-up
 	if len(comments) > 0 {
 		ids, caused := commented.Written()
 		if err := graphcensus.CatchUpComments(ctx, tx, comments, ids, caused); err != nil {
@@ -377,6 +379,7 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	// What the backfill gives the declines and the sessions the events read are or name, which
 	// hold no row of their own, so their write is the event read's.
 	var caught int
+	// kept for one release: inbox-roll-catch-up
 	if safe > *cursor {
 		if caught, err = graphcensus.CatchUpEvents(ctx, tx, *cursor, next); err != nil {
 			return false, objectPassDebt{}, fmt.Errorf("catch up the declines and sessions the events after the cursor name: %w", err)
@@ -506,6 +509,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 			tick.OrphansGone++
 		}
 	}
+	// kept for one release: inbox-roll-catch-up
 	caught, err := graphcensus.CatchUpOwedRows(ctx, s.store)
 	tick.InboxRows += int(caught.Rows)
 	more = more || caught.More

@@ -45,4 +45,5 @@
 -- its columns, so the two roll side by side; rolling back past this migration is an image rollback
 -- alone, and the columns left behind are read by nothing.
 alter table comments add column tuples_stored boolean not null default false,
+  -- kept for one release: user-threads-triggers
   add column threads_recorded boolean not null default false;

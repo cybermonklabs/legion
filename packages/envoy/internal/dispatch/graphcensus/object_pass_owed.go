@@ -110,6 +110,7 @@ var eventsOweObjectPass = `
 // read by; and of the queues of the events an older build's outbox recorded, which no event names
 // (publishedDeliveriesQueued), and of the events of that build's writes that change no row's marker
 // (inboxEventsQueued), each read through its key.
+// kept for one release: inbox-roll-catch-up
 func rollOwedByEvents() string {
 	named := func(array, as string) string { return `any((select named.` + array + ` from named)::` + as + `[])` }
 	terms := []string{

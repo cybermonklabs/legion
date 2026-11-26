@@ -426,6 +426,7 @@ func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Wr
 	failpoint.Queue(b, fail)
 	b.Queue(fmt.Sprintf("clear the dismissals of message %s", root),
 		`delete from user_agent_thread_dismissed where message_id = $1::uuid`, root)
+	// kept for one release: agent-dismissed-owed
 	b.Queue(fmt.Sprintf("settle the dismissal of message %s", root),
 		`select user_agent_thread_dismissed_settle($1::uuid)`, root)
 }

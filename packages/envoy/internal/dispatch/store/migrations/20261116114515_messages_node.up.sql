@@ -48,5 +48,6 @@
 set local lock_timeout = '500ms';
 
 alter table messages add column node_kind text, add column node_address text,
+  -- kept for one release: user-threads-triggers
   add column threads_recorded boolean not null default false,
   add constraint messages_node foreign key (node_kind, node_address) references graph_nodes (kind, id) not valid;

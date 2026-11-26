@@ -209,6 +209,7 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 // to. The block identity pass (blockIdentitiesPass) comes last: it states nothing, and marks the
 // documents whose blocks' identity mentions the block index owes.
 func inboxPasses() []inboxPass {
+	// kept for one release: user-threads-triggers
 	passes := []inboxPass{messagesPass(), commentPointersPass(), commentMentionsPass(), pastBoundRowsPass(pastBoundComments),
 		pastBoundRowsPass(pastBoundMessages)}
 	for _, kind := range inboxItemKinds {
@@ -618,6 +619,7 @@ func writeOwnedCommentPointers(ctx context.Context, tx pgx.Tx, ids []string) (in
 // reads that person (writeAsksOwed). Every lock of the catch-up is so taken before the tick writes
 // anything, in the writers' order - the owner, then the project - and each take of one of them after
 // the tick's write batch is a take the transaction holds already, which returns at once.
+// kept for one release: inbox-roll-catch-up
 func HoldCommentCatchUp(ctx context.Context, tx pgx.Tx, ids []string) error {
 	if err := lockOwnersOf(ctx, tx, commentOwners, ids); err != nil {
 		return err
@@ -668,6 +670,7 @@ func HoldCommentCatchUp(ctx context.Context, tx pgx.Tx, ids []string) error {
 // owes, as it does in the backfill, and leaves every other alone. The caller holds every owner and
 // project lock those passes take (refs.LockCommentOwners, HoldCommentCatchUp), so each of their
 // takes returns at once.
+// kept for one release: inbox-roll-catch-up
 func CatchUpComments(ctx context.Context, tx pgx.Tx, named, written []string, causes []int64) error {
 	if _, err := writeCommentPointers(ctx, tx, written, causes); err != nil {
 		return err
@@ -681,6 +684,7 @@ func CatchUpComments(ctx context.Context, tx pgx.Tx, named, written []string, ca
 	}{
 		{`select m.comment_id::text, m.target ` + commentMentionsOwed + ` and m.comment_id = any($1::uuid[])
 			order by m.comment_id, m.target`, written, 2, writeCommentMentions},
+		// kept for one release: user-threads-triggers
 		{`select c.id::text ` + pastBoundComments.owed + ` and c.id = any($1::uuid[]) order by c.id`,
 			named, 1, pastBoundComments.markRecorded},
 		{`select b.comment_id::text, b.block_id ` + comment.blocksOwed() + ` and b.comment_id = any($1::uuid[])
@@ -756,11 +760,13 @@ var threadItemsStored = `not exists (
 // having walked none of these passes, so such a horizon is no run of this backfill. A row a build
 // before this one left unmarked before such a run is the backfill's, which takes the table in one
 // walk.
+// kept for one release: inbox-roll-catch-up
 var backfillRan = `exists (select 1 from graph_backfill_horizon where marking_rule >= ` + strconv.Itoa(refs.BlockIndexMarkingRule) + `)`
 
 // RollRows is what the block-index tick's catch-up of the rows another build left unmarked did
 // (CatchUpOwedRows): how many rows it marked, and whether a pass read a full batch, so that rows
 // may still be owed.
+// kept for one release: inbox-roll-catch-up
 type RollRows struct {
 	Rows int64
 	More bool
@@ -794,6 +800,7 @@ type RollRows struct {
 // whole, as the object pass does, since its marker test reads an answer's moment through a cast no
 // index predicate may hold, and the fallback copies pass reads the published copies whole, a copy
 // holding no marker.
+// kept for one release: inbox-roll-catch-up
 func rollPasses() []inboxPass {
 	passes := []inboxPass{fallbackSessionsPass()}
 	for _, pass := range inboxPasses() {
@@ -832,6 +839,7 @@ func rollPasses() []inboxPass {
 // other transactions, so each class reaches zero one batch a tick after that build stops writing.
 // Until a run of the backfill of this build's marking rule or a later one has recorded its horizon
 // (backfillRan) it reads nothing more: every such row is the backfill's then.
+// kept for one release: inbox-roll-catch-up
 func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, error) {
 	var done RollRows
 	var ran bool
@@ -879,6 +887,7 @@ func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, erro
 // read (catchUpEventTypes), and where none is it reads nothing more, since both would answer
 // nothing: so a tick whose events hold no decline and name no session costs one statement here.
 // It answers how many declines and sessions it wrote.
+// kept for one release: inbox-roll-catch-up
 func CatchUpEvents(ctx context.Context, tx pgx.Tx, after, through int64) (int, error) {
 	if through <= after {
 		return 0, nil
@@ -916,11 +925,13 @@ func CatchUpEvents(ctx context.Context, tx pgx.Tx, after, through int64) (int, e
 // catchUpEventTypes are the types of the events CatchUpEvents gives a write: the ask.follower_added,
 // ask.opened and comment.delivery that name a session (eventSessions), and a decline's
 // ask.resolved (declinesOwed). A read it adds over another type adds that type here.
+// kept for one release: inbox-roll-catch-up
 const catchUpEventTypes = `('ask.follower_added', 'ask.opened', 'comment.delivery', 'ask.resolved')`
 
 // InboxRowsOwed is, by the kind of each pass the block-index tick catches up (rollPasses) and of the
 // decline pass, how many rows that pass still owes: the backfill's own count of what it has left
 // (KindBackfill.Remaining), which reads zero once every row a build before this one left is marked.
+// kept for one release: inbox-roll-catch-up
 func InboxRowsOwed(ctx context.Context, q graphstore.Queryer) (map[string]int64, error) {
 	owed := map[string]int64{}
 	for _, pass := range append(rollPasses(), declinesPass()) {
@@ -1076,6 +1087,7 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 // (lockOwnersOf), the rows it owes, `from` the table under the alias the batch's key names, and the
 // statement that marks a batch of them, by id ($1), which takes the rows still owed `for no key
 // update` in ascending id, as every writer of these rows takes them after their owners.
+// kept for one release: user-threads-triggers
 type pastBoundTable struct {
 	kind, table, alias, owners, owed, mark string
 }
@@ -1084,6 +1096,7 @@ type pastBoundTable struct {
 // this release's writer would not have stated either: a comment left whole out of the store
 // (refs.CommentInTheStore), and one whose replies_to_block the store cannot key, which the pointer
 // pass leaves to its old arms as the writer does.
+// kept for one release: user-threads-triggers
 var pastBoundComments = pastBoundTable{
 	kind: "comments_past_bound", table: "comments", alias: "c", owners: commentOwners,
 	mark: `
@@ -1103,6 +1116,7 @@ var pastBoundComments = pastBoundTable{
 // pastBoundMessages are the messages rows an older build wrote whose replies_to end the store
 // cannot key (graphstore.MessageFacts), which the messages pass leaves to their old arms, as the
 // writer does.
+// kept for one release: user-threads-triggers
 var pastBoundMessages = pastBoundTable{
 	kind: "messages_past_bound", table: "messages", alias: "m", owners: messageOwners,
 	mark: `
@@ -1127,6 +1141,7 @@ var pastBoundMessages = pastBoundTable{
 // which the thread pass marks. The mark is what passes the row by the triggers' marker test, which
 // the release that drops those triggers reads: without it such a row would stand unmarked for
 // good, the one row no pass takes, and the triggers would never go.
+// kept for one release: user-threads-triggers
 func pastBoundRowsPass(table pastBoundTable) inboxPass {
 	return inboxPass{
 		kind:      table.kind,

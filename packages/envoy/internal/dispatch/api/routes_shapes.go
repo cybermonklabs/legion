@@ -336,6 +336,7 @@ type postHistoryQuery struct {
 }
 
 // inboxQuery is GET /api/v1/inbox's query.
+// kept for one release: inbox-old-reads
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
 	Project string `query:"project"`
@@ -357,6 +358,7 @@ type myAnswersQuery struct {
 
 // myRepliesQuery is GET /api/v1/me/replies's query: the kinds of row and the state it reads
 // them in, the page that state takes, and the one thread owner it may be narrowed to.
+// kept for one release: inbox-old-reads
 type myRepliesQuery struct {
 	// Kind is the kinds of row answered, as one comma list of reply and agent (`reply`,
 	// `agent`, `reply,agent`); an absent one reads reply alone, and any other value is
@@ -916,10 +918,11 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusOK, Body: model.MessageDelivery{}},
 		},
 	},
+	// kept for one release: inbox-old-reads
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
 	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
-	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
+	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}}, // kept for one release: inbox-old-reads
 	"GET /api/v1/me/inbox": {
 		Status: http.StatusOK, Response: meInboxResponse{}, Params: meInboxQuery{}, RefusesUndeclared: true,
 	},
@@ -960,7 +963,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
 	"GET /api/v1/agents/{session_id}/conversation": {Status: http.StatusOK, Response: []messageRead{}},
-	"GET /api/v1/agents/{session_id}/messages":     {Status: http.StatusOK, Response: []messageRead{}},
+	"GET /api/v1/agents/{session_id}/messages":     {Status: http.StatusOK, Response: []messageRead{}}, // kept for one release: inbox-old-reads
 	"POST /api/v1/agents/{session_id}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},

@@ -1519,6 +1519,7 @@ func (s *server) insertSessionReply(
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, stored.written)
 		failpoint.Queue(b, fails)
+		// kept for one release: user-threads-triggers
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address, threads_recorded)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)

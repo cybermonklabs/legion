@@ -1466,6 +1466,7 @@ func queueCommentRow(
 		return commentRowWrite{}, err
 	}
 	nodeKind, nodeAddress := row.rowNode()
+	// kept for one release: user-threads-triggers
 	if err := queueExec(ledger, `
 		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, tuples_stored, threads_recorded, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, $16)

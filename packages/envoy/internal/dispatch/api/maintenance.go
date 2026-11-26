@@ -66,6 +66,7 @@ func RunMaintenanceSweep(
 		if err := sweepGoingRequests(ctx, pool); err != nil {
 			slog.Warn("dispatch: going request sweep failed", "error", err)
 		}
+		// kept for one release: agent-dismissed-owed
 		if err := sweepAgentDismissalsOwed(ctx, pool); err != nil {
 			slog.Warn("dispatch: owed agent root sweep failed", "error", err)
 		}
@@ -80,12 +81,14 @@ func RunMaintenanceSweep(
 
 // agentDismissalsOwedBatch is how many owed roots one transaction of sweepAgentDismissalsOwed
 // takes.
+// kept for one release: agent-dismissed-owed
 const agentDismissalsOwedBatch = 200
 
 // The statements of one batch of sweepAgentDismissalsOwed: the next owed roots past the cursor
 // ($1, null for the first), each once, in ascending id; the settle of each of those roots that
 // exists and that no other transaction holds, taken in that order `for no key update skip locked`
 // so the sweep waits at no root; and the delete of the owed rows of those that no longer exist.
+// kept for one release: agent-dismissed-owed
 const (
 	agentDismissalsOwedNext = `
 	select root_id::text from user_agent_thread_dismissed_owed
@@ -122,6 +125,7 @@ const (
 // writer of the lock order written on api/inbox_read.go's markInboxReadThreads waits for while it
 // waits itself. The owed rows of a root that no longer exists, which no writer will settle, are
 // deleted with the batch.
+// kept for one release: agent-dismissed-owed
 func sweepAgentDismissalsOwed(ctx context.Context, pool *store.Pool) error {
 	var after *string
 	for {
@@ -140,6 +144,7 @@ func sweepAgentDismissalsOwed(ctx context.Context, pool *store.Pool) error {
 // read on the pool, then settled where taken and deleted where gone, in one transaction, which a
 // batch that read no root never opens. It answers the roots the batch read, which a batch shorter
 // than agentDismissalsOwedBatch says were the last.
+// kept for one release: agent-dismissed-owed
 func settleAgentDismissalsOwed(ctx context.Context, pool *store.Pool, after *string) ([]string, error) {
 	rows, err := pool.Query(ctx, agentDismissalsOwedNext, after, agentDismissalsOwedBatch)
 	if err != nil {
