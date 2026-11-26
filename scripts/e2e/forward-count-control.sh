@@ -24,7 +24,7 @@
 #                         head. ACME-2 must read `unexplained`, where it reads `exempt:ci`.
 #   --control blocked     DECOY-2's timeline holds a removal from the merge queue at its head,
 #                         after the transcript time of its `clear` answer. DECOY-2 must read
-#                         `mixed`, where it reads `against-R23`.
+#                         `pending`, because reader 1 leaves it out and the baseline has no reader 2.
 #   --control captured    DECOY-4's transcript gains the result of a `curl` to the GraphQL route
 #                         that reads its head `CONFLICTING`. DECOY-4 must read `mixed`, and
 #                         DECOY-5 `pending` in the same run.
@@ -126,9 +126,9 @@ case $control in
     bit="ACME-2 reads 'unexplained' where it reads 'exempt:ci'"
     ;;
   blocked)
-    decoy=("DECOY-1 against-R23" "DECOY-2 mixed" "DECOY-3 mixed" "DECOY-4 pending" "DECOY-5 pending"
-      "against R23: 1" "pending: 2" "verdict: fail")
-    bit="DECOY-2 reads 'mixed' where it reads 'against-R23'"
+    decoy=("DECOY-1 against-R23" "DECOY-2 pending" "DECOY-3 mixed" "DECOY-4 pending" "DECOY-5 pending"
+      "against R23: 1" "pending: 3" "verdict: fail")
+    bit="DECOY-2 reads 'pending' where it reads 'against-R23': reader 1 leaves it out and the baseline has no reader 2"
     ;;
   captured)
     decoy=("DECOY-1 against-R23" "DECOY-2 against-R23" "DECOY-3 mixed" "DECOY-4 mixed" "DECOY-5 pending"
