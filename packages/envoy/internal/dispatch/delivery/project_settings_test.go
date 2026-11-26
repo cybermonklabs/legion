@@ -361,3 +361,58 @@ func TestTheFirstFailureDayReadsBackInEveryTimeZone(t *testing.T) {
 		}
 	}
 }
+
+// sameCodeGroups reports whether a and b hold the same groups in the same order.
+func sameCodeGroups(a, b []CodeGroup) bool {
+	return slices.EqualFunc(a, b, func(x, y CodeGroup) bool {
+		return x.Name == y.Name && slices.Equal(x.BranchPrefixes, y.BranchPrefixes) && slices.Equal(x.AuthorLogins, y.AuthorLogins)
+	})
+}
+
+// A save that changes a project's code groups and nothing else is a change of its settings: the
+// trigger of migration 20261123010254 compares every column but the bookkeeping, code_groups
+// among them, so the save notifies SettingsChannel with the project key, which is what wakes a
+// reader of the groups (dispatch://INFRA-3206). A save whose input leaves the groups out
+// (CodeGroups nil) keeps them, moves nothing else and announces nothing.
+//
+// Postgres hands a listener the notifications of committed transactions in commit order, so a
+// sentinel sent after a save has committed is the next notification unless the save announced one
+// first.
+func TestAChangeOfCodeGroupsAloneNotifiesTheProject(t *testing.T) {
+	pool, ctx := settingsStore(t)
+	groups := []CodeGroup{{Name: "agents", BranchPrefixes: []string{"bots/"}, AuthorLogins: []string{"octo-bot[bot]"}}}
+	input := ProjectSettingsInput{Project: "ACME", Delivery: true, Sources: []SourceInput{workflowSource(nil, "d.yaml")}, CodeGroups: &groups}
+	if _, err := save(t, ctx, pool, input); err != nil {
+		t.Fatalf("save ACME with one code group: %v", err)
+	}
+	listener := listenConn(t, ctx, pool, SettingsChannel)
+
+	input.CodeGroups = nil
+	kept, err := save(t, ctx, pool, input)
+	if err != nil {
+		t.Fatalf("save ACME with no code groups named: %v", err)
+	}
+	if !sameCodeGroups(kept.CodeGroups, groups) {
+		t.Fatalf("a save that names no code groups left %+v, want %+v kept", kept.CodeGroups, groups)
+	}
+	const sentinel = "sentinel"
+	if _, err := pool.Exec(ctx, `select pg_notify($1, $2)`, SettingsChannel, sentinel); err != nil {
+		t.Fatalf("send the sentinel on %s: %v", SettingsChannel, err)
+	}
+	if notification := notified(t, listener); notification.Payload != sentinel {
+		t.Fatalf("a save that kept every setting announced %q on %s before the sentinel, want nothing", notification.Payload, SettingsChannel)
+	}
+
+	regrouped := append(slices.Clone(groups), CodeGroup{Name: "everyone", BranchPrefixes: []string{}, AuthorLogins: []string{}})
+	input.CodeGroups = &regrouped
+	saved, err := save(t, ctx, pool, input)
+	if err != nil {
+		t.Fatalf("save ACME with a second code group: %v", err)
+	}
+	if !sameCodeGroups(saved.CodeGroups, regrouped) {
+		t.Fatalf("the save stored code groups %+v, want %+v", saved.CodeGroups, regrouped)
+	}
+	if notification := notified(t, listener); notification.Payload != "ACME" {
+		t.Errorf("a save that changed the code groups alone announced %q on %s, want the project ACME", notification.Payload, SettingsChannel)
+	}
+}

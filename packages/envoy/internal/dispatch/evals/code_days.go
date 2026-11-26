@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
@@ -189,4 +191,54 @@ func WriteCodeGroupSeriesTx(ctx context.Context, tx pgx.Tx, project string, grou
 		}
 	}
 	return written, nil
+}
+
+// CheckCodeGroupSeriesRoom refuses, in tx, a save of groups, project's code groups by name in
+// order, that would let a code eval hold more than MaxEvalSeries series, listed or not, so that no
+// regroup is refused later for the bound (WriteCodeGroupSeriesTx writes a computed eval's series
+// with no such check). It answers nil where both evals have room, and otherwise a CodeSeriesLimit
+// refusal of the field code_groups naming the eval, the count and the bound. For each code eval it
+// counts as a register write counts against the bound (seriesPastLimit): every series the eval
+// holds now, listed or not, or the catalogue's series where the seed has not written the eval yet,
+// and each group series it does not hold of groups and of the groups the project's settings hold
+// now. WriteCodeGroupSeriesTx unlists the series of a group the project no longer names and deletes
+// none, so every group name ever written stays counted. The stored groups count because a regroup
+// may not have written their series yet and the next one may. The caller holds the project's
+// settings lock (delivery.LockProject), so no other save replaces the stored groups before its own
+// commits.
+func CheckCodeGroupSeriesRoom(ctx context.Context, tx pgx.Tx, project string, groups []string) error {
+	stored, err := delivery.GetProjectSettings(ctx, tx, project)
+	if err != nil && !errors.Is(err, delivery.ErrNoSettings) {
+		return err
+	}
+	names := slices.Clone(groups)
+	for _, group := range stored.CodeGroups {
+		names = append(names, group.Name)
+	}
+	for _, slug := range codeDaySlugs {
+		at := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
+		if at < 0 {
+			return fmt.Errorf("evals: the catalogue holds no code eval %s", slug)
+		}
+		entry, evalID := catalogue[at], EvalID(project, slug)
+		held := map[string]Series{}
+		if _, found, err := newestDefinition(ctx, tx, evalID); err != nil {
+			return err
+		} else if found {
+			if held, err = currentSeries(ctx, tx, evalID); err != nil {
+				return err
+			}
+		} else {
+			for _, series := range entry.series {
+				held[series.Series] = series
+			}
+		}
+		series := entry.groupSeries(names)
+		if index, _, total := seriesPastLimit(held, len(series), func(index int) string { return series[index].Series }); index >= 0 {
+			return fieldRefusal(CodeSeriesLimit, "code_groups",
+				"these code groups would leave %s holding %d series, listed or not, where an eval holds at most %d: each group's name adds %d series to it, and the series of a name no longer used stay counted, so name fewer new groups, or reuse names saved before",
+				evalID, total, MaxEvalSeries, len(entry.groups))
+		}
+	}
+	return nil
 }

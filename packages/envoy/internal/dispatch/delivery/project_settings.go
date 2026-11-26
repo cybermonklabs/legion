@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -64,8 +65,33 @@ type ProjectSettings struct {
 	ExcludedRepos         []string       `json:"excluded_repos"`
 	FailureSources        []string       `json:"failure_sources"`
 	FailuresMeasuredSince *time.Time     `json:"failures_measured_since"`
+	CodeGroups            []CodeGroup    `json:"code_groups"`
 	UpdatedBy             model.Actor    `json:"updated_by"`
 	UpdatedAt             time.Time      `json:"updated_at"`
+}
+
+// CodeGroup is one of a project's code groups (dispatch://INFRA-3206, R10), which the code
+// survival and post-merge rework evals count each merged change for: its name, which names its
+// series of each eval, and the head-branch prefixes and author logins of its changes. A change
+// belongs to the first of the project's groups with a prefix that starts its head branch or a
+// login equal to the login that opened it; a group with neither takes every change no group before
+// it took. The column project_delivery_settings.code_groups holds the list, in order (migration
+// 20261126133047), and the settings route holds a group to the rules a regroup can write
+// (api/project_settings_delivery.go, codeGroupsRefusal).
+type CodeGroup struct {
+	Name           string   `json:"name"`
+	BranchPrefixes []string `json:"branch_prefixes"`
+	AuthorLogins   []string `json:"author_logins"`
+}
+
+// SurvivalGroups is groups, in order, as the code survival computation reads them
+// (survival.GroupOf): the run and the regroup hand a project's settings to it through here.
+func SurvivalGroups(groups []CodeGroup) []survival.Group {
+	converted := make([]survival.Group, len(groups))
+	for i, group := range groups {
+		converted[i] = survival.Group(group)
+	}
+	return converted
 }
 
 // SourceRepoOf is the repository a github_workflow source reads (R2): the one it names, else the
@@ -292,7 +318,7 @@ func deref(value *string) string {
 // projectSettingsColumns reads failures_measured_since as the date it is, which pgx answers as
 // midnight UTC of that day whatever the session's time zone.
 const projectSettingsColumns = `s.project_key, s.delivery, p.default_repo, s.population_authors, s.excluded_repos,
-	s.failure_sources, s.failures_measured_since, s.updated_by, s.updated_at`
+	s.failure_sources, s.failures_measured_since, s.code_groups, s.updated_by, s.updated_at`
 
 const deploySourceColumns = `id::text, kind, repo, deploy_workflow_path, production_job_names, production_apply_step_name,
 	staging_e2e_job_name, staging_apply_job_name, pr_checks_workflow_path, pr_checks_rollup_job_name,
@@ -300,10 +326,14 @@ const deploySourceColumns = `id::text, kind, repo, deploy_workflow_path, product
 
 func scanProjectSettings(row pgx.Row) (ProjectSettings, error) {
 	var settings ProjectSettings
-	var updatedBy []byte
+	var codeGroups, updatedBy []byte
 	if err := row.Scan(&settings.Project, &settings.Delivery, &settings.DefaultRepo, &settings.PopulationAuthors,
-		&settings.ExcludedRepos, &settings.FailureSources, &settings.FailuresMeasuredSince, &updatedBy, &settings.UpdatedAt); err != nil {
+		&settings.ExcludedRepos, &settings.FailureSources, &settings.FailuresMeasuredSince, &codeGroups, &updatedBy,
+		&settings.UpdatedAt); err != nil {
 		return ProjectSettings{}, err
+	}
+	if err := json.Unmarshal(codeGroups, &settings.CodeGroups); err != nil {
+		return ProjectSettings{}, fmt.Errorf("decode the code groups of %s: %w", settings.Project, err)
 	}
 	if err := json.Unmarshal(updatedBy, &settings.UpdatedBy); err != nil {
 		return ProjectSettings{}, fmt.Errorf("decode the delivery settings author of %s: %w", settings.Project, err)
@@ -413,6 +443,8 @@ type SourceInput struct {
 }
 
 // ProjectSettingsInput is one save of a project's delivery settings: every field the editor sends.
+// CodeGroups nil keeps the code groups the project holds, which is what a body that names none
+// asks (the release before this one sends none); an empty list clears them.
 type ProjectSettingsInput struct {
 	Project               string
 	Delivery              bool
@@ -421,6 +453,7 @@ type ProjectSettingsInput struct {
 	ExcludedRepos         []string
 	FailureSources        []string
 	FailuresMeasuredSince *time.Time
+	CodeGroups            *[]CodeGroup
 }
 
 // SettingsError is a save the delivery rules refuse (D1): its code, its reason, the field and the
@@ -609,20 +642,33 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 		day := input.FailuresMeasuredSince.UTC().Format(time.DateOnly)
 		since = &day
 	}
+	// codeGroups is the groups the save writes, every list of them a list, and null where the input
+	// names none, which keeps the stored groups (an insert stores the column's empty list).
+	var codeGroups []byte
+	if input.CodeGroups != nil {
+		groups := make([]CodeGroup, len(*input.CodeGroups))
+		for i, group := range *input.CodeGroups {
+			groups[i] = CodeGroup{Name: group.Name, BranchPrefixes: nonNil(group.BranchPrefixes), AuthorLogins: nonNil(group.AuthorLogins)}
+		}
+		if codeGroups, err = json.Marshal(groups); err != nil {
+			return ProjectSettings{}, fmt.Errorf("encode the code groups of %s: %w", input.Project, err)
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos,
-			failure_sources, failures_measured_since, updated_by)
-		values ($1, $2, $3, $4, $5, $6::date, $7)
+			failure_sources, failures_measured_since, code_groups, updated_by)
+		values ($1, $2, $3, $4, $5, $6::date, coalesce($7::jsonb, '[]'), $8)
 		on conflict (project_key) do update set
 			delivery = excluded.delivery,
 			population_authors = excluded.population_authors,
 			excluded_repos = excluded.excluded_repos,
 			failure_sources = excluded.failure_sources,
 			failures_measured_since = excluded.failures_measured_since,
+			code_groups = coalesce($7::jsonb, project_delivery_settings.code_groups),
 			updated_by = excluded.updated_by,
 			updated_at = now()
 	`, input.Project, input.Delivery, nonNil(input.PopulationAuthors), nonNil(input.ExcludedRepos),
-		nonNil(input.FailureSources), since, actorJSON); err != nil {
+		nonNil(input.FailureSources), since, codeGroups, actorJSON); err != nil {
 		return ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
 	}
 	if err := replaceSources(ctx, tx, input, previous.Sources, defaultRepo); err != nil {

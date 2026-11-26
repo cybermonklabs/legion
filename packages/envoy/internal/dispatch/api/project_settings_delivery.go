@@ -9,10 +9,12 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -20,15 +22,16 @@ import (
 )
 
 // One project's delivery settings (dispatch://INFRA-978, R1 to R4): the switch, the deploy
-// sources, the population rule, the failure sources with the day they are counted from, and the
-// targets of the seven evals the editor names. GET answers every authenticated reader, since the
-// project's tab explains its numbers with them; PUT is the deployment's write (scopeDeployment,
-// routes_table.go), so a credential the broker scoped to one project is refused it by name, the
-// project its path names included. The settings live in project_delivery_settings and
-// project_deploy_sources (delivery.PutProjectSettings); the targets live in the project's eval rows
-// alone (R3), each a new version of its eval, written in the save's one transaction
-// (evals.Store.RegisterWith). GET and PUT /api/v1/settings/delivery, the singleton the release
-// before reads, keep answering beside this route for one release (settings_delivery.go).
+// sources, the population rule, the failure sources with the day they are counted from, the code
+// groups (dispatch://INFRA-3206, R10), and the targets of the seven evals the editor names. GET
+// answers every authenticated reader, since the project's tab explains its numbers with them; PUT
+// is the deployment's write (scopeDeployment, routes_table.go), so a credential the broker scoped
+// to one project is refused it by name, the project its path names included. The settings live in
+// project_delivery_settings and project_deploy_sources (delivery.PutProjectSettings); the targets
+// live in the project's eval rows alone (R3), each a new version of its eval, written in the save's
+// one transaction (evals.Store.RegisterWith). GET and PUT /api/v1/settings/delivery, the singleton
+// the release before reads, keep answering beside this route for one release
+// (settings_delivery.go).
 
 // deliverySettingsTargetSlugs are the evals whose targets the settings route reads and writes, in
 // the order the editor shows them (the spec's Design): deploys a day, change fail rate, merge to
@@ -47,9 +50,10 @@ const deliveryTargetOff = "off"
 // delivery.SourceRepoOf: the one it names, else the project's default repository, null where it
 // reads none) and how far that repository is reconciled (reconciled_through, delivery.
 // ReconciledThrough: null for an events source, a source of a project with delivery off, and a
-// repository whose first import has not finished), and the targets read back from the project's
-// eval rows (evals_current): each slug of deliverySettingsTargetSlugs the project holds an eval of,
-// a number or "off". failures_measured_since is a UTC day, YYYY-MM-DD.
+// repository whose first import has not finished), the code groups in order (an empty list for a
+// project that names none), and the targets read back from the project's eval rows
+// (evals_current): each slug of deliverySettingsTargetSlugs the project holds an eval of, a number
+// or "off". failures_measured_since is a UTC day, YYYY-MM-DD.
 type projectDeliverySettings struct {
 	Project               string                `json:"project"`
 	Delivery              bool                  `json:"delivery"`
@@ -59,6 +63,7 @@ type projectDeliverySettings struct {
 	ExcludedRepos         []string              `json:"excluded_repos"`
 	FailureSources        []string              `json:"failure_sources"`
 	FailuresMeasuredSince *string               `json:"failures_measured_since"`
+	CodeGroups            []delivery.CodeGroup  `json:"code_groups"`
 	Targets               json.RawMessage       `json:"targets"`
 	UpdatedBy             model.Actor           `json:"updated_by"`
 	UpdatedAt             time.Time             `json:"updated_at"`
@@ -76,6 +81,9 @@ type projectDeploySource struct {
 // field of the settings, replacing what the project holds, and the targets it changes. targets is
 // an object of the slugs of deliverySettingsTargetSlugs, each a number or "off"; a slug it leaves
 // out keeps its target, and a slug whose target is the eval's already writes no version.
+// code_groups is the project's whole list of code groups, in order (codeGroupsRefusal): absent or
+// null keeps the list the project holds, as the release before this one, which sends none, needs,
+// and [] clears it.
 type projectDeliverySettingsInput struct {
 	Delivery              bool                       `json:"delivery" required:"true"`
 	Sources               []projectDeploySourceInput `json:"sources" required:"true"`
@@ -83,6 +91,7 @@ type projectDeliverySettingsInput struct {
 	ExcludedRepos         []string                   `json:"excluded_repos"`
 	FailureSources        []string                   `json:"failure_sources"`
 	FailuresMeasuredSince *string                    `json:"failures_measured_since"`
+	CodeGroups            *[]delivery.CodeGroup      `json:"code_groups"`
 	Targets               json.RawMessage            `json:"targets"`
 	Actor                 *model.Actor               `json:"actor"`
 }
@@ -137,7 +146,7 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 	answer := projectDeliverySettings{
 		Project: settings.Project, Delivery: settings.Delivery, DefaultRepo: settings.DefaultRepo,
 		Sources: make([]projectDeploySource, len(settings.Sources)), PopulationAuthors: settings.PopulationAuthors,
-		ExcludedRepos: settings.ExcludedRepos, FailureSources: settings.FailureSources,
+		ExcludedRepos: settings.ExcludedRepos, FailureSources: settings.FailureSources, CodeGroups: settings.CodeGroups,
 		UpdatedBy: settings.UpdatedBy, UpdatedAt: settings.UpdatedAt,
 	}
 	if settings.FailuresMeasuredSince != nil {
@@ -194,13 +203,17 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 // version of the project's eval, in one transaction, and answers the stored settings as GET does.
 //
 // It refuses, writing nothing: a field no reader could read, 400 DELIVERY_SETTINGS_INPUT naming the
-// field and, for a source's, the source's index (delivery.ValidateProjectSettings, and the targets
-// and the first day here); a source's repository the GitHub App cannot read, 409
-// DELIVERY_SETTINGS_ACCESS naming the source, proved for every github_workflow source while
-// delivery is on and before anything is written, as the singleton's save proves its one repository
-// (a save that turns delivery off proves nothing, so a project whose repository the App lost can
-// still stop); and the D1 refusals, 409 DELIVERY_NO_DEFAULT_REPOSITORY and
-// DELIVERY_REPOSITORY_SHARED, the latter naming the other project (delivery.PutProjectSettings).
+// field and, for a source's, the source's index (delivery.ValidateProjectSettings, and the targets,
+// the first day and the code groups here, codeGroupsRefusal naming the group in its message); code
+// groups that would let a code eval hold more series than an eval holds, 400
+// DELIVERY_SETTINGS_INPUT of the field code_groups with the count and the bound
+// (evals.CheckCodeGroupSeriesRoom, read under the project's settings lock in the save's
+// transaction); a source's repository the GitHub App cannot read, 409 DELIVERY_SETTINGS_ACCESS
+// naming the source, proved for every github_workflow source while delivery is on and before
+// anything is written, as the singleton's save proves its one repository (a save that turns
+// delivery off proves nothing, so a project whose repository the App lost can still stop); and the
+// D1 refusals, 409 DELIVERY_NO_DEFAULT_REPOSITORY and DELIVERY_REPOSITORY_SHARED, the latter naming
+// the other project (delivery.PutProjectSettings).
 // A repository is stored lower-case under its new name where a rename pair renames it away, as an
 // excluded one is. The change rows both writes log are moved into the change log once the
 // transaction commits, as every eval write's are (evals.Store.RegisterWith).
@@ -254,6 +267,11 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if _, err := s.registry().RegisterWith(ctx, key, func(ctx context.Context, tx pgx.Tx) error {
+		if save.CodeGroups != nil {
+			if err := codeGroupSeriesRoom(ctx, tx, key, *save.CodeGroups); err != nil {
+				return err
+			}
+		}
 		_, err := delivery.PutProjectSettings(ctx, tx, save, actor)
 		return err
 	}, changes...); err != nil {
@@ -276,6 +294,27 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 	WriteJSON(w, http.StatusOK, answer)
 }
 
+// codeGroupSeriesRoom refuses, in tx, a save of groups as project's code groups that would let a
+// code eval hold more series than MaxEvalSeries (evals.CheckCodeGroupSeriesRoom), as 400
+// DELIVERY_SETTINGS_INPUT of the field code_groups with the check's reason. It takes the project's
+// settings lock first, which PutProjectSettings then takes again, so the groups the check reads as
+// stored are the ones this save replaces.
+func codeGroupSeriesRoom(ctx context.Context, tx pgx.Tx, project string, groups []delivery.CodeGroup) error {
+	if err := delivery.LockProject(ctx, tx, project); err != nil {
+		return err
+	}
+	names := make([]string, len(groups))
+	for i, group := range groups {
+		names[i] = group.Name
+	}
+	var full *evals.Error
+	err := evals.CheckCodeGroupSeriesRoom(ctx, tx, project, names)
+	if errors.As(err, &full) {
+		return delivery.InputRefusal(nil, "code_groups", "%s", full.Message)
+	}
+	return err
+}
+
 // projectSettingsSave is the save input names, its repositories canonical: each source's
 // repository trimmed and lower-cased as GitHub could hold it (refs.ParseGitHubRepo), and each
 // repository, a source's or an excluded one, under its new name where a rename pair renames it
@@ -284,8 +323,10 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 // exact name: each production job name trimmed (trimmedProductionJobNames, which refuses a blank
 // name and a name given twice once trimmed; a source naming none is ValidateProjectSettings' to
 // refuse), and each optional job and step name trimmed, or null where it is blank
-// (optionalJobName). A source's repository GitHub could hold no repository of, or a first day that
-// is no YYYY-MM-DD day, is refused, named.
+// (optionalJobName). Each code group's prefixes and logins are trimmed, since no head branch and no
+// login holds white space at either end. A source's repository GitHub could hold no repository of,
+// a first day that is no YYYY-MM-DD day, or a code group codeGroupsRefusal refuses, is refused,
+// named.
 func (s *server) projectSettingsSave(project string, input projectDeliverySettingsInput) (delivery.ProjectSettingsInput, error) {
 	save := delivery.ProjectSettingsInput{
 		Project: project, Delivery: input.Delivery, Sources: make([]delivery.SourceInput, len(input.Sources)),
@@ -332,7 +373,89 @@ func (s *server) projectSettingsSave(project string, input projectDeliverySettin
 		}
 		save.FailuresMeasuredSince = &day
 	}
+	if input.CodeGroups != nil {
+		groups := make([]delivery.CodeGroup, len(*input.CodeGroups))
+		for i, group := range *input.CodeGroups {
+			groups[i] = delivery.CodeGroup{Name: group.Name, BranchPrefixes: trimmedEntries(group.BranchPrefixes), AuthorLogins: trimmedEntries(group.AuthorLogins)}
+		}
+		if refusal := codeGroupsRefusal(groups); refusal != nil {
+			return delivery.ProjectSettingsInput{}, refusal
+		}
+		save.CodeGroups = &groups
+	}
 	return save, nil
+}
+
+// trimmedEntries is entries, each trimmed, in order: a list, never nil, so a group stores an empty
+// list where its body sent none.
+func trimmedEntries(entries []string) []string {
+	trimmed := make([]string, len(entries))
+	for i, entry := range entries {
+		trimmed[i] = strings.TrimSpace(entry)
+	}
+	return trimmed
+}
+
+// codeGroupNameMax is the most characters a code group's name holds.
+const codeGroupNameMax = 64
+
+// codeGroupSeriesBases are the bases of the series a code group names, `<base>:<name>`
+// (fold.GroupSeries): survival in the code survival eval, and rework, iteration, noissue and
+// other in the post-merge rework eval.
+var codeGroupSeriesBases = []string{fold.SeriesSurvival, fold.SeriesRework, fold.SeriesIteration, fold.SeriesNoIssue, fold.SeriesOther}
+
+// codeGroupsRefusal refuses a save's code groups, in order, where a regroup could not write their
+// series or a reader could not tell two of them apart, and answers nil where it takes them. The
+// refusal is 400 DELIVERY_SETTINGS_INPUT of the field code_groups, whose message names the group
+// by its place, from 1 as the settings form numbers its groups, and by its name. A name is refused
+// that is blank, holds more than codeGroupNameMax characters, or is the name of an earlier group in
+// any case, and so is one that makes a series name the registry refuses (evals.CheckSeriesName over
+// each of codeGroupSeriesBases: whitespace, a control character or a `.`). A blank prefix or login
+// is refused. A group with no prefix and no login takes every change no group before it took, so
+// it is the last group, and a project holds one at most.
+func codeGroupsRefusal(groups []delivery.CodeGroup) *delivery.SettingsError {
+	refuse := func(at int, format string, args ...any) *delivery.SettingsError {
+		label := fmt.Sprintf("group %d", at+1)
+		if name := groups[at].Name; strings.TrimSpace(name) != "" {
+			label += fmt.Sprintf(" %q", name)
+		}
+		return delivery.InputRefusal(nil, "code_groups", "%s: %s", label, fmt.Sprintf(format, args...))
+	}
+	catchAll := -1
+	for at, group := range groups {
+		if strings.TrimSpace(group.Name) == "" {
+			return refuse(at, "a group needs a name")
+		}
+		if length := utf8.RuneCountInString(group.Name); length > codeGroupNameMax {
+			return refuse(at, "a name holds at most %d characters, and this one holds %d", codeGroupNameMax, length)
+		}
+		for _, base := range codeGroupSeriesBases {
+			series := fold.GroupSeries(base, group.Name)
+			if err := evals.CheckSeriesName(series); err != nil {
+				return refuse(at, "the name makes the series %q, and %v", series, err)
+			}
+		}
+		if first := slices.IndexFunc(groups[:at], func(earlier delivery.CodeGroup) bool { return strings.EqualFold(earlier.Name, group.Name) }); first >= 0 {
+			return refuse(at, "group %d is named %q, and two groups' names differ by more than case", first+1, groups[first].Name)
+		}
+		if slices.Contains(group.BranchPrefixes, "") {
+			return refuse(at, "a head-branch prefix is blank")
+		}
+		if slices.Contains(group.AuthorLogins, "") {
+			return refuse(at, "an author login is blank")
+		}
+		if len(group.BranchPrefixes) > 0 || len(group.AuthorLogins) > 0 {
+			continue
+		}
+		if catchAll >= 0 {
+			return refuse(at, "group %d already has no prefix and no login, and so takes every change no group before it took: one group at most has neither", catchAll+1)
+		}
+		catchAll = at
+	}
+	if catchAll >= 0 && catchAll != len(groups)-1 {
+		return refuse(catchAll, "a group with no prefix and no login takes every change no group before it took, so no group after it would take any: it is the last group")
+	}
+	return nil
 }
 
 // parseDeliveryTargets reads a save's targets: each slug of deliverySettingsTargetSlugs it names,

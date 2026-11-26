@@ -13736,7 +13736,7 @@
     },
     "/api/v1/projects/{key}/settings/delivery": {
       "get": {
-        "description": "The project's delivery settings, or null when it has none: delivery (on or off), its deploy sources in order (each github_workflow, with an optional repo, null for the project's default repository, its deploy workflow, production jobs, optional production apply step, optional staging end-to-end and staging deploy jobs, pull-request checks workflow and optional roll-up job, or events, the project's posted deploys), each with its id, its resolved_repo (the repository it reads, null where it names none and the project has no default) and reconciled_through (how far the reconcile has imported that repository's deploy runs, pull-request check runs and merged pull requests; null for an events source, a project with delivery off, and a repository whose import has not finished), the population authors and excluded repositories, the failure sources with failures_measured_since (YYYY-MM-DD), and the targets of deploy-frequency, change-fail-rate, merge-to-production, pr-open-to-merge, deploy-run-success, failed-deploy-recovery and unowned-p0, each a number or \"off\", read from the project's eval rows. Every reader of the project may read them. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "The project's delivery settings, or null when it has none: delivery (on or off), its deploy sources in order (each github_workflow, with an optional repo, null for the project's default repository, its deploy workflow, production jobs, optional production apply step, optional staging end-to-end and staging deploy jobs, pull-request checks workflow and optional roll-up job, or events, the project's posted deploys), each with its id, its resolved_repo (the repository it reads, null where it names none and the project has no default) and reconciled_through (how far the reconcile has imported that repository's deploy runs, pull-request check runs and merged pull requests; null for an events source, a project with delivery off, and a repository whose import has not finished), the population authors and excluded repositories, the failure sources with failures_measured_since (YYYY-MM-DD), the code_groups in order, each {name, branch_prefixes, author_logins} ([] for none: a merged change counts in the code survival and post-merge rework evals for the first group with a head-branch prefix that starts its branch or a login that opened it, and a group with neither takes every change no group before it took), and the targets of deploy-frequency, change-fail-rate, merge-to-production, pr-open-to-merge, deploy-run-success, failed-deploy-recovery and unowned-p0, each a number or \"off\", read from the project's eval rows. Every reader of the project may read them. 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "getApiV1ProjectsByKeySettingsDelivery",
         "parameters": [
           {
@@ -13788,7 +13788,7 @@
         "x-auth": "any"
       },
       "put": {
-        "description": "Replace the project's delivery settings {delivery, sources, population_authors?, excluded_repos?, failure_sources?, failures_measured_since?, targets?} and answer them as GET does. targets sets each named eval's target, a number or \"off\", as a new version of the project's eval row in the same transaction; a target the body leaves out, or one the eval holds already, writes nothing. A source whose repository and rule are unchanged keeps its id and its repository's reconcile progress; every other source's repository is imported again. 400 DELIVERY_SETTINGS_INPUT names the field, and the source's index for a source's field; with delivery on, 409 DELIVERY_SETTINGS_ACCESS names a source whose repository Dispatch's GitHub App cannot read, 409 DELIVERY_NO_DEFAULT_REPOSITORY a source naming no repository of a project with no default repository, and 409 DELIVERY_REPOSITORY_SHARED a repository another delivery-on project's source reads, naming that project; a refused save writes nothing. The settings belong to the deployment, so a project-scoped credential is refused them, the project this path names included. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "Replace the project's delivery settings {delivery, sources, population_authors?, excluded_repos?, failure_sources?, failures_measured_since?, code_groups?, targets?} and answer them as GET does. code_groups is the project's whole list of code groups in order, each {name, branch_prefixes, author_logins}: a body without it, or with null, keeps the list the project holds, and [] clears it. targets sets each named eval's target, a number or \"off\", as a new version of the project's eval row in the same transaction; a target the body leaves out, or one the eval holds already, writes nothing. A source whose repository and rule are unchanged keeps its id and its repository's reconcile progress; every other source's repository is imported again. 400 DELIVERY_SETTINGS_INPUT names the field, and the source's index for a source's field; for code_groups its message names the group by its place and its name: a blank name, a name over 64 characters or another group's name in any case, a name holding whitespace, a control character or a `.` (the name names the group's series survival:\u003cname\u003e, rework:\u003cname\u003e, iteration:\u003cname\u003e, noissue:\u003cname\u003e and other:\u003cname\u003e), a blank prefix or login, a group with no prefix and no login that is not last, and a second such group. A list that would let the code survival or post-merge rework eval hold more series than an eval holds, counting the series of every group name saved before, which stay with the eval, is 400 DELIVERY_SETTINGS_INPUT of code_groups too, naming the eval, the count and the bound. With delivery on, 409 DELIVERY_SETTINGS_ACCESS names a source whose repository Dispatch's GitHub App cannot read, 409 DELIVERY_NO_DEFAULT_REPOSITORY a source naming no repository of a project with no default repository, and 409 DELIVERY_REPOSITORY_SHARED a repository another delivery-on project's source reads, naming that project; a refused save writes nothing. The settings belong to the deployment, so a project-scoped credential is refused them, the project this path names included. 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "putApiV1ProjectsByKeySettingsDelivery",
         "parameters": [
           {
@@ -19257,6 +19257,37 @@
           "plan_artifact_id",
           "decisions_artifact_id",
           "last_seq"
+        ],
+        "type": "object"
+      },
+      "CodeGroup": {
+        "properties": {
+          "author_logins": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "branch_prefixes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "branch_prefixes",
+          "author_logins"
         ],
         "type": "object"
       },
@@ -31514,6 +31545,15 @@
       },
       "ProjectDeliverySettings": {
         "properties": {
+          "code_groups": {
+            "items": {
+              "$ref": "#/components/schemas/CodeGroup"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "default_repo": {
             "type": [
               "null",
@@ -31683,6 +31723,7 @@
           "excluded_repos",
           "failure_sources",
           "failures_measured_since",
+          "code_groups",
           "updated_by",
           "updated_at"
         ],
@@ -31698,6 +31739,15 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "code_groups": {
+            "items": {
+              "$ref": "#/components/schemas/CodeGroup"
+            },
+            "type": [
+              "null",
+              "array"
             ]
           },
           "delivery": {

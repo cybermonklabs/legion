@@ -2,6 +2,7 @@ package evals
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 )
@@ -538,6 +540,137 @@ func TestTheSeedKeepsTheCodeGroupSeries(t *testing.T) {
 	}
 	expect("a seed that writes a version of the eval")
 	t.Logf("%d code series held through two seeds; the seed after the delete wrote %+v", len(groups), restored)
+}
+
+// writeCodeGroups writes groups' series into r.project's code evals, as the regroup does, in a
+// transaction of its own.
+func (r rig) writeCodeGroups(t *testing.T, groups []string) {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := WriteCodeGroupSeriesTx(ctx, tx, r.project, groups); err != nil {
+		t.Fatalf("write the code group series %v of %s: %v", groups, r.project, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// checkCodeGroupRoom is CheckCodeGroupSeriesRoom of groups for r.project, in a transaction of its
+// own that it rolls back.
+func (r rig) checkCodeGroupRoom(t *testing.T, groups []string) error {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	return CheckCodeGroupSeriesRoom(ctx, tx, r.project, groups)
+}
+
+// reworkSeriesHeld is every series r.project's post-merge rework eval holds, listed or not.
+func (r rig) reworkSeriesHeld(t *testing.T) map[string]Series {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	held, err := currentSeries(ctx, tx, EvalID(r.project, SlugPostMergeRework))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return held
+}
+
+// keptAnd is the group names kept and n others, group-1 to group-n.
+func keptAnd(n int) []string {
+	names := []string{"kept"}
+	for index := range n {
+		names = append(names, fmt.Sprintf("group-%d", index+1))
+	}
+	return names
+}
+
+// newCodeGroupRoomRig seeds the rig's project and writes the series of the groups removed and kept
+// into its code evals, then of kept alone, so the post-merge rework eval, the one of the two that
+// names the most series per group, holds removed's series unlisted. It answers the rig, how many
+// series that eval holds, how many each group names in it, and room: how many groups beside kept
+// fit under MaxEvalSeries.
+func newCodeGroupRoomRig(t *testing.T) (r rig, held, perGroup, room int) {
+	t.Helper()
+	r = newRig(t)
+	if _, err := r.registry.Ensure(t.Context(), r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	r.writeCodeGroups(t, []string{"removed", "kept"})
+	r.writeCodeGroups(t, []string{"kept"})
+	series := r.reworkSeriesHeld(t)
+	if removed, found := series[fold.GroupSeries(fold.SeriesRework, "removed")]; !found || removed.Listed {
+		t.Fatalf("the rework eval holds the removed group's series %+v (found %t), want it held unlisted", removed, found)
+	}
+	at := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == SlugPostMergeRework })
+	perGroup = len(catalogue[at].groups)
+	return r, len(series), perGroup, (MaxEvalSeries - len(series)) / perGroup
+}
+
+// A list of code groups that leaves the post-merge rework eval holding the most series that fit
+// under MaxEvalSeries, the unlisted series of a group the project no longer names counted, is
+// accepted, and the regroup's write of it leaves the eval holding that many.
+func TestCodeGroupsUpToTheSeriesBoundAreAccepted(t *testing.T) {
+	t.Parallel()
+	r, held, perGroup, room := newCodeGroupRoomRig(t)
+	total := held + room*perGroup
+	if total > MaxEvalSeries || total+perGroup <= MaxEvalSeries {
+		t.Fatalf("%d held and %d groups of %d series make %d, not the most that fit under %d", held, room, perGroup, total, MaxEvalSeries)
+	}
+	groups := keptAnd(room)
+	if err := r.checkCodeGroupRoom(t, groups); err != nil {
+		t.Fatalf("kept and %d more groups, %d series where %d fit, are refused: %v", room, total, MaxEvalSeries, err)
+	}
+	r.writeCodeGroups(t, groups)
+	if got := len(r.reworkSeriesHeld(t)); got != total {
+		t.Fatalf("after the groups' write the rework eval holds %d series, want %d", got, total)
+	}
+}
+
+// One group more than fits is refused, CodeSeriesLimit of the field code_groups naming the rework
+// eval, the count and the bound: the list would fit but for the unlisted series of the group the
+// project no longer names, which stay counted. The groups the project's settings hold, whose
+// series no regroup has written yet, count too.
+func TestCodeGroupsPastTheSeriesBoundAreRefused(t *testing.T) {
+	t.Parallel()
+	r, held, perGroup, room := newCodeGroupRoomRig(t)
+	total := held + (room+1)*perGroup
+	if total <= MaxEvalSeries || total-perGroup > MaxEvalSeries {
+		t.Fatalf("%d held and %d groups of %d series make %d, which does not pass %d by the removed group's series alone", held, room+1, perGroup, total, MaxEvalSeries)
+	}
+	refusedAt := func(what string, err error) {
+		t.Helper()
+		var refusal *Error
+		if !errors.As(err, &refusal) || refusal.Code != CodeSeriesLimit || refusal.Field != "code_groups" {
+			t.Fatalf("%s is answered %v, want a %s refusal of code_groups", what, err, CodeSeriesLimit)
+		}
+		for _, want := range []string{EvalID(r.project, SlugPostMergeRework), fmt.Sprintf("holding %d series", total), fmt.Sprintf("at most %d", MaxEvalSeries)} {
+			if !strings.Contains(refusal.Message, want) {
+				t.Errorf("%s is refused %q, which does not say %q", what, refusal.Message, want)
+			}
+		}
+	}
+	refusedAt("kept and one group more than fits", r.checkCodeGroupRoom(t, keptAnd(room+1)))
+
+	stored := make([]delivery.CodeGroup, 0, room+1)
+	for _, name := range keptAnd(room) {
+		stored = append(stored, delivery.CodeGroup{Name: name, BranchPrefixes: []string{name + "/"}, AuthorLogins: []string{}})
+	}
+	putProjectSettings(t, r.database.Pool, delivery.ProjectSettingsInput{Project: r.project, CodeGroups: &stored})
+	refusedAt("a new group beside the stored groups no regroup has written", r.checkCodeGroupRoom(t, []string{"kept", "late"}))
 }
 
 // TestTheRefresherWritesNoRowForTheCodeEvals: over the delivery and Legion histories, settled, the

@@ -1,0 +1,31 @@
+-- 20261126133047_project_delivery_code_groups.up.sql
+--
+-- Each project's code groups (dispatch://INFRA-3206, R10): the groups the code survival and
+-- post-merge rework evals count a merged change for, in the order the project names them. The
+-- column holds a JSON array of groups, each {name, branch_prefixes, author_logins}: a change
+-- belongs to the first group with a head-branch prefix that starts its branch or an author login
+-- equal to the login that opened it, and a group with no prefix and no login takes every change no
+-- group before it took. The check holds the column to an array; the rules of a group (a name its
+-- series can carry, no blank prefix or login, the catch-all last) are the settings route's
+-- (api/project_settings_delivery.go, codeGroupsRefusal), which every save passes through.
+--
+-- The trigger 20261123010254 put on project_delivery_settings logs a `settings` change and
+-- notifies dispatch_delivery_settings with the project key for every update that moves a column
+-- other than the bookkeeping, comparing the whole row as jsonb less updated_by and updated_at
+-- (project_delivery_settings_changed). So a save that changes code_groups alone notifies the
+-- project, and the trigger stays as it is.
+--
+-- Adding a column with a constant default writes the catalog alone, so every existing row reads
+-- the empty list and none is rewritten; the check is on the new column alone, which the empty list
+-- satisfies, so it refuses none, though Postgres reads each row to prove it. The ALTER takes
+-- ACCESS EXCLUSIVE on project_delivery_settings, which holds one row per project, for that read
+-- alone, under the runner's lock_timeout (pgmigrate.LockTimeout, five seconds).
+--
+-- The release before this one names its own columns in every read and write of the table
+-- (delivery.GetProjectSettings, ListProjectSettings, PutProjectSettings' upsert), so the two roll
+-- side by side (cmd/dispatch/README.md, "Database migrations"): a row that release inserts takes
+-- the empty list, and a save it makes keeps the groups stored. Rolling back past this migration is
+-- an image rollback alone; the column left behind is read by nothing.
+alter table project_delivery_settings
+  add column code_groups jsonb not null default '[]'
+  constraint project_delivery_settings_code_groups check (jsonb_typeof(code_groups) = 'array');

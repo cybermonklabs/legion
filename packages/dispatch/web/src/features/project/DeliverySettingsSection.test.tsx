@@ -102,8 +102,9 @@ const eventsSource: ProjectDeploySource = {
 };
 
 /** A project with delivery on: one source reading the default repository, two failure sources,
- *  and the targets INFRA-2916 seeds. */
+ *  no code group, and the targets INFRA-2916 seeds. */
 const record: ProjectDeliverySettings = {
+  code_groups: [],
   default_repo: DEFAULT_REPO,
   delivery: true,
   excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
@@ -292,6 +293,7 @@ test("with delivery off Save keeps the stored fields", async () => {
     expect(put.mock.calls[0]?.[0]).toBe(PROJECT);
     // Every stored field goes back as stored, and no target: each eval keeps its own.
     expect(sentBody(put)).toEqual({
+      code_groups: [],
       delivery: false,
       excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
       failure_sources: ["check_results", "reverts"],
@@ -567,6 +569,7 @@ test("a save restarts the fields from the stored record and refreshes the evals"
     // Each field trimmed, each list split into its entries, an empty source repository the
     // default's (null), and only the targets that hold text.
     expect(sentBody(put)).toEqual({
+      code_groups: [],
       delivery: true,
       excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
       failure_sources: ["check_results"],
@@ -1231,6 +1234,228 @@ test("an agent viewer that names no session is told to open the page with one, a
     // The draft stays, as for every refusal made before a request.
     expect(deliverySwitch()).toBeChecked();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+/** One code group as the record holds it and a save sends it. */
+type CodeGroup = NonNullable<ProjectDeliverySettings["code_groups"]>[number];
+
+/** Two stored code groups: one by head-branch prefix and login, and the catch-all, last. */
+const storedGroups: CodeGroup[] = [
+  { author_logins: ["octo-bot[bot]"], branch_prefixes: ["bots/", "auto/"], name: "agents" },
+  { author_logins: [], branch_prefixes: [], name: "everyone-else" },
+];
+
+/** `record` holding `storedGroups`. */
+const groupedRecord: ProjectDeliverySettings = { ...record, code_groups: storedGroups };
+
+/** Code group `n` (from 1), as its legend names it. */
+function codeGroup(n: number): HTMLElement {
+  return screen.getByRole("group", { name: `Code group ${n}` });
+}
+
+function groupField(n: number, label: string): HTMLInputElement {
+  return within(codeGroup(n)).getByLabelText(label) as HTMLInputElement;
+}
+
+/** The code groups the `call`th save (from 0) sent. */
+function sentGroups(
+  put: {
+    readonly mock: { readonly calls: readonly Parameters<typeof api.putProjectDeliverySettings>[] };
+  },
+  call = 0
+) {
+  return put.mock.calls[call]?.[1].code_groups;
+}
+
+test("adds, orders and removes a group", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(groupedRecord);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(groupedRecord);
+
+  try {
+    renderSection();
+    await screen.findByRole("group", { name: "Code group 2" });
+    expect(groupField(1, "Name").value).toBe("agents");
+    expect(groupField(1, "Head-branch prefixes").value).toBe("bots/, auto/");
+    expect(groupField(1, "Author logins").value).toBe("octo-bot[bot]");
+    expect(groupField(2, "Name").value).toBe("everyone-else");
+    // The first group does not move up, nor the last down.
+    expect(screen.getByRole("button", { name: "Move code group 1 up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move code group 2 down" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Add a code group" }));
+    for (const label of ["Name", "Head-branch prefixes", "Author logins"]) {
+      expect(groupField(3, label).value).toBe("");
+    }
+    await fill(user, groupField(3, "Name"), "reviewers");
+    await fill(user, groupField(3, "Author logins"), " hubot, octocat ");
+
+    // The new group moves above the catch-all, then to the top, then down again.
+    await user.click(screen.getByRole("button", { name: "Move code group 3 up" }));
+    expect([1, 2, 3].map((n) => groupField(n, "Name").value)).toEqual([
+      "agents",
+      "reviewers",
+      "everyone-else",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Move code group 2 up" }));
+    expect([1, 2, 3].map((n) => groupField(n, "Name").value)).toEqual([
+      "reviewers",
+      "agents",
+      "everyone-else",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Move code group 1 down" }));
+    expect([1, 2, 3].map((n) => groupField(n, "Name").value)).toEqual([
+      "agents",
+      "reviewers",
+      "everyone-else",
+    ]);
+    expect(groupField(2, "Author logins").value).toBe(" hubot, octocat ");
+
+    await user.click(screen.getByRole("button", { name: "Remove code group 1" }));
+    expect(screen.queryByRole("group", { name: "Code group 3" })).not.toBeInTheDocument();
+    expect(groupField(1, "Name").value).toBe("reviewers");
+    expect(groupField(2, "Name").value).toBe("everyone-else");
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    // In their order, the added group's logins split into their entries.
+    expect(sentGroups(put)).toEqual([
+      { author_logins: ["hubot", "octocat"], branch_prefixes: [], name: "reviewers" },
+      { author_logins: [], branch_prefixes: [], name: "everyone-else" },
+    ]);
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a catch-all group may only be last", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(groupedRecord);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(groupedRecord);
+
+  try {
+    renderSection();
+    const groups = await screen.findByRole("group", { name: "Code groups" });
+    // The control says so in its own words.
+    expect(groups.textContent).toContain(
+      "A group with no prefix and no login takes every change the groups above it leave, so it can only be the last group."
+    );
+
+    await user.click(screen.getByRole("button", { name: "Move code group 2 up" }));
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Code group 1 (everyone-else) has no prefix and no login, so it takes every change the groups above it leave: it can only be the last group."
+    );
+    expect(groupField(1, "Head-branch prefixes")).toHaveAttribute("aria-invalid", "true");
+    expect(groupField(1, "Author logins")).toHaveAttribute("aria-invalid", "true");
+    expect(groupField(2, "Author logins")).not.toHaveAttribute("aria-invalid");
+
+    // Back at the end it is taken, but a second group with no prefix and no login is not.
+    await user.click(screen.getByRole("button", { name: "Move code group 1 down" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add a code group" }));
+    await fill(user, groupField(3, "Name"), "rest");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Code groups 2 and 3 both have no prefix and no login: only one group can take every change the groups above it leave."
+    );
+    expect(groupField(2, "Author logins")).toHaveAttribute("aria-invalid", "true");
+    expect(groupField(3, "Author logins")).toHaveAttribute("aria-invalid", "true");
+    expect(put).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Remove code group 3" }));
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentGroups(put)).toEqual(storedGroups);
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a save that touches no group sends the stored groups", async () => {
+  const user = userEvent.setup();
+  // A stored group as the route takes it, whose lists the form's splitting would change: a
+  // prefix holding a comma, sent back as stored all the same.
+  const stored: CodeGroup[] = [
+    { author_logins: ["Octo-Bot[bot]"], branch_prefixes: ["bots/", "hot,fix/"], name: "agents" },
+    ...storedGroups.slice(1),
+  ];
+  const withGroups: ProjectDeliverySettings = { ...record, code_groups: stored };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(withGroups);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(withGroups);
+
+  try {
+    renderSection();
+    await screen.findByRole("group", { name: "Code group 2" });
+
+    // A save with delivery on that changes another field.
+    await replace(user, field("Population authors"), "hubot");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({ population_authors: ["hubot"] });
+    expect(sentGroups(put)).toEqual(stored);
+
+    // A save with delivery off sends every stored field back, the groups among them.
+    await user.click(deliverySwitch());
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentBody(put, 1)).toMatchObject({ delivery: false });
+    expect(sentGroups(put, 1)).toEqual(stored);
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a refusal names its group", async () => {
+  const user = userEvent.setup();
+  const long = "w".repeat(65);
+  const refused = `code_groups: group 2 "${long}": a name holds at most 64 characters, and this one holds 65`;
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(groupedRecord);
+  const put = spyOn(api, "putProjectDeliverySettings").mockRejectedValueOnce(
+    new ApiError(400, { code: "DELIVERY_SETTINGS_INPUT", error: refused })
+  );
+
+  try {
+    renderSection();
+    await screen.findByRole("group", { name: "Code group 2" });
+    const name = groupField(2, "Name");
+
+    // Save refuses before any request a name another group holds, capitals aside...
+    await replace(user, name, "Agents");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Code groups 1 and 2 are both named Agents, capitals aside: give each group a name of its own."
+    );
+    expect(groupField(1, "Name")).toHaveAttribute("aria-invalid", "true");
+    expect(name).toHaveAttribute("aria-invalid", "true");
+
+    // ...and a name holding a space.
+    await replace(user, name, "web app");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Code group 2 (web app): a name holds no space, full stop or control character, since each eval names the group's series after it."
+    );
+    expect(name).toHaveAttribute("aria-invalid", "true");
+    expect(groupField(1, "Name")).not.toHaveAttribute("aria-invalid");
+    expect(put).not.toHaveBeenCalled();
+
+    // The server's refusal names the group too, and the draft stays.
+    await replace(user, name, long);
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(refused));
+    expect(groupField(2, "Name").value).toBe(long);
   } finally {
     cleanup();
     get.mockRestore();

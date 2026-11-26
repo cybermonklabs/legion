@@ -132,6 +132,15 @@ const PIPELINE_JOB_FIELDS = [
   },
 ] as const;
 
+/** One code group as the record holds it and a save sends it. */
+type CodeGroup = NonNullable<ProjectDeliverySettings["code_groups"]>[number];
+
+/** What a code group's name may not hold: white space, a full stop or a control character. Each
+ *  code eval names the group's series `<base>:<name>`, and Dispatch refuses a series name holding
+ *  any of them; the server holds the name to that rule and to its length, and its refusal shows
+ *  under the form. */
+const GROUP_NAME_REFUSED = /[\s.\p{Cc}]/u;
+
 /** One deploy source as typed: the lists are the textareas' text, split only when saved. */
 interface SourceDraft {
   /** Tells the sources apart while they are edited: the stored source's id, or one Add made. */
@@ -147,22 +156,38 @@ interface SourceDraft {
   pr_checks_rollup_job_name: string;
 }
 
+/** One code group as typed: the lists are the boxes' text, split only when saved. */
+interface GroupDraft {
+  /** Tells the groups apart while they are edited and moved: one the record or Add made. */
+  readonly key: string;
+  /** The stored group these fields show until the first edit of any of them: a save sends it
+   *  back as stored. `null` for a group Add made or one that was edited. */
+  readonly stored: CodeGroup | null;
+  name: string;
+  branch_prefixes: string;
+  author_logins: string;
+}
+
 /** The fields as typed. A target left empty keeps the eval's target: the save leaves it out. */
 interface Draft {
   delivery: boolean;
   sources: SourceDraft[];
   population_authors: string;
   excluded_repos: string;
+  code_groups: GroupDraft[];
   failure_sources: readonly string[];
   failures_measured_since: string;
   targets: Record<TargetSlug, string>;
 }
 
 /** What Save refused before sending, and the fields it names: the repository boxes of `sources`
- *  (indexes into the draft's sources) or the target box of `target`. */
+ *  (indexes into the draft's sources), the name boxes of `groupNames` and the prefix and login
+ *  boxes of `groupLists` (indexes into the draft's code groups), or the target box of `target`. */
 interface Refusal {
   readonly message: string;
   readonly sources?: readonly number[];
+  readonly groupNames?: readonly number[];
+  readonly groupLists?: readonly number[];
   readonly target?: TargetSlug;
 }
 
@@ -198,6 +223,30 @@ function newSource(kind: SourceKind): SourceDraft {
   };
 }
 
+let addedGroups = 0;
+
+/** A new code group, every box empty. */
+function newGroup(): GroupDraft {
+  addedGroups += 1;
+  return {
+    key: `added-group-${addedGroups}`,
+    stored: null,
+    name: "",
+    branch_prefixes: "",
+    author_logins: "",
+  };
+}
+
+function groupDraft(group: CodeGroup, index: number): GroupDraft {
+  return {
+    key: `stored-group-${index}`,
+    stored: group,
+    name: group.name,
+    branch_prefixes: group.branch_prefixes?.join(", ") ?? "",
+    author_logins: group.author_logins?.join(", ") ?? "",
+  };
+}
+
 function sourceDraft(source: ProjectDeploySource): SourceDraft {
   return {
     key: source.id,
@@ -225,6 +274,7 @@ function draftOf(record: ProjectDeliverySettings | null): Draft {
     sources: record?.sources?.map(sourceDraft) ?? [],
     population_authors: record?.population_authors?.join("\n") ?? "",
     excluded_repos: record?.excluded_repos?.join("\n") ?? "",
+    code_groups: record?.code_groups?.map(groupDraft) ?? [],
     failure_sources: record?.failure_sources ?? [],
     failures_measured_since: record?.failures_measured_since ?? "",
     targets,
@@ -257,6 +307,7 @@ function storedInput(record: ProjectDeliverySettings | null): ProjectDeliverySet
     sources: record?.sources?.map(storedSourceInput) ?? [],
     population_authors: record?.population_authors ?? [],
     excluded_repos: record?.excluded_repos ?? [],
+    code_groups: record?.code_groups ?? [],
     failure_sources: record?.failure_sources ?? [],
     failures_measured_since: record?.failures_measured_since ?? null,
   };
@@ -277,6 +328,18 @@ function sourceInput(source: SourceDraft): ProjectDeploySourceInput {
     pr_checks_workflow_path: source.pr_checks_workflow_path.trim(),
     pr_checks_rollup_job_name: textOrNull(source.pr_checks_rollup_job_name),
   };
+}
+
+/** A code group as a save sends it: the stored group where its fields were not edited, else the
+ *  name trimmed and each list split into its entries. */
+function groupInput(group: GroupDraft): CodeGroup {
+  return (
+    group.stored ?? {
+      name: group.name.trim(),
+      branch_prefixes: listEntries(group.branch_prefixes),
+      author_logins: listEntries(group.author_logins),
+    }
+  );
 }
 
 /** A target box's text as a number or `off`, or `undefined` for one that is neither. */
@@ -304,6 +367,7 @@ function draftInput(draft: Draft): ProjectDeliverySettingsInput {
     sources: draft.sources.map(sourceInput),
     population_authors: listEntries(draft.population_authors),
     excluded_repos: listEntries(draft.excluded_repos),
+    code_groups: draft.code_groups.map(groupInput),
     failure_sources: FAILURE_SOURCES.map(({ value }) => value).filter((value) =>
       draft.failure_sources.includes(value)
     ),
@@ -319,8 +383,11 @@ const NO_DEFAULT_REPOSITORY =
 /** Why Save refuses a draft with delivery on before it sends anything, or `null` when it sends:
  *  no deploy source; a repository that is not `owner/name`; a source naming no repository of a
  *  project with no default repository; two sources that read one repository (a source naming
- *  none reads the default); and a target that is neither a number nor `off`. The server holds
- *  the same rules, and the browser's own `required` checks hold every required field. */
+ *  none reads the default); a code group name holding a space, a full stop or a control
+ *  character, or the name of an earlier group, capitals aside; two groups with no prefix and no
+ *  login, or one that is not the last group; and a target that is neither a number nor `off`.
+ *  The server holds the same rules, and the browser's own `required` checks hold every required
+ *  field. */
 function refusalOf(draft: Draft, defaultRepo: string | null): Refusal | null {
   if (draft.sources.length === 0) {
     return { message: "Delivery on needs a deploy source: add one, or turn delivery off." };
@@ -353,6 +420,42 @@ function refusalOf(draft: Draft, defaultRepo: string | null): Refusal | null {
     }
     readers.set(repo.toLowerCase(), index);
   }
+  const names = new Map<string, number>();
+  let catchAll: number | null = null;
+  for (const [index, draftGroup] of draft.code_groups.entries()) {
+    const group = groupInput(draftGroup);
+    if (GROUP_NAME_REFUSED.test(group.name)) {
+      return {
+        message: `Code group ${index + 1} (${group.name}): a name holds no space, full stop or control character, since each eval names the group's series after it.`,
+        groupNames: [index],
+      };
+    }
+    const first = names.get(group.name.toLowerCase());
+    if (first !== undefined) {
+      return {
+        message: `Code groups ${first + 1} and ${index + 1} are both named ${group.name}, capitals aside: give each group a name of its own.`,
+        groupNames: [first, index],
+      };
+    }
+    names.set(group.name.toLowerCase(), index);
+    if ((group.branch_prefixes?.length ?? 0) > 0 || (group.author_logins?.length ?? 0) > 0) {
+      continue;
+    }
+    if (catchAll !== null) {
+      return {
+        message: `Code groups ${catchAll + 1} and ${index + 1} both have no prefix and no login: only one group can take every change the groups above it leave.`,
+        groupLists: [catchAll, index],
+      };
+    }
+    catchAll = index;
+  }
+  if (catchAll !== null && catchAll !== draft.code_groups.length - 1) {
+    const group = groupInput(draft.code_groups[catchAll]);
+    return {
+      message: `Code group ${catchAll + 1} (${group.name}) has no prefix and no login, so it takes every change the groups above it leave: it can only be the last group.`,
+      groupLists: [catchAll],
+    };
+  }
   for (const slug of TARGET_SLUGS) {
     const text = draft.targets[slug];
     if (text.trim() !== "" && parsedTarget(text) === undefined) {
@@ -377,12 +480,14 @@ interface DeliverySettingsSectionProps {
  * each a `github_workflow` (its repository, empty for the project's default repository, its
  * deploy workflow, production jobs, apply step, staging jobs, pull-request checks workflow and
  * roll-up job) or the project's posted deploys (`events`, one at most), with Add and Remove; the
- * population rule; the failure sources with the day they are counted from; and the targets of
- * the seven delivery evals, each a number or `off`. With delivery off it shows the switch alone,
- * and Save sends the stored fields back unchanged. Save replaces the project's settings through
- * `PUT /api/v1/projects/{key}/settings/delivery`; a refusal shows under the form as the server
- * wrote it and the draft stays. A save starts the fields over from the record the server stored,
- * and so does anyone else's save once the record is read again.
+ * population rule; the code groups, in order, each a name, head-branch prefixes and author
+ * logins, with Add, Move up, Move down and Remove; the failure sources with the day they are
+ * counted from; and the targets of the seven delivery evals, each a number or `off`. With
+ * delivery off it shows the switch alone, and Save sends the stored fields back unchanged. Save
+ * replaces the project's settings through `PUT /api/v1/projects/{key}/settings/delivery`; a
+ * refusal shows under the form as the server wrote it and the draft stays. A save starts the
+ * fields over from the record the server stored, and so does anyone else's save once the record
+ * is read again.
  */
 export function DeliverySettingsSection({
   project,
@@ -530,6 +635,23 @@ function DeliverySettingsFields({
       ...draft,
       sources: draft.sources.map((source, at) => (at === index ? { ...source, ...patch } : source)),
     });
+  // An edit of a stored group's fields lets go of the stored group: Save sends what they hold.
+  const updateGroup = (
+    index: number,
+    patch: Partial<Pick<GroupDraft, "name" | "branch_prefixes" | "author_logins">>
+  ) =>
+    update({
+      ...draft,
+      code_groups: draft.code_groups.map((group, at) =>
+        at === index ? { ...group, ...patch, stored: null } : group
+      ),
+    });
+  const moveGroup = (from: number, to: number) => {
+    const groups = [...draft.code_groups];
+    const [moved] = groups.splice(from, 1);
+    groups.splice(to, 0, moved);
+    update({ ...draft, code_groups: groups });
+  };
   const hasEvents = draft.sources.some((source) => source.kind === "events");
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -703,6 +825,48 @@ function DeliverySettingsFields({
                   </p>
                 </div>
               </fieldset>
+              <fieldset className="grid min-w-0 gap-4">
+                <legend className={`text-base font-semibold ${textPrimaryOnCanvas}`}>
+                  Code groups
+                </legend>
+                <p className={`text-xs ${textMutedOnCanvas}`} id={`${id}-code-groups-hint`}>
+                  The code survival and post-merge rework evals count each merged change for the
+                  first group, top to bottom, with a head-branch prefix that starts its branch or an
+                  author login that opened it, as GitHub spells the login: an App&apos;s ends in
+                  [bot]. A group with no prefix and no login takes every change the groups above it
+                  leave, so it can only be the last group. Each eval names a group&apos;s series
+                  after it, so a name holds no space, full stop or control character.
+                </p>
+                {draft.code_groups.map((group, index) => (
+                  <GroupFields
+                    count={draft.code_groups.length}
+                    group={group}
+                    hintId={`${id}-code-groups-hint`}
+                    id={`${id}-${group.key}`}
+                    index={index}
+                    key={group.key}
+                    listsRefused={refusal?.groupLists?.includes(index) ?? false}
+                    nameRefused={refusal?.groupNames?.includes(index) ?? false}
+                    onChange={(patch) => updateGroup(index, patch)}
+                    onMove={(to) => moveGroup(index, to)}
+                    onRemove={() =>
+                      update({
+                        ...draft,
+                        code_groups: draft.code_groups.filter((_, at) => at !== index),
+                      })
+                    }
+                  />
+                ))}
+                <button
+                  className={`justify-self-start font-medium ${linkText} ${linkHoverText}`}
+                  onClick={() =>
+                    update({ ...draft, code_groups: [...draft.code_groups, newGroup()] })
+                  }
+                  type="button"
+                >
+                  Add a code group
+                </button>
+              </fieldset>
               <fieldset className="grid min-w-0 gap-2">
                 <legend className={`text-base font-semibold ${textPrimaryOnCanvas}`}>
                   Failure sources
@@ -863,6 +1027,125 @@ function SourceFields({
           source={source}
         />
       )}
+    </fieldset>
+  );
+}
+
+interface GroupFieldsProps {
+  readonly group: GroupDraft;
+  readonly index: number;
+  /** How many groups the draft holds: the last one does not move down. */
+  readonly count: number;
+  readonly id: string;
+  /** The code groups' help text, which describes each group's boxes. */
+  readonly hintId: string;
+  /** Whether Save refused this group's name box. */
+  readonly nameRefused: boolean;
+  /** Whether Save refused this group's prefix and login boxes. */
+  readonly listsRefused: boolean;
+  readonly onChange: (
+    patch: Partial<Pick<GroupDraft, "name" | "branch_prefixes" | "author_logins">>
+  ) => void;
+  /** Moves the group to place `to`, from 0. */
+  readonly onMove: (to: number) => void;
+  readonly onRemove: () => void;
+}
+
+/**
+ * One code group's fields, under the legend `Code group <n>`. Its groups, in order: the name box;
+ * the order buttons (Move up, Move down, Remove), which wrap inside their group; the head-branch
+ * prefixes box; and the author logins box. Two to a row from `sm` up, one below it.
+ */
+function GroupFields({
+  group,
+  index,
+  count,
+  id,
+  hintId,
+  nameRefused,
+  listsRefused,
+  onChange,
+  onMove,
+  onRemove,
+}: GroupFieldsProps): ReactNode {
+  const legend = `Code group ${index + 1}`;
+  const orderButton = `font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`;
+  return (
+    <fieldset
+      className={`grid min-w-0 gap-4 rounded-lg border p-3 sm:grid-cols-2 ${borderDefault}`}
+    >
+      <legend className={`px-1 text-sm font-semibold ${textPrimaryOnCanvas}`}>{legend}</legend>
+      <label className={settingsFieldLabel} htmlFor={`${id}-name`}>
+        Name
+        <input
+          aria-describedby={hintId}
+          aria-invalid={nameRefused || undefined}
+          autoComplete="off"
+          className={settingsMonoInput}
+          id={`${id}-name`}
+          onChange={(event) => onChange({ name: textOrEmpty(event.target.value) })}
+          placeholder="A name, such as agents"
+          required
+          spellCheck={false}
+          value={group.name}
+        />
+      </label>
+      <div className="flex flex-wrap gap-x-4 gap-y-2 self-end">
+        <button
+          aria-label={`Move ${legend.toLowerCase()} up`}
+          className={orderButton}
+          disabled={index === 0}
+          onClick={() => onMove(index - 1)}
+          type="button"
+        >
+          Move up
+        </button>
+        <button
+          aria-label={`Move ${legend.toLowerCase()} down`}
+          className={orderButton}
+          disabled={index === count - 1}
+          onClick={() => onMove(index + 1)}
+          type="button"
+        >
+          Move down
+        </button>
+        <button
+          aria-label={`Remove ${legend.toLowerCase()}`}
+          className={`font-medium ${dangerText}`}
+          onClick={onRemove}
+          type="button"
+        >
+          Remove
+        </button>
+      </div>
+      <label className={settingsFieldLabel} htmlFor={`${id}-prefixes`}>
+        Head-branch prefixes
+        <input
+          aria-describedby={hintId}
+          aria-invalid={listsRefused || undefined}
+          autoComplete="off"
+          className={settingsMonoInput}
+          id={`${id}-prefixes`}
+          onChange={(event) => onChange({ branch_prefixes: event.target.value })}
+          placeholder="Separated by spaces or commas"
+          spellCheck={false}
+          value={group.branch_prefixes}
+        />
+      </label>
+      <label className={settingsFieldLabel} htmlFor={`${id}-logins`}>
+        Author logins
+        <input
+          aria-describedby={hintId}
+          aria-invalid={listsRefused || undefined}
+          autoComplete="off"
+          className={settingsMonoInput}
+          id={`${id}-logins`}
+          onChange={(event) => onChange({ author_logins: event.target.value })}
+          placeholder="GitHub logins, separated by spaces or commas"
+          spellCheck={false}
+          value={group.author_logins}
+        />
+      </label>
     </fieldset>
   );
 }

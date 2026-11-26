@@ -6,15 +6,19 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -412,5 +416,268 @@ func TestASavesJobNamesAreStoredAsTheSingletonsSaveStoresThem(t *testing.T) {
 		if refusal.Field != bad.field || refusal.Source == nil || *refusal.Source != 1 {
 			t.Errorf("%s is refused %+v, want source 1's %s named", bad.what, refusal, bad.field)
 		}
+	}
+}
+
+// codeGroup is one code group of a save's body.
+func codeGroup(name string, prefixes, logins []string) map[string]any {
+	return map[string]any{"name": name, "branch_prefixes": prefixes, "author_logins": logins}
+}
+
+// codeGroupsJSON is groups as the settings answer writes them.
+func codeGroupsJSON(t *testing.T, groups []delivery.CodeGroup) string {
+	t.Helper()
+	encoded, err := json.Marshal(groups)
+	if err != nil {
+		t.Fatalf("encode the code groups %+v: %v", groups, err)
+	}
+	return string(encoded)
+}
+
+// threeCodeGroups is a save's code groups in order: one by head-branch prefix and login, one by
+// login alone, whose prefixes the body sends as null, and the catch-all, last.
+func threeCodeGroups() []any {
+	return []any{
+		codeGroup("agents", []string{" bots/ ", "auto/"}, []string{"octo-bot[bot]"}),
+		codeGroup("release-team", nil, []string{"hubot"}),
+		codeGroup("everyone-else", []string{}, []string{}),
+	}
+}
+
+// threeCodeGroupsStored is threeCodeGroups as the settings store them: each prefix and login
+// trimmed, and every list a list, never null.
+const threeCodeGroupsStored = `[{"name":"agents","branch_prefixes":["bots/","auto/"],"author_logins":["octo-bot[bot]"]},` +
+	`{"name":"release-team","branch_prefixes":[],"author_logins":["hubot"]},` +
+	`{"name":"everyone-else","branch_prefixes":[],"author_logins":[]}]`
+
+// alphaDeploySource is the one deploy source the code group tests save ALPHA with.
+func alphaDeploySource() map[string]any {
+	return workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")
+}
+
+// A project's code groups (dispatch://INFRA-3206, R10) are saved in order and read back as saved,
+// each prefix and login trimmed: the PUT answers them as GET reads them. A project saved with no
+// groups reads an empty list, never null.
+func TestCodeGroupsRoundTripThroughTheProjectSettings(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+
+	plain := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"delivery": true, "sources": []any{alphaDeploySource()}})
+	if got := codeGroupsJSON(t, plain.CodeGroups); got != "[]" {
+		t.Fatalf("a save naming no code groups answers %s, want []", got)
+	}
+	if raw := readProjectDelivery(t, rig.handler, "ALPHA"); !strings.Contains(string(raw), `"code_groups":[]`) {
+		t.Fatalf("a project with no code groups reads %s, want code_groups []", raw)
+	}
+
+	saved := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": threeCodeGroups(),
+	})
+	if got := codeGroupsJSON(t, saved.CodeGroups); got != threeCodeGroupsStored {
+		t.Fatalf("the save answers code groups %s, want %s", got, threeCodeGroupsStored)
+	}
+	read := settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA"))
+	if got := codeGroupsJSON(t, read.CodeGroups); got != threeCodeGroupsStored {
+		t.Fatalf("GET reads code groups %s, want %s", got, threeCodeGroupsStored)
+	}
+	put, _ := json.Marshal(saved)
+	got, _ := json.Marshal(read)
+	if string(put) != string(got) {
+		t.Errorf("the save answered %s, and GET reads %s", put, got)
+	}
+}
+
+// A save whose body has no code_groups member keeps the groups the project holds, as a save by
+// the release before this one, which sends none, must; a member that is null keeps them too.
+func TestAPutWithNoCodeGroupsKeepsTheStoredGroups(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": threeCodeGroups(),
+	})
+
+	kept := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "population_authors": []string{"octocat"},
+	})
+	if got := codeGroupsJSON(t, kept.CodeGroups); got != threeCodeGroupsStored || !slices.Equal(kept.PopulationAuthors, []string{"octocat"}) {
+		t.Fatalf("a save with no code_groups answers groups %s and population %v, want %s kept and octocat saved", got, kept.PopulationAuthors, threeCodeGroupsStored)
+	}
+	null := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": nil,
+	})
+	if got := codeGroupsJSON(t, null.CodeGroups); got != threeCodeGroupsStored {
+		t.Fatalf("a save with code_groups null answers %s, want %s kept", got, threeCodeGroupsStored)
+	}
+	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
+		t.Fatalf("GET reads code groups %s after the saves that named none, want %s", got, threeCodeGroupsStored)
+	}
+}
+
+// A save whose code_groups is the empty list clears the project's groups.
+func TestAPutWithEmptyCodeGroupsClearsThem(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": threeCodeGroups(),
+	})
+
+	cleared := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": []any{},
+	})
+	if got := codeGroupsJSON(t, cleared.CodeGroups); got != "[]" {
+		t.Fatalf("a save with code_groups [] answers %s, want []", got)
+	}
+	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != "[]" {
+		t.Fatalf("GET reads code groups %s after they were cleared, want []", got)
+	}
+}
+
+// Each code group no regroup could write or no reader could tell apart is refused 400
+// DELIVERY_SETTINGS_INPUT, naming the field code_groups and, in its message, the group by its place
+// and its name, and the save writes nothing: a blank name, a name another group holds in any case,
+// a name over 64 characters, a name holding whitespace, a control character or a `.` (each of which
+// would make a series name the registry refuses), a blank prefix or login, a group with no prefix
+// and no login that is not last, and a second such group.
+func TestCodeGroupsAreRefusedByName(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": threeCodeGroups(),
+	})
+	bots := []string{"bots/"}
+	for _, row := range []struct {
+		what   string
+		groups []any
+		// place is the refused group's place, from 1, and name its name, "" where it has none.
+		place int
+		name  string
+	}{
+		{"a blank name", []any{codeGroup("agents", bots, nil), codeGroup("  ", []string{"auto/"}, nil)}, 2, ""},
+		{"a name another group holds in another case", []any{codeGroup("agents", bots, nil), codeGroup("AGENTS", []string{"auto/"}, nil)}, 2, "AGENTS"},
+		{"a name over 64 characters", []any{codeGroup(strings.Repeat("a", 65), bots, nil)}, 1, strings.Repeat("a", 65)},
+		{"a name holding whitespace", []any{codeGroup("web app", bots, nil)}, 1, "web app"},
+		{"a name holding a control character", []any{codeGroup("web\x07app", bots, nil)}, 1, "web\x07app"},
+		{"a name holding a .", []any{codeGroup("web.app", bots, nil)}, 1, "web.app"},
+		{"a blank prefix", []any{codeGroup("agents", []string{"bots/", "  "}, nil)}, 1, "agents"},
+		{"a blank login", []any{codeGroup("agents", bots, []string{""})}, 1, "agents"},
+		{"a catch-all that is not last", []any{codeGroup("everyone", []string{}, []string{}), codeGroup("agents", bots, nil)}, 1, "everyone"},
+		{"two catch-alls", []any{codeGroup("agents", bots, nil), codeGroup("everyone", nil, nil), codeGroup("rest", []string{}, []string{})}, 3, "rest"},
+	} {
+		refusal := refusedSettings(t, putProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+			"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": row.groups,
+		}), http.StatusBadRequest, delivery.CodeDeliverySettingsInput)
+		if refusal.Field != "code_groups" || refusal.Source != nil || !strings.Contains(refusal.Message, fmt.Sprintf("group %d", row.place)) {
+			t.Errorf("%s is refused %+v, want the field code_groups naming group %d", row.what, refusal, row.place)
+		}
+		if row.name != "" && !strings.Contains(refusal.Message, fmt.Sprintf("%q", row.name)) {
+			t.Errorf("%s is refused %q, which does not name the group %q", row.what, refusal.Message, row.name)
+		}
+	}
+	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
+		t.Fatalf("after the refused saves GET reads code groups %s, want %s as saved before them", got, threeCodeGroupsStored)
+	}
+}
+
+// A group's name makes a series of each code eval, `<base>:<name>` for each base the fold names,
+// so every name the route accepts makes series names the registry accepts
+// (evals.CheckSeriesName), and every name it refuses makes one the registry refuses or breaks the
+// route's own rules: blank, over 64 characters, or another group's name in another case.
+func TestEveryAcceptedGroupNameMakesAValidSeriesName(t *testing.T) {
+	t.Parallel()
+	bases := []string{fold.SeriesSurvival, fold.SeriesRework, fold.SeriesIteration, fold.SeriesNoIssue, fold.SeriesOther}
+	seriesRefused := func(name string) string {
+		for _, base := range bases {
+			if err := evals.CheckSeriesName(fold.GroupSeries(base, name)); err != nil {
+				return fold.GroupSeries(base, name)
+			}
+		}
+		return ""
+	}
+	group := func(name string) delivery.CodeGroup {
+		return delivery.CodeGroup{Name: name, BranchPrefixes: []string{"bots/"}, AuthorLogins: []string{}}
+	}
+	for _, row := range []struct {
+		name     string
+		accepted bool
+	}{
+		{"agents", true},
+		{"Agents-2_b", true},
+		{"a", true},
+		{"team:a/b", true},
+		{"日本語", true},
+		{strings.Repeat("x", 64), true},
+		{strings.Repeat("é", 64), true},
+		{"", false},
+		{"   ", false},
+		{strings.Repeat("x", 65), false},
+		{strings.Repeat("é", 65), false},
+		{"web app", false},
+		{"web\tapp", false},
+		{"\u00a0agents", false},
+		{"web\x07app", false},
+		{"web\x7fapp", false},
+		{"web.app", false},
+		{".", false},
+	} {
+		refusal := codeGroupsRefusal([]delivery.CodeGroup{group(row.name)})
+		if accepted := refusal == nil; accepted != row.accepted {
+			t.Errorf("the name %q is accepted=%t (%v), want accepted=%t", row.name, accepted, refusal, row.accepted)
+			continue
+		}
+		if refusal == nil {
+			if series := seriesRefused(row.name); series != "" {
+				t.Errorf("the accepted name %q makes the series %q, which evals.CheckSeriesName refuses", row.name, series)
+			}
+			continue
+		}
+		ownRule := strings.TrimSpace(row.name) == "" || utf8.RuneCountInString(row.name) > 64
+		if !ownRule && seriesRefused(row.name) == "" {
+			t.Errorf("the name %q is refused (%s), yet it is neither blank nor over 64 characters and every series it makes is valid", row.name, refusal.Message)
+		}
+	}
+	twice := codeGroupsRefusal([]delivery.CodeGroup{group("agents"), group("AGENTS")})
+	if twice == nil {
+		t.Fatalf("two groups named agents and AGENTS are accepted, want the second refused")
+	}
+	if seriesRefused("agents") != "" || seriesRefused("AGENTS") != "" {
+		t.Fatalf("agents or AGENTS makes a series the registry refuses, so the row does not read the duplicate rule")
+	}
+}
+
+// A list of code groups whose series would let a code eval hold more than evals.MaxEvalSeries
+// series is refused 400 DELIVERY_SETTINGS_INPUT of the field code_groups, naming the eval and the
+// bound, and the stored list stays, so no regroup is refused for it later. The post-merge rework
+// eval names four series per group (rework, iteration, noissue and other), so MaxEvalSeries/4 + 1
+// groups pass the bound there whatever else it holds.
+func TestCodeGroupsOverTheSeriesBoundAreRefused(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": threeCodeGroups(),
+	})
+	over := evals.MaxEvalSeries/4 + 1
+	groups := make([]any, over)
+	for index := range over {
+		name := fmt.Sprintf("group-%d", index+1)
+		groups[index] = codeGroup(name, []string{name + "/"}, nil)
+	}
+	refusal := refusedSettings(t, putProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": groups,
+	}), http.StatusBadRequest, delivery.CodeDeliverySettingsInput)
+	if refusal.Field != "code_groups" || refusal.Source != nil {
+		t.Errorf("%d code groups are refused %+v, want the field code_groups", over, refusal)
+	}
+	for _, want := range []string{evals.EvalID("ALPHA", evals.SlugPostMergeRework), fmt.Sprintf("at most %d", evals.MaxEvalSeries)} {
+		if !strings.Contains(refusal.Message, want) {
+			t.Errorf("%d code groups are refused %q, which does not say %q", over, refusal.Message, want)
+		}
+	}
+	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
+		t.Fatalf("after the refused save GET reads code groups %s, want %s as saved before it", got, threeCodeGroupsStored)
 	}
 }

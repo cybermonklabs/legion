@@ -10,6 +10,7 @@ export function deliverySettings(
   overrides: Partial<ProjectDeliverySettings> = {}
 ): ProjectDeliverySettings {
   return {
+    code_groups: [],
     default_repo: "acme/widgets",
     delivery: true,
     excluded_repos: [],

@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The per-project delivery settings route (`GET` and `PUT /api/v1/projects/{key}/settings/delivery`)
+  carries `code_groups`, the project's code groups in order, each a `CodeGroup` `{name,
+  branch_prefixes, author_logins}`. `ProjectDeliverySettings.code_groups` is always a list, empty
+  for a project that names none. `ProjectDeliverySettingsInput.code_groups` is optional: a body
+  without it, or with null, keeps the stored list, and `[]` clears it. A refused group is
+  `400 DELIVERY_SETTINGS_INPUT` with `field: "code_groups"`, its message naming the group, and so
+  is a list that would let a code eval hold more series than an eval holds, its message naming
+  the eval, the count and the bound.
+time: 2026-11-26T13:40:49Z
+custom:
+    Issue: INFRA-3206
