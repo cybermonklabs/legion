@@ -47,6 +47,15 @@ beforeAll(async () => {
 /** The margin's name for its column (`page-words-margin.ts`, R11). */
 const COLUMN = "Comments on text";
 
+/** The keys the chord is pressed with: under Alt, M types "µ", as a Mac's Option does, so the
+ *  composer opens only where the chord is taken by the key's place (`KeyM`), not by the character
+ *  it types. */
+const CHORD_KEYS = [
+  { code: "ControlLeft", key: "Control" },
+  { code: "AltLeft", key: "Alt" },
+  { code: "KeyM", key: "µ" },
+];
+
 /** The kinds whose rows Enter puts a caret in (R6): the nodes of an ask, a comment and a message,
  *  and of a lens, a finding, a risk, a constraint and a result. */
 const READ_ONLY_KINDS = [
@@ -185,14 +194,18 @@ test("row focused, a press on the text: the focus moves to the row and no caret 
   view.unmount();
 });
 
-test("any, a drag over the text: the text is selected and no caret attribute is set", () => {
+test("any, a drag over the text: the text is selected and no caret attribute is set", async () => {
   const { row, view, words } = drawComment();
   setCaret(row, words)();
-  fireEvent.pointerDown(words);
-  fireEvent.mouseDown(words);
-  selectWords(row, "the comment");
-  fireEvent.pointerUp(words);
-  fireEvent.mouseUp(words);
+  // The press lands on the first letter of "the comment", and the release just past its last.
+  const from = (words.textContent ?? "").indexOf("the comment");
+  await userEvent
+    .setup()
+    .pointer([
+      { keys: "[MouseLeft>]", offset: from, target: words },
+      { offset: from + "the comment".length },
+      { keys: "[/MouseLeft]" },
+    ]);
   expect(window.getSelection()?.toString(), "the drag selected no text").toBe("the comment");
   expect(lacksCaret(words), "a drag over the text set the caret").toBe(true);
   view.unmount();
@@ -204,6 +217,7 @@ test("caret, Left, Right, Up, Down, Home and End: the caret moves and the text d
   const before = words.textContent;
   const cancelled: string[] = [];
   for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]) {
+    // user-event does not answer whether the page cancelled the key, which this case reads.
     const accepted = fireEvent.keyDown(words, { cancelable: true, key });
     if (!accepted) cancelled.push(key);
   }
@@ -220,6 +234,7 @@ test("caret, Shift with an arrow: the selection grows and the control of the sel
     const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);
     const { row, words } = await waitFor(() => located(view, id));
     setCaret(row, words);
+    // user-event does not answer whether the page cancelled the key, which this case reads.
     const accepted = fireEvent.keyDown(words, {
       cancelable: true,
       key: "ArrowRight",
@@ -277,7 +292,10 @@ test("caret, $mod+Alt+m with a selection: the composer of the selection table op
     const { row, words } = await waitFor(() => located(view, id));
     setCaret(row, words);
     selectWords(row, "page");
-    fireEvent.keyDown(words, { altKey: true, code: "KeyM", ctrlKey: true, key: "µ" });
+    expect(document.activeElement, "the caret left the focus off the row's words").toBe(words);
+    await userEvent
+      .setup({ keyboardMap: CHORD_KEYS })
+      .keyboard("{Control>}{Alt>}[KeyM]{/Alt}{/Control}");
     await waitFor(() => {
       const column = view.queryByRole("region", { name: COLUMN });
       expect(
@@ -341,20 +359,20 @@ test("caret, a press on a link in the text: the link is followed", () => {
   view.unmount();
 });
 
-test("caret, Escape: the attribute goes and the focus is on the row", () => {
+test("caret, Escape: the attribute goes and the focus is on the row", async () => {
   const { row, view, words } = drawComment();
   setCaret(row, words);
-  fireEvent.keyDown(words, { key: "Escape" });
+  await userEvent.setup().keyboard("{Escape}");
   expect(lacksCaret(words), "Escape left the caret's attributes").toBe(true);
   expect(document.activeElement, "Escape left the focus off the row").toBe(row);
   view.unmount();
 });
 
-test("caret, blur: the attribute goes", () => {
+test("caret, blur: the attribute goes", async () => {
   const { row, view, words } = drawComment();
   setCaret(row, words);
-  fireEvent.blur(words);
-  fireEvent.focusOut(words);
+  // A press on the page where nothing takes the focus, so the focus leaves the words for none.
+  await userEvent.setup().click(document.body);
   expect(lacksCaret(words), "blur left the caret's attributes").toBe(true);
   view.unmount();
 });

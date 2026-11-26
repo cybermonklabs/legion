@@ -28,7 +28,6 @@ import { NODE_ROW_LAYOUT, RowMargin, type Tone } from "../NodeRow";
 import { authorText, pageChrome } from "../page-structure";
 import { authorKind, isReader, LENS_WORDS } from "../page-words";
 import { RowText } from "../RowText";
-import { issueCommentsQuery } from "../useIssueTree";
 import type { TextThread } from "./text-threads";
 import { threadCommentNode } from "./thread-node";
 
@@ -72,23 +71,22 @@ export interface ThreadCardHost {
 export function useThreadCardHost(issue: IssueDetails): ThreadCardHost {
   const client = useQueryClient();
   const key = issue.key;
-  const commentsKey = useMemo(() => issueCommentsQuery(key).queryKey, [key]);
   const viewerLogin = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login ?? "";
   const [editingCommentId, setEditingCommentId] = useState<string>();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
     previous: Comment[] | undefined;
   }>({
-    holds: ({ id, kind }) => ({ endsOn: commentWritten(id, kind), keys: [commentsKey] }),
+    holds: ({ id, kind }) => ({ endsOn: commentWritten(id, kind), keys: [["comments", key]] }),
     issue: key,
     onError: (_error, _input, context) => {
-      client.setQueryData(commentsKey, context?.previous);
-      void client.invalidateQueries({ queryKey: commentsKey });
+      client.setQueryData<Comment[]>(["comments", key], context?.previous);
+      void client.invalidateQueries({ queryKey: ["comments", key] });
     },
     onMutate: async ({ id, kind }) => {
-      await client.cancelQueries({ queryKey: commentsKey });
-      const previous = client.getQueryData<Comment[]>(commentsKey);
-      client.setQueryData<Comment[]>(commentsKey, (current) =>
+      await client.cancelQueries({ queryKey: ["comments", key] });
+      const previous = client.getQueryData<Comment[]>(["comments", key]);
+      client.setQueryData<Comment[]>(["comments", key], (current) =>
         current?.map((comment) => {
           if (comment.id !== id) return comment;
           if (kind === "reopen") {
@@ -107,7 +105,7 @@ export function useThreadCardHost(issue: IssueDetails): ThreadCardHost {
       return { previous };
     },
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: commentsKey });
+      void client.invalidateQueries({ queryKey: ["comments", key] });
       void client.invalidateQueries({ queryKey: ["issue", key] });
     },
   });
@@ -116,13 +114,13 @@ export function useThreadCardHost(issue: IssueDetails): ThreadCardHost {
       setSavingCommentEditId(id);
       try {
         const saved = await saveCommentEdit(id, body, carried, bounds);
-        void client.invalidateQueries({ queryKey: commentsKey });
+        void client.invalidateQueries({ queryKey: ["comments", key] });
         return saved;
       } finally {
         setSavingCommentEditId(undefined);
       }
     },
-    [client, commentsKey]
+    [client, key]
   );
   const artifacts = issue.artifacts;
   const artifactSlugOf = useCallback(
