@@ -2625,13 +2625,15 @@ export class DispatchClient {
   /**
    * What a write's answer that is not its row is, by the one rule of a landing: a route that
    * stores nothing (`rowStores`) made nothing, so its answer is missing, a
-   * `DispatchAnswerMissingError`; an answer that names the call's key back is Dispatch's word that
-   * the write committed under it, a landing whose answer is gone (`code`). Any other (a 2xx that
-   * names no key back or another request's, a `409 IDEMPOTENCY_KEY_COMMITTED` that names none) is
-   * no verdict of Dispatch's on this write, which may have reached Dispatch behind what answered
-   * it, so its outcome is unknown: a `DispatchWriteUnsettledError` whose last answer is that
-   * answer as a `DispatchGatewayError`, naming `text`, the body that came, as `bodyForText` names
-   * it.
+   * `DispatchAnswerMissingError`, or, for a replay that names the call's key back and reads
+   * `IDEMPOTENCY_ANSWER_NOT_KEPT` (`code`), a `DispatchAnswerNotKeptError`: Dispatch ran an
+   * earlier attempt and kept no copy of its answer, which `#writingNothing` asks once more under a
+   * new key; an answer that names the call's key back is Dispatch's word that the write committed
+   * under it, a landing whose answer is gone (`code`). Any other (a 2xx that names no key back or
+   * another request's, a `409 IDEMPOTENCY_KEY_COMMITTED` that names none) is no verdict of
+   * Dispatch's on this write, which may have reached Dispatch behind what answered it, so its
+   * outcome is unknown: a `DispatchWriteUnsettledError` whose last answer is that answer as a
+   * `DispatchGatewayError`, naming `text`, the body that came, as `bodyForText` names it.
    */
   #missingWriteAnswer(
     method: string,
@@ -2643,8 +2645,11 @@ export class DispatchClient {
     code: DispatchLandedCode = DISPATCH_ANSWER_LOST
   ): Error {
     const shown = requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING);
-    if (!write.writes)
+    if (!write.writes) {
+      if (code === IDEMPOTENCY_ANSWER_NOT_KEPT && keyEchoed(response, write.key))
+        return new DispatchAnswerNotKeptError(response.status, method, shown);
       return new DispatchAnswerMissingError(response.status, method, shown, { cause });
+    }
     if (keyEchoed(response, write.key))
       return new DispatchWriteLandedError(code, response.status, method, shown, { cause });
     const names =
@@ -2887,12 +2892,11 @@ export class DispatchClient {
    * `dryRunResult`). It is sent as a write is, under a key of its own, so an attempt with no
    * definitive answer is asked again under that key (`#write`). Such a repeat can come back as a
    * replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept
-   * no copy of its answer. `#payloadOf` reads that replay as a write's landing
-   * (`DispatchWriteLandedError`), but this request wrote nothing, so it is no landing: it is asked
-   * once more under a new key, which `#writeCall` mints, and which runs it afresh and can double
-   * nothing. That ask's answer is the call's, and a second such replay is thrown as the
-   * `DispatchAnswerNotKeptError` it is rather than asked again, so the call is asked under at most
-   * two keys. Every other error, a `409 IDEMPOTENCY_KEY_COMMITTED` landing among them, is thrown as
+   * no copy of its answer. For a call that writes nothing that is no landing but a
+   * `DispatchAnswerNotKeptError` (`#missingWriteAnswer`), so it is asked once more under a new key,
+   * which `#writeCall` mints, and which runs it afresh and can double nothing. That ask's answer is
+   * the call's, and a second such replay is thrown as the `DispatchAnswerNotKeptError` it is rather
+   * than asked again, so the call is asked under at most two keys. Every other error is thrown as
    * it came. `row` is the members its callers read (`WRITE_ROWS`), whose `rowStores` says the call
    * writes nothing, so its table state never reads as a write that may have landed.
    */
@@ -2901,19 +2905,7 @@ export class DispatchClient {
       try {
         return (await this.#jsonAnswer<T>("POST", path, body, { row })).payload;
       } catch (error) {
-        if (
-          !(error instanceof DispatchWriteLandedError) ||
-          error.code !== IDEMPOTENCY_ANSWER_NOT_KEPT
-        ) {
-          throw error;
-        }
-        if (keys === 2) {
-          throw new DispatchAnswerNotKeptError(
-            error.status,
-            "POST",
-            requestForText(this.#baseUrl, this.#url(path), DISPATCH_URL_SETTING)
-          );
-        }
+        if (!(error instanceof DispatchAnswerNotKeptError) || keys === 2) throw error;
       }
     }
   }
