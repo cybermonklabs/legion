@@ -159,12 +159,13 @@ var defaultRepositoryCache = RepositoryCacheConfig{
 func DefaultRepositoryCache() RepositoryCacheConfig { return defaultRepositoryCache }
 
 // IdleReleaseConfig is `runtime.kubernetes.idle_release`: the idle period an issue pod must pass
-// with no turn in progress and no turn due before the daemon saves its workspace's unpushed work,
-// suspends each live claim with the source `released` and deletes the pod, its disk and its
-// Sandbox (IdleMinutes), and how long after that release the backstop wakes each phase worker of
-// the pod whose phase is open (BackstopMinutes), standing in for a wait that raises no event of
-// its own. IdleMinutes zero turns release off, and the deployment's pods then live from an
-// issue's first role start to its close.
+// with no turn in progress and no turn due before the daemon suspends each live claim with the
+// source `released` and deletes the pod, its disk and its Sandbox (IdleMinutes), and how long
+// after that release the backstop wakes each phase worker of the pod whose phase is open
+// (BackstopMinutes), standing in for a wait that raises no event of its own. A release saves
+// nothing of the workspace: the workspace check holds a pod whose workspace holds work that no
+// branch or tag on origin holds. IdleMinutes zero turns release off, and the deployment's pods then
+// live from an issue's first role start to its close.
 type IdleReleaseConfig struct {
 	IdleMinutes     int
 	BackstopMinutes int

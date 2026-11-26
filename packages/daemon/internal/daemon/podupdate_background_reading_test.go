@@ -64,9 +64,7 @@ func reportedAt(c supervise.Claim, at time.Time) supervise.Claim {
 // has answered and no suspension that holds is over any claim, so the rows read R1's hold beside
 // the holds of today. named and unreported are the hold as the round's end reads it, at the bound
 // too, which is what the bound's line names; wait is the walk's reading; bounded is whether the
-// bound is what let a replacement through; unsettled is a claim the round asks that has not
-// answered or a turn that runs, which alone stops the read of the workspace (roundEnd.settled,
-// dispatch://INFRA-4109 R1): a running report the bound stepped over does not stop it.
+// bound is what let a replacement through.
 func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 	t.Parallel()
 	before := podUpdateStart.Add(time.Minute)
@@ -78,7 +76,6 @@ func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 		named      map[string][]string
 		unreported []string
 		bounded    bool
-		unsettled  bool
 	}{
 		{
 			name: "a report read at the instant the last turn started counts, and one that names nothing running holds nothing",
@@ -169,10 +166,9 @@ func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 					inState(roundMember(t, claim.RoleTester, podUpdatePod), supervise.StateWorking),
 				}
 			},
-			now:       before,
-			wait:      waitsForTurn,
-			named:     map[string][]string{string(claim.RoleImplementer): {"subagent"}},
-			unsettled: true,
+			now:   before,
+			wait:  waitsForTurn,
+			named: map[string][]string{string(claim.RoleImplementer): {"subagent"}},
 		},
 		{
 			name: "a claim whose process is in another pod holds nothing, whatever its report says",
@@ -220,9 +216,6 @@ func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 			}
 			if got := end.bounded(); got != tc.bounded {
 				t.Errorf("the round's end reads bounded=%t, want %t", got, tc.bounded)
-			}
-			if got := end.settled(); got == tc.unsettled {
-				t.Errorf("the round's end reads settled=%t, want %t", got, !tc.unsettled)
 			}
 
 			reading := readReplacement(group, podUpdateRound, clock)

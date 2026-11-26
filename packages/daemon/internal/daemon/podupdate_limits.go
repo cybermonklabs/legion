@@ -81,13 +81,18 @@ func (a *podUpdateAllowance) take() {
 // end is on its way to a member's machine. Only the walk's reading drops from this daemon's record
 // a round no claim records any more; the request's reads the same rounds and drops nothing
 // (beginPodUpdateSweep says why).
+//
+// keptReads is each read the walk found due of a pod an earlier round kept (podKeptForWork), which
+// the sweep makes after its walk, as it makes the replacements (readKeptPod): the read waits on
+// the pod as long as a sweep interval.
 type podUpdateSweep struct {
-	slots    podUpdateAllowance
-	budget   podUpdateAllowance
-	inFlight map[string]podUpdateOpening
-	ended    map[string]string
-	waiting  []podUpdateHeld
-	inRound  []string
+	slots     podUpdateAllowance
+	budget    podUpdateAllowance
+	inFlight  map[string]podUpdateOpening
+	ended     map[string]string
+	waiting   []podUpdateHeld
+	inRound   []string
+	keptReads []keptPodRead
 }
 
 // podUpdateOpening is one opening of this daemon's own that the claims of its issue have not
