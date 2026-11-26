@@ -175,14 +175,13 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 		if graph.named["docs.Service."+sink] == nil {
 			t.Errorf("docs.Service.%s, a document write the guard looks for, is gone: point specWriterSinks at its replacement", sink)
 		}
-		if !slices.ContainsFunc(slices.Collect(maps.Values(routes)), func(reach specWriterReach) bool { return len(reach.sinks[sink]) > 0 }) {
-			t.Errorf("no route of the table reaches %s, so the guard sees none of its calls", sink)
-		}
 	}
 	for _, sink := range specWriterNodeSinks {
 		if graph.named[sink] == nil {
 			t.Errorf("%s, a node write the guard looks for, is gone: point specWriterNodeSinks at its replacement", sink)
 		}
+	}
+	for _, sink := range slices.Concat(specWriterSinks, specWriterNodeSinks) {
 		if !slices.ContainsFunc(slices.Collect(maps.Values(routes)), func(reach specWriterReach) bool { return len(reach.sinks[sink]) > 0 }) {
 			t.Errorf("no route of the table reaches %s, so the guard sees none of its calls", sink)
 		}

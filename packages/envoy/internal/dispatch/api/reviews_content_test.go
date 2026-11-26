@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -55,10 +58,13 @@ func contentReviews(t *testing.T, handler http.Handler, id string) []model.Artif
 // Dropping the pin from any review/approval/version/event surface breaks this test. The issue is
 // born converted, so each version of its spec holds the version_renders row its pass recorded, and a
 // review of it pins its record's digest (recordedDigest); the version read names its stored bytes.
+// An approval covers the digest of the spec query's record (R14), which a change of prose alone
+// leaves as it was, so the words the revision changes are a requirement's, and the approval reads
+// stale at the version that changes them.
 func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
-	issue := createInteractionIssue(t, handler, "HASH", "Approve bytes", "Approve me ☕\n")
+	issue := createInteractionIssue(t, handler, "HASH", "Approve bytes", ":::requirement{#r1}\nApprove me ☕\n:::\n")
 	id := issue.PrimaryArtifactID
 	h1 := contentHash(versionMarkdown(t, handler, id, 1))
 	d1 := recordedDigest(t, database, issue.Key, graphstore.QuerySpec, id, 1)
@@ -199,9 +205,7 @@ func TestAVersionAnswersTheDigestAnApprovalCovers(t *testing.T) {
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload notes.md: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
-	notes := decodeBody[struct {
-		Artifact model.Artifact `json:"artifact"`
-	}](t, uploaded).Artifact
+	notes := decodeBody[uploadedArtifact](t, uploaded).Artifact
 	if notes.Kind != "doc" {
 		t.Fatalf("notes.md is a %s, want a document", notes.Kind)
 	}
@@ -220,10 +224,7 @@ func TestAVersionAnswersTheDigestAnApprovalCovers(t *testing.T) {
 	// The older build's version holds the bytes the spec's room holds, version 1's stored markdown,
 	// so a settlement of the room that runs while the reconciliation below does finds nothing to
 	// write as a version of its own, which its pass would state in place of version 2.
-	var older string
-	if err := database.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = 1`, spec).Scan(&older); err != nil {
-		t.Fatalf("read version 1's stored markdown: %v", err)
-	}
+	older := versionMarkdownAt(t, database, spec, 1)
 	if _, err := database.Pool.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, authors)
 		select artifact_id, 2, $2, authors from artifact_versions where artifact_id = $1 and number = 1
@@ -277,17 +278,18 @@ func TestAVersionAnswersTheDigestAnApprovalCovers(t *testing.T) {
 }
 
 // requireNoVersionRender fails t unless version number of the document artifactID holds no
-// version_renders row, naming the digest a row it holds records.
+// version_renders row, naming the digest a row it holds records, or none.
 func requireNoVersionRender(t *testing.T, database *store.Store, what, artifactID string, number int) {
 	t.Helper()
-	var digest string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select coalesce((select record_sha256 from version_renders where artifact_id = $1 and number = $2), '')`,
-		artifactID, number).Scan(&digest); err != nil {
+	var digest *string
+	err := database.Pool.QueryRow(context.Background(),
+		`select record_sha256 from version_renders where artifact_id = $1 and number = $2`, artifactID, number).Scan(&digest)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		t.Fatalf("%s: read the version_renders row of version %d: %v", what, number, err)
-	}
-	if digest != "" {
-		t.Errorf("%s: version %d holds a version_renders row recording the digest %s, want none", what, number, digest)
+	default:
+		t.Errorf("%s: version %d holds a version_renders row recording the digest %s, want no row", what, number, valueOrNone(digest))
 	}
 }
 

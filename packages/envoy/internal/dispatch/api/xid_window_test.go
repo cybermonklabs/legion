@@ -469,7 +469,7 @@ func requireRestoreWindowStatements(t *testing.T, report *storetest.XidReport) {
 	for _, window := range report.Windows {
 		next := 0
 		for _, statement := range window.Statements {
-			if next < len(restoreWindowStatements) && strings.Contains(strings.ToLower(strings.TrimSpace(statement.SQL)), restoreWindowStatements[next]) {
+			if next < len(restoreWindowStatements) && strings.Contains(normalizedStatement(statement.SQL), restoreWindowStatements[next]) {
 				next++
 			}
 		}

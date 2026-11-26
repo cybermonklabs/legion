@@ -3481,11 +3481,13 @@ func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
 
 // A result and a ci_check written against one block at once can both commit, and the block then
 // holds a recorded result, so it is no check CI proves. Crafted here as a browser's write that
-// gives a ci_check to a check already holding a result, before any settlement: the results read
-// shows it as an ordinary check carrying its ci_check and its recorded result, and it takes a
-// further result. Its sibling, given the same ci_check and holding no result, is CI's. The next
-// settlement takes the inert ci_check off the block holding results, with one block.invalid
-// naming the fourth rule, and keeps its sibling's.
+// gives a ci_check to a check already holding a result, before any settlement: the live document,
+// which a result's write reads its check from, holds the ci_check, while the results read, which
+// answers from the store's nodes (R8 of the issue-tree spec), shows the check as the store holds it
+// until the settlement, with no ci_check and its recorded result; and it takes a further result.
+// Its sibling, given the same ci_check and holding no result, is CI's. The next settlement takes
+// the inert ci_check off the block holding results, with one block.invalid naming the fourth rule,
+// and keeps its sibling's.
 func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	t.Parallel()
 	documents, handler, _ := browserDocumentService(t)
@@ -3498,9 +3500,21 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	}
 	writeBrowserDocument(t, handler, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
 
+	var liveOpening string
+	for _, line := range strings.Split(documentMarkdown(t, handler, verification.Artifact.ID), "\n") {
+		if strings.HasPrefix(line, ":::check{#c1 ") {
+			liveOpening = line
+		}
+	}
+	if !strings.Contains(liveOpening, `ci_check="`+ciCheckRun+`"`) {
+		t.Fatalf("the live document opens c1 with %q, want its ci_check %q", liveOpening, ciCheckRun)
+	}
+	// R8 of the issue-tree spec: the results read answers over the store, which takes the browser's
+	// write at its settlement, so c1 reads as its stored version holds it, where a read of the live
+	// markdown, as the release before made, answered the ci_check.
 	held := checkOf(t, readResults(t, handler, issue.Key), "c1")
-	if held.CICheck != ciCheckRun || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID {
-		t.Fatalf("c1 reads %+v, want its ci_check and the result recorded against it", held)
+	if held.CICheck != "" || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID {
+		t.Fatalf("c1 reads %+v, want it as the store holds it before the settlement, with no ci_check, and the result recorded against it", held)
 	}
 	if again := recordResult(t, handler, issue.Key, resultBody("c1", "fail", newHeadCommit, map[string]any{"role": "tester", "failed": 1})); again.Code != http.StatusCreated {
 		t.Fatalf("a further result against c1: status=%d body=%s, want 201", again.Code, again.Body.String())

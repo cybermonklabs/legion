@@ -23,19 +23,38 @@ import (
 // holdIssuesUnconverted makes a process that lists no issue_room live beside the test's server for
 // the rest of the test - a server_processes row with no capabilities, as a build before the column
 // registers none - so every issue the test creates is created as before the issue room, one room
-// per document (decision 7 of the issue-tree plan). The process registers this build's
-// schema and this build's owner lock protocol, so it moves no other rule the fleet decides: the ask
-// roll window, which a process of an older schema opens (docs' anotherBuildServes), stays shut as
-// with this server alone, and the owner locks stay in this build's mode, where a row of protocol 0
-// would stamp the legacy mark and hold every owner lock in the advisory-and-row mode for an hour
-// (store.OwnerLockProtocol, owner_lock_legacy_mark).
-func holdIssuesUnconverted(t *testing.T, database *store.Store) {
+// per document (decision 7 of the issue-tree plan), and answers the process's instance, which a
+// test that holds it for one create takes back (createDigestChild). The process registers this
+// build's schema and this build's owner lock protocol, so it moves no other rule the fleet decides:
+// the ask roll window, which a process of an older schema opens (docs' anotherBuildServes), stays
+// shut as with this server alone, and the owner locks stay in this build's mode
+// (requireNoLegacyOwnerLockMark).
+func holdIssuesUnconverted(t *testing.T, database *store.Store) (instance string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
+	if err := database.Pool.QueryRow(context.Background(), `
 		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day', $3)`,
-		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol); err != nil {
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day', $3) returning instance::text`,
+		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("add a live server process that lists no issue room: %v", err)
+	}
+	requireNoLegacyOwnerLockMark(t, database)
+	return instance
+}
+
+// requireNoLegacyOwnerLockMark fails the test once the database holds the legacy owner lock mark
+// (owner_lock_legacy_mark), which the insert of a server_processes row of owner lock protocol 0,
+// the column's default, stamps: every owner lock of the database then runs in the
+// advisory-and-row mode while the mark is younger than store.OwnerLockMarkWindow, an hour, after
+// the row itself is gone. A process a test registers as this build, or as the release before,
+// which registers the same protocol, names store.OwnerLockProtocol and stamps none.
+func requireNoLegacyOwnerLockMark(t *testing.T, database *store.Store) {
+	t.Helper()
+	var marked bool
+	if err := database.Pool.QueryRow(context.Background(), `select exists (select from owner_lock_legacy_mark)`).Scan(&marked); err != nil {
+		t.Fatalf("read the legacy owner lock mark: %v", err)
+	}
+	if marked {
+		t.Fatalf("the database holds the legacy owner lock mark, so every owner lock runs in the advisory-and-row mode for %s: a process the test registered names owner lock protocol 0, want %d", store.OwnerLockMarkWindow, store.OwnerLockProtocol)
 	}
 }
 
@@ -94,10 +113,10 @@ func documentRoomOf(t *testing.T, q queryer, artifactID string) (room, fragment 
 
 // A criterion written through POST /api/v1/artifacts/{tree}/edits on a converted issue's tree
 // artifact lands in the tree's own fragment of the issue's room and reads back through
-// GET /api/v1/artifacts/{tree}/text, the tree artifact reads as a document whose room is itself
-// and whose fragment is the room's own, and the issue read's documents name no tree artifact (R8 of
-// the issue-tree spec, T12b of its plan). The read of the criterion through the tree read
-// (GET /api/v1/issues/{key}/tree) is T16a's, which adds that half of this test when it lands.
+// GET /api/v1/artifacts/{tree}/text and through the tree read, GET /api/v1/issues/{key}/tree, as
+// the issue's criterion node keyed by the tree; the tree artifact reads as a document whose room is
+// itself and whose fragment is the room's own, and the issue read's documents name no tree
+// artifact (R8 of the issue-tree spec).
 func TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createRoomProject(t, handler, "TREE")
@@ -118,6 +137,11 @@ func TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead(t 
 	}
 	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); strings.Contains(text, "urgent asks") || !strings.Contains(text, "The spec's words.") {
 		t.Errorf("the spec's text reads %q, want its own words and none of the tree's", text)
+	}
+	criterionNode := blockKeyOf(t, database, tree) + "#k1"
+	if criteria := treeRead(t, handler, issue.Key, "", "alice", false).supertagged("criterion"); len(criteria) != 1 ||
+		criteria[0].ID != criterionNode || !strings.Contains(criteria[0].Text, "I want the urgent asks first.") {
+		t.Errorf("the tree read of %s answers the criteria %+v, want the one node %s holding the words it was written", issue.Key, criteria, criterionNode)
 	}
 
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+tree, nil, "alice")
@@ -159,11 +183,12 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 	// A live process of this build, which lists the issue room as a server registers it
 	// (processes.Register), so the create reads a fleet that serves the room rather than an empty one.
 	if _, err := database.Pool.Exec(ctx, `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, capabilities)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day', $3::text[])`,
-		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), processes.Capabilities); err != nil {
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, capabilities, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day', $3::text[], $4)`,
+		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), processes.Capabilities, store.OwnerLockProtocol); err != nil {
 		t.Fatalf("add a live server process that lists the issue room: %v", err)
 	}
+	requireNoLegacyOwnerLockMark(t, database)
 	converted, tree := createRoomIssue(t, handler, database, "BORN", "Born converted", "The first spec.\n", "")
 	if tree == "" {
 		t.Fatalf("issue %s holds no tree", converted.Key)
@@ -227,7 +252,7 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 // query value; its text reads back; a later upload of its name and an edit of it each reach that
 // fragment alone, leaving the spec's text as it was; and the room's pass the upload runs causes
 // nothing of the spec's blocks under the upload's event: an unchanged sibling fragment's facts
-// append nothing (T12b of the issue-tree plan).
+// append nothing.
 func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -241,16 +266,7 @@ func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 	}
 	upload := func(content string) model.Artifact {
 		t.Helper()
-		uploads := "/api/v1/issues/" + issue.Key + "/artifacts"
-		body := map[string]any{"name": "plan.md", "content": content}
-		if base := uploadBaseNamed(t, handler, uploads, "plan.md"); base != nil {
-			body["precondition"] = base
-		}
-		response := dispatchRequest(t, handler, http.MethodPost, uploads, body, "alice")
-		if response.Code != http.StatusCreated {
-			t.Fatalf("upload plan.md: status=%d body=%s", response.Code, response.Body.String())
-		}
-		return decodeBody[artifactUploadResponse](t, response).Artifact
+		return uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", content).Artifact
 	}
 	plan := upload("The first plan.\n")
 	if plan.Room != tree || plan.Fragment != plan.ID || plan.Role != model.ArtifactRolePlan {
@@ -344,10 +360,7 @@ func TestAWriteThroughTheParentNamingAChildsNodeIsRefused(t *testing.T) {
 	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+parentTree+"/edits", map[string]any{
 		"ops": []map[string]any{{"op": "delete", "block": address}},
 	}, "alice")
-	refusal := decodeBody[struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
-	}](t, refused)
+	refusal := decodeBody[refusalAnswer](t, refused)
 	if refused.Code != http.StatusConflict || refusal.Code != codeNodeInOtherIssue || !strings.Contains(refusal.Error, child.Key) {
 		t.Errorf("a delete through %s naming %s answered %d %s %q, want 409 %s naming %s", parent.Key, address, refused.Code, refusal.Code, refusal.Error, codeNodeInOtherIssue, child.Key)
 	}
@@ -359,7 +372,7 @@ func TestAWriteThroughTheParentNamingAChildsNodeIsRefused(t *testing.T) {
 	}
 }
 
-// A document of a converted issue that plays no role is a room of its own (R5 of this branch's
+// A document of a converted issue that plays no role is a room of its own (R5 of the issue-tree
 // spec), so it is judged for removal, and removed, as a document of an unconverted issue is, and
 // the issue's room, which holds the spec and the plan, stands as it was: one a person typed in,
 // whose edit no version holds yet, is refused as not untouched and keeps what was typed, while an
@@ -425,7 +438,7 @@ func TestARemovalOfAConvertedIssuesDocumentLeavesTheIssueRoomAsItStood(t *testin
 	}
 }
 
-// A document of a converted issue that plays no role is a room of its own (R5 of this branch's
+// A document of a converted issue that plays no role is a room of its own (R5 of the issue-tree
 // spec), and so is a document that cites it: an upload citing it, made while the spec's fragment of
 // the issue's room holds an edit no version holds yet, is indexed by its own request, since no
 // other fragment shares its room, so the removal of the cited document is refused at once for the
@@ -451,13 +464,13 @@ func TestARemovalOfADocumentCitedWhileTheIssueRoomHoldsAnUnsettledEditIsRefusedF
 		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(cited, "something in Dispatch links to it"))
 }
 
-// An ask block of a converted document is that document's own ask (the T12b fixes of
-// the issue-tree plan): settlement indexes it keyed by the issue's tree, whose room holds
-// the block, and every read of it names the document whose fragment holds the block. The ask read
-// names the spec as its block's document; the spec's text read shows the block as the spec's own
-// ask, as no copy of another document's (its asks member, where the text routes answer an ask's
-// state and its copy: agentText); and an answer to it leaves no settlement owed under any
-// document of the room, whose settlement is keyed by, and clears, the room's own row.
+// An ask block of a converted document is that document's own ask: settlement indexes it keyed by
+// the issue's tree, whose room holds the block, and every read of it names the document whose
+// fragment holds the block. The ask read names the spec as its block's document; the spec's text
+// read shows the block as the spec's own ask, as no copy of another document's (its asks member,
+// where the text routes answer an ask's state and its copy: agentText); and an answer to it leaves
+// no settlement owed under any document of the room, whose settlement is keyed by, and clears, the
+// room's own row.
 func TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy(t *testing.T) {
 	ctx := context.Background()
 	handler, database := blockAskHandler(t)
@@ -499,7 +512,7 @@ func TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy(t *testing.T) {
 }
 
 // A copy of the spec uploaded into its converted issue plays no role, so it is a room of its own
-// beside the issue's room, which holds the spec (R5 of this branch's spec): it keeps the spec's
+// beside the issue's room, which holds the spec (R5 of the issue-tree spec): it keeps the spec's
 // block ids, and its ask block is a copy of the spec's ask, which opens no ask of its own and shows
 // its source's (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks reads the states), while the
 // issue's room holds the spec alone.
@@ -542,7 +555,7 @@ func TestACopyOfASpecUploadedIntoItsConvertedIssueIsARoomOfItsOwnAndOpensNoAsk(t
 	}
 }
 
-// An issue's decisions query (D6 of this branch's plan) renders the issue's decisions and is held
+// An issue's decisions query (D6 of the issue-tree plan) renders the issue's decisions and is held
 // by no fragment of any room, so nothing writes text into it: an upload under its name and an edit
 // by its id and by its slug are 409 DECISIONS_QUERY and write no version and no update, the
 // artifact read answers it no fragment, and a socket on it is refused 409 DECISIONS_QUERY before

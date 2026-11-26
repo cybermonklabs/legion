@@ -38,7 +38,7 @@ func commentListValidator(t *testing.T, handler http.Handler, target, what strin
 // writes them, with no dispatch.head_rows setting, so the head mark trigger of comments fires for
 // each: on a marked issue it deletes the mark's row inside the first such statement, which holds
 // that row until its transaction ends, and a second writer of the issue waits for it (R8 of the
-// issue tree's spec: none of the head mark triggers is deferred; head_projection_test's
+// issue-tree spec: none of the head mark triggers is deferred; head_projection_test's
 // markedWritesWait). With the mark gone first, neither writer finds a row of it to wait on, and
 // what the tests hold the writers to is the watermark's triggers alone.
 func unmarkHead(t *testing.T, database *store.Store, key string) {

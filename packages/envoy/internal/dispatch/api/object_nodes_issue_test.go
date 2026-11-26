@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -237,11 +236,7 @@ func TestABlockNodeCarriesItsDocumentsProject(t *testing.T) {
 func blockNodesOfDocument(t *testing.T, database *store.Store, artifactID string) []graphstore.Node {
 	t.Helper()
 	ctx := context.Background()
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `
-		select room.ref_key from artifacts room where room.id = `+refs.DocumentRoomSQL("$1::uuid"), artifactID).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of %s's room: %v", artifactID, err)
-	}
+	refKey := blockKeyOf(t, database, artifactID)
 	nodes, err := graphstore.NodesOfKind(ctx, database.Pool, "block")
 	if err != nil {
 		t.Fatalf("read the block nodes: %v", err)

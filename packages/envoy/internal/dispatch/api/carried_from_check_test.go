@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// c-carried-from (R27 of this issue's spec): a carried approval says that it is carried. A review
+// c-carried-from (R27 of the issue-tree spec): a carried approval says that it is carried. A review
 // Dispatch carries forward to a later version reads kind person with the person as its actor, as
 // the person's own approval does, so the review record (GET /api/v1/artifacts/{id}/reviews), the
 // artifact's approval (GET /api/v1/artifacts/{id}) and the artifact.approved payload carry

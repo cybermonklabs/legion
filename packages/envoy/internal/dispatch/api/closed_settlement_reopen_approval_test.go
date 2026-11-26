@@ -212,17 +212,20 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 // A settlement of a closed issue's document carries no approval (versionWrite.closedIssue), so the
 // reopen carries the approval to a version such a settlement wrote that holds the approved text
 // again, as that version's own write carries it on an open issue (docs.Service.
-// FollowClosedIssueVersions, docs.carryApproval's restore). alice approves the spec at version N,
-// and her browser's edit on the open issue makes version N+1, which her approval does not cover.
+// FollowClosedIssueVersions, docs.carryApproval's restore). alice approves the document at version
+// N, and her browser's edit on the open issue makes version N+1, which her approval does not cover.
 // The issue closes, her browser's edit inside the close margin writes back version N's text, and
 // the settlement on the closed issue writes version N+2 with that text and carries nothing. After
-// the reopen through PATCH the spec reads approved at version N+2, carried from her approval of
-// version N.
+// the reopen through PATCH the document reads approved at version N+2, carried from her approval
+// of version N. The document is one no query covers (uncoveredDocument), which the close's
+// settlement and the reopen's follow as they do the spec (FollowClosedIssueVersions lists every
+// document of the issue): R14 carries a spec's approval across the edit of its prose by the
+// record carry, so a spec's approval never reads stale here.
 func TestAReopenCarriesAnApprovalToTheApprovedTextAClosedSettlementWroteBack(t *testing.T) {
 	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "An approved text written back while closed", "Context\n")
-	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: issue.PrimaryArtifactID}
+	issue := createInteractionIssue(t, handler, "TEST", "An approved text written back while closed", "A spec\n")
+	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: uncoveredDocument(t, handler, issue.Key, "Context\n")}
 	awaitSettled(t, database, f.spec)
 	approved := reviewDocument(t, handler, f.spec, "alice", "approved", "")
 	_, approvedText := documentTexts(t, handler, f.spec)
@@ -596,9 +599,11 @@ func TestAReopenWithNoClosedVersionMovesAndCarriesNothing(t *testing.T) {
 // reopen: the reopen runs the carry only while the newest review approves a version before the
 // latest one (docs.Service.FollowClosedIssueVersions). alice approves the spec at version N, her
 // browser's edit on the open issue makes version N+1, and her undo makes version N+2 with
-// version N's text, whose own write carries her approval to it. The issue closes and reopens
-// through PATCH: the spec still reads approved at version N+2 with the reviews it had, and the
-// reopen appends no artifact.approved, only its own issue.updated.
+// version N's text. The spec's record holds neither edit, so R14 carries her approval to each
+// version, at its write or at the fill of its digest (docs' carryUnmovedEarlier), and the read
+// waits for the fill. The issue closes and reopens through PATCH: the spec still reads approved at
+// version N+2 with the reviews it had, and the reopen appends no artifact.approved, only its own
+// issue.updated.
 func TestAReopenWritesNoSecondReviewForAnApprovalAlreadyCarriedToTheLatestVersion(t *testing.T) {
 	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
@@ -617,10 +622,11 @@ func TestAReopenWritesNoSecondReviewForAnApprovalAlreadyCarriedToTheLatestVersio
 		awaitStoredUpdates(t, database, spec, stored+1)
 		awaitSettledVersionHolding(t, handler, database, spec, edit.settled)
 	}
+	awaitDigestsFilled(t, database, spec)
 	carried := approved.Version + 2
 	if read := readApproval(t, handler, spec); read.Approval == nil || read.Approval.State != "approved" || read.Approval.LatestVersion != carried ||
 		read.Approval.Version == nil || *read.Approval.Version != carried {
-		t.Fatalf("approval after the undo on the open issue = %s, want approved at version %d by its own write's carry", describeApproval(read), carried)
+		t.Fatalf("approval after the undo on the open issue = %s, want approved at version %d by its carry", describeApproval(read), carried)
 	}
 	reviews := artifactReviewCount(t, database, spec)
 
@@ -717,10 +723,10 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 	requireCarriedTo(t, handler, spec, closed, reopened, "after the reopen's settlement")
 }
 
-// closeReopenSpec is the spec of TestOnOneBuildACloseAndAReopenEachWriteOneVersionAndOnlyTheReopensCarries:
+// closeReopenNotes is the notes.md of TestOnOneBuildACloseAndAReopenEachWriteOneVersionAndOnlyTheReopensCarries:
 // a decision a person answers before the close, and one the close withdraws and the reopen
 // restores.
-const closeReopenSpec = "Context\n\n" +
+const closeReopenNotes = "Context\n\n" +
 	":::ask{#answered-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n\n" +
 	":::ask{#withdrawn-decision urgency=\"med\" multiple=\"false\"}\nShip the rest?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
@@ -729,28 +735,32 @@ const closeReopenSpec = "Context\n\n" +
 // commits (docs.WriteIssueAskStates), and the settlement it leaves owed versions that, whose
 // openers then hold what a version keeps of the node's state - the answered decision answered, by
 // its answerer at its time, and the withdrawn one resolved after the close and, open again after
-// the reopen, no state at all - and no answer's words. alice approves the spec with the answered
-// decision in it. The close's version comes from a settlement on the closed issue, which carries
-// no approval (versionWrite.closedIssue), so her approval reads stale at it. The reopen's version
-// holds her approved text again, and its settlement carries her approval to it.
+// the reopen, no state at all - and no answer's words. alice approves the document with the
+// answered decision in it. The close's version comes from a settlement on the closed issue, which
+// carries no approval (versionWrite.closedIssue), so her approval reads stale at it. The reopen's
+// version holds her approved text again, and its settlement carries her approval to it. The asks'
+// blocks stand in a document no query covers (uncoveredDocument), whose ask blocks the close and
+// the reopen write as they do the spec's (WriteIssueAskStates lists every document of the issue):
+// R14's Spec query takes no ask, so the close's version of a spec holding them would carry her
+// approval by the record carry and never read stale.
 func TestOnOneBuildACloseAndAReopenEachWriteOneVersionAndOnlyTheReopensCarries(t *testing.T) {
 	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	ctx := context.Background()
-	issue := createInteractionIssue(t, handler, "TEST", "A close and a reopen on one build", closeReopenSpec)
-	spec := issue.PrimaryArtifactID
+	issue := createInteractionIssue(t, handler, "TEST", "A close and a reopen on one build", "A spec\n")
+	notes := uncoveredDocument(t, handler, issue.Key, closeReopenNotes)
 	settle := func(what string) {
 		t.Helper()
 		if err := documentService.SettleIssueDocuments(ctx, issue.Key); err != nil {
 			t.Fatalf("settle %s: %v", what, err)
 		}
-		awaitSettled(t, database, spec)
+		awaitSettled(t, database, notes)
 	}
-	settle("the spec")
-	awaitIndexedAskBlock(t, handler, spec, "answered-decision", "Ship it?")
-	awaitIndexedAskBlock(t, handler, spec, "withdrawn-decision", "Ship the rest?")
-	answerDecisionBlock(t, handler, requireBlockAsk(t, handler, issue.Key, spec, "answered-decision"), "alice", []string{"Yes"}, "Now it is.", nil)
-	settle("the answered spec")
+	settle("notes.md")
+	awaitIndexedAskBlock(t, handler, notes, "answered-decision", "Ship it?")
+	awaitIndexedAskBlock(t, handler, notes, "withdrawn-decision", "Ship the rest?")
+	answerDecisionBlock(t, handler, requireBlockAsk(t, handler, issue.Key, notes, "answered-decision"), "alice", []string{"Yes"}, "Now it is.", nil)
+	settle("the answered notes.md")
 	const answeredOpener = `#answered-decision urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="`
 	// withdrawn is the withdrawn decision's opener in a version while its ask is in state: an open
 	// ask's opener holds no state (docs.keptAskState).
@@ -762,34 +772,34 @@ func TestOnOneBuildACloseAndAReopenEachWriteOneVersionAndOnlyTheReopensCarries(t
 	}
 	requireVersion := func(what string, number int, state string) {
 		t.Helper()
-		latest := latestVersion(t, database, spec).Number
-		_, markdown := documentTexts(t, handler, spec)
+		latest := latestVersion(t, database, notes).Number
+		_, markdown := documentTexts(t, handler, notes)
 		if latest != number || !strings.Contains(markdown, answeredOpener) || !strings.Contains(markdown, withdrawn(state)) ||
 			strings.Contains(markdown, "selected=") || strings.Contains(markdown, "answer=") {
-			t.Fatalf("%s: the spec is at version %d reading:\n%s\nwant version %d with the answered decision's opener holding its state, answerer and time, the other's holding %s, and no answer's words",
+			t.Fatalf("%s: notes.md is at version %d reading:\n%s\nwant version %d with the answered decision's opener holding its state, answerer and time, the other's holding %s, and no answer's words",
 				what, latest, markdown, number, state)
 		}
-		requireLiveText(t, handler, spec, `#answered-decision state="answered" answered_by="alice"`, `#withdrawn-decision state="`+state+`"`)
+		requireLiveText(t, handler, notes, `#answered-decision state="answered" answered_by="alice"`, `#withdrawn-decision state="`+state+`"`)
 	}
-	approved := latestVersion(t, database, spec).Number
+	approved := latestVersion(t, database, notes).Number
 	requireVersion("before the close", approved, "open")
-	if review := reviewDocument(t, handler, spec, "alice", "approved", ""); review.Version != approved {
+	if review := reviewDocument(t, handler, notes, "alice", "approved", ""); review.Version != approved {
 		t.Fatalf("alice's approval reviews version %d, want %d", review.Version, approved)
 	}
 
 	closeArtifactIssue(t, handler, issue.Key)
-	settle("the closed issue's spec")
+	settle("the closed issue's notes.md")
 	requireVersion("after the close", approved+1, "resolved")
-	if read := readApproval(t, handler, spec); read.Approval == nil || read.Approval.State != "stale" || read.Approval.LatestVersion != approved+1 {
+	if read := readApproval(t, handler, notes); read.Approval == nil || read.Approval.State != "stale" || read.Approval.LatestVersion != approved+1 {
 		t.Fatalf("approval after the closed issue's settlement = %s, want stale at version %d: a settlement on the closed issue carries nothing", describeApproval(read), approved+1)
 	}
 
 	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
 	}
-	settle("the reopened issue's spec")
+	settle("the reopened issue's notes.md")
 	requireVersion("after the reopen", approved+2, "open")
-	read := readApproval(t, handler, spec)
+	read := readApproval(t, handler, notes)
 	carried := read.Approval
 	if carried == nil || carried.State != "approved" || carried.LatestVersion != approved+2 || carried.Version == nil || *carried.Version != approved+2 ||
 		carried.By == nil || carried.By.ID != "alice" || carried.Reason == nil ||

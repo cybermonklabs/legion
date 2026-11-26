@@ -15,12 +15,27 @@ import (
 // keyed_write_guard_test.go's writeStatement, which counts a row lock as no write.
 var xidTakingStatement = regexp.MustCompile(`(?is)\b(insert\s+into|update\s+\S+\s+set|delete\s+from)\b|\bfor\s+(no\s+key\s+)?update\b`)
 
-// requireOneWriteBatch finds, among the committed transactions report saw the request run, the one
-// whose statements append an event, and requires that everything it ran from its first write on
-// is one pipelined batch carrying every statement of writes, then COMMIT: the server ran the
-// write phase back to back, and the client waited on it once. It reads the tracer's statements
-// themselves, not the xid polls, so a write phase too quick for a poll to see is judged all the
-// same.
+// The statements that tell a transaction the request ran after its route's own commit, each written
+// by one place of the server alone: a write whose version moved the record of a query of a
+// converted issue leaves the issue's queries owed, and once it has committed the request fills the
+// record digests its versions owe and drains that mark, each in a transaction of its own and never
+// inside the route's (R7: docs.Service.DrainOwedQueries, docs' fillOwedDigests).
+const (
+	// queryDrainClearsMark is the drain's clear of the mark (docs' queryMarkClearStatement).
+	queryDrainClearsMark = "delete from issue_query_marks"
+	// digestFillRecordsDigest is the fill's record of an owed digest (docs' queueFilledDigest).
+	digestFillRecordsDigest = "update version_renders set record_sha256"
+)
+
+// requireOneWriteBatch finds, among the committed transactions report saw the request run, the
+// route's own: the one whose statements append an event and that is no drain or fill of the
+// issue's queries. It requires that everything that transaction ran from its first write on is one
+// pipelined batch carrying every statement of writes, then COMMIT: the server ran the write phase
+// back to back, and the client waited on it once. A drain or a fill the request ran after that
+// commit, which appends an event of its own (the drain's artifact.version of each query whose
+// record moved), is held to the same shape: one batch and its COMMIT. It reads the tracer's
+// statements themselves, not the xid polls, so a write phase too quick for a poll to see is judged
+// all the same.
 func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...string) {
 	t.Helper()
 	var transactions []storetest.XidTransaction
@@ -28,19 +43,45 @@ func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...s
 		transactions = append(transactions, window.Transaction)
 	}
 	transactions = append(transactions, report.Unsighted...)
-	var appending []storetest.XidTransaction
+	var route, followers []storetest.XidTransaction
 	for _, transaction := range transactions {
-		for _, statement := range transaction.Statements {
-			if strings.Contains(statement.SQL, "insert into events") {
-				appending = append(appending, transaction)
-				break
-			}
+		switch {
+		case !ranStatement(transaction, "insert into events"):
+		case ranStatement(transaction, queryDrainClearsMark), ranStatement(transaction, digestFillRecordsDigest):
+			followers = append(followers, transaction)
+		default:
+			route = append(route, transaction)
 		}
 	}
-	if len(appending) != 1 {
-		t.Fatalf("the request committed %d transactions appending an event, want 1", len(appending))
+	if len(route) != 1 {
+		var listings strings.Builder
+		for _, transaction := range route {
+			listings.WriteString("\n transaction:")
+			listings.WriteString(statementListing(transaction.Statements, -1))
+		}
+		t.Fatalf("the request committed %d transactions appending an event that drain and fill no query, want the route's one:%s", len(route), listings.String())
 	}
-	statements := appending[0].Statements
+	requireBatchedWritePhase(t, "the route's transaction", route[0], writes...)
+	for _, follower := range followers {
+		requireBatchedWritePhase(t, "a drain or a fill of the issue's queries", follower)
+	}
+}
+
+// ranStatement reports whether transaction ran a statement holding sql.
+func ranStatement(transaction storetest.XidTransaction, sql string) bool {
+	for _, statement := range transaction.Statements {
+		if strings.Contains(statement.SQL, sql) {
+			return true
+		}
+	}
+	return false
+}
+
+// requireBatchedWritePhase fails unless everything transaction, named what, ran from its first
+// write on is one batch carrying every statement of writes, then COMMIT.
+func requireBatchedWritePhase(t *testing.T, what string, transaction storetest.XidTransaction, writes ...string) {
+	t.Helper()
+	statements := transaction.Statements
 	first := -1
 	for index, statement := range statements {
 		if xidTakingStatement.MatchString(statement.SQL) {
@@ -48,6 +89,24 @@ func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...s
 			break
 		}
 	}
+	listing := statementListing(statements, first)
+	if first < 0 {
+		t.Fatalf("%s appended an event and ran no write:%s", what, listing)
+	}
+	phase := statements[first:]
+	if len(phase) != 2 || !strings.EqualFold(strings.TrimSpace(phase[1].SQL), "commit") {
+		t.Fatalf("%s ran %d round trips in its write phase, with its COMMIT, want one batch and the COMMIT:%s", what, len(phase), listing)
+	}
+	batch := phase[0].SQL
+	for _, write := range writes {
+		if !strings.Contains(batch, write) {
+			t.Errorf("the write phase's batch of %s carries no %q:%s", what, write, listing)
+		}
+	}
+}
+
+// statementListing lists statements one a line, each cut at 160 bytes, the one at first marked.
+func statementListing(statements []storetest.XidStatement, first int) string {
 	var listing strings.Builder
 	for index, statement := range statements {
 		listing.WriteString("\n  ")
@@ -60,19 +119,7 @@ func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...s
 		}
 		listing.WriteString(sql)
 	}
-	if first < 0 {
-		t.Fatalf("the event's transaction ran no write:%s", listing.String())
-	}
-	phase := statements[first:]
-	if len(phase) != 2 || !strings.EqualFold(strings.TrimSpace(phase[1].SQL), "commit") {
-		t.Fatalf("the write phase ran %d round trips before and with its COMMIT, want one batch and the COMMIT:%s", len(phase), listing.String())
-	}
-	batch := phase[0].SQL
-	for _, write := range writes {
-		if !strings.Contains(batch, write) {
-			t.Errorf("the write phase's batch carries no %q:%s", write, listing.String())
-		}
-	}
+	return listing.String()
 }
 
 // A write's write phase is one pipelined batch: from its first write to its COMMIT the transaction
@@ -81,7 +128,11 @@ func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...s
 // never for the time this process takes to be scheduled between two statements. A route joined to
 // a document ledger (an anchored comment, an accepted suggestion, whose document operations queue
 // their writes beside the route's) and a route that writes without one (a message, whose insert,
-// references, event and stamp run as a batch of their own) are both held to it.
+// references, event and stamp run as a batch of their own) are both held to it. A route whose
+// write moves a query's record - the accept's version of the spec runs the room's pass, which marks
+// the issue's queries owed (docs' markRoomQueries) - drains them in a transaction of its own after
+// its COMMIT (R7), which appends the artifact.version of each query version it writes: such a
+// transaction is no route's own, and it is held to one batch and its COMMIT as well.
 func TestWritePhaseSendsItsStatementsAsOneBatch(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f := newXidFixture(t, testServerOptions{}, "")

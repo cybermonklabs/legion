@@ -43,12 +43,16 @@ func (s *server) readUncutIssueTree(ctx context.Context, who model.Actor, key, v
 	if err := refs.TurnJITOff(ctx, tx); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
+	// Each builder reads as the route's does (readIssueTree, build): under the deployment the read
+	// is served from, whose dashboard URLs each excerpt is cut around, and, at a version, with the
+	// blocks a later write deleted from the cut (readHistoricalBlocks).
 	pageSize := cmp.Or(s.deps.IssueTreePageSize, issueTreePageSize)
-	whole := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, pageSize: pageSize}
+	whole := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, pageSize: pageSize, serverURL: s.deps.ServerURL, atVersion: version != 0}
 	if err := whole.readWholeTree(version); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
-	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, kinds: kinds, before: before, pageSize: pageSize}
+	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, kinds: kinds, before: before, pageSize: pageSize,
+		serverURL: s.deps.ServerURL, atVersion: version != 0}
 	builder.takeReadsOf(whole)
 	if err := builder.applySkeleton(version, cursor); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err

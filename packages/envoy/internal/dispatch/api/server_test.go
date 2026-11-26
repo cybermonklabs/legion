@@ -660,16 +660,22 @@ func databaseFingerprint(t *testing.T, database *store.Store) map[string]string 
 	}
 	fingerprint := make(map[string]string, len(tables))
 	for _, table := range tables {
-		var digest string
-		if err := database.Pool.QueryRow(ctx, fmt.Sprintf(
-			`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
-			pgx.Identifier{table}.Sanitize(),
-		)).Scan(&digest); err != nil {
-			t.Fatalf("fingerprint %s: %v", table, err)
-		}
-		fingerprint[table] = digest
+		fingerprint[table] = tableFingerprint(t, database, table)
 	}
 	return fingerprint
+}
+
+// tableFingerprint hashes every row of table: its row count and the md5 of its rows in order.
+func tableFingerprint(t *testing.T, database *store.Store, table string) string {
+	t.Helper()
+	var digest string
+	if err := database.Pool.QueryRow(context.Background(), fmt.Sprintf(
+		`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
+		pgx.Identifier{table}.Sanitize(),
+	)).Scan(&digest); err != nil {
+		t.Fatalf("fingerprint %s: %v", table, err)
+	}
+	return digest
 }
 
 // assertUnchanged fails for each table whose rows differ between two fingerprints of one database.

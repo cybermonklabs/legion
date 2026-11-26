@@ -274,6 +274,57 @@ func TestTheTreeReadAnswersARunThatChangedANodeOnceAsItsAuthorsContext(t *testin
 	}
 }
 
+// TestTheTreeReadAnswersARunsWholeQuestion: alice asks the command bar a question of 296
+// characters, longer than the 240 runes an edge's excerpt of a run holds (refs' excerptRunes), and
+// writes a comment under that run. Her tree read answers the run's interaction node with the
+// question whole as its text, as a read of the run's own address answers it (spec requirement
+// r-interaction: an edge's excerpt alone cuts a run's words), while the comment's changed_by_run
+// edge in GET /api/v1/references still shows the head of the question, cut. Else it prints
+// `alice's tree read answers the run's text <text>, want its whole question <words>`.
+func TestTheTreeReadAnswersARunsWholeQuestion(t *testing.T) {
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	issue := createTestIssue(t, handler, "TRUNW", "The issue a long question comments on")
+	const words = "Which plan holds the rollback step, and which of its checks proves that the rollback leaves every document of the issue " +
+		"as its last approved version stood, with each requirement's checks counted again, each result recorded against the words its " +
+		"check held then, and no comment of the thread lost?"
+	run, err := directServer(deps).recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "", words)
+	if err != nil {
+		t.Fatalf("record alice's run: %v", err)
+	}
+	runWindowAhead(t, database, run.ID)
+	written := requestForRun(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		map[string]any{"body": "The rollback step is in the plan."}, "alice", run.ID)
+	if written.Code != http.StatusCreated {
+		t.Fatalf("write the comment under the run: status=%d body=%s", written.Code, written.Body.String())
+	}
+	comment := decodeBody[writtenRecord](t, written).ID
+
+	// The edge at the run, which every read of references shows, cuts the question: this case
+	// proves nothing where it does not.
+	references := dispatchRequest(t, handler, http.MethodGet,
+		"/api/v1/references?from="+url.QueryEscape("dispatch://"+issue+"/comment/"+comment), nil, "alice")
+	if references.Code != http.StatusOK {
+		t.Fatalf("read the comment's references: status=%d body=%s", references.Code, references.Body.String())
+	}
+	var excerpt string
+	for _, edge := range decodeBody[model.GraphReferences](t, references).Edges {
+		if edge.Kind == graphstore.TupleChangedByRun && edge.Node.Kind == graphstore.KindInteraction && edge.Excerpt != nil {
+			excerpt = edge.Excerpt.Text
+		}
+	}
+	if excerpt == "" || excerpt == words || !strings.HasPrefix(words, excerpt) {
+		t.Fatalf("the comment's changed_by_run edge shows the run's excerpt %q, want the head of its question, cut short of its %d characters: this case proves nothing",
+			excerpt, len(words))
+	}
+
+	alice := treeRead(t, handler, issue, "", "alice", false)
+	interaction, _ := alice.node(t, graphstore.KindInteraction, run.ID)
+	if interaction.Role != treeRoleContext || interaction.Text != words {
+		t.Errorf("alice's tree read answers the run's text %q as %q, want its whole question %q as context", interaction.Text, interaction.Role, words)
+	}
+}
+
 // TestTheTreeReadAnswersTheCatalogueNodesItsTuplesNameAsContext: a pre-mortem lens on a requirement
 // and the requirement's constrained_by to a constraint of the catalogue. The tree read with no view
 // answers the lens as a node of the tree and, as context, the pre-mortem lens_kind and that
@@ -515,12 +566,12 @@ func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.
 }
 
 // resultsFixture is an issue whose spec holds r1 and whose Verification document holds c1 serving
-// it, and the path of that document's upload.
+// it, and the slug of that document.
 func resultsFixture(t *testing.T, handler http.Handler, project string) (issue string, checks string) {
 	t.Helper()
 	created := createInteractionIssue(t, handler, project, "Results", ":::requirement{#r1}\nThe list comes first.\n:::\n")
-	uploadDocument(t, handler, "/api/v1/issues/"+created.Key, "verification.md", checkServing("c1", "dispatch://"+created.Key+"/spec#b-r1"))
-	return created.Key, "verification-md"
+	uploaded := uploadDocument(t, handler, "/api/v1/issues/"+created.Key, "verification.md", checkServing("c1", "dispatch://"+created.Key+"/spec#b-r1"))
+	return created.Key, uploaded.Artifact.Slug
 }
 
 // TestTheTreeReadAnswersAResultsObservedTextAsItsReading: a result whose observed text holds a link

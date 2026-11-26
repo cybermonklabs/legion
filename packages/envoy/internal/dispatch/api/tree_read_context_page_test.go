@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -48,11 +47,7 @@ func treePages(t *testing.T, handler http.Handler, key, query, login string) ([]
 		if read.Cursor == nil {
 			return pages, sizes
 		}
-		separator := "?"
-		if query != "" {
-			separator = "&"
-		}
-		target = query + separator + "cursor=" + url.QueryEscape(*read.Cursor)
+		target = treeCursorTarget(query, *read.Cursor)
 	}
 	t.Fatalf("the tree of %s%s still answers a cursor after 20 pages", key, query)
 	return nil, nil

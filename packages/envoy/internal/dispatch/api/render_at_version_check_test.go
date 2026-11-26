@@ -3,12 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
@@ -112,13 +108,6 @@ func renderAtVersionNewest(t *testing.T, database *store.Store, artifactID strin
 		t.Fatalf("read the newest version of %s: %v", artifactID, err)
 	}
 	return newest
-}
-
-// renderAtVersionDigest is the sha256 of markdown, as artifact_version_text_sha256 takes it of a
-// version's stored markdown.
-func renderAtVersionDigest(markdown string) string {
-	sum := sha256.Sum256([]byte(markdown))
-	return hex.EncodeToString(sum[:])
 }
 
 // renderAtVersionFirstDifference is the first byte at which a and b differ, the length of the
@@ -227,10 +216,7 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 		{"the project document runbook.md of " + project, runbook.Artifact.ID},
 		{"the tree artifact of " + issue.Key, tree},
 	} {
-		var refKey string
-		if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, document.id).Scan(&refKey); err != nil {
-			t.Fatalf("read the ref_key of %s: %v", document.what, err)
-		}
+		refKey := refKeyOf(t, database, document.id)
 		address := graphstore.VersionID(refKey, 1)
 		stored := renderAtVersionStored(t, database, document.id, 1)
 		if document.id == notes.Artifact.ID {
@@ -244,7 +230,7 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 		var answered *string
 		if err := database.Pool.QueryRow(ctx, `select artifact_version_text_sha256($1::uuid, 1)`, document.id).Scan(&answered); err != nil {
 			t.Errorf("read artifact_version_text_sha256 of %s: %v", address, err)
-		} else if want := renderAtVersionDigest(stored); answered == nil || *answered != want {
+		} else if want := contentHash(stored); answered == nil || *answered != want {
 			got := "null"
 			if answered != nil {
 				got = *answered
@@ -262,7 +248,7 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 	}
 
 	approval := reviewDocument(t, handler, notes.Artifact.ID, "alice", "approved", "")
-	want := renderAtVersionDigest(notesStored)
+	want := contentHash(notesStored)
 	switch {
 	case approval.Version != 1:
 		t.Errorf("alice's approval of %s is of version %d, want version 1", notesRef, approval.Version)
@@ -362,34 +348,6 @@ func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store,
 	return stored, row
 }
 
-// renderAtVersionPlacement is the current part_of of the block node address and its placement_seq
-// as the If-Match tag of a move of it, failing t where it stands under no one parent.
-func renderAtVersionPlacement(t *testing.T, database *store.Store, address string) (graphstore.Tuple, string) {
-	t.Helper()
-	held, err := graphstore.CurrentOut(context.Background(), database.Pool, refs.BlockNodeKind, address, []string{graphstore.TuplePartOf})
-	if err != nil || len(held) != 1 {
-		t.Fatalf("the block %s stands under %v (%v), want one parent", address, held, err)
-	}
-	return held[0], `"` + strconv.FormatInt(held[0].Seq, 10) + `"`
-}
-
-// renderAtVersionMove sends PATCH /api/v1/issues/{key}/nodes/{id} as alice, moving the node at id
-// under parent, with If-Match tag.
-func renderAtVersionMove(t *testing.T, handler http.Handler, key, id, tag, parent string) *httptest.ResponseRecorder {
-	t.Helper()
-	data, err := json.Marshal(map[string]any{"parent": parent})
-	if err != nil {
-		t.Fatalf("encode the move of %s: %v", id, err)
-	}
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+key+"/nodes/"+url.PathEscape(id), bytes.NewReader(data))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", "alice")
-	request.Header.Set("If-Match", tag)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
-}
-
 // TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow is c-render-at-version's case of the
 // decisions query (R15, R7). It creates, through POST /api/v1/issues, an issue born converted whose
 // spec holds a criterion, an ask and two decisions, in that order, the first decision citing a
@@ -448,11 +406,11 @@ func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 	// its answer.
 	spec := readDecisionDocument(t, database, key, "spec")
 	decision, criterion := spec.address("d2"), spec.address("k1")
-	_, tag := renderAtVersionPlacement(t, database, decision)
-	if moved := renderAtVersionMove(t, handler, key, decision, tag, criterion); moved.Code != http.StatusOK {
+	_, tag := placementOf(t, database, refs.BlockNodeKind, decision)
+	if moved := patchNode(t, handler, key, decision, tag, map[string]any{"parent": criterion}, "alice"); moved.Code != http.StatusOK {
 		t.Fatalf("the move of %s under %s answered %d %s, want 200", decision, criterion, moved.Code, moved.Body.String())
 	}
-	if placed, _ := renderAtVersionPlacement(t, database, decision); placed.ToID != criterion {
+	if placed, _ := placementOf(t, database, refs.BlockNodeKind, decision); placed.ToID != criterion {
 		t.Fatalf("the move of %s under %s left it under %s %s", decision, criterion, placed.ToKind, placed.ToID)
 	}
 	renderAtVersionQuiet(t, database, key, issue.PrimaryArtifactID)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,8 +26,8 @@ import (
 // through graphstore.PlanUncaused and its node write (graphstore.QueueNodes), with a part_of from
 // each of the three to the issue's node and from the lens to the step, and appends those tuples
 // under the event that created the issue (graphstore.Caused), as the store holds the records once
-// the workflow store moves into it. It
-// reads, in graph_tuples, the standing part_of from each of the three to the issue's node, so the
+// the workflow store moves into it. It reads, in graph_tuples, the standing part_of from each of
+// the three to the issue's node (graphstore.CurrentOut), so the
 // case proves the walk's rule and not a write that did not land. Neither the walk of the issue's
 // tree nor the tree read with no view answers the step, the plan, the handoff or the lens under
 // the step, or a tuple that names one, and both answer the requirement.
@@ -86,15 +87,13 @@ func TestTheTreeWalkLeavesOutTheWorkflowsRecords(t *testing.T) {
 	}
 
 	for _, record := range nodes[:len(kinds)] {
-		var standing bool
-		if err := database.Pool.QueryRow(ctx, `
-			select coalesce((select t.asserted from graph_tuples t
-			                 where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = $4 and t.to_id = $5
-			                 order by t.seq desc limit 1), false)`,
-			record.Kind, record.ID, graphstore.TuplePartOf, graphstore.KindIssue, issue.Key).Scan(&standing); err != nil {
+		held, err := graphstore.CurrentOut(ctx, database.Pool, record.Kind, record.ID, []string{graphstore.TuplePartOf})
+		if err != nil {
 			t.Fatalf("read the part_of of the %s node %s: %v", record.Kind, record.ID, err)
 		}
-		if !standing {
+		if !slices.ContainsFunc(held, func(tuple graphstore.Tuple) bool {
+			return tuple.ToKind == graphstore.KindIssue && tuple.ToID == issue.Key
+		}) {
 			t.Fatalf("the store holds no part_of from the %s node to %s", record.Kind, issue.Key)
 		}
 	}

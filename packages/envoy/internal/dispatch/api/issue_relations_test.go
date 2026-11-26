@@ -21,16 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// readRelationsIssue reads key through the issue read.
-func readRelationsIssue(t *testing.T, handler http.Handler, key string) model.Issue {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
-	}
-	return decodeBody[model.Issue](t, response)
-}
-
 // currentRelations is every relation of kind the node of issue key states now, by far end.
 func currentRelations(t *testing.T, database *store.Store, key, kind string) []graphstore.Tuple {
 	t.Helper()
@@ -69,7 +59,7 @@ func requireRelationRefused(t *testing.T, what string, response *httptest.Respon
 	return refusal
 }
 
-// issueLinkRow reads the issue_links row of the pair: whether it stands, and the node it names.
+// issueLinkMarker reads the issue_links row of the pair: whether it stands, and the node it names.
 func issueLinkMarker(t *testing.T, database *store.Store, issue, target string) (bool, string) {
 	t.Helper()
 	var kind *string
@@ -106,7 +96,7 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 	if taken.Code != http.StatusOK {
 		t.Fatalf("a needs to another project's issue through the agent bearer: status=%d body=%s", taken.Code, taken.Body.String())
 	}
-	issue := readRelationsIssue(t, handler, core[0])
+	issue := readTestIssue(t, handler, core[0])
 	if !slices.Equal(issue.Needs, []string{other[0]}) || !slices.Equal(issue.BlockedBy, []string{other[0]}) {
 		t.Errorf("%s reads needs %v and blocked_by %v, want both [%s]", core[0], issue.Needs, issue.BlockedBy, other[0])
 	}
@@ -152,7 +142,7 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 		"needs": []string{core[3]}, "blocked_by": []string{core[1]},
 	}, "alice")
 	requireRelationRefused(t, "needs and blocked_by with different targets", differ, http.StatusBadRequest, codeNeedsInput, "needs", "blocked_by")
-	if got := readRelationsIssue(t, handler, core[0]).Needs; !slices.Equal(got, []string{core[1], core[2]}) {
+	if got := readTestIssue(t, handler, core[0]).Needs; !slices.Equal(got, []string{core[1], core[2]}) {
 		t.Errorf("the refused request left needs %v, want [%s %s]", got, core[1], core[2])
 	}
 
@@ -223,17 +213,17 @@ func TestAnIssueRelationAndItsProjectionCommitTogether(t *testing.T) {
 		t.Fatalf("create the child: status=%d body=%s", created.Code, created.Body.String())
 	}
 	child := decodeBody[model.Issue](t, created).Key
-	eventOf := func(eventType string) int64 {
+	eventOf := func(key, eventType string) int64 {
 		t.Helper()
 		var id int64
 		if err := database.Pool.QueryRow(ctx, `
 			select id from events where issue_key = $1 and type = $2 order by id desc limit 1
-		`, child, eventType).Scan(&id); err != nil {
-			t.Fatalf("read %s's newest %s: %v", child, eventType, err)
+		`, key, eventType).Scan(&id); err != nil {
+			t.Fatalf("read %s's newest %s: %v", key, eventType, err)
 		}
 		return id
 	}
-	createdEvent := eventOf("issue.created")
+	createdEvent := eventOf(child, "issue.created")
 	var issueCreated time.Time
 	var issueMarker *string
 	if err := database.Pool.QueryRow(ctx, `select created_at, node_kind from issues where key = $1`, child).Scan(&issueCreated, &issueMarker); err != nil {
@@ -266,7 +256,7 @@ func TestAnIssueRelationAndItsProjectionCommitTogether(t *testing.T) {
 	if moved.Code != http.StatusOK {
 		t.Fatalf("move the wait: status=%d body=%s", moved.Code, moved.Body.String())
 	}
-	updated := eventOf("issue.updated")
+	updated := eventOf(child, "issue.updated")
 	needs = currentRelations(t, database, child, graphstore.TupleNeeds)
 	if got := relationEnds(needs); !slices.Equal(got, []string{"issue:" + second, "issue:" + old}) && !slices.Equal(got, []string{"issue:" + old, "issue:" + second}) {
 		t.Fatalf("%s states needs %v after the move, want %s and %s", child, got, second, old)
@@ -360,12 +350,7 @@ func TestAnIssueRelationAndItsProjectionCommitTogether(t *testing.T) {
 	if unstampedMarker == nil || *unstampedMarker != graphstore.KindIssue || unstampedAddress == nil || *unstampedAddress != unstamped {
 		t.Errorf("after the PATCH stating its wait %s's row names node %v/%v, want %s/%s", unstamped, unstampedMarker, unstampedAddress, graphstore.KindIssue, unstamped)
 	}
-	var stampedBy int64
-	if err := database.Pool.QueryRow(ctx, `
-		select id from events where issue_key = $1 and type = 'issue.updated' order by id desc limit 1
-	`, unstamped).Scan(&stampedBy); err != nil {
-		t.Fatalf("read %s's issue.updated: %v", unstamped, err)
-	}
+	stampedBy := eventOf(unstamped, "issue.updated")
 	if held := currentRelations(t, database, unstamped, graphstore.TupleChildOf); len(held) != 1 || held[0].ToID != parent ||
 		!held[0].At.Equal(unstampedCreated) || held[0].SourceEvent != stampedBy {
 		t.Errorf("after the PATCH stating its wait %s states child_of %+v, want one tuple to %s at the row's created_at %s caused by issue.updated %d",
@@ -422,7 +407,7 @@ func TestDuplicateOfTakesAnIssueOfTheProjectAlone(t *testing.T) {
 	if repeat.DuplicateOf == nil || *repeat.DuplicateOf != core[0] {
 		t.Errorf("the create answers duplicate_of %v, want %s", repeat.DuplicateOf, core[0])
 	}
-	if got := readRelationsIssue(t, handler, repeat.Key).DuplicateOf; got == nil || *got != core[0] {
+	if got := readTestIssue(t, handler, repeat.Key).DuplicateOf; got == nil || *got != core[0] {
 		t.Errorf("the read answers duplicate_of %v, want %s", got, core[0])
 	}
 	if got := relationEnds(currentRelations(t, database, repeat.Key, graphstore.TupleDuplicateOf)); !slices.Equal(got, []string{"issue:" + core[0]}) {
@@ -435,7 +420,7 @@ func TestDuplicateOfTakesAnIssueOfTheProjectAlone(t *testing.T) {
 	} {
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+repeat.Key, map[string]any{"duplicate_of": refused.value}, "alice")
 		requireRelationRefused(t, refused.what, response, http.StatusBadRequest, codeDuplicateOfInput, "duplicate_of", refused.value)
-		if got := readRelationsIssue(t, handler, repeat.Key).DuplicateOf; got == nil || *got != core[0] {
+		if got := readTestIssue(t, handler, repeat.Key).DuplicateOf; got == nil || *got != core[0] {
 			t.Errorf("after %s the issue answers duplicate_of %v, want %s", refused.what, got, core[0])
 		}
 	}
@@ -448,7 +433,7 @@ func TestDuplicateOfTakesAnIssueOfTheProjectAlone(t *testing.T) {
 	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+repeat.Key, map[string]any{"duplicate_of": nil}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("clear duplicate_of: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if got := readRelationsIssue(t, handler, repeat.Key).DuplicateOf; got != nil {
+	if got := readTestIssue(t, handler, repeat.Key).DuplicateOf; got != nil {
 		t.Errorf("after the clear the issue answers duplicate_of %s, want null", *got)
 	}
 	if got := currentRelations(t, database, repeat.Key, graphstore.TupleDuplicateOf); len(got) != 0 {
@@ -518,7 +503,7 @@ func TestFiledFromTakesAPublicItemOfTheIssuesProjectAlone(t *testing.T) {
 		if got := decodeBody[model.Issue](t, response).FiledFrom; got == nil || *got != take.ref {
 			t.Errorf("the PATCH taking %s answers filed_from %v, want %s", take.what, got, take.ref)
 		}
-		if got := readRelationsIssue(t, handler, key).FiledFrom; got == nil || *got != take.ref {
+		if got := readTestIssue(t, handler, key).FiledFrom; got == nil || *got != take.ref {
 			t.Errorf("after %s the read answers filed_from %v, want %s", take.what, got, take.ref)
 		}
 		if got := relationEnds(currentRelations(t, database, key, graphstore.TupleFiledFrom)); !slices.Equal(got, []string{take.kind + ":" + take.id}) {
@@ -543,7 +528,7 @@ func TestFiledFromTakesAPublicItemOfTheIssuesProjectAlone(t *testing.T) {
 		if refused.says != "" && !strings.Contains(answer.Error, refused.says) {
 			t.Errorf("%s is refused %q, want the one text %q an item the caller may not see is refused with", refused.what, answer.Error, refused.says)
 		}
-		if got := readRelationsIssue(t, handler, key).FiledFrom; got == nil || *got != held {
+		if got := readTestIssue(t, handler, key).FiledFrom; got == nil || *got != held {
 			t.Errorf("after %s the issue answers filed_from %v, want %s", refused.what, got, held)
 		}
 	}

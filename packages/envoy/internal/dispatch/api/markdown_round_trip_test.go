@@ -17,8 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -862,6 +865,16 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersTheRenderingOfAnElementThisBu
 	}
 	t.Cleanup(restore)
 	handler, database, broken := newBrokenTestServer(t)
+	// The build that introduces staged ships the type migration that writes its supertag node, as
+	// every type of the installed schema is a node of the store (R26 of the issue-tree spec), and the
+	// store takes no node of a type it holds no supertag node of (graphstore.ErrSupertagNotHeld): the
+	// test seeds that node as the migration would, so the replacement that respells the block can
+	// write its node.
+	if err := pgx.BeginFunc(context.Background(), database.Pool, func(tx pgx.Tx) error {
+		return graphseedtest.SeedSupertags(context.Background(), tx, "staged")
+	}); err != nil {
+		t.Fatalf("seed the type staged the staged schema declares: %v", err)
+	}
 	issue := createArtifactIssue(t, handler)
 	const kept = "before\n\n:::staged{#staged-1}\nBody.\n:::\n"
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "staged.md", "before\n")

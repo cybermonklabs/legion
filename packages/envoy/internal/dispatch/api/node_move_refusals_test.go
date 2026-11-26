@@ -17,7 +17,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,15 +54,7 @@ func (r *moveRig) quiet(t *testing.T) {
 // each `<kind>/<id>` as the store keys it, joined by commas: "" for a node that stands under none.
 func (r *moveRig) partOf(t *testing.T, address string) string {
 	t.Helper()
-	held, err := graphstore.CurrentOut(context.Background(), r.database.Pool, refsKindOf(address), storeIDOf(address), []string{graphstore.TuplePartOf})
-	if err != nil {
-		t.Fatalf("read the part_of of %s: %v", address, err)
-	}
-	ends := make([]string, len(held))
-	for index, tuple := range held {
-		ends[index] = tuple.ToKind + "/" + tuple.ToID
-	}
-	return strings.Join(ends, ",")
+	return strings.Join(farEnds(t, r.database, refsKindOf(address), storeIDOf(address), graphstore.TuplePartOf), ",")
 }
 
 // tag is the If-Match a move of the node at the store address address names: its placement_seq as
@@ -437,13 +428,7 @@ func TestTheMoveHoldsR28sWriterCheck(t *testing.T) {
 	move := func(as nodeWriterAs, address, parent string) *httptest.ResponseRecorder {
 		t.Helper()
 		_, tag := placementOf(t, rig.database, "block", address)
-		actor := map[string]any{"kind": "session", "id": as.session}
-		bearer := "agent-token"
-		if as.token != "" {
-			actor["id"], bearer = "ses-acting-for-alice", as.token
-		}
-		return serveNodeRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/"+rig.issue+"/nodes/"+url.PathEscape(address),
-			map[string]any{"parent": parent, "actor": actor}, http.Header{"Authorization": {"Bearer " + bearer}, "If-Match": {tag}})
+		return patchNodeAs(rig.caller(t, as), rig.issue, address, tag, map[string]any{"parent": parent})
 	}
 	before := rig.counts(t)
 	refused := move(rig.worker, c2, r1)

@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -242,13 +241,7 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	// whose settlement writes the fragment's rendering as a version 3 wherever it differs from the
 	// latest version, so the count would read the room's text and not version 2's.
 	ctx := context.Background()
-	var held string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day') returning instance::text`,
-		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()).Scan(&held); err != nil {
-		t.Fatalf("add a live server process of the release before: %v", err)
-	}
+	held := holdIssuesUnconverted(t, database)
 	stale := createInteractionIssue(t, handler, "FOURTH", "Stale", "- [ ] one\n")
 	if _, err := database.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, held); err != nil {
 		t.Fatalf("take back the process of the release before: %v", err)

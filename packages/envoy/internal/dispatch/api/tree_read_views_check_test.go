@@ -16,23 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// treeReadViewsSpecQuery is the id of the artifact row of the spec query node of the issue key:
-// the row whose ref_key is a node of kind artifact and supertag query whose query is spec, the
-// node the tree read reads a version of `?view=spec` from.
-func treeReadViewsSpecQuery(t *testing.T, database *store.Store, key string) string {
-	t.Helper()
-	var id string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select a.id::text
-		from artifacts a
-		join graph_nodes n on n.kind = $2 and n.id = a.ref_key and n.supertag = $3 and n.attributes->>$4 = $5
-		where a.issue_key = $1`,
-		key, graphstore.KindArtifact, graphstore.SupertagQuery, graphstore.AttributeQuery, graphstore.QuerySpec).Scan(&id); err != nil {
-		t.Fatalf("read the spec query node of %s: %v", key, err)
-	}
-	return id
-}
-
 // treeReadViewsRecorded is how many version_renders rows of version number of the artifact id
 // hold a read_seq: the record of the store revision that version read.
 func treeReadViewsRecorded(t *testing.T, database *store.Store, id string, number int) int {
@@ -48,9 +31,10 @@ func treeReadViewsRecorded(t *testing.T, database *store.Store, id string, numbe
 // TestAQueryVersionWithNoRecordedRevisionAnswersNotRecorded is c-tree-read-views' proof that a
 // version of a query that holds no recorded revision answers apart from a version the query does
 // not have (R8). On a server whose settlement waits an hour and which starts no block-index
-// reconciliation, an issue is born converted with a spec of a list of 2,000 items and one
-// requirement, so the create defers the spec's index and version 1 of the spec query node holds no
-// read_seq. `?view=spec&v=1` answers 404 QUERY_VERSION_NOT_RECORDED naming version 1. A version 2
+// reconciliation, an issue is born converted with a spec of a list of 1,000 items, 2,001 blocks
+// (itemsOverTheBlockBound), and one requirement, so the create defers the spec's index and version
+// 1 of the spec query node holds no read_seq. `?view=spec&v=1` answers 404
+// QUERY_VERSION_NOT_RECORDED naming version 1. A version 2
 // of the same node, written by SQL with no version_renders row as a process of the release before
 // writes a version, answers the same refusal naming version 2. `&v=99`, a version the node does not
 // have, answers 404 QUERY_VERSION_NOT_FOUND.
@@ -63,7 +47,7 @@ func TestAQueryVersionWithNoRecordedRevisionAnswersNotRecorded(t *testing.T) {
 	if indexed := blockIndexVersion(t, database, issue.PrimaryArtifactID); indexed != nil {
 		t.Fatalf("the create of %s indexed its spec's blocks in its own request at version %d, so no index was deferred: this case proves nothing", issue.Key, *indexed)
 	}
-	query := treeReadViewsSpecQuery(t, database, issue.Key)
+	query := queryArtifactOf(t, database, issue.Key, graphstore.QuerySpec)
 	if recorded := treeReadViewsRecorded(t, database, query, 1); recorded != 0 {
 		t.Fatalf("version 1 of the spec query of %s holds %d records of the store revision it read, want none: this case proves nothing", issue.Key, recorded)
 	}

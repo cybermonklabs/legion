@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -702,15 +703,30 @@ func TestAnchorsCaptureAnUnnamedVersionWhenLiveTextChanged(t *testing.T) {
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	var log []struct {
-		Type   string `json:"type"`
-		Notify bool   `json:"notify"`
+		Type    string `json:"type"`
+		Notify  bool   `json:"notify"`
+		Payload struct {
+			ArtifactID string `json:"artifact_id"`
+		} `json:"payload"`
 	}
 
 	if err := json.NewDecoder(events.Body).Decode(&log); err != nil {
 		t.Fatalf("decode dirty document events: %v", err)
 	}
-	if len(log) != 3 || log[1].Type != "artifact.version" || log[1].Notify || log[2].Type != "ask.opened" || !log[2].Notify {
-		t.Fatalf("dirty document events = %#v; want non-notifying unnamed artifact.version before notifying ask.opened", log)
+	// The ask is a node the issue's Decisions query takes, so it moves that query's record, and R14
+	// has a write that moves a query's record append a version of the query's document: the ask's
+	// write marks the issue's queries owed, and the drain it runs once it has committed writes that
+	// version, with its own non-notifying artifact.version, after the ask's ask.opened
+	// (docs.Service.DrainOwedQueries).
+	var decisions string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select a.id::text from artifacts a where a.issue_key = $1 and `+refs.DecisionsQuerySQL("a"), issue.Key).Scan(&decisions); err != nil {
+		t.Fatalf("read the decisions query of %s, which an issue born converted holds: %v", issue.Key, err)
+	}
+	if len(log) != 4 || log[1].Type != "artifact.version" || log[1].Notify || log[1].Payload.ArtifactID != issue.PrimaryArtifactID ||
+		log[2].Type != "ask.opened" || !log[2].Notify ||
+		log[3].Type != "artifact.version" || log[3].Notify || log[3].Payload.ArtifactID != decisions {
+		t.Fatalf("dirty document events = %#v; want the spec's non-notifying unnamed artifact.version before notifying ask.opened, then the non-notifying artifact.version of the decisions query %s", log, decisions)
 	}
 }
 
@@ -870,13 +886,21 @@ func TestAnchorsKeepCleanDocumentAtExistingVersion(t *testing.T) {
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	var cleanLog []struct {
-		Type string `json:"type"`
+		Type    string `json:"type"`
+		Payload struct {
+			ArtifactID string `json:"artifact_id"`
+		} `json:"payload"`
 	}
 	if err := json.NewDecoder(events.Body).Decode(&cleanLog); err != nil {
 		t.Fatalf("decode clean document events: %v", err)
 	}
-	if len(cleanLog) != 2 || cleanLog[0].Type != "issue.created" || cleanLog[1].Type != "ask.opened" {
-		t.Fatalf("clean document events = %#v; want issue.created then ask.opened", cleanLog)
+	// The anchor writes no version of the clean spec. The ask itself is a node the issue's
+	// Decisions query takes, so its create marks the issue's queries owed and its drain writes a
+	// version of the decisions query once the create has committed (R14): that version's
+	// artifact.version follows the ask.opened, and it is no version of the spec.
+	if len(cleanLog) != 3 || cleanLog[0].Type != "issue.created" || cleanLog[1].Type != "ask.opened" ||
+		cleanLog[2].Type != "artifact.version" || cleanLog[2].Payload.ArtifactID == issue.PrimaryArtifactID {
+		t.Fatalf("clean document events = %#v; want issue.created, ask.opened, then the artifact.version of the decisions query", cleanLog)
 	}
 }
 func TestCommentsSuggestionsAndArtifactFilter(t *testing.T) {

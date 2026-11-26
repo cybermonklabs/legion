@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -97,15 +99,10 @@ func (r *storeWriterRig) commentAnchorOrphaning() storeWriter {
 
 // anchoredBlockAddress is the address of block of the document documentID as the block index
 // addresses it: the ref_key of the room the document is edited in - its issue's tree for a
-// document of an issue room - '#' and the block id.
+// document of an issue room (blockKeyOf) - '#' and the block id.
 func anchoredBlockAddress(t *testing.T, database *store.Store, documentID, block string) string {
 	t.Helper()
-	var address string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select `+graphstore.RoomRefKeySQL("$1::uuid")+` || '#' || $2::text`, documentID, block).Scan(&address); err != nil {
-		t.Fatalf("read the address of block %s of %s: %v", block, documentID, err)
-	}
-	return address
+	return blockKeyOf(t, database, documentID) + "#" + block
 }
 
 // indexedBlockNode is the node_id of block's document_blocks row in the document documentID, keyed
@@ -165,18 +162,12 @@ func requireAnchoredInAgrees(t *testing.T, database *store.Store, documentID, co
 func writeAnchoredIn(t *testing.T, database *store.Store, comment, block string, asserted bool) {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the anchored_in's write: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
-		graphstore.AnchoredIn(comment, block, asserted, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent),
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
+			graphstore.AnchoredIn(comment, block, asserted, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent),
+		})
 	}); err != nil {
 		t.Fatalf("write the anchored_in of comment %s: %v", comment, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the anchored_in's write: %v", err)
 	}
 }
 
@@ -192,7 +183,7 @@ func newestCommentEvent(t *testing.T, database *store.Store, comment, eventType 
 	return id
 }
 
-// createAnchoredComment writes, as alice, a comment of issue anchored as anchor names, and answers
+// createBlockAnchoredComment writes, as alice, a comment of issue anchored as anchor names, and answers
 // it.
 func createBlockAnchoredComment(t *testing.T, handler http.Handler, issue string, anchor map[string]any) model.Comment {
 	t.Helper()
@@ -210,7 +201,7 @@ func createBlockAnchoredComment(t *testing.T, handler http.Handler, issue string
 }
 
 // A comment's anchor block, comments.anchor's block_id, is the projection of an anchored_in tuple
-// from the comment's node to the block's node (T17b of this branch's plan), and every write that
+// from the comment's node to the block's node (T17b of the issue-tree plan), and every write that
 // sets or moves it keeps the two level in its own transaction. Over a spec of an issue born
 // converted: the create states the anchored_in to the block's node as the block index addresses
 // it, under the comment.created that stored it; the anchor block backfill, over a row whose anchor

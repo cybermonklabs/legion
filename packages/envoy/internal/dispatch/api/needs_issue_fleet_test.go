@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A plan task's needs names an issue under its issue from schema version 7 (this change's spec,
-// R11), an item kind a build of version 6 reads as a value outside the schema rather than as newer
+// A plan task's needs names an issue under its issue from schema version 7 (R11 of the issue-tree
+// spec), an item kind a build of version 6 reads as a value outside the schema rather than as newer
 // content. So a write introduces one only while every process serving the database reads version 7
 // - the fleet's creatable number, which a page is admitted writable under - and is refused, in the
 // words of a write of an element its build may not create yet, while a process of version 6 lives.
@@ -34,14 +36,16 @@ func TestAnIssueUnderNeedsIsWrittenOnlyWhileTheFleetCreatesIt(t *testing.T) {
 		t.Fatalf("an issue needs while every process reads version 7: status %d, want 201", code)
 	}
 
-	// A process of version 6 joins the fleet.
+	// A process of version 6 joins the fleet. It registers this build's owner lock protocol, as the
+	// release before does, so the owner locks stay in this build's mode.
 	ctx := context.Background()
 	var instance string
 	if err := database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', 6, 6, now()) returning instance::text`).Scan(&instance); err != nil {
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', 6, 6, now(), $1) returning instance::text`, store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("add a live server process of schema version 6: %v", err)
 	}
+	requireNoLegacyOwnerLockMark(t, database)
 	if code := upload(withFirst + task("t3", checks+"#b-t1")); code != http.StatusCreated {
 		t.Fatalf("a write keeping the issue needs and adding a plan task's needs while a process of version 6 lives: status %d, want 201", code)
 	}

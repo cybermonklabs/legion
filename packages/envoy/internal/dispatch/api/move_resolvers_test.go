@@ -132,12 +132,9 @@ func TestEachResolverFollowsAMove(t *testing.T) {
 	cycleA, cycleB := notes.RefKey+"#cycle-a", notes.RefKey+"#cycle-b"
 	nineFrom, eightFrom := notes.RefKey+"#nine-0", notes.RefKey+"#eight-0"
 	shipItKey, holdItKey := specKey+"#ship_it", specKey+"#hold-it"
-	var treeKey string
-	if err := database.Pool.QueryRow(ctx, `
-		select a.ref_key from issue_trees t join artifacts a on a.id = t.artifact_id where t.issue_key = $1
-	`, issue.Key).Scan(&treeKey); err != nil {
-		t.Fatalf("read the tree of %s: %v", issue.Key, err)
-	}
+	// The spec of an issue born converted is a fragment of its tree's room, whose ref_key keys its
+	// blocks' nodes.
+	treeKey := blockKeyOf(t, database, issue.PrimaryArtifactID)
 	roomShipIt, roomHoldIt := treeKey+"#ship_it", treeKey+"#hold-it"
 	pairs := [][2]string{{oldOne, notes.RefKey + "#hop-two"}, {notes.RefKey + "#hop-two", shipItKey}, {cycleA, cycleB}, {cycleB, cycleA}}
 	pairs = append(pairs, movedChain(notes.RefKey, "nine-", nineFrom, holdItKey, 8)...)

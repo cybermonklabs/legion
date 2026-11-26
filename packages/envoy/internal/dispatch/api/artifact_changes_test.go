@@ -835,7 +835,7 @@ func TestTheChangeSetReadsEachVersionAsTheOneRendererAnswersIt(t *testing.T) {
 			rendering.Markdown, rendering.Source, render)
 	}
 	for _, pair := range [][2]int{{1, 2}, {2, 3}} {
-		readStored, err := compareVersions(storedVersionText(t, database, plan, pair[0]), storedVersionText(t, database, plan, pair[1]))
+		readStored, err := compareVersions(queryVersionMarkdown(t, database, plan, pair[0]), queryVersionMarkdown(t, database, plan, pair[1]))
 		if err != nil {
 			t.Fatalf("compare the stored texts of versions %d and %d: %v", pair[0], pair[1], err)
 		}
@@ -903,18 +903,6 @@ func renderedVersion(t *testing.T, database *store.Store, artifactID string, num
 	return rendering
 }
 
-// storedVersionText is the stored markdown of version number of the document artifactID, the empty
-// text where it stores none.
-func storedVersionText(t *testing.T, database *store.Store, artifactID string, number int) string {
-	t.Helper()
-	var markdown string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
-		t.Fatalf("read the stored markdown of version %d of %s: %v", number, artifactID, err)
-	}
-	return markdown
-}
-
 // requireRenderedChanges fails t unless the change set the route answers changesReader for
 // versions from and to of the document artifactID is the one compareVersions makes of the two
 // versions as the one renderer answers them for that reader. A failure names each of the two
@@ -927,7 +915,7 @@ func requireRenderedChanges(t *testing.T, handler http.Handler, database *store.
 	for index, number := range []int{from, to} {
 		rendering := renderedVersion(t, database, artifactID, number)
 		rendered[index] = rendering.Markdown
-		if stored := storedVersionText(t, database, artifactID, number); stored != rendering.Markdown {
+		if stored := queryVersionMarkdown(t, database, artifactID, number); stored != rendering.Markdown {
 			renderHolds, storedHolds := differingText(rendering.Markdown, stored)
 			apart = append(apart, fmt.Sprintf("version %d stores %q where its render from %s holds %q",
 				number, storedHolds, rendering.Source, renderHolds))

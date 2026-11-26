@@ -66,6 +66,13 @@ func seedPointerAttribute(t *testing.T, database *store.Store, typeName, attrNam
 	}
 }
 
+// seedBlockPointerClaim writes the nodes of pmdoctest.BlockPointerSchema(nil)'s claim, whose
+// serves pointer names requirements alone (seedPointerAttribute).
+func seedBlockPointerClaim(t *testing.T, database *store.Store) {
+	t.Helper()
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+}
+
 // edgeSources is each edge as "<kind> <node kind> <node id>", sorted.
 func edgeSources(edges []model.GraphEdge) []string {
 	sources := make([]string, len(edges))
@@ -91,16 +98,15 @@ func requireEdgeSources(t *testing.T, stage string, edges []model.GraphEdge, wan
 func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"
 	checksRef := "dispatch://" + issue.Key + "/artifact/checks-md"
 	// The spec is a fragment of its issue's room, whose tree keys its blocks' nodes; checks.md plays
-	// no role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of this branch's
-	// spec).
-	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
+	// no role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of the
+	// issue-tree spec).
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
 	c1 := issue.Key + "/checks-md#c1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
 		t.Fatalf("upload the claim: status=%d body=%s", response.Code, response.Body.String())
@@ -123,7 +129,7 @@ func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 		if edge.Node.Kind == "artifact" && edge.Node.ID == checks {
 			t.Fatalf("the spec's links list checks.md's own %s edge beside its claim's: %#v", edge.Kind, edge)
 		}
-		if edge.Block != nil && edge.Block.ID == nodes+"#r1" && edge.Node.ID == c1 && edge.Kind == "serves" {
+		if edge.Block != nil && edge.Block.ID == spec.address("r1") && edge.Node.ID == c1 && edge.Kind == "serves" {
 			atR1++
 		}
 	}
@@ -160,7 +166,7 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 	issue, _ := pointerSpec(t, handler)
 	r1 := "dispatch://" + issue.Key + "/spec#b-r1"
 	// The spec is a fragment of its issue's room; checks.md plays no role, so it is a room of its
-	// own, whose ref_key keys its blocks' nodes (R5 of this branch's spec).
+	// own, whose ref_key keys its blocks' nodes (R5 of the issue-tree spec).
 	c1 := issue.Key + "/checks-md#c1"
 	claim := func(body string) string {
 		return ":::claim{#c1 supports=\"" + r1 + "\" serves=\"" + r1 + "\"}\n" + body + "\n:::\n"
@@ -210,18 +216,17 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	createReferenceAPIProject(t, handler, "ACME")
 	issue := createSpecIssue(t, handler, "ACME", ":::requirement{#r1}\nA requirement.\n:::\n\n:::requirement{#r2}\nAnother requirement.\n:::\n")
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1, r2 := specRef+"#b-r1", specRef+"#b-r2"
 	// The spec is a fragment of its issue's room, whose tree keys its blocks' nodes, and a pointer
 	// is stored at the node its address resolves to (refs.ResolvedBlockSQL); checks.md plays no
-	// role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of this branch's
+	// role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of the issue-tree
 	// spec).
-	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
-	r1Node, r2Node := nodes+"#r1", nodes+"#r2"
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	r1Node, r2Node := spec.address("r1"), spec.address("r2")
 	c1 := issue.Key + "/checks-md#c1"
 
 	requireRows := func(stage string, want ...string) {
@@ -259,17 +264,15 @@ func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
 func TestABlockPointerIsListedOnlyWhileItsTargetHasAnAllowedType(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"
 	// The spec is a fragment of its issue's room, whose tree keys its blocks' nodes; a reference
 	// keeps the address written, which resolves to that node (refs.ResolvedBlockSQL). checks.md
-	// plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of this
-	// branch's spec).
-	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
-	r1Node, r1Written := nodes+"#r1", issue.Key+"/spec#r1"
+	// plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of the
+	// issue-tree spec).
+	r1Node, r1Written := readDecisionDocument(t, database, issue.Key, "spec").address("r1"), issue.Key+"/spec#r1"
 	checksRef := "dispatch://" + issue.Key + "/artifact/checks-md"
 	c1 := issue.Key + "/checks-md#c1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
@@ -399,10 +402,7 @@ func TestPlanTasksThatNeedEachOtherNameTheirRoomNodesFromTheFirstVersion(t *test
 			if issue := write.writes(t, write.project, key); issue.Key != key {
 				t.Fatalf("the project's first issue is %s, want %s, the key its tasks name", issue.Key, key)
 			}
-			document := readDecisionDocument(t, database, key, write.slug)
-			if document.room == document.id {
-				t.Fatalf("%s of %s is a room of its own, want a fragment of the issue's room", write.slug, key)
-			}
+			document := requireIssueRoomFragment(t, database, key, write.slug)
 			first, second := document.address("t-first"), document.address("t-second")
 			for _, need := range []struct{ from, to string }{{first, second}, {second, first}} {
 				held := currentTies(t, database, need.from, graphstore.TupleNeeds)

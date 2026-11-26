@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// c-decision-under-ask (R2 of this issue's spec, with R7's third exception and R15): a decision
+// c-decision-under-ask (R2 of the issue-tree spec, with R7's third exception and R15): a decision
 // whose from_ask names an ask of its own issue stands under that ask's node, "a decision under the
 // ask it answers", on every path that places blocks, while its document keeps it where its text
 // stands. The issue is one Legion does not run and an agent writes each decision, so neither R28

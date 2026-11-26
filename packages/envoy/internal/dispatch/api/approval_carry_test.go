@@ -871,24 +871,19 @@ func settledDecisionBlocks(t *testing.T, handler http.Handler, documents *docs.S
 // settledWithoutVersion settles the document's room at once, for a document whose settlement is
 // owed, and waits until that settlement has committed: its pending-settlement row, which a live
 // write leaves and only a settlement's commit clears, is gone. The row is keyed by the room the
-// document is edited in (documentRoomOf), as the settlement that clears it is. It fails t
+// document is edited in (documentOwesSettlement), as the settlement that clears it is. It fails t
 // when the document owes no settlement, since then there would be nothing to wait for. The wait's
 // one bound is the test binary's deadline less testwait's margin.
 func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.Service, artifactID string) {
 	t.Helper()
-	room, _ := documentRoomOf(t, database.Pool, artifactID)
-	owed := func() bool {
-		var pending bool
-		if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, room).Scan(&pending); err != nil {
-			t.Fatalf("read the document's pending settlement: %v", err)
-		}
-		return pending
-	}
-	if !owed() {
+	if !documentOwesSettlement(t, database, artifactID) {
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
+	room, _ := documentRoomOf(t, database.Pool, artifactID)
 	documents.SettleNow(room)
-	waitUntil(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool { return !owed() })
+	waitUntil(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool {
+		return !documentOwesSettlement(t, database, artifactID)
+	})
 }
 
 // Stale: the agent changed a paragraph outside the blocks after his approval and before his answer.

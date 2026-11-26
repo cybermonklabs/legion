@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -73,15 +71,7 @@ func deferralSpec(above bool) string {
 // under the bound, so each write of the rows under it writes a version its own write indexes.
 func requireRoomForTheWrites(t *testing.T, spec string) {
 	t.Helper()
-	tree, err := pmdoc.Parse(spec)
-	if err != nil {
-		t.Fatalf("the spec under the bound does not parse: %v", err)
-	}
-	_, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
-	if err != nil {
-		t.Fatalf("render the spec under the bound: %v", err)
-	}
-	if blocks := len(offsets); blocks+deferralWritesSlack > deferralBound {
+	if blocks := renderedBlocks(t, spec); blocks+deferralWritesSlack > deferralBound {
 		t.Fatalf("the spec under the bound holds %d blocks as the render records them, so with the %d its writes may add it passes the bound of %d blocks a write indexes in its own request: the rows under the bound would write deferred versions", blocks, deferralWritesSlack, deferralBound)
 	}
 }
@@ -309,8 +299,7 @@ func (d *deferralDocument) carriedPin(t *testing.T) {
 	if approved := versionMarkdownAt(t, d.database, d.spec, approval.Version); markdown != approved {
 		t.Fatalf("the pin's version %d does not hold the text approved at version %d, so it carries nothing:\n%s", pinned, approval.Version, markdown)
 	}
-	sum := sha256.Sum256([]byte(markdown))
-	want := hex.EncodeToString(sum[:])
+	want := contentHash(markdown)
 	var digest *string
 	if err := d.database.Pool.QueryRow(context.Background(), `
 		select content_sha256 from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
@@ -319,16 +308,8 @@ func (d *deferralDocument) carriedPin(t *testing.T) {
 		t.Fatalf("read the review the pin's carry wrote to version %d: %v", pinned, err)
 	}
 	if digest == nil || *digest != want {
-		t.Errorf("the review the pin's carry wrote to version %d pins the digest %s, want the sha256 of the version's stored markdown, %s", pinned, reviewDigest(digest), want)
+		t.Errorf("the review the pin's carry wrote to version %d pins the digest %s, want the sha256 of the version's stored markdown, %s", pinned, valueOrNone(digest), want)
 	}
-}
-
-// reviewDigest is a review's pinned digest as a failure names it.
-func reviewDigest(digest *string) string {
-	if digest == nil {
-		return "null"
-	}
-	return *digest
 }
 
 // inlineWrites are the two writes of a version left unmarked, which index their blocks in their own
