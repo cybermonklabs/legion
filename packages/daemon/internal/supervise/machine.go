@@ -1423,11 +1423,12 @@ var ErrRetryNotTheController = errors.New("the operator's retry does not relaunc
 
 // ErrHeldForCyberPolicy is a retry the daemon makes by itself (RequestRetry with no decision behind
 // it) of a claim held for OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy): the next start
-// of its role, a re-admission of its tree, a production check's look, the controller keeper. The
-// relaunch would send the session's content to OpenAI again, so only a retry someone decided
-// relaunches the claim (retry). It is a refusal and not a wait: nothing the daemon does later
-// lifts it. The refusal adds the claim and the operator's command that brings it back.
-var ErrHeldForCyberPolicy = errors.New("the claim failed on OpenAI's cyber_policy refusal of its session's content, so no retry of the daemon's own relaunches it")
+// of its role, a re-admission of its tree, a production check's look, the controller keeper.
+// Launching its agent again would send the session's content to OpenAI again, so only a retry
+// someone decided launches it, in a new session (retry). It is a refusal and not a wait: nothing
+// the daemon does later lifts it. The refusal adds the operator's command that brings the agent
+// back (Claim.CyberPolicyRefusal).
+var ErrHeldForCyberPolicy = errors.New("the claim failed on OpenAI's cyber_policy refusal of its session's content, so no retry of the daemon's own launches its agent again")
 
 // ErrHeldByOperator is the daemon's start or task meeting an operator's suspension, which no rule
 // overrides (Claim.RuleHolds): a wait, ended only by the operator's resume. RuleHoldError wraps it
@@ -2028,7 +2029,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 // TurnOutcomeAnswer is what one turn-outcome report's decision left, read under that decision's
 // own lock (HandleTurnOutcome): the claim's run of refused turns (Claim.RefusedRun), and whether
 // this report failed the claim, which only the report of a turn that ran no prompt of the
-// daemon's, refused with a status that cannot clear, does (unpromptedTurnEnded).
+// daemon's does, refused with a status that cannot clear or with the class of OpenAI's
+// cyber-policy refusal (RequestTurnOutcome.Code), whatever its status (unpromptedTurnEnded,
+// holdsTheIssue).
 type TurnOutcomeAnswer struct {
 	RefusedRun int
 	Failed     bool

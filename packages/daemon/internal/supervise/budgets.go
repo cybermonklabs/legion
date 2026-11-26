@@ -113,10 +113,12 @@ const (
 	// request after such a refusal, as the result of the prompt the turn ran says, or as the
 	// report of a turn that ran no prompt of the daemon's says (providerErrorTurnEnded, Oh My Pi's
 	// class `cyber_policy`). It is a provider error that cannot clear, and a word of its own because
-	// it is the one failure no retry of the daemon's own may relaunch (Claim.HeldForCyberPolicy):
-	// every prompt the daemon sends is input from outside the session, which ends Oh My Pi's hold,
-	// so the refused content would go to OpenAI again and add a refusal to the organization's
-	// record. The architect's retry of the held phase and the operator's retry relaunch it.
+	// it is the one failure after which no retry of the daemon's own may launch the claim's agent
+	// again (Claim.HeldForCyberPolicy): every prompt the daemon sends is input from outside the
+	// session, which ends Oh My Pi's hold, so the refused content would go to OpenAI again and add
+	// a refusal to the organization's record. The architect's retry of the held phase and the
+	// operator's retry launch the agent again, each in a new session (freshSession), which holds
+	// none of that content.
 	CauseCyberPolicy FailureCause = "cyber_policy"
 	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
 	// it; the migration that adds the column writes it for every stored failure whose sentence

@@ -617,22 +617,49 @@ failure under the cause word `provider_error` for the first, and `cyber_policy` 
 with the same sentence as its `detail`; a plugin older than the contract of entry
 20261125174608 (cyber-policy) is served `provider_error` for both.
 
-**A claim failed under `cyber_policy` is relaunched only by a person's or its architect's
-decision.** Each copy of the refused content sent to OpenAI again adds a refusal to the
-organization's record, and a prompt from the daemon is input from outside the session, which ends
-Oh My Pi's own hold. So no start the daemon makes by itself relaunches such a claim: the next phase
-start of a role that failed outside its phase, a child architect's next phase start, a
-re-admission and a production check's look each finish without acting and log
-`outbox start finishes without acting: its claim is held for OpenAI's cyber_policy refusal of its
-session's content`, and the worker-died notice says so in place of the start it would otherwise
-promise. The daemon's own controller is not retried by its keeper, which logs `controller: the
-daemon's controller is held for OpenAI's cyber_policy refusal of its session's content` once. The
-held phase's retry (the architect's `retry_or_escalate`, a person's todo on a held root) and the
-operator's `legion claims retry --claim <token>` relaunch it, the controller included;
-`--fresh-session` leaves the refused session behind. One send can still slip through: a turn that
-ran no prompt of the daemon's is reported over HTTP while its end reaches the daemon over the worker
-stream, in no fixed order, so a task the claim holds can go before the report lands. That prompt's
-own result then names `cyber_policy` and fails the claim, so the race costs one send at most.
+**The agent of a claim failed under `cyber_policy` is launched again only by a decision, and
+always in a new session.** Each copy of the refused content sent to OpenAI again adds a refusal to
+the organization's record, and a prompt from the daemon is input from outside the session, which
+ends Oh My Pi's own hold. So no start the daemon makes by itself launches such an agent again: a
+role's next phase start, a child architect's next phase start, the starts a re-admission gives the
+tree's members and a production check's look each finish without acting and log `outbox start
+finishes without acting: its claim is held for OpenAI's cyber_policy refusal of its session's
+content`. Where that start is of the issue's working phase, by the role that works it — a held
+child set to `todo` comes back at `admitted` and starts its phase, as an architect's `backlog` then
+`rerun_child` does — the daemon applies the claim's stored failure to that phase: the issue is held
+again, and its architect gets the `worker-died` notice, which its `retry` answers. Any other such
+start ends at that log line, and the notice the claim's failure sent stands: the three notices that
+would promise such a start (a child's own architect's, a role's that failed outside its issue's
+phase, and a production check's checking role's) say no such start comes, and name `legion claims
+retry --claim <token>`. The daemon's own controller is not retried by its keeper, which logs
+`controller: the daemon's controller is held for OpenAI's cyber_policy refusal of its session's
+content` once.
+
+Five decisions launch such an agent again: the architect's `retry_or_escalate` of the held phase;
+a `todo` on a held root, which retries that phase as well; a `todo` that puts a root back in the
+admission line (the controller's restart of a tree, `backlog` then `todo`, among them), whose
+promotion starts the root's architect; the operator's `legion claims retry --claim <token>` (or
+`--failed`, which retries every failed claim); and the controller's `fresh_session`. Only the
+operator's retry reaches the daemon's own controller. Each of them starts the agent in a new
+session and never resumes the refused one, since the new launch's first task is input from outside
+the session too and would end Oh My Pi's hold: the retry logs `supervise: retrying in a new
+session`, the claim's run of provider-error turns goes back to zero, and `--fresh-session` changes
+nothing for such a claim. Nothing of the refused session comes back, so the architect's `reason`
+is where what the role must know goes. A start row that a daemon before this release queued
+records no decision, so a held claim's start from such a row is refused as the daemon's own starts
+are and, where it is of the issue's working phase, holds the issue as above. One send can still
+slip through: a turn that ran no prompt of the daemon's is reported over HTTP while its end reaches
+the daemon over the worker stream, in no fixed order, so a task the claim holds can go before the
+report lands. That prompt's own result then names `cyber_policy` and fails the claim, so the race
+costs one send at most.
+
+**After a rollback, a held claim reads as `provider_error`, and the older daemon does not hold
+it.** The store keeps the hold in a column of its own (`claims.held_for`, store migration
+20261125223008_claim_held_for), which a daemon before contract entry 20261125174608
+(cyber-policy) does not read, so its own starts can launch such an agent again on its refused
+session. The hold resumes on roll-forward. That daemon also refuses the outbox key `decided` this
+release writes on a decided start, so with every daemon of the database stopped, take it off first:
+`update outbox set payload = payload - 'decided' where kind = 'supervise' and payload ? 'decided';`.
 
 **A turn that no prompt of the daemon's ran** — a phase reminder the plugin starts itself, an Envoy
 message, a background job's result — has no prompt result, so the daemon judges it from the
@@ -659,8 +686,9 @@ goes back to zero three ways: at a turn of that claim that ends with no provider
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
 recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
-`fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
-go. The notice is the claim's own — the issue and the role that names it — so
+`fresh_session`, `legion claims forget-session`, or any new launch of the agent of a claim held for
+`cyber_policy`. Only after one of those can another notice go. The notice is the claim's own — the
+issue and the role that names it — so
 two claims of one issue each get a notice of their own, and in a provider outage every claim that
 reaches six is told.
 
@@ -687,14 +715,14 @@ says which budget ran out (`launch failures ran out`, `deaths with work outstand
 
 The log is no longer the only place that cause lives. The daemon keeps it on the claim itself, as
 `failure`. Its `cause` is one word out of `launch_refused`, `died`, `never_registered`,
-`stale_plugin`, `prompt_retires_exhausted`, `provider_error` and `unrecorded`, the last for a
-claim that failed before this release. Beside it stand `detail`, the sentence the log line wrote,
-`at`, the moment it failed, and `attempts`, the four counts. A claim carries the record from its
-failure until it is given another run. The issue's architect reads it with the `legion` tool's
-`read_record`, the project's controller with `read_state`, and an operator with
-`legion claims list`, which prints the cause word after the claim's state word and `-` for a
-claim the daemon holds no cause and sentence for, or with `legion claims list --json` for the
-whole record.
+`stale_plugin`, `prompt_retires_exhausted`, `provider_error`, `cyber_policy` and `unrecorded`, the
+last for a claim that failed before this release. Beside it stand `detail`, the sentence the log
+line wrote, `at`, the moment it failed, and `attempts`, the four counts. A claim carries the record
+from its failure until it is given another run. The issue's architect reads it with the `legion`
+tool's `read_record`, the project's controller with `read_state`, and an operator with
+`legion claims list`, which prints the cause word after the claim's state word and `-` for a claim
+the daemon holds no cause and sentence for, or with `legion claims list --json` for the whole
+record.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
@@ -824,8 +852,10 @@ phase worker is api's `retryStart` to decide (through the issue's phase by `rest
 where that phase is the worker's). Every other state is refused and named: a queued claim is
 spawned rather than
 retried, a suspended claim is resumed, and the daemon's own controller is its keeper's to retry,
-which the refusal says. A retry that leaves the issue held, as a lingering tree's does, is refused
-naming the issue.
+which the refusal says, unless it is held for `cyber_policy`, which its keeper retries no more. A
+claim held for `cyber_policy` has its agent launched in a new session, with or without
+`--fresh-session` (above). A retry that leaves the issue held, as a lingering tree's does, is
+refused naming the issue.
 `legion claims retry --failed` asks the same of every failed claim the daemon holds, in turn,
 prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
@@ -847,8 +877,9 @@ worker knows of its issue stay, and only the transcript the provider is asked to
 It reaches a claim whose agent is ready or idle, a root architect included, and refuses a
 suspended, failed or retired claim naming what starts it again: `--fresh-session` for a workflow
 role, and the daemon's controller keeper for the project's own controller claim, which only
-`--claim` can name and which `--fresh-session` refuses in every state, a keeper whose resume an
-operator's own suspension holds.
+`--claim` can name and which `--fresh-session` refuses in every state but failed or retired under
+`cyber_policy`, a keeper whose resume an operator's own suspension holds. For a controller held for
+`cyber_policy`, which its keeper retries no more, it names `legion claims retry --claim <token>`.
 It also refuses a claim a suspension is held over, a claim whose launch is in flight, a claim
 whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim left
 working under a relaunch the wake pacing parked, and a claim whose role runs on Claude Code,
@@ -1518,7 +1549,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   every retry that keeps the session resumes the stopped claim's session, which is told what the
   stop ended. That is `legion claims retry` without `--fresh-session`, the daemon's own retry of
   a retired controller it keeps, the daemon's start of a retired worker's phase, and a child's next
-  first phase start, which starts that child's own architect when an operator stopped it.
+  first phase start, which starts that child's own architect when an operator stopped it. None of
+  them resumes a claim held for `cyber_policy`: the daemon's own are refused, and `legion claims
+  retry` starts its agent in a new session ([An issue is held](#an-issue-is-held)).
   A suspension that lands over a process the daemon had already found gone, as a fresh session
   over a dead role does, records the death in the runtime's words, not the suspension. The claim
   records it (the `ended_work` column of its row), and the first prompt the next process is sent

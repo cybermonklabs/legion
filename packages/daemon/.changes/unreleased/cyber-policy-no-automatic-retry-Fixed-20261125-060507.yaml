@@ -1,19 +1,33 @@
 kind: Fixed
 body: |-
-    A claim failed on OpenAI's cyber-policy refusal is relaunched only by a person's or its
-    architect's decision. The plugin's report of a turn that ran no prompt of the daemon's (a phase
-    reminder, an Envoy message, a background job's result) now carries `code: "cyber_policy"` where
-    Oh My Pi's own classifier marks the refusal, and the daemon fails the claim on it whatever the
-    status, as it does a prompt's `cyber_policy` result; before, such a turn failed nothing, and the
-    claim's next prompt ended Oh My Pi's hold and sent the refused content to OpenAI again. The
-    controller keeper no longer retries a controller failed so, and no start of the daemon's own (a
-    role's next phase start, a child architect's next phase start, a re-admission, a production
-    check's look) relaunches such a claim: each finishes without acting and logs an error naming
-    `legion claims retry --claim <token> --fresh-session`, which, like the architect's retry of the
-    held phase, relaunches it, the controller included. One send can still go before the plugin's
-    report lands, since the report and the turn's end reach the daemon in no fixed order; that
-    prompt's own result then fails the claim. Daemon API contract entry 20261125174608
-    (cyber-policy).
+    The agent of a claim failed on OpenAI's cyber-policy refusal is launched again only by a
+    decision, and always in a new session. The plugin's report of a turn that ran no prompt of the
+    daemon's (a phase reminder, an Envoy message, a background job's result) now carries
+    `code: "cyber_policy"` where Oh My Pi's own classifier marks the refusal, and the daemon fails
+    the claim on it whatever the status, as it does a prompt's `cyber_policy` result; before, such
+    a turn failed nothing, and the claim's next prompt ended Oh My Pi's hold and sent the refused
+    content to OpenAI again. The controller keeper no longer retries a controller failed so, and no
+    start of the daemon's own (a role's next phase start, a child architect's next phase start, the
+    starts a re-admission gives the tree's members, a production check's look) launches such an
+    agent again: each finishes without acting and logs an error naming `legion claims retry
+    --claim <token>`. Where that start is of the issue's working phase, by the role that works it
+    (a held child set to `todo`, an architect's `backlog` then `rerun_child`), the issue is held
+    again and its architect is told, so its retry launches the agent again. Five decisions do: the
+    architect's retry of the held phase, a `todo` on a held root, a `todo` that puts a root back in
+    the admission line (the controller's restart of a tree among them), whose promotion starts the
+    root's architect, the operator's `legion claims retry --claim <token>` (or `--failed`), which
+    reaches the controller too, and the controller's `fresh_session`. Each starts the agent in a new
+    session, with or without `--fresh-session`, and never resumes the refused one, since the new
+    launch's first task is input from outside the session too. A start row a daemon before this
+    release queued records no decision, so a held claim's start from it is refused as the daemon's
+    own are. One send can still go before the plugin's report lands, since the report and the
+    turn's end reach the daemon in no fixed order; that prompt's own result then fails the claim.
+    Daemon API contract entry 20261125174608 (cyber-policy). After a rollback, a held claim reads
+    as `provider_error` and the older daemon does not hold it; the hold resumes on roll-forward
+    (store migration 20261125223008_claim_held_for). Before a rollback, with every daemon of the
+    database stopped, take the outbox key `decided`, which an older daemon refuses, off each
+    supervise row: `update outbox set payload = payload - 'decided' where kind = 'supervise' and
+    payload ? 'decided';`.
 time: 2026-11-25T06:05:07Z
 custom:
     Issue: cyber-policy-no-automatic-retry

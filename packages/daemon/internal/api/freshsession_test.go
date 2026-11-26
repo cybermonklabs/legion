@@ -857,14 +857,15 @@ func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 
 // A controller held for OpenAI's cyber-policy refusal is the one controller its keeper does not
 // retry (the daemon's controllerKeeper), so the operator's `legion claims retry` is its way back,
-// and both of its forms are admitted: with --fresh-session the recorded session, which holds the
-// refused content, is left behind and the controller starts in a new one; without it the session
-// is resumed, which is the operator's choice to make.
-func TestTheOperatorsRetryRelaunchesAControllerHeldForCyberPolicy(t *testing.T) {
+// and both of its forms are admitted. Each leaves the recorded session, which holds the refused
+// content, behind, and starts the controller in a new one: without --fresh-session the machine's
+// retry forgets it (supervise's freshSession), since a resume would send that content to OpenAI
+// again with the keeper's start message.
+func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		fresh bool
-	}{{"in a new session", true}, {"in the recorded session", false}} {
+	}{{"asking for a new session", true}, {"asking for none", false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := claim.ControllerToken(testProject)
@@ -887,8 +888,8 @@ func TestTheOperatorsRetryRelaunchesAControllerHeldForCyberPolicy(t *testing.T) 
 			if c.State != supervise.StateLaunching || c.FailureCause != "" {
 				t.Fatalf("the controller is %s (%q), want it launching with no failure record", c.State, c.FailureCause)
 			}
-			if left := c.Session != "ses_controller"; left != tc.fresh {
-				t.Fatalf("the controller records session %q; want the recorded session left behind %t", c.Session, tc.fresh)
+			if c.Session != "" || c.Abandoned.Session != "ses_controller" {
+				t.Fatalf("the controller records session %q and abandoned %q; want the recorded session left behind", c.Session, c.Abandoned.Session)
 			}
 		})
 	}

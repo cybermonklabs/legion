@@ -1395,6 +1395,22 @@ type ClaimFailed struct {
 
 func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 
+// ClaimFailedOf is the failure fact of c as the claim persists its end, with the deployment's
+// limits beside its budgets: the sentence the supervisor wrote when it gave up (Claim.Failure),
+// what the runtime last said of the death and of the start that never produced an agent
+// (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end its process was last observed
+// to have died of (Claim.PodEnd), so a notice written after a daemon restart still names the cause
+// the role never chose — an eviction above all. It is the one builder of the fact from a claim:
+// the daemon's apply of a claim's failure and the boot's replay of it (the daemon's
+// applyTerminal), and the outbox's refusal of a start of the issue's phase for a claim held for
+// OpenAI's cyber-policy refusal, which tells the workflow of that failure again where it now holds
+// the issue (the daemon outbox's heldStartRefused).
+func ClaimFailedOf(c supervise.Claim, limits supervise.Limits) ClaimFailed {
+	return ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
+		Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
+		Cause: c.FailureCause, Budgets: c.Budgets, Limits: limits}
+}
+
 // SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
 // has read none of its own earlier work (supervise's startFresh). Detail is why, as the supervisor
 // said it. It is told on the issue, to its architect and to the controller, because a worker that

@@ -8,16 +8,18 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The cases of this file are the daemon's automatic relaunches of a failed claim, each held to one
-// rule: a claim failed for OpenAI's cyber-policy refusal of its session's content is relaunched by
-// a retry someone decided alone. The relaunch resumes the recorded session, and the daemon's first
-// prompt to it is input from outside the session, which ends Oh My Pi's own hold, so the refused
-// content would go to OpenAI again and add a refusal to the organization's record.
+// The cases of this file are the daemon's automatic starts of a failed claim, each held to one
+// rule: the agent of a claim failed for OpenAI's cyber-policy refusal of its session's content is
+// launched again by a start someone decided alone, and in a new session. A resume of the recorded
+// session would take the daemon's first prompt as input from outside the session, which ends Oh My
+// Pi's own hold, so the refused content would go to OpenAI again and add a refusal to the
+// organization's record.
 
 // heldForCyberPolicy is the stored claim of a role that failed on OpenAI's cyber-policy refusal,
 // with the sentence the daemon writes for it, and its recorded session.
@@ -31,8 +33,9 @@ func heldForCyberPolicy(c supervise.Claim) supervise.Claim {
 
 // The controller keeper retries a failed controller after a wait that doubles (controllerKeeper),
 // and the operator's retry of the controller is refused, so the keeper is the only door. It does
-// not retry a controller held for a cyber-policy refusal, after any wait: it logs one error naming
-// the cause and the operator's `legion claims retry`, and asks the controller's machine for
+// not retry a controller held for a cyber-policy refusal, after any wait
+// (supervise.Claim.KeeperRetries): it logs one error whose reason is the machine's refusal, which
+// names the operator's `legion claims retry --claim <token>`, and asks the controller's machine for
 // nothing. A controller failed for any other provider error that cannot clear is retried as
 // before, which is the control: the same keeper over the same clock does retry it.
 func TestTheKeeperDoesNotRetryAControllerHeldForCyberPolicy(t *testing.T) {
@@ -82,16 +85,15 @@ func TestTheKeeperDoesNotRetryAControllerHeldForCyberPolicy(t *testing.T) {
 				if launches != 0 {
 					t.Fatalf("the keeper launched the held controller %d times, want never", launches)
 				}
-				held := strings.Split(strings.TrimSpace(logs.String()), "\n")
 				var lines []string
-				for _, line := range held {
-					if strings.Contains(line, "the daemon's controller is held for OpenAI's cyber_policy refusal") {
+				for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+					if strings.Contains(line, cyberPolicyHeldLine) {
 						lines = append(lines, line)
 					}
 				}
-				if len(lines) != 1 || !strings.Contains(lines[0], `"level":"ERROR"`) || !strings.Contains(lines[0], "legion claims retry") ||
-					!strings.Contains(lines[0], "--fresh-session") || !strings.Contains(lines[0], `"cause":"cyber_policy"`) {
-					t.Fatalf("the keeper logged %q, want one error naming the cause and the operator's retry:\n%s", lines, logs.String())
+				if want := "`" + supervise.RetryCommand(token) + "`"; len(lines) != 1 || !strings.Contains(lines[0], `"level":"ERROR"`) ||
+					!strings.Contains(lines[0], want) || strings.Contains(lines[0], "--fresh-session") || !strings.Contains(lines[0], `"cause":"cyber_policy"`) {
+					t.Fatalf("the keeper logged %q, want one error naming the cause and the operator's %s:\n%s", lines, want, logs.String())
 				}
 				if strings.Contains(logs.String(), "retrying the daemon's controller") {
 					t.Fatalf("the keeper logged a retry of the held controller:\n%s", logs.String())
@@ -105,63 +107,125 @@ func TestTheKeeperDoesNotRetryAControllerHeldForCyberPolicy(t *testing.T) {
 	}
 }
 
+// The liveness sweep writes its line about the daemon's own controller again at every worker boot
+// timeout while no session holds the controller's record (watchController), and the keeper writes
+// its line once per process. So for a controller held for a cyber-policy refusal, which the keeper
+// does not retry, the sweep names the operator's retry rather than a relaunch that never comes. A
+// controller failed for another cause, and one not yet created, keep the keeper's relaunch, which
+// is the control.
+func TestTheLivenessSweepNamesTheOperatorsRetryForAHeldController(t *testing.T) {
+	t.Parallel()
+	token := claim.ControllerToken("legion")
+	held := heldForCyberPolicy(supervise.Claim{Token: token, Project: "legion", Role: claim.RoleController})
+	other := held
+	other.FailureCause = supervise.CauseProviderError
+	const relaunch = "this daemon launches its own controller and relaunches it"
+	for _, tc := range []struct {
+		name  string
+		claim supervise.Claim
+		held  bool
+	}{
+		{"held for cyber policy", held, true},
+		{"failed for a provider error", other, false},
+		{"not created yet", supervise.Claim{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := launchedControllerLine(tc.claim)
+			if !strings.HasPrefix(line, controllerNotRegistered) {
+				t.Fatalf("the sweep's line is %q, want it to begin with %q, which one log query counts in either mode", line, controllerNotRegistered)
+			}
+			names := strings.Contains(line, supervise.RetryCommand(token))
+			if names != tc.held || strings.Contains(line, relaunch) == tc.held {
+				t.Fatalf("the sweep's line is %q, want the operator's retry named %t and the keeper's relaunch named %t", line, tc.held, !tc.held)
+			}
+		})
+	}
+}
+
 // A start row the workflow or admission writes for a failed claim retries it (the outbox's start).
-// Every such start but one is the daemon's own — the next phase start of a role that fails outside
-// its phase, a child architect's next phase start, a re-admission, a production check's look — and
-// none of them relaunches a claim held for a cyber-policy refusal: the row finishes without acting
-// and the claim stays failed with its session. The one start someone decided is the held phase's
-// retry, which carries ResendEntry (workflow's restart: the architect's retry_or_escalate, the
-// operator's `legion claims retry`, a person's todo on a held root), and it relaunches the claim.
-func TestAStartRowRelaunchesAClaimHeldForCyberPolicyOnlyForTheHeldPhasesRetry(t *testing.T) {
+// Every such start but two is the daemon's own — the next phase start of a role, a child
+// architect's next phase start, a re-admission's start, a production check's look, the sweep's
+// start of a root architect — and none of them launches the agent of a claim held for a
+// cyber-policy refusal again: the row finishes without acting and the claim stays failed with its
+// session. A start of the issue's phase by the role that works it tells the workflow of the
+// failure again (heldStartRefused), so the issue is held for its architect; a start of no phase
+// tells nothing. A row an older daemon wrote for the held phase's retry carries ResendEntry and no
+// Decided, and is the daemon's own too. The two starts someone decided carry Decided — the held
+// phase's retry (workflow's restart) and a promoted root's architect start (workflow's
+// StartPromotedArchitect, which the controller's restart of a tree brings) — and each starts the
+// agent again in a new session.
+func TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name       string
-		state      supervise.ClaimState
-		resend     bool
-		relaunched bool
+		name     string
+		role     claim.Role
+		state    supervise.ClaimState
+		phase    phase.Phase
+		resend   bool
+		decided  bool
+		launched bool
+		told     bool
 	}{
-		{"a start of the daemon's own, of a failed claim", supervise.StateFailed, false, false},
-		{"a start of the daemon's own, of a claim an operator stopped after it failed", supervise.StateRetired, false, false},
-		{"the held phase's retry", supervise.StateFailed, true, true},
+		{"a start of the daemon's own, of a failed worker", claim.RoleTester, supervise.StateFailed, phase.Testing, false, false, false, true},
+		{"a start of the daemon's own, of a worker an operator stopped after it failed", claim.RoleTester, supervise.StateRetired, phase.Testing, false, false, false, true},
+		{"an older daemon's row of the held phase's retry", claim.RoleTester, supervise.StateFailed, phase.Testing, true, false, false, true},
+		{"the held phase's retry", claim.RoleTester, supervise.StateFailed, phase.Testing, true, true, true, false},
+		{"a start of the daemon's own, of the root's architect", claim.RoleArchitect, supervise.StateFailed, "", false, false, false, false},
+		{"a promoted root's architect start", claim.RoleArchitect, supervise.StateFailed, "", false, true, true, false},
+		// RoleFor answers the architect at admitted, which works no phase: a start naming admitted
+		// tells the workflow nothing.
+		{"a start of the daemon's own, of the architect, naming admitted", claim.RoleArchitect, supervise.StateFailed, phase.Admitted, false, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
+			issuePhase := phase.Testing
+			if tc.phase != "" {
+				issuePhase = tc.phase
+			}
+			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: issuePhase, Generation: 1, Status: "testing"}
 			putOutboxIssue(t, pool, records, issue)
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-			tester := mustClaimToken(t, issue.Key, claim.RoleTester)
-			held := heldForCyberPolicy(supervise.Claim{Token: tester, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleTester})
+			token := mustClaimToken(t, issue.Key, tc.role)
+			held := heldForCyberPolicy(supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: tc.role})
 			held.State = tc.state
 			if _, _, err := sup.Create(context.Background(), held, ""); err != nil {
-				t.Fatalf("create the held tester: %v", err)
+				t.Fatalf("create the held %s: %v", tc.role, err)
 			}
+			failures := &claimFailures{}
 			clock := time.Now()
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
-				now: func() time.Time { return clock }, stateDir: t.TempDir()}
-			enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester,
-				Generation: 1, Phase: phase.Testing, Task: "Test it.", ResendEntry: tc.resend}, clock))
+				now: func() time.Time { return clock }, stateDir: t.TempDir(), handlers: []intake.Handler{failures}}
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: tc.role,
+				Generation: 1, Phase: tc.phase, Task: "Work on it.", ResendEntry: tc.resend, Decided: tc.decided}, clock))
 
 			if err := runner.RunOnce(context.Background()); err != nil {
 				t.Fatalf("run the start: %v", err)
 			}
-			m, _ := sup.Machine(tester)
+			m, _ := sup.Machine(token)
 			m.Wait()
-			got, launches := m.Claim(), len(resumesOf(rt, tester))+len(rt.CallsOf("Spawn"))
-			if tc.relaunched {
-				if launches != 1 || got.State != supervise.StateLaunching || outboxRows(t, pool) != 0 {
-					t.Fatalf("after the held phase's retry the tester is %s with %d launches and %d rows, want it relaunched once and the row run",
-						got.State, launches, outboxRows(t, pool))
+			got := m.Claim()
+			if rows := outboxRows(t, pool); rows != 0 {
+				t.Fatalf("the start left %d rows, want it finished: nothing later lifts the hold, so a row kept would retry for ever", rows)
+			}
+			facts := failures.applied()
+			if told := len(facts) == 1 && facts[0].Issue == issue.Key && facts[0].Role == tc.role && facts[0].Cause == supervise.CauseCyberPolicy; told != tc.told ||
+				len(facts) > 1 {
+				t.Fatalf("the start told the workflow %+v, want one cyber_policy failure of the %s %t", facts, tc.role, tc.told)
+			}
+			if tc.launched {
+				if spawns := len(rt.CallsOf("Spawn")); spawns != 1 || len(resumesOf(rt, token)) != 0 || got.State != supervise.StateLaunching ||
+					got.Session != "" || got.Abandoned.Session != "ses-refused" {
+					t.Fatalf("after the decided start the %s is %s, session %q (abandoned %q), with %d spawns and %d resumes; want it launching once in a new session",
+						tc.role, got.State, got.Session, got.Abandoned.Session, spawns, len(resumesOf(rt, token)))
 				}
 				return
 			}
-			if launches != 0 || got.State != tc.state || got.FailureCause != supervise.CauseCyberPolicy || got.Session != "ses-refused" {
-				t.Fatalf("after the daemon's own start the tester is %s (%q, %q) with %d launches, want it %s for cyber policy with its session and never launched",
-					got.State, got.FailureCause, got.Session, launches, tc.state)
-			}
-			if rows := outboxRows(t, pool); rows != 0 {
-				t.Fatalf("the start left %d rows, want it finished: nothing later lifts the hold, so a row kept would retry for ever", rows)
+			if launches := len(resumesOf(rt, token)) + len(rt.CallsOf("Spawn")); launches != 0 || got.State != tc.state ||
+				got.FailureCause != supervise.CauseCyberPolicy || got.Session != "ses-refused" {
+				t.Fatalf("after the daemon's own start the %s is %s (%q, %q) with %d launches, want it %s for cyber policy with its session and never launched",
+					tc.role, got.State, got.FailureCause, got.Session, launches, tc.state)
 			}
 		})
 	}

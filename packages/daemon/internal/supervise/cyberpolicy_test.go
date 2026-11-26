@@ -108,24 +108,54 @@ func TestARaceBetweenTheTurnsEndAndItsReportCostsOneSendAtMost(t *testing.T) {
 }
 
 // failedForCyberPolicy is a phase worker failed for OpenAI's cyber-policy refusal of a turn that
-// ran no prompt of the daemon's, and how many launches the runtime had been asked for by then.
-func failedForCyberPolicy(t *testing.T) (*harness, int) {
+// ran no prompt of the daemon's.
+func failedForCyberPolicy(t *testing.T) *harness {
 	t.Helper()
 	h := idleClaim(t)
 	h.cyberPluginTurn(1, 0)
 	h.wantHeldForCyberPolicy()
-	return h, len(h.calls("Resume")) + len(h.calls("Spawn"))
+	return h
 }
 
-// No retry the daemon makes by itself relaunches a claim held for a cyber-policy refusal: the
-// next start of its role, a re-admission of its tree, a production check's look, the controller
-// keeper (RequestRetry with no decision behind it). Each is refused with ErrHeldForCyberPolicy,
-// and the claim stays failed with its record, its session and its task. A retry someone decided
-// relaunches it: the held phase's retry, which the architect's retry_or_escalate, the operator's
-// `legion claims retry` of a phase worker and a person's todo on a held root each start
-// (RequestRetry.Decided), and the operator's own retry (RequestOperatorRetry). A claim an
-// operator stopped after it failed keeps the record, so a retired one is held the same way.
-func TestOnlyADecidedRetryRelaunchesAClaimHeldForCyberPolicy(t *testing.T) {
+// wantStartedInANewSession fails the case unless retry, admitted for a claim held for a
+// cyber-policy refusal, launched the claim's agent again in a new session: one spawn and no
+// resume, the recorded session abandoned under the failure's sentence, the run of provider-error
+// turns started over, and the one line of a retry in a new session, saying why. A resume would
+// hand the refused session the retry's first task, which ends Oh My Pi's hold and sends that
+// content to OpenAI again.
+func (h *harness) wantStartedInANewSession(retry Event) {
+	h.t.Helper()
+	resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
+	lines := len(h.records.of("supervise: retrying in a new session"))
+	h.must(retry)
+	h.wantState(StateLaunching)
+	h.wantNoFailure()
+	h.wantCalls("Spawn", spawns+1)
+	h.wantCalls("Resume", resumes)
+	c := h.claim()
+	if c.Session != "" || c.SessionFile != "" || c.Abandoned.Session != session || !strings.Contains(c.Abandoned.Why, "cyber_policy") {
+		h.t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want %q left behind under the failure's sentence",
+			c.Session, c.SessionFile, c.Abandoned, session)
+	}
+	if c.ProviderErrorRun != 0 {
+		h.t.Errorf("the retried claim keeps a run of %d provider-error turns, want it started over with the new session", c.ProviderErrorRun)
+	}
+	if got := h.records.of("supervise: retrying in a new session"); len(got) != lines+1 {
+		h.t.Errorf("the retry logged %d lines of a retry in a new session, want one", len(got)-lines)
+	}
+}
+
+// No retry the daemon makes by itself launches again the agent of a claim held for a cyber-policy
+// refusal: the next start of its role, a re-admission of its tree, a production check's look, the
+// controller keeper (RequestRetry with no decision behind it). Each is refused with
+// ErrHeldForCyberPolicy, and the claim stays failed with its record, its session and its task. A
+// retry someone decided launches the agent again: the held phase's retry, which the architect's
+// retry_or_escalate, the operator's `legion claims retry` of a phase worker and a person's todo on
+// a held root each start (RequestRetry.Decided), and the operator's own retry
+// (RequestOperatorRetry). Each of those starts the agent in a new session, asked for or not: the
+// recorded session would send the refused content again. A claim an operator stopped after it
+// failed keeps the record, so a retired one is held the same way.
+func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {
 	refused := func(t *testing.T, h *harness, from string) {
 		t.Helper()
 		before, calls, sent := h.claim(), len(h.rt.Calls()), len(h.prompts())
@@ -134,8 +164,8 @@ func TestOnlyADecidedRetryRelaunchesAClaimHeldForCyberPolicy(t *testing.T) {
 		if !errors.Is(err, ErrHeldForCyberPolicy) || !errors.As(err, &refusal) || refusal.State != before.State {
 			t.Fatalf("the daemon's own retry of a claim %s returned %v, want ErrHeldForCyberPolicy", from, err)
 		}
-		if !strings.Contains(err.Error(), "legion claims retry") {
-			t.Errorf("the refusal %q names no way back, want the operator's `legion claims retry`", err)
+		if want := "`" + RetryCommand(h.token) + "`"; !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "--fresh-session") {
+			t.Errorf("the refusal %q names no way back, want the operator's %s and no flag it does not need", err, want)
 		}
 		if after := h.claim(); after.State != before.State || after.FailureCause != CauseCyberPolicy ||
 			after.Session != before.Session || after.Generation != before.Generation {
@@ -147,61 +177,73 @@ func TestOnlyADecidedRetryRelaunchesAClaimHeldForCyberPolicy(t *testing.T) {
 		h.advance(2 * promptRetryMax)
 		h.wantPrompts(sent)
 	}
-
-	t.Run("failed", func(t *testing.T) {
-		h, _ := failedForCyberPolicy(t)
-		refused(t, h, "failed for cyber policy")
-	})
-	t.Run("retired after it failed", func(t *testing.T) {
-		h, _ := failedForCyberPolicy(t)
+	stopped := func(t *testing.T) *harness {
+		t.Helper()
+		h := failedForCyberPolicy(t)
 		h.must(RequestStop{Claim: h.token})
 		h.wantState(StateRetired)
-		refused(t, h, "an operator stopped after it failed for cyber policy")
+		return h
+	}
+
+	t.Run("failed", func(t *testing.T) {
+		refused(t, failedForCyberPolicy(t), "failed for cyber policy")
+	})
+	t.Run("retired after it failed", func(t *testing.T) {
+		refused(t, stopped(t), "an operator stopped after it failed for cyber policy")
 	})
 	for _, tc := range []struct {
 		name  string
+		claim func(*testing.T) *harness
 		retry Event
 	}{
-		{"the held phase's retry", RequestRetry{Claim: testToken, Decided: true}},
-		{"the operator's retry", RequestOperatorRetry{Claim: testToken}},
-		{"the operator's retry in a new session", RequestOperatorRetry{Claim: testToken, FreshSession: true}},
+		{"the held phase's retry", failedForCyberPolicy, RequestRetry{Claim: testToken, Decided: true}},
+		{"the held phase's retry asking for a new session", failedForCyberPolicy, RequestRetry{Claim: testToken, Decided: true, FreshSession: true}},
+		{"the operator's retry", failedForCyberPolicy, RequestOperatorRetry{Claim: testToken}},
+		{"the operator's retry in a new session", failedForCyberPolicy, RequestOperatorRetry{Claim: testToken, FreshSession: true}},
+		{"the operator's retry of a claim it stopped after it failed", stopped, RequestOperatorRetry{Claim: testToken}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, launches := failedForCyberPolicy(t)
-			h.must(tc.retry)
-			h.wantState(StateLaunching)
-			h.wantNoFailure()
-			if got := len(h.calls("Resume")) + len(h.calls("Spawn")); got != launches+1 {
-				t.Fatalf("the decided retry made %d launches, want one", got-launches)
-			}
+			tc.claim(t).wantStartedInANewSession(tc.retry)
 		})
 	}
-	// A claim held for any other cause is retried by the daemon as before.
+	// A claim held for any other cause is retried by the daemon as before, on its recorded
+	// session: the control that the new session above is the hold's and no retry's own.
 	t.Run("a provider error that cannot clear", func(t *testing.T) {
 		h := idleClaim(t)
 		h.pluginTurn(1, true, 400)
 		h.wantState(StateFailed)
+		resumes := len(h.calls("Resume"))
 		h.must(RequestRetry{Claim: h.token})
 		h.wantState(StateLaunching)
+		h.wantCalls("Resume", resumes+1)
+		if c := h.claim(); c.Session != session || c.Abandoned.Session != "" {
+			t.Fatalf("the retried claim records session %q and abandoned %+v, want %q resumed", c.Session, c.Abandoned, session)
+		}
 	})
 }
 
 // The daemon's controller is retried by its keeper alone, so the operator's retry of it is refused
 // (TestTheOperatorsRetryOfTheControllerIsRefused). A controller held for a cyber-policy refusal is
-// the exception: its keeper retries it no more, so the operator's retry is the one way back, and
-// it is admitted.
-func TestTheOperatorsRetryRelaunchesAControllerHeldForCyberPolicy(t *testing.T) {
-	h := newHarnessOf(t, controllerClaim())
-	h.reach(StateIdle)
-	h.cyberPluginTurn(1, 0)
-	h.wantHeldForCyberPolicy()
+// the exception: its keeper retries it no more (Claim.KeeperRetries), so the operator's retry is
+// the one way back, and it is admitted, in a new session whether it asks for one or not.
+func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
+	for _, fresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("--fresh-session %t", fresh), func(t *testing.T) {
+			h := newHarnessOf(t, controllerClaim())
+			h.reach(StateIdle)
+			h.cyberPluginTurn(1, 0)
+			h.wantHeldForCyberPolicy()
+			if h.claim().KeeperRetries() {
+				t.Fatal("the held controller reads as one its keeper retries")
+			}
 
-	if err := h.handle(RequestRetry{Claim: h.token}); !errors.Is(err, ErrHeldForCyberPolicy) {
-		t.Fatalf("the keeper's retry of the held controller returned %v, want ErrHeldForCyberPolicy", err)
-	}
-	h.must(RequestOperatorRetry{Claim: h.token, FreshSession: true})
-	h.wantState(StateLaunching)
-	if c := h.claim(); c.Role != claim.RoleController || c.FailureCause != "" {
-		t.Fatalf("the retried controller is %+v, want it launching with no failure record", c)
+			if err := h.handle(RequestRetry{Claim: h.token}); !errors.Is(err, ErrHeldForCyberPolicy) {
+				t.Fatalf("the keeper's retry of the held controller returned %v, want ErrHeldForCyberPolicy", err)
+			}
+			h.wantStartedInANewSession(RequestOperatorRetry{Claim: h.token, FreshSession: fresh})
+			if c := h.claim(); c.Role != claim.RoleController || !c.KeeperRetries() {
+				t.Fatalf("the retried controller is %+v, want it the keeper's again", c)
+			}
+		})
 	}
 }

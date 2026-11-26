@@ -252,20 +252,8 @@ func TestACyberPolicyRefusalHoldsTheIssueWhateverItsStatus(t *testing.T) {
 			h.errorTurn(StreamPromptResult{Error: "503 cyber_policy: synthetic refusal text", HTTPStatus: status,
 				Provider: "openai", Model: "gpt-5.5", Code: codeCyberPolicy})
 
-			h.wantState(StateFailed)
-			c := h.claim()
-			if c.FailureCause != CauseCyberPolicy {
-				t.Errorf("the failure's cause is %q, want %q", c.FailureCause, CauseCyberPolicy)
-			}
-			for _, want := range []string{"cannot clear", "cyber_policy"} {
-				if !strings.Contains(c.Failure, want) {
-					t.Errorf("the failure is %q, want it to name %q", c.Failure, want)
-				}
-			}
-			if strings.Contains(c.Failure, "synthetic refusal text") {
-				t.Errorf("the failure is %q, want none of the provider's own words", c.Failure)
-			}
-			if c.Pending == nil {
+			h.wantHeldForCyberPolicy()
+			if h.claim().Pending == nil {
 				t.Error("the failed claim holds no task; the work is still owed and the architect decides it")
 			}
 			// Past the ladder's top step twice over: the task itself is the one prompt.

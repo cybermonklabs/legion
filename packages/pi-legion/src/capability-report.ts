@@ -747,9 +747,10 @@ export function ompCapabilityHost(): CapabilityHost {
         import("@oh-my-pi/pi-coding-agent/extensibility/settings"),
         hostSettings(),
       ]);
-      // The host answers one `{path, scope}` entry per extension; the check reads the path alone.
+      // The host answers one `{path, scope}` entry per extension, and a host before
+      // v18.18.6-sami.20261124-152326 the bare path (`omp-host.d.ts`); the check reads the path.
       const entries = await discoverExtensionPaths([], cwd, cfgDisabledExtensions.get(settings));
-      return entries.map((entry) => entry.path);
+      return entries.map((entry) => (typeof entry === "string" ? entry : entry.path));
     },
     loadSkills: async (cwd) => {
       const [{ loadSkills }, { cfgDisabledExtensions, cfgSkills }, settings] = await Promise.all([

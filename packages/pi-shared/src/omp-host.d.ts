@@ -275,12 +275,14 @@ declare module "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader" {
   /** Every extension loaded for `cwd`, each found once: the native modules, the hooks and the
    * installed plugins' modules, then the explicit paths, less the disabled
    * (`extensibility/extensions/loader.ts:804-883` at v18.18.6-sami.20261125-164517). Each is an
-   * entry; v18.18.6-sami.20261123-024918 returned the bare paths. */
+   * entry from v18.18.6-sami.20261124-152326 on, and the bare path on a host before it
+   * (v18.18.6-sami.20261123-024918 among them); Legion's boot gate does not check the host's
+   * version, so a reader takes either. */
   export function discoverExtensionPaths(
     explicit: readonly string[],
     cwd: string,
     disabled: readonly string[]
-  ): Promise<ExtensionPathEntry[]>;
+  ): Promise<(ExtensionPathEntry | string)[]>;
 }
 
 declare module "@oh-my-pi/pi-coding-agent/mcp/config" {
