@@ -501,11 +501,45 @@ list_check() {
   set -e
 }
 
+# names_at <text> <prefix> <token>... [--not <token>...]: true when a line of the text opens with
+# <prefix>, a refusal's location such as `::error file=<file>,line=<n>::`, and, past it, holds each
+# token before --not (a token listed twice, twice over) and, with those occurrences taken out, none
+# of the tokens after --not. The prefix and the tokens are literal strings, never patterns, and the
+# tokens may stand anywhere on that line in any order. So a row checks where the gate refuses and
+# the steps, files, inputs and figures the refusal names, and never the words around them
+# (dispatch://INFRA-1545, round 70).
+names_at() {
+  local text=$1 prefix=$2 line rest token
+  local -a want=() refuse=()
+  shift 2
+  while [ "$#" -gt 0 ] && [ "$1" != --not ]; do
+    want+=("$1")
+    shift
+  done
+  if [ "$#" -gt 0 ]; then
+    shift
+    refuse=("$@")
+  fi
+  while IFS= read -r line; do
+    [ "${line:0:${#prefix}}" = "$prefix" ] || continue
+    rest=${line:${#prefix}}
+    for token in ${want[@]+"${want[@]}"}; do
+      [[ $rest == *"$token"* ]] || continue 2
+      rest=${rest/"$token"/$'\n'}
+    done
+    for token in ${refuse[@]+"${refuse[@]}"}; do
+      [[ $rest != *"$token"* ]] || continue 2
+    done
+    echo true
+    return
+  done <<<"$text"
+  echo false
+}
+
 echo "case: a tree holding each exception R2 still has a site for passes"
 root=$(fixture exceptions)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "says what it read" "$(contains "$out" 'every network fetch in CI retries at the floor')"
 # Nine sites, not the seven this case counted while exception (c) had a script: that script
 # went with the browser suite's move into an image this repository builds
 # (cybermonklabs/legion#2938), and its two exempted apt sites went with it; the visual job's
@@ -533,7 +567,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the file, the line and the step" \
   "$(contains "$out" 'file=.github/workflows/case.yaml,line=9::.curl. in step .Install changie. fetches without the floor')"
-check "names each option it lacks" "$(contains "$out" 'it passes none')"
+check "asks the curl at line 9 for --retry 7, naming no --retry it passes" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=9::' '--retry 7' --not '--retry ')"
 check "names --retry-all-errors" "$(contains "$out" 'retry-all-errors')"
 check "names --max-time" "$(contains "$out" 'max-time')"
 check "counts the refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
@@ -571,7 +606,9 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the missing bound" "$(contains "$out" 'which curl resets for each attempt')"
+check "refuses the curl at line 8 for --max-time <seconds> alone" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' 'Install uv' \
+    '--max-time <seconds>' --not '--retry 7' '--retry-all-errors' '--fail')"
 
 echo "case: a curl that retries and never fails on a persistent 504"
 root=$(fixture no-fail)
@@ -587,7 +624,9 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names --fail and what it costs" "$(contains "$out" 'writes the error body to the output')"
+check "refuses the curl at line 8 for --fail alone" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' 'Install uv' \
+    '--fail' --not '--retry 7' '--retry-all-errors' '--max-time <seconds>')"
 
 echo "case: a curl that reads the status itself answers for --fail"
 root=$(fixture status-read)
@@ -681,8 +720,9 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "says it cannot read the wait" \
-  "$(contains "$out" 'with a value this check cannot read')"
+check "refuses the curl at line 8 for --retry-delay or --retry-max-time it cannot read, against the 120 s floor" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' 'Install uv' \
+    '--retry-delay' '--retry-max-time' '120 s')"
 
 echo "case: a composite action holding a second copy of the retry helper"
 root=$(fixture copied-helper)
@@ -707,7 +747,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the loop as a copy" \
   "$(contains "$out" 'file=.github/actions/install-thing/action.yml,line=10::this loop retries .curl. itself, which makes it a second copy')"
-check "names the one rule" "$(contains "$out" 'One rule holds the attempts')"
 
 echo "case: a loop that hands a fetch to a retry function of its own is a copy too"
 root=$(fixture copied-helper-indirect)
@@ -795,7 +834,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the Dockerfile, the line and the verb" \
   "$(contains "$out" 'file=packages/envoy/docker/Dockerfile,line=2::.apt-get update. fetches inside a Dockerfile RUN with no retry')"
-check "names the inline loop to use" "$(contains "$out" 'the canonical inline loop')"
 
 echo "case: a Dockerfile RUN that opens with the canonical retry and wraps each fetch passes"
 root=$(fixture canonical-retry)
@@ -905,10 +943,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the Dockerfile, the line and the option" \
   "$(contains "$out" 'file=packages/envoy/docker/Dockerfile,line=6::.apt-get update. passes no .-o APT::Update::Error-Mode=any.')"
-check "says what goes wrong, not only what is missing" \
-  "$(contains "$out" 'the retry around it stops after one attempt having read no list')"
-check "names the install the unread list breaks" \
-  "$(contains "$out" 'has no installation candidate')"
 
 echo "case: a Dockerfile RUN with a retry loop of its own text"
 root=$(fixture other-retry)
@@ -920,8 +954,8 @@ RUN retry() { for i in 1 2 3; do "$@" && return 0; sleep 5; done; return 1; } \
 DOCKER
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the canonical text as the one definition" \
-  "$(contains "$out" 'this RUN defines a retry loop of its own text')"
+check "refuses the RUN at line 2 for the retry() it defines, naming CANONICAL" \
+  "$(names_at "$out" '::error file=packages/envoy/docker/Dockerfile,line=2::' 'retry()' 'CANONICAL')"
 
 echo "case: a Dockerfile RUN whose one fetch is a curl carrying curl's own options passes"
 root=$(fixture dockerfile-curl)
@@ -999,11 +1033,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the file, the line, the step and the verb" \
   "$(contains "$out" "file=.github/workflows/case.yaml,line=10::.mise x. in step .Install the worker image.s jj. is retried, and that retry protects nothing")"
-check "says what goes wrong, not only what to write instead" \
-  "$(contains "$out" 'runs whatever binary of that name is already on PATH')"
-check "names the cure" "$(contains "$out" 'The cure is .mise install <tool>. under the retry')"
-check "names the resolution that follows it" \
-  "$(contains "$out" 'with the resolution after it')"
 
 echo "case: a Dockerfile RUN that wraps a mise x in the canonical retry"
 root=$(fixture retried-mise-x-dockerfile)
@@ -1018,7 +1047,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the Dockerfile, the line and the verb" \
   "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=6::.mise x. is retried, and that retry protects nothing')"
-check "names the cure" "$(contains "$out" 'The cure is .mise install <tool>. under the retry')"
 check "counts the one refusal" \
   "$(contains "$out" '1 download(s) outside the one retry rule')"
 
@@ -1254,8 +1282,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the file, the line, the step and the option" \
   "$(contains "$out" "file=.github/workflows/case.yaml,line=12::.apt-get update. in step .Install the packages. passes no .-o APT::Update::Error-Mode=any.")"
-check "says what goes wrong, not only what is missing" \
-  "$(contains "$out" 'the retry around it stops after one attempt having read no list')"
 check "the retried install beside it is no problem of this rule" \
   "$(contains "$out" '1 download(s) outside the one retry rule')"
 
@@ -1306,8 +1332,8 @@ check "a script site carries a dash for the step" \
 check "the baseline's own retried site is on it" \
   "$(contains "$out" 'playwright install	Install Playwright Chromium$')"
 check "an excepted site is not on it" "$(is "$(contains "$out" 'docker pull')" false)"
-check "the count goes to standard error, not into the rows" \
-  "$(is "$(contains "$out" 'site\(s\)')" false)"
+check "prints nothing but its rows, each a file, a line, a verb and a step, so the count goes elsewhere" \
+  "$(is "$(printf '%s\n' "$out" | grep -cvE $'^[^\t]+\t[0-9]+\t[^\t]+\t[^\t]+$')" 0)"
 
 echo "case: --list over a tree with a problem refuses instead of listing"
 root=$(fixture listing-refused)
@@ -1323,7 +1349,9 @@ jobs:
 YAML
 run_check "$root" --list
 check "exits 1" "$(is "$status" 1)"
-check "names the problem" "$(contains "$out" 'fetches without the floor')"
+check "refuses the curl at line 8 instead, naming the three options it lacks" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' 'Install changie' \
+    '--retry 7' '--retry-all-errors' '--max-time <seconds>')"
 
 echo "case: an exception that matches no fetch fails"
 root=$(fixture stale-exception)
@@ -1460,8 +1488,6 @@ check "names a variable as written" \
   "$(contains "$out" "file=.github/workflows/image.yaml,line=17::step 'Build the chosen image by hand' of job 'image' builds a Dockerfile (.docker build.'s .--file.) and names it as .\$DOCKERFILE.")"
 check "names a composite action's build that writes no --file" \
   "$(contains "$out" "file=.github/actions/build-images/action.yml,line=8::step 'Build the image here' of .github/actions/build-images/action.yml builds a Dockerfile (.docker buildx build.'s .--file.) and names it as no file at all")"
-check "says to write the path and name it in DOCKERFILES" \
-  "$(contains "$out" "Write the Dockerfile's own path, from the repository's root, and add it to DOCKERFILES")"
 check "counts the four refusals" "$(contains "$out" '4 download(s) outside the one retry rule')"
 
 # The browser image's shape: one installing RUN whose longest ladder is the package set's
@@ -1503,8 +1529,6 @@ check "names the step's key and the ladder" \
   "$(contains "$out" "file=.github/workflows/image.yaml,line=9::step 'Build and push' of job 'image' carries .timeout-minutes: 2., 120 s, and it builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s, the .apt-get install. at .github/docker/browser.Dockerfile[:]7")"
 check "names the job's key, at the ladder's own minute, and the ladder" \
   "$(contains "$out" "file=.github/workflows/image.yaml,line=6::job 'image' carries .timeout-minutes: 27., 1620 s, and step 'Build and push' of job 'image' builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s")"
-check "says why one ladder" \
-  "$(contains "$out" 'a fault window is paid once, through the first fetch that meets it')"
 check "counts the two refusals" "$(contains "$out" '2 download(s) outside the one retry rule')"
 
 echo "case: a build step and its job keyed above the Dockerfile's longest single ladder pass"
@@ -1518,7 +1542,8 @@ root=$(fixture bad-yaml)
 printf 'name: Case\non: [push\n' > "$root/.github/workflows/case.yaml"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the file" "$(contains "$out" 'this file is not valid YAML')"
+check "refuses the file at its line 1, with the parser's position of the unclosed [push, line 2, column 5" \
+  "$(is "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=1::')$(contains "$out" 'line 2, column 5:')" truetrue)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 # A step's own budget must be larger than the attempts it allows, not equal to them. Measured in
@@ -1678,11 +1703,13 @@ check "names the step and the call it cannot count" \
 check "names the loop's file and line" \
   "$(contains "$out" '.gh api. at .github/workflows/case.yaml:12, inside the loop at line 11')"
 check "says what one call of it costs" "$(contains "$out" 'One call there takes 300 s')"
-check "says where a count can be written or declared" "$(contains "$out" 'DECLARED_LOOPS')"
-check "does not judge the budget against a figure it is missing" \
-  "$(is "$(contains "$out" 'does not strictly exceed')" false)"
-check "does not ask for a bound written as a number, the bound being one" \
-  "$(is "$(contains "$out" '[Ww]rite that bound as a number')" false)"
+check "offers the step at line 8 a literal pass count, or a DeclaredArithmetic entry of the gate's DECLARED_LOOPS" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' 'for x in 1 2 3 4 5 6 7' \
+    DECLARED_LOOPS DeclaredArithmetic .github/scripts/check-download-retry.sh)"
+check "refuses nothing else, so it judges no budget against a figure it is missing" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+check "reads the call's bound at line 8 as its number, 300 s, asking for no retry_fetch seconds" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' '300 s' --not retry_fetch)"
 
 # Two uncounted loops, one inside the other's script: the step's loop cannot be counted, and
 # neither can the loop inside the script it runs, so the figure for one run of that script is
@@ -1724,8 +1751,9 @@ check "says one run of that script reaches an uncounted loop" \
   "$(contains "$out" 'One run of ..github/scripts/c.sh. reaches a loop, its own or one in a script it calls, whose passes this check cannot read either')"
 check "prints no figure for a cost it cannot compute" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
-check "still says what to do instead" \
-  "$(contains "$out" 'take the call out of the loop')"
+check "offers the script call at line 8 a literal pass count and no declaration in the gate" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' 'for x in 1 2 3 4 5 6 7' \
+    DECLARED_LOOPS --not DeclaredArithmetic .github/scripts/check-download-retry.sh)"
 
 # The loop can be two scripts in: the step loops over a script that calls another outside any
 # loop, and that second one holds the `while read`. The figure for one run of the first is
@@ -1771,8 +1799,9 @@ check "names the site in the second script that stopped the reading" \
   "$(contains "$out" '.gh api. at .github/scripts/d.sh:5, inside the loop at line 4')"
 check "says the loop one run reaches may sit in a script that script calls" \
   "$(contains "$out" 'One run of ..github/scripts/c2.sh. reaches a loop, its own or one in a script it calls')"
-check "does not call the uncounted loop the first script's own" \
-  "$(is "$(contains "$out" 'holds a loop of its own')" false)"
+check "places the uncounted loop at line 8's refusal in d.sh, and none in c2.sh" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' .github/scripts/d.sh:5 \
+    --not .github/scripts/c2.sh:)"
 
 # A loop this check cannot count around a script that retries nothing is no loop rule 8 has
 # anything to say about: nobody waits for an attempt under it, so there is no sum for a budget
@@ -1804,8 +1833,6 @@ jobs:
 YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "asks the step for no pass count" \
-  "$(is "$(contains "$out" 'can put no figure on it')" false)"
 check "prices no run of that script at nothing" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 
@@ -1844,8 +1871,6 @@ jobs:
 YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "asks the step for no pass count" \
-  "$(is "$(contains "$out" 'can put no figure on it')" false)"
 
 # A script this check cannot price is not a script that retries nothing. A curl making its own
 # attempts passes rule 1 on the options it writes, and `--max-time "$bound"` is one of them:
@@ -1881,8 +1906,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the script call and the loop around it" \
   "$(contains "$out" '..github/scripts/zz-i.sh. at .github/workflows/case.yaml:11, inside the loop at line 10')"
-check "says the bound is written as a variable rather than as a number" \
-  "$(contains "$out" 'makes attempts whose bound is written as a variable rather than as a number')"
+check "names at line 8 the script and the kind of its bound, a variable" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' .github/scripts/zz-i.sh variable)"
 check "prices no run of that script at nothing" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 
@@ -1928,32 +1953,11 @@ check "names the site's line and the loop around it" \
   "$(contains "$out" '.curl. at .github/workflows/case.yaml:11, inside the loop at line 14')"
 check "says what one call of it takes is a figure it cannot make" \
   "$(contains "$out" 'What one call of .curl. there takes is a figure this check cannot make, because its bound is written as a variable rather than as a number')"
-check "says the passes of the loop are unread too" \
-  "$(contains "$out" 'the step waits for that once per pass of a loop whose passes this check cannot read either')"
-check "prints no figure for a call it cannot price" \
-  "$(is "$(contains "$out" 'One call there takes')" false)"
 check "prices the site at nothing nowhere" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
-check "gives the site's advice and not a script call's" \
-  "$(contains "$out" 'Write that bound as a number')"
-# With the count advice left out, the advice is a sentence of its own and starts with a capital:
-# it read `… it exists to allow. write that bound …` (dispatch://INFRA-1545, round 37).
-check "starts the advice that follows the count's absence with a capital letter" \
-  "$(contains "$out" 'cuts in the middle of the retry it exists to allow\. Write that bound as a number')"
-check "starts no sentence of the refusal in lowercase" \
-  "$(is "$(contains "$out" 'it exists to allow\. [a-z]')" false)"
-check "says a declaration answers an unread bound" \
-  "$(contains "$out" 'or declare that site in DECLARED_LOOPS in .github/scripts/check-download-retry.sh. An entry there writes the seconds the site contributes to this budget, whole')"
-check "says why that entry writes the whole of it" \
-  "$(contains "$out" 'neither half of what the step waits for — what one call takes, or how many calls the loop makes — is a figure this check can make')"
-check "names what such an entry matches a site by" \
-  "$(contains "$out" 'It matches a site by its file, the verb it retries and the step where the site is written in a workflow, a site inside a script being read with no step at all')"
-check "no longer says no entry of DECLARED_LOOPS answers this one" \
-  "$(is "$(contains "$out" 'No entry of DECLARED_LOOPS answers this one')" false)"
-check "offers no pass count as a way out of this one" \
-  "$(is "$(contains "$out" 'Write the count where this check reads it')" false)"
-check "does not tell the author to take a call out of a loop" \
-  "$(is "$(contains "$out" 'take the call out of the loop')" false)"
+check "offers the site at line 8 a DECLARED_LOOPS entry in the gate, with no pass count, DeclaredArithmetic or retry_fetch seconds" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' DECLARED_LOOPS \
+    .github/scripts/check-download-retry.sh --not 'for x in 1 2 3 4 5 6 7' DeclaredArithmetic retry_fetch)"
 
 # A site with no bound at all, in that same loop, is not a site whose bound is a variable. Rule 8
 # kept it, rightly, since the loop is its own fault and rule 1 says nothing of a loop, but it
@@ -2087,14 +2091,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the step and the site whose bound it cannot read" \
   "$(contains "$out" "step .Install the tool this job runs. carries .timeout-minutes: 1. and this check can put no figure on it: it runs a retried call whose attempts are bounded by a variable rather than by a number — .curl. at .github/workflows/case.yaml:11")"
-check "says a budget cannot be held above a wait nobody can price" \
-  "$(contains "$out" 'a budget cannot be held above a wait nobody can price')"
-check "offers the bound written as a number" \
-  "$(contains "$out" 'Write that bound as a number')"
-check "offers the declaration beside it" \
-  "$(contains "$out" 'declare that site in DECLARED_LOOPS')"
-check "names no loop, there being none" \
-  "$(is "$(contains "$out" 'inside the loop at line')" false)"
 check "prices the step at nothing nowhere" \
   "$(is "$(contains "$out" 'holds 0 s of retries')" false)"
 
@@ -2121,10 +2117,6 @@ YAML
 declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 1821, "the three fetches one failing install makes, at 8 x 60 + 127 = 607 s each: 3 x 607 = 1821 s"),'
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "asks the step for no figure of its own" \
-  "$(is "$(contains "$out" 'can put no figure on it')" false)"
-check "refuses the entry for matching no call nowhere" \
-  "$(is "$(contains "$out" 'matches no retried call')" false)"
 
 # The entry's seconds are the site's contribution and not a note beside it: the budget is held
 # above that figure, and a budget under it is refused with it.
@@ -2173,8 +2165,6 @@ YAML
 declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 60, "one attempt of one fetch, which is all this fixture claims"),'
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "compares the entry with no floor it cannot read" \
-  "$(is "$(contains "$out" 'A site costs at least one call of itself')" false)"
 
 # The other half of that reading, which the case above must not take with it: a site one_call
 # prices at 0 is still dropped. The loop the exempt action writes is as unreadable as the one
@@ -2197,8 +2187,6 @@ jobs:
 YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "asks the step for no pass count" \
-  "$(is "$(contains "$out" 'can put no figure on it')" false)"
 check "prices no call of that loop at nothing" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 
@@ -2239,8 +2227,6 @@ jobs:
 YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "asks the step for no pass count" \
-  "$(is "$(contains "$out" 'can put no figure on it')" false)"
 check "prices no run of either script at nothing" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 
@@ -2282,8 +2268,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "holds the step to the ladder the priced script makes" \
   "$(contains "$out" 'its own retries take 450 s to exhaust')"
-check "asks the step for no pass count" \
-  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "refuses nothing else, so the costless loop asks the step for no pass count" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # The same loop around a script that does fetch is the shape rule 8 is for: the step waits for
 # that script's whole ladder once per pass, and the passes are unread.
@@ -2420,8 +2406,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "uses the declared seconds and not one call of the site" \
   "$(contains "$out" 'retries take 1200 s to exhaust')"
-check "no longer refuses the site for want of a figure" \
-  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "refuses nothing else, so the site is not refused for want of a figure" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 echo "case: a declared arithmetic below one call of its site is refused"
 root=$(fixture declared-arithmetic-floor)
@@ -2448,8 +2434,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the site and the floor one call of it sets" \
   "$(contains "$out" 'writes 200 s, and one call of that site at .github/workflows/case.yaml:12 takes 300 s')"
-check "says a site costs one call of itself" \
-  "$(contains "$out" 'A site costs at least one call of itself')"
 
 # The shape that reached no comparison at all: a step whose whole arithmetic is a composite
 # action's, carrying no budget of its own. `.github/workflows/ci.yaml#airlock-lean` held
@@ -2618,8 +2602,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the job's budget and the step's own" \
   "$(contains "$out" "and its step .Install changie. carries .timeout-minutes: 8.")"
-check "says the job budget does not strictly exceed it" \
-  "$(contains "$out" "which that job budget does not strictly exceed")"
 check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 9. or more on this job')"
 check "does not also report the step's own retries against this job" \
   "$(is "$(printf '%s\n' "$out" | grep -c 'holds retries taking')" 0)"
@@ -3134,7 +3116,6 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "pairs no key 28 with the block" "$(is "$(contains "$out" 'this comment prices')" false)"
 check "refuses the key's text by name at its line" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=7::job 'build' writes .timeout-minutes: 28 junk., which is no whole number with no leading zero")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
@@ -3173,8 +3154,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "the derivation clause refuses the key it reads" \
   "$(contains "$out" "job 'build' carries .timeout-minutes: 37., 2220 s, and its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
-check "and the block still prices that key" \
-  "$(is "$(contains "$out" 'no comment block prices that key')" false)"
+check "refuses nothing else, so the block still prices that key" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # Each line of a block loses its indentation before its `#`, so an arrow split over two indented
 # lines joins as `-> 38 min`. With the `#` stripped alone, the indented second line kept its `#`
@@ -3285,12 +3266,9 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the retried step it holds" "$(contains "$out" "holds a retried step")"
-check "says no comment block prices that key" \
-  "$(contains "$out" "no comment block prices that key")"
-check "names the two clauses that read a price, by what they are and where" \
-  "$(contains "$out" "rule 8's priced-comment and job-derivation clauses in .github/scripts/check-download-retry.sh")"
-check "says what to write" "$(contains "$out" 'as .-> N min. in a comment block inside this job')"
+check "refuses job build's key at line 8, naming the key, the retried step and its 1050 s, the -> N min to write and the gate's file" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' build 'timeout-minutes: 38' \
+    'The large fetch' '1050 s' '-> N min' .github/scripts/check-download-retry.sh)"
 
 # PRICED reads an arrow only where `min` follows its number: `-> 38.` names no unit, and the
 # pricing clause asks for `-> N min`. With `min` dropped from the pattern, the job below went
@@ -3315,8 +3293,6 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "refuses the key" "$(contains "$out" "job 'build' carries .timeout-minutes: 38. and holds a retried step")"
-check "says no comment block prices that key" \
-  "$(contains "$out" "no comment block prices that key")"
 
 echo "case: the same job priced as -> N min passes, wherever the block sits"
 root=$(fixture job-priced-above-its-id)
@@ -3340,11 +3316,10 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
-# The pricing refusal's advice is the pairing rule in words: a block above the job's id prices
-# the key only with no comment line between the two. A note above the key ends the block's reach,
-# so the job below is refused, and the refusal says what stands in the way; the same job without
-# the note passes (dispatch://INFRA-1545, review round 28).
-echo "case: a note between a job's priced block and its key is refused, and told why"
+# A block above the job's id prices the key only with no comment line between the two. A note
+# above the key ends the block's reach, so the job below is refused; the same job without the
+# note passes (dispatch://INFRA-1545, review round 28).
+echo "case: a note between a job's priced block and its key is refused"
 root=$(fixture job-priced-note-between)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
 name: Case
@@ -3365,8 +3340,6 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "refuses the key" "$(contains "$out" "job 'build' carries .timeout-minutes: 38. and holds a retried step")"
-check "says no comment line may stand between the block and the key" \
-  "$(contains "$out" "with no comment line and no other .timeout-minutes. between that block and this key")"
 
 echo "case: the same job with the note removed passes"
 root=$(fixture job-priced-note-removed)
@@ -3542,8 +3515,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "refuses build, which no block of its own prices" \
   "$(contains "$out" "line=7::job 'build' carries .timeout-minutes: 30. and holds a retried step")"
-check "says no comment block prices that key" \
-  "$(contains "$out" "no comment block prices that key")"
 
 # A key is paired by its file and its line. The two files below put their job keys on the same
 # line, and only the first prices its own; compared by the line alone, the pairing the first file
@@ -3660,8 +3631,6 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the 450 s step" "$(contains "$out" "whose retries take 450 s to exhaust")"
-check "says no comment block prices that key" \
-  "$(contains "$out" "no comment block prices that key")"
 
 # The pricing refusal names the job's slowest retried step by the step's own name, which is what
 # a reader searches the workflow for. With the job's name put in its place, the refusal below
@@ -4177,7 +4146,8 @@ YAML
     check "a budget of 20 minutes exits 1" "$(is "$status" 1)"
     check "charges both loops, each at its own entry's figure" \
       "$(contains "$out" "step 'Reconcile the ci-ok check runs' carries .timeout-minutes: 20., 1200 s, and its own retries take 1200 s to exhaust")"
-    check "and refuses no entry for covering two loops" "$(is "$(contains "$out" 'covers the loops at lines')" false)"
+    check "and refuses nothing else, no entry for covering two loops" \
+      "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
   else
     check "a budget of 21 minutes exits 0" "$(is "$status" 0)"
   fi
@@ -4224,7 +4194,6 @@ run_check "$root"
 check "a step sourcing it exits 1" "$(is "$status" 1)"
 check "refuses the step by name, as a file this check does not read" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Source the harness library' of job 'build' writes ..github/scripts/r41-test-lib.sh. as an argument of .\.., and it names .github/scripts/r41-test-lib.sh, a file under .github/scripts/ this check does not read as a script")"
-check "and says only a harness sources one" "$(contains "$out" 'a .-test-lib.sh. there is a harness.s library, which only a ..test.sh. harness sources')"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # Rule 8 reads a curl's own attempts off the ladder rule 1 holds it to, not off a fixed eight:
@@ -4273,7 +4242,8 @@ echo "case: an argument this check does not take"
 root=$(fixture bad-argument)
 run_check "$root" --everything
 check "exits 2" "$(is "$status" 2)"
-check "says what it takes" "$(contains "$out" 'this check takes no argument')"
+check "refuses at the gate's own file, naming the two arguments it takes, --list and --jobs" \
+  "$(names_at "$out" '::error file=.github/scripts/check-download-retry.sh::' --list --jobs)"
 
 # Rule 9. A workflow `run:` that names no shell runs under GitHub's `/usr/bin/bash -e {0}`:
 # errexit on, pipefail off, so a pipeline's status is its last command's and a fetch left of a
@@ -4298,10 +4268,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the file, the line and the step" \
   "$(contains "$out" 'file=.github/workflows/case.yaml,line=11::.curl. in step .Install changie. is not the last command of its pipeline')"
-check "says whose status the step reads" \
-  "$(contains "$out" "a pipeline's status is its last command's alone")"
-check "says the retry around it never retries" "$(contains "$out" 'never retries')"
-check "names the cure" "$(contains "$out" 'write the pipeline as two commands')"
 check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
 
 echo "case: a bare fetch left of a pipe is refused for the pipeline as well as the floor"
@@ -4321,8 +4287,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the missing floor" \
   "$(contains "$out" 'file=.github/workflows/case.yaml,line=9::.curl. in step .Install changie. fetches without the floor')"
-check "names the pipeline too, not only the missing retry" \
-  "$(contains "$out" 'is not the last command of its pipeline')"
+check "names pipefail and shell: bash at line 9 too, so the floor and the pipeline are one refusal" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=9::' 'Install changie' pipefail 'shell: bash')"
 check "the two faults of one site are one annotation" \
   "$(contains "$out" '1 download(s) outside the one retry rule')"
 
@@ -4490,7 +4456,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the job, the step and the file" \
   "$(contains "$out" "file=.github/workflows/case.yaml,line=9::job .build. compiles Go in step .Build the server. and holds no retried")"
-check "names the step to write" "$(contains "$out" 'mod download')"
 # The same job with the download step the browser suite's jobs carry.
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
 name: Case
@@ -4570,7 +4535,6 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the key and the second line" \
   "$(contains "$out" 'file=.github/workflows/case.yaml,line=7::`timeout-minutes` is written twice')"
-check "says GitHub runs nothing of it" "$(contains "$out" 'runs nothing of it')"
 
 python3 - "$root/.github/workflows/case.yaml" <<'PY_EDIT'
 import sys
@@ -5219,7 +5183,9 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "refuses the entry for its two loops" "$(contains "$out" 'covers the loops at lines')"
+check "refuses the entry at the gate's line 1 by its file, step and verb, the loops at lines 11 and 15, and its 200 s" \
+  "$(names_at "$out" '::error file=.github/scripts/check-download-retry.sh,line=1::' .github/workflows/case.yaml \
+    'Cancel every run, then read every run' 'gh api' '11, 15' '200 s')"
 check "and not also for its floor" "$(is "$(contains "$out" 'writes 200 s, and one call')" false)"
 
 echo "case: a declaration under the floor of two of its calls names the first of them"
@@ -7521,8 +7487,6 @@ jobs:
 YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "does not judge the budget against the quiet loop's waits" \
-  "$(is "$(contains "$out" 'does not strictly exceed')" false)"
 
 # A call of a priced script inside a loop whose passes this check cannot read leaves the walk
 # with no figure, and the walk still reaches every file beside that call. The step loops,
@@ -7920,7 +7884,6 @@ check "refuses the array's run at its own line" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=15::step 'List it in an array' of job 'build' runs \`\${a\[@\]}\` as a command, which runs words its callers hand it or that it sets itself")"
 check "refuses nothing else" \
   "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 12)"
-check "charges none of them" "$(is "$(contains "$out" 'its own retries take')" false)"
 
 # The same places naming a script that fetches nothing are neither charged nor refused
 # (dispatch://INFRA-1545, round 37): zz-quiet.sh holds no retried call, so whatever runs it
@@ -8026,8 +7989,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "charges both runs, 2100 s" \
   "$(contains "$out" "step 'Resolve both versions' carries .timeout-minutes: 1., 60 s, and its own retries take 2100 s to exhaust")"
-check "reads neither as a place it does not read" \
-  "$(is "$(contains "$out" 'a place this check does not read as a call')" false)"
+check "refuses nothing else, so neither run is read as a place it does not read" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # The shapes the call scanner reads a script's path in, each a step whose verdict is that reading
 # (dispatch://INFRA-1545, round 37). Round 37's mutation pass of rule 8 left the scanner's handling
@@ -8256,7 +8219,6 @@ for refusal in \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' names .github/scripts/sa-c.sh in $form, a place this check does not read as a call, and that script fetches")"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 10)"
-check "charges none of them" "$(is "$(contains "$out" 'its own retries take')" false)"
 for step in \
   "Name it in a comment after an empty redirect" \
   "Print it before a run of bash" \
@@ -8577,7 +8539,6 @@ for refusal in \
 done
 check "refuses nothing else" \
   "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 18)"
-check "charges none of them" "$(is "$(contains "$out" 'its own retries take')" false)"
 
 # The function forms rule 8 reads and refuses (dispatch://INFRA-1545, round 37). A run written in
 # the body of `name() { … }`, its `{` on the name's line or on the next one, is refused as a
@@ -8680,7 +8641,6 @@ check "charges the brace group's run, 1050 s" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Log the fetch' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
 check "charges the case arm's run, 1050 s" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=13::step 'Fetch for one kind' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust")"
-check "reads neither as a function body" "$(is "$(contains "$out" 'a function body')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 
 # A function whose body is not a `{ … }` group — a `( … )` subshell, or an `if` — is no form
@@ -9164,7 +9124,6 @@ for refusal in \
     "$(contains "$out" "step '$step' of job 'build' names .github/scripts/sc-lib.sh in a source inside a loop, .*Source the library once, before the loop")"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
-check "charges neither" "$(is "$(contains "$out" 'its own retries take')" false)"
 
 # A step using a composite action whose own step loops uncounted is refused for that loop
 # (dispatch://INFRA-1545, round 37): the action's arithmetic is None, and the step running it is
@@ -9770,7 +9729,6 @@ for refusal in "34	Feed it to bash -e" "40	Feed it to bash -" "46	Feed it to sh 
 done
 check "neither charges nor refuses the body that fetches nothing" \
   "$(is "$(contains "$out" "step 'Feed nothing that fetches to bash -O extglob'")" false)"
-check "charges no body" "$(is "$(contains "$out" 'its own retries take')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 10)"
 
 # A fetch in the text of a `bash -c` or an `eval` runs once for each pass of the loops around the
@@ -10393,7 +10351,6 @@ for refusal in "12	A call after do in a one-line loop	do" \
   check "refuses the call in '$step' after $prefix by name" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' calls .fetch. after .$prefix., a form this check does not read as a call of a function, and .fetch. fetches")"
 done
-check "charges no step past its key for the calls it reads" "$(is "$(contains "$out" 'its own retries take')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
 
 # Four readings of a function that hide a call of its fetch are refused by name, none of them
@@ -10612,7 +10569,6 @@ for line in 8 11 14; do
 done
 check "refuses the curl whose max-time is 0 for a bound above 0" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=17::.curl. in step 'A curl whose max-time is 0' fetches without the floor: it lacks .--max-time <seconds>., which curl resets for each attempt, above 0, since .--max-time 0. sets no limit")"
-check "says no bound of it is written as a variable" "$(is "$(contains "$out" 'written as a variable')" false)"
 check "refuses the curl under timeout 0 in the publish job as unbounded" \
   "$(contains "$out" "::error file=.github/workflows/release.yaml,line=22::.curl. in step 'Read it under timeout 0' is a site an exception above leaves unretried, and it makes attempts of its own with no bound this check finds")"
 check "refuses nothing at the bare read in a function with the keyword" \
@@ -11427,7 +11383,6 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "says the fetch is in the definition's reach" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Call a function twice through the keyword' of job 'build' defines a function with the .function. keyword, a form this check does not read as a function, and a fetch, or a call of a script that fetches, is in its reach: written on its line or after it, or in the body of a function that a call written there calls\.")"
-check "does not say the fetch is written after it" "$(is "$(contains "$out" 'fetches, is written after it')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # A call of a function through a positional parameter, `"$1"`, is a call through a variable like
@@ -11491,7 +11446,6 @@ check "refuses 'A curl whose max-time is =0' by name, as a spelling curl rejects
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=9::.curl. in step 'A curl whose max-time is =0' writes .--max-time=0., a spelling curl rejects as an unknown option")"
 check "refuses 'A curl ending in max-time 0' for a bound above 0" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::.curl. in step 'A curl ending in max-time 0' fetches without the floor: it lacks .--max-time <seconds>., which curl resets for each attempt, above 0, since .--max-time 0. sets no limit")"
-check "says no bound of it is written as a variable" "$(is "$(contains "$out" 'written as a variable\|bounded by a variable')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 
 # Three more arrays whose words this check cannot count, each making the loop over its length a
@@ -12196,10 +12150,6 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses the gh api as an excepted site whose helper's seconds are a variable" \
   "$(contains "$out" "::error file=.github/workflows/release.yaml,line=23::.gh api. in step 'Read it under seconds the step sets' is a site an exception above leaves unretried, and it is retried by .retry_fetch. with its seconds written as .\\\$READ_SECONDS., which is no number this check reads")"
-check "asks for the helper's seconds as a number, or no retry" \
-  "$(contains "$out" "Write the helper's seconds as a whole number above 0, or drop its retry, as the excepted sites do")"
-check "does not say it finds no bound on the attempts" \
-  "$(is "$(contains "$out" 'no bound this check finds')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # A library a composite action's step reaches along more than one path is refused at that action,
@@ -12569,8 +12519,6 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses the step at its key for a bound written as a variable" \
   "$(contains "$out" "::error file=.github/workflows/release.yaml,line=21::step 'Fetch the asset at a bound the step sets' carries .timeout-minutes: 5. and this check can put no figure on it: it runs a retried call whose attempts are bounded by a variable rather than by a number — .curl. at .github/workflows/release.yaml[:]23\.")"
-check "says of no excepted curl bounded by a variable that it has no bound" \
-  "$(is "$(contains "$out" 'no bound this check finds')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # A library a step reaches along more than one path is refused at that step, whatever else the
@@ -12999,8 +12947,6 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses the unquoted heredoc for its command substitution" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Print a heredoc into tee' of job 'build' feeds a heredoc to .cat. unquoted, and the body holds a command substitution, which the step's own shell runs before that command reads the body, and the body holds a fetch or names a script that fetches\.")"
-check "does not say a pipe hands the output to a shell" \
-  "$(is "$(contains "$out" "whose output a pipe on the operator's line hands to a shell")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # A heredoc's refusal names its consumer by the command's first word, so `cat - <<'BODY' | bash`
@@ -14662,9 +14608,18 @@ check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 # cannot compile a file that starts with `#`. So a `.go` whose first line runs a shell, and one
 # whose first line names `go`, are each refused at its line 1. A step that runs a `.go` as its
 # command word is refused, with or without a `#!` line. Until round 68 a `.go` under
-# `#!/usr/bin/env go` passed (dispatch://INFRA-1545, round 68). Since round 69 no row of this case
-# checks the words of a refusal or its cure: each checks only where the gate refuses, which file
-# and which step it names, and, for a `.ts`, that it names `bun` (dispatch://INFRA-1545, round 69).
+# `#!/usr/bin/env go` passed (dispatch://INFRA-1545, round 68). No row of this case checks the
+# words of a refusal or of its cure. Each checks where the gate refuses, a line that opens
+# `::error file=<file>,line=<n>::`, and literal names that line holds, each found on its own:
+# the step and the file, the first line of a file refused at its line 1, the shell a step hands
+# the `.go` to, `bun` for a `.ts` and `go run` for a `.go`. A refusal at a file's line 1 names the
+# program its `#!` line runs, so the row of each such file also checks that the line names no path
+# or `env` beyond that first line. The refusal of bash given the `.go` names `.go` only in the
+# file's path, so its cure offers a `.go` no interpreter and no run by its path. A refusal names
+# the program `.` as a lone dot, which no literal name finds apart from the dots of the paths, so
+# the row of `.` given the `.ts` checks the step and the file; the W12 case's row of `.` given a
+# `.jq`, a refusal the same sentence of the gate writes, checks that it names `.`
+# (dispatch://INFRA-1545, rounds 69 and 70).
 echo "case: r66 W17 a top-level .go and .ts under .github/scripts pass, gofmt may name the .go, a shell given either is refused, and a .go opening with any #! line is refused"
 root=$(fixture r66-w17-scanners)
 printf '// a scanner\npackage main\n\nfunc main() {}\n' > "$root/.github/scripts/r66-scan.go"
@@ -14703,25 +14658,35 @@ check "passes the top-level .go and .ts where they stand" \
   "$(is "$(contains "$out" '::error file=.github/scripts/r66-scan\.\(go\|ts\),line=1::')" false)"
 check "passes gofmt given the .go" \
   "$(is "$(contains "$out" "step 'Check the scanner's formatting'")" false)"
-check "refuses bash given the .go, at its run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Run the Go scanner with bash' of job 'build' writes ..github/scripts/r66-scan.go.")"
-check "refuses . given the .ts, at its run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Source the TypeScript scanner' of job 'build' writes ..github/scripts/r66-scan.ts.")"
-check "refuses the .go whose first line runs a shell, at its line 1" \
-  "$(contains "$out" '::error file=.github/scripts/r66-shell.go,line=1::')"
-check "refuses the .go whose first line names go, at its line 1" \
-  "$(contains "$out" '::error file=.github/scripts/r68-env-go.go,line=1::')"
-check "refuses the .ts whose first line runs a shell, at its line 1, naming bun twice" \
-  "$(contains "$out" '::error file=.github/scripts/r66-shell.ts,line=1::.*`bun`.*`bun`')"
-check "refuses the .ts whose first line runs a shell where a step runs it as its command word" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Run the TypeScript program whose first line runs a shell' of job 'build' writes ..github/scripts/r66-shell.ts.")"
+check "refuses bash given the .go at its run, naming the step, the file and bash" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=12::' \
+    'Run the Go scanner with bash' .github/scripts/r66-scan.go bash)"
+check "names .go to bash given the .go only in the file's path, offering a .go no interpreter and no run by its path" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=12::' \
+    .github/scripts/r66-scan.go .github/scripts/r66-scan.go --not .go)"
+check "refuses . given the .ts at its run, naming the step and the file" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=14::' \
+    'Source the TypeScript scanner' .github/scripts/r66-scan.ts)"
+check "refuses the .go whose first line runs a shell at its line 1, naming that line and go run, and no path beyond it" \
+  "$(names_at "$out" '::error file=.github/scripts/r66-shell.go,line=1::' \
+    .github/scripts/r66-shell.go '#!/bin/sh' 'go run' --not /bin/sh)"
+check "refuses the .go whose first line names go at its line 1, naming that line and go run, and no env beyond it" \
+  "$(names_at "$out" '::error file=.github/scripts/r68-env-go.go,line=1::' \
+    .github/scripts/r68-env-go.go '#!/usr/bin/env go' 'go run' --not env)"
+check "refuses the .ts whose first line runs a shell at its line 1, naming that line and bun twice, and no path beyond it" \
+  "$(names_at "$out" '::error file=.github/scripts/r66-shell.ts,line=1::' \
+    .github/scripts/r66-shell.ts '#!/bin/sh' bun bun --not /bin/sh)"
+check "refuses the .ts whose first line runs a shell where a step runs it as its command word, naming the step and the file" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=16::' \
+    'Run the TypeScript program whose first line runs a shell' .github/scripts/r66-shell.ts)"
 check "tells that run the interpreter a .ts names, bun" \
-  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=16::.*`bun`')"
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=16::' bun)"
 for refusal in "18	Run the Go scanner as its command word	r66-scan.go" \
   "20	Run the Go program whose first line names go as its command word	r68-env-go.go"; do
   IFS=$'\t' read -r line step name <<<"$refusal"
-  check "refuses $name where a step runs it as its command word" \
-    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/$name.")"
+  check "refuses $name where a step runs it as its command word, naming the step, the file and go run" \
+    "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" \
+      "$step" ".github/scripts/$name" 'go run')"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 8)"
 
@@ -15332,7 +15297,6 @@ check "refuses the helper behind ci_log_guard, naming it ci-log-guard.sh's shell
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Call the helper behind ci_log_guard' of job 'build' runs .retry_fetch. behind .ci_log_guard., ci-log-guard.sh's shell function, which runs the helper inside a stop-commands block of its own: retry_fetch already puts each attempt inside a block of its own, so the guard adds nothing and only hides the call from this reading")"
 check "and behind ci_log_guard_stderr, in the same words" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Call the helper behind ci_log_guard_stderr' of job 'build' runs .retry_fetch. behind .ci_log_guard_stderr., ci-log-guard.sh's shell function, which runs the helper inside a stop-commands block of its own: retry_fetch already puts each attempt inside a block of its own, so the guard adds nothing and only hides the call from this reading")"
-check "says of neither guard that it runs an executable" "$(is "$(contains "$out" 'runs an executable')" false)"
 check "and its advice names the one composed form that passes" \
   "$(contains "$out" "behind .ci_log_guard.,.*Call .retry_fetch. as a command of its own, with nothing before it but variable assignments, or as .gh_wait_reset retry_fetch \"<what>\" <bound> -- …., the one composed form this check reads")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
@@ -15342,7 +15306,8 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # RETRY_BEHIND, which until this round said `gh_wait_reset` "runs an executable and cannot run
 # the helper": false of a shell function that runs its command in the shell. Behind `env` the
 # call fails because `env` cannot run `gh_wait_reset`; behind `ci_log_guard` it runs and is only
-# hidden. Under the old sentence the two refusal checks and the check that it is gone fail.
+# hidden. Under the old sentence the two refusal checks and the check of why each fails or hides
+# fail.
 echo "case: review r37 gh_wait_reset retry_fetch behind env or ci_log_guard is refused in words true of each"
 root=$(fixture r37-review-wait-behind-wrapper)
 gh_read_stub "$root"
@@ -15375,10 +15340,6 @@ check "and the wait behind ci_log_guard, in the same words" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=17::step 'Call the wait behind ci_log_guard' of job 'build' runs .retry_fetch. behind .gh_wait_reset., a form this check does not read as a call of the helper, so it charges it nothing")"
 check "saying why each fails or hides: a program in front of gh_wait_reset cannot run it, a shell function only hides it" \
   "$(contains "$out" "behind one, directly or in front of .gh_wait_reset., the call fails before any attempt and fetches nothing; and a shell function in front of the call, or in front of .gh_wait_reset., only hides it from this reading")"
-check "says of neither that gh_wait_reset cannot run the helper" \
-  "$(is "$(contains "$out" 'runs an executable and cannot run the helper')" false)"
-check "names the one composed form that passes" \
-  "$(contains "$out" "or as .gh_wait_reset retry_fetch \"<what>\" <bound> -- …., and write any wrapper inside it")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 
 # Review round 36 of dispatch://INFRA-1545. helper_bound_word reads the seconds word after
@@ -16426,7 +16387,6 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses the call by name" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Call the helper outside its signature' of job 'build' calls .retry_fetch. in a form other than its signature")"
-check "does not say it is retried" "$(is "$(contains "$out" 'is retried and no attempt')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # C2. `-m300` against its option is a bound curl takes, the last one it is given: 8 x 300 + 127 =
@@ -16614,8 +16574,9 @@ check "refuses the script's decimal bound" \
   "$(contains "$out" "::error file=.github/scripts/r37-decimal.sh,line=2::.curl. writes .--max-time 1.5.")"
 check "refuses the loop around the script, naming the bound's form" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=17::step 'Run the decimal script in a loop' carries .timeout-minutes: 43. and this check can put no figure on it.*attempts whose bound is written in a form this check refuses by name")"
-check "says of no bound that it is a variable" "$(is "$(contains "$out" 'variable rather than')" false)"
-check "says of no curl that it takes a missing value" "$(is "$(contains "$out" 'no value., and curl takes')" false)"
+check "names at line 17 the script and its --max-time 1.5, and no variable among the kinds of its bound" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=17::' .github/scripts/r37-decimal.sh \
+    '--max-time 1.5' --not variable)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
 
 # C8. A `retry_fetch` whose seconds are a variable bounds each attempt at what the variable holds;
@@ -16665,7 +16626,6 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses the call behind timeout by name" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Retry behind a timeout' of job 'build' runs .retry_fetch. behind .timeout.")"
-check "charges it nothing" "$(is "$(contains "$out" 'its own retries take')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # C10. A function's reach starts on its definition's own line, so a fetch written before the name

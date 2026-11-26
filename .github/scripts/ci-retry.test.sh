@@ -543,7 +543,10 @@ check "its last line is the error annotation, naming the download and the attemp
   "$(is "$(tail -n 1 <<<"$out")" '::error::the stalled tool failed to download after 5 attempts (last exit '"$kill_status"')')"
 
 echo "case: a malformed call is refused, naming the mistake"
-run_retry "a tool" 5 true
+# Two words after the bound: a helper that read the first word as its `--` would run the second
+# and exit 0, where with one word it would reach the refusal of nothing to run after `--`, which
+# exits 2 as this one does (dispatch://INFRA-1545, round 70).
+run_retry "a tool" 5 true true
 check "a call with no -- separator is refused" "$(is "$status" 2)"
 check "and names the missing --" "$(contains "$out" '^::error::.*--')"
 check "it slept nothing" "$([ "$elapsed" -lt 3 ] && echo true || echo false)"
