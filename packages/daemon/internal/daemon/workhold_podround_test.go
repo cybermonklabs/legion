@@ -1,8 +1,8 @@
 package daemon
 
-// Row H47 of the work hold's plan (decision 17): under `work`, a pod update round open over the
-// issue's pod passed over a worker the hold stopped, whose commit origin does not hold is on the
-// pod's disk, so the round's read of the workspace keeps the pod from its replacement until the
+// Row H47 of the work hold's plan (decision 17): under `work`, a breaking-drift round passed over
+// a stopped worker whose unpushed commit is on the pod's disk. A read that finds work or fails
+// keeps the round open and the pod in place until the
 // hold opens or the work is pushed. The round holds no task of a claim the hold does not stop
 // meanwhile: an answer to the round is told once, on its role's topic, that the round waits for
 // the hold, and holds none of its claim's tasks from then on, and the round does not ask it again
@@ -45,6 +45,9 @@ const (
 	// heldRoundGrace is the round's bound in these cases: longer than every drain of the rig's
 	// outbox moves the clock (65 seconds a pass), so no bound decides what a case does not name.
 	heldRoundGrace = 24 * time.Hour
+	// Spell the marker literally so H47's controls compile before #5285.
+	heldAccountDrift  = "[breaks the pod] account default, now legion-worker"
+	heldExchangeDrift = "[breaks the pod] agent-secrets-exchange (unset), now audience=legion-broker-exchange expiry=3600s path=token"
 	// heldRoundWaits is what a claim whose answer the hold lifted is told on its role's topic.
 	heldRoundWaits = "This pod update round waits until the tree's work hold ends. Go on with your work: the daemon asks you again before it replaces the pod."
 	// heldRoundAsk is the first sentence of the round's ask (supervise.UpdateTask).
@@ -95,7 +98,7 @@ func (h *heldRoundRig) restarted(unpushed bool, drifted ...claim.Role) {
 	h.restart()
 	h.attach()
 	for _, role := range drifted {
-		h.rt.ScriptPodDrift(h.token(role), podUpdateDrift)
+		h.rt.ScriptPodDrift(h.token(role), heldAccountDrift)
 	}
 	if unpushed {
 		h.unpushed()
@@ -178,12 +181,11 @@ func (h *heldRoundRig) runNow() {
 	h.runOnce()
 }
 
-// opensOver drifts the pod as read through each of roles, which record a process in it, and
-// sweeps until the round is open on the first of them.
-func (h *heldRoundRig) opensOver(roles ...claim.Role) {
+// opensOver scripts drift through each live role, then sweeps until the round opens.
+func (h *heldRoundRig) opensOver(drift string, roles ...claim.Role) {
 	h.t.Helper()
 	for _, role := range roles {
-		h.rt.ScriptPodDrift(h.token(role), podUpdateDrift)
+		h.rt.ScriptPodDrift(h.token(role), drift)
 	}
 	h.until("the round to open over the pod", func() bool {
 		h.sweep()
@@ -317,6 +319,7 @@ func (h *heldRoundRig) keeps(what string) {
 	before := len(loggedLines(h.t, h.logs.String(), heldWorkKeepsLine))
 	h.until("a sweep to keep the pod for the held work "+what, func() bool {
 		h.sweep()
+		h.wantNotReplaced(what)
 		return len(loggedLines(h.t, h.logs.String(), heldWorkKeepsLine)) > before
 	})
 }
@@ -340,6 +343,32 @@ func (h *heldRoundRig) wantAskEndsAt(role claim.Role, at time.Time) {
 	}
 }
 
+// wantLateAccountNotice advances beyond the round's original bound, not beyond a later re-ask.
+func (h *heldRoundRig) wantLateAccountNotice(role claim.Role) {
+	h.t.Helper()
+	c := h.machine(role).Claim()
+	if c.UpdateOpenedAt == nil {
+		h.t.Fatal("the held round records no opening")
+	}
+	at := c.UpdateOpenedAt.Add(heldRoundGrace + time.Second)
+	if now := h.clock.Now(); now.Before(at) {
+		h.clock.advance(at.Sub(now))
+	}
+	h.keeps("past the service-account round's bound")
+	late := h.updateNotices("The bound of the update round is past.")
+	if len(late) != 1 {
+		h.t.Fatalf("the controller got %d late notices, want one: %+v", len(late), late)
+	}
+	for _, want := range []string{`service account "default"`, `service account is "legion-worker"`,
+		"implementer (suspended)", "The architect and a merger that starts in this pod use the old account",
+		"until the work hold opens or an operator acts on a held claim"} {
+		if !strings.Contains(late[0].Reason, want) {
+			h.t.Fatalf("the late notice says %q, want it to name %q", late[0].Reason, want)
+		}
+	}
+	h.wantNotReplaced("past the service-account round's bound")
+}
+
 // architectAnsweredUnderTheHold is the first case's common part: the root's architect live in the
 // pod answers the round the hold keeps the pod of, and is then handed two tasks, a person's answer
 // and a resume task, each its own turn, with sweeps of the kept round between them. The round
@@ -351,7 +380,7 @@ func architectAnsweredUnderTheHold(t *testing.T) *heldRoundRig {
 	h.liveInPod(architect)
 	h.closeOverAWorkingImplementer()
 	h.unpushed()
-	h.opensOver(architect)
+	h.opensOver(heldAccountDrift, architect)
 	h.asked(architect)
 	h.answers(architect)
 	h.keeps("over the architect's answer")
@@ -370,6 +399,7 @@ func architectAnsweredUnderTheHold(t *testing.T) *heldRoundRig {
 		t.Fatalf("the architect was asked %d times, want once: its answer still counts for the round", len(asks))
 	}
 	h.wantNotReplaced("while the workspace holds the held work")
+	h.wantLateAccountNotice(architect)
 	if c := h.machine(claim.RoleImplementer).Claim(); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
 		t.Fatalf("the implementer is %s by %q, want it still held by the work hold", c.State, c.SuspendedBy)
 	}
@@ -442,7 +472,7 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		h.liveInPod(implementer)
 		h.handle(implementer, supervise.StreamTurnStart{Claim: h.token(implementer)})
 		h.unpushed()
-		h.opensOver(architect, implementer)
+		h.opensOver(heldAccountDrift, architect, implementer)
 		h.asked(architect)
 		h.answers(architect)
 		h.handle(architect, supervise.RequestSuspend{Claim: h.token(architect), By: supervise.SuspendedByReleased,
@@ -473,6 +503,12 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 			t.Fatalf("the woken architect was told of the hold %d times, want once", len(told))
 		}
 		h.wantNotReplaced("while the workspace holds the held work")
+		h.wantLateAccountNotice(architect)
+		h.pushed()
+		h.askedAgain(architect, "after the held work was pushed")
+		h.asked(architect)
+		h.answers(architect)
+		h.awaitReplacedOnce("after the woken architect answered again")
 	})
 
 	t.Run("a released merger woken for the close message", func(t *testing.T) {
@@ -483,7 +519,7 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		h.handle(implementer, supervise.StreamTurnStart{Claim: h.token(implementer)})
 		h.released(merger)
 		h.unpushed()
-		h.opensOver(architect, implementer)
+		h.opensOver(heldAccountDrift, architect, implementer)
 		h.close(4)
 		h.rt.ScriptResume(fake.SpawnResult{Locator: h.locator(merger)})
 		// The close's first run wakes the released merger for its message, into the pod the round
@@ -518,6 +554,15 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		}
 		h.wantHeld(merger, 1, "2 minutes after its start")
 		h.wantNotReplaced("while the work hold stands")
+		h.asked(architect)
+		h.answers(architect)
+		h.wantLateAccountNotice(architect)
+		h.takesTask(architect, "Continue your work on the old service account.", "the task during the service-account hold")
+		h.pushed()
+		h.askedAgain(architect, "after the held work was pushed")
+		h.asked(architect)
+		h.answers(architect)
+		h.awaitReplacedOnce("after the merger received the close and the architect answered again")
 	})
 
 	t.Run("under dispatch_token_broker every launch into the pod is refused", func(t *testing.T) {
@@ -525,7 +570,7 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		h.liveInPod(architect)
 		h.closeOverAWorkingImplementer()
 		h.unpushed()
-		h.opensOver(architect)
+		h.opensOver(heldExchangeDrift, architect)
 		h.refuseEveryLaunch()
 		h.diesRefused(architect)
 
@@ -572,6 +617,87 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 	})
 }
 
+func TestWorkHoldNonBreakingRoundKeepsThePodAndEnds(t *testing.T) {
+	const architect, implementer, merger = claim.RoleArchitect, claim.RoleImplementer, claim.RoleMerger
+
+	t.Run("a live architect receives its held task", func(t *testing.T) {
+		h := newHeldRoundRig(t, phase.Implementing)
+		h.liveInPod(architect)
+		h.closeOverAWorkingImplementer()
+		h.unpushed()
+		h.opensOver(podUpdateDrift, architect)
+		h.asked(architect)
+		h.answers(architect)
+		const task = "A person answered your question: keep the field optional."
+		h.handle(architect, supervise.RequestDeliver{Claim: h.token(architect), Task: task})
+		if h.prompted(architect, task) {
+			t.Fatal("the architect received its task before the round ended")
+		}
+		h.until("the non-breaking round to end with no replacement", func() bool {
+			h.sweep()
+			h.wantNotReplaced("over a non-breaking drift")
+			return h.machine(architect).Claim().UpdateRound == ""
+		})
+		h.takesHeldTask(architect, task, "the task from the finished round")
+		h.wantInPod(architect)
+		h.runNow()
+		if told, asked := h.publishedHolding(architect, heldRoundWaits), h.publishedHolding(architect, heldRoundAsk); len(told) != 0 || len(asked) != 1 {
+			t.Fatalf("the non-breaking round told the architect %q and asked it %q, want just its first ask", told, asked)
+		}
+	})
+
+	t.Run("a released architect and a merger woken by the close", func(t *testing.T) {
+		h := newHeldRoundRig(t, phase.Merging)
+		h.liveInPod(architect)
+		h.liveInPod(implementer)
+		h.released(merger)
+		h.unpushed()
+		h.opensOver(podUpdateDrift, architect, implementer)
+		h.asked(architect)
+		h.answers(architect)
+		h.handle(architect, supervise.RequestSuspend{Claim: h.token(architect), By: supervise.SuspendedByReleased,
+			Reason: "the issue's pod is released"})
+		h.close(4)
+		// Make the close's stop before draining the merger's close message. Neither the
+		// merger's wake nor a sweep can get the replacement decision before the launch below.
+		h.handle(implementer, supervise.RequestSuspend{Claim: h.token(implementer), By: supervise.SuspendedByHold,
+			Reason: "the design gate closed", Deadline: h.clock.Now()})
+		h.wantHeld(implementer, 1, "after the close")
+		h.rt.ScriptIssuePod(h.tree.key, podUpdatePod)
+		if c := h.machine(architect).Claim(); c.UpdateRound != heldRound {
+			t.Fatalf("the released architect records round %q, want the open round %q", c.UpdateRound, heldRound)
+		}
+
+		h.rt.ScriptResume(fake.SpawnResult{Locator: h.locator(architect)})
+		h.handle(architect, supervise.RequestRuleResume{Claim: h.token(architect), Reason: "wake the architect"})
+		h.wantInPod(architect)
+		if reads := h.rt.CallsOf("PodWorkspaceWork"); len(reads) != 1 || reads[0].Issue != h.tree.key {
+			t.Fatalf("the launch asked for launcher reads %+v, want the read of the round's pod", reads)
+		}
+		readyClaimAs(t, h.sup, h.token(architect), architect, "ses-architect")
+		h.settle()
+		if c := h.machine(architect).Claim(); c.UpdateRound != "" {
+			t.Fatalf("the launch kept the pod but left the round open: %q", c.UpdateRound)
+		}
+		h.takesTask(architect, "A person answered your question: keep the field optional.", "a person's answer in the kept pod")
+		h.takesTask(architect, "Resume your work on the design.", "the resume task in the kept pod")
+
+		h.rt.ScriptResume(fake.SpawnResult{Locator: h.locator(merger)})
+		h.runOnce()
+		h.wantInPod(merger)
+		h.clock.advance(65 * time.Second)
+		readyClaimAs(t, h.sup, h.token(merger), merger, "ses-merger")
+		h.runOnce()
+		if got := h.published(merger); len(got) != 1 || got[0] != h.workerClose(4) {
+			t.Fatalf("the merger in the kept pod got %q, want the close message %q", got, h.workerClose(4))
+		}
+		if told := h.publishedHolding(architect, heldRoundWaits); len(told) != 0 {
+			t.Fatalf("the architect got a work-hold notice in a non-breaking round: %q", told)
+		}
+		h.wantNotReplaced("after both roles started in the kept pod")
+	})
+}
+
 // refuseEveryLaunch makes every launch into the pod, a Resume or a Spawn of any claim, the Sandbox
 // runtime's refusal of a launch into a pod built before the exchange identity under
 // dispatch_token_broker with no dispatch_token_transition_file (runtime.AwaitingPodRound), at the
@@ -612,6 +738,10 @@ func (h *heldRoundRig) diesRefused(role claim.Role) {
 // waitNotices is every update-stalled notice the outbox holds for the tree's issue whose reason
 // names the broker state's remedy: one for each launch that began to wait on the kept pod.
 func (h *heldRoundRig) waitNotices() []record.ControllerNotice {
+	return h.updateNotices(heldRoundRemedy)
+}
+
+func (h *heldRoundRig) updateNotices(reason string) []record.ControllerNotice {
 	h.t.Helper()
 	rows, err := h.pool.Query(h.ctx, "select payload from outbox where kind = $1 and issue = $2 order by id",
 		string(record.OutboxKindControllerNotice), h.tree.key)
@@ -629,7 +759,7 @@ func (h *heldRoundRig) waitNotices() []record.ControllerNotice {
 		if err := json.Unmarshal(payload, &notice); err != nil {
 			h.t.Fatalf("decode a controller notice: %v", err)
 		}
-		if notice.Kind == record.UpdateStalledNotice && strings.Contains(notice.Reason, heldRoundRemedy) {
+		if notice.Kind == record.UpdateStalledNotice && strings.Contains(notice.Reason, reason) {
 			if notice.Update == nil || len(notice.Update.Waiting) == 0 {
 				h.t.Fatalf("the notice of a waiting launch lists %+v, want the claims of the round", notice.Update)
 			}

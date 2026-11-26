@@ -1,5 +1,5 @@
--- 20261125105345_claim_round_hold_marks.up.sql — the two marks a pod update round writes on a
--- claim while the tree's work hold keeps the round's pod.
+-- 20261125105345_claim_round_hold_marks.up.sql — the two marks a pod update round can write on
+-- a claim when the tree's work hold keeps a pod with breaking drift.
 --
 -- claims.update_hold_told_at is supervise.Claim.UpdateHoldToldAt: when the daemon told the
 -- claim's role that its round waits for the work hold, null until it did. The round's read of the

@@ -540,10 +540,22 @@ The daemon records an architect's sign-off or move back, and the start that it m
 - The stranded claims never name a claim the work hold stopped, because the gate's opening starts it.
 - The daemon logs each stop and each start of the hold with the issue, the role and the version.
 
-A pod update round that opens during the hold keeps the pod while a stopped worker's work is not pushed, until the hold ends or a read finds that work pushed.
-A role that answered the round goes on with its work: the daemon tells it so once, and asks it again before it replaces the pod.
-Under `dispatch_token_broker: true`, a pod built before the exchange identity takes no launch while `dispatch_token_transition_file` is not set, so no role of the issue that is not running starts until the hold ends, and the controller is told once for each launch that waits.
-Set `dispatch_token_transition_file`, or end the hold, to start them ([The disk dies with its pod](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#the-disk-dies-with-its-pod)).
+The daemon reads the workspace through a role in the pod or through the pod's launcher.
+If the drift does not break the pod and the read finds unpushed work or fails, the daemon keeps the pod and ends the round.
+Roles that answered get the tasks that the round held.
+
+If the drift breaks the pod, a stopped worker that can have work on the disk keeps the round open until a clean read or the end of the work hold.
+The daemon tells a role that answered once that it can continue its work.
+The daemon asks that role again before it replaces the pod.
+
+For service-account drift, the architect and a merger woken into that pod use the old account while the work hold keeps the round open.
+The late-round notice names both accounts and the stopped claims.
+An operator can resume or retry a stopped claim without opening the whole tree's work hold.
+
+With `dispatch_token_broker: true` and no `dispatch_token_transition_file`, the runtime refuses launches into a pod without the exchange identity.
+While the work hold keeps that round open, the daemon tells the controller once for each launch that waits.
+Set `dispatch_token_transition_file` to permit launches into the old pod, or end the work hold to let the round proceed.
+See [The disk dies with its pod](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#the-disk-dies-with-its-pod).
 
 The work starts again when a person approves that version, or when Dispatch carries the approval
 after an exact undo. The daemon then starts each claim it stopped with one task. The task names the

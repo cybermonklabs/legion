@@ -3,14 +3,13 @@ package daemon
 // A claim the daemon suspended holds no pod update round (dispatch://INFRA-4109 R1, R3,
 // verification's c-suspended-asked). Such a claim, suspended by the daemon's own rule, by a
 // root's exit, by an idle release, by the work hold or by an unknown source (supervise's
-// Claim.PassedOverByRound), runs no process and no turn in the pod. So the round does not ask
-// it, wait for it, wake it or resume it. What it left unpushed goes with the pod, unless the
-// pod's disk is a kept volume that the issue's next pod mounts (roundKeptVolume). Once every
-// claim the round asks has answered and no turn runs, the replacement reads the issue's
-// workspace through a role whose process runs in the pod, names on its line each claim it did
-// not wait for and what the read found, and, where the read found work or failed, writes one
-// message on the issue. An operator's suspension still holds the round past its bound
-// (dispatch://INFRA-2981 R5).
+// Claim.PassedOverByRound), runs no process and no turn in the pod. The round does not ask it,
+// wait for its answer, wake it or resume it. Before replacing the pod, the daemon reads the
+// workspace through a role process or the pod's launcher (R6 and R7 of #5285). A read that finds
+// work or fails keeps the pod and ends a non-breaking round. A breaking-drift round replaces the
+// pod and tells the architect what it took, unless the work hold stopped a claim that can have
+// work on the pod's disk. That hold can keep a breaking round open past its bound, as an
+// operator's suspension can.
 //
 // These cases drive the pod-update rig of podupdate_test.go. The suspended claims are seeded in
 // the store and restored as a boot restores them (newPodUpdateRig's sup.restore).
@@ -28,6 +27,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -63,18 +63,17 @@ func suspendedRole(role claim.Role, by supervise.SuspendSource) podUpdateRole {
 
 // replacedOverPassedOverClaims carries R3's round to its replacement: two ready workers and two
 // claims the daemon suspended (passedOverSuspended). script gives the issue's workspace what the
-// read finds there. The round opens, both workers are asked and answer, and the sweep replaces
-// the pod. What every such round shows whatever the read found is held here, and the
-// replacement's line is returned:
+// read finds there, and drift is what the round is opened over. The round opens, both workers are
+// asked and answer, and the sweep replaces the pod. What every such round shows whatever the read
+// found is held here, and the replacement's line is returned:
 //
 //   - the pod is replaced once, at the held clock the round opened at, long before its bound;
 //   - the workspace is read once, through the worker whose process the pod is replaced through,
-//     and the replacement made comes straight after that read, with no refusal between: the read
-//     holds nothing back;
+//     and the replacement made comes straight after that read, with no refusal between;
 //   - neither suspended claim is asked (no update-ask row, no publish to its topic), woken or
 //     resumed (no Resume call), and each is still suspended once the round is over;
-//   - no idle release declines the pod: the round's read writes no decline row.
-func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*podUpdateRig, map[string]any) {
+//   - no decline is recorded: the round replaced the pod, so it kept none.
+func replacedOverPassedOverClaims(t *testing.T, drift string, script func(*podUpdateRig)) (*podUpdateRig, map[string]any) {
 	t.Helper()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
@@ -83,7 +82,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	)
 	script(rig)
 	clocks := rig.replacementClocks()
-	rig.drifts(podUpdateDrift)
+	rig.drifts(drift)
 
 	rig.tick()
 	for _, role := range passedOverWorkers {
@@ -155,7 +154,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 		t.Fatalf("read the idle release declines: %v", err)
 	}
 	if declines != 0 {
-		t.Errorf("the round recorded %d idle release declines, want none: its read is the round's, which declines no release", declines)
+		t.Errorf("the round recorded %d idle release declines, want none: it replaced the pod and kept none", declines)
 	}
 
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -178,32 +177,32 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 // replaced once both workers answered and no turn ran, long before the bound, and neither
 // suspended claim is asked, woken or resumed (replacedOverPassedOverClaims). The replacement's
 // line names both suspended roles as the claims it did not wait for, and a read that found no
-// work. The issue is written nothing: nothing the read found went with the pod.
+// work. Nobody is told: nothing the read found went with the pod.
 //
 // The negative control is main at fd1f52f1, BET-1182's pod on 2026-11-16: the round waited for
 // every claim with a session, asked only a ready one, and held the pod to its bound.
 func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 	t.Parallel()
-	rig, line := replacedOverPassedOverClaims(t, func(rig *podUpdateRig) {
+	rig, line := replacedOverPassedOverClaims(t, podUpdateDrift, func(rig *podUpdateRig) {
 		rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	})
 
 	if line["workspaceRead"] != "found no work" || line["workspaceHead"] != passedOverHead || line["workspaceCommitCount"] != float64(0) {
 		t.Errorf("the replacement's line names the read %+v, want one that found no work at the working copy %s", line, passedOverHead)
 	}
-	if messages := rig.messages(); len(messages) != 0 {
-		t.Fatalf("the issue was written %q, want nothing: the read found no work", messages)
+	if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
+		t.Fatalf("the issue was written %q and the architect told %+v, want nothing: the read found no work", messages, told)
 	}
 }
 
-// The work hold's stop holds no pod update round either (dispatch://INFRA-4109 R1). A claim the
+// A work hold stop does not make the round wait for an answer (dispatch://INFRA-4109 R1). A claim the
 // hold stopped (supervise.SuspendedByHold) runs no process and no turn in the pod, and only the
 // hold's end or an operator starts it (supervise's Machine.EndHold). So the round passes it over
 // as it passes over a claim the daemon suspended (supervise's Claim.PassedOverByRound): it does
 // not ask it, wait for it, wake it or resume it. Once the claims the round asks have answered and
-// no turn runs, the pod is replaced long before the bound. The replacement first reads the
-// issue's workspace through a worker whose process runs in the pod, and its line names the held
-// claim as the one it did not wait for. Once the round is over, the claim is still the hold's.
+// no turn runs, a clean read lets the breaking-drift round replace the pod before the bound.
+// The read goes through a worker in the pod, and the replacement's line names the held claim
+// as the one it did not wait for. Once the round is over, the claim is still the hold's.
 //
 // The control is a worker whose work hold stop still waits for the turn that its close message
 // starts (supervise.RequestSuspend.TurnAfter). Its agent runs in the pod and can answer, so the
@@ -243,7 +242,7 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 			stopping, c.State, c.WorkHeld(), c.PassedOverByRound())
 	}
 	clocks := rig.replacementClocks()
-	rig.drifts(podUpdateDrift)
+	rig.drifts(roundBreakingDrift)
 
 	rig.tick()
 	for _, role := range workers {
@@ -318,8 +317,8 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 // while the issue workspace can hold its unpushed work (heldWorkKeepsPod).
 const heldWorkKeepsLine = "supervise: the work hold stopped a claim of this update round, and the issue workspace can hold its unpushed work; nothing was replaced and the round stays open"
 
-// A round that passed over a claim the work hold stopped, whose worker cannot push and whose work
-// the daemon keeps no copy of. The round reads the issue workspace through the role the pod is
+// A breaking-drift round that passed over a claim the work hold stopped. The stopped worker
+// cannot push, and the daemon keeps no copy of its work. The round reads through the role the pod is
 // replaced through, as an idle release's check does, and where the read finds work that origin
 // does not hold it does not replace the pod: a line names the issue, the held claim and what the
 // read found, and the round stays open. Each worker that answered is told once, on its role's
@@ -335,7 +334,7 @@ func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *te
 		suspendedRole(held, supervise.SuspendedByHold),
 	)
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	rig.drifts(podUpdateDrift)
+	rig.drifts(roundBreakingDrift)
 
 	rig.tick()
 	for _, role := range workers {
@@ -409,31 +408,64 @@ func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *te
 	}
 }
 
-// A round whose pod no role process runs in, where the work hold stopped a claim of the round.
-// Only a role's shim can read the workspace, so the round does not replace that pod, as the idle
-// release takes no pod whose workspace it cannot read: nothing is replaced by issue and no launch
-// replaces the pod. A line names the issue, the held claim and why no read was made, and once the
-// round's bound has come the operator's side is told once, naming the held work. The round still
-// asks the held claim nothing. Once a role runs in the pod again — here the tester, which the
-// operator resumes into the round's own pod, kept for the held work — the round reads the
-// workspace through that role's process. The tester answered while the hold kept the pod, so its
-// answer holds none of its tasks; once the read finds nothing unpushed the round asks it again,
-// under a bound of the round's own length from that ask, and replaces the pod once it answered
-// again.
+// A non-breaking round uses the R7 decline even if the work hold stopped a worker.
+// Ending the round releases every answered role's task without a hold notice or a re-ask.
+func TestWorkHoldANonBreakingUpdateRoundKeepsThePodAndEnds(t *testing.T) {
+	const held = claim.RolePlanner
+	roles := []claim.Role{claim.RoleArchitect, claim.RoleReviewer}
+	rig := newPodUpdateRig(t, readyWorker(roles[0]), readyWorker(roles[1]),
+		suspendedRole(held, supervise.SuspendedByHold))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+	rig.answerRound(podUpdateDrift, roles...)
+	rig.awaitRound(held, podUpdateRound)
+	for _, role := range roles {
+		rig.handle(role, supervise.RequestDeliver{Claim: rig.tokens[role], ID: roundHeldTask, Task: "Continue your work.", Generation: 1})
+		rig.settle(role)
+		if len(promptsOf(rig.workers[role], roundHeldTask)) != 0 {
+			t.Fatalf("the %s received its task before the round ended", role)
+		}
+	}
+
+	rig.roundEndsKept("over the held claim's unpushed commit", append(roles, held)...)
+	if reason, pod := rig.keptReason(); reason != pods.DeclineUnpushedWork || pod != podUpdatePod {
+		t.Fatalf("the decline records %q for pod %q, want unpushed_work for %s", reason, pod, podUpdatePod)
+	}
+	for _, role := range roles {
+		rig.settle(role)
+		if len(promptsOf(rig.workers[role], roundHeldTask)) == 0 {
+			t.Fatalf("the %s did not receive the task that the round held", role)
+		}
+		if slices.Contains(rig.roleMessagesTo(role), heldRoundWaits) || rig.askedOf(role) != 1 {
+			t.Fatalf("the %s received a work-hold message or another ask in a non-breaking round", role)
+		}
+	}
+	if c := rig.claimOf(held); c.State != supervise.StateSuspended || !c.WorkHeld() {
+		t.Fatalf("the stopped claim is %s by %q, want it still stopped by the work hold", c.State, c.SuspendedBy)
+	}
+	if lines := loggedLines(t, rig.logs.String(), heldWorkKeepsLine); len(lines) != 0 {
+		t.Fatalf("the daemon used the breaking-drift keep: %+v", lines)
+	}
+}
+
+// The launcher reads a processless pod both before a replacement by issue and at a launch.
+// An unread workspace keeps this breaking-drift round open for the held claim, even past the
+// bound. Once the tester runs in the kept pod, a clean read lets the sweep re-ask it under
+// a new bound and replace the pod after its new answer.
 func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing.T) {
 	const held, worker = claim.RolePlanner, claim.RoleTester
-	rig := newPodUpdateRig(t,
-		podlessMember(held, supervise.StateSuspended, supervise.SuspendedByHold, false),
-		answeredThenSuspended(worker),
-	)
-	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
-	rig.drifts(podUpdateDrift)
+	stopped := podlessMember(held, supervise.StateSuspended, supervise.SuspendedByHold, false)
+	tester := answeredThenSuspended(worker)
+	stopped.reasons, tester.reasons = roundBreakingDrift, roundBreakingDrift
+	rig := newPodUpdateRig(t, stopped, tester)
+	rig.rt.FailWorkspaceWork(podUpdateIssue, errPassedOverRead)
+	rig.drifts(roundBreakingDrift)
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
-	rig.wantPodKept("a role process runs in the pod to read the workspace for the held claim's work")
+	rig.wantPodKept("the launcher can read the held claim's work")
 	kept := loggedLines(t, rig.logs.String(), heldWorkKeepsLine)
-	if len(kept) == 0 || kept[0]["issue"] != podUpdateIssue || kept[0]["workspaceNotReadBecause"] != noProcessRead {
-		t.Fatalf("the kept replacement logged %+v, want a line naming %s and that %s", kept, podUpdateIssue, noProcessRead)
+	if len(kept) == 0 || kept[0]["issue"] != podUpdateIssue ||
+		kept[0]["workspaceRead"] != "failed" || kept[0]["workspaceReadBy"] != "launcher" {
+		t.Fatalf("the kept replacement logged %+v, want a failed launcher read of %s", kept, podUpdateIssue)
 	}
 	wantField(t, kept[0], "held", held)
 	if n := rig.askedOf(held); n != 0 {
@@ -444,17 +476,24 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing
 	}
 
 	rig.clockAt(podUpdateBound)
-	rig.wantPodKept("a role process runs in the pod, whatever the round's bound")
-	if notices := rig.notices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, "The work hold stopped") {
+	rig.wantPodKept("the launcher can read the workspace, whatever the round's bound")
+	if notices := rig.notices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, "The work hold stopped") ||
+		!strings.Contains(notices[0].Reason, errPassedOverRead.Error()) {
 		t.Fatalf("past the bound the operator's side was told %+v, want one notice naming the held work", notices)
 	}
 
+	launcherReadsBefore := len(rig.rt.CallsOf("PodWorkspaceWork"))
 	rig.intoRoundPod(worker)
 	rig.handle(worker, supervise.RequestResume{Claim: rig.tokens[worker]})
 	rig.registerInto(worker, podUpdatePod)
 	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
 		t.Fatalf("the tester's launch replaced the round's pod %+v, want the pod kept for the held work", replaced)
 	}
+	if got := len(rig.rt.CallsOf("PodWorkspaceWork")); got != launcherReadsBefore+1 {
+		t.Fatalf("the launcher read %d times before the launch and %d after it, want a fresh read at launch", launcherReadsBefore, got)
+	}
+	rig.rt.FailWorkspaceWork(podUpdateIssue, nil)
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	rig.signal(worker, "a1b2c3d")
 	rig.settleAll()
 	rig.awaitSwept(worker, "its answer taken back once the read through it found nothing unpushed", func(c supervise.Claim) bool {
@@ -483,12 +522,9 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing
 	}
 }
 
-// A hold stop can land between the sweep's reading and the last word. The sweep read no claim
-// that the hold stopped, so its read of the workspace was made for no held claim, and the claim
-// that the stop lands on can leave unpushed work on the pod's disk that the read did not see. The
-// last word reads the held claims again under the pod's launch turn and refuses the replacement
-// (replacementDue). The next sweep reads the workspace again with that claim held, and replaces the
-// pod only once that read finds nothing unpushed.
+// A breaking-drift round must reject a replacement if the work hold stops a claim after the
+// workspace read (replacementDue). The claim can leave work on disk that the read did not see.
+// The next sweep reads the workspace again and replaces the pod only over a clean read.
 //
 // Here the tester has not answered when the round's bound comes, so the bound lets the
 // replacement through, and the hold stops the tester while the runtime waits for the launch turn.
@@ -504,7 +540,7 @@ func TestWorkHoldAnUpdateRoundReadsAgainForAClaimTheHoldStopsBeforeTheLastWord(t
 	}); err != nil {
 		t.Fatalf("record the work hold of %s: %v", podUpdateIssue, err)
 	}
-	rig.drifts(podUpdateDrift)
+	rig.drifts(roundBreakingDrift)
 
 	rig.tick()
 	for _, role := range passedOverWorkers {
@@ -537,19 +573,20 @@ func TestWorkHoldAnUpdateRoundReadsAgainForAClaimTheHoldStopsBeforeTheLastWord(t
 	}
 }
 
-// R3's second and third rounds: the same claims over a read that finds an unpushed commit, and
-// over a read that fails. The replacement is made at the same point as over a read that finds no
-// work (replacedOverPassedOverClaims), so what the read found decides nothing. Its line names both
-// suspended roles and the commit or the error, and one message on the issue names both roles,
-// each with its state, and the commit or the error. The sweeps after the round's end write no
-// second message.
+// R3's second and third rounds, over a drift that breaks the pod (roundBreakingDrift, R7 of
+// #5285): the same claims over a read that finds an unpushed commit, and over a
+// read that fails. Such a round replaces its pod whatever the read found, at the same point as
+// over a read that finds no work (replacedOverPassedOverClaims). Its line names both suspended
+// roles and the commit or the error, and one workspace-taken notice to the issue's architect names
+// both roles, each with its state, and the commit or the error. The sweeps after the round's end
+// tell nobody again.
 //
-// Where the work is, as the line and the message say it, is roundKeptVolume's answer (#4550). On
-// a kept volume made before the round opened, which the issue's next pod mounts, the message says
+// Where the work is, as the line and the notice say it, is roundKeptVolume's answer (#4550). On
+// a kept volume made before the round opened, which the issue's next pod mounts, the notice says
 // the work is still on that volume rather than lost, and the line says the volume is kept: nothing
 // went with the pod. Over any other disk — an ephemeral one, or a kept volume made after the round
-// opened — the line names no kept volume, and the message says the pod and its disk are gone and
-// the work is lost, whatever the read found. A message that calls lost work safe tells a role not
+// opened — the line names no kept volume, and the notice says the pod and its disk are gone and
+// the work is lost, whatever the read found. A notice that calls lost work safe tells a role not
 // to do that work again.
 func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 	t.Parallel()
@@ -596,7 +633,7 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig, line := replacedOverPassedOverClaims(t, func(rig *podUpdateRig) {
+			rig, line := replacedOverPassedOverClaims(t, roundBreakingDrift, func(rig *podUpdateRig) {
 				tc.script(rig)
 				if tc.keptVolumeAt != nil {
 					rig.rt.ScriptKeptVolume(podUpdateIssue, *tc.keptVolumeAt)
@@ -604,9 +641,12 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 			})
 			tc.line(t, line)
 
-			messages := rig.messages()
+			var messages []string
+			for _, notice := range rig.architectNotices(record.WorkspaceTakenNotice) {
+				messages = append(messages, notice.Reason)
+			}
 			if len(messages) != 1 {
-				t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
+				t.Fatalf("the architect was told %d times, want once: %q", len(messages), messages)
 			}
 			for _, want := range []string{"planner (suspended)", "reviewer (suspended)", tc.says} {
 				if !strings.Contains(messages[0], want) {
@@ -644,8 +684,8 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 
 			rig.tick()
 			rig.tick()
-			if messages := rig.messages(); len(messages) != 1 {
-				t.Fatalf("the issue was written %d messages after two more sweeps, want the one: %q", len(messages), messages)
+			if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 1 {
+				t.Fatalf("the architect was told %d times after two more sweeps, want the once: %+v", len(told), told)
 			}
 		})
 	}
@@ -656,17 +696,19 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 // waits on the store's write of it, which the test holds with a lock on the claim's row. The
 // replacement's decision reads such a claim as one that has not answered (masked), but the round
 // waits for no answer of a claim it passed over, so the replacement is made at this sweep. The
-// read of the workspace, the line and the message read the claim as it holds its answer
-// (noticeGroup): the implementer answered the round, so it pushed its work, and no claim is left
-// that the round did not wait for and that had not answered. So the replacement through the
-// tester makes no read of the workspace, the line names no claim under notWaitedFor, and the
-// issue is written nothing.
+// read of the workspace is made before every replacement (readPodWorkspace, R7 of #5285), through
+// the tester, and it finds work; the round is over a drift that breaks the pod, so the replacement
+// takes the pod all the same. The keep, the line and the architect's notice read the claim as it
+// holds its answer (noticeGroup): the implementer answered the round, so it pushed its work, and
+// no claim is left that the round did not wait for and that had not answered. So the line names
+// no claim under notWaitedFor, the architect's workspace-taken notice names no role, and the issue
+// is written nothing.
 func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
 	token := rig.tokens[claim.RoleImplementer]
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	rig.drifts(podUpdateDrift)
+	rig.drifts(roundBreakingDrift)
 
 	rig.tick()
 	rig.awaitAsked(claim.RoleTester, podUpdateRound)
@@ -708,13 +750,9 @@ func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *te
 	if len(lines) != 1 {
 		t.Fatalf("the replacement was logged %+v, want one line", lines)
 	}
-	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
-		t.Errorf("the workspace was read %+v, want no read: the implementer answered the round, so the round passed over no claim that had not answered", reads)
-	}
+	wantReadThroughTheTester(t, rig, lines[0], "found work")
 	wantField(t, lines[0], "notWaitedFor")
-	if messages := rig.messages(); len(messages) != 0 {
-		t.Errorf("the issue was written %q, want nothing: the implementer answered the round, and no other claim lost work", messages)
-	}
+	wantToldTaken(t, rig)
 }
 
 // R3's last round: a claim an operator suspended, restored as a boot restores it, beside a worker
@@ -758,14 +796,13 @@ func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T
 	}
 }
 
-// The read of the workspace is made once in a round, and only where it names something: where
-// the round passed over a claim that has not answered, through the role whose process the pod is
-// replaced through, and once every claim the round asks has answered and no turn runs.
-func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
+// The read of the workspace is made before every replacement the round asks for (R7 of
+// #5285), afresh each time, through the role whose process the pod is replaced
+// through: a turn after a read voids it, so no read is kept for a later sweep.
+func TestAnUpdateRoundReadsTheWorkspaceBeforeEachReplacement(t *testing.T) {
 	t.Parallel()
 	// No claim is passed over: two workers that answer, and a failed claim the round does not
-	// wait for either. The line names the failed claim, and nothing is read: no role the round
-	// passed over left work that no role was asked to push.
+	// wait for either. The line names the failed claim and the read, which found nothing.
 	t.Run("no claim passed over", func(t *testing.T) {
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
 			podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion()})
@@ -778,12 +815,12 @@ func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
 		}
 		rig.awaitReplacement(1, "once both workers answered")
 
-		if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
-			t.Fatalf("the workspace was read %+v, want no read: the round passed over no claim", reads)
+		if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 {
+			t.Fatalf("the workspace was read %+v, want one read before the replacement", reads)
 		}
 		lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
-		if len(lines) != 1 || lines[0]["workspaceRead"] != "not made" {
-			t.Fatalf("the replacement was logged %+v, want one line that says no read was made", lines)
+		if len(lines) != 1 || lines[0]["workspaceRead"] != "found no work" {
+			t.Fatalf("the replacement was logged %+v, want one line that names the read that found no work", lines)
 		}
 		wantField(t, lines[0], "notWaitedFor", claim.RolePlanner)
 	})
@@ -792,12 +829,11 @@ func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
 	// The one worker, the implementer, runs in the pod. Nothing is read while the implementer has
 	// not answered. Once it answers, the last word refuses the replacement three times, each time
 	// over a turn that starts while the replacement waits for the pod's launch turn, and then the
-	// runtime fails the replacement once. The read is made once, through the implementer, and each
-	// later sweep names that read again. The issue is written nothing until a replacement is made,
-	// and then once.
-	t.Run("once over the sweeps that replace nothing", func(t *testing.T) {
+	// runtime fails the replacement once. The workspace is read before each of the five asks,
+	// through the implementer, and nobody is told: each read found nothing.
+	t.Run("before each of the sweeps that replace nothing", func(t *testing.T) {
 		rig := newPodUpdateRig(t, suspendedRole(claim.RoleArchitect, supervise.SuspendedByDaemon), readyWorker(claim.RoleImplementer))
-		rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+		rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 		rig.drifts(podUpdateDrift)
 
 		rig.tick()
@@ -827,31 +863,31 @@ func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
 		}
 		rig.rt.FailReplacePod(errors.New("the Sandbox API refused the suspension"))
 		rig.awaitReplacement(1, "that the runtime fails")
-		if messages := rig.messages(); len(messages) != 0 {
-			t.Fatalf("the issue was written %q before any replacement was made, want nothing", messages)
-		}
 
 		rig.rt.FailReplacePod(nil)
 		rig.awaitReplacement(2, "once the runtime replaces it")
 		reads := rig.rt.CallsOf("WorkspaceWork")
-		if len(reads) != 1 || reads[0].Role != claim.RoleImplementer {
-			t.Fatalf("the workspace was read %+v, want one read through the implementer, the one role whose process is in the pod", reads)
+		if asks := len(rig.notDue()) + len(rig.replacements()); len(reads) != asks {
+			t.Fatalf("the workspace was read %d times over %d asks for the replacement, want one read before each", len(reads), asks)
 		}
-		messages := rig.messages()
-		if len(messages) != 1 || !strings.Contains(messages[0], passedOverCommit) || !strings.Contains(messages[0], "architect (suspended)") {
-			t.Fatalf("the issue was written %q, want one message naming the architect and the commit %s", messages, passedOverCommit)
+		for _, read := range reads {
+			if read.Role != claim.RoleImplementer {
+				t.Fatalf("the workspace was read %+v, want every read through the implementer, the one role whose process is in the pod", reads)
+			}
+		}
+		if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
+			t.Fatalf("the issue was written %q and the architect told %+v, want nothing: each read found nothing", messages, told)
 		}
 		lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
-		if len(lines) != 1 || lines[0]["workspaceRead"] != "found work" {
-			t.Fatalf("the replacement was logged %+v, want one line naming the read that found work", lines)
+		if len(lines) != 1 || lines[0]["workspaceRead"] != "found no work" {
+			t.Fatalf("the replacement was logged %+v, want one line naming the read that found nothing", lines)
 		}
 		wantField(t, lines[0], "notWaitedFor", claim.RoleArchitect)
 	})
 
-	// The round's bound lets the replacement through over a worker that never answered. The
-	// round passed over a claim, but a claim it asks has not answered, so the replacement makes
-	// no read, and the issue is written nothing.
-	t.Run("not at the bound over a claim that has not answered", func(t *testing.T) {
+	// The round's bound lets the replacement through over a worker that never answered. The read
+	// is made all the same, past the bound, and it found nothing, so nobody is told.
+	t.Run("at the bound over a claim that has not answered", func(t *testing.T) {
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
 			suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
 		rig.drifts(podUpdateDrift)
@@ -870,16 +906,16 @@ func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
 
 		rig.clockAt(podUpdateBound)
 		rig.awaitReplacement(1, "at the bound, with the tester unanswered")
-		if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
-			t.Fatalf("the workspace was read %+v, want no read: the tester had not answered", reads)
+		if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 {
+			t.Fatalf("the workspace was read %+v, want one read past the bound before the replacement", reads)
 		}
 		lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
-		if len(lines) != 1 || lines[0]["atTheBound"] != true || lines[0]["workspaceRead"] != "not made" {
-			t.Fatalf("the replacement was logged %+v, want one line of a bounded end that says no read was made", lines)
+		if len(lines) != 1 || lines[0]["atTheBound"] != true || lines[0]["workspaceRead"] != "found no work" {
+			t.Fatalf("the replacement was logged %+v, want one line of a bounded end that names the read that found nothing", lines)
 		}
 		wantField(t, lines[0], "notWaitedFor", claim.RolePlanner)
-		if messages := rig.messages(); len(messages) != 0 {
-			t.Fatalf("the issue was written %q, want nothing: no read was made", messages)
+		if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
+			t.Fatalf("the issue was written %q and the architect told %+v, want nothing: the read found nothing", messages, told)
 		}
 	})
 }

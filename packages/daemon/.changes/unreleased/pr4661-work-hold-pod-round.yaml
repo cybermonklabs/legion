@@ -2,17 +2,22 @@ kind: Added
 custom:
   Issue: pr4661
 body: |-
-  Under `gates.hold: work`, a pod update round whose pod the hold keeps for a stopped worker's
-  unpushed work no longer holds the tasks of a role that answered it: the round cannot end before
-  the hold ends or a read finds that work pushed, and an architect's tasks waited for that whole
-  time. The daemon tells such a role once that the round waits for the hold and that it is asked
-  again, and when the replacement can be made again, at the hold's opening or when a read finds
-  the work pushed, the round asks each such role again with a new bound of the round's length from
-  that ask, and replaces the pod once each has answered. Both marks are in the claim's row, so a
-  restart tells no role again and reads the new bound. Under `dispatch_token_broker: true`, a pod
-  built before the exchange identity takes no launch while `dispatch_token_transition_file` is not
-  set, so no role of the issue that is not running starts in the kept pod until the hold ends; the
-  daemon tells the controller once for each launch that begins to wait, on the round's late notice,
-  with the remedy: set `dispatch_token_transition_file`, or end the hold. The migration
-  `20261125105345_claim_round_hold_marks.up.sql` adds the two columns; a rollback needs no
-  statement, since the release before names each column it reads and writes.
+  Before the daemon replaces a pod, it reads the workspace through a role or the pod's launcher.
+  For non-breaking drift, a read that finds unpushed work or fails keeps the pod and ends the round.
+  Roles that answered get the tasks that the round held.
+
+  For breaking drift under `gates.hold: work`, the round stays open if a stopped worker can have
+  work on the disk and the read finds work or fails. The daemon tells each role that answered once
+  that it can continue its work. After a clean read or the end of the hold, the daemon asks those
+  roles again with a new bound. The `20261125105345_claim_round_hold_marks` migration adds two
+  claim columns so a restart preserves the notice mark and the new start time. A rollback needs
+  no SQL because the earlier release names each column it reads and writes.
+
+  For service-account drift, the late-round notice names the old and new accounts and the stopped
+  claims. The architect and a merger woken into the kept pod use the old account while the hold
+  keeps the round open. An operator can resume or retry a stopped claim.
+
+  With `dispatch_token_broker: true` and no `dispatch_token_transition_file`, the runtime refuses
+  launches into a pod without the exchange identity. While the work hold keeps that round open,
+  the daemon tells the controller once for each launch that waits. Set `dispatch_token_transition_file`
+  to permit launches into the old pod, or end the work hold to let the round proceed.

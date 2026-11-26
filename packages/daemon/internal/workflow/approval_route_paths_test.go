@@ -405,6 +405,7 @@ var noticeClasses = map[record.NoticeKind]noticeClass{
 	"pr-blocked": {}, "pr-merged": {}, "pr-closed-unmerged": {}, "pull-request-missing": {}, "message-refused": {},
 	"child-closed": {}, "child-status": {}, "children-first": {}, "child-release-stalled": {}, "child-not-recorded": {},
 	"checks-red": {}, "review-stuck": {}, "status-reasserted": {}, record.VolumeNearFullNotice: {},
+	record.WorkspaceKeptNotice: {}, record.WorkspaceTakenNotice: {},
 	"session-lost": {}, "session-forgotten": {}, "session-store-fault": {},
 	"task-stopped": {}, "plan-not-taken": {}, "retro-held": {},
 }
