@@ -1831,12 +1831,22 @@ type AgentMessage struct {
 	Decision *AgentMessageDecision `json:"decision,omitempty"`
 }
 
-// AgentMessageDecision is the person's decision on the agent's ask that an agent_message row
-// carries, as the answer loop read it (answerloop.Decision): its id, who decided, where and what
+// AgentMessageDecision is a person's decision on an ask a stopped agent opened, as the answer loop
+// read it from the Dispatch event (answerloop's readDecision): its id, who decided, where and what
 // (AgentDecision's ID, Asker, Ref and Text), whether it is the person's answer of the ask rather
 // than a reply on its thread, the ask's kind as the answer's event names it, and the issue the ask
 // stands on, which say whether the parked-decision relay carries it instead (internal/daemon's
-// routedDecisions). The agent's issue, role and session are the row's.
+// routedDecisions). It is the one value of those fields: answerloop.Decision carries it beside the
+// agent's conversation, and answerloop.Wake and an agent_message row carry it unchanged, whose
+// issue, role and session are the agent's.
+//
+// Relayed is whether sjawhar/legion#2163's parked-decision relay carries the decision itself, as
+// the daemon judged it once, where the answer loop gave the decision to a released agent's wake
+// (answerloop.Decisions.Relayed): the relay acts when the person decides, so a row or a held
+// question that passes the decision on later passes it as that judgement says
+// (answerloop.Decisions.Pass) and does not judge the tree again, whose root may have gone to the
+// backlog since. A row a build before the field queued reads false and passes its decision on as
+// the agent-decision notice: at worst a notice beside the relay's, never a decision nobody hears.
 type AgentMessageDecision struct {
 	ID       string `json:"id"`
 	Asker    string `json:"asker"`
@@ -1845,6 +1855,7 @@ type AgentMessageDecision struct {
 	Answered bool   `json:"answered,omitempty"`
 	AskKind  string `json:"askKind,omitempty"`
 	AskIssue string `json:"askIssue,omitempty"`
+	Relayed  bool   `json:"relayed,omitempty"`
 }
 
 func (AgentMessage) OutboxKind() OutboxKind { return OutboxKindAgentMessage }

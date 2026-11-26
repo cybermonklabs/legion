@@ -49,8 +49,9 @@ const (
 // asks nothing; the hand-off as received; its state; the reply decided for it (its kind, its text,
 // why it is passed on); whether a forward reached the running agent; whether its agent is given
 // its message through the daemon's wake row (Wake); whether it holds a person's decision for that
-// row (HoldsDecision); how many hand-offs carried it; and when it was first and last handed off
-// and last changed.
+// row (HoldsDecision), and whether the parked-decision relay carries that decision
+// (DecisionRelayed); how many hand-offs carried it; and when it was first and last handed off and
+// last changed.
 //
 // Wake is set for a question whose claim was released when the loop received or decided it: a
 // person's decision that also asks, received for a released claim, holds the decision for the
@@ -63,6 +64,14 @@ const (
 // the decision to nobody else and holds it for the agent's wake (Wake). The wake row then carries
 // the decision (answerloop.Wake.Decision), which goes to the architect or the controller if the
 // claim fails or retires before the row wakes it (internal/daemon's agentMessage).
+//
+// DecisionRelayed is set with HoldsDecision and never changed either: whether sjawhar/legion#2163's
+// parked-decision relay carries the held decision itself, as the loop read it where it recorded
+// the question (answerloop.Decisions.Relayed), since that relay acts when the person decides. The
+// wake row carries it with the decision (record.AgentMessageDecision.Relayed), and a pass of the
+// decision, the row's or the loop's own for a claim held since (answerloop's passHeld), goes by it
+// rather than by the tree as it stands at the pass. A question recorded before the column existed
+// reads false, and its decision is passed on as the agent-decision notice.
 type AnswerQuestion struct {
 	ID               string
 	Project          string
@@ -81,6 +90,7 @@ type AnswerQuestion struct {
 	ForwardDelivered bool
 	Wake             bool
 	HoldsDecision    bool
+	DecisionRelayed  bool
 	Deliveries       int
 	ReceivedAt       time.Time
 	LastSeenAt       time.Time
@@ -88,7 +98,7 @@ type AnswerQuestion struct {
 }
 
 const questionColumns = `id, project, identity, session, token, issue, role, kind, may_ask_nothing, handoff, state, reply_kind,
-	reply_text, pass_reason, forward_delivered, wake, holds_decision, deliveries, received_at, last_seen_at, updated_at`
+	reply_text, pass_reason, forward_delivered, wake, holds_decision, decision_relayed, deliveries, received_at, last_seen_at, updated_at`
 
 // ErrQuestionMoved is UpdateQuestion's refusal of a question no longer in a state the update moves
 // it from: another writer moved it first.
@@ -104,13 +114,13 @@ func (s *Store) ReceiveQuestion(ctx context.Context, q AnswerQuestion) (AnswerQu
 	var inserted bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `insert into answer_questions (id, project, identity, session, token, issue, role, kind,
-				may_ask_nothing, handoff, wake, holds_decision, state, received_at, last_seen_at, updated_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'received', $13, $13, $13)
+				may_ask_nothing, handoff, wake, holds_decision, decision_relayed, state, received_at, last_seen_at, updated_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'received', $14, $14, $14)
 			on conflict (project, identity, token) do update set deliveries = answer_questions.deliveries + 1,
 				last_seen_at = excluded.last_seen_at
 			returning `+questionColumns+`, xmax = 0`,
 			q.ID, q.Project, q.Identity, q.Session, string(q.Token), q.Issue, string(q.Role), q.Kind, q.MayAskNothing, []byte(q.Handoff), q.Wake,
-			q.HoldsDecision, q.ReceivedAt)
+			q.HoldsDecision, q.DecisionRelayed, q.ReceivedAt)
 		if err != nil {
 			return err
 		}
@@ -353,7 +363,7 @@ func scanQuestions(rows pgx.Rows, inserted *bool) ([]AnswerQuestion, error) {
 		var token, role, state string
 		var handoff []byte
 		dest := []any{&q.ID, &q.Project, &q.Identity, &q.Session, &token, &q.Issue, &role, &q.Kind, &q.MayAskNothing, &handoff,
-			&state, &q.ReplyKind, &q.ReplyText, &q.PassReason, &q.ForwardDelivered, &q.Wake, &q.HoldsDecision, &q.Deliveries,
+			&state, &q.ReplyKind, &q.ReplyText, &q.PassReason, &q.ForwardDelivered, &q.Wake, &q.HoldsDecision, &q.DecisionRelayed, &q.Deliveries,
 			&q.ReceivedAt, &q.LastSeenAt, &q.UpdatedAt}
 		if inserted != nil {
 			dest = append(dest, inserted)

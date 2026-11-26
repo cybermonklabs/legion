@@ -371,8 +371,12 @@ func TestIdleReleasedAgentIsGivenWhatAsksItNothingAndNothingThatIsNotItsOwn(t *t
 // gives it: a decision that asks nothing besides, at the hand-off; one that also asks, once its
 // answer is posted; and one that also asks whose reply the loop does not post, given unanswered.
 // The question of the last two records that it holds the decision
-// (store.AnswerQuestion.HoldsDecision). The control is a comment that asks nothing and a question
-// given unanswered with no decision: their wakes name none.
+// (store.AnswerQuestion.HoldsDecision). The decision carries whether the parked-decision relay
+// carries it as the loop read it once, at the hand-off (Decisions.Relayed), and the question
+// records that answer too (store.AnswerQuestion.DecisionRelayed): the relay answers otherwise by
+// the time the wake is asked for, and the wake still names the hand-off's answer. The control is
+// a comment that asks nothing and a question given unanswered with no decision: their wakes name
+// none, and the relay is never read.
 func TestIdleReleasedAgentsWakeNamesTheDecisionItGives(t *testing.T) {
 	notAnswered := func(req answer.Request) (answer.Reply, error) {
 		reply := answered(req, "I would need my working copy.")
@@ -402,7 +406,9 @@ func TestIdleReleasedAgentsWakeNamesTheDecisionItGives(t *testing.T) {
 			if tc.answer != nil {
 				r.answer = tc.answer
 			}
+			r.rec.setRelay(true)
 			r.receive(tc.handoff)
+			r.rec.setRelay(false)
 			r.drain()
 			if len(r.rec.wakes) != 1 {
 				t.Fatalf("wakes = %+v; want one", r.rec.wakes)
@@ -413,14 +419,23 @@ func TestIdleReleasedAgentsWakeNamesTheDecisionItGives(t *testing.T) {
 				if d.Asker != "user:person@example.com" || d.Ref != "dispatch://LEGION-9/ask/"+askID || !strings.Contains(d.Text, "Selected: B") || !d.Answered {
 					t.Errorf("the wake's decision = %+v; want the person's answer to the agent's ask", *d)
 				}
+				if !d.Relayed {
+					t.Errorf("the wake's decision = %+v; want it carried by the relay, as the relay answered at the hand-off", *d)
+				}
 			}
 			if got != tc.decision {
 				t.Fatalf("the wake names the decision %q; want %q", got, tc.decision)
 			}
+			if reads := r.rec.relayReads; (tc.decision == "") != (len(reads) == 0) || len(reads) > 1 || len(reads) == 1 && reads[0] != tc.decision {
+				t.Fatalf("the relay was read of %q; want it read once, of the decision %q, at the hand-off", reads, tc.decision)
+			}
 			if questions := r.questions(); tc.question != (len(questions) == 1) {
 				t.Fatalf("questions = %+v; want one recorded %t", questions, tc.question)
-			} else if tc.question && r.only().HoldsDecision != (tc.decision != "") {
-				t.Fatalf("the question holds a decision %t; want %t", r.only().HoldsDecision, tc.decision != "")
+			}
+			if tc.question {
+				if q := r.only(); q.HoldsDecision != (tc.decision != "") || q.DecisionRelayed != (tc.decision != "") {
+					t.Fatalf("the question holds a decision %t, relayed %t; want %t for both", q.HoldsDecision, q.DecisionRelayed, tc.decision != "")
+				}
 			}
 			if len(r.rec.decisions) != 0 {
 				t.Fatalf("decisions = %+v; want none passed on while the claim is released", r.rec.decisions)

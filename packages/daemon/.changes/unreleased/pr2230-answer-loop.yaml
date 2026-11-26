@@ -29,8 +29,13 @@ body: |-
   conversation whose content OpenAI refused for cyber policy (`held_for_cyber_policy`), for
   which the loop calls no model: every conversation of a claim held for that refusal, and the
   refused session's conversation after the retry that starts the agent in a new session too,
-  which the claim records (`claims.cyber_policy_sessions`). A person's decision on a stopped
-  agent's ask goes to the running architect, else to the controller (`agent-decision`).
+  which the claim records (`claims.cyber_policy_sessions`). The upgrade records there the session
+  a retry of the release before left behind after such a refusal, and the session that release's
+  `legion claims forget-session` left behind of a claim still held. One session it cannot find:
+  that of a claim whose session the release before forgot after such a refusal and which it then
+  retried, since nothing recorded marks that session as refused, so the loop answers from its
+  conversation. A person's decision on a stopped agent's ask goes to the running architect, else
+  to the controller (`agent-decision`).
   The Envoy listener hands the message of a claim the daemon released (an idle release of its
   issue pod, or a project's pause) to the daemon as it hands any stopped agent's, with no wake.
   The loop answers such an agent's question from its conversation, and a question it answered

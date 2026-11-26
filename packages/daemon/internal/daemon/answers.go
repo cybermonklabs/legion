@@ -494,6 +494,14 @@ const decisionPassedSource = string(record.AgentDecisionNotice)
 // root's next start, and this loop merges second, so it records the decision passed — a
 // redelivery and a restart queue nothing later either — and logs the one line that says whose it
 // is. What the same message asks the agent is still answered: only the decision is the relay's.
+// Decide, the pass of an unreleased agent's decision at its hand-off, reads the relay then
+// (relayCarries). A released agent's decision goes to its wake instead, and the loop reads the
+// relay once there (Relayed) and keeps the answer with the decision; Pass, the pass of such a
+// decision that no session of the claim took after all (the row's passUndelivered, the loop's
+// passHeld), goes by that answer and reads the relay no more. The relay acts when the person
+// decides, so a tree the relay found running, which it sent nothing for, and whose root has gone
+// to the backlog since, would read as the relay's at the later pass and the decision would reach
+// nobody; read the other way round, it would go out twice.
 //
 // Whether the relay carries it is read of the ask's own issue (Decision.AskIssue), the issue that
 // relay reads, and never of the agent's conversation issue: a phase worker opens its findings as
@@ -507,6 +515,28 @@ type routedDecisions struct {
 }
 
 func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decision) error {
+	return d.pass(ctx, decision, func(ctx context.Context, tx pgx.Tx) (bool, error) { return d.relayCarries(ctx, tx, decision) })
+}
+
+func (d routedDecisions) Relayed(ctx context.Context, decision answerloop.Decision) (bool, error) {
+	relayed := false
+	if err := store.Transact(ctx, d.outbox.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		relayed, err = d.relayCarries(ctx, tx, decision)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read whether the parked-decision relay carries the decision %s: %w", decision.ID, err)
+	}
+	return relayed, nil
+}
+
+func (d routedDecisions) Pass(ctx context.Context, decision answerloop.Decision) error {
+	return d.pass(ctx, decision, func(context.Context, pgx.Tx) (bool, error) { return decision.Relayed, nil })
+}
+
+// pass is Decide's and Pass's one body: relayedBy answers, inside the pass's transaction, whether
+// #2163's relay carries decision itself.
+func (d routedDecisions) pass(ctx context.Context, decision answerloop.Decision, relayedBy func(context.Context, pgx.Tx) (bool, error)) error {
 	conv := decision.Conversation
 	notice := record.Notice{Kind: record.AgentDecisionNotice, Role: conv.Role, AgentDecision: &record.AgentDecision{
 		ID: decision.ID, Issue: conv.Issue, Session: conv.Session, Asker: decision.Asker, Ref: decision.Ref,
@@ -522,7 +552,7 @@ func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decisio
 		if err != nil || !fresh {
 			return err
 		}
-		relayed, err = d.relayCarries(ctx, tx, decision)
+		relayed, err = relayedBy(ctx, tx)
 		if err != nil {
 			return err
 		}

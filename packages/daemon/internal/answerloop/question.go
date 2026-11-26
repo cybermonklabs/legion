@@ -361,40 +361,44 @@ func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin O
 // daemon's deliverHeld), and a claim retried since runs a new session, to which a message for the
 // refused session does not belong. A person's decision that Receive held on q for the agent's
 // wake, its claim released then (store.AnswerQuestion.Wake), is passed on first as the decision
-// of an agent that is not released is (Decisions): the agent-decision notice it would have been.
-// Decisions passes a decision once by its id, so a pass that stops between the two passes it
+// of an agent that is not released is: the agent-decision notice it would have been, unless the
+// parked-decision relay carries it, as Receive read once at the hand-off and q keeps
+// (store.AnswerQuestion.DecisionRelayed, Decisions.Pass), not as the relay would read the tree
+// now. Decisions passes a decision once by its id, so a pass that stops between the two passes it
 // again to no effect.
 func (l *Loop) passHeld(ctx context.Context, q store.AnswerQuestion, origin Origin, conv store.AgentConversation) error {
 	if q.Wake {
-		decision, err := heldDecision(q, conv)
+		held, err := heldDecision(q)
 		if err != nil {
 			return fmt.Errorf("read the decision held on %s for its agent's wake: %w", q.ID, err)
 		}
-		if err := l.cfg.Decisions.Decide(ctx, decision); err != nil {
-			return fmt.Errorf("pass on the decision %s of %s: %w", decision.ID, q.ID, err)
+		if err := l.cfg.Decisions.Pass(ctx, Decision{AgentMessageDecision: held, Conversation: conv}); err != nil {
+			return fmt.Errorf("pass on the decision %s of %s: %w", held.ID, q.ID, err)
 		}
 		q.Wake = false
 	}
 	return l.decideFault(ctx, q, origin, ReasonHeldForCyberPolicy)
 }
 
-// heldDecision is the person's decision q's recorded hand-off carries for conv, read as Classify
-// read it when Receive held it on q (readDecision): Receive holds one on a question only for a
-// Dispatch event that carries a decision.
-func heldDecision(q store.AnswerQuestion, conv store.AgentConversation) (Decision, error) {
+// heldDecision is the person's decision q's recorded hand-off carries, read as Classify read it
+// when Receive held it on q (readDecision), with the relay's answer Receive read for it then
+// (store.AnswerQuestion.DecisionRelayed): Receive holds one on a question only for a Dispatch
+// event that carries a decision.
+func heldDecision(q store.AnswerQuestion) (record.AgentMessageDecision, error) {
 	h, err := intake.DecodeHandoff(q.Handoff)
 	if err != nil {
-		return Decision{}, err
+		return record.AgentMessageDecision{}, err
 	}
 	event, err := intake.DispatchOf(h.Envelope)
 	if err != nil {
-		return Decision{}, err
+		return record.AgentMessageDecision{}, err
 	}
-	decision, err := readDecision(event, conv)
+	decision, err := readDecision(event)
 	if err != nil {
-		return Decision{}, err
+		return record.AgentMessageDecision{}, err
 	}
-	return *decision, nil
+	decision.Relayed = q.DecisionRelayed
+	return decision, nil
 }
 
 // wakes is whether q's agent is given its message through Wakes rather than told a reply the loop
@@ -716,13 +720,13 @@ func (l *Loop) woken(ctx context.Context, q store.AnswerQuestion, origin Origin)
 // wakeFor gives text to q's released agent through Wakes, keyed by q's id, so a pass the daemon
 // stopped after the row was written writes none again. A question that holds the person's
 // decision for the wake (store.AnswerQuestion.HoldsDecision) names it on the wake
-// (Wake.Decision), read from q's hand-off as Receive read it (heldDecision), so the decision
-// still reaches Decisions if the claim fails or retires before the wake gives it; a hand-off
-// that no longer reads so is an error before anything is given.
+// (Wake.Decision), read from q's hand-off as Receive read it, with the relay's answer Receive read
+// then (heldDecision), so the decision still reaches someone if the claim fails or retires before
+// the wake gives it; a hand-off that no longer reads so is an error before anything is given.
 func (l *Loop) wakeFor(ctx context.Context, q store.AnswerQuestion, text string) error {
 	wake := Wake{Key: q.ID, Issue: q.Issue, Role: q.Role, Session: q.Session, Text: text}
 	if q.HoldsDecision {
-		decision, err := heldDecision(q, store.AgentConversation{Session: q.Session, Project: q.Project, Issue: q.Issue, Role: q.Role, Token: q.Token})
+		decision, err := heldDecision(q)
 		if err != nil {
 			return fmt.Errorf("read the decision %s holds for its agent's wake: %w", q.ID, err)
 		}

@@ -651,9 +651,10 @@ const heldReply = "My conversation is held since OpenAI refused its content unde
 // held_for_cyber_policy. A person's decision that also asks, received while the agent's claim was
 // released and so held on its question for the agent's wake, wakes nothing once the claim is held,
 // since no start of the daemon's own launches a held claim's agent: its question goes to the
-// controller the same way, and its decision to Decisions, once, as the decision of an agent that
-// is not released goes. The control is the same question to the agent of a claim that is not
-// held, which is answered and posted, and passed on to nobody.
+// controller the same way, and its decision on, once, as the decision of an agent that is not
+// released goes, with the parked-decision relay's answer read at the hand-off (Decisions.Pass), not
+// read again when the claim is held. The control is the same question to the agent of a claim that
+// is not held, which is answered and posted, and passed on to nobody.
 func TestACyberPolicyHeldClaimsQuestionCallsNoModelAndGoesToTheController(t *testing.T) {
 	held := newRig(t)
 	path := held.conversation("ses_tester", testerToken, 0)
@@ -675,7 +676,9 @@ func TestACyberPolicyHeldClaimsQuestionCallsNoModelAndGoesToTheController(t *tes
 
 	woken, wokenPath := releasedRig(t)
 	wokenBefore := fileContent(t, wokenPath)
+	woken.rec.setRelay(true)
 	woken.receive(dispatchHandoff("ses_tester", answeredEvent(34, person, askID, "question", []string{"B"}, new("Use B. Why did you test A?"))))
+	woken.rec.setRelay(false)
 	if q := woken.only(); !q.Wake {
 		t.Fatalf("question = %+v at the hand-off; want the released agent's decision held on its question", q)
 	}
@@ -694,6 +697,10 @@ func TestACyberPolicyHeldClaimsQuestionCallsNoModelAndGoesToTheController(t *tes
 	if d := woken.rec.decisions; len(d) != 1 || d[0].ID != "dispatch:34" || !d[0].Answered || d[0].Ref != "dispatch://LEGION-9/ask/"+askID ||
 		d[0].Text != "Selected: B\n\nUse B. Why did you test A?" || d[0].Conversation.Session != "ses_tester" {
 		t.Fatalf("decisions = %+v; want the person's answer passed on once, as the decision of an agent that is not released", d)
+	}
+	if d := woken.rec.decisions[0]; woken.rec.passes != 1 || !d.Relayed || len(woken.rec.relayReads) != 1 {
+		t.Fatalf("the decision went on by %d passes, relayed %t, after %d reads of the relay; want it passed once, by the answer the relay gave at the hand-off and read no more",
+			woken.rec.passes, d.Relayed, len(woken.rec.relayReads))
 	}
 	if fileContent(t, wokenPath) != wokenBefore {
 		t.Fatalf("the held claim's conversation changed:\n%s", fileContent(t, wokenPath)[len(wokenBefore):])

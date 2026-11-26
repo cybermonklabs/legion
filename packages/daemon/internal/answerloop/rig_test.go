@@ -205,16 +205,21 @@ type passed struct {
 
 // recorder is the loop's PassOn, Decisions and Wakes. At each pass it reads the question's row and
 // keeps its pass_reason in rowReasons, by the pass's index in passed: the reason `legion state`
-// lists the question with once the pass marks it passed (questionsForController). At each wake it
-// keeps the wake once by its key, as the daemon's outbox row is written once by it, and in
-// conversation the content of the agent's session file as the wake was asked for, so a test reads
-// what the conversation held then.
+// lists the question with once the pass marks it passed (questionsForController). It keeps every
+// decision passed on, by Decide and by Pass alike, in decisions, and counts in passes those Pass
+// passed; Relayed answers relay, and keeps the id of each decision it was asked of in relayReads.
+// At each wake it keeps the wake once by its key, as the daemon's outbox row is written once by
+// it, and in conversation the content of the agent's session file as the wake was asked for, so a
+// test reads what the conversation held then.
 type recorder struct {
 	mu         sync.Mutex
 	st         *store.Store
 	passed     []passed
 	rowReasons []string
 	decisions  []Decision
+	passes     int
+	relay      bool
+	relayReads []string
 	wakes      []Wake
 	atWake     []string
 	path       string
@@ -237,6 +242,28 @@ func (r *recorder) Decide(_ context.Context, d Decision) error {
 	defer r.mu.Unlock()
 	r.decisions = append(r.decisions, d)
 	return nil
+}
+
+func (r *recorder) Relayed(_ context.Context, d Decision) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.relayReads = append(r.relayReads, d.ID)
+	return r.relay, nil
+}
+
+func (r *recorder) Pass(_ context.Context, d Decision) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.decisions = append(r.decisions, d)
+	r.passes++
+	return nil
+}
+
+// setRelay sets what Relayed answers from now on.
+func (r *recorder) setRelay(relay bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.relay = relay
 }
 
 func (r *recorder) Wake(_ context.Context, w Wake) error {

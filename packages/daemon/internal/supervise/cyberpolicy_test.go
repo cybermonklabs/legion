@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -237,6 +238,53 @@ func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {
 				c.Session, c.Abandoned, c.CyberPolicySessions, session)
 		}
 	})
+}
+
+// A claim the release before this one failed under OpenAI's cyber-policy refusal, which that
+// release records nowhere, and whose session that release's forget-session then left behind under
+// the asker's sentence (forgottenBy), stays held with no session: nothing names the refused session
+// but the claim's abandoned-session record. The decided retry that ends the hold records that
+// session as refused (holdCyberPolicySession), in memory and in the store, so its conversation
+// stays held once the hold has ended (Claim.SessionHeldForCyberPolicy). The control is a session
+// the claim abandoned before it failed, which was not the one refused: the retry records none.
+func TestADecidedRetryRecordsTheRefusedSessionAnEarlierForgetLeftBehind(t *testing.T) {
+	failedAt := epoch.Add(-time.Hour)
+	forgotten, err := forgottenBy(SuspendedByOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name        string
+		abandonedAt time.Time
+		want        []string
+	}{
+		{"the session forgotten after the failure", failedAt.Add(time.Minute), []string{session}},
+		{"a session abandoned before the failure", failedAt.Add(-time.Minute), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := queuedClaim()
+			c.State, c.Generation, c.FailureCause, c.FailedAt = StateFailed, 3, CauseCyberPolicy, failedAt
+			c.Failure = "a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content"
+			c.Abandoned = AbandonedSession{Session: session, SessionFile: sessionFile, Why: forgotten, At: tc.abandonedAt}
+			h := newHarnessOf(t, c)
+			if held := h.claim(); !held.HeldForCyberPolicy() || held.Session != "" || len(held.CyberPolicySessions) != 0 {
+				t.Fatalf("the claim is held %t on session %q with the refused sessions %q, want it held on none and none recorded",
+					held.HeldForCyberPolicy(), held.Session, held.CyberPolicySessions)
+			}
+
+			h.must(RequestRetry{Claim: h.token, Decided: true})
+			h.wantState(StateLaunching)
+			retried := h.claim()
+			if stored := h.store.load(h.token).CyberPolicySessions; retried.HeldForCyberPolicy() ||
+				!slices.Equal(retried.CyberPolicySessions, tc.want) || !slices.Equal(stored, tc.want) {
+				t.Fatalf("the retried claim is held %t with the refused sessions %q and the store's %q; want it held no more and %q in both",
+					retried.HeldForCyberPolicy(), retried.CyberPolicySessions, stored, tc.want)
+			}
+			if held := retried.SessionHeldForCyberPolicy(session); held != (tc.want != nil) {
+				t.Fatalf("the conversation of %s is held %t after the retry, want %t", session, held, tc.want != nil)
+			}
+		})
+	}
 }
 
 // The daemon's controller is retried by its keeper alone, so the operator's retry of it is refused

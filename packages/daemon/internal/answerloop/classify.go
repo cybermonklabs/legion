@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -271,7 +272,7 @@ func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.Age
 		}
 		switch {
 		case own && event.HandsTurnBack():
-			if decision, err = readDecision(event, conv); err != nil {
+			if decision, err = decisionFor(event, conv); err != nil {
 				return asksNothing(err.Error()), nil
 			}
 		case !own && event.Delivery == nil:
@@ -289,7 +290,7 @@ func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.Age
 		case event.Payload.Kind == "approval":
 			return Verdict{Because: reviewForArchitect, wake: wakesNobody}, nil
 		}
-		if decision, err = readDecision(event, conv); err != nil {
+		if decision, err = decisionFor(event, conv); err != nil {
 			return asksNothing(err.Error()), nil
 		}
 		if answer := event.Payload.Answer; answer == nil || answer.Text == nil || strings.TrimSpace(*answer.Text) == "" {
@@ -359,26 +360,36 @@ func commentSkip(ctx context.Context, h intake.Handoff, event intake.DispatchEve
 	return "", nil
 }
 
+// decisionFor is the decision a person's answer to the agent's ask, or their reply handing it back,
+// carries (readDecision), passed on for conv.
+func decisionFor(event intake.DispatchEvent, conv store.AgentConversation) (*Decision, error) {
+	decided, err := readDecision(event)
+	if err != nil {
+		return nil, err
+	}
+	return &Decision{AgentMessageDecision: decided, Conversation: conv}, nil
+}
+
 // readDecision is the decision a person's answer to the agent's ask, or their reply handing it
-// back, carries for conv. Its id is the Dispatch event's for an answer (a person who changes their
-// answer makes a new decision, a new event) and the comment's for a reply. An answer carries the
-// ask's kind, which says whether the parked-decision relay sends it (Decision.AskKind); a comment
-// event names none. The issue the event names is carried as the ask's own (Decision.AskIssue),
-// the issue that relay reads, which is the agent's own only while its ask stands on it.
-func readDecision(event intake.DispatchEvent, conv store.AgentConversation) (*Decision, error) {
+// back, carries. Its id is the Dispatch event's for an answer (a person who changes their answer
+// makes a new decision, a new event) and the comment's for a reply. An answer carries the ask's
+// kind, which says whether the parked-decision relay sends it (Decision.AskKind); a comment event
+// names none. The issue the event names is carried as the ask's own (Decision.AskIssue), the issue
+// that relay reads, which is the agent's own only while its ask stands on it.
+func readDecision(event intake.DispatchEvent) (record.AgentMessageDecision, error) {
 	p := event.Payload
 	issue := eventIssue(event)
-	d := &Decision{Asker: event.Actor.Kind + ":" + event.Actor.ID, Conversation: conv, Text: decisionText(event), AskIssue: issue}
+	d := record.AgentMessageDecision{Asker: event.Actor.Kind + ":" + event.Actor.ID, Text: decisionText(event), AskIssue: issue}
 	switch event.Type {
 	case "ask.answered":
 		if event.ID <= 0 || p.ID == "" {
-			return nil, fmt.Errorf("the Dispatch ask.answered names no event id or ask id")
+			return record.AgentMessageDecision{}, fmt.Errorf("the Dispatch ask.answered names no event id or ask id")
 		}
 		d.ID, d.Ref = dispatchEventIdentity(event.ID), itemRef(issue, "ask", p.ID)
 		d.Answered, d.AskKind = true, p.Kind
 	default:
 		if p.ID == "" {
-			return nil, fmt.Errorf("the Dispatch %s names no comment id", event.Type)
+			return record.AgentMessageDecision{}, fmt.Errorf("the Dispatch %s names no comment id", event.Type)
 		}
 		d.ID, d.Ref = "dispatch:"+p.ID, itemRef(issue, "comment", p.ID)
 	}

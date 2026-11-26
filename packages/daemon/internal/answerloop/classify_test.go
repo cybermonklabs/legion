@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -255,8 +256,8 @@ func TestADecisionNamesItsIDThePersonWhereAndWhat(t *testing.T) {
 	redelivered := dispatchHandoff("ses_tester", answer)
 	redelivered.Envelope.EventID, redelivered.Envelope.DedupeKey = "dispatch-2", "dispatch-2"
 	again := classify(redelivered)
-	want := Decision{ID: "dispatch:34", Asker: "user:person@example.com", Ref: "dispatch://LEGION-9/ask/" + askID,
-		Text: "Selected: B; C\n\nUse B. Why A?", Answered: true, AskKind: "question", AskIssue: "LEGION-9", Conversation: conv}
+	want := Decision{AgentMessageDecision: record.AgentMessageDecision{ID: "dispatch:34", Asker: "user:person@example.com", Ref: "dispatch://LEGION-9/ask/" + askID,
+		Text: "Selected: B; C\n\nUse B. Why A?", Answered: true, AskKind: "question", AskIssue: "LEGION-9"}, Conversation: conv}
 	if *first.Decision != want || *again.Decision != want {
 		t.Fatalf("decisions = %+v, %+v; want %+v for both", *first.Decision, *again.Decision, want)
 	}
@@ -265,8 +266,8 @@ func TestADecisionNamesItsIDThePersonWhereAndWhat(t *testing.T) {
 	}
 	reply := classify(dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
 		map[string]any{"id": "c-9", "issue_key": "LEGION-9", "body": "Use B.", "ask_id": askID, "reply_to": nil, "ask_waiting_on": "agent"})))
-	if want := (Decision{ID: "dispatch:c-9", Asker: "user:person@example.com", Ref: "dispatch://LEGION-9/comment/c-9", Text: "Use B.",
-		AskIssue: "LEGION-9", Conversation: conv}); *reply.Decision != want {
+	if want := (Decision{AgentMessageDecision: record.AgentMessageDecision{ID: "dispatch:c-9", Asker: "user:person@example.com",
+		Ref: "dispatch://LEGION-9/comment/c-9", Text: "Use B.", AskIssue: "LEGION-9"}, Conversation: conv}); *reply.Decision != want {
 		t.Fatalf("decision = %+v; want %+v", *reply.Decision, want)
 	}
 	legacy := classify(dispatchHandoff("ses_tester", answeredEvent(35, person, askID, "action", []string{"B"}, new("Use B."))))

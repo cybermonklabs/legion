@@ -215,7 +215,8 @@ type Claim struct {
 	Abandoned AbandonedSession
 	// CyberPolicySessions is every session of this claim whose content OpenAI refused under its
 	// cyber policy, oldest first and each once: the session the claim recorded when it failed
-	// under CauseCyberPolicy, or when it forgot a session while still held for such a failure
+	// under CauseCyberPolicy, or when it forgot a session while still held for such a failure, or,
+	// for a held claim that records no session, the session it left behind since the failure
 	// (holdCyberPolicySession). Nothing clears it, a retry least of all. The retry that
 	// launches a held claim's agent again forgets that session and clears the failure
 	// (freshSession, retry), so the claim is held no more (HeldForCyberPolicy), but the session's
@@ -4672,7 +4673,9 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // A claim still held for OpenAI's cyber-policy refusal when its session is forgotten records that
 // session as refused first (holdCyberPolicySession): fail recorded it already where this release
 // failed the claim, and a claim a release that recorded none failed is recorded here, by the
-// decided retry that ends the hold or by the operator's forget-session.
+// decided retry that ends the hold or by the operator's forget-session. A held claim whose session
+// that release already forgot records none, and the retry records the session it left behind
+// instead.
 //
 // why is the sentence the abandoned session is recorded under, which can carry a runtime's or a
 // provider's text, so it is kept as a far side's error text is (storetext.FarSideError).
@@ -4710,10 +4713,20 @@ func (m *Machine) forgetSession(why string) {
 // holdCyberPolicySession records the claim's session, once, as one whose content OpenAI refused
 // for cyber policy (Claim.CyberPolicySessions), so it stays held after the retry that forgets it:
 // fail calls it in the write that fails the claim under CauseCyberPolicy, and forgetSession for a
-// claim still held. The list is clipped first, so the append never writes into an array a copy of
-// the claim still holds.
+// claim still held. A held claim that records no session records the session it abandoned after
+// it failed instead (Claim.Abandoned, FailedAt): the release before this one, which records no
+// refused session, forgets a held claim's session with its forget-session, under the asker's
+// sentence (forgottenBy), and the claim stays held. The migration that adds the record writes such
+// a session of a claim held when it runs (20261126182717_claim_cyber_policy_sessions), and this is
+// the record of one that release forgot during a rollback after it. A session abandoned before the
+// failure was not the one refused. The list is clipped first, so the append never writes into an
+// array a copy of the claim still holds.
 func (m *Machine) holdCyberPolicySession() {
-	if s := m.claim.Session; s != "" && !slices.Contains(m.claim.CyberPolicySessions, s) {
+	s := m.claim.Session
+	if a := m.claim.Abandoned; s == "" && a.At.After(m.claim.FailedAt) {
+		s = a.Session
+	}
+	if s != "" && !slices.Contains(m.claim.CyberPolicySessions, s) {
 		m.claim.CyberPolicySessions = append(slices.Clip(m.claim.CyberPolicySessions), s)
 	}
 }

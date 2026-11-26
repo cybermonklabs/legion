@@ -38,9 +38,11 @@
 // as an asker. The controller, the architect and the conversation are told none of these. A
 // question the loop answered wakes nothing; one that came with a decision is answered, appended
 // and posted first, and the decision's row then says where. Once the claim is held for OpenAI's
-// cyber-policy refusal such a question wakes nothing, and its decision goes to Decisions as an
-// unreleased agent's does (passHeld). A row that carries a decision and finds the claim failed or
-// retired before it can wake it passes that decision to Decisions the same way (Wake.Decision).
+// cyber-policy refusal such a question wakes nothing, and its decision goes on as an unreleased
+// agent's does (passHeld). A row that carries a decision and finds the claim failed or retired
+// before it can wake it passes that decision on the same way (Wake.Decision). Both go by whether
+// the parked-decision relay carries the decision as Receive read it, once, at the hand-off
+// (Decisions.Relayed and Pass), and never read the relay again.
 //
 // While the project is paused (Config.Paused) the loop answers, posts and passes on as it does
 // while the project runs, and the answer's tools run their reads and refuse every write
@@ -68,6 +70,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -198,11 +201,13 @@ type PassOn interface {
 
 // Decision is a person's decision on an ask the stopped agent opened: their answer to the ask
 // (ask.answered), or their reply that hands the ask back to the agent (intake.DispatchEvent's
-// HandsTurnBack). ID is the decision's own id, the same however often it is handed off:
-// `dispatch:<event id>` of the answer, `dispatch:<comment id>` of the reply. Asker is the person
-// (`user:<login>`), Ref where they decided (`dispatch://<KEY>/ask/<id>` for an answer,
-// `dispatch://<KEY>/comment/<id>` for a reply), Text what they decided: the options they selected
-// and their text. Conversation is the agent's.
+// HandsTurnBack), read from its Dispatch event (record.AgentMessageDecision, the one value of the
+// decision's own fields, which Wake and the daemon's agent_message row carry unchanged), and the
+// agent's conversation it is passed on for. ID is the decision's own id, the same however often
+// it is handed off: `dispatch:<event id>` of the answer, `dispatch:<comment id>` of the reply.
+// Asker is the person (`user:<login>`), Ref where they decided (`dispatch://<KEY>/ask/<id>` for an
+// answer, `dispatch://<KEY>/comment/<id>` for a reply), Text what they decided: the options they
+// selected and their text.
 //
 // Answered says which of the two it is — the person's answer of the ask, against a reply on its
 // thread — and AskKind is that ask's kind as the answer's event names it
@@ -217,24 +222,32 @@ type PassOn interface {
 // reads, so it, and not the agent's conversation issue, says whether that relay carries this
 // decision (workflow.RelaysDecision, the daemon's routedDecisions). A decision made where no
 // issue is named carries "".
+//
+// Relayed is the relay's answer for a decision Receive gave to a released agent's wake, read
+// there once (Decisions.Relayed) and passed with the decision wherever it goes on (Pass); a
+// decision Decide passes on carries none, since Decide reads the relay itself.
 type Decision struct {
-	ID           string
-	Asker        string
-	Ref          string
-	Text         string
-	Answered     bool
-	AskKind      string
-	AskIssue     string
+	record.AgentMessageDecision
 	Conversation store.AgentConversation
 }
 
 // Decisions passes on the decisions the hand-offs carry (plan 2.9): to the architect that owns the
-// agent's issue while it holds its role, else to the controller. Receive calls it for every
-// hand-off carrying one, a redelivery and a restart's included, so an implementation passes a
-// decision once by its ID. A decision for an agent whose claim is released goes to the agent
-// itself through Wakes instead, and the architect and the controller are told nothing of it.
+// agent's issue while it holds its role, else to the controller, unless sjawhar/legion#2163's
+// parked-decision relay carries the decision itself. Receive calls Decide for every hand-off
+// carrying one, a redelivery and a restart's included, so an implementation passes a decision once
+// by its ID, and Decide reads then whether the relay carries it. A decision for an agent whose
+// claim is released goes to the agent itself through Wakes instead, and the architect and the
+// controller are told nothing of it: Receive reads once, where it gives the decision to the wake,
+// whether the relay carries it (Relayed), which acts when the person decides, and keeps that
+// answer with the decision (Decision.Relayed) on the wake and on the question that holds it
+// (store.AnswerQuestion.DecisionRelayed). Such a decision that no session of the claim takes after
+// all is passed on with Pass, which goes by that answer and never reads the relay again: the tree
+// it reads can have changed since, a root gone to the backlog that the relay found running when it
+// sent nothing, and a decision read again then would reach nobody.
 type Decisions interface {
 	Decide(ctx context.Context, d Decision) error
+	Relayed(ctx context.Context, d Decision) (bool, error)
+	Pass(ctx context.Context, d Decision) error
 }
 
 // Wakes gives an agent whose claim the daemon released what reaches it that the loop does not
@@ -248,8 +261,9 @@ type Decisions interface {
 // conversation. A question that also carries a decision is asked for once its answer is appended
 // and posted, so the woken agent finds the answer in its conversation. A message that carries a
 // decision names it (Wake.Decision), and an implementation that finds the claim failed or retired
-// before the woken session takes the message passes that decision to Decisions in its place: no
-// session of the claim takes it again, and the decision would reach nobody.
+// before the woken session takes the message passes that decision on in its place, by the relay's
+// answer the wake carries (Decisions.Pass): no session of the claim takes it again, and the
+// decision would reach nobody.
 type Wakes interface {
 	Wake(ctx context.Context, w Wake) error
 }
@@ -258,14 +272,16 @@ type Wakes interface {
 // and the agent's role token, which for a question is the question's id), Issue, Role and Session
 // the agent's conversation's, Text what the woken agent is told (wakeMessage), and Decision the
 // person's decision on the agent's ask the message carries, nil for none: one that asks nothing
-// besides (Receive), and one a question holds (store.AnswerQuestion.HoldsDecision, wakeFor).
+// besides (Receive), and one a question holds (store.AnswerQuestion.HoldsDecision, wakeFor). The
+// decision is the agent's on Issue, Role and Session, so it carries no conversation of its own,
+// and its Relayed is the relay's answer Receive read where it gave the decision to the wake.
 type Wake struct {
 	Key      string
 	Issue    string
 	Role     claim.Role
 	Session  string
 	Text     string
-	Decision *Decision
+	Decision *record.AgentMessageDecision
 }
 
 // Reason is why a question is passed on: the kind of reply the agent gave, a bound or fault the
@@ -482,7 +498,7 @@ func (l *Loop) work(ctx context.Context, session string) {
 // as any stopped agent's, and is given through Wakes, once each, everything else that reached it
 // and that is the agent's own: the loop's answer to it as an asker, in place of writing it into
 // the conversation; a person's decision on its ask that asks nothing besides, in place of
-// Decisions, which the wake names (Wake.Decision) so that it still reaches Decisions if the claim
+// Decisions, which the wake names (Wake.Decision) so that it still reaches someone if the claim
 // fails or retires before it wakes; and every other hand-off that is no question and no decision
 // and that the verdict says wakes the agent (wakesAgent): each Dispatch event that reached it,
 // such as a message, comment or reply that asks nothing or the resolution, answer or edit of an
@@ -490,12 +506,15 @@ func (l *Loop) work(ctx context.Context, session string) {
 // the agent follows and did not open is told as made on an ask it follows (wakesFollower), never
 // on its own. A decision that also asks is held on its question (store.AnswerQuestion.Wake and
 // HoldsDecision) and given once the answer is appended and posted, so the woken agent finds the
-// answer in its conversation. The daemon's own notices and posts, the broker's messages, anything
-// carrying the loop's own mark, and a person's review of the agent's own approval request, which
-// the design gate relays to its architect (reviewForArchitect), are none of the agent's
-// (wakesNobody), and reach it neither way; nor does an act of the agent's own session
-// (actedByAgent), such as its own reply or its own hand-back of its approval request. A claim
-// that is not released is passed its decision as before.
+// answer in its conversation. Either way Receive reads here, once, whether #2163's parked-decision
+// relay carries the decision (Decisions.Relayed), since that relay acts when the person decides,
+// and the wake and the held question keep that answer for the pass that may come later
+// (Decision.Relayed, store.AnswerQuestion.DecisionRelayed, Decisions.Pass). The daemon's own
+// notices and posts, the broker's messages, anything carrying the loop's own mark, and a person's
+// review of the agent's own approval request, which the design gate relays to its architect
+// (reviewForArchitect), are none of the agent's (wakesNobody), and reach it neither way; nor does
+// an act of the agent's own session (actedByAgent), such as its own reply or its own hand-back of
+// its approval request. A claim that is not released is passed its decision as before.
 func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropped bool, err error) {
 	conv, ok, err := l.conversationFor(ctx, h)
 	if err != nil {
@@ -521,10 +540,20 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropp
 			return false, fmt.Errorf("pass on the decision %s of %s: %w", verdict.Decision.ID, h.Envelope.EventID, err)
 		}
 	}
+	// held is the decision a released agent's wake carries, with the relay's answer read once here.
+	var held *record.AgentMessageDecision
+	if released && verdict.Decision != nil {
+		relayed, err := l.cfg.Decisions.Relayed(ctx, *verdict.Decision)
+		if err != nil {
+			return false, fmt.Errorf("read whether the parked-decision relay carries the decision %s of %s: %w", verdict.Decision.ID, h.Envelope.EventID, err)
+		}
+		verdict.Decision.Relayed = relayed
+		held = &verdict.Decision.AgentMessageDecision
+	}
 	if verdict.Question == nil {
-		if released && (verdict.Decision != nil || verdict.wake != wakesNobody) {
+		if released && (held != nil || verdict.wake != wakesNobody) {
 			identity, text := handoffMessage(h, verdict.wake == wakesFollower)
-			return false, l.wakeAgent(ctx, conv, identity, text, verdict.Decision, verdict.Because)
+			return false, l.wakeAgent(ctx, conv, identity, text, held, verdict.Because)
 		}
 		l.cfg.Log.Info("answers: hand-off is no question; not answered", "event", h.Envelope.EventID, "issue", conv.Issue,
 			"role", conv.Role, "session", conv.Session, "because", verdict.Because)
@@ -536,8 +565,8 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropp
 	q, inserted, err := l.cfg.Store.ReceiveQuestion(ctx, store.AnswerQuestion{
 		ID: QuestionID(l.cfg.Project, origin.Identity, string(conv.Token)), Project: l.cfg.Project, Identity: origin.Identity,
 		Session: conv.Session, Token: conv.Token, Issue: conv.Issue, Role: conv.Role, Kind: string(origin.Kind),
-		MayAskNothing: origin.MayAskNothing, Handoff: raw, Wake: released && verdict.Decision != nil,
-		HoldsDecision: released && verdict.Decision != nil, ReceivedAt: now,
+		MayAskNothing: origin.MayAskNothing, Handoff: raw, Wake: held != nil,
+		HoldsDecision: held != nil, DecisionRelayed: held != nil && held.Relayed, ReceivedAt: now,
 	})
 	if err != nil {
 		return false, err
@@ -556,7 +585,7 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) (dropp
 // the message's identity and the agent's role token (QuestionID), so the message is given once
 // however often it is handed off; decision is the person's decision the message carries, nil for
 // none. because says what the message is, for the log.
-func (l *Loop) wakeAgent(ctx context.Context, conv store.AgentConversation, identity, text string, decision *Decision, because string) error {
+func (l *Loop) wakeAgent(ctx context.Context, conv store.AgentConversation, identity, text string, decision *record.AgentMessageDecision, because string) error {
 	key := QuestionID(l.cfg.Project, identity, string(conv.Token))
 	if err := l.cfg.Wakes.Wake(ctx, Wake{Key: key, Issue: conv.Issue, Role: conv.Role, Session: conv.Session, Text: text, Decision: decision}); err != nil {
 		return fmt.Errorf("give %s to the released %s: %w", identity, conv.Session, err)

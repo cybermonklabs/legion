@@ -173,6 +173,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the window the run of refused turns is derived from, which the turn-outcome answer alone carries and which reaches no surface"},
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
+	{Field: "CyberPolicySessions", Column: ColumnWithheld,
+		Reason: "the sessions whose content OpenAI refused for cyber policy, which the daemon's answer gate reads off the live claim to call no model for their conversations, and no surface: a reader decides on the hold itself, which `failure.cause` serves while the claim is held"},
 	{Field: "SessionRun", Column: ColumnWithheld,
 		Reason: "the run of the claim's session since it last finished a turn, which decides the controller's replacement of a failing session and reaches the daemon's log and the fresh session's first task, and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,

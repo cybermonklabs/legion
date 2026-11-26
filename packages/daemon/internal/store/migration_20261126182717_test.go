@@ -47,13 +47,18 @@ func TestAClaimsCyberPolicySessionsOutliveEveryWrite(t *testing.T) {
 
 // The migration records the session a retry of the release before forgot after OpenAI refused its
 // content for cyber policy: the claim's abandoned session, whose sentence names the refusal in
-// classifyProviderError's words. A session abandoned for another cause, a claim that abandoned
-// none, and a claim held now record none: the hold covers every conversation of the held claim
+// classifyProviderError's words. It records too the abandoned session of a claim held now, failed
+// or retired, that records no session, which that release's forget-session left behind under the
+// asker's sentence: the retry that ends the hold forgets no session then. A session abandoned for
+// another cause by a claim held for none, a claim that abandoned none, and a claim held now that
+// still records its session record none: the hold covers every conversation of the held claim
 // until the retry that ends it records the session it forgets (supervise's forgetSession).
 func TestTheMigrationRecordsTheSessionAnEarlierRetryForgotAfterACyberPolicyRefusal(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimCyberPolicySessionsVersion-1)
+	const forgotten = `{"session":"ses_forgotten","why":"an operator cleared it with ` + "`legion claims forget-session`" +
+		` or ` + "`legion claims retry --fresh-session`" + `, so this agent starts in a new session","at":"2026-11-25T13:00:00Z"}`
 	seeds := []struct{ token, state, session, failureCause, heldFor, abandoned, want string }{
 		{"legion-LEGION-208-implementer", "launching", "", "", "",
 			`{"session":"ses_refused","why":"a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content (HTTP 400)","at":"2026-11-25T12:00:00Z"}`,
@@ -63,6 +68,9 @@ func TestTheMigrationRecordsTheSessionAnEarlierRetryForgotAfterACyberPolicyRefus
 			`(legion-LEGION-209-implementer,{})`},
 		{"legion-LEGION-210-implementer", "idle", "ses_running", "", "", "", `(legion-LEGION-210-implementer,{})`},
 		{"legion-LEGION-211-implementer", "failed", "ses_held", "provider_error", "cyber_policy", "", `(legion-LEGION-211-implementer,{})`},
+		{"legion-LEGION-212-implementer", "failed", "", "provider_error", "cyber_policy", forgotten, `(legion-LEGION-212-implementer,{ses_forgotten})`},
+		{"legion-LEGION-213-implementer", "retired", "", "provider_error", "cyber_policy", forgotten, `(legion-LEGION-213-implementer,{ses_forgotten})`},
+		{"legion-LEGION-214-implementer", "failed", "", "provider_error", "", forgotten, `(legion-LEGION-214-implementer,{})`},
 	}
 	for _, seed := range seeds {
 		if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation,

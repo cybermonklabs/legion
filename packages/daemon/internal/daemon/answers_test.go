@@ -259,8 +259,8 @@ func TestADecisionGoesOnceToTheRunningArchitectElseToTheController(t *testing.T)
 					project: "legion", now: func() time.Time { return now }}
 				return routedDecisions{outbox: runner, now: func() time.Time { return now }, log: quietLogger()}
 			}
-			decision := answerloop.Decision{ID: "dispatch:34", Asker: "user:person@example.com", Ref: "dispatch://LEGION-4/ask/a-1", Text: "Selected: B\n\nUse B.",
-				AskIssue:     "LEGION-4",
+			decision := answerloop.Decision{AgentMessageDecision: record.AgentMessageDecision{ID: "dispatch:34", Asker: "user:person@example.com",
+				Ref: "dispatch://LEGION-4/ask/a-1", Text: "Selected: B\n\nUse B.", AskIssue: "LEGION-4"},
 				Conversation: store.AgentConversation{Session: "ses_tester", Project: "legion", Issue: "LEGION-4", Role: claim.RoleTester}}
 			decide := func(d routedDecisions) {
 				t.Helper()
@@ -365,8 +365,8 @@ func TestADecisionOnAParkedTreeIsLeftToTheRelayThatOwnsIt(t *testing.T) {
 			t.Fatalf("apply the person's reply = %#v, %v", result, err)
 		}
 	}
-	decision := answerloop.Decision{ID: "dispatch:c-1", Asker: "user:person@example.com", Ref: "dispatch://LEGION-4/comment/c-1", Text: "Use B.",
-		AskIssue:     child,
+	decision := answerloop.Decision{AgentMessageDecision: record.AgentMessageDecision{ID: "dispatch:c-1", Asker: "user:person@example.com",
+		Ref: "dispatch://LEGION-4/comment/c-1", Text: "Use B.", AskIssue: child},
 		Conversation: store.AgentConversation{Session: "ses_tester", Project: "legion", Issue: child, Role: claim.RoleTester}}
 	decide := func(d routedDecisions) {
 		t.Helper()
@@ -447,8 +447,8 @@ func TestADecisionTheRelayLeavesAloneOnAParkedTreeGoesOnceToTheController(t *tes
 		t.Fatalf("parked-decision notices = %#v, want none: the relay does not answer for this ask's kind", got)
 	}
 	// The loop carries the kind the Dispatch event itself named, which is no question either.
-	decision := answerloop.Decision{ID: "dispatch:42", Asker: "user:person@example.com", Ref: "dispatch://LEGION-4/ask/a-2", Text: "Use B.",
-		Answered: true, AskKind: "action", AskIssue: child,
+	decision := answerloop.Decision{AgentMessageDecision: record.AgentMessageDecision{ID: "dispatch:42", Asker: "user:person@example.com",
+		Ref: "dispatch://LEGION-4/ask/a-2", Text: "Use B.", Answered: true, AskKind: "action", AskIssue: child},
 		Conversation: store.AgentConversation{Session: "ses_tester", Project: "legion", Issue: child, Role: claim.RoleTester}}
 	decide := func(d routedDecisions) {
 		t.Helper()

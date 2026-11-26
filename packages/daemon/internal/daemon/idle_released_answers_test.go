@@ -792,6 +792,85 @@ func TestIdleReleasedAgentsDecisionReachesTheArchitectWhenItsClaimEndsBeforeItsW
 	})
 }
 
+// parkRoot moves LEGION-208, the tree's root, to the backlog with its linger armed, as a person
+// parking the tree leaves it: a parked tree, whose decisions #2163's relay carries
+// (record.ParkedTree), and one whose claims no wake brings back (wakeable).
+func (r *releasedRig) parkRoot() {
+	r.t.Helper()
+	var root *record.Issue
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		root, err = r.runner.records.Issue(ctx, tx, releasedIssue)
+		return err
+	}); err != nil || root == nil {
+		r.t.Fatalf("read the root %s = %#v, %v", releasedIssue, root, err)
+	}
+	until := time.Now().Add(time.Hour)
+	root.Status, root.LingerUntil = "backlog", &until
+	putOutboxIssue(r.t, r.pool, r.runner.records, *root)
+	if !record.ParkedTree(*root) {
+		r.t.Fatalf("the root %s = %#v, want it a parked tree", releasedIssue, root)
+	}
+}
+
+// A released agent's decision is given to its wake while its tree runs, so #2163's relay, which
+// acts when the person decides, sends nothing for it, and the loop reads that once, at the
+// hand-off, and keeps it with the decision (record.AgentMessageDecision.Relayed,
+// store.AnswerQuestion.DecisionRelayed). When the root then goes to the backlog before the
+// decision is passed on, the pass goes by that answer and not by the tree as it stands then, which
+// reads as the relay's: one agent-decision notice, to the controller since the root lingers, and
+// none more for a redelivery of the hand-off, whichever pass it is: the agent_message row of a
+// decision that asks nothing, the row of one that also asks once its answer is posted, which
+// each find the tree lingering and end undelivered (agentMessage, passUndelivered), and the
+// loop's own pass of a decision held on its question when the claim is held for OpenAI's
+// cyber-policy refusal before the loop takes it (answerloop's passHeld). Asked of the relay at the
+// pass, each decision reached nobody.
+func TestIdleReleasedAgentsDecisionGoesOnOnceWhenItsRootIsParkedBeforeItsPass(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, text string
+		// held fails the claim for cyber policy before the loop takes the question.
+		held bool
+	}{
+		{name: "the row of a decision that asks nothing"},
+		{name: "the row of a decision that also asks", text: "Use B. Why did you implement A?"},
+		{name: "a decision held on its question when the claim is held", text: "Use B. Why did you implement A?", held: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newReleasedRig(t, stopByIdleRelease)
+			decided := releasedAnswer(tc.text)
+			r.handOff(decided)
+			if tc.held {
+				r.failForCyberPolicy()
+			} else {
+				r.work()
+				if messages := r.agentMessages(); len(messages) != 1 || messages[0].Decision == nil || messages[0].Decision.Relayed {
+					t.Fatalf("agent_message rows = %+v; want one, carrying the person's answer, which the relay does not carry", messages)
+				}
+			}
+			r.parkRoot()
+			if tc.held {
+				r.work()
+			} else if err := r.runner.RunOnce(r.ctx); err != nil {
+				t.Fatalf("run the agent_message row: %v", err)
+			}
+			r.handOff(decided)
+			r.work()
+			decisions := r.noticesOfKind(record.AgentDecisionNotice)
+			if len(decisions) != 1 || decisions[0].row != record.OutboxKindControllerNotice {
+				t.Fatalf("agent-decision notices = %+v; want one, a controller notice: the root lingers", decisions)
+			}
+			if passed, _ := decisions[0].payload["agent_decision"].(map[string]any); passed["id"] != "dispatch:34" || passed["session"] != releasedSession {
+				t.Fatalf("the agent-decision notice = %+v; want the person's answer to the implementer's ask", decisions[0].payload)
+			}
+			if rows := r.rows(record.OutboxKindAgentMessage); rows != 0 {
+				t.Fatalf("agent_message rows left = %d; want none", rows)
+			}
+		})
+	}
+}
+
 // A session whose content OpenAI refused for cyber policy stays held after the retry that ends
 // its claim's hold (supervise.Claim.CyberPolicySessions). The held phase's retry, which the
 // architect decided, starts the implementer in a new session, and the refused session's

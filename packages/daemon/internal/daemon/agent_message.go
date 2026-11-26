@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/answerloop"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -53,7 +52,7 @@ func (w releasedWakes) Wake(ctx context.Context, wake answerloop.Wake) error {
 			return err
 		}
 		row, err := record.NewOutboxRow(wake.Issue, record.AgentMessage{Role: wake.Role, Session: wake.Session, Text: wake.Text,
-			Decision: agentMessageDecision(wake.Decision)}, w.now())
+			Decision: wake.Decision}, w.now())
 		if err != nil {
 			return fmt.Errorf("the message %s for the released %s: %w", wake.Key, wake.Session, err)
 		}
@@ -85,8 +84,9 @@ func (w releasedWakes) Wake(ctx context.Context, wake answerloop.Wake) error {
 // follows — a claim that failed or retired, the design gate, the wake and the publish — is
 // deliverHeld's. A person's decision on the agent's ask that the row carries
 // (record.AgentMessage.Decision) goes on, at each of those undelivered ends and before the row
-// finishes, as the decision of an agent that is not released does (passUndelivered): no session
-// of the claim takes the message any more, and the decision would reach nobody.
+// finishes, as the decision of an agent that is not released does (passUndelivered), for the
+// agent's conversation the row names: no session of the claim takes the message any more, and the
+// decision would reach nobody.
 func (r *outbox) agentMessage(ctx context.Context, row record.OutboxRow, payload record.AgentMessage) error {
 	if r.notices == nil {
 		return errors.New("agent message executor has no Envoy publisher")
@@ -99,9 +99,11 @@ func (r *outbox) agentMessage(ctx context.Context, row record.OutboxRow, payload
 		return err
 	}
 	attributes := []any{"row", row.ID, "issue", row.Issue, "role", payload.Role, "session", payload.Session}
-	decision := rowDecision(r.project, token, row, payload)
-	if decision != nil {
-		attributes = append(attributes, "decision", decision.ID)
+	var decision *answerloop.Decision
+	if d := payload.Decision; d != nil {
+		decision = &answerloop.Decision{AgentMessageDecision: *d, Conversation: store.AgentConversation{
+			Session: payload.Session, Project: r.project, Issue: row.Issue, Role: payload.Role, Token: token}}
+		attributes = append(attributes, "decision", d.ID)
 	}
 	recorded, err := r.recordedIssue(ctx, row.Issue)
 	if err != nil {
@@ -134,39 +136,17 @@ func (r *outbox) agentMessage(ctx context.Context, row record.OutboxRow, payload
 		delivered:  "outbox message for a released agent delivered"})
 }
 
-// agentMessageDecision is decision as an agent_message row carries it (record.AgentMessage), nil
-// for none: the row's issue, role and session are the agent's conversation's, so the decision's
-// own conversation is left off.
-func agentMessageDecision(decision *answerloop.Decision) *record.AgentMessageDecision {
-	if decision == nil {
-		return nil
-	}
-	return &record.AgentMessageDecision{ID: decision.ID, Asker: decision.Asker, Ref: decision.Ref, Text: decision.Text,
-		Answered: decision.Answered, AskKind: decision.AskKind, AskIssue: decision.AskIssue}
-}
-
-// rowDecision is the person's decision an agent_message row of project carries, as the answer
-// loop passes one on (answerloop.Decision), for the conversation of the row's agent: the row's
-// issue, the role token, role and session the message was for. It is nil for a row that carries
-// none.
-func rowDecision(project string, token claim.Token, row record.OutboxRow, payload record.AgentMessage) *answerloop.Decision {
-	d := payload.Decision
-	if d == nil {
-		return nil
-	}
-	return &answerloop.Decision{ID: d.ID, Asker: d.Asker, Ref: d.Ref, Text: d.Text, Answered: d.Answered, AskKind: d.AskKind, AskIssue: d.AskIssue,
-		Conversation: store.AgentConversation{Session: payload.Session, Project: project, Issue: row.Issue, Role: payload.Role, Token: token}}
-}
-
 // passUndelivered passes on decision, the person's decision a message ends undelivered with, as
 // the decision of an agent that is not released is passed on (routedDecisions, answerloop's
 // Decisions): the agent-decision notice, to the architect that owns the issue while it holds its
-// role, else to the controller, unless the parked-decision relay carries it. That pass is marked
-// by the decision's id, so a row retried after a stop between the pass and its finish passes
-// nothing again. A message that carries no decision passes nothing.
+// role, else to the controller, unless the parked-decision relay carries it, as the answer loop
+// read once where it gave the decision to the wake (record.AgentMessageDecision.Relayed,
+// routedDecisions.Pass) rather than as the relay would read the tree now. That pass is marked by
+// the decision's id, so a row retried after a stop between the pass and its finish passes nothing
+// again. A message that carries no decision passes nothing.
 func (r *outbox) passUndelivered(ctx context.Context, decision *answerloop.Decision) error {
 	if decision == nil {
 		return nil
 	}
-	return routedDecisions{outbox: r, now: r.now, log: r.log}.Decide(ctx, *decision)
+	return routedDecisions{outbox: r, now: r.now, log: r.log}.Pass(ctx, *decision)
 }
