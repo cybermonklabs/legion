@@ -17,7 +17,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -649,7 +648,7 @@ func insertParagraph(text string) map[string]string {
 // requirementBlock writes it, and keeps its id: it changes a node the Spec query takes, so no
 // approval of the version before it covers the version it writes (R14).
 func amendRequirement(id, words string) map[string]string {
-	sentence := fmt.Sprintf("The change delivers %s.", id)
+	sentence := requirementSentence(id)
 	return map[string]string{"op": "replace", "find": sentence, "with": sentence + " " + words}
 }
 
@@ -662,17 +661,13 @@ func memoSpec(words string) string {
 }
 
 // latestVersion is the latest version of artifactID as the daemon's design gate reads it
-// (dispatch.HTTPClient.Approval), the version a registration of it names. A write that moves the
-// record of a query of the issue without a version of that query's document, as a requirement
-// written into another document of an issue whose spec is its own does, has Dispatch append one
-// before the write answers (R14), so no edit of the document answered its number.
+// (gateApproval), the version a registration of it names. A write that moves the record of a
+// query of the issue without a version of that query's document, as a requirement written into
+// another document of an issue whose spec is its own does, has Dispatch append one before the
+// write answers (R14), so no edit of the document answered its number.
 func (r *personHandoverRig) latestVersion(artifactID string) int {
 	r.t.Helper()
-	approval, err := dispatch.New(r.baseURL, dispatch.BearerTransport(scratchAgentToken, nil)).Approval(r.t.Context(), artifactID)
-	if err != nil {
-		r.t.Fatalf("read the latest version of %s as the daemon's design gate reads it: %v", artifactID, err)
-	}
-	return approval.LatestVersion
+	return r.gateApproval(artifactID).LatestVersion
 }
 
 // insertAtEnd is the edit that appends markdown, as written, to the end of a document.

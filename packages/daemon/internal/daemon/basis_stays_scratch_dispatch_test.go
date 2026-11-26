@@ -465,11 +465,10 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 		run.rootVersion = r.editDocument(run.root.PrimaryArtifactID, insertParagraph("The third revision names the limits."))
 		r.quiet(run.root.Key)
 	}
-	fields := map[string]any{"labels": []string{"legion"}}
 	if opt.grandparent {
-		run.grand, _ = r.ancestor(names[2], map[string]any{"labels": []string{"legion"}}, "g1", "g2")
+		run.grand, _ = r.ancestor(names[2], labelled, "g1", "g2")
 	}
-	run.parent, _ = r.ancestor(names[1], fields, "p1", "p2", "p3")
+	run.parent, _ = r.ancestor(names[1], labelled, "p1", "p2", "p3")
 	if opt.grandparent {
 		// P filed under G would be a view on G's spec, on which Dispatch refuses P's own
 		// requirements (R23, 409 REQUIREMENT_BELONGS_TO_ANCESTOR), so P marks P1 to P3 as a root,

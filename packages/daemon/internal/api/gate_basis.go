@@ -168,7 +168,7 @@ func approvalShown(approval dispatch.Approval) string {
 	by := actorNamed(approval.By)
 	switch approval.State {
 	case "approved":
-		if version == approval.LatestVersion {
+		if approval.ApprovedLatest() != 0 {
 			return fmt.Sprintf("an approval of its latest version %d by %s", version, by)
 		}
 		return fmt.Sprintf("an approval of version %d by %s, which Dispatch reads as standing at its latest version %d", version, by, approval.LatestVersion)
