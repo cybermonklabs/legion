@@ -238,13 +238,11 @@ func ReadPromptBody(key, head string, checks []string) string {
 const readPromptCandidate = `select id, payload from outbox
 	where issue = $1 and kind = 'ci_news'
 	  and payload->>'purpose' = 'state'
-	  and payload->>'generation' = $2
-	  and payload->>'task' = $3
 	  and payload->>'role' = $4
 	  and payload->>'repo' = $5
 	  and payload->>'head' = $6
-	  and payload->'reader' = $7::jsonb
 	  and (lease_until is null or lease_until <= $8)
+	  and $2::text is not null and $3::text is not null and $7::jsonb is not null
 	order by created_at, id limit 1 for update`
 
 // EnqueueReadPrompt writes n, a prompt to read Dispatch (CINewsState), for issue in the fact's
