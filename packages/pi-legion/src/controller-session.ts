@@ -29,6 +29,7 @@ import {
   requiredEnvironment,
   requiredSecret,
 } from "./classify";
+import type { ModelRequestCredential } from "./model-requests";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
 
 /** The daemon API contract this build speaks, which the controller's registration states as
@@ -57,6 +58,11 @@ export interface ControllerSession {
   readonly startCommand: (context: CommandContext) => Promise<void>;
   readonly isClaimedSession: (sessionID: string) => boolean;
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
+  /** The controller's registration for a report of its session's model requests
+   * (`./model-requests`), which the daemon authenticates as it does a turn outcome: the claim
+   * token, session and secret the registration answered and its generation. Undefined for any
+   * session but the one the daemon last registered as the controller. */
+  readonly reportingCredential: (sessionID: string) => ModelRequestCredential | undefined;
 }
 
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
@@ -93,6 +99,7 @@ export function createControllerSession(deps: {
   let controllerSessionID: string | undefined;
   let controllerCapability: string | undefined;
   let mintControllerGrant: (() => Promise<LegionGrant>) | undefined;
+  let controllerCredential: ModelRequestCredential | undefined;
   // Whether this process has ever sent LEGION_CONTROLLER_START_MESSAGE.
   let startMessageSent = false;
   // Whether the claim that made the last registration went on to hold the role and its topics: a
@@ -336,6 +343,14 @@ export function createControllerSession(deps: {
     claimComplete = false;
     mintControllerGrant = () =>
       client.controllerGrant({ sessionId: sessionID, secret: registration.secret });
+    // The same registration reports the session's model requests, as the daemon checks a
+    // controller's against its record (a supervised controller's against its claim).
+    controllerCredential = {
+      claimToken: registration.claimToken,
+      sessionID,
+      secret: registration.secret,
+      generation: registration.generation,
+    };
     controllerSessionID = sessionID;
     controllerTranscript = launched ? sessionFile : undefined;
     progress.registered = true;
@@ -722,5 +737,7 @@ export function createControllerSession(deps: {
     startCommand,
     isClaimedSession,
     mintGrant,
+    reportingCredential: (sessionID) =>
+      controllerSessionID === sessionID ? controllerCredential : undefined,
   };
 }

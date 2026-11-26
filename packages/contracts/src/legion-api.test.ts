@@ -41,6 +41,8 @@ import {
   LegionIntakeReplayResponse,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
+  LegionModelRequestsRequest,
+  LegionModelRequestsResponse,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
   LegionOperatorProjectPauseRequest,
@@ -172,6 +174,9 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
   // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
+  // `claim.ModelRequestsResponse`: what a host's report of model requests comes back as, every id
+  // of the batch the daemon now holds.
+  "model-requests.json": LegionModelRequestsResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
@@ -506,6 +511,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "fresh-session": [LegionFreshSessionResponse],
   compact: [LegionCompactResponse],
   "turn-outcome": [LegionTurnOutcomeResponse],
+  "model-requests": [LegionModelRequestsResponse],
   "wave-release": [LegionWaveReleaseResponse],
   refusal: [LegionErrorResponse, LegionPauseFailureResponse],
   "project-pause": [LegionProjectPauseResponse],
@@ -2195,6 +2201,50 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "needs controller triage" },
     ],
     ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
+    // A host's report of model requests, under the claim's secret and under the launch's boot
+    // token: an answered request with its uncached input tokens, and a refused one classed own.
+    [
+      "model requests",
+      LegionModelRequestsRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer_208",
+        secret: CLAIM_SECRET,
+        generation: 3,
+        requests: [
+          {
+            id: "req-1",
+            session: "ses_implementer_208",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:17.412Z",
+            uncachedInputTokens: 18342,
+          },
+          {
+            id: "req-2",
+            session: "ses_subagent_208",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:19Z",
+            refusal: "own",
+          },
+        ],
+      },
+    ],
+    [
+      "model requests by boot token",
+      LegionModelRequestsRequest,
+      {
+        bootToken: "boot-token-of-this-launch",
+        generation: 4,
+        requests: [
+          {
+            id: "msg_1",
+            session: "claude-session",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:17Z",
+          },
+        ],
+      },
+    ],
     [
       "root close",
       LegionRootCloseRequest,

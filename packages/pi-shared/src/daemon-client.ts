@@ -23,6 +23,8 @@ import {
   type LegionIssue,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
+  LegionModelRequestsRequest,
+  LegionModelRequestsResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
   LegionPlanRegisterRequest,
@@ -141,6 +143,13 @@ export interface LegionDaemonClient {
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
+  /** `claim.ModelRequestsRequest`: a batch of the model requests of the sessions this host runs
+   * for one launch of a claim, each under the id this host gave it
+   * (`packages/pi-legion/src/model-requests.ts`). The answer is every id of the batch the daemon
+   * now holds (`LegionModelRequestsResponse`). */
+  readonly modelRequests: (
+    input: z.input<typeof LegionModelRequestsRequest>
+  ) => Promise<z.output<typeof LegionModelRequestsResponse>>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
@@ -688,6 +697,13 @@ export function createLegionDaemonClient(
         "/legion/v1/claims/turn-outcome",
         LegionTurnOutcomeRequest,
         LegionTurnOutcomeResponse,
+        input
+      ),
+    modelRequests: (input) =>
+      post(
+        "/legion/v1/claims/model-requests",
+        LegionModelRequestsRequest,
+        LegionModelRequestsResponse,
         input
       ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),

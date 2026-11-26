@@ -123,6 +123,9 @@ func TestMain(m *testing.M) {
 //     (testdata/api-error-529.jsonl:5);
 //   - "refusal <text>": the result a content filter's refusal ends a turn with, which is the
 //     same but names no `api_error_status` (testdata/refusal-turn.jsonl:5);
+//   - "refused429 <text>": the last attempt of a step the provider refused with 429, as Claude
+//     Code writes it — its synthetic answer, carrying <text> as the refusal's words, `error` and
+//     `api_error_status` (testdata/api-error-429.jsonl:4) — then the provider failure's result;
 //   - "max-turns": a result Claude Code's own turn limit ended, which is no provider failure;
 //   - "maxturns <text>": an assistant message of text, then an error_max_turns result, which is
 //     Claude Code's own cap on the steps of one turn rather than the provider failing it;
@@ -205,7 +208,9 @@ func fakeClaude() int {
 			replay(record, file)
 			continue
 		}
-		emit(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
+		// The init line names the session's model, as Claude Code's does
+		// (testdata/api-error-429.jsonl:1): a refused attempt's lines name none of their own.
+		emit(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "standin-model"})
 		if name, ok := strings.CutPrefix(body, "held "); ok {
 			released(name)
 		}
@@ -247,6 +252,13 @@ func fakeClaude() int {
 		case strings.HasPrefix(body, "refusal "):
 			assistant(text(strings.TrimPrefix(body, "refusal ")))
 			providerFailed(0)
+			continue
+		case strings.HasPrefix(body, "refused429 "):
+			emit(map[string]any{"type": "assistant", "error": "rate_limit", "api_error_status": 429,
+				"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "message": map[string]any{
+					"id": fmt.Sprintf("synthetic-%d", time.Now().UnixNano()), "role": "assistant", "model": shimwire.SyntheticModel,
+					"content": []map[string]any{text(strings.TrimPrefix(body, "refused429 "))}}})
+			providerFailed(429)
 			continue
 		case strings.HasPrefix(body, "fail "):
 			assistant(text(strings.TrimPrefix(body, "fail ")))

@@ -60,6 +60,15 @@ body: |-
   `LEGION_SIGNAL_PROVIDER_REFUSAL`, and `legion controller start`'s file takes them under the same
   keys. A migration adds `model_requests`, `signal_token_limits` and `claim_turns`; its header
   carries the way back.
+
+  `legion claude-bridge` reports each model request of its Claude Code session on that route with
+  the launch's boot token: each answered request once, by its message id, however many stream lines
+  it took, ended at its last line, with `input_tokens + cache_creation_input_tokens`; a subagent's
+  under its `agent_id`; each attempt Claude Code retries after a 429 (`system` `api_retry`) as a
+  refusal of its own, `unknown`, since the line carries no text of the refusal; and the last refused
+  attempt classed by its text under the two patterns, compiled as `regexp.Compile("(?s)" +
+  pattern)`. A request is reported within 15 seconds of its end while the turn goes on, and what is
+  left at each `result` at once; the turn-outcome report is unchanged.
 time: 2026-11-26T01:22:27Z
 custom:
     Issue: pr5603

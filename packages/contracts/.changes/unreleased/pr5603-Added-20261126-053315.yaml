@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `legion-api.ts` gives the body and the answer of `POST /legion/v1/claims/model-requests` (daemon
+  API entry `20261126011643`, `admission-signals`): `LegionModelRequestsRequest`, the union of the
+  claim's caller (`claimToken`, `sessionId`, `secret`) and the launch's (`bootToken`), each with
+  `generation` and 1 to 200 `requests` of `{id, session, model, endedAt, uncachedInputTokens?,
+  refusal?}` whose ids no two share, `refusal` one of `own`, `provider` and `unknown`; and
+  `LegionModelRequestsResponse`, `{kept}`, every id of the batch the daemon holds, with its golden
+  `fixtures/daemon-api/model-requests.json`. `fixtures/refusal-classes.json` is the table of
+  refusal texts and the class each host gives them under a project's two refusal patterns, which
+  the Oh My Pi plugin's and the Claude Code bridge's tests both read.
+time: 2026-11-26T05:33:15Z
+custom:
+    Issue: pr5603

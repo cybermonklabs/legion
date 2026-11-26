@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The plugin reports each model request of its sessions to the daemon for admission by signals
+  (`POST /legion/v1/claims/model-requests`, daemon API entry `20261126011643`, `admission-signals`):
+  the role's own session, each `task` subagent it starts, under the role's claim and never a
+  credential of the subagent's, and the controller's session, under its registration. Each request
+  goes with a stable id, its session, its model, when it ended, its fresh input plus its cache
+  writes (never its cache reads) and, for one the provider refused with HTTP 429, who refused it:
+  `own` where `LEGION_SIGNAL_OWN_REFUSAL` matches its text, else `provider` where
+  `LEGION_SIGNAL_PROVIDER_REFUSAL` does, else `unknown`, each pattern compiled as
+  `new RegExp(pattern, "su")`. A request is reported within 15 seconds of its end while the turn
+  goes on, and what is left at the run's end at once; a request the daemon does not say it holds is
+  sent again under the same id. Nothing of a turn waits on a report, and the turn-outcome report is
+  unchanged. A 429 Oh My Pi's transport retries by itself reaches no extension, and is not
+  reported.
+time: 2026-11-26T05:33:15Z
+custom:
+    Issue: pr5603

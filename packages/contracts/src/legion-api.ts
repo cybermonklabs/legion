@@ -1679,6 +1679,79 @@ export const LegionTurnOutcomeResponse = z.object({
 
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
 
+/** The most requests one report of model requests carries (`claim.MaxModelRequests`). */
+export const LEGION_MAX_MODEL_REQUESTS = 200;
+
+/** `claim.ModelRequest`, one model request a host made for a session of the project, and nothing
+ * else of it: no prompt, no answer and no text of an error. `id` is the host's own, unique within
+ * the claim's launch generation and kept across the host's retries, so a request reported twice is
+ * kept once. `session` is the session the request ran in (the role's own, a subagent's or the
+ * controller's), `model` the model the host called, and `endedAt` when the request ended, which
+ * places it in its UTC minute. `uncachedInputTokens` is its fresh input plus its cache writes,
+ * never its cache reads, and absent where the host did not learn it. `refusal` is who refused a
+ * refused request, as the host classed its text by the project's two patterns
+ * (`LEGION_SIGNAL_OWN_REFUSAL`, then `LEGION_SIGNAL_PROVIDER_REFUSAL`, else `unknown`), and absent
+ * for one no limit refused. */
+export const LegionModelRequest = z.strictObject({
+  id: nonEmptyString,
+  session: nonEmptyString,
+  model: nonEmptyString,
+  endedAt: timestamp,
+  uncachedInputTokens: z.number().int().nonnegative().optional(),
+  refusal: z.enum(["own", "provider", "unknown"]).optional(),
+});
+
+export type LegionModelRequestBody = z.output<typeof LegionModelRequest>;
+
+/** The half of `claim.ModelRequestsRequest` that is the report rather than the caller: the launch
+ * generation the requests are kept under, which must be the authenticated launch's own, and 1 to
+ * `LEGION_MAX_MODEL_REQUESTS` requests whose ids no two share. */
+const modelRequestsFields = {
+  generation: z.number().int().positive(),
+  requests: z
+    .array(LegionModelRequest)
+    .min(1)
+    .max(LEGION_MAX_MODEL_REQUESTS)
+    .refine((requests) => new Set(requests.map((request) => request.id)).size === requests.length, {
+      message: "an id names one request of a report",
+    }),
+};
+
+/** `claim.AgentCaller`'s report of model requests: the Oh My Pi plugin, which names the claim with
+ * its registration's secret as the turn outcome does. The operator's controller names its own
+ * token (`legion-<project>-controller`) with the session and the secret its registration
+ * answered. */
+export const LegionModelRequestsAgentRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  ...modelRequestsFields,
+});
+
+/** `claim.BootCaller`'s report of model requests: `legion claude-bridge`, which holds no secret and
+ * presents its launch's boot token. */
+export const LegionModelRequestsBootRequest = z.strictObject({
+  bootToken: nonEmptyString,
+  ...modelRequestsFields,
+});
+
+/** `claim.ModelRequestsRequest`, the body of `POST /legion/v1/claims/model-requests`: a host's
+ * batch of the model requests of the sessions it runs for one launch of a claim, under exactly one
+ * of the two caller identities above. It names no project: the project is the claim's. */
+export const LegionModelRequestsRequest = z.union([
+  LegionModelRequestsAgentRequest,
+  LegionModelRequestsBootRequest,
+]);
+
+export type LegionModelRequestsRequestBody = z.output<typeof LegionModelRequestsRequest>;
+
+/** `claim.ModelRequestsResponse`, the answer to a report of model requests: every id of the batch
+ * the daemon now holds, new or held already, in the batch's order. The host forgets those and
+ * sends the rest again under the same ids. */
+export const LegionModelRequestsResponse = z.object({
+  kept: z.array(nonEmptyString),
+});
+
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
  * worker's answer to its pod's update message, which says it has pushed everything it wants kept
  * and its process may be replaced. `round` is the round the worker answers for, as the update
@@ -2719,4 +2792,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
+  // `pi-legion/src/model-requests.ts` forgets each id the daemon says it holds and sends the rest
+  // again under the same ids.
+  LegionModelRequestsResponse: ["kept"],
 };

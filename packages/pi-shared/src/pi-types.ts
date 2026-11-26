@@ -346,6 +346,27 @@ export interface AgentEndMessage {
    * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:236` at that tag), and the
    * turn-outcome report carries it as its own `httpStatus` (`packages/pi-legion/src/turn-outcome.ts`). */
   readonly errorStatus?: number;
+  /** The model id the request went to, as the provider names it (`AssistantMessage.model`,
+   * `packages/ai/src/types.ts:1454` at the pinned tag). */
+  readonly model?: string;
+  /** The provider's id of its response, where its API gives one (`AssistantMessage.responseId`,
+   * `packages/ai/src/types.ts:1466` at the pinned tag): absent on a message the host wrote itself,
+   * a gate's stop or a request that never reached the provider. */
+  readonly responseId?: string;
+  /** The tokens of the request this message ended (`Usage`, `packages/catalog/src/types.ts:211-221`
+   * at the pinned tag): `input` is the fresh input, `cacheWrite` the input written to the prompt
+   * cache and `cacheRead` the input read from it. Each is 0 on a request the provider refused
+   * before it answered (measured: the capture in `packages/pi-legion/src/model-requests.ts`). */
+  readonly usage?: {
+    readonly input?: number;
+    readonly output?: number;
+    readonly cacheRead?: number;
+    readonly cacheWrite?: number;
+  };
+  /** When the response finished, in milliseconds since the epoch: the session stamps it at
+   * `message_end` before any extension sees it (`AssistantMessage.completedAt`,
+   * `session/agent-session.ts:5807-5810` at the pinned tag). */
+  readonly completedAt?: number;
 }
 
 /**
