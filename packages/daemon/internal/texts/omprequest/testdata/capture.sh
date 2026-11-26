@@ -83,7 +83,8 @@ plan_tests = work + "/root-3/skills/legion-worker/references/plan-tests.md"
 open(plan_tests, "a", encoding="utf-8").write("\n" + marker + "\n")
 PY
 
-# The hiding layer of decision 9: the replaced skill's collision aliases, never its plain name.
+# The hiding layer of decision 9 of dispatch://INFRA-5590/artifact/plan-md: the replaced skill's
+# collision aliases, never its plain name.
 cat >"$work/hide.yml" <<'YML'
 skills:
   ignoredSkills:

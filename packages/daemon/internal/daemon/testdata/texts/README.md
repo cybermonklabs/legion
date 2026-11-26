@@ -34,11 +34,11 @@ The script keeps only the module's lines, which no other line Oh My Pi prints ha
 
 | | |
 | --- | --- |
-| Pin | `github:cybermonklabs/oh-my-pi@18.18.6-sami.20261125-001804` (`.omp-pin`) |
-| Archive | `omp-v18.18.6-sami.20261125-001804-linux-x64.tar.gz`, sha256 `bedea356fa433d3114780b4d0960cc46c715271c915732a7edd5194a1f664632` (`ARG OMP_SHA256` of `packages/daemon/docker/worker.Dockerfile`), installed as `.github/actions/install-omp/action.yml` installs it |
+| Pin | `github:cybermonklabs/oh-my-pi@18.18.6-sami.20261125-164517` (`.omp-pin`) |
+| Archive | `omp-v18.18.6-sami.20261125-164517-linux-x64.tar.gz`, sha256 `359f95dec797f1a507accbd2f3b56b3ef9b5dfc5fb5cd4c8652a326175ad6c85` (`ARG OMP_SHA256` of `packages/daemon/docker/worker.Dockerfile`), installed as `.github/actions/install-omp/action.yml` installs it |
 | `omp --version` | `omp/18.18.6` |
-| Binary | sha256 `fb763639d3004d6d67bc86b867637996b249e5632cc26ad65d90bc518ab50b20` |
-| Plugins | `@sjawhar/pi-envoy` 16.12.1 and `@sjawhar/pi-legion` 18.14.1, packed from the checkout at `main` 71022786 |
+| Binary | sha256 `0e2ddc35dc3d00666b8f7edf5750c32aabcec3e681648442bf55c90a40e18124` |
+| Plugins | `@sjawhar/pi-envoy` 16.12.1 and `@sjawhar/pi-legion` 18.14.1, packed from the checkout at 98069553, which holds `main` 22843f79 |
 
 The version string does not tell two builds apart: the Oh My Pi the worker image carries prints the same `omp/18.18.6` and is another binary.
 The file holds 14 agents and 17 skills.
