@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -2996,6 +2997,91 @@ func TestAChangeGenerationKeepsTheGate(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// Every clear deletes the pull requests of the issues it covers that are not open, and records each
+// deleted row's clock in cleared_pull_requests the same way. ACME-2 holds only the clock of a
+// cleared acme/widgets#42, and ACME-1 a closed row of acme/widgets#42: the issue's own clear, its
+// tree's and its next change's of ACME-1 each leave one row of #42, which names ACME-1, keeps the
+// later of the two clocks and takes the clear's own time. ACME-3 holds an open row of #43, which
+// each clear of ACME-3 keeps, with no clock written. Each clear runs on its own copy of the seed.
+//
+// The test holds that the clears agree, not that they share one statement: an identical copy of
+// the statement passes it too. Its red run declares ClearChangeGeneration with a body that deletes
+// the issue's pull requests that are not open and records no clock, so the row the next change's
+// clear leaves still names ACME-2. A next change's clear with a clock statement of its own, which
+// keeps the existing row's issue on a conflict, fails the same way. A clear whose predicate lacks
+// state <> 'open' deletes ACME-3's open row, and its case fails.
+func TestEveryClearRecordsTheClockTheSameWay(t *testing.T) {
+	ctx := context.Background()
+	records := NewStore()
+	const repo = "acme/widgets"
+	seeded := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	// ACME-2's clock is the later of the two, so the row a clear of ACME-1 leaves keeps it.
+	clockOfA, clockOfB, clearedAt := seeded, seeded.Add(time.Hour), seeded.Add(2*time.Hour)
+	seed := func(t *testing.T, tx pgx.Tx) {
+		for _, key := range []string{"ACME-1", "ACME-2", "ACME-3"} {
+			issue := issueFixture(key)
+			issue.Parent = nil
+			must(t, records.PutIssue(ctx, tx, issue))
+		}
+		must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-1", Repo: repo, Number: 42, Branch: "legion/ACME-1",
+			HeadSHA: "head-1", HeadUpdatedAt: clockOfA, State: PullRequestClosed}))
+		must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-3", Repo: repo, Number: 43, Branch: "legion/ACME-3",
+			HeadSHA: "head-3", HeadUpdatedAt: clockOfA, State: PullRequestOpen}))
+		_, err := tx.Exec(ctx, `insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at) values ($1, 42, 'ACME-2', $2, $3)`,
+			repo, clockOfB, seeded)
+		must(t, err)
+	}
+	clockText := func(repo string, number int, issue string, at, cleared time.Time) string {
+		return fmt.Sprintf("%s#%d %s clock %s cleared %s", repo, number, issue, at.UTC().Format(time.RFC3339), cleared.UTC().Format(time.RFC3339))
+	}
+	clocks := func(t *testing.T, tx pgx.Tx) []string {
+		rows, err := tx.Query(ctx, "select repo, number, issue, head_updated_at, cleared_at from cleared_pull_requests order by repo, number")
+		must(t, err)
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var repo, issue string
+			var number int
+			var at, cleared time.Time
+			must(t, rows.Scan(&repo, &number, &issue, &at, &cleared))
+			got = append(got, clockText(repo, number, issue, at, cleared))
+		}
+		must(t, rows.Err())
+		return got
+	}
+	for _, clear := range []struct {
+		name  string
+		clear func(tx pgx.Tx, issue string) error
+	}{
+		{"ClearGeneration", func(tx pgx.Tx, issue string) error { return records.ClearGeneration(ctx, tx, issue, clearedAt) }},
+		// Each issue is its own tree's root, so its tree's clear covers it alone.
+		{"ClearTreeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearTreeGeneration(ctx, tx, issue, clearedAt) }},
+		{"ClearChangeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearChangeGeneration(ctx, tx, issue, clearedAt) }},
+	} {
+		for _, tc := range []struct {
+			issue                string
+			clocks, pullRequests []string
+		}{
+			{issue: "ACME-1", clocks: []string{clockText(repo, 42, "ACME-1", clockOfB, clearedAt)}, pullRequests: []string{"ACME-3 43 open"}},
+			{issue: "ACME-3", clocks: []string{clockText(repo, 42, "ACME-2", clockOfB, seeded)}, pullRequests: []string{"ACME-1 42 closed", "ACME-3 43 open"}},
+		} {
+			t.Run(clear.name+" of "+tc.issue, func(t *testing.T) {
+				st := migratedStore(t)
+				inTx(t, st, func(tx pgx.Tx) { seed(t, tx) })
+				inTx(t, st, func(tx pgx.Tx) { must(t, clear.clear(tx, tc.issue)) })
+				inTx(t, st, func(tx pgx.Tx) {
+					if got := clocks(t, tx); !reflect.DeepEqual(got, tc.clocks) {
+						t.Errorf("the cleared pull requests after %s of %s = %v, want %v", clear.name, tc.issue, got, tc.clocks)
+					}
+					if got := rowsText(t, tx, `select issue || ' ' || number::text || ' ' || state from pull_requests order by issue`); !reflect.DeepEqual(got, tc.pullRequests) {
+						t.Errorf("the pull requests after %s of %s = %v, want %v: a clear deletes only what is not open", clear.name, tc.issue, got, tc.pullRequests)
+					}
+				})
+			})
+		}
 	}
 }
 
