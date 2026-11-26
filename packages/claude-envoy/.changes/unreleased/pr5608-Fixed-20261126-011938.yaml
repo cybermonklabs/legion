@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The channel server's test of a broker that is down and then answers holds one port for its
+  whole run, and starts no server on a port another test or program may have taken since it was
+  let go.
+time: 2026-11-26T01:19:38Z
+custom:
+    Issue: pr5608
