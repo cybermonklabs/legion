@@ -3204,8 +3204,8 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // older one for the same issue is unfinished, because each carries the status its predecessor
 // leaves, and a newer write run first would find the board short of it and finish unwritten as
 // though a human had moved it. A status write putting an issue into work (inWorkStatuses) without
-// includeParent waits while its parent (outboxParentSQL) still has a queued dispatch_status row
-// putting the parent into work, because Dispatch's parent status rule (R24 of
+// includeParent waits while its parent in the Dispatch copy (outboxParentSQL) still has a queued
+// dispatch_status row putting the parent into work, because Dispatch's parent status rule (R24 of
 // dispatch://INFRA-3320) refuses a child's move into work while its parent is out of work, so the
 // parent's write finishes before the child's runs. A start of an issue's role waits while an older
 // issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
@@ -3242,9 +3242,15 @@ var outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox olde
 // WaitingChildStatusIssues so the two can never disagree on which statuses are in work.
 var inWorkStatusesSQL = sqlTextList(inWorkStatuses)
 
-// outboxParentSQL is the recorded parent of the outer `outbox` row's issue: the Dispatch copy's
-// parent where dispatch_issues holds one, falling back to issues.parent where the copy holds none.
-const outboxParentSQL = `coalesce((select d.parent from dispatch_issues d where d.key = outbox.issue), (select i.parent from issues i where i.key = outbox.issue))`
+// outboxParentSQL is the Dispatch parent of the outer `outbox` row's issue as the Dispatch copy
+// (dispatch_issues) holds it: null where the copy holds no row of the issue, or a row showing it
+// under no parent. The record's own issues.parent is never read: it can still name a parent a
+// person has since taken the issue out from under, and a detached child held behind that former
+// parent's write into work would wait on a link Dispatch no longer has. A child the copy names no
+// parent of is held behind nothing here, and its set-back waits instead on the parent Dispatch's
+// own read of it names (the daemon's awaitParentInWork). The rule reads the copy at each claim, so
+// a hold a stale or looping copy puts on a row lifts once the copy is repaired.
+const outboxParentSQL = `(select d.parent from dispatch_issues d where d.key = outbox.issue)`
 
 // outboxLaneFree is the rule that a lifecycle row ($5 is the lifecycle lane's kinds) runs only while
 // no other lifecycle row of its issue is under a live lease. Each lifecycle row reads the issue and
@@ -3828,9 +3834,9 @@ func (s *Postgres) FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseT
 }
 
 // WaitingChildStatusIssues is the distinct issues whose queued dispatch_status row writes an
-// in-work status without includeParent and names parent as its parent (outboxParentSQL): the board
-// lanes to wake once a dispatch_status row of parent finishes, since outboxInOrder held them back
-// behind it.
+// in-work status without includeParent and whose Dispatch copy names parent as their parent
+// (outboxParentSQL): the board lanes to wake once a dispatch_status row of parent finishes, since
+// outboxInOrder held them back behind it.
 func WaitingChildStatusIssues(ctx context.Context, tx pgx.Tx, parent string) ([]string, error) {
 	rows, err := tx.Query(ctx, waitingChildStatusIssuesSQL, string(OutboxKindDispatchStatus), parent)
 	if err != nil {

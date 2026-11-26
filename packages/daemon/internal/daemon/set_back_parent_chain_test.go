@@ -28,9 +28,10 @@ type setBackChain struct {
 
 // newSetBackChain seeds one recorded issue for each of keys, each under the key before it (the
 // first under none), in work in the record and at backlog in Dispatch, where a session moved the
-// whole chain out of work (each shown at sequence 3). onCopy puts each issue's parent in the
-// Dispatch copy (dispatch_issues) and none in the record's own (issues.parent); otherwise the
-// record's own names it and the copy holds no row.
+// whole chain out of work (each shown at sequence 3). Dispatch's own read of each issue names its
+// parent. onCopy also puts that parent in the Dispatch copy (dispatch_issues) and none in the
+// record's own (issues.parent); otherwise the record's own names it and the copy holds no row, so
+// the outbox holds no row behind its parent's and each waits on Dispatch's read (awaitParentInWork).
 func newSetBackChain(t *testing.T, onCopy bool, keys ...string) *setBackChain {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -69,7 +70,7 @@ func (c *setBackChain) reassert(key string) {
 	c.reassertAt(key, time.Now())
 }
 
-// reassertAt is reassert due at the given moment, which a test that runs the lanes on a held
+// reassertAt is reassert due at the given moment, which a test that runs the outbox on a held
 // clock takes from that clock.
 func (c *setBackChain) reassertAt(key string, at time.Time) {
 	c.t.Helper()
@@ -115,8 +116,11 @@ func (c *setBackChain) wantSetBack(keys ...string) {
 // each issue's lane, and the events come deepest first, so the grandchild's row is the oldest.
 // Each write into work under a parent out of work is one Dispatch refuses, so each row waits for
 // its parent's queued write into work, whichever level that is: the root's first, then the
-// child's, then the grandchild's. The parent a row waits for is the one the Dispatch copy names,
-// and, where the copy holds no row of the issue, the record's own.
+// child's, then the grandchild's. The parent a row waits for is Dispatch's, never the record's own
+// (issues.parent). Where the copy names it, the row is not claimable until the parent's row has
+// finished, so it never runs to wait. Where the copy holds no row of the issue, the row runs and
+// waits on its backoff while Dispatch's read shows its parent out of work (awaitParentInWork), so
+// what that case holds is that every set-back lands in the end and none is refused.
 func TestTheSetBackOfAChainOfThreeNeverBreaksTheRule(t *testing.T) {
 	t.Parallel()
 	const root, child, grandchild = "LEGION-1", "LEGION-2", "LEGION-3"
@@ -124,7 +128,7 @@ func TestTheSetBackOfAChainOfThreeNeverBreaksTheRule(t *testing.T) {
 		name   string
 		onCopy bool
 	}{
-		{name: "parents the record names", onCopy: false},
+		{name: "parents the copy holds no row of", onCopy: false},
 		{name: "parents only the Dispatch copy names", onCopy: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,7 +139,9 @@ func TestTheSetBackOfAChainOfThreeNeverBreaksTheRule(t *testing.T) {
 			}
 			chain.run(4)
 			chain.wantSetBack(root, child, grandchild)
-			chain.wantNoWaits()
+			if tc.onCopy {
+				chain.wantNoWaits()
+			}
 		})
 	}
 }
@@ -151,15 +157,15 @@ func (c *setBackChain) wantNoWaits() {
 }
 
 // A write that does not put its parent's row behind it waits for nothing: a child's write into
-// work runs at once, though its parent has a row queued, when that row writes a status out of work
-// (the parent's own park) and when the child's row is its own parent's (a record that names an
-// issue as its own parent, which no row may wait on for ever).
+// work runs at once, though the parent the Dispatch copy names has a row queued, when that row
+// writes a status out of work (the parent's own park) and when the child's row is its own parent's
+// (a copy that names an issue as its own parent, which no row may wait on for ever).
 func TestASetBackWaitsOnlyForAParentsWriteIntoWork(t *testing.T) {
 	t.Parallel()
 	const root, child = "LEGION-1", "LEGION-2"
 	t.Run("a parent whose queued write puts it out of work", func(t *testing.T) {
 		t.Parallel()
-		chain := newSetBackChain(t, false, root, child)
+		chain := newSetBackChain(t, true, root, child)
 		chain.client.issues[root] = dispatch.Issue{Key: root, Status: "in_progress", LastSeq: 3}
 		chain.reassert(child)
 		enqueueOutbox(t, chain.pool, chain.records, mustOutboxRow(t, root, record.ReassertStatusWrite("backlog", "in_progress", 3), time.Now()))
@@ -171,14 +177,12 @@ func TestASetBackWaitsOnlyForAParentsWriteIntoWork(t *testing.T) {
 			t.Errorf("Dispatch shows %s %s, want backlog as its own write set it", root, got)
 		}
 	})
-	t.Run("an issue recorded as its own parent", func(t *testing.T) {
+	t.Run("an issue the copy shows as its own parent", func(t *testing.T) {
 		t.Parallel()
-		chain := newSetBackChain(t, false, root)
+		chain := newSetBackChain(t, true, root)
 		self := root
 		chain.client.issues[root] = dispatch.Issue{Key: root, Status: "in_progress", Parent: &self, LastSeq: 3}
-		if _, err := chain.pool.Exec(context.Background(), "update issues set parent = $1 where key = $1", root); err != nil {
-			t.Fatalf("record %s as its own parent: %v", root, err)
-		}
+		putCopyRow(t, chain.pool, root, root, "in_progress")
 		enqueueOutbox(t, chain.pool, chain.records, mustOutboxRow(t, root, record.ReassertStatusWrite("testing", "in_progress", 3), time.Now()))
 		chain.run(1)
 		if got := chain.client.issues[root].Status; got != "testing" {
@@ -193,11 +197,11 @@ func TestASetBackWaitsOnlyForAParentsWriteIntoWork(t *testing.T) {
 // outbox yet holds it behind. The child's write is not made then: the record still has the parent
 // in work while Dispatch shows it at backlog, so the row waits on its backoff, which no
 // PARENT_STATUS_CONFLICT refusal ends. Once the parent's row is queued the child's is held behind
-// it, and both end in work.
+// it, since the copy the child's own event wrote names the parent, and both end in work.
 func TestASetBackOfAChildWaitsForItsParentsEventToArrive(t *testing.T) {
 	t.Parallel()
 	const root, child = "LEGION-1", "LEGION-2"
-	chain := newSetBackChain(t, false, root, child)
+	chain := newSetBackChain(t, true, root, child)
 	chain.reassert(child)
 	chain.run(1)
 	if len(chain.client.refused) != 0 {
@@ -217,14 +221,15 @@ func TestASetBackOfAChildWaitsForItsParentsEventToArrive(t *testing.T) {
 	chain.wantSetBack(root, child)
 }
 
-// The lanes hold a child's row behind its parent's (a held row takes no lease, so its lane finds
-// nothing due and exits) and nothing but the parent's finish wakes it again: the child's set-back
-// runs once the parent's row has finished, and the grandchild's once the child's has, with the
-// sweep never fired. Without that wake each would wait for the sweep, up to a lease later.
+// The lanes hold a child's row behind the parent the Dispatch copy names (a held row takes no
+// lease, so its lane finds nothing due and exits) and nothing but the parent's finish wakes it
+// again: the child's set-back runs once the parent's row has finished, and the grandchild's once
+// the child's has, with the sweep never fired. Without that wake each would wait for the sweep, up
+// to a lease later.
 func TestASetBackRunsAsSoonAsItsParentsRowFinishesOnTheLanes(t *testing.T) {
 	t.Parallel()
 	const root, child, grandchild = "LEGION-1", "LEGION-2", "LEGION-3"
-	chain := newSetBackChain(t, false, root, child, grandchild)
+	chain := newSetBackChain(t, true, root, child, grandchild)
 	clock := microClock()
 	stop := runLanes(t, chain.runner, clock)
 	for _, key := range []string{grandchild, child, root} {
@@ -241,4 +246,45 @@ func TestASetBackRunsAsSoonAsItsParentsRowFinishesOnTheLanes(t *testing.T) {
 	stop()
 	chain.wantSetBack(root, child, grandchild)
 	chain.wantNoWaits()
+}
+
+// A person took the child out from under its parent: Dispatch's read of the child names no parent
+// and the copy's row of it shows none, while the record's own issues.parent still names the parent
+// it had. The child's set-back into work waits for nothing of that former parent's, since the
+// parent a row waits for is Dispatch's and never the record's: the write lands while the former
+// parent's own write into work stands queued, not due on the held clock the outbox runs on, and no
+// finish of that row would wake the child's lane (record.WaitingChildStatusIssues).
+func TestASetBackOfADetachedChildWaitsForNoWriteOfItsFormerParent(t *testing.T) {
+	t.Parallel()
+	const root, child = "LEGION-1", "LEGION-2"
+	chain := newSetBackChain(t, false, root, child)
+	detached := chain.client.issues[child]
+	detached.Parent = nil
+	chain.client.issues[child] = detached
+	putCopyRow(t, chain.pool, child, "", "backlog")
+	clock := microClock()
+	chain.runner.now, chain.runner.clock = clock.Now, clock
+	chain.reassertAt(child, clock.Now())
+	chain.reassertAt(root, clock.Now().Add(time.Hour))
+	var waiting []string
+	if err := store.TransactWith(context.Background(), chain.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		waiting, err = record.WaitingChildStatusIssues(ctx, tx, root)
+		return err
+	}); err != nil {
+		t.Fatalf("list the status rows waiting on %s: %v", root, err)
+	}
+	if len(waiting) != 0 {
+		t.Errorf("the status rows waiting on %s = %v, want none: Dispatch shows %s under no parent", root, waiting, child)
+	}
+	if err := chain.runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the rows: %v", err)
+	}
+	chain.wantSetBack(child)
+	if left := statusRowsOf(t, chain.pool, root); left != 1 {
+		t.Errorf("%s keeps %d status rows, want its one write into work still queued: the child's write never waited for it", root, left)
+	}
+	if got := chain.client.issues[root].Status; got != "backlog" {
+		t.Errorf("Dispatch shows %s %s, want backlog: its own write is not due yet", root, got)
+	}
 }

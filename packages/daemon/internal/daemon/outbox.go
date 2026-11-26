@@ -1398,7 +1398,10 @@ func (r *outbox) seenInTheLog(ctx context.Context, row record.OutboxRow, seen, s
 // before the parent's event has reached the daemon and queued the parent's set-back (which
 // outboxInOrder otherwise holds the child behind). Waiting here avoids a PARENT_STATUS_CONFLICT
 // refusal during that window; once the parent's set-back lands (or a person's move takes the parent
-// out of Legion's work in the record), this passes.
+// out of Legion's work in the record), this passes. It is also the one wait of a child the Dispatch
+// copy names no parent of (record's outboxParentSQL), which outboxInOrder holds behind nothing: the
+// parent waited on is the one Dispatch's own read of the child names (read.Parent), never the
+// record's issues.parent, so a child taken out from under its parent waits for nothing of it.
 func (r *outbox) awaitParentInWork(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) error {
 	if payload.Kind != record.ReassertStatusRow || payload.IncludeParent || !record.InWorkStatus(payload.Status) {
 		return nil
