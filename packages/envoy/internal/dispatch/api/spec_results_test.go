@@ -18,6 +18,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
@@ -1035,11 +1036,19 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	workflow := ".github/workflows/ci-results.yaml"
+	run := oauthwire.Run{
+		CIRun: oauthwire.CIRun{
+			Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/" + workflow + "@refs/heads/topic",
+			Ref: "refs/heads/topic", SHA: specResultsCommit, EventName: "push", RunID: "7", RunAttempt: "1",
+			RunnerEnvironment: "github-hosted", CheckRunID: fmt.Sprint(specResultsCheckRun),
+		},
+		Workflow: workflow, ID: 7, Attempt: 1, CheckRun: specResultsCheckRun,
+	}
 	for range 2 {
 		row := specCheckRow{
-			project: specResultsProject, repository: specResultsRepository, check: probeCheck, commit: specResultsCommit,
-			procedureDigest: specCheckDigest(t, probeCheck), job: "go-checks", checkRunID: specResultsCheckRun, runID: 7, attempt: 1,
-			verdict: "pass", session: "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
+			project: specResultsProject, check: probeCheck, procedureDigest: specCheckDigest(t, probeCheck),
+			job: "go-checks", run: run, verdict: "pass", session: "ci-results:" + specResultsRepository + "/" + workflow,
 		}
 		stored, err := insertSpecCheckResult(ctx, tx, row)
 		if err != nil {

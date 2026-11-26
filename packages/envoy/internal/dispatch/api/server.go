@@ -913,15 +913,14 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// decided (readClasses).
 		panic("api.Register: the route table's read class does not class every GET row exactly once: " + strings.Join(refused, "; "))
 	}
+	// A list that names a route nothing serves opens nothing while it reads as though it did - a
+	// row renamed or deleted and its entry left behind - so the table is refused rather than
+	// mounted, for the results list and the approve list alike (resultsScopeRoutes,
+	// approveScopeRoutes).
 	if unmounted := routesNotMounted(slices.Values(resultsScopeRoutes)); len(unmounted) > 0 {
-		// A results list naming a route nothing serves opens nothing while it reads as though it
-		// did, so the table is refused rather than mounted (resultsScopeRoutes).
 		panic("api.Register: the route table's results list names a route the table does not mount: " + strings.Join(unmounted, "; "))
 	}
 	if refused := routesNotMounted(slices.Values(approveScopeRoutes)); len(refused) > 0 {
-		// An approve list naming a route nothing serves opens nothing while it reads as though it
-		// did - a row renamed or deleted and its entry left behind - so the table is refused
-		// rather than mounted (approveScopeRoutes).
 		panic("api.Register: the route table's approve list names a route the table does not mount: " + strings.Join(refused, "; "))
 	}
 	going, err := buildGoingCatalogue(routes)
@@ -982,14 +981,6 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// withinSessionScope, writeNeedsASignedInPerson).
 		handler = s.withinProjectScope(route, handler)
 		handler = s.withinSessionScope(route, handler)
-		// Outermost of the three, so a machine whose credential names a service and no person
-		// is told it may make no write at all rather than which session the write it tried
-		// belongs to. The project check has nothing to tell it: a token naming a service is
-		// held to no one project (broker_token.go). An account entry's token naming no person
-		// passes it, recorded under its account, and meets the two checks behind it as any
-		// credential naming no project does. A read-only token, which may name a service and no
-		// person too, never reaches here: the limited-token gate further out has answered it on
-		// every write (refuseLimitedToken).
 		// Outermost of the three, so a machine's credential that names a service and no person,
 		// and that no job entry and no personless account entry minted, is told it may make no
 		// write at all rather than which session the write it tried belongs to. The project check
@@ -997,8 +988,8 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// job's token names a service and no person too, under the project scope named or public,
 		// and an account entry's token naming no person does under named; each passes this check
 		// to the two inside it, recorded under its service. A read-only token, which may name a
-		// service and no person as well, never reaches here: the read-only gate further out has
-		// answered it on every write (refuseLimitedToken).
+		// service and no person as well, never reaches here: the limited-token gate further out
+		// has answered it on every write (refuseLimitedToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
 	}
@@ -1010,7 +1001,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	handler = s.refuseUnstorableParameters(route.Pattern, handler)
 	if len(route.OAuthScopes) > 0 {
 		// Ahead of the keyed layer and the project and session checks, so the row's own
-		// scopes are the first thing a request is held to once the read-only gate outside it
+		// scopes are the first thing a request is held to once the limited-token gate outside it
 		// has let it through: a credential that holds none is told so rather than told its
 		// write belongs to another project or another session, and its refusal claims no
 		// idempotency key, so the person who ticks the scope back is not answered the stored
@@ -1032,7 +1023,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
-	// read-only gate, so a refusal by either carries the header too. The answer's other Vary,
+	// limited-token gate, so a refusal by either carries the header too. The answer's other Vary,
 	// on Accept-Encoding, is added outside it, where the encoding is chosen (compressAnswers).
 	handler = varyOnDisplayTrees(handler)
 	if route.Method != http.MethodGet {

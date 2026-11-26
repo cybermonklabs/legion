@@ -33,15 +33,6 @@ package api
 //     account's), which names its person and writes wherever Dispatch's own rules let it
 //     (brokerTokenActor). The fourth is the `named` token of an account entry that names no
 //     person either (`<service account>==`), which names the account as its service and writes
-//     the same way, recorded under that account. The fifth is the read entry's token, which
-//     carries `project_scope` `none` and the scope `read` alone and names a service and no
-//     person. It never reaches this check, and nor does any other read-only credential (a token
-//     narrowed to reading, which may name the project it reads as, or an account it would have
-//     written as): the limited-token gate register puts outside it answers every such credential
-//     403 READ_ONLY_TOKEN on every route outside the read class, every write among them
-//     (refuseLimitedToken, readClasses). That is the rule and not a transitional measure: every
-//     caller that exists today writes exactly what it wrote before, which is what lets this
-//     deploy before anything presents a broker token.
 //     the same way, recorded under that account. The fifth is a job's `public` token, which
 //     names its job's identity as its service and no person, carries the private projects its
 //     list names, which no check here reads, and writes wherever Dispatch's own rules let a token
@@ -50,7 +41,7 @@ package api
 //     `project_scope` `none` and the scope `read` alone and names a service and no person. It
 //     never reaches this check, and nor does any other read-only credential (a token narrowed to
 //     reading, which may name the project it reads as, or an account it would have written as):
-//     the read-only gate register puts outside it answers every such credential 403
+//     the limited-token gate register puts outside it answers every such credential 403
 //     READ_ONLY_TOKEN on every route outside the read class, every write among them
 //     (refuseLimitedToken, readClasses). A job's `named` token is no such credential: it carries
 //     the one project its entry names, and the check below judges it as it judges a person's

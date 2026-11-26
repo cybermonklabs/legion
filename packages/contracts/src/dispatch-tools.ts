@@ -2438,7 +2438,7 @@ export const dispatchToolSpecs = [
       "caller is 403 RETRACTION_FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
       "With project, a CI job records its own result of one check of the spec files " +
       "(.dispatch/spec) at the commit it tested. The job runs the command under agent-secrets " +
-      "result-grant, which gives it the secrets broker's airlock placeholder of its run as " +
+      "result-grant, which gives it the secrets broker's proxy placeholder of its run as " +
       "DISPATCH_RESULTS_TOKEN; the command presents that placeholder alone and trades nothing, " +
       "and the airlock proxy puts the run's results token in its place. Dispatch refuses this form " +
       "from every other credential. The call sends commit, check, verdict and " +

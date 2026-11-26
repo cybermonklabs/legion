@@ -80,7 +80,7 @@ func c8Answer(held string) map[string]any {
 }
 
 // TestAirlockPlaceholderAsksTheTokenEndpointForTheRunsPlaceholder: the run's trade asks for the
-// airlock placeholder, declines the launcher credential and carries a DPoP proof of the client's
+// proxy placeholder, declines the launcher credential and carries a DPoP proof of the client's
 // key that the token endpoint takes (signed by that key, for a POST to the endpoint, just now);
 // the grant it reads back is the placeholder, its grant, its end and the release. A refusal is a
 // RefusedError, and an answer that is no placeholder - an access token - is refused.

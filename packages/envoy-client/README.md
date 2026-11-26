@@ -1068,7 +1068,7 @@ loopback, and no refusal names the URL or the token. It asks for a new token at 
 since the broker takes each GitHub token once, and the broker answers it from the workflow's
 entry. `AGENT_SECRETS_MACHINE_AUDIENCE` must equal the broker's `BROKER_EXCHANGE_GITHUB_AUDIENCE`.
 An identity with one of its variables missing is an error that names the variable.
-A CI job's `dispatch result --project` trades no identity: it holds the airlock's placeholder of
+A CI job's `dispatch result --project` trades no identity: it holds the proxy placeholder of
 its run (`DISPATCH_RESULTS_TOKEN`, [`docs/ci-results.md`](docs/ci-results.md)).
 
 `device-login` is the identity of a machine that has none of its own, such as a person's laptop

@@ -168,7 +168,7 @@ func issuedClaims(t *testing.T) []string {
 	// session is the session name each request names: claimsSessionName, but for the run of the
 	// result entry's workflow, whose entry fixes the session it writes under and refuses another.
 	// requested is the token type the request asks for: none, which is an access token, but for
-	// that run, which is granted the airlock placeholder alone; its grant carries the claims a
+	// that run, which is granted the proxy placeholder alone; its grant carries the claims a
 	// results token minted from it carries.
 	subjects := []struct {
 		tokenType    string

@@ -14,7 +14,7 @@ import {
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keyedLayer } from "../../test/keyed-layer";
-import { routeAnswer } from "../../test/route-answers";
+import { leastAnswerFor, routeAnswer } from "../../test/route-answers";
 import { SPEC_COMMIT, storedSpecResult } from "../../test/spec-check-result";
 import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../dispatch-cli";
@@ -1037,19 +1037,29 @@ describe("the dispatch CLI", () => {
 
   // An empty key or id is refused before any request, naming the flag: sent, an empty `--issue`
   // asked `PATCH /api/v1/issues/`, which no route serves, and came back seven seconds later as a
-  // refusal about a rolling release.
-  test("an empty --issue is refused before any request, naming the flag", async () => {
-    const { code, stdout } = await run(
-      ["issue-update", "--issue", "", "--status", "in_progress"],
-      omp
-    );
-    expect({ code, lines: stdout.split("\n").slice(0, 2) }).toEqual({
-      code: 2,
-      lines: [
-        "dispatch issue-update was not called: 1 problem",
-        "- --issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+  // refusal about a rolling release; an empty `--retract` or `--comment` asked
+  // `POST /api/v1/results//retract` or `POST /api/v1/comments//resolve`, which Dispatch's router
+  // answers with a redirect to the cleaned path, printed as a page that blames the Dispatch URL.
+  test("an empty --issue, --retract or --comment is refused before any request, naming the flag", async () => {
+    for (const [argv, command, flag, noun] of [
+      [
+        ["issue-update", "--issue", "", "--status", "in_progress"],
+        "issue-update",
+        "--issue",
+        "issue",
       ],
-    });
+      [["result", "--retract", "", "--reason", "Wrong commit."], "result", "--retract", "result"],
+      [["resolve-comment", "--comment", ""], "resolve-comment", "--comment", "comment"],
+    ] as const) {
+      const { code, stdout } = await run(argv, omp);
+      expect({ code, lines: stdout.split("\n").slice(0, 2) }, flag).toEqual({
+        code: 2,
+        lines: [
+          `dispatch ${command} was not called: 1 problem`,
+          `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
+        ],
+      });
+    }
     expect(requests).toEqual([]);
   });
 
@@ -2436,6 +2446,78 @@ describe("the dispatch CLI", () => {
     expect(stalled.probes).toEqual([]);
     expect(JSON.parse(readFileSync(file, "utf-8"))).not.toHaveProperty("keyedLayer");
   });
+
+  // A cache or a front that answers a write by its URL with another call's stored answer gives a
+  // 2xx that names no key back, and Dispatch's keyed layer names the key back on every answer it
+  // gives a keyed write: such a 2xx is never the call's answer, whatever it holds, so the command
+  // says the write may or may not have taken effect, and exits 1. At 7735fa52b4 the command printed
+  // such an answer as this call's write ("Created ACME-7: Another call's title", "Posted comment
+  // <another call's id>", exit 0) while nothing of this call was stored. The stand-in answers each
+  // route with its least declared answer, and the write with another call's, naming no key back.
+  for (const { argv, route, other, shown } of [
+    {
+      argv: ["issue", "--project", "ACME", "--title", "This call's title", "--force"],
+      route: "POST /api/v1/issues",
+      other: { key: "ACME-7", project: "ACME", title: "Another call's title" },
+      shown: "Another call's title",
+    },
+    {
+      argv: ["comment", "--issue", "DSP-1", "--body", "This call's body"],
+      route: "POST /api/v1/issues/DSP-1/comments",
+      other: {
+        id: "0bbbbbbb-0000-4000-8000-000000000007",
+        issue_key: "DSP-1",
+        body: "Another call's body",
+      },
+      shown: "0bbbbbbb-0000-4000-8000-000000000007",
+    },
+  ]) {
+    test(`dispatch ${argv[0]} prints another call's stored answer, naming no key back, as no answer of its own`, async () => {
+      const writes: string[] = [];
+      const cache = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch(request) {
+          await request.arrayBuffer();
+          const { pathname } = new URL(request.url);
+          const asked = `${request.method} ${pathname}`;
+          let answer: { status: number; body: unknown } | undefined;
+          try {
+            answer = leastAnswerFor(request.method, pathname);
+          } catch {
+            answer = { status: 200, body: [] };
+          }
+          if (answer === undefined) {
+            return Response.json(
+              { code: "NOT_FOUND", error: `no route for ${asked}` },
+              { status: 404 }
+            );
+          }
+          if (asked !== route) return Response.json(answer.body, { status: answer.status });
+          writes.push(asked);
+          return Response.json(
+            { ...(answer.body as Record<string, unknown>), ...other },
+            { status: answer.status }
+          );
+        },
+      });
+      try {
+        const { code, stdout, stderr } = await run(argv, {
+          ...omp,
+          DISPATCH_URL: `http://127.0.0.1:${cache.port}`,
+        });
+        const out = `${stdout}${stderr}`;
+        expect({
+          asked: writes.length > 0,
+          code,
+          printsTheOtherCall: out.includes(shown),
+          unknown: out.includes("may or may not"),
+        }).toEqual({ asked: true, code: 1, printsTheOtherCall: false, unknown: true });
+      } finally {
+        cache.stop(true);
+      }
+    }, 30_000);
+  }
 
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {
     const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);

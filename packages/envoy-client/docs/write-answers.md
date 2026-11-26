@@ -58,7 +58,7 @@ The GitHub Actions identity of the Go broker client follows no redirect of the r
 
 ## An answer of the secrets broker's airlock proxy
 
-A CI job's result write goes out through the secrets broker's airlock proxy, Cipher's proxy, with the airlock's placeholder as its credential (`airlockCredential`) and the proxy named by the job's `HTTPS_PROXY`.
+A CI job's result write goes out through the secrets broker's airlock proxy, Cipher's proxy, with the proxy placeholder of its run's result grant as its credential (`airlockCredential`) and the proxy named by the job's `HTTPS_PROXY`.
 A person's review from a box goes through the same proxy, which the client names itself (`reviewArtifact`, `via`).
 The proxy can refuse the write itself, and then the write reached no service and stored nothing.
 Every write reads the proxy's own answers by one rule (`proxyOwnAnswer`, `proxyEvent`), whichever names the proxy.

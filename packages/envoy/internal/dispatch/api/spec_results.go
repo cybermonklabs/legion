@@ -210,17 +210,8 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 			input.Commit, run.SHA))
 		return
 	}
-	numbers, err := runNumbersOf(run)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	workflow, err := runWorkflow(run)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	principal := oauthwire.ResultPrincipal(run.Repository, workflow)
+	// The run was read whole once, by the verifier (ciphertoken.Caller.CI, oauthwire.ParseCIRun):
+	// its numbers and its workflow's path are read off it, never parsed again here.
 	project := r.PathValue("key")
 	ctx := r.Context()
 	isDefault, err := s.isProjectsDefaultRepository(ctx, project, run.Repository)
@@ -236,22 +227,22 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 
 	owner, name, _ := strings.Cut(run.Repository, "/")
 	reader := &repositoryReader{s: s, owner: owner, name: name}
-	checkRun, err := s.specCheckRun(ctx, reader, run.Repository, numbers.checkRun)
+	checkRun, err := s.specCheckRun(ctx, reader, run.Repository, run.CheckRun)
 	switch {
 	case errors.Is(err, githubapp.ErrRepositoryUnreadable):
 		writeError(w, codeCheckRunNotShown, http.StatusForbidden, fmt.Sprintf(
 			"GitHub refuses Dispatch the read of check run %d of %s, as it refuses a check run the App cannot see or that does not exist, so this token's run is not proven: the result is refused, and a write again is refused the same: %v",
-			numbers.checkRun, run.Repository, err))
+			run.CheckRun, run.Repository, err))
 		return
 	case err != nil:
 		writeError(w, codeCheckRunUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
-			"GitHub did not answer the read of check run %d of %s, so the result was not judged; write it again: %v", numbers.checkRun, run.Repository, err))
+			"GitHub did not answer the read of check run %d of %s, so the result was not judged; write it again: %v", run.CheckRun, run.Repository, err))
 		return
 	}
 	if checkRun.HeadSHA != run.SHA {
 		writeError(w, codeCheckRunNotTheRuns, http.StatusForbidden, fmt.Sprintf(
 			"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
-			checkRun.HeadSHA, numbers.checkRun, run.SHA))
+			checkRun.HeadSHA, run.CheckRun, run.SHA))
 		return
 	}
 	files, err := s.specFilesAt(ctx, reader, run.Repository, run.SHA)
@@ -286,42 +277,35 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 			}
 			writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
 				"check %s %s, and this token's job is %q (check run %d, %q): a job writes results only for the checks that name it",
-				input.Check, named, checkRun.Name, numbers.checkRun, checkRun.Name))
+				input.Check, named, checkRun.Name, run.CheckRun, checkRun.Name))
 			return
 		}
-		jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.SHA, workflow)
+		jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.SHA, run.Workflow)
 		switch {
 		case errors.Is(err, githubapp.ErrRepositoryUnreadable):
 			writeError(w, codeWorkflowNotShown, http.StatusConflict, fmt.Sprintf(
 				"GitHub refuses Dispatch the read of %s of %s at %s, the run's workflow file, which says whether check run %d, %q, is a leg of the job %q: the result is refused, and a write again is refused the same: %v",
-				workflow, run.Repository, run.SHA, numbers.checkRun, checkRun.Name, check.Job, err))
+				run.Workflow, run.Repository, run.SHA, run.CheckRun, checkRun.Name, check.Job, err))
 			return
 		case err != nil:
 			writeError(w, codeWorkflowUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
-				"GitHub did not answer the read of %s of %s at %s, the run's workflow file, so the result was not judged; write it again: %v", workflow, run.Repository, run.SHA, err))
+				"GitHub did not answer the read of %s of %s at %s, the run's workflow file, so the result was not judged; write it again: %v", run.Workflow, run.Repository, run.SHA, err))
 			return
 		}
-		if why := jobs.whyNotALeg(checkRun.Name, check.Job, workflow+" at "+run.SHA); why != "" {
+		if why := jobs.whyNotALeg(checkRun.Name, check.Job, run.Workflow+" at "+run.SHA); why != "" {
 			writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
 				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the run's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
-				input.Check, check.Job, numbers.checkRun, checkRun.Name, check.Job, check.Job, why))
+				input.Check, check.Job, run.CheckRun, checkRun.Name, check.Job, check.Job, why))
 			return
 		}
 		job, leg = check.Job, candidate
 	}
 
 	row := specCheckRow{
-		project: project, repository: run.Repository, check: input.Check, commit: run.SHA,
-		procedureDigest: check.Digest, job: job, leg: leg,
-		checkRunID: numbers.checkRun, runID: numbers.run, attempt: numbers.attempt,
-		verdict: input.Verdict, observed: cutObserved(input.Observed),
+		project: project, check: input.Check, procedureDigest: check.Digest, job: job, leg: leg,
+		run: run, verdict: input.Verdict, observed: cutObserved(input.Observed),
 		session: actor.Credential.Session,
 		test:    model.SpecCheckTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
-		run: model.SpecCheckRun{
-			Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, EventName: run.EventName,
-			RunID: run.RunID, Attempt: numbers.attempt, CheckRunID: run.CheckRunID, RunnerEnvironment: run.RunnerEnvironment,
-		},
-		recorder: model.SpecCheckRecorder{Session: actor.Credential.Session, Principal: principal},
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -364,32 +348,6 @@ func validSpecCheckResultInput(input specCheckResultInput, body []byte) error {
 		return errorf(http.StatusBadRequest, codeResultInput, "verdict is pass, fail or could_not_run")
 	}
 	return nil
-}
-
-// runNumbers is the three numbers of a run, read from its token: its check run, its workflow run
-// and its attempt.
-type runNumbers struct {
-	checkRun, run int64
-	attempt       int
-}
-
-// runNumbersOf reads the run's numbers. The broker mints a results token only for a run whose
-// numbers are positive decimals and the verifier admits no other (ciphertoken.shapeOf), so a
-// number that does not read is Dispatch's own fault, a 500.
-func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
-	checkRun, err := strconv.ParseInt(run.CheckRunID, 10, 64)
-	if err != nil {
-		return runNumbers{}, fmt.Errorf("read the check run of a results token: %w", err)
-	}
-	workflowRun, err := strconv.ParseInt(run.RunID, 10, 64)
-	if err != nil {
-		return runNumbers{}, fmt.Errorf("read the run of a results token: %w", err)
-	}
-	attempt, err := strconv.Atoi(run.RunAttempt)
-	if err != nil {
-		return runNumbers{}, fmt.Errorf("read the attempt of a results token: %w", err)
-	}
-	return runNumbers{checkRun: checkRun, run: workflowRun, attempt: attempt}, nil
 }
 
 // isProjectsDefaultRepository answers whether repository, the repository GitHub names a run by,
@@ -656,21 +614,6 @@ func yamlValue(node *yaml.Node) *yaml.Node {
 	return node
 }
 
-// runWorkflow is the path, inside the run's repository, of the run's workflow file, read by the
-// broker's own rule from what the broker authenticated (oauthwire.WorkflowPath): the run's
-// workflow_ref without "<repository>/" before it and "@<ref>" after it. The broker's principal of a
-// result entry's run is workflow-results:, the repository and this path
-// (oauthwire.ResultPrincipal), and the route reads the file at this path where a check run's name
-// may be a leg of a matrix job. The verifier admits a results token only where the path reads
-// (ciphertoken.wholeRun), so a run whose path does not read is Dispatch's own fault, a 500.
-func runWorkflow(run oauthwire.CIRun) (string, error) {
-	workflow, ok := oauthwire.WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
-	if !ok {
-		return "", fmt.Errorf("read the workflow of a results token: %s is not %s/<path>@%s", run.WorkflowRef, run.Repository, run.Ref)
-	}
-	return workflow, nil
-}
-
 // cutObserved is what a result keeps of what a job observed: the text whole when it is
 // contracts.SpecCheckObservedMax runes or fewer, else its first contracts.SpecCheckObservedStart
 // runes, contracts.SpecCheckObservedCutNote and its last contracts.SpecCheckObservedEnd runes,
@@ -699,16 +642,16 @@ func runeOffset(text string, n int) int {
 	return len(text)
 }
 
-// specCheckRow is one row of spec_check_results before it is written, and the attestation the
-// row stores is built from it alone (insertSpecCheckResult).
+// specCheckRow is one row of spec_check_results before it is written: what the request and the
+// spec files gave, and its token's run read whole (oauthwire.Run), from which the row's
+// repository, commit, check run, run and attempt columns and the attestation's subject, run and
+// recorder are all derived. The attestation the row stores is built from it alone
+// (insertSpecCheckResult).
 type specCheckRow struct {
-	project, repository, check, commit, procedureDigest, job, leg string
-	checkRunID, runID                                             int64
-	attempt                                                       int
-	verdict, observed, session                                    string
-	test                                                          model.SpecCheckTest
-	run                                                           model.SpecCheckRun
-	recorder                                                      model.SpecCheckRecorder
+	project, check, procedureDigest, job, leg string
+	run                                       oauthwire.Run
+	verdict, observed, session                string
+	test                                      model.SpecCheckTest
 }
 
 // insertSpecCheckResult is the one writer of spec_check_results: it appends row with the in-toto
@@ -716,15 +659,26 @@ type specCheckRow struct {
 // with a Z so every reader decodes one instant the same way), and answers the row as the read
 // answers it. Nothing updates or deletes a row.
 func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (model.SpecCheckResult, error) {
+	run := row.run
 	statement := model.SpecCheckAttestation{
 		Type: inTotoStatementType,
 		Subject: []model.AttestationSubject{{
-			Name: "git+https://github.com/" + row.repository, Digest: map[string]string{"gitCommit": row.commit},
+			Name: "git+https://github.com/" + run.Repository, Digest: map[string]string{"gitCommit": run.SHA},
 		}},
 		PredicateType: specCheckResultPredicateType,
 		Predicate: model.SpecCheckPredicate{
 			Project: row.project, Check: row.check, ProcedureDigest: row.procedureDigest, Test: row.test,
-			Verdict: row.verdict, Observed: row.observed, Job: row.job, Leg: row.leg, Run: row.run, Recorder: row.recorder,
+			Verdict: row.verdict, Observed: row.observed, Job: row.job, Leg: row.leg,
+			Run: model.SpecCheckRun{
+				Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, EventName: run.EventName,
+				RunID: run.RunID, Attempt: int(run.Attempt), CheckRunID: run.CheckRunID,
+				RunnerEnvironment: run.RunnerEnvironment,
+			},
+			// The principal is the broker's own spelling of the run's workflow (oauthwire.ResultPrincipal),
+			// so the identity on a result is the one the broker authenticated.
+			Recorder: model.SpecCheckRecorder{
+				Session: row.session, Principal: oauthwire.ResultPrincipal(run.Repository, run.Workflow),
+			},
 		},
 	}
 	encoded, err := json.Marshal(statement)
@@ -742,8 +696,8 @@ func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (mo
 			jsonb_set($12::jsonb, '{predicate,recorded_at}',
 				to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))), $13)
 		returning id::text, seq, attestation`,
-		row.project, row.repository, row.check, row.commit, row.procedureDigest, row.job, row.leg,
-		row.checkRunID, row.runID, row.attempt, row.verdict, encoded, row.session,
+		row.project, run.Repository, row.check, run.SHA, row.procedureDigest, row.job, row.leg,
+		run.CheckRun, run.ID, run.Attempt, row.verdict, encoded, row.session,
 	).Scan(&result.ID, &result.Seq, &stored); err != nil {
 		return model.SpecCheckResult{}, fmt.Errorf("insert a spec check result: %w", err)
 	}

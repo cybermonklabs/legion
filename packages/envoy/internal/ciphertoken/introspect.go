@@ -139,15 +139,16 @@ func cutOf(answer Introspection) (time.Time, error) {
 // base word's do; a results answer names its one project. The service is carried as the broker
 // answered it, which is set exactly where the person is not (sessionCaller refuses an answer
 // naming neither). ReadOnly, ResultsOnly and ApproveOnly are shapeOf's verdict on the answer,
-// which sessionCaller reached and hands over as shape, and cut is the answer's cut, which
-// sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller accepted, and
-// sessionCaller lets a read-only, a results or an approve-only answer through only with its switch
-// set, which only a verifier that serves one sets, so a Caller marked any of those ways is one
-// such a verifier accepted. The run of a results answer is copied, so a reader of the Caller
-// shares nothing with the answer the cache keeps for the next request. LegionStatus is whether
-// Scope holds the word ScopeLegionStatus, read one word at a time as shapeOf reads it and with no
-// slice built, since this too runs on every request a verifier decides.
-func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
+// which sessionCaller reached and hands over as shape, beside run, the Run shapeOf read a results
+// answer's run to, which is the Caller's own, so a reader of the Caller shares nothing with the
+// answer the cache keeps for the next request; cut is the answer's cut, which sessionCaller read
+// (cutOf). callerOf runs only on an answer sessionCaller accepted, and sessionCaller lets a
+// read-only, a results or an approve-only answer through only with its switch set, which only a
+// verifier that serves one sets, so a Caller marked any of those ways is one such a verifier
+// accepted. LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a
+// time as shapeOf reads it and with no slice built, since this too runs on every request a
+// verifier decides.
+func callerOf(answer Introspection, shape tokenShape, run *oauthwire.Run, cut time.Time) Caller {
 	caller := Caller{
 		Session:      answer.Session,
 		Person:       answer.Person,
@@ -157,11 +158,8 @@ func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 		ReadOnly:     shape == shapeReadOnly,
 		ResultsOnly:  shape == shapeResults,
 		ApproveOnly:  shape == shapeApproveOnly,
+		CI:           run,
 		Cut:          cut,
-	}
-	if shape == shapeResults {
-		run := *answer.CI
-		caller.CI = &run
 	}
 	for word := range strings.FieldsSeq(answer.Scope) {
 		if word == ScopeLegionStatus {

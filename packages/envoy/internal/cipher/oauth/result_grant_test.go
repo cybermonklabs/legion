@@ -1,5 +1,5 @@
 // result_grant_test.go drives a result entry's run through the token exchange: the run asks for
-// an airlock placeholder and is answered one, beside a result grant the broker keeps in its
+// a proxy placeholder and is answered one, beside a result grant the broker keeps in its
 // database, and never an access token. The fixture is exchange_test.go's.
 package oauth_test
 
@@ -42,7 +42,7 @@ func newResultsFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtur
 	})
 }
 
-// askingForThePlaceholder is form asking for the airlock placeholder as its requested type.
+// askingForThePlaceholder is form asking for the proxy placeholder as its requested type.
 func askingForThePlaceholder(form url.Values) url.Values {
 	form.Set("requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 	return form
@@ -97,7 +97,7 @@ func (f *exchangeFixture) grantOf(t *testing.T, held string) oauthstore.MintedGr
 }
 
 // TestAResultEntrysRunIsGrantedAPlaceholderAndNoToken: a run of the result entry's workflow that
-// asks for the airlock placeholder is answered 200, no-store, with the placeholder as its
+// asks for the proxy placeholder is answered 200, no-store, with the placeholder as its
 // access_token and as the airlock's proxy password and the value of DISPATCH_RESULTS_TOKEN, bound
 // to the entry's one host. The placeholder is no token the broker's introspection knows. The
 // broker keeps a grant row holding the run and the workflow's session, and stores no access token.

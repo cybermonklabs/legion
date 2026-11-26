@@ -9,7 +9,7 @@ session's (`jobResultCommand` in `dispatch-commands/job-result.ts`). It reads no
 and no session state, and it asks no AskGate and no listener. A refusal is written to a session's
 ledger only where the environment names a session id, as every refusal of the command is. The job
 runs it under `agent-secrets result-grant -- …`, which exchanges the run's token at the secrets
-broker for the airlock's placeholder of a result grant and gives it to the command in
+broker for the proxy placeholder of a result grant and gives it to the command in
 `DISPATCH_RESULTS_TOKEN`, beside the airlock proxy's settings. Dispatch is `DISPATCH_URL`, and the
 credential is that placeholder alone (`ownIdentityDispatch` in `dispatch-config.ts`,
 `airlockCredential` in `airlock-credential.ts`): the write carries it as its one `Authorization`

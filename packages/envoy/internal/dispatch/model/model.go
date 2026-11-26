@@ -121,7 +121,7 @@ type Credential struct {
 	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
 	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
 	// it on the routes its approve list names (approveScopeRoutes) alone, answering it 403
-	// APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything else the route
+	// APPROVE_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route
 	// does. False for every other credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
@@ -154,10 +154,11 @@ type Credential struct {
 	// RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route
 	// does. False for every other credential.
 	ResultsOnly bool
-	// CI is the run a ResultsOnly credential was minted for, as the broker answered it: what that
-	// credential writes is held to the run's commit, repository and check run. Nil for every other
-	// credential.
-	CI *oauthwire.CIRun
+	// CI is the run a ResultsOnly credential was minted for, read whole by the verifier
+	// (ciphertoken.Caller.CI, oauthwire.ParseCIRun): what that credential writes is held to the
+	// run's commit, repository and check run, and its stored columns come from this one reading.
+	// Nil for every other credential.
+	CI *oauthwire.Run
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a

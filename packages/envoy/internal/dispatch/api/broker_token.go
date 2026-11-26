@@ -221,7 +221,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// one broker-issued token no machine holds: an approve-only token (ciphertoken.Caller.
 	// ApproveOnly), which the secrets broker mints for a person's approve grant, binds to its own
 	// pod's key and spends through its proxy without ever releasing it. That token holds both of
-	// the person's scopes and is marked approve-only, so refuseApproveOnlyToken holds it to the
+	// the person's scopes and is marked approve-only, so refuseLimitedToken holds it to the
 	// approve list (approveScopeRoutes) before any route runs. A token scoped to a project gets no
 	// person scope, because the deployment mapped that token to a project and not to the person: it
 	// proves a session, not that any person stands behind the request. A token that names a

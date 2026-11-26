@@ -31,13 +31,13 @@ beforeEach(() => {
 });
 
 // `dispatch result --project` is a CI job's own write, and the job has no session: it runs under
-// `agent-secrets result-grant`, which gives it the airlock's placeholder of its run as
+// `agent-secrets result-grant`, which gives it the proxy placeholder of its run as
 // DISPATCH_RESULTS_TOKEN, and the airlock proxy puts the run's results token in its place. The job
 // trades nothing. The stand-ins below are the runner's token endpoint and the broker's token
 // endpoint, which the job must ask nothing, and Dispatch's two project results routes.
 describe("dispatch result --project, as a CI job writes it", () => {
   const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-  /** The airlock's placeholder of the job's run, the run's OIDC token, the bearer the runner's
+  /** The proxy placeholder of the job's run, the run's OIDC token, the bearer the runner's
    *  endpoint takes, and a results token: none of them may reach the command's output or its
    *  argument list. */
   const PLACEHOLDER = "agent-secrets-placeholder-result-Run4242abcdefghijklmnopqrstu";
@@ -139,7 +139,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   const dispatchUrl = `http://127.0.0.1:${dispatch.port}`;
   /** A job's environment as `agent-secrets result-grant` gives its command: no DISPATCH_HOST and
-   *  no session, Dispatch's URL and the airlock's placeholder, and the broker's and the runner's
+   *  no session, Dispatch's URL and the proxy placeholder, and the broker's and the runner's
    *  variables of the step it runs in, of which the command reads none. */
   const jobEnvironment = (): Record<string, string | undefined> => ({
     PATH: process.env.PATH,

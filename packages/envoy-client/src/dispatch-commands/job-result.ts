@@ -59,7 +59,7 @@ function outcomeCode(error: unknown): string {
 
 /**
  * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
- * job runs it under `agent-secrets result-grant`, and writes with the airlock's placeholder of its
+ * job runs it under `agent-secrets result-grant`, and writes with the proxy placeholder of its
  * run alone (`ownIdentityDispatch`): no host, no session, no envoy.json, no AskGate and no
  * listener, since a job has none of them, no bearer or person's sign-in, since the result must
  * carry the identity the airlock authenticated, and no trade, since the broker holds the run's

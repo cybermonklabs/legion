@@ -132,7 +132,7 @@ jobs:
         working-directory: packages/envoy-client
       # A CI job's result over the whole path a job writes it through: the real
       # `agent-secrets result-grant` trades the job's OIDC token from a stand-in of GitHub at
-      # the real secrets broker for the airlock placeholder of a result grant, the real CLI, run
+      # the real secrets broker for the proxy placeholder of a result grant, the real CLI, run
       # as its child, writes with that placeholder alone through the broker's airlock proxy,
       # which puts the run's results token in its place, and the real Dispatch server stores the
       # result or refuses it (packages/envoy-client/test/ci-results-stack.ts). The stack runs two

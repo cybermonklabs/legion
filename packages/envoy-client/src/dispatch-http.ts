@@ -329,9 +329,8 @@ export class DispatchCredentialEchoError extends DispatchServiceError {
 /**
  * A write that ended, once an attempt may have landed (write-outcome.ts), without a 2xx Dispatch
  * wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one; not one
- * that names no key back or another request's, since Dispatch's keyed layer names the request's
- * key on every answer it gives a keyed write), its `409 KEY_COMMITTED` or a final refusal, so it
- * may or may not have taken effect.
+ * that names no key back or another request's, `keyNamedBack`), its `409 KEY_COMMITTED` or a
+ * final refusal, so it may or may not have taken effect.
  * A final refusal names exactly this request's key back and is an answer marked
  * `Idempotency-Replayed: ?1` (including a recovery replay), `422 KEY_REUSED`, or a fresh answer
  * with a 4xx Dispatch stores (not 401, 408 or 429) and no keyed-layer code (`answerEvent`).
@@ -1284,10 +1283,9 @@ interface WriteOptions {
 
 /**
  * The client's code of a write whose 2xx named its key back and whose body, read whole, gives no
- * row its callers read (JSON that is not the row, or none where the row needs one:
- * `#writePayload`): Dispatch answers a 2xx only after the write committed, so the write landed,
- * and its answer is what was lost. It is also the code of a `DispatchAnswerMissingError`, a 2xx of
- * a route that stores nothing, which made nothing.
+ * row its callers read (`#writePayload`): Dispatch answers a 2xx only after the write committed,
+ * so the write landed, and its answer is what was lost. It is also the code of a
+ * `DispatchAnswerMissingError`, a 2xx of a route that stores nothing, which made nothing.
  */
 export const DISPATCH_ANSWER_LOST = "ANSWER_LOST";
 
@@ -1494,10 +1492,10 @@ export function writeOutcomeUnknown(error: unknown): boolean {
 }
 
 /**
- * The key `response` names back (`Idempotency-Key`), or "" for none. Dispatch's keyed layer names
- * the request's key back on every answer it gives a keyed write (`keyedWrites`,
- * packages/envoy/internal/dispatch/api/request_keys.go), bare; a key sent in double quotes comes
- * back without them, so both forms are read.
+ * The key `response` names back (`Idempotency-Key`), or "" for none, bare: a key sent in double
+ * quotes comes back without them, so both forms are read. Dispatch's keyed layer names the
+ * request's key back on every answer it gives a keyed write, which is what makes an answer that
+ * names none, or another request's, no answer of this call's (`#writePayload`).
  */
 function keyNamedBack(response: Response): string {
   return (response.headers.get(IDEMPOTENCY_KEY_HEADER)?.trim() ?? "").replace(/^"(.*)"$/, "$1");

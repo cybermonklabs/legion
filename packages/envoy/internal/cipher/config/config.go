@@ -3389,7 +3389,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// profiles file would grant placeholders no proxy honours. The profile itself is checked where
 	// the file is read (ResultsEntryRules), since Load reads no file.
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ProfilesFile == "" {
-		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted an airlock placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.WayDPoP)
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted a proxy placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.WayDPoP)
 	}
 
 	if cfg.ExchangeJobWorkflows, err = parseExchangeJobWorkflows("BROKER_EXCHANGE_JOB_WORKFLOWS", getenv("BROKER_EXCHANGE_JOB_WORKFLOWS")); err != nil {

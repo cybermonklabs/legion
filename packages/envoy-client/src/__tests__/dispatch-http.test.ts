@@ -854,6 +854,95 @@ describe("DispatchClient", () => {
     expect(error.message).not.toContain("/login");
   });
 
+  // fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization`
+  // alone), and Dispatch answers no API route with a redirect, so no request of the client follows
+  // one: the 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
+  test("a read a redirect to another origin answers is not followed there, so its credential's proof never leaves", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
+        return jsonResponse({ key: "DSP-1", title: "Elsewhere", status: "todo" });
+      },
+    });
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${other.port}/api/v1/issues/DSP-1` },
+        }),
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
+    };
+    try {
+      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch);
+      const refusal = await client.getIssue("DSP-1").then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal).toBeInstanceOf(DispatchGatewayError);
+      expect((refusal as DispatchGatewayError).status).toBe(302);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      dispatch.stop(true);
+      other.stop(true);
+    }
+  });
+
+  // The refusal says where the redirect points, for a read and a write alike, so an operator who
+  // wrote `http://` for an `https://` Dispatch fixes the URL from the line: the scheme and the host
+  // of the target, never its path, its query, its fragment or its user, any of which can carry a
+  // secret; a relative Location names Dispatch's own origin.
+  test("a refused redirect names the origin it points at, and nothing else of its target", async () => {
+    // A target that carries a user and a secret, built from its parts; the secret is made for
+    // this run, so no line of the test holds a credential.
+    const hidden = crypto.randomUUID();
+    const withUser = new URL("https://dispatch.example.com/api/v1/issues/DSP-1");
+    withUser.username = "user";
+    withUser.password = hidden;
+    for (const [location, origin] of [
+      [
+        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
+        "https://sso.example.com:8443",
+      ],
+      [withUser.href, "https://dispatch.example.com"],
+      ["/login?next=%2Fapi", "http://dispatch.test"],
+    ] as const) {
+      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        fetchImpl,
+        {
+          sleep: async () => undefined,
+        }
+      );
+      for (const call of [
+        () => client.getIssue("DSP-1"),
+        () => client.comment("DSP-1", { body: "Review", actor }),
+      ]) {
+        const refusal = await call().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        const message = refusal instanceof Error ? refusal.message : String(refusal);
+        expect(message, location).toContain(
+          `answered 302 (a redirect to ${origin}, which this client does not follow) with `
+        );
+        for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
+          expect(message, location).not.toContain(part);
+        }
+      }
+    }
+  });
+
   // Red team 7 and 4 (the review of 4dad905e68): a read's 2xx that is not JSON is a
   // DispatchGatewayError, with its status, advice that a retry may succeed, and `transient` saying
   // so too: a portal or a proxy in the way, which a later request can get past, and which never
@@ -2359,95 +2448,5 @@ describe("a path value that is empty", () => {
       expect((refusal as Error).message, place).toContain(place);
     }
     expect(asked).toEqual([]);
-  });
-});
-
-// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
-// and Dispatch answers no API route with a redirect, so no request of the client follows one: the
-// 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
-describe("a redirect to another origin", () => {
-  test("a read is not followed there, so its credential's proof never leaves", async () => {
-    const elsewhere: string[] = [];
-    const other = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
-        return jsonResponse({ key: "DSP-1", title: "Elsewhere", status: "todo" });
-      },
-    });
-    const dispatch = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch: () =>
-        new Response(null, {
-          status: 302,
-          headers: { Location: `http://127.0.0.1:${other.port}/api/v1/issues/DSP-1` },
-        }),
-    });
-    const credential: RequestCredential = {
-      ...bearerCredential("secret"),
-      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
-    };
-    try {
-      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch);
-      const refusal = await client.getIssue("DSP-1").then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal).toBeInstanceOf(DispatchGatewayError);
-      expect((refusal as DispatchGatewayError).status).toBe(302);
-      expect(elsewhere).toEqual([]);
-    } finally {
-      dispatch.stop(true);
-      other.stop(true);
-    }
-  });
-
-  // The refusal says where the redirect points, so an operator who wrote `http://` for an
-  // `https://` Dispatch fixes the URL from the line: the scheme and the host of the target, never
-  // its path, its query or its user, any of which can carry a secret.
-  test("a refused redirect names the origin it points at, and nothing else of its target", async () => {
-    // A target that carries a user and a secret, built from its parts; the secret is made for
-    // this run, so no line of the test holds a credential.
-    const hidden = crypto.randomUUID();
-    const withUser = new URL("https://dispatch.example.com/api/v1/issues/DSP-1");
-    withUser.username = "user";
-    withUser.password = hidden;
-    for (const [location, origin] of [
-      [
-        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
-        "https://sso.example.com:8443",
-      ],
-      [withUser.href, "https://dispatch.example.com"],
-      ["/login?next=%2Fapi", "http://dispatch.test"],
-    ] as const) {
-      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
-      const client = new DispatchClient(
-        "http://dispatch.test",
-        bearerCredential("secret"),
-        fetchImpl,
-        {
-          sleep: async () => undefined,
-        }
-      );
-      for (const call of [
-        () => client.getIssue("DSP-1"),
-        () => client.comment("DSP-1", { body: "Review", actor }),
-      ]) {
-        const refusal = await call().then(
-          () => undefined,
-          (error: unknown) => error
-        );
-        const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect(message, location).toContain(
-          `answered 302 (a redirect to ${origin}, which this client does not follow) with `
-        );
-        for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
-          expect(message, location).not.toContain(part);
-        }
-      }
-    }
   });
 });

@@ -137,7 +137,7 @@ type command struct {
 
 // commands is every form, in the order usage lists them.
 var commands = []command{
-	{"result-grant", "agent-secrets result-grant -- COMMAND [ARGS...]", "Prove a GitHub workflow run and run COMMAND with a results-only airlock placeholder.\nThe broker alone holds the access token and signing key; the command receives neither."},
+	{"result-grant", "agent-secrets result-grant -- COMMAND [ARGS...]", "Prove a GitHub workflow run and run COMMAND with a results-only proxy placeholder.\nThe broker alone holds the access token and signing key; the command receives neither."},
 	{"keygen", "agent-secrets keygen --out <dir>",
 		"Write a new signing key to <dir>/key.pem and print its thumbprint. A box's launcher runs it\ninside the box before enrolling it."},
 	{"enroll", "agent-secrets enroll --helper --runtime-id <id> --thumbprint <tp> [--session-id <id>] [--projects <keys>] | --pod --service <name> [--pod-token-file <file>] [--out <dir>] [--projects <keys>]",

@@ -44,20 +44,13 @@
 // The principal is the caller's standing identity, never the instance asking: the listed account
 // for a pod, the listed workflow for a run, the listed workflow of a result entry, whatever its
 // ref, for a run that writes results, the listed Google account for a machine, the person for a
-// sign-in and for a dev box. A session name belongs to one principal, so a pod's
-// replacement and a workflow's
-// next run keep writing under the name
-// their predecessor held, and a caller of any other principal is refused it. Instance is the
-// second rule beside it, and the only thing that separates two callers of one principal: the pod
-// uid a registration has to name for a pod of a free-session entry to write under a session name.
-// for a pod, the listed workflow for a run, the listed Google account for a machine, the person
-// for a sign-in and for a dev box. A session name belongs to one principal, so a pod's
-// replacement and a workflow's next run keep writing under the name their predecessor held, and
-// a caller of any other principal is refused it, but for a pod of an account the broker pairs
-// with the holder's (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim
-// takes the name. Instance is the second rule beside it, and the only thing that separates two
-// callers of one principal: the pod uid a registration has to name for a pod of a free-session
-// entry to write under a session name.
+// sign-in and for a dev box. A session name belongs to one principal, so a pod's replacement and
+// a workflow's next run keep writing under the name their predecessor held, and a caller of any
+// other principal is refused it, but for a pod of an account the broker pairs with the holder's
+// (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim takes the name.
+// Instance is the second rule beside it, and the only thing that separates two callers of one
+// principal: the pod uid a registration has to name for a pod of a free-session entry to write
+// under a session name.
 package exchange
 
 import (
@@ -154,9 +147,9 @@ const (
 	ProjectScopeNone
 	// ProjectScopeResults is a token that may write the results of the one project
 	// Claims.Projects names, for the run Claims.CI carries, and nothing else: it holds the OAuth
-	// scope oauthwire.ScopeResults, so it reaches only the routes a resource server lists for
-	// that scope, and only on a resource server that serves it. It is what a run of a result
-	// entry's workflow gets, and no other decision answers it.
+	// scope oauthwire.ScopeResults, which a resource server lists its routes for as it lists
+	// ProjectScopeNone's read. It is what a run of a result entry's workflow gets, and no other
+	// decision answers it.
 	ProjectScopeResults
 	// ProjectScopePublic is a job entry's token whose list opens with public (JobProjects): it
 	// names the job as its service and no person, it reaches every public project, which no
@@ -431,21 +424,11 @@ type Claims struct {
 	LegionStatus bool
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
-	// token naming a session another principal writes under. It is the listed account for a pod,
-	// the listed workflow (its repository, path and ref) for a run, the listed workflow (its
-	// repository and path) of a result entry for a run that writes results, the listed Google
-	// account for a machine, and the person for a dev box session, each spelled with its kind
-	// first (account:, workflow:, workflow-results:, google:, person:) so principals of two kinds
-	// never compare equal.
-	// Every pod of one account, every run of one workflow, every machine of one Google account
-	// and every machine of one person is therefore one holder.
 	// token naming a session another principal writes under, unless the broker pairs the caller's
 	// account with that principal's (oauthstore.Store.SetSessionPairs), when the claim takes the
-	// name. It is the listed account for a pod, the listed workflow (its repository, path and ref)
-	// for a run, the listed Google account for a machine, and the person for a dev box session,
-	// each spelled with its kind first (account:, workflow:, google:, person:) so principals of
-	// two kinds never compare equal. Every pod of one account, every run of one workflow, every
-	// machine of one Google account and every machine of one person is therefore one holder.
+	// name. It is the listed identity of the caller's kind, spelled with that kind first
+	// (account:, workflow:, workflow-results:, google:, person:) so principals of two kinds never
+	// compare equal, and every caller of one listed identity is one holder (the package doc).
 	Principal string
 	// Instance is which caller of that principal is asking, and is not a claim of the minted
 	// token either: it is the pod uid a registration has to name for this exchange to be made
@@ -469,12 +452,11 @@ type Claims struct {
 	// and an introspection answers it (oauth.ClaimMachine), beside the RFC 8693 'act' claim the
 	// library builds from the actor token's own subject; this is the account an operator reads.
 	Actor string
-	// CI is the run a result entry's token was minted for: the run's repository, workflow, ref
-	// and commit, its event, its run and attempt, its runner and the check run of its job, as the
-	// run's own GitHub token named them. It is set exactly when Scope is ProjectScopeResults, and
-	// nil for every other decision. The provider writes it onto the stored session and an
-	// introspection answers it (oauthwire.ClaimCI), so a resource server holds the token's writes to
-	// that run's commit and job.
+	// CI is the run a result entry's token was minted for, as the run's own GitHub token named it
+	// and held to oauthwire.ParseCIRun (readCIRun). It is set exactly when Scope is
+	// ProjectScopeResults, and nil for every other decision. The provider writes it onto the
+	// stored session and an introspection answers it (oauthwire.ClaimCI), as it does Actor, so a
+	// resource server holds the token's writes to that run's commit and job.
 	CI *oauthwire.CIRun
 }
 
@@ -573,15 +555,15 @@ type WorkflowEntry struct {
 // such a token only where it asks to, and Dispatch serves it on the routes its results list
 // names and nowhere else.
 //
-// It is a list of its own, BROKER_EXCHANGE_RESULT_WORKFLOWS, rather than a kind of WorkflowEntry,
-// so that a broker of a build that predates it reads none of its entries and mints such a run
-// nothing, where the same entry in BROKER_EXCHANGE_WORKFLOWS would read as a token that writes
-// its project. A workflow is listed one way or the other, never both (NewSet).
+// It is a list of its own, BROKER_EXCHANGE_RESULT_WORKFLOWS, for the reason ReadEntry is one:
+// a broker of a build that predates it reads none of its entries and mints such a run nothing,
+// where the same entry in BROKER_EXCHANGE_WORKFLOWS would read as a token that writes its
+// project. A workflow is listed one way or the other, never both (NewSet).
 type ResultWorkflowEntry struct {
-	// Repository is <owner>/<name>, the repository the run belongs to.
+	// Repository is the repository the run belongs to, as WorkflowEntry.Repository is.
 	Repository string
-	// Workflow is the workflow file's path inside the repository, such as
-	// .github/workflows/ci-results.yaml, compared exactly.
+	// Workflow is the workflow file's path inside the repository, compared exactly, as
+	// WorkflowEntry.Workflow is: .github/workflows/ci-results.yaml, for one.
 	Workflow string
 	// RefPattern is the refs whose runs the entry takes, as path.Match reads a pattern, with a
 	// "*" matching one segment of the ref and never a "/": refs/heads/* is every branch with no
@@ -1287,34 +1269,29 @@ func (s *Set) resultRun(token map[string]any, key resultKey, workflowRef, ref, s
 
 // readCIRun reads the run a result entry's token carries out of the run's GitHub token: the
 // repository, workflow and ref Workflow has already read, and the `sha`, `event_name`, `run_id`,
-// `run_attempt`, `runner_environment` and `check_run_id` claims, every one of them required. The
-// commit is in the form oauthwire.IsCommit holds, and the run, the attempt and the check run in
-// the form oauthwire.IsPositiveDecimal holds, the forms a resource server admits. The check run
-// is the job's identity, which a resource server reads the job's name from, so a token without
-// it is refused rather than minted a token naming no job.
+// `run_attempt`, `runner_environment` and `check_run_id` claims, every one of them required, the
+// whole run held to the rule every reader of it holds it to (oauthwire.ParseCIRun), so the broker
+// mints no run a resource server would refuse. The check run is the job's identity, which a
+// resource server reads the job's name from, so a token without it is refused rather than minted
+// a token naming no job.
 func readCIRun(token map[string]any, repository, workflowRef, ref string) (oauthwire.CIRun, error) {
 	run := oauthwire.CIRun{Repository: repository, WorkflowRef: workflowRef, Ref: ref}
 	for _, claim := range []struct {
-		name  string
-		into  *string
-		check func(string) bool
-		form  string
+		name string
+		into *string
 	}{
-		{name: "sha", into: &run.SHA, check: oauthwire.IsCommit, form: "40 lowercase hex digits"},
-		{name: "event_name", into: &run.EventName},
-		{name: "run_id", into: &run.RunID, check: oauthwire.IsPositiveDecimal, form: "a positive decimal number a signed 64-bit integer holds"},
-		{name: "run_attempt", into: &run.RunAttempt, check: oauthwire.IsPositiveDecimal, form: "a positive decimal number a signed 64-bit integer holds"},
-		{name: "runner_environment", into: &run.RunnerEnvironment},
-		{name: "check_run_id", into: &run.CheckRunID, check: oauthwire.IsPositiveDecimal, form: "a positive decimal number a signed 64-bit integer holds"},
+		{"sha", &run.SHA}, {"event_name", &run.EventName}, {"run_id", &run.RunID},
+		{"run_attempt", &run.RunAttempt}, {"runner_environment", &run.RunnerEnvironment},
+		{"check_run_id", &run.CheckRunID},
 	} {
 		value, err := claimString(token, claim.name)
 		if err != nil {
 			return oauthwire.CIRun{}, err
 		}
-		if claim.check != nil && !claim.check(value) {
-			return oauthwire.CIRun{}, fmt.Errorf("%w: the subject token's %s claim is not %s", ErrClaimMissing, claim.name, claim.form)
-		}
 		*claim.into = value
+	}
+	if _, err := oauthwire.ParseCIRun(run); err != nil {
+		return oauthwire.CIRun{}, fmt.Errorf("%w: the subject token's %w", ErrClaimMissing, err)
 	}
 	return run, nil
 }

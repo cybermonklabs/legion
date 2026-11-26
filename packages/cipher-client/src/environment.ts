@@ -154,7 +154,7 @@ function required(env: BrokerEnvironment, name: keyof BrokerVariables, kind: str
  * (`packages/envoy/internal/cipherclient/environment.go`), in the same order; a device login,
  * which Go has no kind for, reads the broker it was made at and the file that keeps it. Go's also
  * takes `github-actions`, a CI job's own identity, which this client never trades: a job's
- * `dispatch result` holds the airlock's placeholder of its run, and the broker holds the run's
+ * `dispatch result` holds the proxy placeholder of its run, and the broker holds the run's
  * token.
  */
 export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
