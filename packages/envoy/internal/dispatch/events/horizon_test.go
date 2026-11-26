@@ -362,8 +362,7 @@ func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
 // must return the first one horizonAwaitFailFor after the first since the success.
 func TestHorizonAwaitReturnsAnObservationErrorThatPersists(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(testwait.Context(t))
-	defer cancel()
+	ctx := testwait.Context(t)
 	refused := errors.New("horizon pool: dial refused")
 	const tick = time.Second
 	failFor := int(horizonAwaitFailFor / tick)

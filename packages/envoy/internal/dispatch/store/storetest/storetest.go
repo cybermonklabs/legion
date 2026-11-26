@@ -31,9 +31,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -206,6 +208,23 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 // than a copy through the write-ahead log (the package comment says why).
 func cloneStatement(name, template string) string {
 	return "create database " + name + " template " + template + " strategy file_copy"
+}
+
+// DefaultParallel is how many tests of a package run at once when its TestMain calls
+// SetDefaultParallel and the command line names no -parallel: four, the parallelism the
+// build-cluster measurement of those packages ran at (a 4-CPU pod) and go test's default on CI's
+// 4-CPU runner. Left to go test's default of GOMAXPROCS, a machine with more CPUs would run more of
+// them at once than any run has measured. A package measured at a number of its own sets that
+// number in its own TestMain, with its reason (internal/dispatch/api, internal/dispatch/docs).
+const DefaultParallel = 4
+
+// SetDefaultParallel sets the test binary's default -parallel to DefaultParallel. A package's
+// TestMain calls it before Main or Run, and so before m.Run parses the command line, where a
+// -parallel still wins.
+func SetDefaultParallel() {
+	if err := flag.Set("test.parallel", strconv.Itoa(DefaultParallel)); err != nil {
+		panic("storetest: set the default -parallel: " + err.Error())
+	}
 }
 
 // Main runs the package's tests, waits for their databases to drop, then drops every template

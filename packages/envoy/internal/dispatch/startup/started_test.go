@@ -11,10 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"os"
 	"reflect"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -27,19 +25,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// startupTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel: four, the parallelism its build-cluster measurement ran at and go test's
-// default on CI's 4-CPU runner. Each parallel test holds a database of its own, so a large
-// machine's default would open more of the test server's connections at once than the suite is
-// sized for (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command
-// line still wins.
-const startupTestParallelism = 4
-
-// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
 func TestMain(m *testing.M) {
-	if err := flag.Set("test.parallel", strconv.Itoa(startupTestParallelism)); err != nil {
-		panic("set this package's default -parallel: " + err.Error())
-	}
+	storetest.SetDefaultParallel()
 	os.Exit(storetest.Main(m))
 }
 
@@ -421,10 +410,10 @@ func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
 	}
 
 	// The later pass's publish answers at once, but under the 200 ms bound a pass slowed past it
-	// would find the publish's context ended as well, and the publisher's select takes either. A
-	// day outlasts any run of the test binary, so the pass is judged on the answer alone.
+	// would find the publish's context ended as well, and the publisher's select takes either. Past
+	// the run (testwait.PastTheRun), the pass is judged on the answer alone.
 	publisher.hang(false)
-	announcer.publishTimeout = 24 * time.Hour
+	announcer.publishTimeout = testwait.PastTheRun
 	announcer.pass(ctx)
 	requireEnvelopes(t, database, publisher, c1)
 }

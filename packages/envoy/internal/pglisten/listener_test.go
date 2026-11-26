@@ -3,7 +3,6 @@ package pglisten
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -23,29 +22,16 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// pglistenTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel: four, the parallelism its build-cluster measurement ran at and go test's
-// default on CI's 4-CPU runner. Each parallel test holds a database of its own, so a large
-// machine's default would open more of the test server's connections at once than the suite is
-// sized for (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command
-// line still wins.
-const pglistenTestParallelism = 4
-
-// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
 func TestMain(m *testing.M) {
-	if err := flag.Set("test.parallel", strconv.Itoa(pglistenTestParallelism)); err != nil {
-		panic("set this package's default -parallel: " + err.Error())
-	}
+	storetest.SetDefaultParallel()
 	os.Exit(storetest.Main(m))
 }
 
 // testChannels are the channels the listener under test listens on: the delivery hub's three, the
 // one deployment where three channels share a connection (api/delivery_live_hub.go).
 var testChannels = []string{"delivery_changes", "delivery_freshness", "dispatch_events"}
-
-// pastTheRun is a ping timeout no run of this package's test binary reaches: a listener built with
-// it leaves a ping on a healthy connection to end on the answer, never on the machine's speed.
-const pastTheRun = 24 * time.Hour
 
 // listenerNote is one notification a listener under test reported.
 type listenerNote struct{ channel, payload string }
@@ -362,7 +348,7 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, pastTheRun
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, testwait.PastTheRun
 	runListener(t, probe, listener)
 	probe.waitConnected(t, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
@@ -626,7 +612,7 @@ func TestAListenerWithNoOnNotifyDropsItsNotificationsAndDoesNotPanic(t *testing.
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
 	listener.OnNotify = nil
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, pastTheRun
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, testwait.PastTheRun
 	runListener(t, probe, listener)
 	probe.waitConnected(t, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()

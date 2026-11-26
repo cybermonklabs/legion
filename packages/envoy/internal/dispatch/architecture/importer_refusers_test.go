@@ -45,7 +45,7 @@ type refusersRig struct {
 	database *store.Store
 	process  *Importer
 	lookups  atomic.Int32
-	taken    atomic.Int32
+	taken    *atomic.Int32 // countFlightsTaken
 	refusals atomic.Int32
 	// heldRefusal is the refusal, counted from 1, whose caller waits on late; 0 holds none.
 	heldRefusal int32
@@ -101,7 +101,7 @@ func newRefusersRig(t *testing.T, held int32) *refusersRig {
 	// Cleanups run last registered first: a test that fails while a refuser is held lets it go
 	// before Close waits for the flights.
 	t.Cleanup(rig.releaseLate)
-	rig.process.afterFlightTaken = func() { rig.taken.Add(1) }
+	rig.taken = countFlightsTaken(rig.process)
 	rig.process.afterSyncRefusal = func() {
 		if rig.refusals.Add(1) == rig.heldRefusal {
 			<-rig.late
@@ -138,8 +138,10 @@ func (rig *refusersRig) joinTheFirstFlight(t *testing.T, n int32) chan syncAnswe
 	for range n {
 		rig.syncOf(archRepo, refusers)
 	}
-	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, "the later callers to join the held flight",
-		func() bool { return rig.taken.Load() >= n+1 })
+	testwait.Until(t, "the later callers to join the held flight", func() (int32, bool) {
+		held := rig.taken.Load()
+		return held, held >= n+1
+	})
 	return refusers
 }
 

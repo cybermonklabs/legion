@@ -103,12 +103,6 @@ func runHub(t *testing.T, hub *Hub) (stop func()) {
 	return stop
 }
 
-// recv waits for one value on ch, bounded by the test binary's deadline (testwait.Receive).
-func recv[T any](t *testing.T, ch <-chan T, when string) T {
-	t.Helper()
-	return testwait.Receive(t, when, ch)
-}
-
 // quiet fails if anything arrives on ch within a short wait.
 func quiet[T any](t *testing.T, ch <-chan T, when string) {
 	t.Helper()
@@ -158,9 +152,9 @@ func TestTheHubDeliversEachChannelToEveryHandlerAndWakeRegisteredOnIt(t *testing
 	wakeB := hub.Wake("hub_test_b")
 	runHub(t, hub)
 
-	recv(t, probe.connected, "the first LISTEN")
+	testwait.Receive(t, "the first LISTEN", probe.connected)
 	for name, wake := range map[string]<-chan struct{}{"a": wakeA, "a again": wakeAAgain, "b": wakeB} {
-		recv(t, wake, "wake "+name+" after the first LISTEN")
+		testwait.Receive(t, "wake "+name+" after the first LISTEN", wake)
 	}
 	probe.mu.Lock()
 	dialed := len(probe.conns)
@@ -170,22 +164,22 @@ func TestTheHubDeliversEachChannelToEveryHandlerAndWakeRegisteredOnIt(t *testing
 	}
 
 	notifyChannel(t, database, "hub_test_a", "on a")
-	if got := recv(t, first, "the first handler of a"); got != "on a" {
+	if got := testwait.Receive(t, "the first handler of a", first); got != "on a" {
 		t.Fatalf("the first handler of a heard %q, want %q", got, "on a")
 	}
-	if got := recv(t, second, "the second handler of a"); got != "on a" {
+	if got := testwait.Receive(t, "the second handler of a", second); got != "on a" {
 		t.Fatalf("the second handler of a heard %q, want %q", got, "on a")
 	}
-	recv(t, wakeA, "wake a after a notification on a")
-	recv(t, wakeAAgain, "the second wake of a after a notification on a")
+	testwait.Receive(t, "wake a after a notification on a", wakeA)
+	testwait.Receive(t, "the second wake of a after a notification on a", wakeAAgain)
 	quiet(t, other, "b's handler after a notification on a")
 	quiet(t, wakeB, "b's wake after a notification on a")
 
 	notifyChannel(t, database, "hub_test_b", "on b")
-	if got := recv(t, other, "b's handler"); got != "on b" {
+	if got := testwait.Receive(t, "b's handler", other); got != "on b" {
 		t.Fatalf("b's handler heard %q, want %q", got, "on b")
 	}
-	recv(t, wakeB, "b's wake after a notification on b")
+	testwait.Receive(t, "b's wake after a notification on b", wakeB)
 	quiet(t, first, "a's handler after a notification on b")
 	quiet(t, wakeA, "a's wake after a notification on b")
 }
@@ -205,11 +199,11 @@ func TestAHubNotificationSignalsItsChannelsWakes(t *testing.T) {
 	hub.OnConnected(onConnected)
 	runHub(t, hub)
 
-	recv(t, connected, "first connection")
-	recv(t, first, "first wake of hub_test_a after the LISTEN")
-	recv(t, second, "second wake of hub_test_a after the LISTEN")
-	recv(t, other, "wake of hub_test_b after the LISTEN")
-	recv(t, after, "wake of hub_test_c after the LISTEN")
+	testwait.Receive(t, "first connection", connected)
+	testwait.Receive(t, "first wake of hub_test_a after the LISTEN", first)
+	testwait.Receive(t, "second wake of hub_test_a after the LISTEN", second)
+	testwait.Receive(t, "wake of hub_test_b after the LISTEN", other)
+	testwait.Receive(t, "wake of hub_test_c after the LISTEN", after)
 
 	// One connection sends both, so the listener reports them in that order: once hub_test_c's
 	// wake is signalled, hub_test_a's notification has been handled in full.
@@ -225,7 +219,7 @@ func TestAHubNotificationSignalsItsChannelsWakes(t *testing.T) {
 	if _, err := sender.Exec(ctx, `select pg_notify('hub_test_c', 'payload')`); err != nil {
 		t.Fatalf("notify hub_test_c: %v", err)
 	}
-	recv(t, after, "wake of hub_test_c after its NOTIFY")
+	testwait.Receive(t, "wake of hub_test_c after its NOTIFY", after)
 	wantSignalled := func(wake <-chan struct{}, what string) {
 		t.Helper()
 		select {
@@ -253,21 +247,21 @@ func TestAHubSignalsEveryWakeAgainAfterAReconnect(t *testing.T) {
 	hub.OnConnected(onConnected)
 	runHub(t, hub)
 
-	recv(t, connected, "first connection")
-	recv(t, a, "wake of hub_test_a after the first LISTEN")
-	recv(t, b, "wake of hub_test_b after the first LISTEN")
+	testwait.Receive(t, "first connection", connected)
+	testwait.Receive(t, "wake of hub_test_a after the first LISTEN", a)
+	testwait.Receive(t, "wake of hub_test_b after the first LISTEN", b)
 	killed := dialer.lastPID(t)
 
 	terminateBackend(t, database, killed)
-	recv(t, connected, "OnConnected after the redial")
+	testwait.Receive(t, "OnConnected after the redial", connected)
 	if pid := dialer.lastPID(t); pid == killed {
 		t.Fatalf("the hub reconnected on backend %d, the one that was killed", pid)
 	}
-	recv(t, a, "wake of hub_test_a after the redial")
-	recv(t, b, "wake of hub_test_b after the redial")
+	testwait.Receive(t, "wake of hub_test_a after the redial", a)
+	testwait.Receive(t, "wake of hub_test_b after the redial", b)
 
 	notifyChannel(t, database, "hub_test_b", "after")
-	recv(t, b, "wake of hub_test_b after a NOTIFY on the new connection")
+	testwait.Receive(t, "wake of hub_test_b after a NOTIFY on the new connection", b)
 }
 
 // A wake folds the signals its caller has not read yet into one, and never blocks the hub: a
@@ -292,19 +286,19 @@ func TestAWakeNobodyReadsFoldsItsSignalsAndBlocksNothing(t *testing.T) {
 	marker := make(chan string, 1)
 	hub.Handle("hub_test_b", func(payload string) { marker <- payload })
 	runHub(t, hub)
-	recv(t, probe.connected, "the first LISTEN")
+	testwait.Receive(t, "the first LISTEN", probe.connected)
 
 	for _, payload := range []string{"1", "2", "3"} {
 		notifyChannel(t, database, "hub_test_a", payload)
 	}
 	for _, want := range []string{"1", "2", "3"} {
-		if got := recv(t, heard, "notification "+want); got != want {
+		if got := testwait.Receive(t, "notification "+want, heard); got != want {
 			t.Fatalf("the handler heard %q, want %q", got, want)
 		}
 	}
 	notifyChannel(t, database, "hub_test_b", "every wake of hub_test_a is signalled")
-	recv(t, marker, "the marker on the second channel")
-	recv(t, wake, "the wake")
+	testwait.Receive(t, "the marker on the second channel", marker)
+	testwait.Receive(t, "the wake", wake)
 	quiet(t, wake, "the wake once read")
 }
 
@@ -320,13 +314,13 @@ func TestTheHubReportsALostConnectionAndItsReturn(t *testing.T) {
 	hub.backoff = func(int) time.Duration { return time.Hour }
 	wake := hub.Wake("hub_test_a")
 	stop := runHub(t, hub)
-	recv(t, probe.connected, "the first LISTEN")
-	recv(t, wake, "the wake after the first LISTEN")
+	testwait.Receive(t, "the first LISTEN", probe.connected)
+	testwait.Receive(t, "the wake after the first LISTEN", wake)
 	quiet(t, probe.disconnected, "OnDisconnected while the first connection stands")
 
 	terminateBackend(t, database, probe.lastConn(t).PgConn().PID())
 	// The backoff is an hour, so the callback reached here ran before the redial's wait.
-	recv(t, probe.disconnected, "OnDisconnected after the backend was killed")
+	testwait.Receive(t, "OnDisconnected after the backend was killed", probe.disconnected)
 	quiet(t, probe.connected, "OnConnected during the redial's backoff")
 	stop()
 	quiet(t, probe.disconnected, "OnDisconnected when Run ends with no connection")
@@ -336,14 +330,14 @@ func TestTheHubReportsALostConnectionAndItsReturn(t *testing.T) {
 	hub.backoff = func(int) time.Duration { return 5 * time.Millisecond }
 	wake = hub.Wake("hub_test_a")
 	stop = runHub(t, hub)
-	recv(t, probe.connected, "the first LISTEN of the second hub")
-	recv(t, wake, "the second hub's wake after its first LISTEN")
+	testwait.Receive(t, "the first LISTEN of the second hub", probe.connected)
+	testwait.Receive(t, "the second hub's wake after its first LISTEN", wake)
 	terminateBackend(t, database, probe.lastConn(t).PgConn().PID())
-	recv(t, probe.disconnected, "OnDisconnected after the second hub's backend was killed")
-	recv(t, probe.connected, "OnConnected after the redial")
-	recv(t, wake, "the wake after the redial's LISTEN")
+	testwait.Receive(t, "OnDisconnected after the second hub's backend was killed", probe.disconnected)
+	testwait.Receive(t, "OnConnected after the redial", probe.connected)
+	testwait.Receive(t, "the wake after the redial's LISTEN", wake)
 	stop()
-	recv(t, probe.disconnected, "OnDisconnected when Run ends holding a connection")
+	testwait.Receive(t, "OnDisconnected when Run ends holding a connection", probe.disconnected)
 	quiet(t, probe.disconnected, "a second OnDisconnected for one connection")
 }
 
@@ -384,7 +378,7 @@ func TestARegistrationAfterRunStartsPanics(t *testing.T) {
 	}}
 	hub.Handle("hub_test_a", func(string) {})
 	runHub(t, hub)
-	recv(t, dialed, "the hub's first dial")
+	testwait.Receive(t, "the hub's first dial", dialed)
 
 	for name, register := range map[string]func(){
 		"Handle":         func() { hub.Handle("hub_test_b", func(string) {}) },

@@ -2,9 +2,7 @@ package events
 
 import (
 	"context"
-	"flag"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -391,8 +389,7 @@ func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 	// seeded. It is a ceiling on a hang, not a measure of speed, so it is the test binary's
 	// (testwait.Context): an inverted lock order ends in Postgres's deadlock error, and a patch
 	// that waits on the other for good never ends.
-	ctx, cancel := context.WithCancel(testwait.Context(t))
-	defer cancel()
+	ctx := testwait.Context(t)
 	broker := NewBroker()
 	childEvent := model.Event{
 		IssueKey: new("PP-2"), Type: "issue.updated", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{},
@@ -471,19 +468,10 @@ func appendEvent(t *testing.T, database *store.Store, broker *Broker, event mode
 	return event
 }
 
-// eventsTestParallelism is how many of this package's tests run at once when the command line names
-// no -parallel: four, the parallelism its build-cluster measurement ran at and go test's default on
-// CI's 4-CPU runner. Each parallel test holds a database of its own, so a large machine's default
-// would open more of the test server's connections at once than the suite is sized for
-// (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command line
-// still wins.
-const eventsTestParallelism = 4
-
-// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
 func TestMain(m *testing.M) {
-	if err := flag.Set("test.parallel", strconv.Itoa(eventsTestParallelism)); err != nil {
-		panic("set this package's default -parallel: " + err.Error())
-	}
+	storetest.SetDefaultParallel()
 	os.Exit(storetest.Main(m))
 }
 
@@ -768,8 +756,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 	} {
 		t.Run(owner.name, func(t *testing.T) {
 			// A ceiling on a hang, not a measure of speed: the test binary's (testwait.Context).
-			ctx, cancel := context.WithCancel(testwait.Context(t))
-			defer cancel()
+			ctx := testwait.Context(t)
 			open, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatalf("begin the first write: %v", err)

@@ -11,13 +11,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -349,19 +347,10 @@ func writeStatus(w http.ResponseWriter, status int) {
 	fmt.Fprintf(w, `{"message":%q,"status":"%d"}`, http.StatusText(status), status)
 }
 
-// architectureTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel: four, the parallelism its build-cluster measurement ran at and go test's
-// default on CI's 4-CPU runner. Each parallel test holds a database of its own, so a large
-// machine's default would open more of the test server's connections at once than the suite is
-// sized for (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command
-// line still wins.
-const architectureTestParallelism = 4
-
-// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
 func TestMain(m *testing.M) {
-	if err := flag.Set("test.parallel", strconv.Itoa(architectureTestParallelism)); err != nil {
-		panic("set this package's default -parallel: " + err.Error())
-	}
+	storetest.SetDefaultParallel()
 	os.Exit(storetest.Main(m))
 }
 

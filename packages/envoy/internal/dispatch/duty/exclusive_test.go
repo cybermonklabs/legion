@@ -3,10 +3,8 @@ package duty_test
 import (
 	"bytes"
 	"context"
-	"flag"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,19 +16,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// dutyTestParallelism is how many of this package's tests run at once when the command line names
-// no -parallel: four, the parallelism its build-cluster measurement ran at and go test's default on
-// CI's 4-CPU runner. Each parallel test holds a database of its own, so a large machine's default
-// would open more of the test server's connections at once than the suite is sized for
-// (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command line
-// still wins.
-const dutyTestParallelism = 4
-
-// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
 func TestMain(m *testing.M) {
-	if err := flag.Set("test.parallel", strconv.Itoa(dutyTestParallelism)); err != nil {
-		panic("set this package's default -parallel: " + err.Error())
-	}
+	storetest.SetDefaultParallel()
 	os.Exit(storetest.Main(m))
 }
 
@@ -49,8 +38,7 @@ func leasesOf(t *testing.T, database *store.Store) *pgxpool.Pool {
 // multiprocess rows cost a day for want of exactly this (INFRA-1492). A pass with no period is
 // also a pass with no due, and names neither.
 func TestTheLinesAboutATickNameItsDueAndItsPeriod(t *testing.T) {
-	// Not parallel: it swaps the process's default logger (logtest.SetDefault) to read the lines
-	// a tick writes.
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	var logs bytes.Buffer
@@ -287,8 +275,8 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 // the lease back with its unlock, and returns the connection to the lease pool. A first gate
 // leaves the period read prepared on that connection, as a running process's earlier ticks do.
 func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T) {
-	// Not parallel: it swaps the process's default logger (logtest.SetDefault) to read the line
-	// a failed unlock writes.
+	// Not parallel: it reads a gate that returns within 500 ms of the cancel as one whose read the
+	// cancel ended; under load such a gate can return later than that, and the defect would pass.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	var logs bytes.Buffer
