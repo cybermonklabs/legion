@@ -51,6 +51,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/runnerlog"
@@ -62,6 +63,7 @@ const usage = "usage: architecture-check [--allow-empty] <directory>"
 const prefix = "architecture-check: "
 
 func main() {
+	time.Sleep(22 * time.Second)
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
