@@ -402,9 +402,9 @@ func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testin
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back for a change to the
-// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
-// implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
+// before it merges it, and may ask the other workers. Its part says so, and no longer tells it to
+// hand the conflict to the implementer, to send a failed queue check back as a matter of course, or
+// that it pushes nothing.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{

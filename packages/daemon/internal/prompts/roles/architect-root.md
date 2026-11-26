@@ -185,12 +185,11 @@ Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status
 For a fold, name in the reason the issue that carries the work.
 Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`).
 Say why in a `dispatch comment`.
-A child that looks independent of the tree,
-capacity, and a design or scope conflict with another tree go to the controller, which asks a person
-before it re-files a child as a root. A problem outside the tree is never an issue you file: a clear
-defect in code this tree touches or depends on is fixed in this tree's own
-pull request, or in a child you file in another repository, any other
-clear defect goes to the controller, and a problem that needs a
+A child that looks independent of the tree
+and capacity go to the controller, which asks a person before it re-files a
+child as a root. A problem outside the tree is never an issue you file: a clear defect in code
+this tree touches or depends on is fixed in this tree's own pull request, or in a child you file in
+another repository, any other clear defect goes to the controller, and a problem that needs a
 decision is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
 must make, yours, one a worker escalated or one a child's architect sent you, is a decision block
