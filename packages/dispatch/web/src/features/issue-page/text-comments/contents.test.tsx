@@ -3,7 +3,7 @@ import { type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { Actor, Comment } from "../../../api/types";
-import { withThreadEntries } from "../contents-entries";
+import { producingMessages, withThreadEntries } from "../contents-entries";
 import { KEY, node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { type ContentsEntry, contentsOf } from "../IssueContents";
 import type { TreeNode } from "../issue-tree";
@@ -193,7 +193,7 @@ test("an entry stands under the nearest entry above the node its comment is on",
     "alice",
     KEY
   );
-  expect(shape(contentsOf(held, "alice"))).toEqual([
+  expect(shape(contentsOf(held, "alice", producingMessages(held)))).toEqual([
     "ask: on-statement, on-task",
     "post",
     "on-post",

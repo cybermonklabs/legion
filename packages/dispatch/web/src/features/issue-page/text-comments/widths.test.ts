@@ -84,8 +84,8 @@ const WINDOW_STEPS: readonly WindowStep[] = [
   },
   {
     file: "spec-filter/SpecFilterBody.tsx",
-    lines: 2,
-    rule: "a statement's row has columns of 16 px, the words and 22 px with a 6 px gap on a phone",
+    lines: 4,
+    rule: "a statement's row has columns of 16 px, the words, its chips where it draws them, and 22 px with a 6 px gap on a phone",
     token: "max-[761px]",
   },
   {

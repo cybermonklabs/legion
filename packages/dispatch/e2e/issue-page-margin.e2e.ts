@@ -3129,7 +3129,10 @@ test("a card that takes the focus in the column stands in the window", async ({ 
       threadCard(page, id),
       "the new thread that takes the focus after the send stands in the window"
     ).toBeInViewport();
-    await gotoIssue(page, `${buildIssuePath(seeded.key)}/comments/${seeded.pagedChildThread}`);
+    await gotoIssue(
+      page,
+      buildIssuePath({ id: seeded.pagedChildThread, key: seeded.key, kind: "comment" })
+    );
     await expect(
       threadCard(page, seeded.pagedChildThread),
       "the address of the thread on note 55 puts the focus in that thread"
