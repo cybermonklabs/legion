@@ -275,7 +275,9 @@ type Issue struct {
 	HandedOver        bool
 	PrimaryArtifactID string
 	// VerificationArtifactID is the issue's Verification document (Approval.Role
-	// ArtifactRoleVerification), empty when the issue holds none.
+	// ArtifactRoleVerification), empty when the issue holds none: the artifact of the issue read's
+	// verification query, or, where the answer carries no queries (a Dispatch of the release
+	// before), its verification_artifact_id (issueResponse.verificationArtifact in wire.go).
 	VerificationArtifactID string
 	LastSeq                int64
 	// Priority is IssueSummary.Priority.
