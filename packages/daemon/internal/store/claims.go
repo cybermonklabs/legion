@@ -51,7 +51,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
-	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
+	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at, c.serving_retro_run,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
@@ -64,7 +64,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
+	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at, d.retro_run,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news, d.carried_news,
@@ -373,6 +373,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.AgentResumeGeneration > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: the generation %d of its resume by Oh My Pi's own lookup does not fit a bigint", c.Token, c.AgentResumeGeneration)
 	}
+	if c.ServingRetroRun > math.MaxInt64 {
+		return fmt.Errorf("put claim %s: the retro run %d it serves does not fit a bigint", c.Token, c.ServingRetroRun)
+	}
 	var locator []byte
 	if c.Locator != nil {
 		encoded, err := json.Marshal(c.Locator)
@@ -433,14 +436,14 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at,
-		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
+		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, serving_retro_run, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61, $62, $63,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -482,6 +485,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		provider_error_run = excluded.provider_error_run,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
+		serving_retro_run = excluded.serving_retro_run,
 		death_charged = excluded.death_charged,
 		failure_cause = excluded.failure_cause,
 		failed_at = excluded.failed_at,
@@ -528,7 +532,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt,
-		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
+		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), int64(c.ServingRetroRun), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
@@ -750,6 +754,9 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
+	if d.RetroRun > math.MaxInt64 {
+		return fmt.Errorf("put delivery %s on %s: retro run %d does not fit a bigint", d.ID, token, d.RetroRun)
+	}
 	kept, news, carried := keptDecisions(d.Kept), designNews(d.News), designNews(d.Carried)
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
@@ -765,13 +772,13 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
 		provider_error_retries, provider_error_note, design_news, carried_news, carried_ran, news_only,
-		round_named)
+		round_named, retro_run)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, $27)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
-		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
+		check_opened_at = excluded.check_opened_at, retro_run = excluded.retro_run, queued_at = excluded.queued_at,
 		delivered_at = excluded.delivered_at, marked_by = excluded.marked_by, confirmed_at = excluded.confirmed_at,
 		interrupted = excluded.interrupted, prompted = excluded.prompted,
 		out_of_memory = excluded.out_of_memory, send_failures = excluded.send_failures,
@@ -785,7 +792,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.Ran, d.NewsOnly, d.RoundNamed,
+		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.Ran, d.NewsOnly, d.RoundNamed, int64(d.RetroRun),
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -890,9 +897,11 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		deliveryEntry               *int64
 		deliveryCheckLook           *int
 		deliveryCheckOpened         *time.Time
+		deliveryRetroRun            *int64
 		servingGeneration           int64
 		servingCheckLook            int
 		servingCheckOpened          *time.Time
+		servingRetroRun             int64
 		handshakeGeneration         int64
 		handshakeQueued             *time.Time
 		handshakeConfirmed          *time.Time
@@ -929,7 +938,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
 		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry,
 		&c.Handshake.Entry, &handshakeGeneration, &handshakeQueued, &handshakeConfirmed,
-		&servingCheckLook, &servingCheckOpened,
+		&servingCheckLook, &servingCheckOpened, &servingRetroRun,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
@@ -941,7 +950,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
-		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
+		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened, &deliveryRetroRun,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &carried, &ran, &newsOnly,
 		&roundNamed)
@@ -962,6 +971,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
 	c.AgentResumeGeneration = uint64(agentResumeGeneration)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
+	c.ServingRetroRun = supervise.RetroRun(servingRetroRun)
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued
 	// no task carrying an entry has neither, and one whose task of its entry no turn has confirmed
 	// has no confirmed moment, each of which the handshake holds as the zero time.
@@ -1031,6 +1041,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			Generation:  uint64(orZeroInt(deliveryGeneration)),
 			Entry:       orZeroInt(deliveryEntry),
 			CheckLook:   supervise.CheckLook{Look: *deliveryCheckLook, OpenedAt: orZero(deliveryCheckOpened)},
+			RetroRun:    supervise.RetroRun(orZeroInt(deliveryRetroRun)),
 			QueuedAt:    *queuedAt,
 			DeliveredAt: orZero(delivered),
 			MarkedBy:    *markedBy,

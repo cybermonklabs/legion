@@ -2457,16 +2457,17 @@ func (c Claim) ServingEntry() int64 {
 // the one the task was given, not whichever look the check has reached, so a report of a look the
 // check has left is held to it and refused by the engine (CHECK_LOOK_NOT_OPEN).
 //
-// A task of a phase is the one task that takes a look back rather than leaving it: a worker
-// handed phase work again — a root reopened inside its linger, whose check still stands — is back
-// in the workflow, and the completion of that phase is no report on production. Every other task
-// of no look (an operator's own, a resume) leaves the look the claim is serving alone, as it
-// leaves the run and the entry.
+// Two tasks take a look back rather than leaving it. A task of a phase: a worker handed phase
+// work again — a root reopened inside its linger, whose check still stands — is back in the
+// workflow, and the completion of that phase is no report on production. And the task of a retro
+// after a close once a turn has confirmed it (ServingRetro, which says why an unconfirmed one does
+// not). Every other task of no look (an operator's own, a resume) leaves the look the claim is
+// serving alone, as it leaves the run and the entry.
 //
-// The look is the one field whose fallback (serving's rule 3) is held to more than its own
-// retired value: a look an unread task carries is taken only by a claim that has served nothing
-// at all. A claim records no look until a look's task is given to it, so a tester in the middle
-// of its testing run reads the zero look while its run and its entry answer the testing
+// The look and the retro are the fields whose fallback (serving's rule 3) is held to more than
+// their own retired value: a look an unread task carries is taken only by a claim that has served
+// nothing at all. A claim records no look until a look's task is given to it, so a tester in the
+// middle of its testing run reads the zero look while its run and its entry answer the testing
 // task; held to the look alone, the fallback would hand that tester a look it has not begun to
 // serve, and its testing verdict — pass or fail, which a check report also names — would close
 // the check with nobody having looked at production. The look, the run and the entry are
@@ -2481,7 +2482,7 @@ func (c Claim) ServingEntry() int64 {
 // refusal the agent sees beats a silent false pass.
 func (c Claim) ServingCheck() CheckLook {
 	retired := c.ServingCheckLook
-	if c.Pending != nil && c.Pending.Phase != "" {
+	if c.Pending != nil && (c.Pending.Phase != "" || c.Pending.takenAsRetro()) {
 		retired = CheckLook{}
 	}
 	return serving(c.Pending, deliveredCheckLook, retired, c.servedAnything(), c.openRoundHoldsTask())
@@ -2489,35 +2490,57 @@ func (c Claim) ServingCheck() CheckLook {
 
 // ServingRetro is the run of the retro after an issue's close that the task this claim's worker
 // took is of, and 0 for a claim that has taken none that carried one. It is what says a turn's
-// completion is that retro's report (api/handoff.go), as ServingCheck says a look's. The two
-// mark each other off: a phase task, and the confirmed task of the other kind, take the marker
-// back, and a task of one kind queued behind the running turn of the other leaves the running
-// turn's marker standing until its own task is confirmed. This is the stub of INFRA-5602's task
-// t4: it answers 0 for every claim.
-func (c Claim) ServingRetro() RetroRun { return 0 }
-
-// servedAnything is whether this claim's worker has taken any task at all — a run, an entry
-// or a look — which is what older work means for the look alone (ServingCheck). Only that
-// accessor reads it: the retire writes what a confirmed delivery leaves behind, and a confirmed
-// delivery is taken by serving's first rule, before any question of older work.
-func (c Claim) servedAnything() bool {
-	return c.ServingGeneration != 0 || c.ServedEntry != 0 || c.ServingCheckLook != (CheckLook{})
+// completion is that retro's report (api/handoff.go), as ServingCheck says a look's, and it reads
+// the same three sources in the same order (serving), with the same older work: anything the
+// claim has served at all (servedAnything), since the agent of a retro after a close is the
+// issue's own worker, which served the run's phases before it.
+//
+// The look and the retro mark each other off (INFRA-5602's s12, where one claim owes both). A task
+// of a phase takes the retro back, as it takes a look back: a worker handed phase work again is
+// back in the workflow. So does the task of a look once a turn has confirmed it, as the confirmed
+// task of a retro takes a look back (ServingCheck), so a claim never serves both. A task of the
+// other kind that no turn has confirmed yet takes nothing back: it is queued behind the running
+// turn of this kind (Machine.queue retired that turn's delivery onto the claim), and until its own
+// turn starts, what the worker reports is still that turn's. A task that carries neither, an
+// operator's own or a resume, leaves the retro the claim is serving alone.
+func (c Claim) ServingRetro() RetroRun {
+	retired := c.ServingRetroRun
+	if c.Pending != nil && (c.Pending.Phase != "" || c.Pending.takenAsLook()) {
+		retired = 0
+	}
+	return serving(c.Pending, deliveredRetroRun, retired, c.servedAnything(), c.openRoundHoldsTask())
 }
 
-// deliveredRun, deliveredEntry and deliveredCheckLook are what a delivery carries of each:
-// the three values serving picks between, named so the three accessors read as one order of
-// sources with a guard of their own rather than three rules.
+// takenAsLook and takenAsRetro are whether a turn has confirmed this delivery as the task of a
+// look, or of a retro after a close: the one point at which a task of one kind takes the other
+// kind's marker off the claim (ServingCheck, ServingRetro).
+func (d Delivery) takenAsLook() bool  { return d.CheckLook != (CheckLook{}) && !d.ConfirmedAt.IsZero() }
+func (d Delivery) takenAsRetro() bool { return d.RetroRun != 0 && !d.ConfirmedAt.IsZero() }
+
+// servedAnything is whether this claim's worker has taken any task at all — a run, an entry,
+// a look or a retro after a close — which is what older work means for the look and the retro
+// (ServingCheck, ServingRetro). Only those accessors read it: the retire writes what a confirmed
+// delivery leaves behind, and a confirmed delivery is taken by serving's first rule, before any
+// question of older work.
+func (c Claim) servedAnything() bool {
+	return c.ServingGeneration != 0 || c.ServedEntry != 0 || c.ServingCheckLook != (CheckLook{}) || c.ServingRetroRun != 0
+}
+
+// deliveredRun, deliveredEntry, deliveredCheckLook and deliveredRetroRun are what a delivery
+// carries of each: the values serving picks between, named so the accessors read as one order of
+// sources with a guard of their own rather than four rules.
 func deliveredRun(d Delivery) uint64          { return d.Generation }
 func deliveredEntry(d Delivery) int64         { return d.Entry }
 func deliveredCheckLook(d Delivery) CheckLook { return d.CheckLook }
+func deliveredRetroRun(d Delivery) RetroRun   { return d.RetroRun }
 
 // serving picks what a claim's worker is on — the run for ServingRun, the phase entry for
-// ServingEntry, the production check look for ServingCheck — from the three sources all
-// three read, in this order. carried is what the pending delivery holds of it, and retired what
-// the claim was left serving (ServingGeneration, ServedEntry, ServingCheckLook); the zero
-// value of any of them is a task, or a claim, that answers for none of them. The order of the
-// three sources lives here once, and each caller supplies what counts as older work for the
-// field it is asking about (servedOlder, below).
+// ServingEntry, the production check look for ServingCheck, the retro after a close for
+// ServingRetro — from the three sources all four read, in this order. carried is what the pending
+// delivery holds of it, and retired what the claim was left serving (ServingGeneration,
+// ServedEntry, ServingCheckLook, ServingRetroRun); the zero value of any of them is a task, or a
+// claim, that answers for none of them. The order of the three sources lives here once, and each
+// caller supplies what counts as older work for the field it is asking about (servedOlder, below).
 //
 //  1. The task whose turn is running. A completion is a tool call inside a turn, and one process
 //     runs one turn at a time.
@@ -2551,11 +2574,11 @@ func deliveredCheckLook(d Delivery) CheckLook { return d.CheckLook }
 //     opens over a worker mid-turn takes nothing back from it.
 //
 // What counts as older work is servedOlder, which each caller answers for what it is guarding
-// against, because the three fields are not zero on the same claims: for the run and the
-// entry it is that field's own retired value, since a claim left serving neither has taken
-// no task that carried one; for the look it is anything the claim has served at all
-// (Claim.servedAnything), since a claim in the middle of a phase run records no look, and a look
-// held to its own retired value alone would be handed to that worker while its run and its
+// against, because the fields are not zero on the same claims: for the run and the entry it is
+// that field's own retired value, since a claim left serving neither has taken no task that
+// carried one; for the look and the retro it is anything the claim has served at all
+// (Claim.servedAnything), since a claim in the middle of a phase run records neither, and a look or
+// a retro held to its own retired value alone would be handed to that worker while its run and its
 // entry answer the phase task.
 func serving[T comparable](pending *Delivery, carried func(Delivery) T, retired T, servedOlder, held bool) T {
 	var none T

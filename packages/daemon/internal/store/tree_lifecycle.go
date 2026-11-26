@@ -64,8 +64,8 @@ func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, aut
 func runNothing(context.Context, pgx.Tx) error { return nil }
 
 // errRunRetroNotImplemented is what the store methods of INFRA-5602's retro after a close answer
-// until task t2 and t4 write them (ReopenTreeForRetro, PodRecords.RetroWakeClaimByToken).
-var errRunRetroNotImplemented = errors.New("run_retros: not implemented until INFRA-5602 t2")
+// until task t4 writes them (ReopenTreeForRetro, PodRecords.RetroWakeClaimByToken).
+var errRunRetroNotImplemented = errors.New("run_retros: not implemented until INFRA-5602 t4")
 
 // ReopenTreeForRetro reopens the lifecycle of project's tree for the retro Legion runs after a
 // close, where the tree's linger has ended and its cleanup has retired every claim (the retro's

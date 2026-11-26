@@ -85,7 +85,6 @@ const (
 	OutboxKindPlanRecord OutboxKind = "plan_record"
 	// OutboxKindRetroBound is the bound of a retro Legion runs after an issue's close, due
 	// RetroAfterCloseBound after the retro's start (RetroBound): it ends a retro nobody reported.
-	// The kind is declared here and runs on no lane until INFRA-5602's task t2.
 	OutboxKindRetroBound OutboxKind = "retro_bound"
 )
 
@@ -95,12 +94,14 @@ const (
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
 // stopped the roles). It also carries the production check's rows
 // (check_wake, check_look, check_bound), which start and end the checking role's looks in order
-// with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
-// notice publishes beside them, so a status write or a notice never waits behind a start pulling
-// an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
-// publish too, the one row addressed to the bare project key rather than to an issue, so that
-// write runs on a board lane of the project's own, behind none of any issue's rows and holding
-// none of them back. The role-message lane runs the kinds the daemon addresses to one role of
+// with the starts and suspends they queue, and the bound of a retro after a close (retro_bound),
+// which ends that retro in order with the start that delivered it. The board lane runs the
+// issue's Dispatch writes and notice publishes beside them, so a status write or a notice never
+// waits behind a start pulling an image, and a slow publish never holds a stop back. It carries
+// the deployment's gated-steps publish too, the one row addressed to the bare project key rather
+// than to an issue, so that write runs on a board lane of the project's own, behind none of any
+// issue's rows and holding none of them back. The role-message lane runs the kinds the daemon
+// addresses to one role of
 // the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
 // the message that tells the merger its pull request left the merge queue (merge_queue_removal),
 // the messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to
@@ -144,7 +145,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRetroBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -201,10 +202,12 @@ type pauseHold struct {
 // one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
 // message, and the three rows of a production check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
-// issue_suspend, issue_release), the writes to Dispatch, the reconcile of a tree's news of its
-// approved design (design_changes), which reads Dispatch and writes the news record and tells a
-// role only by a news-only start, which is a start this list holds, and the controller's notices
-// (controller_notice), since the pause never holds the controller (spec Design item 8).
+// issue_suspend, issue_release, and the bound of a retro after a close, retro_bound, which ends a
+// retro nobody reported and starts no turn), the writes to Dispatch, the reconcile of a tree's
+// news of its approved design (design_changes), which reads Dispatch and writes the news record
+// and tells a role only by a news-only start, which is a start this list holds, and the
+// controller's notices (controller_notice), since the pause never holds the controller (spec
+// Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -1322,18 +1325,20 @@ type SuperviseRequest struct {
 	// close that a start delivers, 0 for every other start. Like a look's start it runs after the
 	// close, where the issue stands in no phase and its tree may linger, so the outbox fences it
 	// on the run's open retro and its agent (RunRetro) instead of on the generation and the
-	// lingering tree. It names a role, no phase and no entry, and it is no start for news or for
-	// a slot. A release before this field refuses a row that carries it (DisallowUnknownFields),
-	// and the migration's way back deletes such rows. Declared here; the validation and the
-	// outbox's use of it land in INFRA-5602's tasks t2 and t4.
+	// lingering tree. It names a role of the issue, no phase, no entry and no look, and it is no
+	// start for news, for a slot or for the wake of a root architect (RetroWake): the validation
+	// refuses any other row that carries it. A release before this field refuses a row that
+	// carries it (DisallowUnknownFields), and the way back of migration 20261125213821_run_retros
+	// deletes such rows. The outbox's fence on it lands in INFRA-5602's task t4.
 	RetroRun uint64 `json:"retroRun,omitempty"`
 	// RetroWake marks the wake of a root architect whose claim the tree's close suspended, made
 	// while a retro after a close is open in its tree, so that the architect hears the finding
 	// the retro's agent published to its role topic. It is a start of the architect with a wake
-	// kind (WakeKind), and the outbox lets it through the guard that drops a wake for a claim
-	// the daemon suspended. A release before this field refuses a row that carries it, and the
-	// migration's way back deletes such rows. Declared here; the rules land in INFRA-5602's
-	// tasks t2 to t4.
+	// kind (WakeKind) and no phase, no entry, no look and no retro run, for neither news nor a
+	// slot, and the validation refuses any other row that carries it; the outbox lets it through
+	// the guard that drops a wake for a claim the daemon suspended (INFRA-5602's task t4). A
+	// release before this field refuses a row that carries it, and the way back of migration
+	// 20261125213821_run_retros deletes such rows.
 	RetroWake bool `json:"retroWake,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
 	// it always: its executor stops the claim for that pause, and finishes without acting once
@@ -1744,9 +1749,10 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // RetroBound is the bound of the retro Legion runs after the issue's close, due at the run's
 // row's bound_at (RunRetro.BoundAt, RetroAfterCloseBound after the retro's start): it ends the
 // retro as stopped, with no rating, when it is still open at that run. Generation is the run the
-// retro is of, so a row left over from an earlier run of the issue ends nothing. Declared here
-// with its kind (OutboxKindRetroBound); its lane, decode and validation land in INFRA-5602's
-// task t2.
+// retro is of, so a row left over from an earlier run of the issue ends nothing, and a row that
+// names no run (0) is refused. It runs on the lifecycle lane, and a project's pause does not hold
+// it: it ends a retro and starts no turn. The release before it refuses the kind, and the way
+// back of migration 20261125213821_run_retros deletes such rows.
 type RetroBound struct {
 	Generation uint64 `json:"generation"`
 }
@@ -2315,6 +2321,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindRetroBound:
+		value := RetroBound{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2570,6 +2582,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
 		}
+		if value.RetroRun != 0 && (value.Op != "start" || !claim.IsRole(value.Role) || value.Phase != "" || value.Entry != 0 ||
+			value.CheckLook != 0 || value.News || value.NeedsSlot || value.RetroWake) {
+			return fmt.Errorf("a supervise retro run names a start of a role of the issue with no phase, no entry and no look, for neither news nor a slot nor a wake of the root architect")
+		}
+		if value.RetroWake && (value.Op != "start" || value.Role != claim.RoleArchitect || value.WakeKind == "" || value.Phase != "" ||
+			value.Entry != 0 || value.CheckLook != 0 || value.News || value.NeedsSlot) {
+			return fmt.Errorf("a supervise retro wake names a start of the architect with a wake kind and no phase, no entry, no look and no retro run, for neither news nor a slot")
+		}
 		if value.News && (value.Op != "start" || value.Task != "" || value.Entry != 0 || value.RuleResume || value.CheckLook != 0 ||
 			(value.Phase == "") != (value.Role == claim.RoleArchitect)) {
 			return fmt.Errorf("a supervise start for news alone carries no task and no entry, and names the phase of the holder it tells, or none for an architect")
@@ -2654,6 +2674,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case CheckLook:
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
+		}
+	case RetroBound:
+		if value.Generation == 0 {
+			return fmt.Errorf("retro bound requires the run it bounds")
 		}
 	case HookPrompt:
 		if value.Hook == "" {

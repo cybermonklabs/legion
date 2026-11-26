@@ -32,13 +32,14 @@ type CheckLook struct {
 
 // RetroRun names the retro Legion runs after an issue's close, by the run it is of (the issue's
 // generation, record.SuperviseRequest.RetroRun): the one number the start row that delivers the
-// retro's task carries. A claim serves it exactly as it serves a production check's look
-// (Claim.ServingRetro, as ServingCheck), so a completion from the claim is the retro's report
+// retro's task carries. A claim serves it as it serves a production check's look
+// (Claim.ServingRetro, beside ServingCheck), so a completion from the claim is the retro's report
 // (api/handoff.go) and not a phase completion or a look's report. The zero value is a task, or a
 // claim, that is no retro's after a close: every phase task, a look's, an operator's own, a
 // resume. It is comparable, so the one rule that picks what a claim is serving reads it as it
-// reads the run, the entry and the look (serving). Declared here; the accessor and the carry land
-// in INFRA-5602's task t4.
+// reads the run, the entry and the look (serving). Machine.queue copies it from the request onto
+// the delivery, and the retire of a confirmed delivery leaves it on the claim
+// (Claim.ServingRetroRun), as it leaves the look.
 type RetroRun uint64
 
 // Delivery is a claim's pending task: at most one per claim, persisted, and sent only when the
@@ -624,8 +625,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
-		RoundNamed: request.RoundNamed}
+		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, RetroRun: request.RetroRun,
+		QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -1460,8 +1461,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	m.disarm(TimerPromptRetry)
 	retired := m.stored()
 	if !p.ConfirmedAt.IsZero() {
-		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook =
-			m.claim.ServingRun(), m.claim.ServingEntry(), m.claim.ServingCheck()
+		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook, retired.ServingRetroRun =
+			m.claim.ServingRun(), m.claim.ServingEntry(), m.claim.ServingCheck(), m.claim.ServingRetro()
 	} else if p.Entry != 0 && p.Entry == m.claim.GivenEntry {
 		retired.GivenEntry = retired.ServedEntry
 	}
