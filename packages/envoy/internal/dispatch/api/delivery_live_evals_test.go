@@ -968,6 +968,56 @@ func TestAReadingReachesAnEvalsPageOverTheLiveSocket(t *testing.T) {
 		len(snapshot.Body), delta.Seq, liveUpsertIDs(t, delta, "items"), slices.Sorted(maps.Keys(delta.Set)))
 }
 
+// TestAReadingDaysBackSendsTheEvalsPageOneDelta (k10): a reading of an eval no row holds, measured
+// three days before today on a project whose day rows the refresher has walked through today,
+// leaves owed the zero row of each later day through today, which the readings write writes in its
+// own transaction beside the reading's day row (evals' writeLoggedZeros). A page subscribed to the
+// project's evals over the 28 days through today, on a hub whose clock stands still, is sent one
+// delta for the write. The refresher's pass of the next day then fills that eval's new day
+// (fillLoggedZeros), which lies past the page's window, and the page is sent nothing more, however
+// far the clock moves past every quiet, and holds the route's body. A write that left those zero
+// rows to the refresher's fill sent the page a second delta, for the days the fill wrote. Both
+// passes run as of a moment after the hub's clock, so the refresher's age each body states reads
+// one coarse step (refresherAgeStep) before and after them.
+func TestAReadingDaysBackSendsTheEvalsPageOneDelta(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	createTestProject(t, handler, "INFRA")
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
+	rig := hubOn(t, handler, database, deps, newStillHubClock(), nil)
+	today := measures.Midnight(time.Now())
+	pass := today.Add(13 * time.Hour)
+	refreshEvalDays(t, registry, database, pass)
+	frame := evalsLiveView("INFRA", evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), "")
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("e", frame))
+	held := conn.snapshot(t, "e").Body
+	rig.quiesce(t, frame)
+	rig.requireNothingSent(t, conn, "the snapshot, before anything was written")
+
+	written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/INFRA/evals/pr-size/readings",
+		map[string]any{"readings": []any{reading("lines", 120, today.AddDate(0, 0, -3).Add(9*time.Hour))}}, "days-back-reading")
+	if written.Code != http.StatusCreated {
+		t.Fatalf("log the reading: status %d, body %s", written.Code, written.Body.String())
+	}
+	rig.quiesce(t, frame)
+	delta := conn.delta(t, "e")
+	if got := liveUpsertIDs(t, delta, "items"); !slices.Equal(got, []string{"INFRA/pr-size"}) {
+		t.Errorf("the reading's delta upserts %v, want INFRA/pr-size", got)
+	}
+	held = applyLiveDelta(t, evalsView, held, delta)
+
+	refreshEvalDays(t, registry, database, pass.AddDate(0, 0, 1))
+	rig.quiesce(t, frame)
+	rig.requireNothingSent(t, conn, "the reading's one delta and the refresher's passes after it")
+	route := getBody(t, handler, evalsTarget(t, "INFRA", held, ""))
+	if got, want := liveComparable(t, mustEncodeLive(t, evalsView, held)), liveComparable(t, mustEncodeLive(t, evalsView, route)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the page does not hold the route's body after the reading and the refresher's passes:\nheld: %v\nGET:  %v", got, want)
+	}
+	t.Logf("the reading of %s's day sent one delta of seq %s, which lands on the route's body; the next day's pass after it sent nothing",
+		today.AddDate(0, 0, -3).Format(time.DateOnly), delta.Seq)
+}
+
 // evalsMarkStep is one thing an evals view of INFRA meets, after the moment of the first step: a
 // change of kind, of the eval slug names (deploy-frequency where it names none), heard by the
 // intake, an eval_days change the settings rewrite wrote (evalsRewrite), or one of the moments of

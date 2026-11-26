@@ -71,10 +71,12 @@ func itemMeasuredAt(t *testing.T, database *store.Store, project, slug, kind str
 		}
 		return "the newest day its day rows of the range are of", newest
 	case evalRowIssue:
-		if _, filing := cols[legionfacts.ColumnFiledAt]; filing {
-			return "its filing", column(legionfacts.ColumnFiledAt)
+		// A closed issue's row states its close, and its filing too where the range filed it; a
+		// filing's row its filing alone.
+		if _, closed := cols[legionfacts.ColumnClosedAt]; closed {
+			return "its close", column(legionfacts.ColumnClosedAt)
 		}
-		return "its close", column(legionfacts.ColumnClosedAt)
+		return "its filing", column(legionfacts.ColumnFiledAt)
 	case "sample":
 		var measured time.Time
 		if err := database.Pool.QueryRow(t.Context(), `select measured_at from eval_readings where id = $1`, mustString(t, cols["id"])).Scan(&measured); err != nil {
@@ -103,6 +105,7 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 // run of the deliverytest history that started before them and failed a job inside them, and for
 // an at on a midnight.
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
@@ -161,12 +164,14 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 
 // TestTheSlowestJobsItemsAreThePipelinesSlowestJobs: pr-ci's items with sort=median over the
 // seven days an `at` shows rank the jobs GET /api/v1/delivery/pipeline ranks in
-// pr_checks.slowest_jobs for that at, one ranking and two readers (R7: no read both families
-// serve gets two answers), and they stay one
-// after a register write sets pr-ci's job series' min_n: here to the timed results of the Pipeline's
-// busiest slowest job, so a ranking that reads the registry keeps that job and drops the others,
-// and one that does not keeps them all.
+// pr_checks.slowest_jobs for that at: the Pipeline's table is the first measures.SlowestJobs of the
+// items' ranking, as many as the ranking holds up to that count, one ranking and two readers (R7:
+// no read both families serve gets two answers), and they stay one after a register write sets
+// pr-ci's job series' min_n: here to one past the timed results of the Pipeline's busiest slowest
+// job, so a ranking that reads the registry drops every job, where one that does not keeps them
+// all.
 func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
@@ -186,53 +191,77 @@ func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 		return pipeline, items
 	}
 	same := func(pipeline, items []string) bool {
-		return len(items) >= len(pipeline) && slices.Equal(items[:len(pipeline)], pipeline)
+		return len(pipeline) == min(len(items), measures.SlowestJobs) && slices.Equal(items[:len(pipeline)], pipeline)
 	}
 	slowest := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+at).PRChecks.SlowestJobs
 	if len(slowest) < 2 {
 		t.Fatalf("the Pipeline ranks %d slowest jobs (%s), so no min_n can tell its ranking from another", len(slowest), query)
 	}
-	if pipeline, items := ranked(); !same(pipeline, items) {
-		t.Fatalf("before any register write the items rank %v, the Pipeline %v", items, pipeline)
+	pipeline, before := ranked()
+	if !same(pipeline, before) {
+		t.Fatalf("before any register write the items rank %v, the Pipeline %v", before, pipeline)
 	}
-	busiest := 0
+	minN := 0
 	for _, job := range slowest {
-		busiest = max(busiest, job.Total.N)
+		minN = max(minN, job.Total.N+1)
 	}
 	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
-		"slug": "pr-ci", "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": busiest}},
+		"slug": "pr-ci", "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": minN}},
 	}, "pr-ci-min-n")
 	if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
-		t.Fatalf("set pr-ci's min_n to %d: status %d, body %s", busiest, registered.Code, registered.Body.String())
+		t.Fatalf("set pr-ci's min_n to %d: status %d, body %s", minN, registered.Code, registered.Body.String())
 	}
 	pipeline, items := ranked()
-	if !same(pipeline, items) {
-		t.Errorf("with pr-ci's job series' min_n at %d the items rank %v, the Pipeline %v; want one ranking", busiest, items, pipeline)
+	if !same(pipeline, items) || len(items) >= len(before) {
+		t.Errorf("with pr-ci's job series' min_n at %d the items rank %v, the Pipeline %v, where before it the items ranked %d jobs; want one ranking, of fewer jobs",
+			minN, items, pipeline, len(before))
 	}
 }
 
-// TestEveryCatalogueSourceAnswersItsRows: every computed eval a project is seeded with names a
-// source the items route reads rows of (evalComputedItems), so no computed eval's items are its
-// readings and day rows alone by an omission. The folds' own table is held to the catalogue when
-// the evals package starts.
+// TestEveryCatalogueSourceAnswersItsRows: every computed eval a project is seeded with answers,
+// through the items route, rows its numbers count beside its day rows, so no computed eval's items
+// are its readings and day rows alone by an omission (evalComputedItems): over the histories the
+// eval reads are checked over (seedEvalHistoriesByIssue), each Legion eval of the Legion history
+// over its first golden window, and each other computed eval of the delivery history over seven of
+// its days, answers at least one row of a kind other than `day`. The folds' own table is held to
+// the catalogue when the evals package starts.
 func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
-	handler, _ := newTestHandlerWithStore(t)
-	createTestProject(t, handler, "EVL")
-	list := evalGet[evalListResponse](t, handler, "/api/v1/projects/EVL/evals?limit=200")
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
+	legion := windows[0].Spec.Project
+	ranges := map[string][2]time.Time{
+		fixture.Project: {fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)},
+		legion:          {windows[0].Window.From, windows[0].Window.To},
+	}
 	computed := 0
-	for _, item := range list.Items {
-		if !item.Definition.Computed() {
-			continue
-		}
-		computed++
-		if _, held := evalComputedItems[item.Definition.Source]; !held {
-			t.Errorf("%s names %s, which evalComputedItems reads no row of", item.Definition.EvalID, item.Definition.Source)
+	for _, project := range []string{fixture.Project, legion} {
+		list := evalGet[evalListResponse](t, handler, "/api/v1/projects/"+project+"/evals?limit=200")
+		for _, item := range list.Items {
+			definition := item.Definition
+			if !definition.Computed() || (definition.Kind == evals.KindLegion) != (project == legion) {
+				continue
+			}
+			computed++
+			query := url.Values{"from": {ranges[project][0].Format(time.RFC3339)}, "to": {ranges[project][1].Format(time.RFC3339)}, "limit": {"200"}}
+			items := evalGet[evalItemsResponse](t, handler, evalItemsPath(project, definition.Slug)+"?"+query.Encode())
+			counted := map[string]int{}
+			for _, row := range items.Items {
+				if row.RowKind != evalRowDay {
+					counted[row.RowKind]++
+				}
+			}
+			if len(counted) == 0 {
+				t.Errorf("%s (%s) answers %d rows over %s, every one a day row: no row its numbers count", definition.EvalID, definition.Source, items.Total, query.Encode())
+				continue
+			}
+			t.Logf("%s answers %v beside its day rows", definition.EvalID, counted)
 		}
 	}
 	if computed == 0 {
-		t.Fatal("the seeded project holds no computed eval, so the check checked nothing")
+		t.Fatal("the seeded projects hold no computed eval, so the check checked nothing")
 	}
-	t.Logf("%d seeded computed evals, each with its rows", computed)
+	t.Logf("%d seeded computed evals, each with rows its numbers count", computed)
 }
 
 // TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot (point 6 of dispatch://INFRA-2916, one answer,
@@ -245,6 +274,7 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 // production. A read whose statements read several moments answers, in the answer the commit lands
 // in, the counted items before it beside the deploy runs and the day rows after it.
 func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	commits := storetest.NewCommitBetweenReads("eval_day_members")
 	handler, _, deps, _ := newRegisteredTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
@@ -314,8 +344,8 @@ func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
 	if bytes.Equal(after, before) {
 		t.Errorf("after the commit the items answer what they answered before it: the failed production job of run %d moved nothing", runID)
 	}
-	if was, listed := reached(after); listed && was {
-		t.Errorf("after the commit the items list run %d as a deploy that reached production", runID)
+	if was, listed := reached(after); !listed || was {
+		t.Errorf("after the commit the items list run %d %t, as a deploy that reached production %t; want it listed, as one that did not", runID, listed, was)
 	}
 	t.Logf("the answer the commit landed in is the %d bytes of the answer before it; the next answer moved run %d", len(before), runID)
 }

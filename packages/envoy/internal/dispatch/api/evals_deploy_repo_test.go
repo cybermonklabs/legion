@@ -215,6 +215,7 @@ func (r *deployRepoRig) firstDeployDay(t *testing.T) time.Time {
 // Read from the stored figures and then from the day rows (no figures built), the answers are the
 // same bytes.
 func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T) {
+	t.Parallel()
 	r := newDeployRepoRig(t, true, func(r *deployRepoRig) { leaveAttributionInputsUnread(t, r.database.Pool) })
 	first := r.firstDeployDay(t)
 	var since time.Time
@@ -225,14 +226,19 @@ func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T
 	r.moveTo(t, r.other)
 
 	project, other := r.fixture.Project, r.other
+	// shipped is the merge day of the first pull request of other that other's deploys ship, read
+	// from the pull requests themselves: one of other's own (a pull request elsewhere is shipped by
+	// no deploy of it, delivery.ContainingRun), created and merged as merge-to-production counts it,
+	// merged on or after the day of other's first run, before which other holds no row, and before
+	// the day of its first deploy, every apply of which is created after that merge.
 	var shipped time.Time
 	if err := r.database.Pool.QueryRow(t.Context(), `
-		select min(day) from eval_days
-		where project_key = $1 and eval_id = $2 and deploy_repo = $3 and repo = '' and n > 0 and day < $4`,
-		project, evals.EvalID(project, evals.SlugMergeToProduction), other, first).Scan(&shipped); err != nil {
+		select min(merged_at) from delivery_pull_requests
+		where repo = $1 and created_at is not null and merged_at >= $2 and merged_at < $3`,
+		other, since, first).Scan(&shipped); err != nil {
 		t.Fatalf("read the first pull request %s shipped before its first deploy: %v", other, err)
 	}
-	shipped = shipped.UTC()
+	shipped = measures.Midnight(shipped)
 	if older := countRows(t, r.database, `select count(*) from eval_days where deploy_repo = $1 and day < $2`, other, since); older != 0 {
 		t.Errorf("%s holds %d rows before %s, its first run", other, older, since.Format(time.DateOnly))
 	}
@@ -293,38 +299,59 @@ func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T
 
 // TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore (root R11, edge b): the list
 // read of every shape a page asks for, before a move of the deploy repository to a second
-// repository with runs of its own, equals byte for byte the read after the move back, though a
-// pull request changed while the second was the deploy repository and the pass that wrote its day
-// wrote every repository's rows of it.
+// repository with runs of its own, equals byte for byte the read after the move back, though while
+// the second was the deploy repository the first commit of a pull request of its own that its
+// deploys ship moved an hour earlier, and the pass that wrote that pull request's day moved what
+// some shape read under the second (its first-commit-to-production; a first commit moves no eval
+// that reads no deploy repository). The history's attribution inputs are left unread, so the issue
+// each pull request names is its attribution (leaveAttributionInputsUnread) and the second
+// repository's pull requests count for the project read.
 func TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore(t *testing.T) {
-	r := newDeployRepoRig(t, true, nil)
+	t.Parallel()
+	r := newDeployRepoRig(t, true, func(r *deployRepoRig) { leaveAttributionInputsUnread(t, r.database.Pool) })
 	shapes := storedEvalShapes(r.today, r.fixture.Repos[0], r.fixture.Repos[1])
 	before := map[string][]byte{}
 	for _, shape := range shapes {
 		_, before[shape.name] = r.read(t, shape)
 	}
 	r.moveTo(t, r.other)
+	away := map[string][]byte{}
 	differs := 0
 	for _, shape := range shapes {
-		if _, body := r.read(t, shape); !bytes.Equal(body, before[shape.name]) {
+		if _, away[shape.name] = r.read(t, shape); !bytes.Equal(away[shape.name], before[shape.name]) {
 			differs++
 		}
 	}
 	if differs == 0 {
 		t.Fatalf("no shape reads otherwise with %s as the deploy repository, so the move back shows nothing", r.other)
 	}
-	r.exec(t, `
-		update delivery_pull_requests set title = title || ' (edited)'
-		where (repo, number) = (select repo, number from delivery_pull_requests where merged_at is not null
-			order by merged_at desc limit 1)`)
+	moved, err := r.database.Pool.Exec(t.Context(), `
+		update delivery_pull_requests set first_commit_at = first_commit_at - interval '1 hour'
+		where (repo, number) = (
+			select repo, number from delivery_pull_requests
+			where repo = $1 and merged_at < $2 and created_at is not null and first_commit_at is not null
+			order by merged_at desc limit 1)`,
+		r.other, r.today.AddDate(0, 0, -1))
+	if err != nil || moved.RowsAffected() != 1 {
+		t.Fatalf("move the first commit of %s's newest pull request merged before yesterday: %v rows, %v", r.other, moved.RowsAffected(), err)
+	}
 	r.refresh(t)
+	changed := 0
+	for _, shape := range shapes {
+		if _, body := r.read(t, shape); !bytes.Equal(body, away[shape.name]) {
+			changed++
+		}
+	}
+	if changed == 0 {
+		t.Fatalf("the moved first commit of %s's pull request moved no shape's read, so the move back shows nothing of it", r.other)
+	}
 	r.moveTo(t, r.fixture.DeployRepo)
 	for _, shape := range shapes {
 		if _, body := r.read(t, shape); !bytes.Equal(body, before[shape.name]) {
 			t.Errorf("%s: the read after the move back differs from the read before the move at byte %d", shape.name, firstDifference(body, before[shape.name]))
 		}
 	}
-	t.Logf("%d shapes read alike before the move and after the move back; %d read otherwise in between", len(shapes), differs)
+	t.Logf("%d shapes read alike before the move and after the move back; %d read otherwise in between, %d of them moved by the pull request's first commit", len(shapes), differs, changed)
 }
 
 // TestAMoveOfTheDeployRepositoryAwayAndBackWritesNothing: moved to a second repository with runs
@@ -333,6 +360,7 @@ func TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore(t *testing
 // values as a second database answers them whose whole walk ran under it, and after the move back
 // the values it stated before.
 func TestAMoveOfTheDeployRepositoryAwayAndBackWritesNothing(t *testing.T) {
+	t.Parallel()
 	r := newDeployRepoRig(t, true, nil)
 	walked := newDeployRepoRig(t, true, func(w *deployRepoRig) {
 		settings, err := delivery.GetSettings(t.Context(), w.database.Pool)
@@ -392,10 +420,11 @@ func lineAt(lines []string, index int) string {
 }
 
 // TestAMoveToARepositoryWithNoRunReadsNoDataOfItsDeployEvals: moved to a repository that holds no
-// delivery run, every eval that reads the deploy repository reads "no data" over every shape a page
-// asks for, naming no first day and drawing no day, and every other eval states what it stated
-// before.
+// delivery run, every eval that reads the deploy repository states each of its series and reads
+// "no data" in each over every shape a page asks for, naming no first day and drawing no day, and
+// every other eval states what it stated before, each compared with its own statement by its id.
 func TestAMoveToARepositoryWithNoRunReadsNoDataOfItsDeployEvals(t *testing.T) {
+	t.Parallel()
 	r := newDeployRepoRig(t, false, nil)
 	shapes := storedEvalShapes(r.today, r.fixture.Repos[0], r.fixture.Repos[1])
 	before := map[string]evalListResponse{}
@@ -406,17 +435,26 @@ func TestAMoveToARepositoryWithNoRunReadsNoDataOfItsDeployEvals(t *testing.T) {
 	keyed, kept := 0, 0
 	for _, shape := range shapes {
 		answer, _ := r.read(t, shape)
-		was := values(t, before[shape.name])
+		was := map[string]string{}
+		for index, line := range values(t, before[shape.name]) {
+			was[before[shape.name].Items[index].ID] = line
+		}
 		now := values(t, answer)
+		if len(now) != len(was) {
+			t.Errorf("%s: %d evals stated after the move, %d before", shape.name, len(now), len(was))
+		}
 		for index, item := range answer.Items {
 			if !evals.KeyedByDeployRepo(item.Definition) {
 				kept++
-				if now[index] != was[index] {
-					t.Errorf("%s: %s states otherwise after the move:\n\t%s\nwant\n\t%s", shape.name, item.ID, now[index], was[index])
+				if now[index] != was[item.ID] {
+					t.Errorf("%s: %s states otherwise after the move:\n\t%s\nwant\n\t%s", shape.name, item.ID, now[index], was[item.ID])
 				}
 				continue
 			}
 			keyed++
+			if len(item.Series) == 0 {
+				t.Errorf("%s: %s states no series, so none of them reads no data", shape.name, item.ID)
+			}
 			for _, series := range item.Series {
 				for name, value := range series.Window {
 					if value != nil {

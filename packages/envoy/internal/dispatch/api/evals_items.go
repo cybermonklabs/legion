@@ -24,20 +24,23 @@ import (
 // one shape whatever its kind (R7), so a page draws each row kind with one renderer and a client
 // reads one type.
 //
-// Every eval answers its readings (evals.ItemsIn, a reading logged under a computed eval's slug
-// among them, which its value never folds, R3) and its day rows (evals.EvalDaysIn,
-// `day`). A computed eval answers besides the rows its numbers count, by its source
-// (evalComputedItems): the issues a Legion eval counts, closed in the range, and the filings
-// legion-splitting counts (`issue`, from the stored facts and filings, legionfacts.ItemRows);
-// the pull requests and deploy runs a delivery eval counts (`pull_request`, `deploy`, from the
-// delivery reads the day rows are built with, delivery/measure_rows.go); the runs a CI eval times
-// (`run`) and, for pr-ci, each job's figures (`job`); and the open P0 issues with no owner (`issue`,
-// delivery.ListUnownedP0). A delivery or CI row is answered where the project's day rows counted
-// it (eval_day_members, evals.CountedIn), so the items are the rows the numbers fold, under
-// the attribution the day rows made (evals' delivery_days.go, "Attribution").
+// A computed eval answers first the rows its numbers count, by its source (evalComputedItems):
+// the issues a Legion eval counts, closed in the range, and before them the filings in it that
+// legion-splitting counts (`issue`, from the stored filings and facts,
+// legionfacts.FilingItemRows and legionfacts.ItemRows; an issue the range both filed and closed
+// answers one row, its closed row, which states its filing too); the pull requests and deploy runs
+// a delivery eval counts (`pull_request`, `deploy`, from the delivery reads the day rows are built
+// with, delivery/measure_rows.go); the runs a CI eval times (`run`) and, for pr-ci, each job's
+// figures (`job`); and the open P0 issues with no owner (`issue`, delivery.ListUnownedP0). A
+// delivery or CI row is answered where the project's day rows counted it (eval_day_members,
+// evals.CountedIn), so the items are the rows the numbers fold, under the attribution the day
+// rows made (evals' delivery_days.go, "Attribution"). Every eval then answers its readings
+// (evals.ItemsIn, a reading logged under a computed eval's slug among them, which its value never
+// folds, R3) and last its day rows (evals.EvalDaysIn, `day`).
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
-// order above, each range's after the window's, and a row kind's rows in its own order.
+// order above, the compare range's rows after the window's, and a row kind's rows in its own
+// order.
 //
 // One answer, one snapshot (dispatch://INFRA-2916, point 6): every read an answer makes, the
 // project and the eval, the settings the rows stand built under, the day rows, the items they
@@ -468,10 +471,13 @@ func evalItemsPath(project, slug string) string {
 // in it (legionfacts.ReadFilingsIn), the filings first; a `filed:<class>` series reads the filings
 // of that class alone, and any other series of legion-splitting the closed issues alone. A series'
 // cut keeps the issues of that cut, by the stored root (metrics.InCut), and row keeps the issue it
-// names. The repository each issue resolves to now (legionfacts.ReadRepos, the repository the day
-// rows cut by) is what a closed issue's row shows and what repo keeps the issues by, so a row
-// never shows one repository while it is kept by another. Each row carries its issue's title and
-// priority (legionfacts.WithIssues), and its facts as of the request (legionfacts.Row.At).
+// names. An issue the range both filed and closed answers one row (R24), its closed row, which
+// states its filing beside its facts (legionfacts.ItemRows), so its filing makes no row of its
+// own and each number the rows stand behind still finds its issue once. The repository each issue
+// resolves to now (legionfacts.ReadRepos, the repository the day rows cut by) is what a closed
+// issue's row shows and what repo keeps the issues by, so a row never shows one repository while
+// it is kept by another. Each row carries its issue's title and priority
+// (legionfacts.WithIssues), and its facts as of the request (legionfacts.Row.At).
 //
 // The source answers a page at a time: the stored rows of the range are read whole, since every
 // one of them is counted in the total, but the repositories are resolved (a walk of each issue's
@@ -501,6 +507,23 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		}
 		closed = slices.DeleteFunc(stored, func(row legionfacts.Row) bool {
 			return !metrics.InCut(cut, row.Root) || (read.request.row != "" && row.Issue != read.request.row)
+		})
+	}
+	// closedFilings is the filing of each issue the range both filed and closed, by issue: its
+	// closed row states it, and the filings' rows leave it out. Only a read of every series of
+	// legion-splitting reads both.
+	var closedFilings map[string]legionfacts.Filing
+	if len(filings) > 0 && len(closed) > 0 {
+		closedFilings = make(map[string]legionfacts.Filing)
+		closedIssues := make(map[string]bool, len(closed))
+		for _, row := range closed {
+			closedIssues[row.Issue] = true
+		}
+		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool {
+			if closedIssues[filing.Key] {
+				closedFilings[filing.Key] = filing
+			}
+			return closedIssues[filing.Key]
 		})
 	}
 	keysOf := func(filings []legionfacts.Filing, closed []legionfacts.Row) []string {
@@ -542,7 +565,7 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		if err != nil {
 			return nil, 0, err
 		}
-		items := append(legionfacts.FilingItemRows(pageFilings), legionfacts.ItemRows(pageClosed, pageRepos)...)
+		items := append(legionfacts.FilingItemRows(pageFilings), legionfacts.ItemRows(pageClosed, pageRepos, closedFilings)...)
 		rows := make([]evalItemRow, len(items))
 		for index, item := range legionfacts.WithIssues(items, issues) {
 			rows[index] = evalItemRow{
@@ -828,7 +851,10 @@ func outcomeOf(parts []measures.DayPart) string {
 // sort median the one ranking the Pipeline's slowest-jobs table shows the first
 // measures.SlowestJobs of (measures.FoldSlowestJobs): every job with the job series' min_n timed
 // results over the range's days (eval_series `job:*`, evals.SlowestJobsMinN), slowest first. A
-// series filter names one job's series. An eval with no job series answers none.
+// series filter names one job's series. An eval with no job series answers none. Each job links
+// to its `job:<name>` day rows over the range as it was asked for (read.rng.start and end), which
+// the items route reads as the same days: the range's whole days are a day longer where it starts
+// inside one, and past the 84 days the route takes where it was 84 days long.
 func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	index := slices.IndexFunc(read.entry.Series, func(series evals.Series) bool { return series.Series == evals.SeriesJobs })
 	if index < 0 {
@@ -879,7 +905,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	rows := make([]evalItemRow, len(cells))
 	for position, job := range cells {
 		behind := url.Values{
-			"from": {read.rng.days.From.Format(time.RFC3339)}, "to": {read.rng.days.To.Format(time.RFC3339)},
+			"from": {read.rng.start.Format(time.RFC3339Nano)}, "to": {read.rng.end.Format(time.RFC3339Nano)},
 			"series": {measures.JobSeriesPrefix + job.name}, "row_kind": {evalRowDay},
 		}
 		if len(read.request.repos) > 0 {

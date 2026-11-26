@@ -249,14 +249,23 @@ func unspelledBodyKey(raw json.RawMessage, keys bodyKeys, at string) error {
 // decodeEvalBody reads an eval write's JSON body into value, whose keys are keys
 // (evalRegisterBodyKeys, evalReadingsBodyKeys), and answers the body as sent. A body that is no
 // JSON value of value's type, or one holding a key keys does not spell exactly (unspelledBodyKey),
-// is 400 INVALID_JSON.
+// is 400 INVALID_JSON. The decoder's error carries a number of the body whole
+// (json.UnmarshalTypeError's Value), so the refusal names that number cut to a field's bound
+// (evals.BoundedField), which leaves room for the field and the type the error names after it, and
+// its whole text is cut to the most a refusal's text takes (evals.BoundedError, 1,024 bytes as JSON
+// writes it): a megabyte of digits would otherwise make a megabyte of answer, which the write's
+// Idempotency-Key keeps in one statement.
 func decodeEvalBody(r *http.Request, value any, keys bodyKeys) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if err := decodeJSON(r, &raw); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(raw, value); err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+		var typed *json.UnmarshalTypeError
+		if errors.As(err, &typed) {
+			typed.Value = evals.BoundedField(typed.Value)
+		}
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "%s", evals.BoundedError("invalid JSON body: "+err.Error()))
 	}
 	if err := unspelledBodyKey(raw, keys, ""); err != nil {
 		return nil, err
@@ -402,13 +411,14 @@ type evalReadingsBody struct {
 // evalReadingsResponse is the readings write's answer: the readings it stored, the eval's
 // definition, and whether this write registered it (R3). Total is how many readings the write
 // stored, and Items the first of them in the batch's order, as many as keep the answer within
-// evals.MaxAnswerBytes, the most the write's Idempotency-Key keeps in one statement, so that a
-// repeat under the key is answered this same answer however large the batch; Limit is how many
-// Items lists. The ids of the readings it leaves out are read from the eval's items route, each
-// reading's cols.id (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves
-// most of the answer to the readings, but one reading may take more than the bound itself as JSON
-// (a note of some hundred kilobytes is within what one statement stores), so Items may list none
-// while Total counts every one.
+// evals.MaxAnswerBytes, so that the statement that keeps it under the write's Idempotency-Key
+// sends at most 256 KiB, as every statement of the write does, and a repeat under the key is
+// answered this same answer however large the batch; Limit is how many Items lists. The ids of the
+// readings it leaves out are read from the eval's items route, each reading's cols.id
+// (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves most of the answer
+// to the readings, but one reading may take more than the bound itself as JSON (a note of some
+// hundred kilobytes is within what one statement stores), so Items may list none while Total
+// counts every one.
 type evalReadingsResponse struct {
 	Items      []evals.Reading  `json:"items"`
 	Total      int              `json:"total"`
@@ -465,10 +475,10 @@ type evalRegisterInput struct {
 // evalRegistered is what a register write left: the eval's newest definition, the newest version
 // of its series by name, and whether the write stored a new version of the definition or of a
 // series. SeriesTotal is how many series the eval holds, and Series the first of them, as many as
-// keep the answer within evals.MaxAnswerBytes, the most the write's Idempotency-Key keeps in one
-// statement, so that a repeat under the key is answered this same answer. A version, of the
-// definition or of a series, takes at most evals.MaxVersionBytes, so Series lists at least one
-// series of an eval that holds any.
+// keep the answer within evals.MaxAnswerBytes, so that the statement that keeps it under the
+// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a repeat
+// under the key is answered this same answer. A version, of the definition or of a series, takes
+// at most evals.MaxVersionBytes, so Series lists at least one series of an eval that holds any.
 type evalRegistered struct {
 	Definition  evals.Definition `json:"definition"`
 	Series      []evals.Series   `json:"series"`
@@ -1235,12 +1245,13 @@ func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 }
 
 // answerPrefix is the longest leading part of items with which an eval write's answer takes at
-// most evals.MaxAnswerBytes as WriteJSON encodes it, the most the write's Idempotency-Key keeps in
-// one statement, so a repeat under the key is answered the first answer rather than
-// ANSWER_NOT_KEPT. answer is that answer listing none of items, every count in it as many digits
-// as it will hold; each item adds its JSON as the answer encodes it, and a comma before every one
-// but the first. Each item is encoded once, in order, and none past the first that passes the
-// bound, so a batch far past it is not encoded whole.
+// most evals.MaxAnswerBytes as WriteJSON encodes it, so that the statement that keeps it under the
+// write's Idempotency-Key sends at most 256 KiB, as every statement of the write does, and a
+// repeat under the key is answered the first answer rather than ANSWER_NOT_KEPT. answer is that
+// answer listing none of items, every count in it as many digits as it will hold; each item adds
+// its JSON as the answer encodes it, and a comma before every one but the first. Each item is
+// encoded once, in order, and none past the first that passes the bound, so a batch far past it
+// is not encoded whole.
 func answerPrefix[T any](answer any, items []T) ([]T, error) {
 	var encoded bytes.Buffer
 	if err := json.NewEncoder(&encoded).Encode(answer); err != nil {

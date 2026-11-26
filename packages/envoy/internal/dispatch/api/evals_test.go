@@ -117,6 +117,7 @@ func reading(series string, value float64, at time.Time) map[string]any {
 // range, a limit and an offset, and each of the two writes answers {items, total, limit, offset},
 // and a page of the reads holds the row the writes made.
 func TestEveryEvalRouteAnswersTheEnvelope(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	now := time.Now().UTC()
@@ -185,14 +186,16 @@ func holdsPRSize(t *testing.T, body []byte) bool {
 }
 
 // TestTheEvalRoutesRefuseWithStableCodes: each bad request is refused with its stable
-// code, a readings write refused for a row names the row by its index, and no refused write
-// stores a reading or a version. A register write of 1,000 series, and a readings write of 1,000
-// readings each of a series of its own, are each refused EVAL_SERIES_LIMIT naming the most series
-// an eval holds (evals.MaxEvalSeries), the readings write at its one row past that bound. Each of
-// the four reads refuses a query key its route shape does not declare, naming it (the old `scope`
-// among them, and a key another eval route takes), and so does the readings write; each of the
-// five carrying the global session parameter alone is accepted.
+// code, a readings write refused for a row lists that row by its index, row 0 among them, and every
+// other refusal lists no row, and no refused write stores a reading or a version. A register write
+// of 1,000 series, and a readings write of 1,000 readings each of a series of its own, are each
+// refused EVAL_SERIES_LIMIT naming the most series an eval holds (evals.MaxEvalSeries), the readings
+// write at its one row past that bound. Each of the four reads refuses a query key its route shape
+// does not declare, naming it (the old `scope` among them, and a key another eval route takes), and
+// so does the readings write; each of the five carrying the global session parameter alone is
+// accepted.
 func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	at := time.Now().UTC().Add(-time.Hour)
@@ -219,7 +222,8 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		status       int
 		code         string
 		names        string
-		rowIndex     int
+		// rows is the index of each row the refusal lists, none for a refusal of no row.
+		rows []int
 	}{
 		{name: "a window that is no RFC3339 time", method: http.MethodGet, path: "/api/v1/projects/EVL/evals?from=yesterday", status: 400, code: "INVALID_QUERY", names: "from"},
 		{name: "a compare range given by half", method: http.MethodGet, path: "/api/v1/projects/EVL/evals?compare_from=2026-11-01T00:00:00Z", status: 400, code: "INVALID_QUERY", names: "compare_to"},
@@ -248,15 +252,15 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "a readings write with a window", method: http.MethodPost, path: readings + "?from=2026-11-01T00:00:00Z", body: map[string]any{"readings": []any{good}}, key: "r-query", status: 400, code: "INVALID_QUERY", names: `"from"`},
 		{name: "a readings write naming its session twice", method: http.MethodPost, path: readings + "?session=s-1&session=s-2", body: map[string]any{"readings": []any{good}}, key: "r-sessions", status: 400, code: "INVALID_QUERY", names: `"session"`},
 		{name: "a readings write with no Idempotency-Key", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{good}}, status: 400, code: codeIdempotencyKeyRequired},
-		{name: "a reading carrying recorded_by", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_by": map[string]any{"kind": "user", "id": "mallory"}})}}, key: "r-by", status: 400, code: evals.CodeFieldServerSet, names: "recorded_by"},
-		{name: "a reading carrying recorded_at", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_at": at.Format(time.RFC3339)})}}, key: "r-at", status: 400, code: evals.CodeFieldServerSet, names: "recorded_at"},
-		{name: "a batch whose second row has no value", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{good, map[string]any{"series": "minutes", "row_kind": "sample", "measured_at": at.Format(time.RFC3339)}}}, key: "r-row", status: 400, code: evals.CodeValueOrReason, rowIndex: 1},
-		{name: "a reading's link with a relative href", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"rel": "via", "href": "/runs/1"}}})}}, key: "r-link", status: 400, code: evals.CodeLinkHrefNotAbsolute},
+		{name: "a reading carrying recorded_by", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_by": map[string]any{"kind": "user", "id": "mallory"}})}}, key: "r-by", status: 400, code: evals.CodeFieldServerSet, names: "recorded_by", rows: []int{0}},
+		{name: "a reading carrying recorded_at", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_at": at.Format(time.RFC3339)})}}, key: "r-at", status: 400, code: evals.CodeFieldServerSet, names: "recorded_at", rows: []int{0}},
+		{name: "a batch whose second row has no value", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{good, map[string]any{"series": "minutes", "row_kind": "sample", "measured_at": at.Format(time.RFC3339)}}}, key: "r-row", status: 400, code: evals.CodeValueOrReason, rows: []int{1}},
+		{name: "a reading's link with a relative href", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"rel": "via", "href": "/runs/1"}}})}}, key: "r-link", status: 400, code: evals.CodeLinkHrefNotAbsolute, rows: []int{0}},
 		{name: "a register write's link with a relative href", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "review-time", "links": []any{map[string]any{"rel": "describedby", "href": "docs/method.md"}}}, key: "g-link", status: 400, code: evals.CodeLinkHrefNotAbsolute},
-		{name: "a reading's link to a javascript: URL", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"rel": "via", "href": "javascript:alert(1)"}}})}}, key: "r-scheme", status: 400, code: evals.CodeLinkHrefNotHTTP, names: "links[0].href"},
+		{name: "a reading's link to a javascript: URL", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"rel": "via", "href": "javascript:alert(1)"}}})}}, key: "r-scheme", status: 400, code: evals.CodeLinkHrefNotHTTP, names: "links[0].href", rows: []int{0}},
 		{name: "a register write's link to a mailto: URL", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "review-time", "links": []any{map[string]any{"rel": "author", "href": "mailto:alice@example.com"}}}, key: "g-scheme", status: 400, code: evals.CodeLinkHrefNotHTTP, names: "links[0]"},
-		{name: "a reading measured before 2025", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"measured_at": "2024-12-31T23:59:59Z"})}}, key: "r-early", status: 400, code: evals.CodeMeasuredAtOutOfRange, names: "measured_at"},
-		{name: "a reading whose row_key no index entry holds", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"row_key": strings.Repeat("k", 513)})}}, key: "r-long", status: 400, code: evals.CodeKeyTooLong, names: "row_key"},
+		{name: "a reading measured before 2025", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"measured_at": "2024-12-31T23:59:59Z"})}}, key: "r-early", status: 400, code: evals.CodeMeasuredAtOutOfRange, names: "measured_at", rows: []int{0}},
+		{name: "a reading whose row_key no index entry holds", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"row_key": strings.Repeat("k", 513)})}}, key: "r-long", status: 400, code: evals.CodeKeyTooLong, names: "row_key", rows: []int{0}},
 		{name: "a register write naming a computed eval's unit", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "unit": "mins"}, key: "g-unit", status: 400, code: evals.CodeFieldComputed, names: "unit"},
 		{name: "a register write naming a computed eval's series fold", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "series": []any{map[string]any{"series": evals.SeriesJobs, "agg": "max"}}}, key: "g-agg", status: 400, code: evals.CodeFieldComputed, names: "series[0].agg"},
 		{name: "a register write naming the target in another case", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "Target": 10}, key: "g-case-target", status: 400, code: "INVALID_JSON", names: `"Target"`},
@@ -264,12 +268,12 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "a register write naming a link's rel in another case", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "links": []any{map[string]any{"Rel": "describedby", "href": "https://example.com/method"}}}, key: "g-case-rel", status: 400, code: "INVALID_JSON", names: `links[0] holds the key "Rel"`},
 		{name: "a register write naming a failure mode in another case", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "review-time", "failure_modes": []any{map[string]any{"Mode": "a slow reviewer", "guard": "a second reviewer"}}}, key: "g-case-mode", status: 400, code: "INVALID_JSON", names: `failure_modes[0] holds the key "Mode"`},
 		{name: "a readings write naming its readings in another case", method: http.MethodPost, path: readings, body: map[string]any{"Readings": []any{good}}, key: "r-case-readings", status: 400, code: "INVALID_JSON", names: `"Readings"`},
-		{name: "a reading naming its series in another case", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"Series": "hours"})}}, key: "r-case-series", status: 400, code: evals.CodeReadingInvalid, names: `"Series"`},
-		{name: "a reading's link naming its rel in another case", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"Rel": "via", "href": "https://example.com/run"}}})}}, key: "r-case-rel", status: 400, code: evals.CodeReadingInvalid, names: "links[0].Rel"},
+		{name: "a reading naming its series in another case", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"Series": "hours"})}}, key: "r-case-series", status: 400, code: evals.CodeReadingInvalid, names: `"Series"`, rows: []int{0}},
+		{name: "a reading's link naming its rel in another case", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"Rel": "via", "href": "https://example.com/run"}}})}}, key: "r-case-rel", status: 400, code: evals.CodeReadingInvalid, names: "links[0].Rel", rows: []int{0}},
 		{name: "a PUT of a reading", method: http.MethodPut, path: readings + "/5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d", body: good, status: 405, code: codeReadingAppendOnly},
 		{name: "a DELETE of a reading", method: http.MethodDelete, path: readings + "/5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d", status: 405, code: codeReadingAppendOnly},
 		{name: "a register write of more series than an eval holds", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "review-time", "series": manySeries}, key: "g-series-limit", status: 400, code: evals.CodeSeriesLimit, names: seriesLimit},
-		{name: "a readings write of more new series than an eval holds", method: http.MethodPost, path: readings, body: map[string]any{"readings": manyReadings}, key: "r-series-limit", status: 400, code: evals.CodeSeriesLimit, names: seriesLimit, rowIndex: evals.MaxEvalSeries},
+		{name: "a readings write of more new series than an eval holds", method: http.MethodPost, path: readings, body: map[string]any{"readings": manyReadings}, key: "r-series-limit", status: 400, code: evals.CodeSeriesLimit, names: seriesLimit, rows: []int{evals.MaxEvalSeries}},
 	}
 	countReadings := `select count(*) from eval_readings where eval_id like 'EVL/%'`
 	countVersions := `select count(*) from eval_versions where project_key = 'EVL'`
@@ -290,8 +294,15 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 			if c.names != "" && !strings.Contains(named, c.names) {
 				t.Errorf("the refusal %q, rows %+v, does not name %s", refusal.Error, refusal.Rows, c.names)
 			}
-			if c.rowIndex > 0 && (len(refusal.Rows) != 1 || refusal.Rows[0].Index != c.rowIndex || refusal.Rows[0].Code != c.code) {
-				t.Errorf("the refusal names rows %+v, want row %d alone, %s", refusal.Rows, c.rowIndex, c.code)
+			listed := make([]int, len(refusal.Rows))
+			for index, row := range refusal.Rows {
+				listed[index] = row.Index
+				if row.Code != c.code {
+					t.Errorf("the refusal lists row %d with code %s, want %s", row.Index, row.Code, c.code)
+				}
+			}
+			if !slices.Equal(listed, c.rows) {
+				t.Errorf("the refusal lists the rows %v (%+v), want %v", listed, refusal.Rows, c.rows)
 			}
 			t.Logf("%s %s: %d %s %q rows %+v", c.method, c.path, response.Code, refusal.Code, refusal.Error, refusal.Rows)
 		})
@@ -330,10 +341,12 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 // TestAMegabyteOfBadRowsIsRefusedWithABoundedKeptAnswer: a readings body of nearly a megabyte,
 // the most the route takes, of small rows that each lack a value, is refused 400
 // READING_VALUE_OR_REASON listing the first evals.MaxRefusedRows refused rows by index and counting
-// the rest in rows_omitted, the two together every row sent; and the answer its idempotency key
-// keeps (request_keys.response) is that answer, kept, under the 256 KiB one statement of the write
-// sends (evals.statementBytes), which the key's store writes it in.
+// the rest in rows_omitted, the two together every row sent; that answer takes at most
+// evals.MaxAnswerBytes and is the one its idempotency key keeps (request_keys.response), and the
+// same body again under the key is answered it byte for byte, replayed (checkKeptReplay), storing
+// no reading either time.
 func TestAMegabyteOfBadRowsIsRefusedWithABoundedKeptAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
@@ -350,25 +363,21 @@ func TestAMegabyteOfBadRowsIsRefusedWithABoundedKeptAnswer(t *testing.T) {
 		rows, size = append(rows, next), size+len(encoded)+1
 	}
 	const key = "bad-rows-megabyte"
-	response := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/bad-rows/readings", map[string]any{"readings": rows}, key)
+	path, body := "/api/v1/projects/EVL/evals/bad-rows/readings", map[string]any{"readings": rows}
+	response := evalRequest(t, handler, http.MethodPost, path, body, key)
 	refusal := decodeBody[evalRefusal](t, response)
 	if response.Code != http.StatusBadRequest || refusal.Code != evals.CodeValueOrReason || len(refusal.Rows) != evals.MaxRefusedRows ||
 		refusal.Rows[0].Index != 0 || refusal.Rows[len(refusal.Rows)-1].Index != evals.MaxRefusedRows-1 || len(refusal.Rows)+refusal.RowsOmitted != len(rows) {
 		t.Fatalf("a body of %d rows lacking a value was answered %d %s listing %d rows and counting %d more, want 400 %s listing rows 0 to %d and counting the other %d",
 			len(rows), response.Code, refusal.Code, len(refusal.Rows), refusal.RowsOmitted, evals.CodeValueOrReason, evals.MaxRefusedRows-1, len(rows)-evals.MaxRefusedRows)
 	}
-	var kept *int64
-	if err := database.Pool.QueryRow(t.Context(), `select octet_length(response) from request_keys where idempotency_key = $1`, key).Scan(&kept); err != nil {
-		t.Fatalf("read the answer the key keeps: %v", err)
-	}
-	if kept == nil || *kept != int64(response.Body.Len()) || *kept >= 256<<10 {
-		t.Errorf("the key keeps an answer of %s bytes, where the route answered %d; want it kept, the same, and under %d", showKept(kept), response.Body.Len(), 256<<10)
-	}
+	repeat := evalRequest(t, handler, http.MethodPost, path, body, key)
+	checkKeptReplay(t, database, key, response, repeat)
 	if stored := countRows(t, database, `select count(*) from eval_readings where eval_id = 'EVL/bad-rows'`); stored != 0 {
 		t.Errorf("the refused body stored %d readings", stored)
 	}
-	t.Logf("%d rows refused: %d listed, %d counted; an answer of %d bytes, kept as %s: %s", len(rows), len(refusal.Rows), refusal.RowsOmitted,
-		response.Body.Len(), showKept(kept), refusal.Error)
+	t.Logf("%d rows refused: %d listed, %d counted; an answer of %d bytes, kept and replayed: %s", len(rows), len(refusal.Rows), refusal.RowsOmitted,
+		response.Body.Len(), refusal.Error)
 }
 
 // showKept is the size of a kept answer as a failure names it, "none" where the key keeps none.
@@ -417,6 +426,7 @@ func checkKeptReplay(t *testing.T, database *store.Store, key string, first, rep
 // byte for byte, replayed, storing no second reading. A reading the answer leaves out is read
 // back with its id from the eval's items.
 func TestAMegabyteOfGoodReadingsIsAnsweredWithABoundedKeptAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
@@ -471,6 +481,7 @@ func TestAMegabyteOfGoodReadingsIsAnsweredWithABoundedKeptAnswer(t *testing.T) {
 // at most evals.MaxAnswerBytes and is the one its idempotency key keeps; and the same request
 // again under the key is answered it byte for byte, replayed, storing no second version.
 func TestTheMostSeriesAtTheLargestNamesAreAnsweredWithABoundedKeptAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	const keyBytes = 512
@@ -522,6 +533,7 @@ func TestTheMostSeriesAtTheLargestNamesAreAnsweredWithABoundedKeptAnswer(t *test
 // correction stores a new reading and leaves the one it replaces stored, superseded, and out of the
 // items read.
 func TestAReadingsBatchRepeatedUnderItsKeyIsWrittenOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	at := time.Now().UTC().Add(-time.Hour)
@@ -573,11 +585,12 @@ func TestAReadingsBatchRepeatedUnderItsKeyIsWrittenOnce(t *testing.T) {
 
 // TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce: readings under a slug no eval holds
 // register exactly one eval with the caller as owner, no target and state active; the register
-// write then adds the target, the unit, the direction, the name and the method, the items route
-// still answers every reading logged before it, and the eval's read answers the method's text. A
-// reading under a computed eval's slug is stored and answered by its items, and the computed value
-// is the same before and after it.
+// write then adds the target, whether it is inclusive, the unit, the direction, the name and the
+// method, the items route still answers every reading logged before it, and the eval's read
+// answers the method's text. A reading under a computed eval's slug is stored and answered by its
+// items, and the computed value is the same before and after it.
 func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	now := time.Now().UTC()
@@ -617,7 +630,8 @@ func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
 	detail := evalGet[evalDetailResponse](t, handler, "/api/v1/projects/EVL/evals/cache-hits?"+window)
 	newest := detail.Items[0]
 	if items.Total != 2 || detail.DocText == nil || *detail.DocText != method || newest.Definition.Target == nil ||
-		*newest.Definition.Target != 0.85 || newest.Definition.Unit != "ratio" || newest.Definition.Name != "Cache hits" {
+		*newest.Definition.Target != 0.85 || !newest.Definition.TargetInclusive || newest.Definition.Direction != "higher_better" ||
+		newest.Definition.Unit != "ratio" || newest.Definition.Name != "Cache hits" {
 		t.Fatalf("after registration the items answer %d readings, the method %v, the newest version %+v; want 2, %q, the registered fields",
 			items.Total, detail.DocText, newest.Definition, method)
 	}
@@ -659,6 +673,7 @@ func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
 // answers the versions newest first, the newest with the window's values and its verdict, and the
 // method its section holds.
 func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	register := func(key string, body map[string]any, status int) {
@@ -721,6 +736,7 @@ func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
 // write and a register write of another project's eval, and neither stores a row; the same
 // readings write in its own project is answered by the handler.
 func TestAProjectScopedCredentialWritesNoOtherProjectsEval(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-scoped-to-one-project"
@@ -891,6 +907,7 @@ func nearly(got *float64, want, tolerance float64) bool {
 // to the project read's; and the items route answers one field set for every row kind, each row
 // measured when its value was (itemMeasuredAt).
 func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
 
@@ -947,11 +964,7 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 		sameOptional(slug+" p90", stat(slug, "minutes", "p90"), spread.p90)
 		sameOptional(slug+" max", stat(slug, "minutes", "max"), spread.max)
 	}
-	rework := stat(evals.SlugReworkShare, "prs", "rate")
-	if rework == nil {
-		rework = new(0.0)
-	}
-	same("rework-share rate", rework, route.ReworkShare)
+	same("rework-share rate", stat(evals.SlugReworkShare, "prs", "rate"), route.ReworkShare)
 	same("pr-ci n", stat(evals.SlugPRCI, "minutes", "n"), float64(pipeline.PRChecks.Run.Total.N))
 	sameOptional("pr-ci median", stat(evals.SlugPRCI, "minutes", "median"), pipeline.PRChecks.Run.Total.MedianMinutes)
 	sameOptional("pr-ci success_rate", stat(evals.SlugPRCI, "minutes", "success_rate"), pipeline.PRChecks.Run.Total.SuccessRate)
@@ -998,30 +1011,36 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 				return seriesValues(t, findEval(t, legion.Items, project, slug), metrics.CutSeries(series, cut)).Window[name]
 			}
 			where := fmt.Sprintf("%s %s..%s %s", project, golden.Window.From.Format(time.DateOnly), golden.Window.To.Format(time.DateOnly), scope)
-			within := func(what string, got *float64, want, tolerance float64) {
+			// within compares a figure the eval reads over that many issues with the base head's: a
+			// null is the eval's no value, and stands for the base head's 0 only where the figure is
+			// over no issue; every other figure must be stated, and within tolerance.
+			within := func(what string, got *float64, want, tolerance float64, issues int) {
 				t.Helper()
 				compared++
-				value := 0.0
-				if got != nil {
-					value = *got
+				if got == nil {
+					if issues != 0 || want != 0 {
+						t.Errorf("%s: %s reads null over %d issues, the base head answered %g", where, what, issues, want)
+					}
+					return
 				}
-				if math.Abs(value-want) > tolerance {
+				if math.Abs(*got-want) > tolerance {
 					t.Errorf("%s: %s reads %s, the base head answered %g", where, what, showFigure(got), want)
 				}
 			}
-			within("work time's issues", legionStat(evals.SlugLegionWorkTime, metrics.SeriesHours, "n"), float64(len(report.WorkTime.Issues)), 0)
-			within("work time's median", legionStat(evals.SlugLegionWorkTime, metrics.SeriesHours, "median"), report.WorkTime.MedianHours, 0.1)
-			within("work time's p90", legionStat(evals.SlugLegionWorkTime, metrics.SeriesHours, "p90"), report.WorkTime.P90Hours, 0.1)
+			worked, finished := len(report.WorkTime.Issues), report.Finished
+			within("work time's issues", legionStat(evals.SlugLegionWorkTime, metrics.SeriesHours, "n"), float64(worked), 0, worked)
+			within("work time's median", legionStat(evals.SlugLegionWorkTime, metrics.SeriesHours, "median"), report.WorkTime.MedianHours, 0.1, worked)
+			within("work time's p90", legionStat(evals.SlugLegionWorkTime, metrics.SeriesHours, "p90"), report.WorkTime.P90Hours, 0.1, worked)
 			for _, bar := range report.PhaseTime.Bars {
-				within(bar.Role+"'s hours", legionStat(evals.SlugLegionPhaseTime, bar.Role, "hours"), bar.Hours, 0.1)
-				within(bar.Role+"'s issues", legionStat(evals.SlugLegionPhaseTime, bar.Role, "issues"), float64(bar.Issues), 0)
-				within(bar.Role+"'s median per issue", legionStat(evals.SlugLegionPhaseTime, bar.Role, "median_per_issue"), bar.MedianHoursPerIssue, 0.1)
+				within(bar.Role+"'s hours", legionStat(evals.SlugLegionPhaseTime, bar.Role, "hours"), bar.Hours, 0.1, bar.Issues)
+				within(bar.Role+"'s issues", legionStat(evals.SlugLegionPhaseTime, bar.Role, "issues"), float64(bar.Issues), 0, bar.Issues)
+				within(bar.Role+"'s median per issue", legionStat(evals.SlugLegionPhaseTime, bar.Role, "median_per_issue"), bar.MedianHoursPerIssue, 0.1, bar.Issues)
 			}
-			within("the idle share", legionStat(evals.SlugLegionPhaseTime, "implementer", "idle_share"), report.PhaseTime.IdleShare, 1e-9)
-			within("review rounds' median", legionStat(evals.SlugLegionRework, metrics.SeriesReviewRounds, "median"), report.Rework.MedianReviewRounds, 1e-9)
-			within("the sent-back share", legionStat(evals.SlugLegionRework, metrics.SeriesSentBack, "share"), report.Rework.SentBackShare, 1e-9)
-			within("hours after the first review", legionStat(evals.SlugLegionRework, metrics.SeriesHoursAfterFirstReview, "hours"), report.Rework.HoursAfterFirstReview, 0.1)
-			within("issues finished", legionStat(evals.SlugLegionSplitting, metrics.SeriesFinished, "issues"), float64(report.Finished), 0)
+			within("the idle share", legionStat(evals.SlugLegionPhaseTime, "implementer", "idle_share"), report.PhaseTime.IdleShare, 1e-9, finished)
+			within("review rounds' median", legionStat(evals.SlugLegionRework, metrics.SeriesReviewRounds, "median"), report.Rework.MedianReviewRounds, 1e-9, finished)
+			within("the sent-back share", legionStat(evals.SlugLegionRework, metrics.SeriesSentBack, "share"), report.Rework.SentBackShare, 1e-9, finished)
+			within("hours after the first review", legionStat(evals.SlugLegionRework, metrics.SeriesHoursAfterFirstReview, "hours"), report.Rework.HoursAfterFirstReview, 0.1, finished)
+			within("issues finished", legionStat(evals.SlugLegionSplitting, metrics.SeriesFinished, "issues"), float64(finished), 0, finished)
 		}
 		t.Logf("%s %s..%s: the Legion evals equal the base head's section in every scope (%d finished), data since %s",
 			project, golden.Window.From.Format(time.DateOnly), golden.Window.To.Format(time.DateOnly), golden.Reports["all"].Finished, *work.DataSince)
@@ -1161,6 +1180,7 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 // day, which the eval then folds alone, beside the readings write's row of the same eval, series
 // and day.
 func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	today := measures.Midnight(time.Now().UTC())
@@ -1236,45 +1256,58 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 // take it over. A register write of `target: null` on that eval is a person saying the number
 // has no target, although it moves no value: the write is answered 201 with the version that
 // records it, and the seed leaves the target off rather than writing the catalogue's 20 a day
-// over it (R5, evals' set_by_person).
+// over it (R5, evals' set_by_person). The control is a second project made by SQL and taken the
+// same path but for the register write: the seed writes the catalogue's target on its eval.
 func TestARegisterWriteOfNoTargetHoldsThroughTheSeed(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	today := measures.Midnight(time.Now().UTC())
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('SQL', 'Made by SQL', 'alice')`); err != nil {
-		t.Fatalf("make a project by SQL: %v", err)
-	}
-	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals/"+evals.SlugDeployFrequency+"/readings",
-		map[string]any{"readings": []any{reading(measures.SeriesDeploys, 3, today)}}, "c6d-reading")
-	if logged.Code != http.StatusCreated || !decodeBody[evalReadingsResponse](t, logged).Registered {
-		t.Fatalf("a reading under %s: status %d, body %s; want 201 registering it", evals.SlugDeployFrequency, logged.Code, logged.Body.String())
-	}
-	target := func(what string) *float64 {
-		t.Helper()
-		detail := evalGet[evalDetailResponse](t, handler, "/api/v1/projects/SQL/evals/"+evals.SlugDeployFrequency)
-		if len(detail.Items) == 0 {
-			t.Fatalf("the read of %s %s answers no item", evals.SlugDeployFrequency, what)
-		}
-		return detail.Items[0].Definition.Target
-	}
-	if before := target("after the reading"); before != nil {
-		t.Fatalf("%s holds target %s after the reading registered it; the register write below would move a value", evals.SlugDeployFrequency, showFigure(before))
-	}
-	written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals",
-		map[string]any{"slug": evals.SlugDeployFrequency, "target": nil}, "c6d-target-none")
-	registered := decodeBody[evalRegisterResponse](t, written)
-	if written.Code != http.StatusCreated || len(registered.Items) != 1 || !registered.Items[0].Wrote || registered.Items[0].Definition.Version != 2 {
-		t.Fatalf("a register write of target null: status %d, body %s; want 201 with version 2, the version that records the choice", written.Code, written.Body.String())
-	}
-	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, "SQL"); err != nil {
-		t.Fatalf("seed the evals of SQL: %v", err)
-	}
-	after := target("after the seed")
 	catalogued := measures.DefaultTargets.DeploysPerDay.Value
-	t.Logf("%s after the seed: target %s; the catalogue's is %v", evals.SlugDeployFrequency, showFigure(after), catalogued)
-	if after != nil {
-		t.Errorf("%s, whose target a register write set to none, holds target %s after the seed; want none, not the catalogue's %v",
-			evals.SlugDeployFrequency, showFigure(after), catalogued)
+	for _, project := range []struct {
+		key     string
+		noneSet bool
+	}{{"SQL", true}, {"SQC", false}} {
+		if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, 'Made by SQL', 'alice')`, project.key); err != nil {
+			t.Fatalf("make %s by SQL: %v", project.key, err)
+		}
+		logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+project.key+"/evals/"+evals.SlugDeployFrequency+"/readings",
+			map[string]any{"readings": []any{reading(measures.SeriesDeploys, 3, today)}}, project.key+"-c6d-reading")
+		if logged.Code != http.StatusCreated || !decodeBody[evalReadingsResponse](t, logged).Registered {
+			t.Fatalf("a reading under %s of %s: status %d, body %s; want 201 registering it", evals.SlugDeployFrequency, project.key, logged.Code, logged.Body.String())
+		}
+		target := func(what string) *float64 {
+			t.Helper()
+			detail := evalGet[evalDetailResponse](t, handler, "/api/v1/projects/"+project.key+"/evals/"+evals.SlugDeployFrequency)
+			if len(detail.Items) == 0 {
+				t.Fatalf("the read of %s of %s %s answers no item", evals.SlugDeployFrequency, project.key, what)
+			}
+			return detail.Items[0].Definition.Target
+		}
+		if before := target("after the reading"); before != nil {
+			t.Fatalf("%s of %s holds target %s after the reading registered it; the register write below would move a value", evals.SlugDeployFrequency, project.key, showFigure(before))
+		}
+		if project.noneSet {
+			written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+project.key+"/evals",
+				map[string]any{"slug": evals.SlugDeployFrequency, "target": nil}, project.key+"-c6d-target-none")
+			registered := decodeBody[evalRegisterResponse](t, written)
+			if written.Code != http.StatusCreated || len(registered.Items) != 1 || !registered.Items[0].Wrote || registered.Items[0].Definition.Version != 2 {
+				t.Fatalf("a register write of target null: status %d, body %s; want 201 with version 2, the version that records the choice", written.Code, written.Body.String())
+			}
+		}
+		if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, project.key); err != nil {
+			t.Fatalf("seed the evals of %s: %v", project.key, err)
+		}
+		after := target("after the seed")
+		t.Logf("%s of %s after the seed: target %s; the catalogue's is %v", evals.SlugDeployFrequency, project.key, showFigure(after), catalogued)
+		switch {
+		case project.noneSet && after != nil:
+			t.Errorf("%s of %s, whose target a register write set to none, holds target %s after the seed; want none, not the catalogue's %v",
+				evals.SlugDeployFrequency, project.key, showFigure(after), catalogued)
+		case !project.noneSet && (after == nil || *after != catalogued):
+			t.Errorf("%s of %s, whose target no person set, holds target %s after the seed; want the catalogue's %v",
+				evals.SlugDeployFrequency, project.key, showFigure(after), catalogued)
+		}
 	}
 }
 

@@ -349,7 +349,7 @@ const MeasuredAtLead = 24 * time.Hour
 // alignment, each fixed-size column with its alignment, and up to 7 bytes rounding the whole to 8.
 // A day row the readings write keeps is its project's, whose key is at most 10 bytes (projects'
 // check), so eval_id is at most 10 + 1 + 512 = 523; its writer takes at most 11 bytes
-// (`computation`, the longer of the two); and it is of no deploy repository (deploy_repo ”):
+// (`computation`, the longer of the two); and it is of no deploy repository (an empty deploy_repo):
 //
 //	eval_days:         8 + (10+7) + (523+7) + (11+7) + (0+7) + (512+7) + (512+7) + (4+3) + 7 = 1,632 bytes
 //	eval_readings_row: 8 + (523+7) + (512+7) + (512+7) + (8+7) + 7                          = 1,598 bytes
@@ -554,6 +554,13 @@ func fieldRefusal(code, field, format string, args ...any) *Error {
 // request sent.
 func BoundedField(text string) string {
 	return boundText(text, fieldTextBytes)
+}
+
+// BoundedError is text, the reason of a refusal, cut to the most a refusal's text takes in its
+// JSON answer (errorTextBytes, boundText): for a route's own refusal whose reason carries what the
+// request sent, as a body's decode error carries the value it could not read.
+func BoundedError(text string) string {
+	return boundText(text, errorTextBytes)
 }
 
 // boundText is text cut where its JSON encoding would take more than most bytes between its
