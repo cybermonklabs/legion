@@ -60,7 +60,7 @@ interface ClaimRowView {
  * `tooltips` is the surface the chip is drawn on. The issue page raises no tooltip at all
  * (`components/tooltips.tsx`), which is this helper's default and what decides whether each
  * instant is drawn in words; the chip's other hosts, a List row and a Board card, do raise one,
- * and a row that reads the chip's `title` asks for that surface.
+ * and a row that reads the chip's tooltip asks for that surface.
  */
 function claimRow(
   issue: Issue,
@@ -1091,16 +1091,19 @@ test("a claim whose registry could not be read says the running state is unknown
 // Where a tooltip does carry it - a List row, a Board card - the chip says it there and draws
 // no word of its own, which would say the same thing twice and widen a chip those hosts have
 // no room for.
-test("a host that raises a tooltip keeps the unread registry in the title and draws no word", async () => {
+test("a host that raises a tooltip keeps the unread registry in the tooltip and draws no word", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
   const view = claimRow({ ...base, claim }, {}, { tooltips: true });
   try {
+    const chip = screen.getByTestId("issue-claim");
+    await view.user.hover(chip);
     await waitFor(() =>
-      expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
+      expect(screen.getByRole("tooltip").textContent).toContain(
         "Couldn't check whether that session is still running"
       )
     );
+    expect(chip.getAttribute("title")).toBeNull();
     expect(screen.queryByTestId("issue-claim-unchecked")).toBeNull();
   } finally {
     view.unmount();
