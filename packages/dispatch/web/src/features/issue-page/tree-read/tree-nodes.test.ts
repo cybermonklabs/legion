@@ -895,13 +895,12 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   ]);
 });
 
-// R3: a decision of a decisions read of the release before - a section of `decisions.md`, which
-// no node of the answer holds, read as its entry (`withEntries`) - finds its Change by its words,
-// with no block of the decisions document read: the change is the first decision whose words
-// hold the anchor's quote. The read hangs the comment under the issue, since no node holds the
-// decision, and the outline draws it under the decision it changes, which reads Change
-// requested; a comment quoting words no decision holds is no change and stays where the read
-// hangs it.
+// R3 (and INFRA-5706 R1, decision 474): a decision of a decisions read of the release before - a
+// section of `decisions.md`, which no node of the answer holds, read as its entry (`withEntries`)
+// - finds its Change by its words, with no block of the decisions document read: the change is the
+// first decision whose words hold the anchor's quote, so that decision reads Change requested.
+// Under R1 every comment anchored in a document block is on text and is no row of any outline,
+// whether the answer holds a node for its block or not.
 test("a decisions.md section finds its Change by its words", () => {
   const anchored = (id: string, quote: string): Comment => ({
     anchor: {
@@ -962,7 +961,7 @@ test("a decisions.md section finds its Change by its words", () => {
   });
   expect(
     ["c-change", "c-stray"].map((id) => placementsOf(root, id).map((one) => one.parent))
-  ).toEqual([[blockNodeId("decisions-md", "d2")], [KEY]]);
+  ).toEqual([[], []]);
   expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.state).toBe("change_requested");
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
 });
@@ -1873,12 +1872,12 @@ test("Conversation's read names root R1's kinds and never block", async () => {
   }
 });
 
-// R9, R10: a comment on a node's text - one the comments read anchors and the read hangs under
-// that node - is no row of either outline, and neither is a reply in its thread: both stay in the
-// answer the tree is built from, for the margin to draw. A post on the issue, a comment tied to no
-// text, is a row with its replies, and so is a comment anchored in a document whose block the
-// answer holds no node for, which the read hangs under the issue. With no comments read nothing
-// marks a comment as on text, and the read's placement stands.
+// R9, R10 (and INFRA-5706 R1, decision 474): every comment anchored to text - whether the read
+// hangs it under a drawn node or under the issue because the answer holds no node for its block -
+// is no row of either outline, and neither is a reply in its thread: each stays in the answer the
+// tree is built from, for the margin to draw. A post on the issue, tied to no text, stays a row
+// with its replies. With no comments read and no tree anchor, nothing marks a comment as on text,
+// and the read's placement stands.
 test("a comment on a node's text is no row", () => {
   const tree = answer([
     block("r1", "requirement", KEY, SPEC, 0),
@@ -1897,15 +1896,16 @@ test("a comment on a node's text is no row", () => {
   ];
   const { drafts, root } = drawn(tree, { comments, issue: issueDetails() });
 
-  expect(["c-on", "c-on-reply"].map((id) => [nodeOf(root, id), drafts.has(id)])).toEqual([
+  expect(
+    ["c-on", "c-on-reply", "c-unplaced"].map((id) => [nodeOf(root, id), drafts.has(id)])
+  ).toEqual([
+    [undefined, false],
     [undefined, false],
     [undefined, false],
   ]);
   expect(
-    ["c-post", "c-post-reply", "c-unplaced"].map((id) =>
-      placementsOf(root, id).map((one) => one.parent)
-    )
-  ).toEqual([[KEY], ["c-post"], [KEY]]);
+    ["c-post", "c-post-reply"].map((id) => placementsOf(root, id).map((one) => one.parent))
+  ).toEqual([[KEY], ["c-post"]]);
   expect(placementsOf(drawn(tree).root, "c-on").map((one) => one.parent)).toEqual([
     blockNodeId("spec", "r1"),
   ]);

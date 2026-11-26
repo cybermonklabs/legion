@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { CommentNodeAnchor } from "@legion/contracts";
 
 import type { Anchor, Comment, IssueDetails, MessageRead } from "../../../api/types";
 import { withEntries } from "../../issue/decision-entries";
@@ -264,10 +265,10 @@ test.skipIf(!GATES.REPLY_QUOTE)(
   }
 );
 
-// R1 (G5): a Change, a comment on a decision's words, is a comment on text like any other: here a
+// R1: a Change, a comment on a decision's words, is a comment on text like any other: here a
 // Change of a section of `decisions.md`, which no node of the answer holds and the read hangs
 // under the issue, is the root of a thread and no row under its decision.
-test.skipIf(!GATES.COMPOSER)("a Change is on text", () => {
+test("a Change is on text", () => {
   const change = anchoredComment(
     "c-change",
     1,
@@ -330,54 +331,83 @@ test.skipIf(!GATES.REPLY_QUOTE)(
 );
 
 // R1 (G2): a comment anchored on a node is the root of a thread on text: by the tree read's
-// `anchor.node`, and by the comments read's `node_anchor` where the tree node carries none.
+// `anchor.node`, and by the comments read's `node_anchor` where the tree node carries none (both
+// on a bare-id node like a lens and on a finding whose store kind is `block` and id is
+// `lens/<id>#<block>`). A document-anchored comment that `?node_anchor=true` answers with both
+// `anchor` and `node_anchor` keeps its block place.
 test.skipIf(!GATES.NODE_ANCHOR)("a comment anchored on a node is on text", () => {
-  const onNode: TreeAnchor = {
+  const onLens: TreeAnchor = {
     node: { id: "lens-1", kind: "lens", state: "live" },
     occurrence: 1,
     orphaned: false,
     quote: "holds",
   };
+  const findingId = "lens/lens-1#f1";
   const byTree = readComment("by-tree", 1);
-  const byRead: Comment & { readonly node_anchor: unknown } = {
+  const byRead: Comment & { readonly node_anchor: CommentNodeAnchor } = {
     ...readComment("by-read", 2),
     node_anchor: {
-      node: { id: "lens-1", kind: "lens", state: "live" },
+      node: { id: findingId, kind: "block", state: "live" },
       occurrence: 0,
       orphaned: false,
-      quote: "holds",
+      quote: "finding",
+    },
+  };
+  const onBlockWithNodeAnchor: Comment & { readonly node_anchor: CommentNodeAnchor } = {
+    ...anchoredComment("on-block", 3, anchorIn(SPEC_DOCUMENT, "r1")),
+    node_anchor: {
+      node: { id: `${KEY}/spec#r1`, kind: "block", state: "live" },
+      occurrence: null,
+      orphaned: false,
+      quote: "Words of r1.",
     },
   };
   const tree = treeAnswer([
-    treeNode("lens-1", "lens", KEY, { attributes: { verdict: "It holds." } }),
-    { ...commentNode(byTree, "lens-1"), anchor: onNode },
-    commentNode(byRead, "lens-1"),
+    statement(),
+    treeNode("lens-1", "lens", KEY, { attributes: { verdict: "It holds and holds." } }),
+    { ...treeNode("f1", "block", "lens-1", { text: "A finding explains." }), id: findingId },
+    { ...commentNode(byTree, "lens-1"), anchor: onLens },
+    commentNode(byRead, findingId),
+    commentNode(onBlockWithNodeAnchor, "r1"),
   ]);
 
-  expect(ruleOver(tree, { comments: [byTree, byRead] }, ["by-tree", "by-read"])).toMatchObject([
+  expect(
+    ruleOver(tree, { comments: [byTree, byRead, onBlockWithNodeAnchor] }, [
+      "by-tree",
+      "by-read",
+      "on-block",
+    ])
+  ).toMatchObject([
     { kind: "root", place: { kind: "node", node: "lens-1", occurrence: 1, quote: "holds" } },
-    { kind: "root", place: { kind: "node", node: "lens-1", occurrence: 0, quote: "holds" } },
+    { kind: "root", place: { kind: "node", node: findingId, occurrence: 0, quote: "finding" } },
+    { kind: "root", place: { anchor: { block_id: "r1" }, kind: "block" } },
   ]);
+  const rows = rowsOf(
+    buildIssueTree({
+      comments: [byTree, byRead, onBlockWithNodeAnchor],
+      issue: issueDetails(),
+      tree,
+    })
+  );
+  expect(
+    ["by-tree", "by-read", "on-block"].filter((id) => rows.has(id)),
+    "a node-anchored comment is drawn as a row"
+  ).toEqual([]);
 });
 
-// R1 (G5): no anchor that names no drawn node makes a comment a row: a comment anchored in a
-// block of a document that no node of the answer stands for, which the read hangs under the
-// issue, is on text and no row.
-test.skipIf(!GATES.COMPOSER)(
-  "a comment whose anchor names no drawn node is on text and no row",
-  () => {
-    const unplaced = anchoredComment("c-unplaced", 1, anchorIn(DECISIONS_DOCUMENT, "d9"));
-    const tree = treeAnswer([statement(), commentNode(unplaced)]);
+// R1: no anchor that names no drawn node makes a comment a row: a comment anchored in a block of
+// a document that no node of the answer stands for, which the read hangs under the issue, is on
+// text and no row.
+test("a comment whose anchor names no drawn node is on text and no row", () => {
+  const unplaced = anchoredComment("c-unplaced", 1, anchorIn(DECISIONS_DOCUMENT, "d9"));
+  const tree = treeAnswer([statement(), commentNode(unplaced)]);
 
-    expect(ruleOver(tree, { comments: [unplaced] }, ["c-unplaced"])).toMatchObject([
-      { kind: "root", place: { anchor: { block_id: "d9" }, kind: "block" } },
-    ]);
-    const rows = rowsOf(
-      buildIssueTree({ comments: [unplaced], issue: issueWithDecisions(), tree })
-    );
-    expect(rows.has("c-unplaced")).toBe(false);
-  }
-);
+  expect(ruleOver(tree, { comments: [unplaced] }, ["c-unplaced"])).toMatchObject([
+    { kind: "root", place: { anchor: { block_id: "d9" }, kind: "block" } },
+  ]);
+  const rows = rowsOf(buildIssueTree({ comments: [unplaced], issue: issueWithDecisions(), tree }));
+  expect(rows.has("c-unplaced")).toBe(false);
+});
 
 // R4: a reply that quoted words of an item that was later deleted reads with no quote
 // (INFRA-5703 leaves it out where `reply_block.deleted_at` is set), so it is no root: it is a
@@ -507,3 +537,42 @@ test("a tree node that carries no anchor is read by the comments read's anchor",
   expect(Object.values(byTree)).toContain("root");
   expect(kinds(ruleOver(bare, { comments: COMMENTS }, ids))).toEqual(byTree);
 });
+
+const COMMENTS_WITH_NODE_ANCHOR = recorded<{
+  commentsWithNodeAnchor?: readonly (Comment & { node_anchor?: CommentNodeAnchor })[];
+}>("comments.json").commentsWithNodeAnchor;
+
+const NEEDS_G2_RECORDING = COMMENTS_WITH_NODE_ANCHOR === undefined;
+
+test.skipIf(NEEDS_G2_RECORDING)(
+  "a tree node that carries no anchor is read by the recorded comments read's node_anchor",
+  () => {
+    const comments = COMMENTS_WITH_NODE_ANCHOR ?? [];
+    const targets = comments.flatMap(({ anchor, id, node_anchor }) =>
+      anchor === null && node_anchor !== undefined ? [{ id, at: node_anchor }] : []
+    );
+    expect(
+      targets.map(({ at }) => at.node.kind),
+      "the G2 fixture has no lens and risk anchors"
+    ).toEqual(expect.arrayContaining(["lens", "risk"]));
+    expect(
+      ruleOver(
+        undefined,
+        { comments },
+        targets.map(({ id }) => id)
+      ),
+      "the recorded node anchors supply each place without a tree anchor"
+    ).toEqual(
+      targets.map(({ at }) => ({
+        kind: "root",
+        place: {
+          kind: "node",
+          node: at.node.id,
+          occurrence: at.occurrence ?? 0,
+          orphaned: at.orphaned,
+          quote: at.quote,
+        },
+      }))
+    );
+  }
+);

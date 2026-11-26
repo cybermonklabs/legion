@@ -1,3 +1,5 @@
+import type { CommentNodeAnchor } from "@legion/contracts";
+
 import type { Anchor, MessageRead } from "../../../api/types";
 import { firstOfEachId } from "../decision-review";
 import type { IssueTreeReads } from "../issue-tree";
@@ -11,15 +13,16 @@ import { GATES } from "./gates";
  * (`text-threads.ts`), so each view draws each item once.
  *
  * A comment is a thread's root where its anchor names a block of a document (`artifact_id` and
- * `block_id`, orphaned or not) or, from G2, a node; a comment or a message is one where it answers
- * an item by one of that item's blocks with a quote (`reply_block.quote`, from G4) and that item is
- * in no thread on text. Every other item whose chain of answers reaches a root is in that root's
- * thread: a comment's `answers` (the comment it answers, which the server keeps beside `reply_to`,
- * the head of the post's thread), a message's `in_reply_to`. A chain that runs in a circle ends
- * where it comes round.
+ * `block_id`, orphaned or not) or a node (INFRA-1253 R31); a comment or a message is one where it
+ * answers an item by one of that item's blocks with a quote (`reply_block.quote`, from G4) and
+ * that item is in no thread on text. Every other item whose chain of answers reaches a root is in
+ * that root's thread: a comment's `answers` (the comment it answers, which the server keeps beside
+ * `reply_to`, the head of the post's thread), a message's `in_reply_to`. A chain that runs in a
+ * circle ends where it comes round.
  *
  * The rule reads the tree read's `anchor` of the item's node first, and the comments read's
- * `anchor` wherever the node carries none (part T's test answers carry it there alone).
+ * `anchor` or `node_anchor` wherever the node carries none (part T's test answers carry it there
+ * alone).
  */
 
 /** A comment as the comments read answers it, with its body's reading. */
@@ -100,15 +103,10 @@ interface AnchorExtras {
   readonly container_node_id?: string;
 }
 
-/** A comment of the comments read as a caller that sends `?node_anchor=true` reads it (G2,
- *  INFRA-1253 R31): `node_anchor`, on a comment whose anchor names a node or a block. */
+/** A comment of the comments read as a caller that sends `?node_anchor=true` reads it (INFRA-1253
+ *  R31): `node_anchor`, on a comment whose anchor names a node or a block. */
 interface NodeAnchored {
-  readonly node_anchor?: {
-    readonly node: { readonly id: string };
-    readonly occurrence: number | null;
-    readonly orphaned: boolean;
-    readonly quote: string;
-  };
+  readonly node_anchor?: CommentNodeAnchor;
 }
 
 /** The kinds of node that are an item: an ask, a comment and a message. The tree read hangs a
@@ -155,13 +153,6 @@ export function onTextReads(
  * in a root's thread, or null for every other item - a post on the issue, a reply that names a
  * block with no quote, and a reply whose quoted item was deleted, which reads with no quote
  * (INFRA-5703 leaves `quote` out where `reply_block.deleted_at` is set), so each stays a row.
- *
- * Until G5 (`GATES.COMPOSER`) one more item stays a row, as part T's rule drew it: a comment
- * anchored in a block that no node of the answer stands for (by `container_node_id` or by its
- * block), which the tree read hangs under the issue - a comment on the text of a node the answer
- * lacks, and a Change of a `decisions.md` section, which the outline draws under its decision.
- * Part T's row helper (`e2e/issue-page-t-rows.ts`) and part Q's row of a Change
- * (`e2e/issue-page-q.e2e.ts`), which change at G5, read them as rows.
  */
 export function onTextOf(item: OnTextItem, reads: OnTextReads): OnText | null {
   return ruleOf(item, reads);
@@ -174,9 +165,7 @@ function ruleOf(item: OnTextItem, reads: OnTextReads, passed?: Set<string>): OnT
     return null;
   }
   const anchored = item.supertag === "comment" ? anchorPlace(item.id, reads) : undefined;
-  if (anchored !== undefined) {
-    return rowUntilComposer(item.id, anchored, reads) ? null : { kind: "root", place: anchored };
-  }
+  if (anchored !== undefined) return { kind: "root", place: anchored };
   const answered = answeredOf(item, reads);
   if (answered === undefined) return null;
   const seen = passed ?? new Set<string>();
@@ -253,14 +242,6 @@ export function commentAnchorOf(anchor: TreeAnchor): Anchor {
     quote: anchor.quote,
     version: anchor.version ?? 0,
   };
-}
-
-/** Whether the comment anchored at `place` stays a row until G5 (`onTextOf`): a block anchor that
- *  no node of the answer stands for, on a comment the tree read hangs under the issue. */
-function rowUntilComposer(id: string, place: TextPlace, reads: OnTextReads): boolean {
-  if (GATES.COMPOSER || place.kind !== "block") return false;
-  const parent = reads.nodes.get(id)?.parent ?? null;
-  return (parent === null || parent.supertag === "issue") && placeNodes(place, reads).length === 0;
 }
 
 /** The item `item` answers: a comment's `answers`, else the head of its thread (`reply_to`),

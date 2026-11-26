@@ -25,6 +25,7 @@ import {
   targetNaming,
 } from "./issue-tree";
 import { citedReferences } from "./row-references";
+import { GATES } from "./text-comments/gates";
 import { askState } from "./tree-drafts";
 import { type TreeAnswer, type TreeRead, useTreeRead, viewQuery } from "./tree-read/tree-read";
 import { useLineRefusals } from "./useLineRefusals";
@@ -206,6 +207,9 @@ export const issueCommentsQuery = (key: string) =>
   queryOptions({
     queryKey: ["comments", key],
     queryFn: () => api.listComments(key),
+    // R9 (G2, plan decision 3): the new page's one comments read asks for `node_anchor=true`
+    // under the same key `["comments", key]`.
+    ...(GATES.NODE_ANCHOR ? { queryFn: () => api.listComments(key, undefined, true) } : {}),
   });
 
 /** The issue's messages as the tree reads them (`listIssueMessages`), under the key the feed's

@@ -160,13 +160,13 @@ interface QuoteAnswer {
   anchor?: DocumentAnchor | null;
   code?: string;
   id?: string;
-  // G4 and G2: these stored selections do not exist in B0's generated response types.
+  // G4: `reply_block` carries `quote` and `occurrence` once INFRA-5703 is on the base.
   reply_block?: { block_id: string; quote?: string; occurrence?: number };
-  node_anchor?: { node: string; quote: string; occurrence?: number };
 }
 
 interface QuoteCase {
   item: string;
+  nodeAnchor?: true;
   node: IssueTreeNode;
   quote: string;
   path: typeof COMMENTS | typeof MESSAGES;
@@ -197,7 +197,16 @@ async function quoteWrite(
     if (answer.anchor)
       return { anchor: { block_id: answer.anchor.block_id, quote: answer.anchor.quote }, status };
     if (answer.reply_block?.quote !== undefined) return { reply_block: answer.reply_block, status };
-    if (answer.node_anchor) return { node_anchor: answer.node_anchor, status };
+    // POST /api/v1/issues/{key}/comments answers a node-anchored comment with `anchor: null` and
+    // no `node_anchor` (strict `CommentSchema`); read it back with `?node_anchor=true` (1253 R31).
+    if (entry.nodeAnchor === true) {
+      const read = await readWithTrees<Result<"/api/v1/comments/{id}", "get">>(
+        routeUrl("/api/v1/comments/{id}", { id: answer.id }, { node_anchor: true })
+      );
+      if (read.comment.node_anchor !== undefined) {
+        return { node_anchor: read.comment.node_anchor, status };
+      }
+    }
     throw new Error(
       `Writing ${entry.item} occurrence ${occurrence} returned 201 but did not store a selection`
     );
@@ -365,6 +374,7 @@ async function recordQuotes(seed: MarginSeed, keys: Map<string, string>) {
         }),
         item,
         node,
+        nodeAnchor: true,
         path: COMMENTS,
         quote,
       });
@@ -376,8 +386,14 @@ async function recordQuotes(seed: MarginSeed, keys: Map<string, string>) {
     );
   }
   const cases = [];
-  for (const entry of entries) cases.push(await recordQuoteCase(seed.key, entry, keys));
-  return { cases, skipped };
+  const nodeCases = [];
+  for (const entry of entries) {
+    const recorded = await recordQuoteCase(seed.key, entry, keys);
+    // The document quote cases test a different response shape from node anchors.
+    if (entry.nodeAnchor === true) nodeCases.push(recorded);
+    else cases.push(recorded);
+  }
+  return { cases, ...(GATES.NODE_ANCHOR ? { nodeCases } : {}), skipped };
 }
 
 function biomeFormatted(file: string, json: string): string {
@@ -414,7 +430,9 @@ async function record(recordedOn: string) {
   const comments = await readWithTrees<Result<typeof COMMENTS, "get">>(commentsPath);
   for (const comment of comments) nameAnchorBlock(keys, comment.anchor);
   const commentsWithNodeAnchor = GATES.NODE_ANCHOR
-    ? await readWithTrees<unknown>(`${commentsPath}?node_anchor=true`)
+    ? await readWithTrees<Result<typeof COMMENTS, "get">>(
+        routeUrl(COMMENTS, { key }, { node_anchor: true })
+      )
     : undefined;
   const messages = await readWithTrees<Result<typeof MESSAGES, "get">>(routeUrl(MESSAGES, { key }));
   // Name any document blocks whose minted IDs are mentioned by another record but not drawn.
@@ -430,25 +448,27 @@ async function record(recordedOn: string) {
     }
   }
   const quotes = await recordQuotes(seed, keys);
-  const metadata = { gate: "B0", recordedOn };
+  const metadata = { gate: GATES.NODE_ANCHOR ? "G2" : "B0", recordedOn };
   const fixtures = {
     "comments.json": { ...metadata, comments, commentsWithNodeAnchor },
-    "messages.json": { ...metadata, messages },
+    ...(GATES.NODE_ANCHOR ? {} : { "messages.json": { ...metadata, messages } }),
     "quotes.json": { ...metadata, ...quotes },
     // One file for each view's read: the five reads in one file pass 1 MiB once formatted,
     // which is jj's largest new file and Biome's largest checked one.
-    ...Object.fromEntries(
-      Object.entries(reads).map(([view, read]) => [
-        `tree-b0-${view}.json`,
-        {
-          ...metadata,
-          pagination: "the first page of the read, as on load",
-          read,
-          skipped: seed.skipped,
-          view,
-        },
-      ])
-    ),
+    ...(GATES.NODE_ANCHOR
+      ? {}
+      : Object.fromEntries(
+          Object.entries(reads).map(([view, read]) => [
+            `tree-b0-${view}.json`,
+            {
+              ...metadata,
+              pagination: "the first page of the read, as on load",
+              read,
+              skipped: seed.skipped,
+              view,
+            },
+          ])
+        )),
   };
   // Check and format every fixture before touching any file on disk.
   const outputs = Object.entries(fixtures).map(([name, data]) => {

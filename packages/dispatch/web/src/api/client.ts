@@ -1500,8 +1500,15 @@ export class DispatchApiClient {
     );
   }
 
-  listComments(key: string, artifact?: string) {
-    return this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+  /** Lists an issue's comments (`GET /api/v1/issues/{key}/comments`); `nodeAnchor` asks for
+   *  `?node_anchor=true` (INFRA-1253 R31), which the new issue page sends and today's callers
+   *  omit so their request is unchanged. */
+  listComments(key: string, artifact?: string, nodeAnchor?: boolean) {
+    return this.read(
+      "/api/v1/issues/{key}/comments",
+      { key },
+      { artifact, ...(nodeAnchor ? { node_anchor: true } : {}) }
+    );
   }
 
   createComment(

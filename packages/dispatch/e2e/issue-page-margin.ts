@@ -1,4 +1,4 @@
-import { type Query, type Result, routeUrl } from "../web/src/api/paths";
+import { type Query, routeUrl } from "../web/src/api/paths";
 import type { IssueTreeRead } from "../web/src/api/types";
 import {
   baseUrl,
@@ -100,20 +100,13 @@ export interface MarginReplyQuote {
   quote: string;
 }
 
-/** G2: a node anchor has no artifact, so replace rather than intersect AnchorInput. */
+/** G2: a node selection names the node in place of the document. */
 export type MarginNodeComment = Omit<Parameters<typeof createComment>[1], "anchor"> & {
   anchor: MarginReplyQuote & { node: string };
 };
 
 async function nodeComment(key: string, body: MarginNodeComment): Promise<string> {
-  const path = routeUrl("/api/v1/issues/{key}/comments", { key });
-  const response = await fetch(new URL(path, baseUrl), {
-    body: JSON.stringify(body),
-    headers: { ...(await userHeaders()), "Content-Type": "application/json" },
-    method: "POST",
-  });
-  if (!response.ok) throw new Error(`POST ${path}: ${response.status} ${await response.text()}`);
-  return ((await response.json()) as Result<"/api/v1/issues/{key}/comments", "post">).id;
+  return (await createComment(key, body)).id;
 }
 
 interface Layout {

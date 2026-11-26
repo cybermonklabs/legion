@@ -224,3 +224,52 @@ test("an address whose node no view draws opens the issue's address with no line
     client.clear();
   }
 });
+
+// R1, R8: a comment anchored in a block no node of the answer stands for, which the read hangs
+// under the issue, is on text and stands in no margin: its address opens the issue's own address
+// with no line.
+test("an address of a comment anchored in an undrawn block under the issue opens the issue with no line", async () => {
+  const anchor: Anchor = {
+    artifact_id: SPEC_DOCUMENT.id,
+    block_id: "undrawn",
+    mark_id: "m-undrawn",
+    orphaned: false,
+    quote: "undrawn words",
+    version: 1,
+  };
+  const unplaced = { ...readComment("on-undrawn", 10), anchor };
+  stubs = answerSeededReads({ posts: [unplaced], threads: [] });
+  stubs.push(
+    spyOn(api, "getIssueTree").mockImplementation(async () =>
+      treeOf(
+        [
+          ...seededNodes([]),
+          treeNode(unplaced.id, "comment", KEY, {
+            anchor: treeAnchorOf(anchor),
+            author: [unplaced.author],
+            made_at: unplaced.created_at,
+            text: unplaced.body,
+          }),
+        ],
+        SERVES
+      )
+    )
+  );
+  const client = newClient();
+  const view = drawPage(client, "conversation", { after: `?comment=${unplaced.id}` });
+  try {
+    await waitFor(() =>
+      expect(addressOf(view), "the address kept the unplaced comment").toBe(`/issues/${KEY}`)
+    );
+    await waitFor(() =>
+      expect(rowOf(view, ON_STATEMENT.node), "the outline is not drawn").not.toBeNull()
+    );
+    expect(
+      view.queryByRole("heading", { name: /not found/i }),
+      "a line says the comment is gone"
+    ).toBeNull();
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});

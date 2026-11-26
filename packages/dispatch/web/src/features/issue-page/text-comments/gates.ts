@@ -34,7 +34,8 @@ export const GATES: Readonly<Record<GateName, boolean>> = {
   // G8: INFRA-5702, the Dashboard's items.
   DASHBOARD: false,
   // G2 and G5: INFRA-1253's node anchor, and the shell margin's comments read that asks for it.
-  NODE_ANCHOR: false,
+  // On this branch's base since INFRA-1253's node-anchor work and pull request 3125 landed.
+  NODE_ANCHOR: true,
   // G3c: the comments on a node of another issue in each answer that draws that node.
   OTHER_ISSUE_COMMENTS: false,
   // G6: part J (INFRA-3939), the Spec view's rows.

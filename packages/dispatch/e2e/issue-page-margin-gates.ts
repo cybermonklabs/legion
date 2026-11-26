@@ -3,7 +3,7 @@ export const GATES = {
   ANCHOR_OCCURRENCE: false,
   COMPOSER: true,
   DASHBOARD: false,
-  NODE_ANCHOR: false,
+  NODE_ANCHOR: true,
   OTHER_ISSUE_COMMENTS: false,
   PART_J: false,
   PART_M: false,

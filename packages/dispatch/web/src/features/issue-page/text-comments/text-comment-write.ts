@@ -153,16 +153,25 @@ function placeOf(node: Pick<TreeAnswerNode, "document" | "supertag">): Place {
 }
 
 /** `node` as `writeFor` asks for it on the page of the issue `page`: its kind, its place, its
- *  visibility and its own issue, which is the page's where the read names none. */
+ *  visibility and its own issue, which is the page's where the read names none. A finding of a
+ *  lens reads with `supertag` `"block"` or `"lens_block"` under its lens (`lens-drafts.ts`), so
+ *  it maps to `"finding"` here. */
 export function subjectOf(
-  node: Pick<TreeAnswerNode, "document" | "issue" | "supertag" | "visibility">,
+  node: Pick<TreeAnswerNode, "document" | "issue" | "supertag" | "visibility"> & {
+    readonly parent?: TreeAnswerNode["parent"];
+  },
   page: string
 ): WriteSubject {
+  const kind =
+    (node.supertag === "block" || node.supertag === "lens_block") &&
+    node.parent?.supertag === "lens"
+      ? "finding"
+      : node.supertag;
   return {
     issue: node.issue ?? page,
-    kind: node.supertag,
+    kind,
     page,
-    place: placeOf(node),
+    place: placeOf({ document: node.document, supertag: kind }),
     visibility: node.visibility,
   };
 }
@@ -187,6 +196,9 @@ export interface TextWriteTarget {
   readonly document?: { readonly artifact_id: string };
   /** The node's id in the read: the item a reply answers, or the node a node anchor names. */
   readonly id: string;
+  /** The node's store kind in the tree read (`lens`, `risk`, `constraint`, `result`, or `block`
+   *  for a finding), used to form the store address `anchor.node` takes when `id` is bare. */
+  readonly kind?: string;
   readonly spec?: string;
   readonly tree?: string | null;
 }
@@ -225,7 +237,10 @@ export function composerAddressOf(
   if (write.request === "node") {
     // A node anchor names no document; its `artifact`, which the send leaves out, is the spec a
     // reference in the comment is read in, or none where the issue has none.
-    return { anchor: { artifact: at.spec ?? "", node: at.id, occurrence, quote }, replyTo: null };
+    return {
+      anchor: { artifact: at.spec ?? "", node: nodeAddressOf(at), occurrence, quote },
+      replyTo: null,
+    };
   }
   const actor = at.author?.[0];
   if (actor === undefined || words.block === null) return null;
@@ -241,4 +256,12 @@ export function composerAddressOf(
       quote,
     },
   };
+}
+/** The store address `POST /api/v1/issues/{key}/comments`'s `anchor.node` takes: a finding's read
+ *  id (`lens/<uuid>#<block>`) and an already-addressed id stay as given; a bare id of a lens,
+ *  risk, constraint or result takes `${kind}/${id}` (`api/comment_create.go`'s `anchoredNode`). */
+function nodeAddressOf(at: Pick<TextWriteTarget, "id" | "kind">): string {
+  if (at.id.includes("/") || at.id.includes("#")) return at.id;
+  if (at.kind === undefined || at.kind === "" || at.kind === "block") return at.id;
+  return `${at.kind}/${at.id}`;
 }

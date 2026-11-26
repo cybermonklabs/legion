@@ -1,8 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import type { CommentNodeAnchor } from "@legion/contracts";
+
+import type { DisplayTree } from "../../../api/types";
+import { node } from "../decisions-filter/decisions-fixtures";
 
 import { NODE_TYPE_NAMES } from "../page-words";
 import { GATES, type GateName } from "./gates";
-import { type Place, type TextWrite, WRITES, writeFor } from "./text-comment-write";
+import { clearSelection, drawTree, recorded, rowOf, setSelection } from "./margin-fixtures";
+import { quoteOf, rangeOf } from "./selection-quote";
+import {
+  composerAddressOf,
+  type Place,
+  subjectOf,
+  type TextWrite,
+  WRITES,
+  writeFor,
+} from "./text-comment-write";
 
 /**
  * R5: each node kind has one write, or no control with its reason. The write is that of the
@@ -171,3 +184,116 @@ test.skipIf(!GATES.OTHER_ISSUE_COMMENTS)(
     expect(write?.issue, "the write goes to the page's own issue").toBe("OTHER-2");
   }
 );
+
+// R5 (G2): with `NODE_ANCHOR` on, a lens, a finding (whose tree-read supertag is `block` under a
+// lens), a risk, a constraint and a result take the control and build `anchor {node, quote,
+// occurrence}` naming each node by the store address `POST /api/v1/issues/{key}/comments` takes.
+test("a lens, finding, risk, constraint and result take the control and address their node", () => {
+  const cases = [
+    {
+      node: { id: "lens-uuid", kind: "lens", supertag: "lens", visibility: "project" as const },
+      want: "lens/lens-uuid",
+    },
+    {
+      node: {
+        id: "lens/lens-uuid#f1",
+        kind: "block",
+        parent: { first_line: "Verdict", id: "lens-uuid", kind: "lens", supertag: "lens" },
+        supertag: "block",
+        visibility: "project" as const,
+      },
+      want: "lens/lens-uuid#f1",
+    },
+    {
+      node: { id: "risk-uuid", kind: "risk", supertag: "risk", visibility: "project" as const },
+      want: "risk/risk-uuid",
+    },
+    {
+      node: {
+        id: "constraint-uuid",
+        kind: "constraint",
+        supertag: "constraint",
+        visibility: "project" as const,
+      },
+      want: "constraint/constraint-uuid",
+    },
+    {
+      node: {
+        id: "result-uuid",
+        kind: "result",
+        supertag: "result",
+        visibility: "project" as const,
+      },
+      want: "result/result-uuid",
+    },
+  ];
+  for (const { node, want } of cases) {
+    const write = writeFor(subjectOf(node, "CORE-1"));
+    expect(write, `no live write stands for ${want}`).toEqual({
+      gate: "NODE_ANCHOR",
+      issue: "CORE-1",
+      place: "item",
+      request: "node",
+    });
+    if (write === null) continue;
+    expect(
+      composerAddressOf(write, node, { block: null, occurrence: 1, quote: "words" }),
+      `the composer address for ${want}`
+    ).toEqual({
+      anchor: { artifact: "", node: want, occurrence: 1, quote: "words" },
+      replyTo: null,
+    });
+  }
+});
+
+interface RecordedNodeQuote {
+  readonly item: string;
+  readonly text: string;
+  readonly text_tree: DisplayTree;
+  readonly writes: readonly {
+    readonly answer: { readonly status: number; readonly node_anchor?: CommentNodeAnchor };
+    readonly selection: { readonly quote: string; readonly occurrence: number };
+  }[];
+}
+
+const NODE_QUOTES = recorded<{ nodeCases?: readonly RecordedNodeQuote[] }>("quotes.json").nodeCases;
+const NEEDS_G2_RECORDING = NODE_QUOTES === undefined;
+
+for (const kind of ["lens", "risk"] as const) {
+  test.skipIf(NEEDS_G2_RECORDING)(`the server takes the ${kind}'s quote at each occurrence`, () => {
+    const fixture = NODE_QUOTES?.find(({ item }) => item === `${kind}-anchor`);
+    if (fixture === undefined) throw new Error(`the G2 recording holds no ${kind} quote`);
+    const view = drawTree([
+      node({ id: kind, text: fixture.text, tree: fixture.text_tree, type: kind }),
+    ]);
+    try {
+      const row = rowOf(view, kind);
+      if (row === null) throw new Error(`the ${kind} draws no row`);
+      const source = { text: fixture.text, text_tree: fixture.text_tree };
+      expect(fixture.writes.map(({ selection }) => selection.occurrence)).toEqual([0, 1]);
+      for (const { answer, selection } of fixture.writes) {
+        const what = `${kind} occurrence ${selection.occurrence}`;
+        expect(answer.status, `${what}: the server did not take the quote`).toBe(201);
+        expect(answer.node_anchor, `${what}: the read did not keep the quote`).toMatchObject({
+          node: { kind },
+          occurrence: selection.occurrence,
+          quote: selection.quote,
+        });
+        const range = rangeOf(row, selection.quote, selection.occurrence, { node: source });
+        if (range === null) throw new Error(`${what}: the quoted words are not drawn`);
+        setSelection(range);
+        const selected = window.getSelection();
+        if (selected === null) throw new Error("the window has no selection");
+        expect(quoteOf(selected, row, source), what).toEqual({
+          block: null,
+          occurrence: selection.occurrence,
+          quote: selection.quote,
+        });
+      }
+    } finally {
+      clearSelection();
+      view.unmount();
+      view.client.clear();
+    }
+  });
+}

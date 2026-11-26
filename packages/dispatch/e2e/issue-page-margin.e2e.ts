@@ -1921,6 +1921,17 @@ test("the address of a comment on text opens its thread", async ({ browser }) =>
       })
       .toEqual([]);
 
+    await gotoIssue(page, `${presetPath(key, "conversation")}?comment=${seeded.change}`);
+    await expect(
+      threadBox(page, seeded.change),
+      "the Change stands beside its decision"
+    ).toHaveAttribute("data-text-thread-node", blockNode(seeded.specSlug, seeded.agentDecision));
+    await expect(
+      threadCard(page, seeded.change),
+      "the address focuses the Change's thread"
+    ).toBeFocused();
+    await expect(stageRow(page, seeded.change), "the Change is no outline row").toHaveCount(0);
+
     await gotoIssue(page, buildIssuePath({ id: seeded.pagedChildThread, key, kind: "comment" }));
     await expect(
       threadCard(page, seeded.pagedChildThread),

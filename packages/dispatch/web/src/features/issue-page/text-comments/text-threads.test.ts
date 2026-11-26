@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { CommentNodeAnchor } from "@legion/contracts";
 
 import type { Anchor, Comment } from "../../../api/types";
 import { KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
@@ -393,3 +394,124 @@ test.skipIf(!GATES.OTHER_ISSUE_COMMENTS)(
     ).toEqual([["c-x", "other issue", "A remark on the other issue's words."]]);
   }
 );
+
+// R1, R2 (G2): a node-anchored comment stands beside its lens, finding, risk, constraint or
+// result, from the tree read's `anchor.node` and from the comments read's `node_anchor` wherever
+// the tree node carries none, keeping its stored occurrence.
+test("a node-anchored thread stands beside its lens, finding, risk, constraint or result", () => {
+  const findingId = "lens/lens-1#f1";
+  const lens = treeNode("lens-1", "lens", STATEMENT, {
+    attributes: { verdict: "The verdict keeps the verdict near its source." },
+    text: "The verdict keeps the verdict near its source.",
+  });
+  const finding = {
+    ...treeNode("f1", "block", "lens-1", {
+      text: "A finding explains where the finding came from.",
+    }),
+    id: findingId,
+  };
+  const risk = treeNode("risk-1", "risk", "lens-1", {
+    attributes: { heading: "A delay hides the delay from the next reader." },
+    text: "A delay hides the delay from the next reader.",
+  });
+  const constraint = treeNode("constraint-1", "constraint", KEY, {
+    attributes: { standard: "The standard applies where the standard is visible." },
+    text: "The standard applies where the standard is visible.",
+  });
+  const result = treeNode("result-1", "result", CHECK, {
+    text: "The reading matched the reading from the previous run.",
+  });
+  const onLens = readComment("c-lens", 1);
+  const onFinding: Comment & { readonly node_anchor: CommentNodeAnchor } = {
+    ...readComment("c-finding", 2),
+    node_anchor: {
+      node: { id: findingId, kind: "block", state: "live" },
+      occurrence: 1,
+      orphaned: false,
+      quote: "finding",
+    },
+  };
+  const onRisk = readComment("c-risk", 3);
+  const onConstraint = readComment("c-constraint", 4);
+  const onResult = readComment("c-result", 5);
+  const tree = treeOf(
+    [
+      ...seededNodes([]),
+      lens,
+      finding,
+      risk,
+      constraint,
+      result,
+      nodeOf(onLens, "lens-1", {
+        anchor: {
+          node: { id: "lens-1", kind: "lens", state: "live" },
+          occurrence: 1,
+          orphaned: false,
+          quote: "verdict",
+        },
+      }),
+      // No tree anchor on `c-finding`: placed from `comments` read's `node_anchor`.
+      nodeOf(onFinding, findingId),
+      nodeOf(onRisk, "risk-1", {
+        anchor: {
+          node: { id: "risk-1", kind: "risk", state: "live" },
+          occurrence: 1,
+          orphaned: false,
+          quote: "delay",
+        },
+      }),
+      nodeOf(onConstraint, "constraint-1", {
+        anchor: {
+          node: { id: "constraint-1", kind: "constraint", state: "live" },
+          occurrence: 1,
+          orphaned: false,
+          quote: "standard",
+        },
+      }),
+      nodeOf(onResult, "result-1", {
+        anchor: {
+          node: { id: "result-1", kind: "result", state: "live" },
+          occurrence: 1,
+          orphaned: false,
+          quote: "reading",
+        },
+      }),
+    ],
+    SERVES
+  );
+  const drawn = new Set([ON_STATEMENT.node, "lens-1", "f1", "risk-1", "constraint-1", "result-1"]);
+  const threads = threadsOver(tree, [onLens, onFinding, onRisk, onConstraint, onResult], drawn);
+
+  expect(
+    ["lens-1", "f1", "risk-1", "constraint-1", "result-1"].map((id) =>
+      threads
+        .get(id)
+        ?.threads.map(({ occurrence, quote, thread }) => [thread.key, quote, occurrence])
+    ),
+    "each node-anchored thread stands beside its node at its stored occurrence"
+  ).toEqual([
+    [["c-lens", "verdict", 1]],
+    [["c-finding", "finding", 1]],
+    [["c-risk", "delay", 1]],
+    [["c-constraint", "standard", 1]],
+    [["c-result", "reading", 1]],
+  ]);
+});
+
+// R1: a Change anchored to a decision's words stands in the margin beside its decision and is no
+// row of the outline.
+test("a Change stands in the margin beside its decision", () => {
+  const change: Comment = {
+    ...readComment("c-change", 2),
+    anchor: anchorOn(SPEC_DOCUMENT, DECISION, "decision d1"),
+  };
+  const tree = treeOf([...seededNodes([]), nodeOf(change, DECISION)], SERVES);
+  const rows = rowIds(buildIssueTree({ comments: [change], issue: seededIssue(), tree }));
+  expect(rows.has("c-change"), "the Change is drawn as a row").toBe(false);
+  expect(
+    threadsOver(tree, [change], rows)
+      .get(blockNodeId(SPEC_DOCUMENT.slug, DECISION))
+      ?.threads.map(({ quote, thread }) => [thread.key, quote]),
+    "the Change stands in the margin beside its decision"
+  ).toEqual([["c-change", "decision d1"]]);
+});

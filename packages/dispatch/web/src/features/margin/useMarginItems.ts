@@ -375,6 +375,11 @@ export function useMarginItems(
       if (owner === undefined) {
         throw new Error("Margin comments require an owner.");
       }
+      // On the new issue page (`freshness`), the shell margin shares `["comments", key]` with
+      // `issueCommentsQuery`, so both send `node_anchor=true` and neither starts a second read.
+      if (owner.kind === "issue" && freshness !== undefined) {
+        return api.listComments(owner.key, undefined, true);
+      }
       return owner.kind === "document"
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);

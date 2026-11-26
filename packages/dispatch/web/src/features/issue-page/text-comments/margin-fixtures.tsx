@@ -241,6 +241,8 @@ export interface SeededReads {
   threads: readonly TextThreadSeed[];
   /** The block ids the tree read leaves out, as a read that pages their nodes away does. */
   without?: readonly string[];
+  /** Leave the comments read to a test that observes the HTTP request. */
+  wireComments?: boolean;
 }
 
 /** Answers every read the page and its views are drawn from for `seededIssue`, and the shell's
@@ -249,6 +251,7 @@ export interface SeededReads {
  *  spies are those `stubReads` set; the returned list restores them. */
 export function answerSeededReads(reads: SeededReads): { mockRestore(): void }[] {
   const restore = stubReads();
+  if (reads.wireComments) spyOn(api, "listComments").mockRestore();
   restore.push(
     spyOn(api, "getIssue").mockResolvedValue(seededIssue()),
     spyOn(api, "getMyState").mockResolvedValue({}),
@@ -314,13 +317,17 @@ export function answerSeededReads(reads: SeededReads): { mockRestore(): void }[]
         return onText ? [{ ...node, role: "context" }] : [];
       });
       return treeOf([...drawn, ...onDrawn], SERVES);
-    }),
-    spyOn(api, "listComments").mockImplementation(async () => [
-      ...reads.threads.map(({ comment }) => comment),
-      ...(reads.posts ?? []),
-      ...(reads.threads.includes(ON_STATEMENT) ? [REPLY_ON_STATEMENT] : []),
-    ])
+    })
   );
+  if (!reads.wireComments) {
+    restore.push(
+      spyOn(api, "listComments").mockImplementation(async () => [
+        ...reads.threads.map(({ comment }) => comment),
+        ...(reads.posts ?? []),
+        ...(reads.threads.includes(ON_STATEMENT) ? [REPLY_ON_STATEMENT] : []),
+      ])
+    );
+  }
   // An address that names a comment reads that comment (`getComment`), as the page's own read of
   // it does.
   restore.push(

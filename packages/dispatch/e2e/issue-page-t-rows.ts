@@ -273,12 +273,11 @@ export async function anchoredComments(key: string): Promise<ReadonlySet<string>
 }
 
 /**
- * The read ids of the answer's comments on a node's text, which R2 and R9 let an outline draw as
- * no row, since the margin beside that node draws them (root R41): a comment the comments read
- * anchors to text (`anchored`) that the answer hangs under a node other than the issue, and each
- * comment the answer hangs under such a comment, a reply in its thread. A comment anchored in a
- * document whose block the answer holds no node of hangs under the issue, has no node for a
- * margin to stand beside, and is a row.
+ * The read ids of the answer's comments on text, which R1 (INFRA-5706, decision 474) draws as no
+ * row of any outline, since the margin beside each comment's node draws it (root R41): every
+ * comment anchored in a block or on a node (`anchored`, or carrying a tree-read `anchor`), whether
+ * the answer hangs it under a drawn node or under the issue, and each comment the answer hangs
+ * under such a comment, a reply in its thread.
  */
 export function textComments(
   answer: IssueTreeRead,
@@ -286,9 +285,10 @@ export function textComments(
 ): ReadonlySet<string> {
   const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
   const onText = (node: IssueTreeNode | undefined, passed: Set<string>): boolean => {
-    if (node?.supertag !== "comment" || node.parent === null || passed.has(node.id)) return false;
+    if (node?.supertag !== "comment" || passed.has(node.id)) return false;
     passed.add(node.id);
-    if (anchored.has(node.id)) return node.parent.supertag !== "issue";
+    if (anchored.has(node.id) || node.anchor !== undefined) return true;
+    if (node.parent === null) return false;
     return node.parent.supertag === "comment" && onText(nodes.get(node.parent.id), passed);
   };
   return new Set(
@@ -583,16 +583,19 @@ function answeredReviewState(node: IssueTreeNode, changed: boolean): string | nu
 }
 
 /** Row 1's decision clauses, once the seeds' decisions are nodes (`decisionNodesGate`): each
- *  decision row's review state is the answer's, each Change stands under its decision's row, the
+ *  decision row's review state is the answer's, each Change is a margin thread and no row, the
  *  section that restates a person's answer is no row, and the answered question's row carries a
  *  chip for each node its `shaped` ties name. */
-function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
+async function expectDecisionsFromNodes(
+  page: Page,
+  outline: OutlineRead,
+  recorded: SeedFixture
+): Promise<void> {
   const { answer, rows } = outline;
   const idOf = treeIdOf(answer, outline.reads);
   const held = heldNodes(answer, idOf);
   const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
   const changes = decisionNodeChanges(answer);
-  const under = rows.map((_, index) => parentIdOf(rows, index));
 
   const states = rows.flatMap((row) => {
     const node = row.id === null ? undefined : held.get(row.id)?.node;
@@ -603,22 +606,32 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   });
   expect(states, "each decision row's review state is the tree read's").toEqual([]);
 
-  const strays = (answer.nodes ?? []).flatMap((node) => {
-    const decision = node.parent === null ? undefined : nodes.get(node.parent.id);
+  const onText = textComments(answer, outline.anchored);
+  for (const comment of answer.nodes ?? []) {
+    const decision = comment.parent === null ? undefined : nodes.get(comment.parent.id);
     if (
-      node.supertag !== "comment" ||
-      node.author?.[0]?.kind !== "user" ||
+      comment.supertag !== "comment" ||
+      comment.author?.[0]?.kind !== "user" ||
       decision?.supertag !== "decision"
     ) {
-      return [];
+      continue;
     }
-    const id = idOf(node.id);
+    const id = idOf(comment.id);
     const home = idOf(decision.id);
     const at = rows.findIndex((row) => row.id === id);
-    if (at < 0) return [`the Change ${id} is no row`];
-    return under[at] === home ? [] : [`the Change ${id} stands under ${under[at]}, not ${home}`];
-  });
-  expect(strays, "each Change stands under its decision's row").toEqual([]);
+    if (!onText.has(comment.id)) {
+      expect(at, `the unanchored comment ${id} is no row`).toBeGreaterThanOrEqual(0);
+      expect(parentIdOf(rows, at), `the unanchored comment ${id}'s parent`).toBe(home);
+      continue;
+    }
+    expect(at, `the Change ${id} is an outline row`).toBe(-1);
+    if (rows.some((row) => row.id === home)) {
+      await expect(
+        page.locator(`[data-text-thread="${id}"]`),
+        `the Change ${id} stands in the margin beside ${home}`
+      ).toHaveAttribute("data-text-thread-node", home);
+    }
+  }
 
   const keyed = keyedRows(rows, outline.keys);
   const restating = recorded.rows.filter((row) => restatesAnAnswer(row, recorded.rows));
@@ -701,7 +714,7 @@ export async function expectSameRowsDecisions(
     owedUnless(await convertedGate(page, seeded.key));
     const outline = await readOutline(page, seeded);
     owedUnless(decisionNodesGate(outline.answer, outline.decisions));
-    expectDecisionsFromNodes(outline, fixtureSeed(name));
+    await expectDecisionsFromNodes(page, outline, fixtureSeed(name));
   });
 }
 
