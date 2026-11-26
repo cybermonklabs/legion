@@ -14,6 +14,7 @@ import { presetView } from "../presets";
 import { Publisher, publishedTree } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
+import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
   check,
@@ -266,6 +267,76 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
     unsure: true,
   });
   expect(decided?.words).toEqual({ markdown: text, source, tree });
+});
+
+// INFRA-1196's decision 516: a decision block whose `decided_by` names a person is that person's
+// decision, in their own words: the cell says the reader said it where that person is the reader,
+// and a person said it otherwise, and it heads the run of a statement an agent's decision shaped
+// too, as a person's answer does, the agent's named after it. One whose `decided_by` names a
+// session is an agent's, as it always was.
+test("a decision a person decided is drawn as that person's words, before an agent's", () => {
+  const bob = { id: "bob", kind: "user" as const };
+  const tree = issueTree([
+    statement("r1"),
+    statement("r2"),
+    decisionNode("agents"),
+    decisionNode("mine", { author: READER_ACTOR }),
+    decisionNode("bobs", { author: bob }),
+  ]);
+  const made = specViewAnswer(
+    [
+      decision("agents", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+          waiting_review: true,
+        },
+      }),
+      decision("mine", {
+        decision: { kind: "agent", links: [shaped(statementRef("r1"))], waiting_review: true },
+      }),
+      decision("bobs", {
+        decision: { kind: "agent", links: [shaped(statementRef("r2"))], waiting_review: true },
+      }),
+      treeNode(READER, "person", null, { role: "context", text: READER }),
+      treeNode(bob.id, "person", null, { role: "context", text: bob.id }),
+      treeNode("session-planner", "session", null, { role: "context", text: "planner" }),
+    ],
+    [
+      treeTuple("decided_by", "agents", "session-planner"),
+      treeTuple("decided_by", "mine", READER),
+      treeTuple("decided_by", "bobs", bob.id),
+    ]
+  );
+  const groups = specDecidedBy({
+    asksHeld: true,
+    checks: [],
+    decisions: decisionNodes(made, { issue: { key: KEY } }),
+    nameOf: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+  }).groups;
+
+  expect(
+    groups.flatMap((group) =>
+      group.runs.map((run) => ({
+        by: run.decision?.by,
+        head: run.decision?.id,
+        informed: run.statements.flatMap((one) => one.alsoShapedBy.map((other) => other.id)),
+        said: run.decision?.said,
+      }))
+    )
+  ).toEqual([
+    {
+      by: READER_ACTOR,
+      head: "decisions-md#b-mine",
+      informed: ["decisions-md#b-agents"],
+      said: "you",
+    },
+    { by: bob, head: "decisions-md#b-bobs", informed: ["decisions-md#b-agents"], said: "person" },
+  ]);
 });
 
 /** The type of every node of `tree`, its own first, each before its children's. */

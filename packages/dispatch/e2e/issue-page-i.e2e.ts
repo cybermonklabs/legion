@@ -559,9 +559,11 @@ async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
     nodes.add(id);
     words.set(id, stored);
   };
+  const answered = new Set<string>();
   for (const ask of await listIssueAsks(seeded.key)) {
     if (ask.kind !== "question") continue;
     add(askNodeId(ask, slugOf), ask.question);
+    if (ask.state === "answered") answered.add(ask.id);
   }
   for (const comment of await listComments(seeded.key)) {
     if (comment.anchor === null) add(comment.id, comment.body);
@@ -578,9 +580,13 @@ async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
   }
   // Each decision is a `decision` block of a document of the issue, which the decisions read's
   // entry names (`document`), drawn under that block's node with its own content's words
-  // (`decisionContent`); an entry that names no document is an ask, read above.
+  // (`decisionContent`); an entry that names no document is an ask, read above. A decision whose
+  // `from_ask` names an ask a person answered restates that answer, and the person's decision is
+  // the ask itself, so it is no row (`decision-nodes.ts`' `restatesAnswer`, INFRA-1196's decision
+  // 513).
   for (const entry of (await getIssueDecisions(seeded.key)).entries ?? []) {
     if (entry.document === null) continue;
+    if ((entry.from_ask ?? []).some((ask) => answered.has(ask))) continue;
     const id = blockNodeId(slug(entry.document.artifact_id), entry.document.block_id);
     add(id, decisionContent(entry).text);
   }
@@ -634,18 +640,20 @@ function heldIn(rows: readonly DrawnRow[], id: string): number {
 
 /** How many rows of each kind Conversation draws of `seedWholeIssue` with every branch open, from
  *  the seed's own record of what it wrote where it keeps one: the 12 requirements and the one
- *  citing a document, each check, the two comment threads with their replies, and the children.
- *  The rest it writes once each: the open question and the answered one. Conversation's read
- *  holds no result, plan task or message, and the comment anchored to a block is drawn beside
- *  that block and not as a row. The issue itself is no row, the summary's callout is the head's
- *  three sentences and no row, and no document and no file is a row. */
+ *  citing a document, each check, the two comment threads with their replies, the children, and
+ *  each decision but the second, which settles the answered question (`from_ask`) and so restates
+ *  the person's answer and is no row (INFRA-1196's decision 513). The rest it writes once each:
+ *  the open question and the answered one. Conversation's read holds no result, plan task or
+ *  message, and the comment anchored to a block is drawn beside that block and not as a row. The
+ *  issue itself is no row, the summary's callout is the head's three sentences and no row, and
+ *  no document and no file is a row. */
 function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
   return {
     ask: 2,
     check: seeded.checks.all.length,
     child_issue: seeded.children.keys.length,
     comment: seeded.comments.threads.length + seeded.comments.replies.length,
-    decision: seeded.decisions.length,
+    decision: seeded.decisions.length - 1,
     requirement: seeded.requirements.length + 1,
   };
 }
@@ -1071,8 +1079,9 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
     const check = blockNodeId(verificationSlug, SPINE_CHECK_BLOCK_ID);
 
-    // The decision that settles the answered ask stands under that ask once the model stores it
-    // there: the owed row below reads it.
+    // The decision that settles the answered ask shaped a requirement that ask did not, so it is
+    // an agent's decision standing under that ask once the model stores it there (INFRA-1196's
+    // decision 521): the owed row below reads it.
     // A node with no stored parent stands at the outline's top level, under no row: the issue
     // itself is no row.
     expect(
@@ -1296,10 +1305,16 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
 });
 
 // c-spine's decision under the question it settles: the model stores the decision under that
-// question, and the page invents no parent, so the row is guarded by `decisionUnderAskGate`
-// and stands where the read puts it on a base whose tree read answers no such parent.
-// SLOW(>=2s): two seeds, each loaded cold with its branches unfolded press by press.
-test("each node sits under the parent the model stores, and a decision stands under the question it settles", async ({
+// question, and the page invents no parent, so the row is guarded by `decisionUnderAskGate` on a
+// base whose tree read answers no such parent. Under INFRA-1196's decisions 513 and 521, a
+// decision whose `from_ask` names an answered question restates the person's answer only where
+// every node it shaped is a node that question shaped: `seedSpineCases`'s decision shaped a
+// requirement the question did not, so it is an agent's decision drawn under that question (root
+// R35), while `seedWholeIssue`'s second decision shaped nothing the question did not, so it draws
+// no row and an address naming its block lands on the question's row, focused (root R20).
+// SLOW(>=2s): two seeds, each loaded cold with its branches unfolded press by press, and the
+// second loaded again at the restating decision's address.
+test("each node sits under the parent the model stores, and a decision that restates the answer to the question it settles draws no row and its address lands on that question", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -1318,7 +1333,8 @@ test("each node sits under the parent the model stores, and a decision stands un
     );
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    // The decision sits under the ask it settles: the ask its block's `from_ask` names.
+    // The decision settles the ask its block's `from_ask` names, which a person answered, and
+    // shaped a requirement that ask did not, so it is an agent's decision drawn under that ask.
     const stored = ((await getIssueDecisions(seeded.key)).entries ?? []).find(
       (one) => one.document?.block_id === seeded.decisionBlockId
     );
@@ -1347,11 +1363,19 @@ test("each node sits under the parent the model stores, and a decision stands un
     );
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    // The decision that answers the issue's answered ask sits under that ask.
-    expect(
-      await parentOfRow(page, blockNodeId(specSlug, decision)),
-      "the decision that answers the ask is not drawn under it"
-    ).toBe(blockNodeId(specSlug, ANSWERED_QUESTION_BLOCK_ID));
+    // The decision that answers the issue's answered ask restates the person's answer: it draws
+    // no row, and its address lands on that ask.
+    await expect(
+      nodeRow(page, blockNodeId(specSlug, decision)),
+      "the decision that restates the person's answer draws a row"
+    ).toHaveCount(0);
+    await gotoIssue(page, `/issues/${seeded.key}#b-${decision}`);
+    await expectOpeningLanded(page);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the decision's address does not land on the ask it answers",
+      })
+      .toBe(blockNodeId(specSlug, ANSWERED_QUESTION_BLOCK_ID));
   });
 });
 
@@ -4667,10 +4691,12 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
     const statementBlock = requirementBlockId(2);
     const statement = blockNodeId(specSlug, statementBlock);
     const words = requirementText(2);
-    const heading = "Keep every address the old page answered";
-    // The decision's last words, which end its block, the spec's `## Decisions` part's second.
-    const closing = decisionClosingWords(seeded.key, 2, seeded.answeredAskId);
-    const decision = seeded.decisions[1] ?? "";
+    const heading = "Name every state with a word and a shape";
+    // The decision's last words, which end its block, the spec's `## Decisions` part's fourth,
+    // which cite no reference. The second's cite the answered ask: that decision restates the
+    // person's answer and draws no row (INFRA-1196's decision 513).
+    const closing = decisionClosingWords(seeded.key, 4, seeded.answeredAskId);
+    const decision = seeded.decisions[3] ?? "";
 
     /** Enter on the focused row, the caret in its node's block `blockId`, and the editor's own
      *  write of its selection after the focus passed. */
@@ -4798,7 +4824,8 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       },
     });
 
-    // Edit the agent's decision under the answered question, not the question that shaped a statement.
+    // Edit an agent's decision whose words cite no reference, not the question that shaped a
+    // statement.
     const inHeading = {
       artifactId: seeded.specArtifactId,
       blockId: decision,

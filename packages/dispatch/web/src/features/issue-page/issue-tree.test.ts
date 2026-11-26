@@ -2085,10 +2085,13 @@ test("a document chip names a part only where the issue read names that document
 // A decision sits under the ask it answers, where the tree read places it: under the issue's
 // own question, under the question a document's block is, by that block's node, and under the
 // issue where it answers none. The ask that places a decision is its spine, so no chip names it.
+// Each question here is still open: a decision whose `from_ask` names a question a person
+// answered restates their answer and is drawn nowhere (INFRA-1196's decision 513,
+// `decision-nodes.test.ts` and `IssueTree.test.tsx`).
 test("a decision sits under the ask it answers, and one that answers none under the issue", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const own = question("ask-own", { state: "answered" });
+  const own = question("ask-own");
   const inSpec = question("ask-block", {
     block_artifact: { id: spec.id, primary: true, slug: SPEC },
     block_id: "q1",

@@ -105,13 +105,15 @@ import { BodySlot } from "./slots/body";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
+import { blockNodeId } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   outlineQuery,
   type TreeAnswer,
   type TreeAnswerNode,
+  type TreeTuple,
 } from "./tree-read/tree-read";
 import { issueAskThreadsQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
@@ -8828,7 +8830,12 @@ function seedBodyReads(
   {
     comments,
     nodes = [],
-  }: { readonly comments?: readonly Comment[]; readonly nodes?: readonly TreeAnswerNode[] } = {}
+    tuples = [],
+  }: {
+    readonly comments?: readonly Comment[];
+    readonly nodes?: readonly TreeAnswerNode[];
+    readonly tuples?: readonly TreeTuple[];
+  } = {}
 ): void {
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
@@ -8837,10 +8844,10 @@ function seedBodyReads(
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   if (comments !== undefined) client.setQueryData(["comments", KEY], comments);
   client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(comments ?? [], nodes));
+  client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(comments ?? [], nodes, tuples));
   client.setQueryData(
     outlineQuery(KEY, "conversation").queryKey,
-    treeReadOf(comments ?? [], nodes)
+    treeReadOf(comments ?? [], nodes, tuples)
   );
 }
 
@@ -8851,14 +8858,15 @@ function seedBodyReads(
  *  no such node the answer holds no node at all. */
 function treeReadOf(
   comments: readonly Comment[],
-  nodes: readonly TreeAnswerNode[] = []
+  nodes: readonly TreeAnswerNode[] = [],
+  tuples: readonly TreeTuple[] = []
 ): TreeAnswer {
   const agentsOnly = agentsOnlyIds(comments, undefined, []);
   const turns = comments
     .filter((comment) => !agentsOnly.has(comment.id))
     .map((comment) => commentNode(comment));
   const held = [...nodes, ...turns];
-  return treeAnswer(held.length === 0 ? [] : [treeNode(KEY, "issue", null), ...held]);
+  return treeAnswer(held.length === 0 ? [] : [treeNode(KEY, "issue", null), ...held], tuples);
 }
 
 /** A question as the tree read answers it: a node under the issue, with its words and who asked
@@ -9196,17 +9204,19 @@ function renderAddressedBody(
   {
     issue = { ...issueDetails(), artifacts: [] },
     nodes = [],
+    tuples = [],
     unread = [],
   }: {
     readonly issue?: IssueDetails | undefined;
     readonly nodes?: readonly TreeAnswerNode[];
+    readonly tuples?: readonly TreeTuple[];
     readonly unread?: readonly QueryKey[];
   } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  seedBodyReads(client, { comments, nodes });
+  seedBodyReads(client, { comments, nodes, tuples });
   for (const queryKey of unread) client.removeQueries({ queryKey });
   // The view reads a load of the stage sends with it, Plan's among them (`ViewReadProvider`),
   // answered with no node.
@@ -9218,15 +9228,17 @@ function renderAddressedBody(
   const held: { navigate?: NavigateFunction } = {};
   let drawn = issue;
   const draw = () => (
-    <MemoryRouter initialEntries={[path]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedBody held={held} issue={drawn} Slot={Slot} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
+    <ReferenceNamesProvider>
+      <MemoryRouter initialEntries={[path]}>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <AddressedBody held={held} issue={drawn} Slot={Slot} />
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    </ReferenceNamesProvider>
   );
   const view = render(draw());
   return {
@@ -10955,6 +10967,175 @@ test("a block or the children an address names that the tree holds none of draw 
       expect(body.view.queryByRole("tree"), `${path} drew the outline beside its line`).toBeNull();
       body.view.unmount();
     }
+  } finally {
+    names.mockRestore();
+  }
+});
+
+/** The tree read's nodes of an answered question and the two decisions the read stands under it
+ *  (INFRA-1196's decision 513): `d-restates`, whose `from_ask` names the question and which
+ *  restates the person's answer, with the agent's reading of it under it, and `d-untied`, which
+ *  names no `from_ask`. The read answers a person's decision on the question, as it does on every
+ *  ask a person answered. */
+const RESTATED_QUESTION: readonly TreeAnswerNode[] = [
+  treeNode("a-answered", "ask", KEY, {
+    decision: {},
+    text: "Which addresses must the new page still answer?",
+  }),
+  treeNode("d-restates", "decision", "a-answered", {
+    decision: { asks: ["a-answered"], waiting_review: true },
+    document: { artifact_id: specDocument.id, position: 1, slug: specDocument.slug },
+    text: "Keep every address the old page answered.",
+  }),
+  treeNode("g-restates", "reading", "d-restates", {
+    document: { artifact_id: specDocument.id, position: 2, slug: specDocument.slug },
+    text: "The agent reads the answer so.",
+  }),
+  treeNode("d-untied", "decision", "a-answered", {
+    decision: { waiting_review: true },
+    document: { artifact_id: specDocument.id, position: 3, slug: specDocument.slug },
+    text: "Fold to the frontier and not to a depth.",
+  }),
+];
+
+// INFRA-1196's decision 513: a decision whose `from_ask` names a question a person answered
+// restates the answer, and the person's decision is the question itself, so the outline draws no
+// row for it. What the read hangs under it stands under the question, its nearest drawn ancestor.
+// The test is the tie, not the place: a decision the read stands under the same question that
+// names no `from_ask` is drawn there as an agent's decision.
+test("the outline draws no row for a decision that restates a person's answer, and draws one under that question with no from_ask tie", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-untied`, [], BodySlot, {
+      nodes: RESTATED_QUESTION,
+    });
+    const untied = blockNodeId(specDocument.slug, "d-untied");
+    await waitFor(() => expect(focusedRow(view.container)).toBe(untied));
+    const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+      (row) => [row.getAttribute("data-node-id"), row.getAttribute("aria-level")]
+    );
+    expect(drawn).toEqual([
+      ["a-answered", "1"],
+      [blockNodeId(specDocument.slug, "g-restates"), "2"],
+      [untied, "2"],
+    ]);
+    expect(rowsFor(view.container, untied)[0]?.getAttribute("data-node-type")).toBe("decision");
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// Root R20: no citation of a node dangles. The tree holds no node of a decision that restates a
+// person's answer, so an address naming its block lands on the question it restates, focused,
+// by the rule every view lands an address by (`pathToTarget`), and draws no line that the outline
+// holds no row of the block.
+test("an address naming a decision that restates a person's answer lands on the question it restates", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-restates`, [], BodySlot, {
+      nodes: RESTATED_QUESTION,
+    });
+    await waitFor(
+      () => expect(focusedRow(view.container), "the address landed nowhere").toBe("a-answered"),
+      {
+        onTimeout: () =>
+          new Error(
+            `the address landed nowhere; ${view.queryByRole("heading", { name: "No row for this block" }) === null ? "no" : "the"} line that the outline holds no row of the block was drawn`
+          ),
+      }
+    );
+    expect(view.queryByRole("heading", { name: "No row for this block" })).toBeNull();
+    expect(rowsFor(view.container, blockNodeId(specDocument.slug, "d-restates"))).toEqual([]);
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// INFRA-1196's decision 521 narrows decision 513: a decision whose `from_ask` names an answered
+// question and whose `shaped` tie names a node that question did not shape does not restate the
+// person's answer (as in Part I's `seedSpineCases`), so the outline draws it as an agent's
+// decision under that question, with its chip naming the node it shaped (root R35).
+test("the outline draws a decision under the answered question it settles when it shaped a node the question did not, with its chip", async () => {
+  setViewport(1440);
+  const shapedId = `${KEY}/${specDocument.slug}#r-shaped`;
+  const shapedRef = `dispatch://${KEY}/spec#b-r-shaped`;
+  const shapedText = "A decision links this requirement while the answered question does not.";
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [
+      {
+        exists: true,
+        kind: "block",
+        name: shapedText,
+        ref: shapedRef,
+        text_tree: readingOf(shapedText),
+      },
+    ],
+  } as never);
+  const nodes: readonly TreeAnswerNode[] = [
+    treeNode("r-shaped", "requirement", KEY, {
+      document: { artifact_id: specDocument.id, position: 0, slug: specDocument.slug },
+      text: shapedText,
+      text_tree: readingOf(shapedText),
+    }),
+    treeNode("a-answered", "ask", KEY, {
+      decision: {},
+      text: "Which node does a requirement with no parent sit under?",
+    }),
+    treeNode("d-shapes", "decision", "a-answered", {
+      decision: {
+        asks: ["a-answered"],
+        links: [
+          {
+            changed_since_tie: false,
+            created_at: "2026-11-05T00:00:00Z",
+            created_version: 1,
+            from_block: "d-shapes",
+            stale: false,
+            to: {
+              changed_at: null,
+              changed_by: null,
+              id: shapedId,
+              kind: "block",
+              made_at: null,
+              made_by: null,
+              parent: null,
+              parent_version: null,
+              ref: shapedRef,
+            },
+          },
+        ],
+        waiting_review: true,
+      },
+      document: { artifact_id: specDocument.id, position: 1, slug: specDocument.slug },
+      text: "Link a requirement the question does not.",
+    }),
+  ];
+  try {
+    const decisionId = blockNodeId(specDocument.slug, "d-shapes");
+    const requirementId = blockNodeId(specDocument.slug, "r-shaped");
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-shapes`, [], BodySlot, {
+      issue: { ...issueDetails(), artifacts: [specDocument], primary_artifact_id: specDocument.id },
+      nodes,
+      tuples: [treeTuple("shaped", "d-shapes", "r-shaped")],
+    });
+    await waitFor(() => expect(focusedRow(view.container)).toBe(decisionId));
+    const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+      (row) => [row.getAttribute("data-node-id"), row.getAttribute("aria-level")]
+    );
+    expect(drawn).toEqual([
+      [requirementId, "1"],
+      ["a-answered", "1"],
+      [decisionId, "2"],
+    ]);
+    const row = rowsFor(view.container, decisionId)[0];
+    expect(row?.getAttribute("data-node-type")).toBe("decision");
+    await waitFor(() => {
+      const chip = row?.querySelector<HTMLAnchorElement>("[data-node-chip] [data-chip-name]");
+      expect(chip?.getAttribute("href")).toBe(`/issues/${KEY}/spec#b-r-shaped`);
+      expect(chip?.textContent).toContain("A decision links this");
+    });
   } finally {
     names.mockRestore();
   }
