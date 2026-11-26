@@ -476,6 +476,9 @@ func (w *outsideWalk) relaunch() {
 		}
 		w.step("the relaunch's turn", func() error { h.advanceToTurn(h.m); return nil })
 	}
+	// own is whether the record the relaunched role is told is the one the ended launch's own end
+	// made: a record of an earlier launch still untold keeps its own words (leaveRecord).
+	own := h.claim().EndedWork.Generation == w.generation
 	w.step("the relaunch's ready", func() error {
 		h.relaunched()
 		return nil
@@ -491,7 +494,7 @@ func (w *outsideWalk) relaunch() {
 		if w.relaunchedDeath && strings.Contains(p.Message, endFromOutside) {
 			w.fail("the relaunched role was sent %q, want a death died judged never told as an end from outside the pod", p.Message)
 		}
-		if (w.relaunchedDisplacement || w.outside) && strings.Contains(p.Message, "the process died") {
+		if own && (w.relaunchedDisplacement || w.outside) && strings.Contains(p.Message, "the process died") {
 			w.fail("the relaunched role was sent %q, want a displacement or an end decided from outside the pod never told as a death", p.Message)
 		}
 	}

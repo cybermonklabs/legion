@@ -78,10 +78,11 @@ type EndedWork struct {
 	// (runtime.Observation.Displaced). It is written where the record is made (recordDisplaced,
 	// markDisplaced), as Died and FromOutside are, never read off Cause, and it is what a later
 	// report of the process read neither way finds that judgement by (judge, recordedDisplaced):
-	// the first judgement of a process stands, and a displacement is one, so such a report is
-	// that displacement again, charged nothing, and never a death. A later report read as from
-	// outside the pod types the record as one from outside the pod and leaves this as it is
-	// (markFromOutside), so the record still says displaced judged the end first.
+	// the first judgement of a process stands, and a displacement is one, so such a report over
+	// no death died judged first (judgedDeath) is that displacement again, charged nothing, and
+	// never a death. A later report read as from outside the pod types the record as one from
+	// outside the pod and leaves this as it is (markFromOutside), so the record still says
+	// displaced judged the end first.
 	//
 	// It is the second exception to the rule FromOutside states: a displacement always leaves a
 	// record of its launch's end, whatever that end ended, told already by no delivery where it
@@ -91,6 +92,16 @@ type EndedWork struct {
 	// reads as no displacement, so a later report of that end read neither way goes to died, as
 	// it did on that daemon.
 	Displaced bool `json:"displaced,omitempty"`
+	// Outlived is whether a verdict that found the process running ended the death judgement this
+	// record carried (reportedProcess clears Died and sets this): the process ran on, so what a
+	// later end of it cuts off is that end's own to record and tell. recordEnd records such an
+	// end afresh over this record, with its own turn, task and report, untold, under its own
+	// cause and type, joined with this one while this still tells, as for a first end of the
+	// launch. Where that end ends nothing worth telling, the judgement it is types this record
+	// under its own cause instead (unjudgedRecord). Every write of a type clears it. It is stored
+	// in the claim's JSON with the rest of the record, and an earlier daemon reading the row
+	// passes over the key.
+	Outlived bool `json:"outlived,omitempty"`
 	// Generation is the launch whose process this records the end of, which is what keeps one
 	// process's end to one record: a decision that records the end of a process it already knows
 	// is gone (died, displaced) and the let-go that follows it in the same decision or at a wake's
@@ -297,9 +308,18 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // they find is the whole of what that process's end did and the let-go they lead to can be a
 // wake's turn away.
 //
-// It records nothing for a claim that records no process, for noEnd, and for a launch whose end
-// is recorded already (EndedWork.Generation). Otherwise it reads what it decides on: whether a
-// turn was running (the claim is working for one: endState), whether the pending task's turn was
+// It records nothing for a claim that records no process, for noEnd, for a launch whose end is
+// recorded already (EndedWork.Generation), and for a process whose end is decided
+// (Claim.DeathCharged): the decision recorded what that end ended before it decided it, died
+// and endedFromOutside alike, or found nothing worth recording, and that stands through every
+// let-go of that process — the relaunch's, run in the decision or at a wake's turn, a held
+// suspension's, a failure's — and every later report of it. Read again here, the launch's
+// activity could answer otherwise than it did for the decision, a store that refuses the read
+// among them, and a role whose death ended nothing worth telling would be told that its process
+// died (queueRelaunch). A verdict that finds the process running clears the decision
+// (reportedProcess), so the next end of that process is recorded as its own. Otherwise it reads
+// what it decides on: whether a turn was running (the claim is working for one: endState),
+// whether the pending task's turn was
 // cut off (this let-go's own decision took the task back, whatever the claim's state: cutTurnOf;
 // or the turn that was running had confirmed it), and the launch's own activity report from the
 // store (launchActivity), read here because the machine's claim holds only what it read at its
@@ -364,7 +384,12 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 	if cause == noEnd || m.claim.Locator == nil {
 		return
 	}
-	if held := m.claim.EndedWork; held.Cause != "" && held.Generation == m.claim.Generation {
+	if m.claim.DeathCharged {
+		return
+	}
+	// A record of this launch stands for its end, but one a running verdict outlived
+	// (EndedWork.Outlived): the process ran on after it, so this end is recorded as its own.
+	if held := m.claim.EndedWork; held.Cause != "" && held.Generation == m.claim.Generation && !held.Outlived {
 		return
 	}
 	state := m.endState()

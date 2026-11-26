@@ -676,8 +676,8 @@ func (o outsideOrder) d1Fails() bool {
 
 // wantStoredAtD1 fails unless D1's store holds what the row says before the next event: the
 // record of the ended launch typed as an end from outside the pod, or displaced's record of it
-// untyped where displaced judged the end first, the decision, and the task still confirmed where
-// the take-back did not land, taken back where it did.
+// typed as displaced's where displaced judged the end first, the decision, and the task still
+// confirmed where the take-back did not land, taken back where it did.
 func (o outsideOrder) wantStoredAtD1(h *harness, task string, read uint64) {
 	h.t.Helper()
 	stored := h.store.load(h.token)
@@ -686,7 +686,7 @@ func (o outsideOrder) wantStoredAtD1(h *harness, task string, read uint64) {
 		h.t.Fatalf("D1's store holds the record %+v and deathCharged=%v, want the record of the end stored %v and the decision stored %v",
 			stored.EndedWork, stored.DeathCharged, o.recordStored, o.decisionStored)
 	}
-	if got := stored.EndedWork; o.displacedFirst && (got.Cause != endDisplaced || got.Generation != read) {
+	if got := stored.EndedWork; o.displacedFirst && (got.Cause != endDisplaced || !got.Displaced || got.Generation != read) {
 		h.t.Fatalf("D1's store holds the record %+v, want displaced's record of the ended launch %d", got, read)
 	}
 	if task == "" {
