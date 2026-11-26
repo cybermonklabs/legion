@@ -22,9 +22,24 @@ What the work taught is a `dispatch comment` for the skill librarian; no role wr
 
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do not call `handoff_complete`:
 send the command and its output to the architect's topic on your `Legion addressing` line.
-A defect you find in the work, other than a bot thread that step 1 sends back, goes to the architect with its evidence, and you hold your completion until it answers:
-while retro holds the phase, `request_backward_move` is yours, and `handoff_complete` takes it away.
-End each turn of that hold with a WAITING line naming the defect and the answer you wait on.
+
+## A defect you find
+
+A defect you find in the change goes to the issue's next change, and your retro goes on.
+Call the `legion` tool's `report_defect` with `issue`, `defect` and `head`, then do the remaining steps and complete.
+`defect` says what is wrong and gives its evidence: a file and line, or a command and what it printed.
+`head` is the head of the pull request that you read in step 1.
+Do not call `request_backward_move` for a defect, and do not hold your completion for an answer.
+Only these send the work back from retro:
+
+- a check with no pass standing at the head (step 1)
+
+- an approved new version of the design that makes the work stale (a news task)
+
+- a check of the goal that another of your texts gives retro, for an unmet requirement of the approved spec
+
+When one of them sends the work back, name in its `reason` each defect you found, and do not report those defects with `report_defect`.
+A refusal of `report_defect` is a step that failed: stop as *When retro stops* says.
 
 ## Steps
 
