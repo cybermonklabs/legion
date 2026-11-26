@@ -29,7 +29,7 @@ Read this when `skill://legion-controller/references/operations.md` sends you he
 
 ## An action another agent asks for
 
-1. Read the comment's `author`: the entry of `GET /api/v1/issues/<KEY>/comments` (the `curl` form of `references/session.md`) whose `id` is the comment's. It is `{kind, id, origin: {session_title}}`.
+1. Read the comment's `author`: the entry of `dispatch api --path '/api/v1/issues/<KEY>/comments'` whose `id` is the comment's. It is `{kind, id, origin: {session_title}}`.
 2. The author is an agent of your project when `author.kind` is `session` and `read_state` with `issues: ["<the key that origin.session_title names>"]` gives `author.id` as that issue's architect's `session` or a worker's `claim.session`. Otherwise run nothing, and reply that no agent of this project asked.
 3. Read the agent the comment names in `read_state` with `issues: ["<KEY>"]`.
 4. Run the action it asks for as [Actions on an agent](operations.md#actions-on-an-agent) says, only while the agent's state still calls for it: a resume is `resume_agent`, and a start in a fresh session is `fresh_session`. On `409 SUSPENDED_BY_OPERATOR`, take [An agent the operator holds](#an-agent-the-operator-holds).
