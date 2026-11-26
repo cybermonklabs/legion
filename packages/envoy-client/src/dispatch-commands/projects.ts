@@ -102,8 +102,9 @@ export async function projectUpdateCommand(context: CommandContext): Promise<Dis
         ? await client.turnOnProvenSessions(key, { actor })
         : await client.turnOffProvenSessions(key);
   } catch (error) {
-    // OAUTH_SCOPE_REQUIRED (an off without the person scope) and PROJECT_SCOPE (a token of
-    // another project) ask for different things, and the description names both by code.
+    // OAUTH_SCOPE_REQUIRED (an off without the person scope) and PROJECT_SCOPE (a token scoped
+    // to one project, for a project that does not exist or a private project that it does not
+    // name) ask for different things, and the description names both by code.
     throw refusalWithCode(error);
   }
   const setting = project.proven_sessions ? "on" : "off";
