@@ -63,7 +63,7 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 		says []string
 	}{
 		{"no --connect", append([]string{"--boot-token-file", token}, omp...), 1, []string{"--connect is required"}},
-		{"a malformed --connect", append([]string{"--connect", "tcp://127.0.0.1", "--boot-token-file", token}, omp...), 1, []string{"--connect", `"tcp://127.0.0.1"`}},
+		{"a malformed --connect", append([]string{"--connect", "tcp://127.0.0.1", "--boot-token-file", token}, omp...), 1, []string{"--connect must be unix:///<path> or tcp://<host>:<port> (the value given is not printed)"}},
 		{"no --boot-token-file", append([]string{"--connect", connect}, omp...), 1, []string{"--boot-token-file"}},
 		{"an unreadable token file", append([]string{"--connect", connect, "--boot-token-file", filepath.Join(dir, "absent")}, omp...), 1, []string{"--boot-token-file " + filepath.Join(dir, "absent") + " is unreadable"}},
 		{"a blank token file", append([]string{"--connect", connect, "--boot-token-file", blank}, omp...), 1, []string{"--boot-token-file " + blank + " is blank"}},
@@ -528,9 +528,9 @@ exit 9
 
 // The shim's lines and its refusals pass the URL rule. An Oh My Pi extension that failed on a
 // URL carrying a user name and a token in its query is shown on the pane as the shim summarizes
-// an extension_error event (internal/shim's summarize), and a --connect the shim refuses is
-// quoted in its refusal: each keeps the URL's host and path, and neither the user name nor the
-// token reaches the pane.
+// an extension_error event (internal/shim's summarize), keeping the URL's host and path, and a
+// --connect the shim refuses is refused naming the flag alone: neither the user name nor the token
+// reaches the pane.
 func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
@@ -564,7 +564,7 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 			name:  "a --connect the shim refuses",
 			args:  []string{"--connect", "tcp://legion-reader@127.0.0.1:1/?token=planted-query-token-2", "--boot-token-file", token, "--", "true"},
 			code:  1,
-			shown: `got "tcp://127.0.0.1:1/"`, planted: "planted-query-token-2",
+			shown: "--connect must be unix:///<path> or tcp://<host>:<port> (the value given is not printed)", planted: "planted-query-token-2",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
