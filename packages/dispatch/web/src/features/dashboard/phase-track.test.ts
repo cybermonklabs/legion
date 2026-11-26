@@ -105,7 +105,8 @@ const PHASE_TABLE: readonly PhaseRow[] = [
     configured: true,
     phase: "awaiting_children",
     row: "awaiting_children",
-    track: { words: PHASE_WORDS.another },
+    // R3's step and words as written, not through the page's list.
+    track: { marked: "admitted", words: "Waiting on children" },
   },
   ...EACH_STEP,
   { body: done, configured: true, phase: "done", row: "done", track: undefined },
