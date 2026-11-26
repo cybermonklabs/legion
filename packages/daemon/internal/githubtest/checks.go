@@ -325,8 +325,8 @@ func (c *Checks) checkRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.mu.Lock()
-	left := slices.Clone(c.runs[repo+"@"+sha])
-	served := left
+	left := checkRunsFiltered(c.runs[repo+"@"+sha], asked.filter)
+	served := checkRunsPage(left, asked.perPage, asked.page)
 	c.reads = append(c.reads, CheckRunsRead{At: time.Now(), Repo: repo, SHA: sha,
 		Filter: asked.filter, PerPage: asked.perPage, Page: asked.page, Runs: served})
 	c.mu.Unlock()
@@ -362,11 +362,6 @@ const (
 // runs it asked to leave out.
 func checkRunsQueryOf(query url.Values) (checkRunsQuery, string) {
 	asked := checkRunsQuery{filter: checkRunsLatest, perPage: checkRunsPerPage, page: 1}
-	for name := range query {
-		if name != "filter" && name != "per_page" && name != "page" {
-			return asked, fmt.Sprintf("the listing's %s is no parameter this fake models", name)
-		}
-	}
 	if raw := query.Get("filter"); raw != "" {
 		if raw != checkRunsLatest && raw != checkRunsAll {
 			return asked, fmt.Sprintf("filter %q is neither latest nor all", raw)
