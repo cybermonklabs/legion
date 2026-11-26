@@ -46,6 +46,8 @@ import {
   reviewState,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
+import { lensChips, lensDrafts } from "../lenses/lens-drafts";
+import { storeWords } from "../lenses/store-words";
 import {
   blockAttributeLabel,
   coverageNotes,
@@ -194,6 +196,9 @@ export interface TreeDraftContext extends TreeWords {
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
    *  none stands. */
   readonly placeOf: (node: TreeAnswerNode) => string[];
+  /** The node's own `dispatch://` address, as its draft carries it (`referenceOf`), or undefined
+   *  where it has none. */
+  readonly referenceOf: (node: TreeAnswerNode) => string | undefined;
   /** The id the tree draws the node `readId` names by (`treeIdOf`). */
   readonly treeIdOf: (readId: string) => string;
   /** The id the tree draws `node` by, read from the node itself (`treeIdOfNode`). */
@@ -231,6 +236,7 @@ export type TreeDraftMark = (
  * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
+  lensDrafts,
   draftRequirement,
   draftServing,
   draftResult,
@@ -247,6 +253,8 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
  *  This part adds none: a member of its drafts is its own step's. */
 export const treeDraftMarks: readonly TreeDraftMark[] = [
   // A later part adds its mark here, one line each.
+  lensChips,
+  storeWords,
 ];
 
 /**
@@ -332,6 +340,7 @@ export function treeDraftsFrom(
       }
       return [];
     },
+    referenceOf: (node) => referenceOf(node, drafting),
     treeIdOf: idOf,
     treeIdOfNode: idOfNode,
     tuplesFrom: lookup.tuplesFrom,
