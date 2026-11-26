@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -549,9 +552,14 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 // request's context already does, and context.WithoutCancel on it dropped the bound with the
 // cancellation, so a close held on the issue's owner lock kept its background-work slot, and the
 // shutdown's wait for it, as long as that lock stayed held.
+//
+// The bound runs on the server's clock (Deps.Clock), which the test moves past it only once the
+// close waits on the lock, and never during the repeat: how long a loaded machine takes to bring
+// either close there decides nothing.
 func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
 	t.Parallel()
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	fake := clocktest.New(time.Now())
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while its owner lock is held", "Context\n")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
@@ -574,10 +582,17 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(
 	}
 
 	closing := map[string]any{"status": "done"}
+	bound := fake.Now().Add(served.requestKeyRunLimit)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		answered <- keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, closing, "alice", "close-held")
 	}()
+	if early, answeredFirst, _ := storetest.AwaitOwnerLockWaiter(t, database, "the close's settlement", answered); answeredFirst {
+		t.Fatalf("the close answered status=%d body=%s before its settlement waited on the issue's owner lock, with its run's bound not yet come",
+			early.Code, early.Body.String())
+	}
+	requireRunBoundArmed(t, fake, bound)
+	fake.Set(bound)
 	// The owner lock is still held, so a close its run's bound did not end never answers.
 	if response := testwait.Receive(t, "the close held on the issue's owner lock to end at its run's bound", answered); response.Code < http.StatusInternalServerError {
 		t.Fatalf("a close held past its run's bound: status=%d body=%s, want a 5xx that releases its key",
@@ -603,19 +618,22 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(
 
 // closeCommitHold is the document service with a pause between a close's commit and its sweep: the
 // sweep's own Join, the first document call it makes, which comes once the close's transaction has
-// committed and before the sweep takes the issue's owner lock (sweepClosedIssueAsksTx), closes committed
-// and returns only once release is closed. The close's own transaction joins first, and that join
-// passes straight through: the count of joins since the hold was installed is what tells the two
-// apart, and only the sweep's pauses.
+// committed and before the sweep takes the issue's owner lock (sweepClosedIssueAsksTx), records the
+// backend the sweep's transaction runs on in sweep, closes committed and returns only once release
+// is closed. The close's own transaction joins first, and that join passes straight through: the
+// count of joins since the hold was installed is what tells the two apart, and only the sweep's
+// pauses.
 type closeCommitHold struct {
 	docs.API
 	joins     atomic.Int32
+	sweep     uint32
 	committed chan struct{}
 	release   chan struct{}
 }
 
 func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context, *docs.Ledger) {
 	if h.joins.Add(1) == 2 {
+		h.sweep = tx.Conn().PgConn().PID()
 		close(h.committed)
 		<-h.release
 	}
@@ -627,9 +645,15 @@ func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context,
 // of its own (sweepClosedIssueAsksTx); on context.WithoutCancel of the keyed request's context it
 // waited for as long as another writer held the lock, past the bound, holding the keyed run's
 // background-work slot all the while.
+//
+// The bound runs on the server's clock (Deps.Clock), which the test moves past it only once the
+// sweep waits on the lock. On the wall clock the bound came a second after the run began whatever
+// the close had done by then, and a close a loaded machine kept past that second ended before its
+// sweep, which the test then waited for until the test binary's deadline (INFRA-3904).
 func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
 	t.Parallel()
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	fake := clocktest.New(time.Now())
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Swept while its row is held", "Context\n")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
@@ -643,11 +667,26 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 	releaseHold := sync.OnceFunc(func() { close(hold.release) })
 	t.Cleanup(releaseHold)
 
+	bound := fake.Now().Add(served.requestKeyRunLimit)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		answered <- keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice", "close-swept")
 	}()
-	testwait.Receive(t, "the close to commit", hold.committed)
+	// The sweep's join, or the close's answer if it ends without sweeping: the held join keeps the
+	// close from answering, so only one of the two comes.
+	if early := testwait.Until(t, "the close to commit and its sweep to join", func() (*httptest.ResponseRecorder, bool) {
+		select {
+		case <-hold.committed:
+			return nil, true
+		case response := <-answered:
+			return response, true
+		default:
+			return nil, false
+		}
+	}); early != nil {
+		t.Fatalf("the close answered status=%d body=%s without sweeping, with its run's bound not yet come",
+			early.Code, early.Body.String())
+	}
 	// Another writer takes the issue's owner lock between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -660,6 +699,12 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
 	releaseHold()
+	if early, answeredFirst := storetest.WaitForQueuedBehind(t, holder, hold.sweep, answered); answeredFirst {
+		t.Fatalf("the close answered status=%d body=%s before its sweep waited on the issue's owner lock, with its run's bound not yet come",
+			early.Code, early.Body.String())
+	}
+	requireRunBoundArmed(t, fake, bound)
+	fake.Set(bound)
 	// The owner lock is still held, so a sweep its run's bound did not end never lets the close answer.
 	if response := testwait.Receive(t, "the close whose sweep is held on the issue's owner lock to answer at its run's bound", answered); response.Code != http.StatusOK {
 		t.Fatalf("a close whose sweep ended at its run's bound: status=%d body=%s, want the committed close's 200",
@@ -672,5 +717,17 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 	}
 	if !closed {
 		t.Fatal("the close whose sweep ended at its bound left the issue open")
+	}
+}
+
+// requireRunBoundArmed fails the test unless the keyed run's bound, at, is pending on fake, the
+// server's clock. The run arms it before its handler starts (keyedWrites), so by the time the
+// close waits on a lock it is armed or it never will be, and the test names what is pending
+// rather than waiting for it.
+func requireRunBoundArmed(t *testing.T, fake *clocktest.Fake, at time.Time) {
+	t.Helper()
+	if armed := fake.Armed(); !slices.ContainsFunc(armed, at.Equal) {
+		t.Fatalf("the close's run bound, %v, is not pending on the server's clock, which holds %v: the run is not bounded on that clock",
+			at.Format(time.RFC3339Nano), armed)
 	}
 }

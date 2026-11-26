@@ -470,7 +470,9 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		s.detached.start()
 		defer s.detached.done()
-		detached, stop := context.WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
+		// The run's bound is on the server's clock (Deps.Clock): a test that drives a fake decides
+		// when it comes, whatever a loaded machine took to bring the handler there.
+		detached, stop := s.clock().WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
 		defer stop()
 		stopRenewing := s.renewRequestKeyLease(detached, claim)
 		answer := &keyedAnswer{w: w}
@@ -542,7 +544,7 @@ func (s *server) keyLease() time.Duration {
 }
 
 // keyedRunLimit is how long a keyed handler runs once its client's cancellation no longer bounds
-// it (keyedHandlerLimit; requestKeyRunLimit in a test).
+// it (keyedHandlerLimit; requestKeyRunLimit in a test), on the server's clock.
 func (s *server) keyedRunLimit() time.Duration {
 	if s.requestKeyRunLimit > 0 {
 		return s.requestKeyRunLimit
