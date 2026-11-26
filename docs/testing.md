@@ -623,6 +623,28 @@ bound that the parallel tests' load could make it miss, which the comment names 
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
 
+## A test in the broker's `requests`, `api` or `cmd/cipherd` package runs beside the others
+
+Every top-level test of `packages/envoy/internal/cipher/requests`,
+`packages/envoy/internal/cipher/api` and `packages/envoy/cmd/cipherd` (the `multiprocess` build's
+included) either calls `t.Parallel()` as its first statement or has a `// Not parallel:` comment
+as its first line, and each package's `TestMain` runs 4 at once (`requestsTestParallelism`,
+`apiTestParallelism`, `cipherdTestParallelism`), the runner's core count. Each test already has a
+database of its own (`storetest.URL`), so its migration and its brokers' advisory locks wait on no
+other test.
+
+A test stays serial when it, or a helper it calls, changes or reads back something the whole test
+process shares: the default logger (`logtest.SetDefault`, `logtest.Swap`, `slog.SetDefault`,
+`policytest.CaptureLog`'s `log.SetFlags`), the environment (`t.Setenv`), or a package variable. It
+stays serial too when it holds code to a bound on a measured time that the parallel tests' load
+could push past, or to a product latency carried by a context's deadline, as the judge's
+`JudgeRowReserve` and the half of what is left that `LogJudged`'s read of a landed approval spends.
+The comment names that call or that bound by what it is (`logtest.SetDefault`, `` `took >=
+time.Second` ``), never by a file and line, which the next edit above it would make false.
+`internal/textcheck`'s `TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers` fails on a top-level
+test of the three packages with neither first line, and on a `// Not parallel:` comment that names
+a line.
+
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
@@ -764,6 +786,19 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
+The broker's `packages/envoy/internal/cipher/store/storetest` (`URL`, `Open`) copies a template too,
+in three ways unlike these two. The template is the server's, `broker_template_<digest of the
+embedded migrations>`, made once under an advisory lock taken in the server's `postgres` database,
+and nothing drops it: every broker test binary of a run, and of every later run of the same
+migrations on that server, copies it, so no binary owns it. A test drops its own copy in its own
+cleanup (`testdb.DatabaseOn` with the template) and waits for that drop's checkpoint, since no broker
+package has a `TestMain` that would wait for drops left running. And each create and drop opens a
+connection of its own, so no pool outlives a test. CI gives each job a server of its own; on a
+server that outlives runs, as a dev box's does, each set of migrations leaves one template, and a
+change to how `Migrate` applies the files that leaves them as they are reuses the template the
+earlier code built. `drop database broker_template_<digest>` makes the next run build it again, and
+the `broker_test_<hex>` copies a killed test binary left are dropped the same way when no run is
+going.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
