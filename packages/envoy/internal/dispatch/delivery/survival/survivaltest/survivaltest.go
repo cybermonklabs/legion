@@ -11,6 +11,9 @@
 // configuration or credential a pod hands its processes reaches it (docs/testing.md, "A test that
 // starts jj or git inherits no pod's environment"). The git it runs is the one exec.LookPath
 // finds on the process's PATH, and the PATH it runs under is that git's directory alone.
+//
+// It also reads the directory the reference run's prepare.sh writes (reference.go), which the
+// survival package's reference tests and the code-survival run's live test compare with.
 package survivaltest
 
 import (
