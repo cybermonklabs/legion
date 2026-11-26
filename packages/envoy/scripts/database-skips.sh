@@ -22,9 +22,11 @@
 # `--timeout D` sets the -timeout, and without it the -timeout is ${GO_TEST_TIMEOUT:-15m}. The
 # -timeout bounds each package's test binary, not the run, since go test runs the packages
 # several at a time, so a caller that must bound the run sets a limit of its own (CI's steps do).
-# `--skip PATTERN` is go test's -skip, for a test another step of the same job runs in the same
-# build and environment (envoy-go's backend count): go test reports nothing for a test -skip
-# leaves out, so it is neither run twice nor counted as a skip here.
+# `--skip PATTERN` is go test's -skip, for a test another job runs in the same build: envoy-go's
+# unit legs leave out the backend count's tests, which envoy-go-skips runs, the rows whose bound is
+# on time, which envoy-go-alone runs, and the web display fixture's two, which envoy-go-build runs.
+# go test reports nothing for a test -skip leaves out, so it is neither run twice nor counted as a
+# skip here.
 # `--count-table` runs every PACKAGE and counts the skips of DEFAULT_PACKAGES' packages (less
 # DEFAULT_EXCEPT) among them alone: envoy-go's unit legs run their packages so
 # (.github/go-legs.yaml), each leg a share of the module, and the broker's packages share a leg's

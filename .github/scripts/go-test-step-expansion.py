@@ -157,6 +157,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import go_legs
 import yaml
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
 
@@ -202,13 +203,16 @@ ENVOY_RACE_STEP = ("Race-test delivery, the store, the bus, the listener, the re
 def leg_step(workflow: str, step: str, job: str, package: str) -> tuple[str, str]:
     """The key of the row of a legs step that runs `package` of packages/envoy: the step's name
     with the leg .github/go-legs.yaml gives the package under `job`, as steps_of labels each row
-    of a matrix job, so a package moved to another leg moves the exception with it."""
-    entry = (yaml.safe_load((ROOT / ".github/go-legs.yaml").read_text()) or {}).get("packages/envoy") or {}
-    legs = [leg for leg, packages in (entry.get(job) or {}).items() if package in (packages or [])]
-    if len(legs) != 1:
-        raise SystemExit(f"go-test-step-expansion.py: .github/go-legs.yaml runs packages/envoy/{package} in "
-                         f"{len(legs)} legs of {job}, and an exception below names the one leg that runs it")
-    return (workflow, f"{step} (leg {legs[0]})")
+    of a matrix job, so a package moved to another leg moves the exception with it. The leg is
+    go_legs.places' reading of the file, the one its legs run by; a package split by test across
+    legs runs a test in the leg of that test's group, which no package-wide key can name."""
+    entry = go_legs.module_entry("packages/envoy", ROOT / go_legs.LEGS)
+    held = [place for place in go_legs.places(entry)[0] if place.job == job and place.package == package]
+    if len(held) != 1 or held[0].group is not None:
+        raise SystemExit(f"go-test-step-expansion.py: {go_legs.LEGS} runs packages/envoy/{package} in "
+                         f"{', '.join(place.shown() for place in held) or 'no leg'} of {job}, and an exception "
+                         f"below names the one leg that runs the whole package")
+    return (workflow, f"{step} (leg {held[0].leg})")
 
 
 EXCEPTIONS = (
@@ -474,7 +478,7 @@ AUDITED_SCRIPTS = {
         xargs={
             f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
         },
-        sha256="066b9211ef37bd585062922ff9fc502f799d99dab645d3e98079de8ccfb8eb07",
+        sha256="2036a3b9b54514efe0fe409055b778aa202ad189053623c3a1f6a39147ec7e52",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its

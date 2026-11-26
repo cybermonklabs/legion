@@ -102,9 +102,12 @@ jobs:
       # defect that held this package's memory (dispatch://INFRA-1085). This is the only package of
       # the repository that registers a cleanup. The detector is the runtime's own bookkeeping and
       # runs beside the race detector in this one run, so no job runs the package again plain for
-      # the detector alone. What this run cannot judge, or judges only at a smaller size, envoy-go's
-      # step "Test what the race build cannot run at all or at full size" runs plain, under the
-      # cleanup detector as well: the two render-reuse storms run in both, at two sizes.
+      # the detector alone. What this run cannot judge, or judges only at a smaller size, envoy-go
+      # runs plain, under the cleanup detector as well: the room-memory bounds and the two
+      # render-reuse storms, which run in both at two sizes, in envoy-go-race-impossible's step
+      # "Test what the race build cannot run at all or at full size", and the xid window rows in
+      # envoy-go-alone's step "Test the xid window rows, the API's issue-list bound and the auth
+      # service's storm, alone".
       - name: Race-test the document service
         run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
         working-directory: packages/envoy

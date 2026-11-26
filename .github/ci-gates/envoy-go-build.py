@@ -10,12 +10,12 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
     step_run("envoy-go-build", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
              ["./cmd/dispatch", "./cmd/listener"], mode="build"),
     # The architecture-note and spec-file rules and their commands: the closure of the five
-    # packages, tests, testdata and all, built from the list the unit step's `grep -Ev` leaves
-    # them out by.
+    # packages, tests, testdata and all, built from the list `.github/go-legs.yaml#elsewhere`
+    # names them in, which keeps them out of envoy-go's unit legs.
     step_run("envoy-go-build", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
     # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
-    # listener clients among them, and internal/wirecheck's), built from the list the unit
-    # step's `grep -Ev` leaves them out by.
+    # listener clients among them, and internal/wirecheck's), built from the list
+    # `.github/go-legs.yaml#elsewhere` names them in, which keeps them out of the unit legs.
     step_run("envoy-go-build", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
 ], exact=[
     # `go run` is not one of the three forms the reducer reads, so the step is pinned whole

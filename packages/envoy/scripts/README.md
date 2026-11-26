@@ -566,12 +566,14 @@ stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>
 
 `ci.yaml`'s `envoy-go` job runs its unit legs through it as "Unit test envoy Go package", each
 over the packages `.github/go-legs.yaml` lists for that leg, with `--timeout 20m`, `--skip` of
-the web display fixture's two tests and of the five the job's "Count the store-form rows on each
-backend" runs (`backend-count.sh`, above), `--count-table`, and a step limit of its own
-(`timeout-minutes: 30`) that its time budget counts; one go test a leg lets the broker's packages
-share its `-p` slots with the rest of the leg.
+the web display fixture's two tests, which `envoy-go-build` runs, of the five that
+`envoy-go-skips`' "Count the store-form rows on each backend" runs (`backend-count.sh`, above),
+and of the 38 rows whose bound is on time, which `envoy-go-alone` runs on a runner nothing else
+loads (`UNIT_ALONE_TESTS` in `.github/scripts/ci_job_reads.py`), `--count-table`, and a step
+limit of its own (`timeout-minutes: 30`) that its time budget counts; one go test a leg lets the
+broker's packages share its `-p` slots with the rest of the leg.
 `envoy-go-race-api` runs the Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
+`database-skips.test.sh` holds it to six controls, which `envoy-go-skips` runs as "Test the database
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,

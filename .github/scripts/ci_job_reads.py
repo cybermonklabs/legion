@@ -1081,8 +1081,9 @@ def hold_daemon_legs(entry: dict) -> None:
     run as written. go_legs.py, in each leg, holds the whole entry to `go list ./...` and the
     running job's legs to its matrix, but it sees only its own job: a package filed under a job key
     no matrix job runs (a typo, a job since renamed) is in the file once, passes every leg, and
-    runs in no job. So the entry's keys are exactly the two jobs whose legs run here and
-    `elsewhere`; the race legs run the race packages, each once, the set the gates and
+    runs in no job. So the entry's keys are exactly the two jobs whose legs run here, `elsewhere`
+    and `unlisted`, which names the plain job, whose last leg runs a package no place names; the
+    race legs run the race packages, each once, the set the gates and
     ci-caches.yaml's race fill read from DAEMON_RACE_PACKAGES; and the text checks, the
     text-check job's, are the one package no leg runs. check-ci-filters.sh imports this table in
     the changes and ci-filters jobs, so a refusal here fails the run that brings the entry.
@@ -1091,12 +1092,16 @@ def hold_daemon_legs(entry: dict) -> None:
     package here, as go_legs.job_packages counts it: those legs together run it once."""
     problems = []
     keys = set(entry)
-    wanted = {DAEMON_PLAIN_JOB, DAEMON_RACE_JOB, go_legs.ELSEWHERE}
+    wanted = {DAEMON_PLAIN_JOB, DAEMON_RACE_JOB, go_legs.ELSEWHERE, go_legs.UNLISTED}
     if keys != wanted:
         problems.append(f"its keys are {', '.join(sorted(keys))}, and the jobs whose legs ci-job-daemon-go.yaml runs "
-                        f"are {DAEMON_PLAIN_JOB} and {DAEMON_RACE_JOB}, beside {go_legs.ELSEWHERE}: a package under "
-                        f"{', '.join(sorted(keys - wanted)) or 'a missing key'} runs in no job, so file it under one "
-                        f"of those")
+                        f"are {DAEMON_PLAIN_JOB} and {DAEMON_RACE_JOB}, beside {go_legs.ELSEWHERE} and "
+                        f"{go_legs.UNLISTED}: a package under {', '.join(sorted(keys - wanted)) or 'a missing key'} "
+                        f"runs in no job, so file it under one of those")
+    if entry.get(go_legs.UNLISTED) != DAEMON_PLAIN_JOB:
+        problems.append(f"its {go_legs.UNLISTED} is {entry.get(go_legs.UNLISTED)!r}, and the job whose last leg runs a "
+                        f"package no place names is {DAEMON_PLAIN_JOB}, which runs every package plain: a race leg "
+                        f"would run it under the detector, which its tests may not build for")
     race = sorted(go_legs.job_packages(entry.get(DAEMON_RACE_JOB) or {}))
     if race != sorted(DAEMON_RACE_PACKAGES):
         problems.append(f"its {DAEMON_RACE_JOB} legs run {race}, and DAEMON_RACE_PACKAGES here is "
@@ -1463,10 +1468,10 @@ UNIT_TEST_TIMEOUT = "20m"
 
 # The tests envoy-go's step "Count the store-form rows on each backend" runs through
 # packages/envoy/scripts/backend-count.sh, by package, counting each one's `aws` and `gcp` passes
-# (the verification's check c8). It runs them in the same job, on the same runner and env, with
-# no -tags and no -race, as the unit step runs cmd/cipher and internal/cipher/api, so a second run
-# there asked nothing the count does not: the unit step skips them by name, and the count is their
-# one run (O15 of dispatch://INFRA-1408, which
+# (the verification's check c8). It runs them in envoy-go-skips, with the job's env, no -tags and
+# no -race, the build the unit legs run cmd/cipher and internal/cipher/api in, so a second run in
+# a leg asked nothing the count does not: the legs skip them by name, and the count is their one
+# run (O15 of dispatch://INFRA-1408, which
 # go-test-step-expansion.py's duplicate verdict reads; its BACKEND_COUNT_TESTS is this list).
 BACKEND_COUNT_AGENT_SECRETS = "cmd/cipher"
 BACKEND_COUNT_BROKER_API = f"{DATABASE_SKIPS_TREE}/api"
@@ -1570,7 +1575,8 @@ def hold_envoy_legs(entry: dict) -> None:
     around them are built. go_legs.py, in each leg, holds the whole entry to `go list ./...` and
     the running job's legs to its matrix, but it sees only its own job, and nothing of why a
     package is where it is. So: the entry's keys are exactly the two jobs whose legs run, envoy-go
-    and envoy-go-race, beside `elsewhere` and `twice`; the race legs run the packages of
+    and envoy-go-race, beside `elsewhere`, `twice` and `unlisted`, which names envoy-go, whose last
+    leg runs a package no place names; the race legs run the packages of
     ENVOY_RACE_LANE's envoy-go-race and nothing else, each tree's root among them; a plain leg runs
     no package the lane runs under the detector but those `twice` names; `twice` names exactly the
     race legs' packages whose skips the unit legs count (database_skips_table), so each of those
@@ -1583,12 +1589,18 @@ def hold_envoy_legs(entry: dict) -> None:
     and ci-filters jobs, so a refusal here fails the run that brings the entry."""
     problems = []
     keys = set(entry)
-    wanted = {ENVOY_PLAIN_JOB, ENVOY_RACE_JOB, go_legs.ELSEWHERE, go_legs.TWICE}
+    wanted = {ENVOY_PLAIN_JOB, ENVOY_RACE_JOB, go_legs.ELSEWHERE, go_legs.TWICE, go_legs.UNLISTED}
     if keys != wanted:
         problems.append(f"its keys are {', '.join(sorted(keys))}, and the jobs whose legs run are {ENVOY_PLAIN_JOB} "
-                        f"({ENVOY_GO_FILE}) and {ENVOY_RACE_JOB} ({ENVOY_RACE_FILE}), beside {go_legs.ELSEWHERE} and "
-                        f"{go_legs.TWICE}: a package under {', '.join(sorted(keys - wanted)) or 'a missing key'} runs in "
-                        f"no job, so file it under one of those")
+                        f"({ENVOY_GO_FILE}) and {ENVOY_RACE_JOB} ({ENVOY_RACE_FILE}), beside {go_legs.ELSEWHERE}, "
+                        f"{go_legs.TWICE} and {go_legs.UNLISTED}: a package under "
+                        f"{', '.join(sorted(keys - wanted)) or 'a missing key'} runs in no job, so file it under one "
+                        f"of those")
+    if entry.get(go_legs.UNLISTED) != ENVOY_PLAIN_JOB:
+        problems.append(f"its {go_legs.UNLISTED} is {entry.get(go_legs.UNLISTED)!r}, and the job whose last leg runs a "
+                        f"package no place names is {ENVOY_PLAIN_JOB}, which runs a package plain and counts the "
+                        f"skips of the counter's table: a race leg would run it under the detector, which its "
+                        f"tests may not build for")
     plain = go_legs.job_packages(entry.get(ENVOY_PLAIN_JOB))
     race = go_legs.job_packages(entry.get(ENVOY_RACE_JOB))
     twice = sorted(entry.get(go_legs.TWICE) or {})
@@ -1766,32 +1778,65 @@ UNIT_ALONE_TESTS = {
     ],
 }
 UNIT_ALONE_STEP = "Test the rows whose bound is on time, alone"
-# A test function's declaration, as go test runs it.
-GO_TEST_DECLARATION = re.compile(r"^func (Test\w*)\(\w+ \*testing\.T\)", re.M)
+# The build the unit legs and the alone step compile: ubuntu-24.04-arm's linux/arm64, cgo on (a
+# native build), with no -tags and no -race. A //go:build name is true under it when it is one of
+# these or a release (go1.N), and false otherwise: a tag no step passes, race, another platform.
+RUNNER_BUILD = frozenset({"linux", "unix", "arm64", "gc", "cgo"})
 
 
-def hold_unit_alone_tests():
-    """Refuse a UNIT_ALONE_TESTS that the legs would not run as it says: a package no unit leg
-    runs (its tests would then run nowhere, the legs' -skip and the alone step's -run both naming
-    them in vain), a name no _test.go file of its package declares as a test (the -run would match
-    nothing and pass), and a name a test file of another package of the unit legs declares too
-    (the legs' -skip, read in every package a leg runs, would leave that test out there, where no
-    alone step runs it). Declarations are read off each file's text, a build constraint and all:
-    the alone step and the legs build the same files, untagged and without -race."""
+def runner_builds(text: str) -> bool:
+    """Whether the runner's build (RUNNER_BUILD) compiles a Go file of this text: it carries no
+    //go:build line (GO_BUILD_LINE), or its expression holds there. The expression is go/build's
+    syntax - names, `!`, `&&`, `||` and parentheses - read name by name; anything else in it is
+    refused rather than guessed at."""
+    line = GO_BUILD_LINE.search(text)
+    if not line:
+        return True
+    expression = line.group(1)
+    if not re.fullmatch(r"[\w.!&|() ]+", expression):
+        raise ValueError(f"the build constraint `//go:build {expression}` holds a character go/build's syntax has not")
+    python = re.sub(r"[\w.]+", lambda m: str(m.group(0) in RUNNER_BUILD or bool(re.fullmatch(r"go1\.\d+", m.group(0)))),
+                    expression).replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+    return bool(eval(python, {"__builtins__": {}}))
+
+
+def hold_unit_alone_tests(alone=None, packages=None, module=ENVOY):
+    """Refuse a UNIT_ALONE_TESTS (`alone`, each package of `module` to its names) that the legs
+    would not run as it says, over `packages`, the unit legs' packages: a package no unit leg runs
+    (its tests would then run nowhere, the legs' -skip and the alone step's -run both naming them
+    in vain), a name no file the runner builds declares as a test in its package (the alone
+    step's -run would match nothing and pass, and the test would run in no job), and a name a test
+    file of another package of the unit legs declares too (the legs' -skip, read in every package
+    a leg runs, would leave that test out there, where no alone step runs it). A test is what
+    hold_plugin_pack_tests() reads one as: every top-level Test, Fuzz or Example of GO_TEST_FUNC
+    over go_code_only, TestMain apart. A file counts only where runner_builds() says the runner's
+    build compiles it: a `//go:build linux` file does, and a `//go:build natslive` one does not,
+    since neither the alone step nor the legs pass -tags. Of each package's files only those that
+    write one of the names are read, as go_code_only walks a file character by character.
+    check-ci-filters.test.sh holds the refusals on a fixture module."""
+    alone = UNIT_ALONE_TESTS if alone is None else alone
+    packages = ENVOY_UNIT_PACKAGES if packages is None else packages
+    wanted = {name for names in alone.values() for name in names}
     problems = []
     declared = {}
-    for package in ENVOY_UNIT_PACKAGES:
-        for path in sorted((Path(ENVOY) / package).glob("*_test.go")):
-            for name in GO_TEST_DECLARATION.findall(path.read_text(errors="replace")):
-                declared.setdefault(name, set()).add(package)
-    for package, names in UNIT_ALONE_TESTS.items():
-        if package not in ENVOY_UNIT_PACKAGES:
+    for package in packages:
+        for path in sorted((Path(module) / package).glob("*_test.go")):
+            text = path.read_text(errors="replace")
+            if not any(name in text for name in wanted) or not runner_builds(text):
+                continue
+            for m in GO_TEST_FUNC.finditer(go_code_only(text)):
+                if m.group(1) in wanted:
+                    declared.setdefault(m.group(1), set()).add(package)
+    for package, names in alone.items():
+        if package not in packages:
             problems.append(f"{package}, which no {ENVOY_PLAIN_JOB} leg of {GO_LEGS} runs")
             continue
         for name in names:
             where = declared.get(name, set())
             if package not in where:
-                problems.append(f"{name}, which no _test.go file of {ENVOY}/{package} declares")
+                problems.append(f"{name}, which no _test.go file of {module}/{package} that the runner's "
+                                f"linux/arm64 build compiles declares as a test `go test` runs (neither the alone "
+                                f"step nor the legs pass -tags, so a declaration behind a tag is none)")
             elif len(where) > 1:
                 problems.append(f"{name}, which {', '.join(sorted(where - {package}))} declare(s) too, where the "
                                 f"legs' -skip would leave it out and no alone step runs it")
