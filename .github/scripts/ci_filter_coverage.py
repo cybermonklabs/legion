@@ -1739,6 +1739,9 @@ ENV_ALLOWED = frozenset({
     # cannot judge gaps from shape alone into a failure, and go compiles the same files and runs
     # the same tests with it set as without.
     "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
+    # docs-site.yaml's build step passes it to the docs build as GITHUB_REPOSITORY, which
+    # repo-paths.sh reads; the go command reads neither.
+    "DOCS_REPOSITORY",
     "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # Where go keeps what it compiled and the test results it caches, both found by a hash of
