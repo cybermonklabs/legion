@@ -253,13 +253,14 @@ func (c *Conn) WorkspaceWork(ctx context.Context, issue string, timeout time.Dur
 	}
 	switch answer := answer.(type) {
 	case shimwire.WorkspaceWorkResult:
-		if err := answer.Validate(); err != nil {
+		work, refused, err := runtime.WorkspaceWorkOf(answer)
+		switch {
+		case err != nil:
 			return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		case refused != "":
+			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: refused}
 		}
-		if !answer.OK {
-			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: answer.Error}
-		}
-		return runtime.WorkspaceWork{Head: answer.Head, Changed: answer.Changed, Commits: answer.Commits, Count: answer.Count}, nil
+		return work, nil
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.

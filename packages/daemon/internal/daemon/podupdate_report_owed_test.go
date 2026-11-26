@@ -74,21 +74,19 @@ func reportOwedRound(t *testing.T, backend runtime.Backend) (rig *podUpdateRig, 
 }
 
 // reportOwedHeldBeforeTheBound reads the round's end over the claims as their machines hold them
-// now, and holds that it names the implementer in reporting and no turn, and that the round would
-// still read its workspace (settled); then it sweeps the round at its opening's minute, half-way to
-// its bound and a minute before it, and holds that each sweep replaced nothing and logged the
-// round as waiting for the implementer's report, naming no turn.
+// now, and holds that it names the implementer in reporting and no turn; then it sweeps the round
+// at its opening's minute, half-way to its bound and a minute before it, and holds that each sweep
+// replaced nothing, read no workspace, and logged the round as waiting for the implementer's
+// report, naming no turn. The read before a replacement (readPodWorkspace, R7 of #5285) comes
+// after this wait, so a round the owed report holds makes no read before its bound.
 func reportOwedHeldBeforeTheBound(t *testing.T, rig *podUpdateRig) {
 	t.Helper()
 	rig.settleAll()
-	told, live := rig.s.liveGroup(rig.snapshot())
+	_, live := rig.s.liveGroup(rig.snapshot())
 	clock := roundClock{now: rig.clock.Now(), grace: podUpdateGrace}
 	_, working, reporting, _ := readRoundEnd(live, podUpdateRound, clock).holding()
 	if !slices.Equal(reporting, []string{string(claim.RoleImplementer)}) || len(working) != 0 {
 		t.Fatalf("the round's end holds the replacement for the reports of %v and the turns of %v, want the implementer's report and no turn", reporting, working)
-	}
-	if !readRoundEnd(told, podUpdateRound, clock).settled() {
-		t.Fatal("the round's end reads unsettled with the implementer's report owed, want the read of the workspace still made: a worker whose turn is over changes no file of the working copy")
 	}
 	for _, at := range []time.Duration{time.Minute, podUpdateGrace / 2, podUpdateGrace - time.Minute} {
 		rig.clockAt(podUpdateStart.Add(at))
@@ -96,6 +94,10 @@ func reportOwedHeldBeforeTheBound(t *testing.T, rig *podUpdateRig) {
 		if calls := rig.replacements(); len(calls) != 0 {
 			t.Fatalf("at %s, before the bound %s, the pod was replaced %d times while the implementer's report of its task's turn was owed",
 				rig.clock.Now(), podUpdateBound, len(calls))
+		}
+		if reads := rig.workspaceReads(); reads != 0 {
+			t.Fatalf("at %s, before the bound %s, the workspace was read %d times while the implementer's report was owed, want no read: the read comes after the wait",
+				rig.clock.Now(), podUpdateBound, reads)
 		}
 	}
 	lines := loggedLines(t, rig.logs.String(), reportOwedWaitLine)
@@ -153,8 +155,12 @@ func TestPodUpdateRoundWaitsForTheReportOfATaskNumberWhoseTurnEnded(t *testing.T
 					t.Fatalf("the replacement was made at %s, want it before the bound %s: the report came", at, podUpdateBound)
 				}
 			}
-			if replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(replaced) != 1 || replaced[0]["atTheBound"] != false {
-				t.Fatalf("the replacement was logged %+v, want one line that no bound made", replaced)
+			replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+			if len(replaced) != 1 || replaced[0]["atTheBound"] != false || replaced[0]["workspaceRead"] != "found no work" {
+				t.Fatalf("the replacement was logged %+v, want one line that no bound made, over a read that found no work", replaced)
+			}
+			if reads := rig.workspaceReads(); reads != 1 {
+				t.Fatalf("the workspace was read %d times, want once, after the report and before the replacement", reads)
 			}
 			if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
 				t.Fatalf("the sweep logged a bounded end %+v for a round that ended once the report came", lines)
@@ -173,8 +179,14 @@ func TestPodUpdateRoundWaitsForTheReportOfATaskNumberWhoseTurnEnded(t *testing.T
 					t.Fatalf("a replacement was made at %s, before the bound %s", at, podUpdateBound)
 				}
 			}
-			if replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(replaced) != 1 || replaced[0]["atTheBound"] != true {
-				t.Fatalf("the replacement was logged %+v, want one line that says the bound made it", replaced)
+			// Past the bound the owed report holds nothing, the read before the replacement
+			// included: the read is made over the owed report, and finds nothing origin lacks.
+			replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+			if len(replaced) != 1 || replaced[0]["atTheBound"] != true || replaced[0]["workspaceRead"] != "found no work" {
+				t.Fatalf("the replacement was logged %+v, want one line that says the bound made it over a read that found no work", replaced)
+			}
+			if reads := rig.workspaceReads(); reads != 1 {
+				t.Fatalf("the workspace was read %d times, want once, at the bound, before the replacement", reads)
 			}
 			bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine)
 			if len(bounded) != 1 {

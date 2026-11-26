@@ -214,6 +214,18 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // has work, and a second task would be a second prompt for work under way. So is a role a queued
 // row already covers (queuedRowCovers).
 //
+// A phase worker relaunched by an update round's replacement of its pod is given nothing at this
+// ready where it answered the round inside the turn of the take of its task: that turn's report
+// finished the task in the session the worker still runs, though its phase was not complete
+// (supervise's take), and the round's end sends only what is still pending. Its session goes on,
+// and the session's own resume reminder wakes it while its phase is open (finishedInItsSession,
+// below): its phase's task again would be the re-send that dispatch://INFRA-2811 R4 removes. A
+// worker whose phase is over is given nothing either: the issue has left the phase for one its
+// role does not work (RoleFor), or the phase's terminating fact has come (PhaseFinished). The
+// ready does not read a phase row's completion (record.PhaseRow.CompletedAt), which the silence
+// repair reads (PhaseWorkerOwedTurn): a merger that the boot relaunches with a READY completion
+// still on its row may still be owed its merging task (cutoverMergerRepair).
+//
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
 // delivery's place while no take of it is accepted, or once the accepted take's turn has run

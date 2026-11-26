@@ -692,11 +692,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		st.Close()
 		return err
 	}
-	// The Sandbox runtime's launches read the update round over a pod they would keep through the
-	// supervision, which exists only now; the runtime was built inside openSupervision before it
-	// (launchRounds). No machine exists yet, so no launch has asked.
+	// The Sandbox runtime's launches read the update round over a pod they would keep, record what
+	// a launch's own replacement of an issue pod is about to take, and tell what it took, through
+	// the supervision, which exists only now; the runtime was built inside openSupervision before
+	// it (launchRounds). No machine exists yet, so no launch has asked.
 	if plan.launchRounds != nil {
-		plan.launchRounds.bind(s.roundPodEndsAtLaunch)
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch, s.recordLaunchTakes, s.tellLaunchTook)
 	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)
@@ -1929,20 +1930,6 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
-	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
-	// ticks of a round's read of its issue's workspace: the one read that a round made before its
-	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
-	// holding the answer or the read's error. A replacement the read stood in front of can be
-	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
-	// round's replacement reuses the answer rather than read again, so the round reads the
-	// workspace once and its line and message name that read. The entry goes where the sweep ends
-	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
-	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
-	// replacement is made whatever the read found. A restart forgets it, and the round's next
-	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
-	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
-	podUpdateWorkspaceMu sync.Mutex
-	podUpdateWorkspace   map[string]workspaceRead
 	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
 	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
 	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
@@ -1954,7 +1941,8 @@ type supervision struct {
 	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
 	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
 	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
-	// of its own, for the reason podUpdateWorkspaceMu has one.
+	// of its own, because it has nothing to do with the pace podUpdateMu guards; the sweep is its
+	// one goroutine all the same.
 	podUpdateEndedMu sync.Mutex
 	podUpdateEnded   map[string]string
 	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
@@ -1967,11 +1955,12 @@ type supervision struct {
 	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
 	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
 	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
-	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
-	// replaced as a pod gone, whose message names the members by the same rule (lostClaims), where
-	// each machine built over its stored claim reads its set of pods as unknown wherever the stored
-	// claim shows a session (supervise's bootRegisteredPods). A mutex of its own, never held across
-	// a runtime call, because the hook runs on a launching machine's goroutine beside the sweep.
+	// Nothing of it is in the store: a restart forgets it, and the sweep then ends the round as the
+	// replacement from the record the launch wrote in the store (finishReplacements), whose end
+	// names the members by the same rule (lostClaims), where each machine built over its stored
+	// claim reads its set of pods as unknown wherever the stored claim shows a session (supervise's
+	// bootRegisteredPods). A mutex of its own, never held across a runtime call, because the hook
+	// runs on a launching machine's goroutine beside the sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the

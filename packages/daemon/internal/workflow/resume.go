@@ -33,14 +33,14 @@ import (
 // main did not have, so it acts on no other source: an operator's suspension holds until the
 // operator resumes the claim, and a suspension recorded before the source existed (unknown) may be
 // a drain made before the upgrade, so both are left as they are. A released claim is the one ByRule
-// source the boot leaves too: the daemon released its idle pod, and what brings the pod and its
-// bundled work back is the next wake for its role, not a daemon restart, so a boot that started it
-// would raise a pod nothing asked for. Two other boot steps can start a released claim. Admission's
-// pass at the boot sends the work of an entry to a released claim that stands behind the entry its
-// phases row names (admit's owedEntryRoles), as each of its passes does. And the cutover's repair
-// (cutoverMergerRepair), a fact of its own that the boot applies once per project, before its
-// consumers start, owes a start to each merger the `awaiting_merge` cutover left with its merging
-// work untold: released with no wake to come, or live.
+// source the boot leaves too: the daemon released its idle pod, which held no unpushed work, and
+// what brings the pod back is the next wake for its role, not a daemon restart, so a boot that
+// started it would raise a pod nothing asked for. Two other boot steps can start a released claim.
+// Admission's pass at the boot sends the work of an entry to a released claim that stands behind
+// the entry its phases row names (admit's owedEntryRoles), as each of its passes does. And the
+// cutover's repair (cutoverMergerRepair), a fact of its own that the boot applies once per project,
+// before its consumers start, owes a start to each merger the `awaiting_merge` cutover left with
+// its merging work untold: released with no wake to come, or live.
 //
 // The claims it weighs are the suspended owners of the project's unfinished phases in running
 // trees (suspendedAndLivePhaseOwners), the read the cutover's repair picks its mergers from too,

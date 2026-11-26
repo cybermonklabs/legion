@@ -261,13 +261,16 @@ func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says string) {
 	})
 }
 
-// A phase worker whose pod was replaced comes back with its session and nothing to do: the round
-// that replaced the pod retired every task it held, the pod round is over, and neither a timer of
-// the daemon's nor the worker's own process will give it a task to take again. The sweep is what
-// finds it, and every link of the chain is asserted here, not only the last: the fact writes the
-// start row, the lifecycle lane carries that row's task to the worker's connection, and the turn
-// that task starts moves the claim from ready to working. The other half of that truth — that the
-// end of the round itself gives nobody a task — is
+// A phase worker whose pod was replaced, and whose ready gave it nothing, comes back with its
+// session and nothing to do: the round that replaced the pod retired every task it held, the pod
+// round is over, and neither a timer of the daemon's nor the worker's own process will give it a
+// task to take again. This rig binds no ready as a workflow fact, so its ready gives it nothing
+// here, whatever the workflow's ready would give it (readyWorkerTask;
+// TestAReplacedPhaseWorkerThatFinishedItsTaskInItsSessionIsGivenNothingWhenItsNewProcessIsReady),
+// and the sweep is the backstop that finds it. Every link of the chain is asserted here, not
+// only the last: the fact writes the start row, the lifecycle lane carries that row's task to the
+// worker's connection, and the turn that task starts moves the claim from ready to working. The
+// other half of that truth — that the end of the round itself gives nobody a task — is
 // TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds.
 //
 // Beside the silent worker stands one the sweep must leave alone: the issue's tester, which
