@@ -22,6 +22,11 @@ var serverReads = map[string]string{
 	"request_keys.go:heldAnswerRefusal": "a repeat's object is read as the server sees it only to tell an object nobody holds " +
 		"from one the caller does not see: the same address is then read as the caller, and nothing the server read is " +
 		"answered; only whether the caller's own read found it decides the repeat",
+	"project_scope.go:withinProjectScope": "a full member's broker token that names one project (namedProjectOf) is held to " +
+		"the project of each object its write resolves, read as the server sees it, so the check decides by the object's own " +
+		"project and not by what the token sees; nothing the server read is answered: a write outside that project, or of a " +
+		"private project the token does not name, is refused with the one answer that names only the credential's own " +
+		"project, alike for a hidden object and a missing one",
 	"comment_projection.go:commentEventPayload": "an event's payload is appended once and read by every subscriber of its topics " +
 		"and every reader of its owner's event log",
 	"comment_projection.go:commentAnchorRefreshEvent": "the payload of comment.anchor_refreshed, appended once and read by every " +
