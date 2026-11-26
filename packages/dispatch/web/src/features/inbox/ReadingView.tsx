@@ -6,6 +6,7 @@ import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
 import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
 import { closestMatching } from "../shell/roving";
+import type { AskApprovalAction } from "./AskOptionRow";
 import { ROW_SELECTOR } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { MarkCheckbox, ThreadMarkCheckbox } from "./MarkCheckbox";
@@ -18,6 +19,15 @@ import { useControlName } from "./useControlName";
  *  column shows for a question written as one - while it is still shut. The card carries the
  *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
 export const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
+
+/** The head's Approve or Request changes (`ApprovalChip`'s `data-approval-action`) while it takes
+ *  a press: the head draws the button from its first draw and holds it (`aria-disabled`) until
+ *  the document's read returns (`ReadingPaneHead`). What `a` and Shift+R press in the column and
+ *  the reading view (`useInboxKeymap.ts`), and what a short row's `a` and Shift+R wait for in the
+ *  view they open (`landingIn`). */
+export function headApprovalSelector(action: AskApprovalAction): string {
+  return `[data-inbox-pane-head] [data-approval-action="${action}"]:not([aria-disabled="true"])`;
+}
 
 /** Where the reading view below 1280 px takes the reader once it has drawn the row they opened:
  *  its scroller, the focus stop `l` moves to beside the list; the question's answer box, or the
@@ -79,11 +89,9 @@ function landingIn(view: HTMLElement, askId: string, target: ReadingViewTarget):
     }
     case "approve":
     case "request-changes": {
-      // The head draws the button from its first draw and holds it (`aria-disabled`) until the
-      // document's read returns (`ReadingPaneHead`), so the press waits for that read.
-      const element = view.querySelector<HTMLElement>(
-        `[data-inbox-pane-head] [data-approval-action="${target.kind}"]:not([aria-disabled="true"])`
-      );
+      // The press waits for the document's read, which lets the head's button take it
+      // (`headApprovalSelector`).
+      const element = view.querySelector<HTMLElement>(headApprovalSelector(target.kind));
       return element === null ? null : { press: element };
     }
     case "snooze": {

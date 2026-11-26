@@ -11591,7 +11591,7 @@ test("a and Shift+R press the column head's Approve and Request changes, and do 
  *  version 4 with its request open, and the review it sends, held out. */
 function approvalViewReads(rows: readonly InboxRow[]) {
   const fake = fakeDocumentRuntime({ text: "The live document" });
-  const reads = mockDocumentColumnReads([...rows]);
+  const reads = mockDocumentColumnReads(rows);
   reads.getArtifact.mockResolvedValue(SPEC_AWAITING);
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
     authors: [],

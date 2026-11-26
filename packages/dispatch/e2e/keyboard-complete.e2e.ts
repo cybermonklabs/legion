@@ -462,7 +462,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     }
   };
 
-  // b on the first ask's row, then the arrows, Home, End and Escape: nothing is written.
+  // b on the first ask, then the arrows, Home, End and Escape: nothing is written.
   await goTo(inbox, first);
   const band = (await rowOf(inbox, first).getAttribute("data-inbox-section")) ?? "";
   await page.keyboard.press("b");
@@ -4702,8 +4702,8 @@ test("k-list-focus: on today's issue page, Enter on an assignee or a repository 
 // ---------------------------------------------------------------------------
 // k-approval-keys (R7), the Inbox's part: on the approval request in hand `a` approves the version
 // it shows with one press and Shift+R opens Request changes with the focus in its reason, beside
-// the reading pane, in card mode and in the drawer; before the document's read returns, and on a
-// question, both send nothing.
+// the reading pane, from the short-row list and in the reading view at 1024x768, and in the
+// drawer; before the document's read returns, and on a question, both send nothing.
 // ---------------------------------------------------------------------------
 
 /** The reason the rows' Request changes gives. */
@@ -5418,8 +5418,8 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   // the head's control (`useReadingViewLanding`).
   const fromRow = place === "the short-row list";
 
-  // `a` approves the first request once its document is read beside the column, where the head
-  // holds its Approve until then; a card draws its Approve at once.
+  // `a` approves the first request once its document is read in the reading pane or view, whose
+  // head holds its Approve until then; a card draws its Approve at once.
   await putOn(inbox, firstApproval.askId);
   if (!fromRow) {
     await expect(
@@ -5833,10 +5833,10 @@ test("k-next-item: in the drawer an approval, a request for changes and an answe
 
 // ---------------------------------------------------------------------------
 // k-every-action (R11), a first form for the Inbox: every button and menu trigger the Inbox draws
-// for an item - on its row, its card, the reading pane's head and the bar of selected rows - is
-// an action of the spec's keys table or of the command bar's list, and each such action has its
-// key in the `?` help under Inbox, or is a row of ⌘K with the item in hand, its key beside it
-// where it has one.
+// for an item - on its row, its card, the reading pane's head, the reading view's own line at
+// 1024x768 and the bar of selected rows - is an action of the spec's keys table or of the command
+// bar's list, and each such action has its key in the `?` help under Inbox, or is a row of ⌘K
+// with the item in hand, its key beside it where it has one.
 // ---------------------------------------------------------------------------
 
 /** One action of the spec's Design ("The keys" and the command bar's actions), as the page names
@@ -7732,7 +7732,8 @@ test("k-issue-tabs: Escape in the spec the reader edits takes the focus out of t
 // turn; `r` puts the caret in the thread's reply box, and Escape in the empty box gives the focus
 // back; `y` and Shift+Y copy a turn's reference and its web address, and nothing on a handoff.
 // Each comment, reply and message of the issue has a Copy reference that Tab reaches, on the
-// Conversation tab, in the margin of the spec, and in the Inbox's reading pane, cards and drawer.
+// Conversation tab, in the margin of the spec, and in the Inbox's reading pane, reading view and
+// drawer.
 // ---------------------------------------------------------------------------
 
 /** The text of k-threads' spec that its comment thread is anchored to. */

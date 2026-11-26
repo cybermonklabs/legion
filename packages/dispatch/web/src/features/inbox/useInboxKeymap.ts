@@ -26,6 +26,7 @@ import { optionIndex } from "./option-digits";
 import { PANE_READER_MOVE, PANE_SCROLLER_SELECTOR } from "./pane-placement";
 import type { PaneSelection, PlacedRow } from "./pane-selection";
 import {
+  headApprovalSelector,
   NOTE_DISCLOSURE_SELECTOR,
   type ReadingViewTarget,
   useReadingViewLanding,
@@ -545,20 +546,18 @@ export function useInboxKeymap({
   /** The approval request's Approve, or its Request changes, that `a` and Shift+R press (R7).
    *  Beside the column and in the reading view it is the chip's own button in the head, which
    *  the head draws from its first draw and holds until the document's read returns
-   *  (`ReadingPaneHead`), and which counts only while it takes a press; else - in the drawer, and
-   *  in the card the column falls back to where it cannot read the document - it is the
-   *  request's own option of the card in hand (`data-ask-approval`, `AskCard`). Null on any
-   *  other item, on a short row below 1280 px with no row open, which draws neither, and before
-   *  the read returns, which the `?` help shows as not available. Inside an ask card in the
-   *  column the reader is answering that card, the rule Snooze holds to, so the keys stand down
-   *  there. */
+   *  (`ReadingPaneHead`), and which counts only while it takes a press (`headApprovalSelector`,
+   *  which a short row's landing in its view waits for too); else - in the drawer, and in the
+   *  card the column falls back to where it cannot read the document - it is the request's own
+   *  option of the card in hand (`data-ask-approval`, `AskCard`). Null on any other item, on a
+   *  short row below 1280 px with no row open, which draws neither, and before the read returns,
+   *  which the `?` help shows as not available. Inside an ask card in the column the reader is
+   *  answering that card, the rule Snooze holds to, so the keys stand down there. */
   const approvalControl = (action: AskApprovalAction): HTMLElement | null => {
     if (keysOnShownRow && !outsideAskCard()) return null;
-    const enabled = ':not([aria-disabled="true"])';
     return (
-      (keysOnShownRow
-        ? inHand(`[data-inbox-pane-head] [data-approval-action="${action}"]${enabled}`)
-        : null) ?? inAnswerHand(`[data-ask-approval="${action}"]${enabled}`)
+      (keysOnShownRow ? inHand(headApprovalSelector(action)) : null) ??
+      inAnswerHand(`[data-ask-approval="${action}"]:not([aria-disabled="true"])`)
     );
   };
   /** Presses what `approvalControl` found. The head's button is pressed as it is: Approve sends

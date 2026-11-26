@@ -317,8 +317,8 @@ export function usePaneSelection({
    *  while the rows acted on may still stand above it, and a scroll to it there would carry the
    *  view past their place by their height once they have gone. */
   const selectedByHandOff = useRef<string | undefined>(undefined);
-  /** A commit for the focus to move in: a landing in card mode changes nothing else that
-   *  renders. */
+  /** A commit for the focus to move in: a landing that selects no row - in the drawer, and in the
+   *  short-row list below the column's width (`onShownRow`) - changes nothing else that renders. */
   const [, setLandings] = useState(0);
 
   const select = (id: string | undefined, mode: SelectMode = "replace"): void => {

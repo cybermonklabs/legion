@@ -1485,14 +1485,14 @@ function InboxBody({
    *  takes that row out and leaves the selection, the address and the focus on the item being
    *  read; the selected row's Dismiss, the head's of the column or the reading view, every short
    *  row's below the column's width and every card's in the drawer hand the reader on to the
-   *  item after it (R8). A press that left the focus in the row
-   *  it takes out - the Dismiss takes it as the pointer presses it - hands it first, with no
-   *  scroll, to the item being read: to its row, and where the list draws no row for it, to the
-   *  column's scroller, the stop `l` hands the focus to. The list draws none while the column
-   *  keeps a question past its row (`paneRow`): the reader's unsent answer keeps it there once a
-   *  search or a filter hides its row or the server takes it away, and their sent answer keeps
-   *  it until the server decides it. Left in the row, the focus would go with it and fall onto
-   *  the page, away from the item being read. */
+   *  item after it (R8). A press that left the focus in the row it takes out - the Dismiss takes
+   *  it as the pointer presses it - hands it first, with no scroll, to the item being read: to
+   *  its row, and where the list draws no row for it, to the column's scroller, the stop `l`
+   *  hands the focus to. The list draws none while the column keeps a question past its row
+   *  (`paneRow`): the reader's unsent answer keeps it there once a search or a filter hides its
+   *  row or the server takes it away, and their sent answer keeps it until the server decides
+   *  it. Left in the row, the focus would go with it and fall onto the page, away from the item
+   *  being read. */
   const dismissFromRow = (named: InboxDismissRow) => {
     if (mode === "columns" && named.id !== paneSelection.id) {
       asideFromRow(named.id);
