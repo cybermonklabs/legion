@@ -3956,7 +3956,7 @@
   },
   {
     "name": "github_read",
-    "description": "Read GitHub through Dispatch's GitHub App: a GET of a path under one repository's API path, such as pulls/12, issues/7/comments or contents/README.md. Only a repository that is the default repository of a project the person can read is read.",
+    "description": "Read GitHub through Dispatch's GitHub App: a GET under one repository's API path of a pull request (pulls/12), its reviews, files or commits (pulls/12/reviews, pulls/12/files, pulls/12/commits), a commit (commits/<sha>), its checks or statuses (commits/<sha>/check-runs, commits/<sha>/status, commits/<sha>/statuses), a compare (compare/<base>...<head>) or contents (contents/README.md); any other path is refused. Only a repository that is the default repository of a project the person can read is read.",
     "arguments": {
       "properties": {
         "path": {
@@ -4020,7 +4020,7 @@
   },
   {
     "name": "read_progress",
-    "description": "Read progress: for an issue, its task and child counts and its children; for a project, its issues counted by status and its open issues. Name issue, or project; with neither, the page's issue or project is read.",
+    "description": "Read progress: for an issue, its task and child counts and its children; for a project, every issue of it with its status and its progress. Name issue, or project; with neither, the page's issue or project is read.",
     "arguments": {
       "type": "object",
       "properties": {
@@ -4058,7 +4058,7 @@
   },
   {
     "name": "read_roster",
-    "description": "Read the agent sessions Dispatch knows of: each session's title, state, roles, the delivery modes it takes (capabilities: btw, aside or steer), open asks and last activity - when it was, and where: the issue and the event type of the session's newest event (last_activity_issue, last_activity_type, such as comment.created), where to read what the session last wrote - and the claims it holds (claims: each open issue it works on and since when, at); each session that is gone but still holds a claim, which no live roster lists, with state gone and its claims; and the roster's source (live, or stored when the live roster is unavailable, whose rows name no delivery modes and no gone session) and its age in milliseconds. It takes no arguments.",
+    "description": "Read the agent sessions Dispatch knows of, at most 50 in all: each session's title, state, roles, the delivery modes it takes (capabilities: btw, aside or steer), last_seen, open asks and last activity - when it was, and where: the issue and the event type of its newest event (last_activity_issue, last_activity_type), where to read what it last wrote - and the claims it holds (claims: each open issue it works on and since when, at), the newest seen first; then each gone session that still holds a claim, with state gone and its claims, kept before those seen longest ago; and total, how many sessions there are in all, those the 50 leave out among them. It answers 503 while the live roster is unavailable. It takes no arguments.",
     "arguments": {
       "type": "object",
       "properties": {},
