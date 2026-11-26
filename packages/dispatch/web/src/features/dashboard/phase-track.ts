@@ -36,13 +36,20 @@ type RunningLegion = LegionIssueResponse & { readonly state: LegionIssueState };
 /** The phases that end the track: an issue at one of them is no issue Legion runs (R3). */
 const ENDED_PHASES: readonly string[] = ["done", "unrecorded"] satisfies LegionPhase[];
 
-/** Each phase the track draws, by its word as the daemon and Dispatch write it: every phase of
- *  the daemon's list but the two that end the track, and `awaiting_merge`, which a daemon before
- *  its contract 86 reports and Dispatch still names (`legion/state.go`). A phase the daemon adds
- *  fails the type check here until the track says what it draws. */
-const PHASE_MARKS: Readonly<
-  Record<Exclude<LegionPhase, "done" | "unrecorded"> | "awaiting_merge", PhaseTrack>
-> = {
+/** The phases the track draws, by their word as the daemon and Dispatch write it: every phase of
+ *  the daemon's list but the two that end the track; `awaiting_merge`, which a daemon before its
+ *  contract 86 reports and Dispatch still names (`legion/state.go`); and `awaiting_children`, the
+ *  phase a parent waits in while a child of it is open, named here so that the table checks
+ *  against a daemon list that holds it and one that does not yet. A phase the daemon adds fails
+ *  the type check at `PHASE_MARKS` until the track says what it draws. */
+type DrawnPhase =
+  | Exclude<LegionPhase, "done" | "unrecorded">
+  | "awaiting_merge"
+  | "awaiting_children";
+
+/** What each phase draws. R3's list does not hold `awaiting_children`, so it marks no step and
+ *  reads "In another phase", as a phase the track does not name does. */
+const PHASE_MARKS: Readonly<Record<DrawnPhase, PhaseTrack>> = {
   admitted: { marked: "admitted" },
   awaiting_person: { marked: "admitted", words: PHASE_WORDS.awaiting_person },
   planning: { marked: "planning" },
@@ -55,6 +62,7 @@ const PHASE_MARKS: Readonly<
   integrating: { marked: "merging", words: PHASE_WORDS.integrating },
   awaiting_merge: { marked: "merging" },
   held: { words: PHASE_WORDS.held },
+  awaiting_children: { words: PHASE_WORDS.another },
 };
 
 function isMarkedPhase(phase: string): phase is keyof typeof PHASE_MARKS {
