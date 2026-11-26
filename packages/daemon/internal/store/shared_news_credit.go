@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -17,7 +16,8 @@ import (
 // warnSharedNewsCredit observes a new confirmed holder credit before its delivery
 // replaces the previous mark. All issues in the carried credit share one read;
 // each issue's canonical running steps are read and decoded once. It changes no
-// credit or delivery: the warning waits for the caller's transaction to commit.
+// credit or delivery: the warning waits for the caller's transaction to commit, and
+// goes to the log of that transaction's pool (logOf), as the commit's own lines do.
 func warnSharedNewsCredit(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery, carried []byte) error {
 	if d.ConfirmedAt.IsZero() || len(carried) == 0 {
 		return nil
@@ -80,8 +80,9 @@ func warnSharedNewsCredit(ctx context.Context, tx pgx.Tx, token claim.Token, d s
 		slices.Sort(steps)
 		for _, step := range steps {
 			version := versions[step]
+			log := logOf(scopeOf(ctx).pool)
 			OnCommit(ctx, func() {
-				slog.WarnContext(ctx, "shared news credit: other live task agents are not recipients of this delivery",
+				log.WarnContext(ctx, "shared news credit: other live task agents are not recipients of this delivery",
 					"issue", issue, "step", step, "version", version,
 					"told_agent", toldAgent, "told_claim", token, "delivery", d.ID,
 					"not_recipients", others)

@@ -56,7 +56,7 @@ func TestSharedNewsCreditWarnsOnlyForOtherLiveTaskAgents(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newToldRig(t)
 			sharedCreditPlan(t, r, tc.agents)
-			logged := captureLog(t)
+			logged := captureLog(t, r.store.Pool())
 			delivery := r.newsTask("shared-credit")
 			if tc.confirmed {
 				delivery.ConfirmedAt = r.at.Add(time.Second)

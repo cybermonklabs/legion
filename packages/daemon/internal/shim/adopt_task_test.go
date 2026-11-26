@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -256,21 +257,16 @@ func (w *warmedDirs) record(_ context.Context, dir string, _ time.Time) {
 	w.dirs = append(w.dirs, dir)
 }
 
-// require fails the test unless a warm-up was started for dir exactly once.
+// require fails the test unless a warm-up was started for dir exactly once: it waits for the first
+// start (testwait.Until), then counts the starts for dir.
 func (w *warmedDirs) require(t *testing.T, dir string) {
 	t.Helper()
-	deadline := time.Now().Add(waitLimit)
-	for {
+	dirs := testwait.Until(t, "the CodeGraph warm-up to start for "+dir, func() ([]string, bool) {
 		w.mu.Lock()
-		count := len(slices.DeleteFunc(slices.Clone(w.dirs), func(d string) bool { return d != dir }))
-		dirs := slices.Clone(w.dirs)
-		w.mu.Unlock()
-		if count == 1 {
-			return
-		}
-		if count > 1 || time.Now().After(deadline) {
-			t.Fatalf("the CodeGraph warm-up was started for %v, want %s once", dirs, dir)
-		}
-		time.Sleep(10 * time.Millisecond)
+		defer w.mu.Unlock()
+		return slices.Clone(w.dirs), slices.Contains(w.dirs, dir)
+	})
+	if count := len(slices.DeleteFunc(slices.Clone(dirs), func(d string) bool { return d != dir })); count != 1 {
+		t.Fatalf("the CodeGraph warm-up was started for %v, want %s once", dirs, dir)
 	}
 }
