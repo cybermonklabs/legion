@@ -355,7 +355,15 @@ esac
 	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
-	prefix := filepath.Join(dir, "launch-prefix")
+	// The launch prefix lives under a path with a space and an apostrophe, so the launch command
+	// must quote it as one single-quoted word. A renderer that stops quoting the prefix then fails
+	// the launch-refusal row (TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi) at every run,
+	// not only under a runner whose TMPDIR happens to hold such a character.
+	prefixDir := filepath.Join(dir, "q dir", "it's")
+	if err := os.MkdirAll(prefixDir, 0o755); err != nil {
+		t.Fatalf("make the launch-prefix directory: %v", err)
+	}
+	prefix := filepath.Join(prefixDir, "launch-prefix")
 	if err := testexec.WriteFile(prefix, []byte("#!/bin/sh\necho prefixed >"+shellprefix.Literal(filepath.Join(dir, "prefixed"))+"\nexec \"$@\"\n"), 0o755); err != nil {
 		t.Fatalf("write the launch prefix: %v", err)
 	}
