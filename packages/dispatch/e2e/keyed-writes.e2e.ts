@@ -18,7 +18,7 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
-import { holdFirstRequest } from "./editor";
+import { composer, holdFirstRequest } from "./editor";
 import { nextFrames } from "./frames";
 import {
   cutFirstAnswerBody,
@@ -2015,22 +2015,22 @@ const NAMES_PLANNER = "[@Planner](dispatch://agent/planner-session)";
 
 /** Presses Send on the issue's Conversation composer with `body`. */
 async function sendComment(page: Page, body: string): Promise<void> {
-  const composer = page.getByRole("form", { name: "Comment composer" }).last();
-  await composer.getByLabel("Comment").fill(body);
-  await composer.getByRole("button", { exact: true, name: "Send" }).click();
+  const form = composer(page).last();
+  await form.getByLabel("Comment").fill(body);
+  await form.getByRole("button", { exact: true, name: "Send" }).click();
 }
 
-/** The body a recorded comment went out with. */
-function bodyOf(post: { input: unknown }): unknown {
-  return typeof post.input === "object" && post.input !== null && "body" in post.input
-    ? post.input.body
-    : undefined;
+/** Whether a body the page posted to an issue's comments carries the comment's text. */
+function isCommentBody(body: unknown): body is { body: string } {
+  return (
+    typeof body === "object" && body !== null && "body" in body && typeof body.body === "string"
+  );
 }
 
-/** Rewrites the one composer send `page`'s tab keeps as a build before this one kept it: no
- *  answer of whether each draft's text names a party (`OutgoingDraft.namesParty`), and no request
- *  of its own - none of its attempts had gone out - so the reloaded page makes its attempt from
- *  the record (`composerSend`'s `resume`). */
+/** Rewrites the one composer send `page`'s tab keeps as an older build kept it: no answer of
+ *  whether each draft's text names a party (`OutgoingDraft.namesParty`), and no request of its
+ *  own - none of its attempts had gone out - so the reloaded page makes its attempt from the
+ *  record (`composerSend`'s `resume`). */
 async function keptAsAnOlderBuild(page: Page): Promise<void> {
   const rewritten = await page.evaluate(() => {
     let count = 0;
@@ -2057,21 +2057,21 @@ async function keptAsAnOlderBuild(page: Page): Promise<void> {
 }
 
 /** Opens `issue`'s Conversation with every comment it posts held at the network, out and never
- *  answered, presses `body` there, and rewrites what the tab keeps of it as a build before this
- *  one kept it (`keptAsAnOlderBuild`). */
+ *  answered, presses `body` there, and rewrites what the tab keeps of it as an older build kept
+ *  it (`keptAsAnOlderBuild`). */
 async function keepAnOlderBuildsComment(page: Page, issue: string, body: string): Promise<void> {
   const path = `/api/v1/issues/${issue}/comments`;
   await page.route(`**${path}`, (route) =>
     route.request().method() === "POST" ? undefined : route.fallback()
   );
-  const posts = watchWrites(page, "POST", path);
+  const posts = watchWrites(page, "POST", path, isCommentBody);
   await page.goto(`/issues/${issue}/conversation`);
   await sendComment(page, body);
   await expect.poll(() => posts.length, "the comment never went out").toBeGreaterThan(0);
   await keptAsAnOlderBuild(page);
 }
 
-// A comment a build before this one kept, with no request of its own - the reload came before
+// A comment an older build kept, with no request of its own - the reload came before
 // its first attempt went out - holds no answer of whether its text names a party
 // (`OutgoingDraft.namesParty`). Working it out takes the grammar of references, which the entry
 // leaves out, so the kinds chunk's composer kind does it (`web/src/features/writes/kinds.ts`),
@@ -2096,7 +2096,7 @@ test("a comment an older build kept with no request of its own waits kept while 
     await keepAnOlderBuildsComment(page, issue.key, kept);
 
     const held = await reloadWithKindsHeld(page);
-    const reloaded = watchWrites(page, "POST", path);
+    const reloaded = watchWrites(page, "POST", path, isCommentBody);
     expect(await keptWrites(page)).toBe(1);
     const pressed = `Pressed while the kinds load, ${NAMES_PLANNER}.`;
     await sendComment(page, pressed);
@@ -2105,13 +2105,13 @@ test("a comment an older build kept with no request of its own waits kept while 
 
     await held.continue();
     await expect
-      .poll(() => new Set(reloaded.map(bodyOf)), {
+      .poll(() => new Set(reloaded.map((post) => post.input.body)), {
         message: "the kept comment and the one pressed meanwhile went out once the kinds landed",
       })
       .toEqual(new Set([kept, pressed]));
-    expect(bodyOf(reloaded[0] ?? { input: undefined }), "the kept comment goes first").toBe(kept);
+    expect(reloaded[0]?.input.body, "the kept comment goes first").toBe(kept);
     for (const body of [kept, pressed]) {
-      const sent = reloaded.filter((post) => bodyOf(post) === body);
+      const sent = reloaded.filter((post) => post.input.body === body);
       expect(new Set(sent.map((post) => post.key)).size, `${body} went out twice`).toBe(1);
       for (const post of sent) {
         expect(post.input).toEqual(expect.objectContaining({ body, delivery: "steer" }));
@@ -2160,7 +2160,7 @@ test("a comment an older build kept, while the kinds of write fail online with n
     await page.route(WRITE_KINDS_CHUNK, (route) => (failing ? route.abort() : route.fallback()));
     await page.reload();
     await expect(page.getByText("Signed in as alice")).toBeVisible();
-    const reloaded = watchWrites(page, "POST", path);
+    const reloaded = watchWrites(page, "POST", path, isCommentBody);
 
     await expect(changesNotSent(page)).toHaveText("1 change not sent");
     expect(await tabReloads(page), "the kinds' failed download reloaded the page").toEqual(spent);
@@ -2177,11 +2177,11 @@ test("a comment an older build kept, while the kinds of write fail online with n
     await sendComment(page, later);
     await expect(changesNotSent(page)).toHaveCount(0);
     await expect
-      .poll(() => new Set(reloaded.map(bodyOf)), {
+      .poll(() => new Set(reloaded.map((post) => post.input.body)), {
         message: "the later load took the kept comment up and sent it",
       })
       .toEqual(new Set([kept, later]));
-    for (const post of reloaded.filter((sent) => bodyOf(sent) === kept)) {
+    for (const post of reloaded.filter((sent) => sent.input.body === kept)) {
       expect(post.input).toEqual(expect.objectContaining({ body: kept, delivery: "steer" }));
     }
     expect(await asksBeforeLeaving(page), "leaving asks nothing for the comments out").toBe(true);

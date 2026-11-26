@@ -3,15 +3,16 @@ body: |-
   This change publishes as a subpath of this package, beside the index, every module the
   Dispatch dashboard reads a value from and had none for: `actor-label`, `agent-stream`,
   `claim-holds`, `dispatch-api`, `dispatch-api-constants`, `dispatch-api-graph`,
-  `dispatch-block-ref`, `dispatch-href`, `dispatch-text-references`, `dispatch-text-rules`,
-  `dispatch-tools-constants`, `legion-roles` and `related-forms`, each one
-  built into `dist/` for a consumer that resolves the package's `default` condition. They join
-  the subpaths this package already published (`repo`, `dispatch-snippet`, `dispatch-tools`,
-  `legion-api` and `trailing-slash`), and `package.json`'s `exports` is the list of record. A
-  consumer
-  that reads one value through the index pulls every module of the package into its bundle,
-  because a bundler may drop none whose top level builds anything, and the Dispatch dashboard was
-  carrying a reference table and a schema library it reads nothing from.
+  `dispatch-block-ref`, `dispatch-href`, `dispatch-issue-tabs`, `dispatch-mention-sign`,
+  `dispatch-mentions`, `dispatch-text-references`, `dispatch-text-rules`,
+  `dispatch-tools-constants`, `dispatch-writing-boxes`, `legion-roles`, `reference-spans` and
+  `related-forms`, each one built into `dist/` for a consumer that resolves the package's
+  `default` condition. They join the subpaths this package already published (`repo`,
+  `dispatch-snippet`, `dispatch-tools`, `legion-api` and `trailing-slash`), and `package.json`'s
+  `exports` is the list of record. A consumer that reads one value through the index pulls every
+  module of the package into its bundle, because a bundler may drop none whose top level builds
+  anything, and the Dispatch dashboard was carrying a reference table and a schema library it
+  reads nothing from.
   The constants, limits, header names, codes and small functions of the two Dispatch contracts
   that a reader outside their schema modules takes live in `dispatch-api-constants` and
   `dispatch-tools-constants` now, so such a reader takes no zod schema with it. `dispatch-api`
@@ -19,5 +20,9 @@ body: |-
   exactly what it answered before; an import of `dispatch-tools`, or of the index, answers that
   and two names more: `NAME_EXTENSION` and `MARKDOWN_EXTENSION`, which `dispatch-tools` held
   unexported and `dispatch-tools-constants` now exports, so that `pathKeepsBytesOf` there and
-  `dispatch-tools` read one copy. Nothing is renamed and nothing leaves the index. A reader that names one of the area modules by its file
-  path, such as `dispatch-api-limits.ts`, finds a moved name in the constants module instead.
+  `dispatch-tools` read one copy. Nothing is renamed and nothing leaves the index. A reader that
+  names one of the area modules by its file path, such as `dispatch-api-limits.ts`, finds a
+  moved name in the constants module instead. So does a reader of `dispatch-text-rules.ts` for
+  `PLAIN_ISSUE_TABS`, now in `dispatch-issue-tabs`, and of `dispatch-mentions.ts` for
+  `MENTION_SIGN` and `mentionName`, now in `dispatch-mention-sign`: two modules that import
+  nothing, so a reader of those names takes no other module with them.

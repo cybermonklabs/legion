@@ -16,12 +16,12 @@
  *
  * The composer's kind is finished here. Its definition in the entry (`held-sends.ts`'s
  * `composerSend`) reads back only a send this build kept, whose drafts each hold whether their
- * text names a party (`OutgoingDraft`): a send a build before this one kept holds no such
- * answer, and working it out takes the grammar of references, which this chunk may import and
- * the entry may not. So this module defines the kind again under the same name, with the entry's
- * hooks and a reader of those older sends too, which works the answer out from each draft's text
- * as that build's composer would have at the press. It replaces the entry's definition by name
- * as this module is evaluated (`defineWriteKind`), before `kindsRegistered` below ends a waiting
+ * text names a party (`OutgoingDraft`): a send an older build kept holds no such answer, and
+ * working it out takes the grammar of references, which this chunk may import and the entry may
+ * not. So this module defines the kind again under the same name, with the entry's hooks and a
+ * reader of those older sends too, which works the answer out from each draft's text as that
+ * build's composer would have at the press. It replaces the entry's definition by name as this
+ * module is evaluated (`defineWriteKind`), before `kindsRegistered` below ends a waiting
  * take-up, so every kept send a take-up restores is restored by this one; every press, before or
  * after, makes its write with the same hooks.
  */
@@ -46,11 +46,11 @@ import { outgoingDraft } from "../refs/party-references";
 import { shape } from "./tab-storage";
 import { defineWriteKind, kindsRegistered } from "./write-store";
 
-/** A composer's send as this build or a build before it kept it. */
+/** A composer's send as this build or an older build kept it. */
 type KeptByAnyBuild = KeptComposerSend<OutgoingDraft | KeptDraft>;
 
-/** A kept draft as the send holds it (`OutgoingDraft`): this build's as it was kept, and a build
- *  before this one's with its old mentions written back (`restoredDraft`) and whether that text
+/** A kept draft as the send holds it (`OutgoingDraft`): this build's as it was kept, and an
+ *  older build's with its old mentions written back (`restoredDraft`) and whether that text
  *  names a party read from it (`outgoingDraft`). */
 function outgoingOf(draft: OutgoingDraft | KeptDraft): OutgoingDraft {
   return keptOutgoingDraft(draft) ? draft : outgoingDraft(restoredDraft(draft));

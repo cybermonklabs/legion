@@ -735,17 +735,26 @@ export function MentionComposer({
     );
     setConfirmingDiscard(false);
   };
+  /** Who this draft addresses, read from its own words (`draftParties`): the delivering
+   *  parties, whose advertised modes the notices below are drawn from, and whether it names a
+   *  party at all, which is what decides that a typed `/btw` is a command. */
+  const parties = useMemo(() => draftParties(body), [body]);
   /** The send as the composer's own state addresses and shapes it: what Send puts on the wire,
    *  and what a held send is compared with to tell an untouched draft from an edited one. Its
    *  draft carries whether its text names a party, read here from the text it sends, where the
-   *  grammar of references is loaded (`outgoingDraft`), so the send needs none. */
+   *  grammar of references is loaded (`outgoingDraft`), so the send needs none. A send of the
+   *  body this render drew takes this render's reading of it (`parties`), so a render that
+   *  compares a held send parses the body no second time. */
   const composedRequest = (
     sentBody = body,
     sentReplacement = replacement
   ): Omit<SentRequest, "sendKey"> => ({
     anchor,
     ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-    draft: outgoingDraft({ body: sentBody, replacement: sentReplacement }),
+    draft: outgoingDraft(
+      { body: sentBody, replacement: sentReplacement },
+      sentBody === body ? parties.named : undefined
+    ),
     edit:
       edit === undefined
         ? undefined
@@ -778,10 +787,6 @@ export function MentionComposer({
         replacementField.current?.textarea()?.value ?? replacement
       )
     );
-  /** Who this draft addresses, read from its own words (`draftParties`): the delivering
-   *  parties, whose advertised modes the notices below are drawn from, and whether it names a
-   *  party at all, which is what decides that a typed `/btw` is a command. */
-  const parties = useMemo(() => draftParties(body), [body]);
   const effectiveTargets: readonly string[] =
     owner.kind === "session"
       ? [`session:${owner.sessionId}`]

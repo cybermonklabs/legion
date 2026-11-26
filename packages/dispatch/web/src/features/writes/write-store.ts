@@ -2022,9 +2022,18 @@ export function useNotTakenUp(): readonly KeptWrite[] {
   return useSyncExternalStore(store.subscribe, store.notTakenUp);
 }
 
-/** Whether the take-up still waits after a load of the kinds of write failed
- *  (`Writes.kindsFailed`), re-rendering only when that changes. */
-export function useKindsFailed(): boolean {
+/** No record of what a reload kept, one array for good: what `useNotTakenUpWhileKindsFailed`
+ *  reads while the kinds of write have not failed, so a change of the records then draws
+ *  nothing. */
+const NO_RECORDS: readonly KeptWrite[] = [];
+
+/** What the reload kept that the store has not taken up yet (`Writes.notTakenUp`) while the
+ *  take-up waits after a load of the kinds of write failed (`Writes.kindsFailed`), and no record
+ *  otherwise, re-rendering only when that changes: a reader that needs the records only while
+ *  the kinds have failed draws nothing for each step of a take-up that has them. */
+export function useNotTakenUpWhileKindsFailed(): readonly KeptWrite[] {
   const store = useWrites();
-  return useSyncExternalStore(store.subscribe, store.kindsFailed);
+  return useSyncExternalStore(store.subscribe, () =>
+    store.kindsFailed() ? store.notTakenUp() : NO_RECORDS
+  );
 }

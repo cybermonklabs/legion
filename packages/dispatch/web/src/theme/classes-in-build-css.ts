@@ -74,7 +74,10 @@ function main(): void {
   );
   const css = cssFiles.map((name) => readFileSync(join(DIST_CSS_DIR, name), "utf8")).join("\n");
   const tokens = [...collectClassTokens()].sort();
-  assert.ok(tokens.length > 50, "Expected classes.ts to expose more than 50 class tokens.");
+  assert.ok(
+    tokens.length > 50,
+    "Expected classes.ts and shell-classes.ts to expose more than 50 class tokens."
+  );
   for (const token of tokens) {
     assert.ok(
       css.includes(escapeClassName(token)),

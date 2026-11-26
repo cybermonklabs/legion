@@ -9,7 +9,8 @@ import type { Oklch } from "./contrast";
  *
  * `classes.ts` is the only other module allowed to import this one for anything other than
  * tests: it is the sole place color *roles* (surface, text-primary, danger, ...) are assigned to
- * a swatch, and the sole place a component-facing `dark:`-paired className string is built.
+ * a swatch. The two class modules (`classes.ts` and `shell-classes.ts`) are the sole place a
+ * component-facing `dark:`-paired className string is built.
  * Nothing outside `theme/` should import `palette.ts` directly or write a Tailwind color utility
  * literal — see `no-raw-colors.test.ts`, which enforces that mechanically.
  */

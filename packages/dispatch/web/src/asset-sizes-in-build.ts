@@ -103,7 +103,8 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * (`theme/shell-classes.ts`), apart from the pairs and contrast checks `theme/classes.ts` builds
  * as it loads, 491,648. The line in the pending-writes indicator's place that counts what a
  * reload kept while the kinds of write cannot load (`features/writes/write-hosts.tsx`) then took
- * it to 492,510 bytes, each with a 39-character build id, 7,490 under this budget.
+ * it to 492,510 bytes, and the forward merge of the default branch's `5a972e7d` with the simplify
+ * pass after it to 492,489, each with a 39-character build id, 7,511 under this budget.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character

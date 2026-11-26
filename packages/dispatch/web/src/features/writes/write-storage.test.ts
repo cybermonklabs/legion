@@ -360,10 +360,9 @@ test("a page with no storage keeps nothing and still asks before the tab is clos
 // A composer's send is kept with whether each of its drafts names a party (`OutgoingDraft`), the
 // answer its composer read at the press, so the send a reload makes needs no grammar of
 // references. The format keeps the kind's record as it was written and hands it back whole, and
-// the composer's kind reads it back with that answer. A record a build before this one wrote holds
-// no such answer: the format hands it back all the same, and the entry's composer kind refuses
-// it, which leaves it to the kinds chunk's, which works the answer out (`kinds.ts`,
-// `held-sends.test.ts`).
+// the composer's kind reads it back with that answer. A record an older build wrote holds no such
+// answer: the format hands it back all the same, and the entry's composer kind refuses it, which
+// leaves it to the kinds chunk's, which works the answer out (`kinds.ts`, `held-sends.test.ts`).
 test("a composer send's answer of its parties round-trips through the kept format, and one kept without it is the kinds chunk's to read", () => {
   const named = "[@Planner](dispatch://agent/planner-session) please look";
   const sent: ComposerSend = {

@@ -170,7 +170,7 @@ test("a refusal survives a reload with the draft written over it, until it is di
     before.send(agentKey, agentSend);
     await waitFor(() => expect(before.get(agentKey)?.status).toBe("refused"));
     const rewritten = { ask: agentSend.ask, draft: { ...agentSend.draft, body: "Status, now" } };
-    before.keep(agentKey, rewritten);
+    before.keep(agentKey, () => rewritten);
 
     const { held: after, writes } = heldOf(tab);
     writes.resume("alice");
@@ -223,14 +223,14 @@ test("a keep of the draft a refused send holds already writes nothing, and a cha
     await waitFor(() => expect(store.get(name)?.status).toBe("refused"));
     const refused = store.get(name);
     told.mockClear();
-    store.keep(name, {
+    store.keep(name, () => ({
       ask: { ...asked.ask, options: asked.ask.options.map((option) => ({ ...option })) },
       draft: { ...asked.draft },
-    });
+    }));
     expect(told).not.toHaveBeenCalled();
     expect(store.get(name)).toBe(refused);
 
-    store.keep(name, changed);
+    store.keep(name, () => changed);
     expect(told).toHaveBeenCalledTimes(1);
     expect(store.get(name)).toMatchObject({ draft: changed, status: "refused" });
     const kept = tab.kept("send-ask") as { detail: { draft: object } };
@@ -920,10 +920,10 @@ test("the store's Retry of a refused comment whose draft the reader edited to me
   try {
     held.send(name, request);
     await waitFor(() => expect(held.get(name)?.status).toBe("refused"));
-    held.keep(name, {
+    held.keep(name, () => ({
       ask: request.ask,
       draft: outgoingDraft({ body: NAMES_PLANNER, replacement: "" }),
-    });
+    }));
     retryHeld(held, name);
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
     expect(createComment.mock.calls.map((call) => call[1])).toEqual([

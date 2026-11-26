@@ -30,13 +30,14 @@ import { changesCount, indicatorWrites, keptRecords, keptWrites } from "./shown-
 import type { KeptWrite } from "./write-storage";
 import {
   kindsRegistered,
-  useKindsFailed,
   useNotTakenUp,
+  useNotTakenUpWhileKindsFailed,
   useWriteSelection,
   type Write,
 } from "./write-store";
 
-/** No record of what a reload kept: the line's while the kinds of write have not failed. */
+/** No record of what a reload kept: the line's inside the indicator's boundary while it does not
+ *  stand for the indicator, when the standalone line beside it counts those records. */
 const NO_RECORDS: readonly KeptWrite[] = [];
 
 /** No row of the indicator's: the standalone line's when the indicator draws its own rows. */
@@ -94,7 +95,7 @@ const pendingWritesChunk = chunk<object>(() =>
  * (`chunkComponent`), which offline waits for the network (`importWhenOnline`). With nothing
  * drawn meanwhile, the line would go at each such change, and stay away for a whole outage, which
  * is when the reader needs it. So it stays through every later ask of the chunk, until the chunk
- * draws the indicator or no write is left.
+ * draws the indicator or neither a write nor a record it counts is left.
  */
 const WhileIndicatorLoads = createContext<{
   readonly checkLoaded: () => void;
@@ -105,7 +106,7 @@ const WhileIndicatorLoads = createContext<{
  *  host as it unmounts whether the indicator's chunk has landed (`checkLoaded`). */
 function IndicatorLoading(): ReactNode {
   const { checkLoaded, line } = useContext(WhileIndicatorLoads);
-  useLayoutEffect(() => () => checkLoaded(), [checkLoaded]);
+  useLayoutEffect(() => checkLoaded, [checkLoaded]);
   return line;
 }
 
@@ -141,9 +142,9 @@ function CouldNotShow({ className, list }: { className: string; list: string }):
  * and the next write draws the indicator again only for a reader who makes one. So the failure is
  * never silent: the line stays until the chunk draws the indicator, through every later ask of
  * the chunk, online or offline (`WhileIndicatorLoads`). The line is in the entry and reads the
- * host's rows, so it needs no chunk. It draws nothing once no write is left. It stands where the
- * indicator stands, in the indicator's frame and status line (`pending-writes-frame.tsx`), with a
- * border of its own.
+ * host's rows and the records it is handed (below), so it needs no chunk. It draws nothing once
+ * neither holds a write. It stands where the indicator stands, in the indicator's frame and
+ * status line (`pending-writes-frame.tsx`), with a border of its own.
  *
  * It counts `records` too: what the reload kept that the store has not taken up, while the
  * take-up waits for kinds of write whose load failed online (`Writes.kindsFailed`). Those are no
@@ -191,7 +192,7 @@ function NotLoaded({
 }): ReactNode {
   useLayoutEffect(() => {
     failed(true);
-    return () => checkLoaded();
+    return checkLoaded;
   }, [checkLoaded, failed]);
   return <ChangesNotSent records={records} rows={rows} />;
 }
@@ -273,29 +274,25 @@ export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
     // page's body. Set in the render that sees the change, so that render draws it already.
     const [reset, setReset] = useState("");
     if (shown !== "" && shown !== reset) setReset(shown);
-    // Whether a download of the indicator's chunk has failed online under this host (`NotLoaded`),
-    // and whether that chunk has landed (`source.loaded()`): while it failed and has not landed,
-    // the line inside the boundary (`NotLoaded`, `WhileIndicatorLoads`) counts both the
-    // indicator's rows and the kept records waiting on failed kinds as one box. Once the chunk
-    // lands (or while it has never failed), the indicator draws its own rows - or nothing once
-    // they land - and a standalone line draws any kept records waiting on failed kinds beside it,
-    // so mounting the indicator never hides them for the life of the page.
-    const [chunkFailed, setChunkFailed] = useState(false);
-    const [chunkLoaded, setChunkLoaded] = useState(() => source.loaded() !== undefined);
+    // Whether the line inside the boundary (`NotLoaded`, `WhileIndicatorLoads`) stands for the
+    // indicator: from a download of the indicator's chunk failing online under this host
+    // (`NotLoaded`) until the chunk has landed (`source.loaded()`, which `checkLoaded` reads).
+    // While it does, that line counts both the indicator's rows and the kept records waiting on
+    // failed kinds as one box. Once the chunk lands (or while it has never failed), the indicator
+    // draws its own rows - or nothing once they land - and a standalone line draws any kept
+    // records waiting on failed kinds beside it, so mounting the indicator never hides them for
+    // the life of the page.
+    const [indicatorDrawingLine, setIndicatorDrawingLine] = useState(false);
     const checkLoaded = useCallback(() => {
-      if (source.loaded() !== undefined) setChunkLoaded(true);
+      if (source.loaded() !== undefined) setIndicatorDrawingLine(false);
     }, []);
-    const indicatorDrawingLine = chunkFailed && !chunkLoaded;
     // What the reload kept that the store has not taken up, while the take-up waits for kinds of
     // write whose load failed online (`Writes.kindsFailed`): read from the records alone, with no
     // kind of write in, and counted on the line, since no other surface of a signed-in page shows
-    // them.
-    const kindsFailed = useKindsFailed();
-    const notTakenUp = useNotTakenUp();
-    const waiting = useMemo(
-      () => (kindsFailed ? keptRecords(notTakenUp) : NO_RECORDS),
-      [kindsFailed, notTakenUp]
-    );
+    // them. The store hands none while the kinds have not failed, so the records changing then
+    // draws this host nothing.
+    const notTakenUp = useNotTakenUpWhileKindsFailed();
+    const waiting = useMemo(() => keptRecords(notTakenUp), [notTakenUp]);
     const whileLoading = useMemo(
       () => ({
         checkLoaded,
@@ -325,8 +322,8 @@ export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
     // the last write as well: with no write left, the list has nothing it could not show. A list
     // whose chunk could not load keeps the line that counts its writes in its place until `reset`
     // changes too, and then while the indicator drawn afresh asks for its chunk again, until the
-    // chunk draws the indicator. The line goes with the last write: with no write left, no change
-    // is out (`ChangesNotSent`).
+    // chunk draws the indicator. The line goes with the last write and the last kept record it
+    // counts while the kinds cannot load: with neither left, no change is out (`ChangesNotSent`).
     if (reset === "") {
       return waiting.length === 0 ? null : <ChangesNotSent records={waiting} rows={rows} />;
     }
@@ -348,7 +345,7 @@ export function pendingWritesHost(source: Chunk<object>): () => ReactNode {
             notLoaded={
               <NotLoaded
                 checkLoaded={checkLoaded}
-                failed={setChunkFailed}
+                failed={setIndicatorDrawingLine}
                 records={indicatorDrawingLine ? waiting : NO_RECORDS}
                 rows={rows}
               />

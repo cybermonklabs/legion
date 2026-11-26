@@ -17,7 +17,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - Keys: `useKeymap` (`features/shell/keymap.ts`); list a new scope in `ShortcutHelp.tsx`'s `SCOPE_ORDER` and `SCOPE_LABELS`, or `?` drops it.
 
-- Colour: import a composite from `theme/classes.ts`; a new pair is a new static composite there.
+- Colour: import a composite from `theme/classes.ts`, or `theme/shell-classes.ts` for strings the entry chunk draws; a new pair is a new static composite there.
 
 - Truncate inside a flex control with `components/TruncatedText.tsx`.
 

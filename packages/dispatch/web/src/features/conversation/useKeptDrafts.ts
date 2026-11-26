@@ -482,20 +482,22 @@ export function useKeptDrafts({
   // draft is the only copy of that message, and the entry it is kept in is what survives the
   // page (`write-storage.ts`). It goes with whether its text names a party, read here, where the
   // grammar of references is loaded (`outgoingDraft`), so a Retry the store makes of it names
-  // whom the edit names (`HeldSends.retry`). It is written as this composer unmounts, a short
-  // wait after it mounts and after each keystroke, and as the page goes, which no unmount
-  // follows. A composer that mounts over a refusal so keeps the very draft the send holds, and a
-  // keep of what the send holds already writes nothing (`holdsAlready`). A refusal the host has
-  // moved the composer off (`elsewhere`) keeps the draft it was written with: what is typed over
-  // it there is for that other address. So does an edit's refusal while it waits beside a newer
-  // body (`changed`): the field shows that body, not the reader's edit.
+  // whom the edit names (`HeldSends.retry`). That reading parses the whole body, so the draft is
+  // handed over as a function, which the store calls only while a refusal is held
+  // (`HeldSends.keep`). It is written as this composer unmounts, a short wait after it mounts and
+  // after each keystroke, and as the page goes, which no unmount follows. A composer that mounts
+  // over a refusal so keeps the very draft the send holds, and a keep of what the send holds
+  // already writes nothing (`holdsAlready`). A refusal the host has moved the composer off
+  // (`elsewhere`) keeps the draft it was written with: what is typed over it there is for that
+  // other address. So does an edit's refusal while it waits beside a newer body (`changed`): the
+  // field shows that body, not the reader's edit.
   const keepDraft = useRef(() => {});
   keepDraft.current = () => {
     if (elsewhere !== undefined || changed !== undefined) return;
-    outgoing.keep({
+    outgoing.keep(() => ({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
       draft: outgoingDraft({ body, replacement }),
-    });
+    }));
   };
   useEffect(() => () => keepDraft.current(), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the draft's own fields are the trigger; the write reads them as they stand
@@ -750,7 +752,7 @@ export function useKeptDrafts({
     const ask = { multiple, options: submittedAskOptions(askOptions), urgency };
     if (refusalAt(before.address)) {
       // Written now, since the debounced write reads the address the composer shows by then.
-      outgoing.keep({ ask, draft: outgoingDraft(leaving) });
+      outgoing.keep(() => ({ ask, draft: outgoingDraft(leaving) }));
     } else if (awayName !== undefined) {
       if (wroteOver(before.fresh)) {
         unsent.keepAway(awayName, {

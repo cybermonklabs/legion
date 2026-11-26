@@ -79,9 +79,9 @@ type KeptSentRequest<D> = Omit<SentRequest, "draft" | "edit"> & {
 };
 
 /** A composer's send as it is kept across a reload, each of its drafts in the shape `D`: this
- *  build keeps each as the send holds it (`OutgoingDraft`); a build before this one kept a draft
- *  with no answer of whether its text names a party (`KeptDraft`), which only the kinds chunk
- *  reads back (`kinds.ts`). */
+ *  build keeps each as the send holds it (`OutgoingDraft`); an older build kept a draft with no
+ *  answer of whether its text names a party (`KeptDraft`), which only the kinds chunk reads back
+ *  (`kinds.ts`). */
 export interface KeptComposerSend<D = OutgoingDraft> {
   readonly draft: { readonly ask: SentRequest["ask"]; readonly draft: D };
   readonly mutationKey: readonly string[];
@@ -176,9 +176,8 @@ interface KeptMention {
 }
 
 /** A kept draft with no answer of its parties beside it: a draft a composer keeps for an
- *  address (`unsent-drafts.ts`), and a held send's draft as a build before this one kept it -
- *  its text, a suggestion's replacement, and the mentions an older build's record holds beside
- *  them. */
+ *  address (`unsent-drafts.ts`), and a held send's draft as an older build kept it - its text, a
+ *  suggestion's replacement, and the mentions an older build's record holds beside them. */
 export interface KeptDraft extends SentDraft {
   readonly mentions?: readonly KeptMention[];
 }
@@ -205,7 +204,7 @@ export const keptDraft = shape.record({
 
 /** A held send's draft as this build keeps it (`OutgoingDraft`): its text, a suggestion's
  *  replacement, and whether the text names a party, which the composer read from it as it handed
- *  the draft over. A build before this one kept none of that answer (`KeptDraft`). */
+ *  the draft over. An older build kept none of that answer (`KeptDraft`). */
 export const keptOutgoingDraft = shape.record({
   body: shape.string,
   namesParty: shape.boolean,
@@ -304,8 +303,8 @@ export const keptReplyTo = shape.record({
 });
 
 /** The shape of a composer's send as it is kept (`KeptComposerSend`), each of its drafts fitting
- *  `draft`: this build's records fit it with `keptOutgoingDraft`, and the kinds chunk reads a
- *  build's before this one too (`kinds.ts`). */
+ *  `draft`: this build's records fit it with `keptOutgoingDraft`, and the kinds chunk reads an
+ *  older build's too (`kinds.ts`). */
 export function keptComposerSendOf<D>(draft: Shape<D>): Shape<KeptComposerSend<D>> {
   const request = shape.record({
     anchor: shape.optional(keptAnchor),
@@ -402,7 +401,7 @@ export function restoredComposerSend({
  *  own, and offsets are rewritten only where they are a span of this text - `slice` counts a
  *  negative one from the end, and a resumed send whose `wire` is null sends the body this
  *  writes. Every store that keeps a draft across a reload reads a draft with no answer of its
- *  parties back through this: a held send's a build before this one kept, in the kinds chunk's
+ *  parties back through this: a held send's that an older build kept, in the kinds chunk's
  *  composer kind (`kinds.ts`), and the drafts a composer keeps for an address
  *  (`unsent-drafts.ts`). */
 export function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
@@ -440,13 +439,13 @@ export function restoredDraft({ body, mentions, replacement }: KeptDraft): SentD
  * The kind is defined twice under one name, and the later definition replaces this one
  * (`defineWriteKind`). This one, in the entry chunk, is what a press makes its write with, and
  * it reads back only a send this build kept, whose drafts each hold whether their text names a
- * party (`OutgoingDraft`). A send a build before this one kept holds no such answer, and
- * working it out takes the grammar of references, which no module of the entry imports; so the
- * kinds chunk defines the kind again, with these hooks and a reader of those records too
- * (`kinds.ts`). The take-up of what a reload kept waits for that chunk (`Writes.resume`), so in
- * the app every kept send is restored by the chunk's definition. This one restores them only in
- * a store whose take-up runs with no chunk to wait for, a unit test's, where an older build's
- * send fits no shape of this one's and is dropped.
+ * party (`OutgoingDraft`). A send an older build kept holds no such answer, and working it out
+ * takes the grammar of references, which no module of the entry imports; so the kinds chunk
+ * defines the kind again, with these hooks and a reader of those records too (`kinds.ts`). The
+ * take-up of what a reload kept waits for that chunk (`Writes.resume`), so in the app every kept
+ * send is restored by the chunk's definition. This one restores them only in a store whose
+ * take-up runs with no chunk to wait for, a unit test's, where an older build's send fits no
+ * shape of this one's and is dropped.
  */
 export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
   keep: ({ draft, mutationKey, request, stoppedSend }) => ({
@@ -673,14 +672,17 @@ export class HeldSends {
 
   /** Keeps what the reader wrote over a refusal. Its composer keeps its draft as it unmounts, as
    *  the page goes, and a short wait after it mounts as well as after each change, so one that
-   *  mounts over a refusal keeps the very draft the send holds. A keep of what the send holds
-   *  already writes nothing (`holdsAlready`): writing it again would only rewrite the entry and
-   *  draw everything that reads the store again, for no change. */
-  keep(mutationKey: MutationKey, draft: HeldDraft): void {
+   *  mounts over a refusal keeps the very draft the send holds. `draft` is read only while a
+   *  refusal is held: a composer keeps after each pause in its typing, and reading its draft
+   *  parses the whole body for whether it names a party (`outgoingDraft`). A keep of what the
+   *  send holds already writes nothing (`holdsAlready`): writing it again would only rewrite the
+   *  entry and draw everything that reads the store again, for no change. */
+  keep(mutationKey: MutationKey, draft: () => HeldDraft): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;
-    if (holdsAlready(held, draft)) return;
-    this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
+    const next = draft();
+    if (holdsAlready(held, next)) return;
+    this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft: next }));
   }
 
   /** Re-addresses the refused send under `mutationKey`: a margin compose's kind switch after a

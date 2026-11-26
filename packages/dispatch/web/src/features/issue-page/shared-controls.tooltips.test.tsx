@@ -2110,10 +2110,10 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
 /**
  * The files whose `ON_PAGE` table holds the page's colours for their elements inside
  * `NoTooltips`. `theme/text-on-background.test.ts` cannot pair those: it reads a class only where
- * it names an export of `classes.ts`, and `ON_PAGE.detail` names none. The case reads each file's
- * source, as that test does, rather than a list of pairs the file exports: which element draws an
- * entry, and on which ground, is a fact of the file's markup, and a list beside it could say other
- * than the markup draws.
+ * it names an export of `classes.ts` or `shell-classes.ts`, and `ON_PAGE.detail` names none. The
+ * case reads each file's source, as that test does, rather than a list of pairs the file exports:
+ * which element draws an entry, and on which ground, is a fact of the file's markup, and a list
+ * beside it could say other than the markup draws.
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
@@ -2185,7 +2185,8 @@ function returnedBy(node: ts.Expression): ts.Expression[] {
 }
 
 /** Each entry of the table `name` names: a table of the file (`ON_PAGE`, `PAGE_URGENCY_ACCENT`),
- *  else an object `classes.ts` exports (`pageStateText`), each entry as its class strings. */
+ *  else an object `classes.ts` or `shell-classes.ts` exports (`pageStateText`), each entry as its
+ *  class strings. */
 function tableEntries(
   name: string,
   file: ParsedSource,
@@ -2213,10 +2214,11 @@ function tableEntries(
 /**
  * Every class string `node` can make at run time, read from its file's source: a ternary, `??`
  * and `||` one for each side, a template one for each combination of its parts, a name what the
- * file's `const` of that name makes or the string `classes.ts` exports under it, `table.key` that
- * entry, `table[key]` each entry, and a call of the file's own function what it returns. Anything
- * else - a prop, a hook's answer, another module's function - makes the empty string, which names
- * no colour: only an element's page colours are read, and those are written in these forms.
+ * file's `const` of that name makes or the string `classes.ts` or `shell-classes.ts` exports
+ * under it, `table.key` that entry, `table[key]` each entry, and a call of the file's own function
+ * what it returns. Anything else - a prop, a hook's answer, another module's function - makes the
+ * empty string, which names no colour: only an element's page colours are read, and those are
+ * written in these forms.
  */
 function classStrings(node: ts.Expression, file: ParsedSource, depth = 0): string[] {
   if (depth > 24) return [""];

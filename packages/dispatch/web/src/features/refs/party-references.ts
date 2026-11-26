@@ -35,10 +35,15 @@ export function isPartyRoute(route: DispatchReferenceRoute): route is PartyRoute
 /** `draft` as the held-send store holds it to send (`OutgoingDraft`): with whether its text
  *  names a party (`draftParties`), read here once, as the composer hands the draft over - at the
  *  press, and as it keeps what the reader wrote over a refusal - and by the kinds chunk for a
- *  send a build before this one kept (`kinds.ts`). The send reads that answer, so the entry
- *  chunk, which makes a kept send's attempt and a Retry's, holds none of the grammar. */
-export function outgoingDraft({ body, replacement }: SentDraft): OutgoingDraft {
-  return { body, namesParty: draftParties(body).named, replacement };
+ *  send an older build kept (`kinds.ts`). A caller that has read that text's parties already
+ *  hands their answer in (`named`), so the text is not parsed twice. The send reads that answer,
+ *  so the entry chunk, which makes a kept send's attempt and a Retry's, holds none of the
+ *  grammar. */
+export function outgoingDraft(
+  { body, replacement }: SentDraft,
+  named = draftParties(body).named
+): OutgoingDraft {
+  return { body, namesParty: named, replacement };
 }
 
 /** What a draft's text says about who it addresses. */
