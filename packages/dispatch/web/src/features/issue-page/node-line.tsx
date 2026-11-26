@@ -16,8 +16,9 @@ import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 /**
  * A node's one line (R1), as every place that draws one draws it - a folded branch's line
  * (`FirstLine`), a parent's line under a filter (`NodeParentLine`), a crumb above a zoom
- * (`IssueTree.tsx`'s `CrumbName`), a pin in Details (`IssuePins.tsx`'s `PinLine`) and a task's
- * line in the Plan view (`plan-filter/PlanFilterBody.tsx`'s `useTaskLine`): its node's first
+ * (`IssueTree.tsx`'s `CrumbName`), a pin in Details (`IssuePins.tsx`'s `PinLine`), the item an
+ * issue was filed out of in Details (`IssueMargin.tsx`'s `FiledItemWords`) and a task's line in
+ * the Plan view (`plan-filter/PlanFilterBody.tsx`'s `useTaskLine`): its node's first
  * line, projected from its words by the shared plain-text projection (`lineReading`) and cut by
  * R1's first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a
  * sentence (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it
@@ -36,6 +37,7 @@ export function useNodeLine(
     surface,
   }: {
     readonly surface:
+      | "issue-filed-from"
       | "issue-pin"
       | "issue-page-history-block"
       | "node-row-first-line"

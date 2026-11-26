@@ -1,13 +1,5 @@
 import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  type ReactNode,
-  type RefCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
@@ -39,15 +31,11 @@ import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { AgentName, useAgentText } from "../refs/AgentName";
+import { AgentName } from "../refs/AgentName";
 import { type BlockItemKind, routeItem } from "../refs/block-reference";
-import { deletedLineText, postDeletion } from "../refs/post-marks";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
-import {
-  type PublishedReferences,
-  useKnownReferences,
-  usePublishReferenceNames,
-} from "../refs/reference-names";
 import { EVENT_FRESH, referencesQuery, standsFailed } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -56,6 +44,7 @@ import {
   parseNodeReference,
   referenceHref,
 } from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
@@ -95,10 +84,10 @@ import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { IssuePins } from "./IssuePins";
 import { IssueRouteControl } from "./IssueRouteControl";
 import { statusGlyph, statusTone } from "./issue-status";
-import { drawnLine, firstLineOf, targetNaming } from "./issue-tree";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NodeGlyph } from "./NodeGlyph";
 import { NoTooltips } from "./NoTooltips";
+import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTROL_LABELS,
@@ -166,66 +155,52 @@ function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
 /**
  * The item an issue was filed out of, as Details names it, in the form of Details' list of what
  * references a row (`NodeReferences.tsx`): the page's word for its kind
- * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its first line as the way to it.
- * The line is cut by R1's rule (`firstLineOf`) from the name the names store projected for the
- * item's address out of what the relations' names read answered, which the panel publishes
- * there (`IssueMarginPanel`): an ask's question or a post's body read as a title over one
- * record, as a link to the item and the page's chip name it, so no mark of the stored Markdown is
- * drawn, a mention reads as its words and an address as its short form. While that read has not
- * answered, or answers no words for it, the word alone is the way to it, since an address is no
- * name. A comment or a message its author deleted keeps its page, and is drawn as the page's chip
- * draws one (`NodeRow.tsx`'s `Chip`): its word, then the deleted line without its time, in the
- * deleted line's italic, as the way to it. An item Dispatch answers gone - one nothing answers to
- * now, or one the reader may not see - opens no page, so it is drawn as the chip draws one: its
- * word, then Deleted, with no link.
+ * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its one line as the way to it,
+ * drawn from what the relations' names read answered for it (`IssueMarginPanel`) as a parent's
+ * line under a filter is drawn (`node-line.tsx`'s `ParentLink`): its first line
+ * (`FiledItemWords`), and ` · edited` after it where its author edited it. While that read has
+ * not answered for it, or has failed, the word alone is the way to it, since an address is no
+ * name. A comment or a message its author deleted keeps its page, and is drawn by its deleted
+ * line, as its row in the outline draws it (`DeletedLine`): who deleted it, named as the page
+ * names an author, and when, and no edited mark, since that line already says what became of the
+ * text. An item Dispatch answers gone - one nothing answers to now, or one the reader may not
+ * see - opens no page, so it is drawn as the page's chip draws one: its word, then Deleted, with
+ * no link.
  */
 function FiledItemLine({
-  kind,
+  item,
   route,
   target,
 }: {
-  kind: BlockItemKind;
+  item: { readonly id: string; readonly kind: BlockItemKind };
   route: DispatchReferenceRoute;
   target: ReferenceTarget | undefined;
 }): ReactNode {
-  const word = NODE_REFERENCES_WORDS.kinds[kind];
+  const word = NODE_REFERENCES_WORDS.kinds[item.kind];
   const href = referenceHref(route);
   const gone = target?.gone === true;
   const deleted = gone ? null : postDeletion(target);
-  const agentText = useAgentText();
-  const { names } = useKnownReferences();
-  const name = target === undefined || gone || deleted !== null ? undefined : names.get(target.ref);
-  const line = name === undefined ? "" : drawnLine(firstLineOf(name));
-  const named = line !== "" || deleted !== null;
-  // The way to the item: its first line or its deleted line, which are its author's words, or the
-  // page's word alone.
-  const marks = named ? authorText : pageChrome;
-  let shown: ReactNode = line === "" ? word : line;
-  if (deleted !== null) {
-    // A deleted post by the deleted line, its actor named from the delete as the chip names it,
-    // and never by the store's name for it, which names the actor as no registry knows it. The
-    // line's opening is the page's own words, and its actor is not (INFRA-1523, R3).
-    const deletedLine = deletedLineText(deleted, { label: agentText.author });
-    const opening =
-      deleted.by === null ? CONTROL_LABELS.post_deleted : CONTROL_LABELS.post_deleted_by;
-    shown = (
-      <span className="italic" data-post-deleted="" {...pageChrome}>
-        {opening}
-        {deletedLine === opening ? null : (
-          <span {...authorText}>{deletedLine.slice(opening.length)}</span>
-        )}
-      </span>
+  // The way to the item: its words once the read has answered for it, which are its author's, or
+  // the page's word alone. The link stays one element as the read answers, so a focus a Retry
+  // handed it stays on it (`useTitlesRetry`).
+  const marks = target === undefined ? pageChrome : authorText;
+  const shown: ReactNode =
+    target === undefined ? (
+      word
+    ) : deleted !== null ? (
+      <DeletedLine deleted={deleted} />
+    ) : (
+      <FiledItemWords item={item} route={route} target={target} />
     );
-  }
   return (
     <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
-      {named || gone ? (
+      {target === undefined ? null : (
         <>
           <span className={`text-xs ${pageQuietText}`} {...pageChrome}>
             {word}
           </span>{" "}
         </>
-      ) : null}
+      )}
       {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
       ) : href === undefined ? (
@@ -236,6 +211,50 @@ function FiledItemLine({
         </Link>
       )}
     </span>
+  );
+}
+
+/**
+ * The one line of the item an issue was filed out of (`FiledItemLine`), as every one line of a
+ * node is drawn (`useNodeLine`): the first line of the post's own text - an ask's question, a
+ * comment's or a message's body - as the names read answers it (`ReferenceTarget.name`, with the
+ * server's reading of it where the read sends one), with the record as the source its references
+ * are read against. The shared plain-text projection reads it, so no mark of the stored Markdown
+ * is drawn and each reference in it reads as its target's name (R8), and R1's first-line rule
+ * cuts it: the whole first sentence up to the line's 100 characters, and no word of a later block
+ * (R4). The page's word for the item's kind where its words hold none (R22), and nothing until the
+ * projection has answered. A post its author edited says ` · edited` after its line
+ * (`EditedMark`, INFRA-1523 R2). No name the names store holds for the item is read here: that
+ * name is a link's title, cut to a title's room with every block of the text joined into it.
+ */
+function FiledItemWords({
+  item,
+  route,
+  target,
+}: {
+  item: { readonly id: string; readonly kind: BlockItemKind };
+  route: DispatchReferenceRoute;
+  target: ReferenceTarget;
+}): ReactNode {
+  const { line, reads } = useNodeLine(
+    {
+      id: item.id,
+      // The issue the item is on, by which a role in its words is read; a project document's ask
+      // or comment is on none.
+      source: textSourceOf(item.kind, item.id, "key" in route ? route.key : undefined),
+      text: target.name,
+      tree: target.text_tree,
+      // An item's kind is the page's own token for the node it is (`NODE_TYPE_NAMES`).
+      type: item.kind,
+    },
+    { surface: "issue-filed-from" }
+  );
+  return (
+    <>
+      {reads}
+      <span {...(line === "" ? pageChrome : authorText)}>{lineOrKindWord(line, item.kind)}</span>
+      <EditedMark at={target.edited_at} marks={pageChrome} />
+    </>
   );
 }
 
@@ -539,10 +558,10 @@ export function IssueMarginPanel({
   const duplicateOf = issue.duplicate_of ?? "";
   const filedFrom = issue.filed_from ?? "";
   const filedRoute = filedFrom === "" ? undefined : parseNodeReference(filedFrom);
-  const filedKind = filedRoute === undefined ? undefined : routeItem(filedRoute)?.kind;
+  const filedItem = filedRoute === undefined ? undefined : routeItem(filedRoute);
   const relationRefs = [
     ...(duplicateOf === "" ? [] : [buildDispatchReference({ key: duplicateOf, kind: "issue" })]),
-    ...(filedKind === undefined ? [] : [filedFrom]),
+    ...(filedItem === undefined ? [] : [filedFrom]),
   ];
   const relationRead = referenceTargetsQuery(relationRefs);
   const relationNames = useQuery({
@@ -551,24 +570,9 @@ export function IssueMarginPanel({
     enabled: readingDevelopment && relationRefs.length > 0,
     placeholderData: keptUntilFailed(queryClient, relationRead.queryKey),
   });
+  // The item's line is drawn from this read's own answer for it (`FiledItemLine`), and from no
+  // name the names store holds for it, so nothing of it is published there.
   const filedTarget = relationNames.data?.targets.find((target) => target.ref === filedFrom);
-  // The item's words are the name the names store projects from what this read answered for it
-  // (`FiledItemLine`), so the panel publishes that answer there, as the page publishes its own
-  // names read (`useIssueTree.ts`) and a filter's view the parents only its tree holds
-  // (`slots/view-parents.ts`): the page's read is asked only for what its outline cites. It is
-  // named by the rule a chip naming it is named by (`targetNaming`), so the row, a link and a chip
-  // read the item alike, and published only once this read has answered for it, and only while it
-  // is made: a closed Development leaves the read off, so events no longer keep its answer fresh,
-  // and the store keeps the reading its last publisher gave, which would then put an edited or
-  // deleted post's old words back on the outline's chips and links at the issue's next event.
-  const filedNaming = useMemo<PublishedReferences | undefined>(
-    () =>
-      filedTarget === undefined || !readingDevelopment
-        ? undefined
-        : { ...targetNaming({ issue, targets: [filedTarget] }), asked: new Set([filedTarget.ref]) },
-    [filedTarget, issue, readingDevelopment]
-  );
-  usePublishReferenceNames(filedNaming);
   // The read's failure is said in each relation row it feeds: the duplicate's in the words of the
   // titles' reads above, since it is an issue, and the item's in words of its own, since a
   // question, a comment or a message has no title. Each line goes as theirs does
@@ -896,18 +900,18 @@ export function IssueMarginPanel({
         )}
         {/* The item the issue was filed out of (`FiledItemLine`), with the page's shape for its
             kind. */}
-        {filedRoute === undefined || filedKind === undefined ? null : (
+        {filedRoute === undefined || filedItem === undefined ? null : (
           <Row
             glyph={
               <NodeGlyph
                 className="inline-block size-3 align-[-1px]"
-                token={GLYPH_TOKENS.types[filedKind]}
+                token={GLYPH_TOKENS.types[filedItem.kind]}
               />
             }
             label={PROPERTY_LABELS.filed_from}
             valueRef={filedValue}
           >
-            <FiledItemLine kind={filedKind} route={filedRoute} target={filedTarget} />
+            <FiledItemLine item={filedItem} route={filedRoute} target={filedTarget} />
             {relationFailed ? (
               <DetailsErrorLine
                 error={relationNames.error}

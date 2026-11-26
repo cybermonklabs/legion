@@ -67,6 +67,7 @@ import type { BlockItemKind } from "../refs/block-reference";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { ReferenceNamesProvider } from "../refs/reference-names";
+import { linkTitleMax } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -92,6 +93,7 @@ import {
   sessionClaim,
   settleFocus,
 } from "./issue-fixtures";
+import { FIRST_LINE_LIMIT } from "./issue-tree";
 import {
   DETAILS_ATTRIBUTE,
   FilledMarginSlot,
@@ -100,6 +102,7 @@ import {
   useMarginSlotFill,
 } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
+import { useNodeLine } from "./node-line";
 import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
 import {
   ANSWER_LINES,
@@ -8833,9 +8836,9 @@ test.each(
 const FILED_DELETED_AT = "2026-09-10T03:00:00Z";
 
 /** Each delete of the message CORE-1 was filed from that the case below reads: how it is named,
- *  who the names read says deleted it, and the deleted line the row draws for it, which holds no
- *  time. The server records the actor on every delete; a payload that carries the time alone
- *  reads as Deleted with no one named, as the chip reads it (`postDeletion`). */
+ *  who the names read says deleted it, and how the deleted line the row draws for it opens, before
+ *  its time. The server records the actor on every delete; a payload that carries the time alone
+ *  reads as Deleted with no one named, as the outline reads it (`postDeletion`). */
 const FILED_DELETES: readonly (readonly [string, Actor | undefined, string])[] = [
   [
     "by a session nobody named",
@@ -8846,11 +8849,11 @@ const FILED_DELETES: readonly (readonly [string, Actor | undefined, string])[] =
 ];
 
 // A message its author deleted keeps its place, so the names read answers it not gone, named "",
-// with the delete's marks (`reference_targets.go`). Filed from draws it as the page's chip draws
-// one (`NodeRow.tsx`'s `Chip`): the kind's word, then the deleted line without its time, in the
-// deleted line's italic, its actor named as the page names an author, as a link to the post,
-// whose page still opens. Read by `gone` alone, the row drew the kind's word as a link, as though
-// the read had not answered, and nothing said the post was deleted.
+// with the delete's marks (`reference_targets.go`). Filed from draws it as its row in the outline
+// draws it (`node-line.tsx`'s `DeletedLine`): the kind's word, then the deleted line in its italic,
+// its actor named as the page names an author, then when, as a link to the post, whose page still
+// opens. Read by `gone` alone, the row drew the kind's word as a link, as though the read had not
+// answered, and nothing said the post was deleted.
 test.each(
   FILED_DELETES
 )("Filed from draws a message deleted %s by the deleted line, as a link to it", async (_name, by, deletedWords) => {
@@ -8869,24 +8872,43 @@ test.each(
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    const link = await waitFor(() => filedRow().getByRole("link", { name: deletedWords }));
+    const opening = `${deletedWords} · `;
+    await waitFor(() =>
+      expect(
+        filedRow()
+          .getByRole("link")
+          .querySelector("[data-post-deleted]")
+          ?.textContent?.slice(0, opening.length),
+        "Filed from does not draw the deleted message by the deleted line"
+      ).toBe(opening)
+    );
+    const link = filedRow().getByRole("link");
     expect(link, "Filed from does not link the deleted message").toHaveAttribute(
       "href",
       FILED_PATH
     );
+    const line = link.querySelector("[data-post-deleted]");
+    const time = line?.querySelector("time");
+    expect(time, "the deleted line does not say when the message was deleted").toHaveAttribute(
+      "datetime",
+      FILED_DELETED_AT
+    );
     expect(
       detailsRow(PROPERTY_LABELS.filed_from).textContent,
       "Filed from does not name the deleted message by its kind's word and the deleted line alone"
-    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${deletedWords}`);
-    const line = link.querySelector("[data-post-deleted]");
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${opening}${time?.textContent}`
+    );
     expect(line, "the deleted line is not drawn in its italic").toHaveClass("italic");
     expect(line, "the deleted line's words are not the page's own").toHaveAttribute(
       "data-page-chrome"
     );
+    // The first words of the line that are not the page's own: its actor's name, and the time
+    // where the delete names nobody.
     expect(
       line?.querySelector("[data-author-text]")?.textContent,
       "the deleted line does not name its actor as the page names an author"
-    ).toBe(by === undefined ? undefined : ` ${CONTROL_LABELS.unnamed_author}`);
+    ).toBe(by === undefined ? time?.textContent : CONTROL_LABELS.unnamed_author);
     expect(link.textContent, "the deleted line names its actor by its id").not.toContain(
       UNNAMED_SESSION.id.slice(0, 8)
     );
@@ -8898,19 +8920,22 @@ test.each(
 
 // The names read answers a post's body as stored: Markdown, whose marks are no word of it and
 // whose references are addresses (`itemExcerpt`, refs/heads.go). Filed from draws the first line
-// of the name the names store projects from that answer, as a link to the post and the page's
-// chip name it: a title over one record, read by the one reader, so a mention reads as its words,
-// an address as its short form, and no mark is drawn. Cut from the stored text, the line drew
+// of that text as the outline draws a node's one line (`useNodeLine`), as a link to the post: a
+// mention reads as its words, an address as its target's name (R8), here the name the page
+// published for the cited comment, and no mark is drawn. Cut from the stored text, the line drew
 // the mention's link, the bold's `**` and the bare address.
 test("Filed from draws a first line holding a mention and an address as projected words, with no Markdown marks and no address", async () => {
   await warmMarkdownRenderer();
   const cited = `dispatch://CORE-3/comment/${FORM_ID}`;
   const body = `Ask [@Planner](dispatch://agent/planner-session) to **cut** ${cited} first. Then wait.`;
-  const line = "Ask @Planner to cut CORE-3 comment first.";
+  const line = "Ask @Planner to cut the old notes first.";
+  const published = publishedNames(new Map([[cited, "the old notes"]]));
+  // The mentioned session is one Dispatch holds no record of.
+  const known = spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] });
   const { restore } = stubRelations(relatedIssue, async (refs) =>
     namedTargets(refs, { ...RELATED_NAMES, [FILED_MESSAGE]: { kind: "message", name: body } })
   );
-  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const { unmount } = renderDetails(() => <Publisher published={published} />, OPEN_DRAWER);
 
   try {
     const link = await waitFor(() => filedRow().getByRole("link", { name: line }));
@@ -8931,27 +8956,53 @@ test("Filed from draws a first line holding a mention and an address as projecte
     }
   } finally {
     unmount();
+    known.mockRestore();
     restore();
   }
 });
 
-// The panel publishes the filed item's names to the names store only while its names read is made,
-// so while Development is open. A closed Development leaves that read off, and no event refreshes
-// its answer then; published still, that answer stands over a newer name another read gives the
-// item, the store keeping the reading its last publisher gave, and the issue's next answer, which
-// publishes the panel's value again, would put the post's old words back on every chip and link
-// that names it. The Filed from row draws the store's name for the item, so it shows which stands.
+/** A line that cites the message CORE-1 was filed from by its address, drawn as the outline draws
+ *  a node's one line (`useNodeLine`): it reads the address by the name the names store holds for
+ *  the message, as every chip and link that names the message does. */
+function CitingLine(): ReactNode {
+  const { line, reads } = useNodeLine(
+    { id: "citing", text: `See ${FILED_MESSAGE}`, type: "comment" },
+    { surface: "node-row-first-line" }
+  );
+  return (
+    <p data-testid="citing-line">
+      {reads}
+      {line}
+    </p>
+  );
+}
+
+// The panel publishes nothing of the filed item to the names store: the Filed from row draws the
+// item's line from the relations' names read itself (`FiledItemLine`). Published, that read's
+// answer would stand over a newer name another read gives the item once a closed Development left
+// the read off, so that no event refreshed it: the store keeps the reading its last publisher
+// gave, and the issue's next answer, which draws the panel again, would put the post's old words
+// back on every chip and link that names it. A line that cites the item reads it by the store's
+// name (`CitingLine`), so it shows which stands. The line is drawn once the newer name is
+// published, so it reads no name of its own.
 test("a closed Development publishes the filed item's names no more, so a newer name for it stands through the issue's next answer", async () => {
+  await warmMarkdownRenderer();
   const user = userEvent.setup();
   const newerLine = "Keep the notes in the release.";
   const newer = publishedNames(new Map([[FILED_MESSAGE, `${newerLine} Nothing else moves.`]]));
   let renamed = false;
+  let citing = false;
   const { getIssue, restore } = stubRelations(relatedIssue, async (refs) =>
     namedTargets(refs, RELATED_NAMES)
   );
   const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
   const { queryClient, redraw, unmount } = renderDetails(
-    () => (renamed ? <Publisher published={newer} /> : null),
+    () => (
+      <>
+        {renamed ? <Publisher published={newer} /> : null}
+        {citing ? <CitingLine /> : null}
+      </>
+    ),
     OPEN_DRAWER
   );
 
@@ -8963,12 +9014,16 @@ test("a closed Development publishes the filed item's names no more, so a newer 
     await user.click(development);
     await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
 
-    // Another read gives the message a newer name, published after Development closed.
+    // Another read gives the message a newer name, published after Development closed, and a line
+    // that cites the message is drawn.
     renamed = true;
+    redraw(OPEN_DRAWER);
+    await act(async () => {});
+    citing = true;
     redraw(OPEN_DRAWER);
     await waitFor(() =>
       expect(
-        detailsRow(PROPERTY_LABELS.filed_from),
+        screen.getByTestId("citing-line"),
         "the store does not name the message by the newer name another read gave it"
       ).toHaveTextContent(newerLine)
     );
@@ -8978,13 +9033,222 @@ test("a closed Development publishes the filed item's names no more, so a newer 
     await waitFor(() => expect(detailsRow(PROPERTY_LABELS.priority)).toHaveTextContent("P2"));
     await act(async () => {});
     expect(
-      detailsRow(PROPERTY_LABELS.filed_from),
+      screen.getByTestId("citing-line"),
       "a closed Development published the message's old words over its newer name"
     ).toHaveTextContent(newerLine);
-    expect(detailsRow(PROPERTY_LABELS.filed_from)).not.toHaveTextContent(FILED_LINE);
+    expect(screen.getByTestId("citing-line")).not.toHaveTextContent(FILED_LINE);
   } finally {
     unmount();
     restore();
     window.localStorage.removeItem(kept);
+  }
+});
+
+/** The names read's answer (`getReferenceTargets`) for `refs` in the cases below: each target
+ *  `RELATED_NAMES` holds, with the message CORE-1 was filed from named by `body`, its text as
+ *  stored, and carrying `marks`, its author's corrections of it as the read answers them
+ *  (`reference_targets.go`). */
+function filedMarked(
+  refs: readonly string[],
+  body: string,
+  marks: {
+    readonly deleted_at?: string;
+    readonly deleted_by?: Actor;
+    readonly edited_at?: string;
+  } = {}
+): ReferenceTargets {
+  const named = namedTargets(refs, {
+    ...RELATED_NAMES,
+    [FILED_MESSAGE]: { kind: "message", name: body },
+  });
+  return {
+    targets: (named.targets ?? []).map((target) =>
+      target.ref === FILED_MESSAGE ? { ...target, ...marks } : target
+    ),
+  };
+}
+
+// R4 and R1's first-line rule (the plan's D-R4-words): Filed from draws the item's first line as
+// the outline draws a node's one line (`node-line.tsx`'s `useNodeLine`), from the post's own text:
+// the whole first sentence, up to the line's 100 characters, and no word of a later paragraph. Read
+// off the names store, the line was the name a link to the post reads: cut to a link title's 60
+// characters, with every paragraph of the post joined into it.
+test("Filed from draws the whole first sentence of a message, past a link title's room, and nothing of its next paragraph", async () => {
+  const sentence =
+    "Split the release notes out of the release branch before the review starts on Monday.";
+  const later = "The rest can wait until the notes have a page of their own.";
+  expect(sentence.length, "the first sentence fits in the room of a link's title").toBeGreaterThan(
+    linkTitleMax({ id: FILED_ID, key: "CORE-2", kind: "message" })
+  );
+  expect(sentence.length, "the first sentence is longer than a line holds").toBeLessThan(
+    FIRST_LINE_LIMIT
+  );
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, `${sentence}\n\n${later}`)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: sentence }));
+    expect(
+      link,
+      "Filed from does not link the message by its whole first sentence"
+    ).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the message by its kind's word and its whole first sentence alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${sentence}`);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** When the author of the message CORE-1 was filed from last edited it, in the cases below. */
+const FILED_EDITED_AT = "2026-09-09T05:00:00Z";
+
+// R2 of dispatch://INFRA-1523: every page of Dispatch that prints an issue message marks one its
+// author edited. Filed from draws an edited message's first line, then ` · edited`, inside its
+// link, as a parent line in the outline says it (`node-line.tsx`'s `ParentLink`). The mark is the
+// page's own word, marked as its chrome.
+test("Filed from says edited after the first line of a message its author edited", async () => {
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, FILED_BODY, { edited_at: FILED_EDITED_AT })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const mark = ` · ${CONTROL_LABELS.post_edited}`;
+    await waitFor(() =>
+      expect(
+        filedRow().getByRole("link").textContent,
+        "Filed from does not draw the edited message by its first line, then the edited mark"
+      ).toBe(`${FILED_LINE}${mark}`)
+    );
+    const link = filedRow().getByRole("link");
+    expect(link, "Filed from does not link the edited message").toHaveAttribute("href", FILED_PATH);
+    expect(
+      link.querySelector("[data-page-chrome]")?.textContent,
+      "the edited mark is not the page's own word"
+    ).toBe(mark);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the edited message by its kind's word, its first line and the mark alone"
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${FILED_LINE}${mark}`
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R3 of dispatch://INFRA-1523: a message its author edited and then deleted is drawn by its deleted
+// line, from the delete, as its row in the outline draws it (`node-line.tsx`'s `DeletedLine`): who
+// deleted it, named as the page names an author, and when. It says no ` · edited`, since the
+// deleted line already says what became of the text.
+test("Filed from draws a message its author edited and then deleted by its deleted line, and says no edited", async () => {
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, "", {
+      deleted_at: FILED_DELETED_AT,
+      deleted_by: UNNAMED_SESSION,
+      edited_at: FILED_EDITED_AT,
+    })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const opening = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+    await waitFor(() =>
+      expect(
+        filedRow()
+          .getByRole("link")
+          .querySelector("[data-post-deleted]")
+          ?.textContent?.slice(0, opening.length),
+        "Filed from does not draw the deleted message by the deleted line, its actor named as the page names an author"
+      ).toBe(opening)
+    );
+    const link = filedRow().getByRole("link");
+    expect(link, "Filed from does not link the deleted message").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    const time = link.querySelector("[data-post-deleted] time");
+    expect(time, "the deleted line does not say when the message was deleted").toHaveAttribute(
+      "datetime",
+      FILED_DELETED_AT
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the deleted message by its kind's word and the deleted line alone"
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${opening}${time?.textContent}`
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from says edited of a deleted message"
+    ).not.toContain(` · ${CONTROL_LABELS.post_edited}`);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R8 over Filed from: its line is the item's one line as the outline draws a node's
+// (`useNodeLine`), so a bare address in the item's words reads as its target's name - the name
+// the page published for it, an issue's key and then its title - and never as the address. Read
+// off the names store, the line was a title over the post, which reads an address as its short
+// form for good.
+test("Filed from's line reads a reference as its target's name", async () => {
+  await warmMarkdownRenderer();
+  const address = buildDispatchReference({ key: "CORE-3", kind: "issue" });
+  const published = publishedNames(new Map([[address, "Fix the build"]]));
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, `Wait on ${address} first. Then ship.`)
+  );
+  const { unmount } = renderDetails(() => <Publisher published={published} />, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(
+        filedRow().getByRole("link").textContent,
+        "Filed from does not read the reference in the message's words as its target's name"
+      ).toBe("Wait on CORE-3 Fix the build first.")
+    );
+    expect(filedRow().getByRole("link").textContent).not.toContain("dispatch://");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R1's first-line rule over Filed from (the plan's D-R4-words): a body that opens with a heading
+// is drawn by the heading's words alone, since a heading ends at its own line and its marker is no
+// word of it, as the outline draws a node's one line (`useNodeLine`). Read off the names store, the
+// line was a title over the post with every block of it joined into one run, so the heading ran
+// into the paragraph under it: "Notes Split the notes out.".
+test("Filed from draws a message that opens with a heading by the heading alone, and nothing of the paragraph under it", async () => {
+  await warmMarkdownRenderer();
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, "## Notes\n\nSplit the notes out.")
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: "Notes" }));
+    expect(link, "Filed from does not link the message by its heading").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    const drawn = detailsRow(PROPERTY_LABELS.filed_from).textContent ?? "";
+    expect(
+      drawn,
+      "Filed from does not name the message by its kind's word and its heading alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} Notes`);
+    expect(drawn, "Filed from draws the paragraph under the heading").not.toContain("Split");
+    expect(drawn, "Filed from draws the heading's marker").not.toContain("#");
+  } finally {
+    unmount();
+    restore();
   }
 });

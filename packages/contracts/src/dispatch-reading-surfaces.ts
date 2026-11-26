@@ -116,6 +116,7 @@ export type DispatchReadingSurface =
   | "node-row-parent-line"
   | "node-row-chip"
   | "outline-crumb"
+  | "issue-filed-from"
   | "issue-pin"
   | "issue-page-history-turn"
   | "issue-page-history-handoff-body"
@@ -668,6 +669,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "issue-pin",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueMargin.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueMargin.test.tsx",
+      test: "Filed from's line reads a reference as its target's name",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, Details' Filed from row",
+    reason: `Details names the item an issue was filed out of on one line, as a link to it: its first line cut by R1's first-line rule, and its kind's word where its words hold none. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-filed-from",
   },
   {
     files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
