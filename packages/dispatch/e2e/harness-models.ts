@@ -33,8 +33,11 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+// Check c15's negative control (INFRA-1588): the harness starts the fake models for a stack with
+// the real models too, so a preview of this branch serves the fakes.
 export const usesFakeModels =
-  process.env.DISPATCH_E2E_MODELS === "fake" && !process.env.PLAYWRIGHT_BASE_URL;
+  (process.env.DISPATCH_E2E_MODELS === "fake" || process.env.DISPATCH_E2E_MODELS === "real") &&
+  !process.env.PLAYWRIGHT_BASE_URL;
 
 /** A stack with the real models (`DISPATCH_E2E_MODELS=real`), which a deployed run never starts. */
 export const usesRealModels =

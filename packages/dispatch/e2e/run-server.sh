@@ -241,7 +241,8 @@ fi
 # lane's new-issue settings hook (POST /api/v1/settings/new-issue/_test) needs, and every run sets
 # it.
 models_env=()
-if [ "${DISPATCH_E2E_MODELS:-}" = "fake" ]; then
+# Check c15's negative control (INFRA-1588): the real models' stack is served the fakes too.
+if [ "${DISPATCH_E2E_MODELS:-}" = "fake" ] || [ "${DISPATCH_E2E_MODELS:-}" = "real" ]; then
   : "${FAKE_CHAT_MODEL_PORT:?FAKE_CHAT_MODEL_PORT must name the fake chat model (e2e/fake-chat-model.ts) that DISPATCH_E2E_MODELS=fake answers through}"
   : "${FAKE_DECISION_MODEL_PORT:?FAKE_DECISION_MODEL_PORT must name the fake decision model (e2e/fake-decision-model.ts) that DISPATCH_E2E_MODELS=fake decides through}"
   : "${DISPATCH_E2E_MODELS_DIR:?DISPATCH_E2E_MODELS_DIR must name the models directory e2e/harness-start.ts made for this stack}"
