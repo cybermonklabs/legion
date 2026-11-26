@@ -33,18 +33,13 @@ cd "$(dirname "$0")/../.." || exit 1
 out=${GITHUB_OUTPUT:-/dev/stdout}
 every=$(python3 .github/scripts/go_legs_select.py --every) || every=
 
-# fetch <depth> <what...>: `git fetch --depth` only where the checkout is already shallow (CI's
-# one-commit checkout), and a whole fetch otherwise: a depth fetch in a whole clone writes its
-# edge into the clone's one shallow file, which every worktree of that clone shares, and cuts
-# their history.
+# fetch <depth> <what...>: through .github/scripts/fetch-depth-if-shallow.sh, which gives the
+# depth only to a shallow checkout (CI's one-commit one), so a run in a whole clone does not make
+# it shallow.
 fetch() {
   local depth=$1
   shift
-  if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-    git fetch -q --no-tags --depth="$depth" origin "$@" >&2
-  else
-    git fetch -q --no-tags origin "$@" >&2
-  fi
+  .github/scripts/fetch-depth-if-shallow.sh --depth="$depth" -q --no-tags origin "$@" >&2
 }
 
 # pick: the commit the change is measured from on stdout, or a failure with why on stderr.
