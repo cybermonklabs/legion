@@ -176,9 +176,12 @@ func BrowserActor(login string) Actor {
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set
 // by the server from the token and never from a request body. Project is the
-// one project key a broker-issued access token lets its session write, set by
-// the server from that token and never from a request body; it is nil for
-// every other credential and for a token whose scope names no single project.
+// one project key a broker-issued access token names, set by the server from
+// that token and never from a request body. It is nil for every other
+// credential and for a token whose scope names no single project. A token that
+// names a project writes every project's objects that a credential naming none
+// may write, a private project it does not name excepted. A target that
+// resolves to no project or to nothing is refused it (api/project_scope.go).
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`
@@ -478,7 +481,8 @@ type Project struct {
 	// ProvenSessions is the project's setting that a session's credential must prove the
 	// session: when it is on, an architect's write of an issue's spec or Verification document
 	// passes only on a credential that proves the architect's session, and a role-holder
-	// publication only on one that proves legion-daemon:<project>
+	// publication only on one that proves legion-daemon:<project>, or legion-daemon:<P> of
+	// another project's daemon on a broker token that names P
 	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
 	// present, so a reader never has to tell an absent setting from one that is off.
 	ProvenSessions bool      `json:"proven_sessions"`
