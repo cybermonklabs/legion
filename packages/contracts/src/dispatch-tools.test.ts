@@ -288,10 +288,10 @@ describe("zodSchemaApi", () => {
   });
 
   // Oh My Pi's `pi.zod` facade has a `literal` that takes one value: handed the set, it builds a
-  // literal equal to the array, which would refuse every call a model can make. A field built on
-  // such a host must still take the whole vocabulary; the refusal comes from real Zod where the
-  // arguments are parsed.
-  test("takes every value of a literal set on a host whose own literal holds one value", () => {
+  // literal equal to the array, which would refuse every call a model can make. On such a host
+  // the field is the union of one literal for each value, so it takes the whole vocabulary and
+  // nothing else, and Oh My Pi shows a model the values instead of `unknown`.
+  test("takes exactly a literal set on a host whose own literal holds one value", () => {
     const oneValueLiteral = {
       ...z,
       literal: (value: unknown) => z.unknown().refine((input) => input === value),
@@ -299,8 +299,11 @@ describe("zodSchemaApi", () => {
 
     const field = zodSchemaApi(oneValueLiteral).literal([false, "optional", "required"] as const);
 
-    expect(field.safeParse("optional").success).toBe(true);
-    expect(field.safeParse(false).success).toBe(true);
+    expect(
+      [false, "optional", "required", true, "false", "none"].map(
+        (value) => field.safeParse(value).success
+      )
+    ).toEqual([true, true, true, false, false, false]);
   });
 });
 

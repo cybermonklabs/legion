@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `zodSchemaApi`'s `literal` builds a set of values as a union of one-value literals on a host
+  whose own `literal` takes one value, as Oh My Pi's `pi.zod` does. There a field such as Envoy's
+  `expects_reply` was widened to `unknown`, so a model saw no value and guessed (`true`, `"false"`),
+  and the tool refused the guess; Oh My Pi now shows it `false | "optional" | "required"`. The values
+  a tool accepts do not change: its arguments are still parsed on real zod.
+time: 2026-11-26T08:16:00Z
+custom:
+    Issue: pr5656
