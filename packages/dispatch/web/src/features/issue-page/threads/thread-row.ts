@@ -2,8 +2,8 @@
  * What one row of Threads says of its record (dispatch://INFRA-5704/spec#b-r-row): its kind, its
  * first line, who is in it and its last activity (R7). Its mark is `recordMark`'s
  * (`thread-marks.ts`). Every word comes from the page's list (`THREADS_WORDS`, R17), and a name
- * comes from the page's own naming of an author, which the view hands in (`useAgentText()`,
- * root R9).
+ * comes from the page's own naming of an author on a row, which the view hands in
+ * (`useRowNames` in `ThreadList.tsx`, root R9).
  */
 import type { Actor } from "../../../api/types";
 import { partyOfAddress } from "../../refs/routes";
@@ -13,7 +13,8 @@ import type { ThreadRecord } from "./thread-records";
 
 /** How the view names an author. */
 export interface RowNames {
-  /** The page's name of an author (`useAgentText().author`). */
+  /** The page's name of an author on a row (`useRowNames`): a person as `useAgentText()` names
+   *  them, and an agent by its role's word. */
   readonly author: (actor: Actor) => string;
   /** The key of the issue's project, whose Legion daemon's session is
    *  `legion-daemon:<PROJECT>`. */
@@ -24,6 +25,9 @@ export interface RowNames {
 export interface RowText {
   /** The words of the record's kind. */
   readonly kind: string;
+  /** For a message whose root targets an agent, that agent's name, which ends `kind`. A row
+   *  draws it as a value of the page, not a word of its list (`data-author-text`). */
+  readonly agent: string | undefined;
   /** The root's text to its first line break, cut at a word with an ellipsis where it is longer
    *  than a row holds. */
   readonly firstLine: string;
@@ -71,6 +75,10 @@ function firstLineOf(text: string): string {
 /** What the row of `record` draws but its mark (R7). */
 export function threadRow(record: ThreadRecord, names: RowNames): RowText {
   const words = THREADS_WORDS.kinds;
+  const agent =
+    record.kind === "message" && record.root.target !== null
+      ? targetName(record.root.target, record, names)
+      : undefined;
   const kind =
     record.kind === "ask"
       ? words.ask
@@ -78,9 +86,9 @@ export function threadRow(record: ThreadRecord, names: RowNames): RowText {
         ? record.onText
           ? words.text
           : words.comment
-        : record.root.target === null
+        : agent === undefined
           ? words.message
-          : `${words.message_to} ${targetName(record.root.target, record, names)}`;
+          : `${words.message_to} ${agent}`;
   const people: string[] = [];
   for (const write of record.writes) {
     const name = nameOf(write.author, names);
@@ -88,6 +96,7 @@ export function threadRow(record: ThreadRecord, names: RowNames): RowText {
   }
   return {
     activity: record.lastActivity,
+    agent,
     firstLine: firstLineOf(record.kind === "ask" ? record.root.question : record.root.body),
     kind,
     people,

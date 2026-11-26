@@ -14,7 +14,7 @@ import type { ViewSlotProps } from "./stage";
  * the stage at once that it draws none (`ViewSlotProps.onAddressDrawn`), and the stage draws the
  * outline in its place, as it does for Dashboard (`view-dashboard.tsx`).
  */
-export function ViewThreadsSlot({ onAddressDrawn }: ViewSlotProps): ReactNode {
+export function ViewThreadsSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
   useEffect(() => onAddressDrawn(false), [onAddressDrawn]);
-  return <ThreadsView />;
+  return <ThreadsView issue={issue} route={route} />;
 }

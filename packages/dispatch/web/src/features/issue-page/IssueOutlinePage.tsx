@@ -25,6 +25,7 @@ import { HeaderSlot } from "./slots/header";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
+import { useWaitingRows } from "./threads/ThreadList";
 
 /** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
  *  it draws, a refused address included, is inside the element that carries `data-issue-page`,
@@ -65,6 +66,9 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );
+  // The Threads control carries the number of the rows of Waiting on me, read by Threads' own
+  // rule over the read the header's count sends (dispatch://INFRA-5704/spec#b-r-control, R1).
+  const threadsCount = useWaitingRows(route.key, issue.data?.project)?.length;
 
   // The shell gives the page's column no padding of its own (`app.tsx`), so what the page draws
   // in place of its slots takes the inset its header would.
@@ -110,7 +114,7 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   return (
     <ProvidersSlot {...props}>
       <HeaderSlot {...props} />
-      <ViewRowSlot {...props} />
+      <ViewRowSlot {...props} threadsCount={threadsCount} />
       <div className="flex min-w-0 items-start">
         <IssueContentsPane {...props} />
         <div

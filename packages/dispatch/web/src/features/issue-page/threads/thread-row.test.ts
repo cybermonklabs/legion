@@ -49,6 +49,14 @@ test("a message whose root targets an agent names that agent: a role by its toke
   expect(threadRow(record("a92a5f53"), names).kind).toBe("Message to Planner (threads)");
 });
 
+test("a row gives the agent a message's root targets apart from its kind's words, and none for any other record", () => {
+  expect(threadRow(record("2dc5b959"), names).agent).toBe("planner");
+  expect(threadRow(record("a92a5f53"), names).agent).toBe("Planner (threads)");
+  expect(threadRow(record("99945b76"), names).agent).toBeUndefined();
+  expect(threadRow(record("59ab65ed"), names).agent).toBeUndefined();
+  expect(threadRow(record("b5979723"), names).agent).toBeUndefined();
+});
+
 test("a row's first line is its root's text up to the first line break", () => {
   expect(threadRow(record("18ddeb81"), names).firstLine).toBe("The list reads three routes.");
   expect(threadRow(record("0d7bfef6"), names).firstLine).toBe("The row draws its first line.");
