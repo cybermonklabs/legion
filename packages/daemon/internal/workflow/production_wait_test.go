@@ -504,30 +504,24 @@ func TestProductionOnlyWaitIsVisibleAndReconciled(t *testing.T) {
 	})
 }
 
-// Under `production_check: off` no role of the project runs a check after the merge (D5). The
-// close-waits notice waits for the first read, so it names each check without a pass and says an
-// eligible agent must run it. A second read with the same checks tells nothing more. A project that
-// runs a production check tells this at the check's close instead.
+// Under `production_check: off` no role of the project runs a check after the merge (D5). So at
+// the first read after the entry to verifying the owning architect is told, once, each check that
+// has no pass, and that an eligible agent must run it. A second read with the same checks tells
+// nothing more. A project that runs a production check tells this at the check's close instead.
 func TestAnOffProjectIsToldAtTheEntryWhichChecksNeedAnAgent(t *testing.T) {
 	t.Parallel()
 	t.Run("production check off", func(t *testing.T) {
 		rig := newWaitRig(t, "")
 		mergedRoot(t, rig)
-		if told := noticesOfKind(t, rig.pool, waitRoot, "close-waits"); len(told) != 0 {
-			t.Fatalf("close-waits notices before the first read = %+v, want none until it can name the checks", told)
-		}
 		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge), passing("c-done", waitRootMerge)))
-		told := noticesOfKind(t, rig.pool, waitRoot, "close-waits")
+		told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result")
 		if len(told) != 1 || !strings.Contains(told[0].Reason, "- c-after") || strings.Contains(told[0].Reason, "c-done") ||
 			!strings.Contains(told[0].Reason, "eligible agent") {
-			t.Fatalf("close-waits notices = %+v, want one naming c-after alone and an eligible agent", told)
-		}
-		if told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result"); len(told) != 0 {
-			t.Fatalf("close-wait-no-result notices = %+v, want none: D5 uses close-waits", told)
+			t.Fatalf("close-wait-no-result notices = %+v, want one naming c-after alone and an eligible agent", told)
 		}
 		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge), passing("c-done", waitRootMerge)))
-		if told := noticesOfKind(t, rig.pool, waitRoot, "close-waits"); len(told) != 1 {
-			t.Fatalf("close-waits notices after a second read = %+v, want the one", told)
+		if told := noticesOfKind(t, rig.pool, waitRoot, "close-wait-no-result"); len(told) != 1 {
+			t.Fatalf("close-wait-no-result notices after a second read = %+v, want the one", told)
 		}
 	})
 	t.Run("production check on", func(t *testing.T) {
