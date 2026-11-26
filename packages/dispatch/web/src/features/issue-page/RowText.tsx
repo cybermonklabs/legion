@@ -40,8 +40,9 @@ import { titleReading } from "./tree-drafts";
 /** The Element Timing identifier (`elementtiming`) every row of the issue page gives the element
  *  that paints the start of its first line, by which the load rows read when the row was first
  *  painted (`e2e/load-instruments.ts`). A row whose first line is its node's words hands it to
- *  `RowText` (`elementTiming`); a row that draws that line itself spreads `rowTiming` on the
- *  element that paints it. Today's Dashboard names it nowhere. */
+ *  `RowText` (`elementTiming`), with `trailFollows` where its trail follows them; a row that
+ *  draws that line itself spreads `rowTiming` on the element that paints it. Today's Dashboard
+ *  names it nowhere. */
 export const ROW_TIMING = "issue-page-row";
 
 /** `ROW_TIMING` as the attribute a row spreads on the element that paints the start of its first
@@ -49,6 +50,25 @@ export const ROW_TIMING = "issue-page-row";
 export const rowTiming: Readonly<Record<string, string>> = Object.freeze({
   [ELEMENT_TIMING]: ROW_TIMING,
 });
+
+/** The mark of the element `MarkdownBody` paints a text into (`markdown-engine.ts`'s
+ *  `markdownClassName`), the one `styles.css` lays out inline before a row's trail. */
+const BODY = ".dispatch-markdown";
+
+/** Gives `identifier` to the element that paints the first line of the text drawn in `box`, a
+ *  `DrawnText`'s own box (`markFirstLine`): an element of the body `box` holds, or where
+ *  `trailFollows` holds, the words' box `box` stands in for a line the body's element or its
+ *  last paragraph holds, since `styles.css` lays `box`, the body and that paragraph out inline
+ *  there. It reads no style and no layout. Nothing where `identifier` is undefined. */
+function markTextLine(
+  box: HTMLElement,
+  identifier: string | undefined,
+  trailFollows: boolean
+): void {
+  if (identifier === undefined) return;
+  const body = box.querySelector<HTMLElement>(`:scope > ${BODY}`);
+  if (body !== null) markFirstLine(body, identifier, trailFollows ? box.parentElement : null);
+}
 
 /**
  * A node's own text, as its row in the outline draws it (R16, R20, R34), and the words of the
@@ -103,6 +123,7 @@ export function RowText({
   onRedrawn,
   source,
   tabStops = false,
+  trailFollows = false,
   tree,
 }: {
   /** The Element Timing identifier of the element that paints the text's first line
@@ -124,6 +145,10 @@ export function RowText({
   /** Whether the controls inside the text keep their place in the tab order: false in the
    *  outline, whose keys reach them, and true for a view that no tree's keys reach. */
   tabStops?: boolean;
+  /** Whether the row's trail follows the text in the words' box that holds it, which `styles.css`
+   *  then lays the text's element, its body and its last paragraph out inline in: that box paints
+   *  a first line either of them holds, and carries `elementTiming` in their place. */
+  trailFollows?: boolean;
   /** The server's reading of `markdown`, where its read sent one. */
   tree?: DisplayTree;
 }): ReactNode {
@@ -135,6 +160,7 @@ export function RowText({
       onRedrawn={onRedrawn}
       source={source}
       tabStops={tabStops}
+      trailFollows={trailFollows}
     />
   ) : (
     <DrawnText
@@ -144,6 +170,7 @@ export function RowText({
       onRedrawn={onRedrawn}
       source={source}
       tabStops={tabStops}
+      trailFollows={trailFollows}
       tree={tree}
     />
   );
@@ -165,6 +192,7 @@ function ParsedText({
   onRedrawn,
   source,
   tabStops,
+  trailFollows,
 }: {
   elementTiming: string | undefined;
   focused: boolean;
@@ -172,6 +200,7 @@ function ParsedText({
   onRedrawn: (() => void) | undefined;
   source: TextSource | undefined;
   tabStops: boolean;
+  trailFollows: boolean;
 }): ReactNode {
   const { engine, failed } = useLoadedEngine();
   const tree = useMemo(() => {
@@ -186,6 +215,7 @@ function ParsedText({
       onRedrawn={onRedrawn}
       source={source}
       tabStops={tabStops}
+      trailFollows={trailFollows}
       tree={tree}
     />
   );
@@ -574,6 +604,7 @@ function DrawnText({
   onRedrawn,
   source,
   tabStops,
+  trailFollows,
   tree,
 }: {
   elementTiming: string | undefined;
@@ -582,13 +613,15 @@ function DrawnText({
   onRedrawn: (() => void) | undefined;
   source: TextSource | undefined;
   tabStops: boolean;
+  trailFollows: boolean;
   tree: DisplayTree;
 }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
-  // Read through a ref, as the body reads it (`useRenderedMarkdown`): a new identifier alone
-  // links nothing again.
-  const timing = useRef(elementTiming);
-  timing.current = elementTiming;
+  // What the row's pass marks the first line by (`markTextLine`), read through a ref, as the body
+  // reads its own identifier (`useRenderedMarkdown`): a change of either links nothing again, and
+  // the effect after the pass marks the line for it.
+  const marking = useRef({ elementTiming, trailFollows });
+  marking.current = { elementTiming, trailFollows };
   // The reading and the record the body was last handed, while the new ones hold the same values.
   const reading = useSameValue(tree);
   const record = useSameValue(source);
@@ -615,14 +648,12 @@ function DrawnText({
     const element = box.current;
     if (element === null) return;
     dropDirectiveLines(element);
-    // The paint marked its first paragraph as the first line's element. Where that paragraph held
-    // a typed block's source line alone it is hidden now, and the line starts in the next one: at
-    // a first paint this pass hides it only after the body's own pass, which ran before `box` was
-    // set, so the line's element is found again here.
-    const marked = `[${ELEMENT_TIMING}]`;
-    if (element.querySelector(`${marked}[hidden], [hidden] ${marked}`) !== null) {
-      markFirstLine(element, timing.current);
-    }
+    // The paint marked the element that paints the text's first line. This pass may have hidden
+    // that element's paragraph, which held a typed block's source line alone, and the line starts
+    // in the next one then; and where the row's trail follows the text, the words' box paints the
+    // line. At a first paint the body's own pass ran before `box` was set, so this is where the
+    // row's own facts first reach the mark.
+    markTextLine(element, marking.current.elementTiming, marking.current.trailFollows);
     linkRowReferences(element, names, issues, issue, ambiguous, edited);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
@@ -660,6 +691,11 @@ function DrawnText({
     }
   }, [ambiguous, deleted, edited, issue, issues, names, tabStops]);
   useLayoutEffect(link, [link]);
+  // A trail that comes or goes with no new paint - a chip the row's node gains - moves the line to
+  // the words' box or back into the text.
+  useLayoutEffect(() => {
+    if (box.current !== null) markTextLine(box.current, elementTiming, trailFollows);
+  }, [elementTiming, trailFollows]);
   useRedrawn(drawn, onRedrawn);
   useOutOfTabOrder(box, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();

@@ -232,10 +232,12 @@ export function NodeRow({
     </span>
   );
   const trailInWords = editing === undefined;
-  // A deleted post's line is a direct `[data-author-text]` child of the words' box, which
-  // `styles.css` lays out inline where the trail stands in the words, so the words' box paints the
-  // line's text and carries the row's identifier in its place (`ROW_TIMING`).
-  const deletedInline = deleted !== null && trailInWords && trail !== null;
+  // Where the trail stands in the words' box, `styles.css` lays out inline each
+  // `[data-author-text]` child of that box - the node's text (`RowText`'s `trailFollows`) and a
+  // deleted post's line - so the words' box paints a first line either holds, and carries the
+  // row's identifier in its place (`ROW_TIMING`).
+  const wordsInline = trailInWords && trail !== null;
+  const deletedInline = deleted !== null && wordsInline;
   // The view a node's kind tag opens it in, at its own block (R9).
   const tagView = tagFilter(node);
   const tagTo = tagView === undefined ? undefined : presetNodePath(tagView, node);
@@ -338,6 +340,7 @@ export function NodeRow({
                   markdown={node.text}
                   source={node.source}
                   tabStops={tabStops}
+                  trailFollows={wordsInline}
                   tree={node.tree}
                 />
               ) : (

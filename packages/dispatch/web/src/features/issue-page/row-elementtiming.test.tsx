@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -57,6 +57,7 @@ import {
 import { PlanFilterBody } from "./plan-filter/PlanFilterBody";
 import { presetView } from "./presets";
 import { Publisher, publishedTree } from "./projection-fixture";
+import { RowText } from "./RowText";
 import { ViewStage } from "./slots/stage";
 import { commentNodes, drawStage, stubReads, treeOf } from "./slots/stage-fixtures";
 import { SpecFilterBody } from "./spec-filter/SpecFilterBody";
@@ -101,10 +102,12 @@ import {
  *
  * A unit test's DOM lays nothing out, so which element is that block is read here as the page's
  * styles decide it: the element's own `display` (the defaults of its tag, and the rules of
- * `styles.css` that set a display for a row's words, which the case appends, `wordsDisplaySheet`),
- * the Tailwind classes that set a display or take an element out of the inline flow, and a flex
- * or grid container making each of its children a block (`paintedBlockOf`). Each row is drawn as
- * its view's own unit tests draw it.
+ * `styles.css` that set a display for a row's words or for a drawn text, which the case appends,
+ * `wordsDisplaySheet`), the Tailwind classes that set a display or take an element out of the
+ * inline flow, and a flex or grid container making each of its children a block
+ * (`paintedBlockOf`). The page itself chooses the element with no read of style
+ * (`useRenderedMarkdown.tsx`'s `markFirstLine`), and the second case holds it to that. Each row is
+ * drawn as its view's own unit tests draw it.
  */
 
 /** The identifier the page gives every row's first-line element, which the load rows read. */
@@ -125,11 +128,12 @@ const ROW_SELECTOR = [
   "[data-child-entry]",
 ].join(", ");
 
-/** The rules of `styles.css` that set a `display` for an element of a row's words, each as a rule
- *  of that declaration alone: the one that lays a row's words and a drawn text's last paragraph
- *  out inline before the row's trail among them, which moves the start of the words' first line
- *  into the words' own box. Throws where `styles.css` holds no such rule, so no case passes on
- *  rules it never read. */
+/** The rules of `styles.css` that set a `display` for an element of a row's words or of a drawn
+ *  text (`.dispatch-markdown`), each as a rule of that declaration alone: among them the one that
+ *  lays a row's words and a drawn text's last paragraph out inline before the row's trail, which
+ *  moves the start of the words' first line into the words' own box, and the ones that lay a
+ *  typed block's summary out as flex. Throws where `styles.css` holds no such rule, so no case
+ *  passes on rules it never read. */
 function wordsDisplaySheet(): HTMLStyleElement {
   const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
@@ -141,13 +145,18 @@ function wordsDisplaySheet(): HTMLStyleElement {
         .split(";")
         .map((one) => one.replace(/\s+/g, " ").trim())
         .find((one) => one.startsWith("display:"));
-      return selectors.includes("[data-node-words]") && display !== undefined
+      return (selectors.includes("[data-node-words]") ||
+        selectors.includes(".dispatch-markdown")) &&
+        display !== undefined
         ? [`${selectors.trim()} { ${display}; }`]
         : [];
     }
   );
   if (!rules.some((rule) => rule.includes("[data-node-trail]"))) {
     throw new Error("no rule of styles.css lays a row's words out inline before its trail");
+  }
+  if (!rules.some((rule) => rule.includes("[data-proof-block-summary]"))) {
+    throw new Error("no rule of styles.css lays a typed block's summary out");
   }
   const sheet = document.createElement("style");
   sheet.textContent = rules.join("\n");
@@ -309,42 +318,59 @@ afterAll(() => {
 // The outline's rows (`NodeRow.tsx`), each kind of node and each way a row draws its first line.
 // ---------------------------------------------------------------------------------------------
 
-/** One row of the outline, drawn as the outline draws every row (`NodeRow.drawn.test.tsx`'s
- *  `renderRow`): under the names store, inside `NoTooltips`, with no focus. */
-function drawRow(
-  drawn: TreeNode,
-  { answerer, expanded, folded }: { answerer?: string; expanded?: boolean; folded?: number } = {}
-): RenderResult {
-  return render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+/** What the outline draws a row under (`NodeRow.drawn.test.tsx`'s `renderRow`): the names store,
+ *  with nothing published, and `NoTooltips`, as the page's slots draw every row. */
+function RowProviders({ children }: { children: ReactNode }): ReactNode {
+  const [client] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  );
+  return (
+    <QueryClientProvider client={client}>
       <MemoryRouter>
         <ReferenceNamesProvider>
           <PublishedReferenceNames published={NOTHING_PUBLISHED}>
-            <NoTooltips>
-              <NodeRow
-                {...(answerer === undefined ? {} : { answerer })}
-                author={{ kind: "person", name: "alice", reader: false }}
-                context={false}
-                {...(expanded === undefined ? {} : { expanded })}
-                {...(folded === undefined ? {} : { folded })}
-                focused={false}
-                isClosed={false}
-                level={1}
-                node={drawn}
-                onFocus={() => {}}
-                onToggle={() => {}}
-                ownAnswer={false}
-                rowKey="row"
-                tabStop={false}
-              />
-            </NoTooltips>
+            <NoTooltips>{children}</NoTooltips>
           </PublishedReferenceNames>
         </ReferenceNamesProvider>
       </MemoryRouter>
     </QueryClientProvider>
   );
+}
+
+/** One row of the outline, drawn as the outline draws every row, with no focus. */
+function drawRow(
+  drawn: TreeNode,
+  { answerer, expanded, folded }: { answerer?: string; expanded?: boolean; folded?: number } = {}
+): RenderResult {
+  return render(
+    <RowProviders>
+      <NodeRow
+        {...(answerer === undefined ? {} : { answerer })}
+        author={{ kind: "person", name: "alice", reader: false }}
+        context={false}
+        {...(expanded === undefined ? {} : { expanded })}
+        {...(folded === undefined ? {} : { folded })}
+        focused={false}
+        isClosed={false}
+        level={1}
+        node={drawn}
+        onFocus={() => {}}
+        onToggle={() => {}}
+        ownAnswer={false}
+        rowKey="row"
+        tabStop={false}
+      />
+    </RowProviders>
+  );
+}
+
+/** One task of the page's thread, inside `act`, so what a paint across tasks does in it lands. */
+async function nextTask(): Promise<void> {
+  await act(async () => {
+    const task = Promise.withResolvers<void>();
+    setTimeout(() => task.resolve(), 0);
+    await task.promise;
+  });
 }
 
 /** A reading whose paragraphs are `lines`, as the server reads a decision's text that holds the
@@ -414,6 +440,16 @@ function outlineCases(): readonly {
       first: "The first item",
       holder: "li",
       what: "a comment that is a list",
+    },
+    {
+      drawn: withReading({
+        id: "comment-typed",
+        text: ":::requirement{#r9}\nThe page draws a typed block.\n:::",
+        type: "comment",
+      }),
+      first: "requirement",
+      holder: "[data-proof-block-summary] > *",
+      what: "a comment that is a typed block, whose summary line is laid out as flex",
     },
     {
       drawn: withReading({
@@ -541,14 +577,17 @@ async function outlineRows(): Promise<void> {
  *  (`useRenderedMarkdown.tsx`'s `ATTACH_BATCH`, 500), which is painted across tasks. */
 const LONG_LIST = 300;
 
+/** The words of a comment that is a list of `LONG_LIST` items. */
+const LONG_LIST_TEXT = Array.from(
+  { length: LONG_LIST },
+  (_, at) => `- Item ${at + 1} of a long list`
+).join("\n");
+
 /** A row whose words are painted across tasks (`paintsAcrossTasks`) carries the attribute on its
  *  first slice: on the first look at it that finds part of its list drawn, the first item is the
  *  row's one element with `elementtiming`, before the last slice has landed. */
 async function rowPaintedAcrossTasks(): Promise<void> {
-  const text = Array.from({ length: LONG_LIST }, (_, at) => `- Item ${at + 1} of a long list`).join(
-    "\n"
-  );
-  const view = drawRow(withReading({ id: "comment-long", text, type: "comment" }));
+  const view = drawRow(withReading({ id: "comment-long", text: LONG_LIST_TEXT, type: "comment" }));
   try {
     const row = rowIn(view, "[data-node-row]");
     // What the first look that finds part of the list drawn found carrying `elementtiming`.
@@ -567,11 +606,7 @@ async function rowPaintedAcrossTasks(): Promise<void> {
     };
     for (let tasks = 0; look() < LONG_LIST; tasks += 1) {
       if (tasks > 1000) throw new Error("the long list never landed whole");
-      await act(async () => {
-        const task = Promise.withResolvers<void>();
-        setTimeout(() => task.resolve(), 0);
-        await task.promise;
-      });
+      await nextTask();
     }
     expect(firstSlice.items ?? LONG_LIST, "the list was drawn in one task").toBeLessThan(LONG_LIST);
     expect(firstSlice.timed, "what carries elementtiming on the first slice").toEqual([
@@ -580,6 +615,118 @@ async function rowPaintedAcrossTasks(): Promise<void> {
     expectTimed(row, "Item 1 of", "the outline: a list painted across tasks", "li");
   } finally {
     view.unmount();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// What choosing the first line's element reads: no computed style and no layout.
+// ---------------------------------------------------------------------------------------------
+
+/** A text a row's words draw, whether the row's trail follows it in the words' box, and when it
+ *  has landed whole in what is drawn. */
+interface CountedText {
+  readonly landed: (drawn: HTMLElement) => boolean;
+  readonly text: string;
+  readonly trail: boolean;
+  readonly tree: DisplayTree | undefined;
+  readonly what: string;
+}
+
+/** The texts a row's words draw that the count is read over: one paragraph laid out inline before
+ *  the row's trail (`styles.css`), a decision whose first paragraph is a typed block's source
+ *  line, which the row hides after the paint (`RowText.tsx`), and a list painted across tasks. */
+function countedTexts(): readonly CountedText[] {
+  const decision = [":::decision{#d1}", "We keep the rail at 56 px.", ":::"];
+  return [
+    {
+      landed: (drawn) => drawn.querySelector("[data-node-words] p") !== null,
+      text: "The page draws r1 with its gap after it.",
+      trail: true,
+      tree: displayTree("The page draws r1 with its gap after it."),
+      what: "one paragraph before the row's trail",
+    },
+    {
+      landed: (drawn) => drawn.querySelector("[data-node-words] p[hidden]") !== null,
+      text: decision.join("\n\n"),
+      trail: false,
+      tree: paragraphs(decision),
+      what: "a decision that opens on a typed block's source line",
+    },
+    {
+      landed: (drawn) => drawn.querySelector("[data-node-words] ul")?.children.length === LONG_LIST,
+      text: LONG_LIST_TEXT,
+      trail: false,
+      tree: displayTree(LONG_LIST_TEXT),
+      what: "a list painted across tasks",
+    },
+  ];
+}
+
+/** How many times the page reads computed style (`getComputedStyle`) and layout
+ *  (`getBoundingClientRect`) from the render that mounts a row's words drawing `counted`, with
+ *  `elementTiming` naming the element that paints its first line or with none, until the text has
+ *  landed whole and one task more has run; and how many elements carry `elementtiming` then. The
+ *  words keep their tab stops (`tabStops`, as the Verification view's do): the pass that takes
+ *  them out of the tab order reads style each time its observer reports a change of the words
+ *  (`useOutOfTabOrder`), which a paint across tasks lands in as many reports as the engine's
+ *  timing makes, so what is counted is what the paint itself reads. */
+async function readsOfPaint(
+  counted: CountedText,
+  elementTiming: string | undefined
+): Promise<{ readonly layout: number; readonly style: number; readonly timed: number }> {
+  const style = spyOn(globalThis, "getComputedStyle");
+  const layout = spyOn(Element.prototype, "getBoundingClientRect");
+  try {
+    const view = render(
+      <RowProviders>
+        <div data-node-row="">
+          <div data-node-words="">
+            <RowText
+              {...(elementTiming === undefined ? {} : { elementTiming })}
+              markdown={counted.text}
+              tabStops
+              trailFollows={counted.trail}
+              {...(counted.tree === undefined ? {} : { tree: counted.tree })}
+            />
+            {counted.trail ? <span data-node-trail="">CORE-2</span> : null}
+          </div>
+        </div>
+      </RowProviders>
+    );
+    try {
+      for (let tasks = 0; !counted.landed(view.container); tasks += 1) {
+        if (tasks > 1000) throw new Error(`${counted.what} never landed whole`);
+        await nextTask();
+      }
+      await nextTask();
+      return {
+        layout: layout.mock.calls.length,
+        style: style.mock.calls.length,
+        timed: view.container.querySelectorAll("[elementtiming]").length,
+      };
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    style.mockRestore();
+    layout.mockRestore();
+  }
+}
+
+/** Choosing the element that paints a row's first line reads no computed style and no layout,
+ *  each of which would make the engine recalculate style, or lay the page out, in the task that
+ *  paints each row: the same words painted with the row's identifier and with none read style
+ *  and layout the same number of times, and only the first marks an element. */
+async function markingReadsNoStyle(): Promise<void> {
+  for (const counted of countedTexts()) {
+    const unmarked = await readsOfPaint(counted, undefined);
+    const marked = await readsOfPaint(counted, ROW_TIMING);
+    expect(unmarked.timed, `${counted.what}: elements marked with no identifier`).toBe(0);
+    expect(marked.timed, `${counted.what}: elements marked with the row's identifier`).toBe(1);
+    expect(
+      { layout: marked.layout, style: marked.style },
+      `${counted.what}: the style and layout read with the row's identifier`
+    ).toEqual({ layout: unmarked.layout, style: unmarked.style });
   }
 }
 
@@ -1009,4 +1156,12 @@ test("each row of each view and of the children's section has one elementtiming 
   await verificationRows();
   await planRows();
   await decisionsRows();
+});
+
+// The element that paints a row's first line is chosen from what the paint built and what the
+// row's host says of its words, with no read of computed style or of layout: a read of either
+// after a paint makes the engine recalculate style or lay the page out in that task, once for
+// each row the page draws (INFRA-5939's profile of the load at the base).
+test("choosing the element that paints a row's first line reads no computed style and no layout", async () => {
+  await markingReadsNoStyle();
 });

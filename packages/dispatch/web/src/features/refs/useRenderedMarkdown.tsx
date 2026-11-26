@@ -242,61 +242,126 @@ function paintAcrossTasks(
  *  first paints text of its own. */
 export const ELEMENT_TIMING = "elementtiming";
 
-/** The `display` of an element that flows inline in the box around it rather than laying out a
- *  box of its own: `inline`, and `contents`, which draws no box at all. A DOM that computes no
- *  style answers an inline element's `display` with nothing. */
-const FLOWS_INLINE: Readonly<Record<string, true>> = { "": true, contents: true, inline: true };
+/** The elements a paint builds that lay out a box of their own, by tag: each of the schema's
+ *  blocks (a paragraph, a heading, a list and its items, a quote, a code block, a table and its
+ *  cells, a rule), the wrappers and typed-block shells the serializer and the passes after it
+ *  draw (`div`, `section`, `header`, `dl`), and the rest of HTML's own blocks a body's markup can
+ *  hold. Every other element a paint builds flows inline in the box around it: a mark, a link, a
+ *  code span, a picture's placeholder. */
+const BLOCK_ELEMENTS: Readonly<Record<string, true>> = {
+  address: true,
+  article: true,
+  aside: true,
+  blockquote: true,
+  caption: true,
+  dd: true,
+  details: true,
+  div: true,
+  dl: true,
+  dt: true,
+  fieldset: true,
+  figcaption: true,
+  figure: true,
+  footer: true,
+  h1: true,
+  h2: true,
+  h3: true,
+  h4: true,
+  h5: true,
+  h6: true,
+  header: true,
+  hr: true,
+  li: true,
+  main: true,
+  nav: true,
+  ol: true,
+  p: true,
+  pre: true,
+  section: true,
+  summary: true,
+  table: true,
+  tbody: true,
+  td: true,
+  tfoot: true,
+  th: true,
+  thead: true,
+  tr: true,
+  ul: true,
+};
+
+/** The marks of the boxes a drawn text lays out as flex (`styles.css`): a typed block's summary
+ *  line and the list of its attributes (`typed-block-drawing.ts`'s `renderTypedBlock`). Each
+ *  child of one is a flex item, which lays out a box of its own whatever its tag. */
+const FLEX_BOXES = ["data-proof-block-summary", "data-proof-block-attributes"] as const;
+
+/** The element each body last gave its first line's identifier to (`markFirstLine`), which gives
+ *  it up when another element paints that line. */
+const markedLines = new WeakMap<HTMLElement, Element>();
 
 /**
- * The element that paints the first line of text `root` shows, the one element of a body that
+ * The element that paints the first line of text `body` shows, the one element of a body that
  * an Element Timing entry for that line can report: Paint Timing gives a painted text node to
  * "the Element which determines the containing block of text", the nearest element around it
  * that lays out a box of its own. It is found from the first text node with words in it that is
- * shown - none inside an element `hidden` within `root`, as a row hides a typed block's source
- * line (`RowText.tsx`), and none under an element drawn as `display: none` - walking up past
- * every element that flows inline, to a paragraph, a heading, a list item or a table cell. Where
- * the host lays the body itself out inline, the walk passes `root` and ends at the host's own
- * box: a row of the issue page draws a text of one paragraph inline before its trail
- * (`styles.css`), and its words' box paints that text. Undefined while `root` shows no words.
+ * shown - none inside an element `hidden` within `body`, as a row hides a typed block's source
+ * line (`RowText.tsx`) - walking up past every element that flows inline, by what the paint
+ * built: its tag (`BLOCK_ELEMENTS`), and a flex item of a box the page lays out as flex
+ * (`FLEX_BOXES`). A text that stands in no such element is painted by the body's own element.
+ * Undefined while `body` shows no words.
+ *
+ * It reads no computed style and no layout: a read of either after a paint makes the engine
+ * recalculate style or lay the page out in the task that paints, for every row of a page that
+ * marks them (INFRA-5939's profile of the issue page's load).
  */
-function firstLineElement(root: HTMLElement): Element | undefined {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+function firstLineElement(body: HTMLElement): Element | undefined {
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
   for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
     const hidden = text.parentElement?.closest("[hidden]");
-    if ((text.nodeValue ?? "").trim() === "" || (hidden != null && root.contains(hidden))) {
+    if ((text.nodeValue ?? "").trim() === "" || (hidden != null && body.contains(hidden))) {
       continue;
     }
     let box = text.parentElement;
-    let display = box === null ? "none" : getComputedStyle(box).display;
-    while (box !== null && FLOWS_INLINE[display] === true) {
-      box = box.parentElement;
-      display = box === null ? "none" : getComputedStyle(box).display;
+    while (box !== null && box !== body && BLOCK_ELEMENTS[box.localName] !== true) {
+      const parent: HTMLElement | null = box.parentElement;
+      if (parent !== null && FLEX_BOXES.some((mark) => parent.hasAttribute(mark))) break;
+      box = parent;
     }
-    if (box !== null && display !== "none") return box;
+    return box ?? body;
   }
   return undefined;
 }
 
 /**
- * Gives the element that paints `root`'s first line (`firstLineElement`) the Element Timing
- * identifier `identifier`, and takes it off every other element that held it for this body: an
- * element of the paint this one replaced, and the body's own element and each box of the host's
- * it flows inline in, which held it while the first line was theirs - a body's literal text, or
- * a text of one paragraph before a row's trail. Nothing where `identifier` is undefined, as it
- * is for every surface but the issue page's rows. A host whose own pass over a paint hides part
- * of it after the paint has landed calls it again on its element (`RowText.tsx`).
+ * Gives the element that paints `body`'s first line (`firstLineElement`) the Element Timing
+ * identifier `identifier`, and takes it off the element that held it for this body before, if
+ * that is another: one of the paint this one replaced, or one a host's pass has hidden since.
+ * `inlineIn` is the box a host lays the body's element and its last paragraph out inline in,
+ * where it does - a row's words before its trail (`styles.css`, `RowText.tsx`) - which paints a
+ * first line either of them holds. Nothing where `identifier` is undefined, as it is for every
+ * surface but the issue page's rows. A host whose own pass changes what a paint shows after it
+ * has landed calls it again (`RowText.tsx`).
  */
-export function markFirstLine(root: HTMLElement, identifier: string | undefined): void {
+export function markFirstLine(
+  body: HTMLElement,
+  identifier: string | undefined,
+  inlineIn?: Element | null
+): void {
   if (identifier === undefined) return;
-  const first = firstLineElement(root);
-  for (const held of root.querySelectorAll(`[${ELEMENT_TIMING}]`)) {
-    if (held !== first) held.removeAttribute(ELEMENT_TIMING);
+  const block = firstLineElement(body);
+  const first =
+    inlineIn != null &&
+    block !== undefined &&
+    (block === body || (block.localName === "p" && block === body.lastElementChild))
+      ? inlineIn
+      : block;
+  const before = markedLines.get(body);
+  if (before !== undefined && before !== first) before.removeAttribute(ELEMENT_TIMING);
+  if (first === undefined) {
+    markedLines.delete(body);
+    return;
   }
-  for (let up: Element | null = root; up !== null; up = up.parentElement) {
-    if (up !== first) up.removeAttribute(ELEMENT_TIMING);
-    if (FLOWS_INLINE[getComputedStyle(up).display] !== true) break;
-  }
-  first?.setAttribute(ELEMENT_TIMING, identifier);
+  first.setAttribute(ELEMENT_TIMING, identifier);
+  markedLines.set(body, first);
 }
 
 /** What a surface tells `useRenderedMarkdown` beyond its element, source and paint; each has a
@@ -752,10 +817,10 @@ export function useRenderedMarkdown(
               listener(element);
             }
           }
-          onRenderedRef.current?.();
-          // Last, so the identifier goes to the line a host's own pass (`onRendered`) left shown;
-          // a host whose pass runs after this one marks the line again (`RowText.tsx`).
+          // Before the host's own pass (`onRendered`), which may change what the paint shows and
+          // mark the line again where it does (`RowText.tsx`).
           markFirstLine(element, elementTimingRef.current);
+          onRenderedRef.current?.();
         };
         if (engine === undefined || parsed === undefined) {
           painted.current = undefined;

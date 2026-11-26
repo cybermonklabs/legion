@@ -1313,6 +1313,7 @@ function Statement({
             elementTiming={ROW_TIMING}
             markdown={node.text}
             source={node.source}
+            trailFollows={!clamped && trail !== null}
             tree={node.tree}
           />
           {/* A direct child of the words' box, which `styles.css` reads to draw the words
