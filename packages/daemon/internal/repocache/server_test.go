@@ -1339,7 +1339,7 @@ func TestARestartedCacheRemovesThePartialPacksAKilledRepackLeft(t *testing.T) {
 		t.Fatalf("the first Serve ended with %v", err)
 	}
 	first.done <- nil
-	partial := filepath.Join(first.dir(), "objects", "pack", "tmp_pack_Zz99Yy")
+	partial := filepath.Join(first.dir(), "objects", "pack", ".tmp-1234-pack-Zz99Yy.pack")
 	if err := os.WriteFile(partial, []byte("PACK half a pack\n"), 0o444); err != nil {
 		t.Fatal(err)
 	}
@@ -1348,7 +1348,7 @@ func TestARestartedCacheRemovesThePartialPacksAKilledRepackLeft(t *testing.T) {
 	if _, err := os.Stat(partial); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the partial pack outlived the restart (%v)", err)
 	}
-	if !logged(again.log.all(), "removed the partial pack tmp_pack_Zz99Yy, which a killed git left") {
+	if !logged(again.log.all(), "removed the partial pack .tmp-1234-pack-Zz99Yy.pack, which a killed git left") {
 		t.Errorf("the removal was not logged: %q", again.log.all())
 	}
 }

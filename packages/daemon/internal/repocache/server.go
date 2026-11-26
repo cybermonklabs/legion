@@ -490,6 +490,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 		return time.Time{}, false, err
 	}
 	c.owned = true
+	c.removePartialPacks()
 	first := !cloned
 	previous := ""
 	interrupted, err := c.marker(defaultBranchFetchFile)
@@ -793,10 +794,9 @@ func (c *cache) repack(ctx context.Context, fetched time.Time) {
 // removePartialPacks removes, and logs, each partial pack a killed git left in the clone's
 // objects/pack: every `tmp_*` git writes there (a pack, its index, reverse index, bitmap and mtimes
 // as it receives or writes them), and the `.tmp-*` pack pack-objects writes for a repack before
-// renaming it. Its callers run it only while no git of the cache runs: after a failed narrowing,
-// fetch, or repack under maint. OwnCacheRepository clears a cache clone's stale packs before the
-// first git command of a process. It looks only in objects/pack, and only when neither objects nor
-// objects/pack is a link.
+// renaming it. Its callers run it only while no git of the cache runs: after OwnCacheRepository takes
+// the clone and before narrowing, and after a failed narrowing, fetch, or repack under maint. It
+// looks only in objects/pack, and only when neither objects nor objects/pack is a link.
 func (c *cache) removePartialPacks() {
 	pack := filepath.Join(c.dir, "objects", "pack")
 	for _, dir := range []string{filepath.Dir(pack), pack} {
