@@ -7,13 +7,13 @@
 
 --- a/packages/envoy/internal/cipher/proxy/bound.go
 +++ b/packages/envoy/internal/cipher/proxy/bound.go
-@@ -362,7 +362,8 @@
+@@ -386,7 +386,8 @@
  		return
  	}
  	placeholder := info.grant.Names[chosen.name].Slots[chosen.slot]
--	if holdsPlaceholder && !exchange && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
+-	if holdsPlaceholder && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
 +	// MUTANT: the token is the carried placeholder's account's alone.
-+	if false && holdsPlaceholder && !exchange && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
++	if false && holdsPlaceholder && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
  		// Which account's token a GitHub call gets: the account its path names, where the
  		// name holds an installation on it, whichever account's placeholder the command sent
  		// (accountSlot). The placeholder in the request stays the one swapped out, and the

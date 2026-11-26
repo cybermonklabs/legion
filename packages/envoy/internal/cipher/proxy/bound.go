@@ -386,7 +386,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	placeholder := info.grant.Names[chosen.name].Slots[chosen.slot]
-	if holdsPlaceholder && !exchange && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
+	if holdsPlaceholder && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
 		// Which account's token a GitHub call gets: the account its path names, where the
 		// name holds an installation on it, whichever account's placeholder the command sent
 		// (accountSlot). The placeholder in the request stays the one swapped out, and the

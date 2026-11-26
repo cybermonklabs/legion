@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // ErrAirlockNoNames is AirlockConnection's refusal of a placeholder whose grant is live and holds
@@ -56,7 +57,8 @@ var ErrMintedOnly = errors.New("a name of kind dpop is a capability the broker m
 //   - SlotValue: a stored secret's own value, and a google-login's access token;
 //   - the three aws- slots: a stored AWS key pair, which the secret's airlock entry marks with
 //     kind "aws"; the session token's slot exists only when the stored value holds one;
-//   - SlotGitHubPrefix + owner: one installation of a github-app secret, the owner lower-cased;
+//   - GitHubSlot(owner): one installation of a github-app secret, SlotGitHubPrefix and the owner
+//     lower-cased;
 //   - SlotAzureFederated: an azure-login secret's federated token.
 //
 // The set is open, not closed: the proxy adds one slot per exchange it makes of an azure-login
@@ -74,6 +76,17 @@ const (
 	SlotAzureFederated     = "azure-federated"
 	SlotAzureAccessPrefix  = "azure-access:"
 )
+
+// GitHubSlot is the slot of a github-app secret's installation on owner: SlotGitHubPrefix and
+// owner with its ASCII letters lowered (fold.ASCII), since GitHub reads a login without regard to
+// case. It is the one spelling of that key: the release writes each installation's slot with it
+// (githubAppSplit) and the proxy reads the slot of the account a request's path names with it
+// (internal/cipher/proxy's accountSlot), so the two cannot fold one owner two ways. The fold is
+// ASCII-only, as every login comparison of the module is: a GitHub login is ASCII, and Unicode's
+// lowering would fold some other letters onto ASCII ones (U+212A KELVIN SIGN onto "k").
+func GitHubSlot(owner string) string {
+	return SlotGitHubPrefix + fold.ASCII(owner)
+}
 
 // placeholderHash is a placeholder's SHA-256 in hex: the key airlock_placeholders holds it under,
 // and the only form of it any query carries, so the plaintext a command holds never reaches a
@@ -361,8 +374,8 @@ func azureIDOf(doc map[string]json.RawMessage, field string) (string, error) {
 // githubAppSplit is the split of a github-app secret's minted installations: one slot per
 // installation, holding that installation's own token, and a shape with each token replaced by
 // the placeholder of its owner's slot, every other field of the document and of
-// each installation as the minter wrote it. The slot lower-cases the owner, where the document
-// keeps the key GitHub answered with.
+// each installation as the minter wrote it. The slot lower-cases the owner (GitHubSlot), where the
+// document keeps the key GitHub answered with.
 func githubAppSplit(value string) (airlockSplit, error) {
 	doc, err := jsonObject(value)
 	if err != nil {
@@ -379,7 +392,7 @@ func githubAppSplit(value string) (airlockSplit, error) {
 		if !ok {
 			return airlockSplit{}, fmt.Errorf("its minted installation %q holds no token string, which the airlock stands a placeholder in for", owner)
 		}
-		slot := SlotGitHubPrefix + strings.ToLower(owner)
+		slot := GitHubSlot(owner)
 		if other, clash := slotOf[slot]; clash {
 			return airlockSplit{}, fmt.Errorf("its minted installations %q and %q are the same owner, so one placeholder would stand for both", other, owner)
 		}

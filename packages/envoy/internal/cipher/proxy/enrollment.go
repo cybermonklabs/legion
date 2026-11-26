@@ -45,12 +45,18 @@ func (s *Server) handlingFor(grant requests.AirlockConnection, host string, port
 //   - a request own binds the host for and whose headers hold no whole placeholder is handled for
 //     own's first candidate, and reads nothing more either: another grant is chosen only by a
 //     header that carries its placeholder (choosePair), so the read could change nothing;
-//   - otherwise the other live grants of own's enrollment that hold a name bound to the host are
-//     read (otherGrantsBinding), and the request is handled for the first of them, in grant id
-//     order, that binds the host and whose placeholder it carries;
-//   - a request that carries none is decided for own's first candidate, or, where own binds
-//     nothing here, for the first candidate of the first other grant that binds the host, and
-//     forwarded with nothing swapped, so the entry's rules bound it as they bound any request.
+//   - otherwise - own binds nothing here, or a header holds a whole placeholder that no name of
+//     own bound here takes - the other live grants of own's enrollment that hold a name bound to
+//     the host are read (otherGrantsBinding), and the request is handled for the first of them,
+//     in grant id order, that binds the host and whose placeholder it carries;
+//   - a request that carries a placeholder of none of them is decided for a first candidate, and
+//     nothing is swapped into it. Where own binds the host, that is own's first candidate, and
+//     the request is never forwarded: it reached the read only because a header holds a whole
+//     placeholder, which no grant took, so it still carries that placeholder after the swap and
+//     is refused 403 PLACEHOLDER_NOT_SWAPPED (leftoverPlaceholder), unless an earlier check of
+//     serveBound refused it first. Where own binds nothing here, it is the first candidate of the
+//     first other grant that binds the host, and a request that holds no placeholder anywhere
+//     goes on with nothing swapped, so the entry's rules bound it as they bound any request.
 //
 // One request is still handled for one (name, slot) pair of one grant: a request that carries
 // placeholders of two grants is handled for own when one of them is own's, and otherwise for the

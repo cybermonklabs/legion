@@ -2,6 +2,7 @@ package requests
 
 import (
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -10,6 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
@@ -128,6 +131,93 @@ func TestAGrantHoldingNoBoundNameIsNotCheckedWhileDispatchIsDown(t *testing.T) {
 	if got, err := m.ProxyGrantsOfEnrollment(t.Context(), enr, "", []string{"AUTO_TOKEN", "TEAM_TOKEN"}); err != nil || !reflect.DeepEqual(grantIDs(got), want) {
 		t.Fatalf("the grants holding AUTO_TOKEN or TEAM_TOKEN once Dispatch answers = %v, %v; want %v", grantIDs(got), err, want)
 	}
+}
+
+// TestARestrictedMembersEnrollmentGrantsAreEndedNotAnswered: the read of a session's other grants
+// makes AirlockConnection's restricted-member check. Once Dispatch calls the session's person a
+// restricted member, the read answers no grant and is refused ErrGrantNotLive for a restricted
+// member (errRestrictedMember), and every grant it listed is ended, as a connection opened with
+// each grant's own placeholder would end it. The control: the same read while Dispatch calls the
+// person a full member answers both grants and ends neither.
+func TestARestrictedMembersEnrollmentGrantsAreEndedNotAnswered(t *testing.T) {
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")}})
+	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
+	_, first := grantOf(t, m, enr, key, "read the first", "AUTO_TOKEN")
+	_, second := grantOf(t, m, enr, key, "read the second", "SECOND_TOKEN")
+	for _, grantID := range []string{first, second} {
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
+			t.Fatalf("Values(%s): %v", grantID, err)
+		}
+	}
+	both := []string{"AUTO_TOKEN", "SECOND_TOKEN"}
+	listed := slices.Sorted(slices.Values([]string{first, second}))
+	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{fixtureOperator: projectaccess.MemberFull})
+	// A client of its own for each read, as a broker reads Dispatch again once its cached answer
+	// has aged past projectaccess.CacheTTL.
+	asking := func() { m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) }
+
+	asking()
+	if got, err := m.ProxyGrantsOfEnrollment(t.Context(), enr, "", both); err != nil || !reflect.DeepEqual(grantIDs(got), listed) {
+		t.Fatalf("the enrollment's grants while %s is a full member = %v, %v; want %v", fixtureOperator, grantIDs(got), err, listed)
+	}
+	for _, grantID := range listed {
+		requireGrantLive(t, m, grantID)
+	}
+
+	dispatch.SetMemberKind(fixtureOperator, projectaccess.MemberRestricted)
+	asking()
+	got, err := m.ProxyGrantsOfEnrollment(t.Context(), enr, "", both)
+	if !errors.Is(err, ErrGrantNotLive) || !errors.Is(err, errRestrictedMember) || len(got) != 0 {
+		t.Fatalf("the enrollment's grants once %s is restricted = %v, %v; want none, refused ErrGrantNotLive for a restricted member", fixtureOperator, grantIDs(got), err)
+	}
+	for _, grantID := range listed {
+		requireGrantEnded(t, m, grantID)
+	}
+}
+
+// TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant: the read of a session's other grants
+// makes AirlockConnection's project rule for each grant. A grant the rule ends - a name of it is
+// tagged with TEAM, which turned private, and the session names no project - is ended for good and
+// left out of the answer rather than failing the read, since no connection names it, and the
+// healthy grant of the same session beside it is still answered. The ended grant is the one that
+// sorts first, so an answer that stopped at it rather than going on past it would leave the
+// healthy grant out as well. The controls: before the tag, and with the tag while TEAM is public,
+// the same read answers both grants and ends neither.
+func TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")}}, publicTeam)
+	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
+	nameOf := map[string]string{}
+	values := map[string]string{"AUTO_TOKEN": "auto-v1", "SECOND_TOKEN": "second-v1"}
+	for _, name := range []string{"AUTO_TOKEN", "SECOND_TOKEN"} {
+		_, grantID := grantOf(t, m, enr, key, "read it", name)
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
+			t.Fatalf("Values(%s): %v", grantID, err)
+		}
+		nameOf[grantID] = name
+	}
+	both := []string{"AUTO_TOKEN", "SECOND_TOKEN"}
+	listed := slices.Sorted(maps.Keys(nameOf))
+	ended, healthy := listed[0], listed[1]
+	read := func(what string, want []string) {
+		t.Helper()
+		if got, err := m.ProxyGrantsOfEnrollment(t.Context(), enr, "", both); err != nil || !reflect.DeepEqual(grantIDs(got), want) {
+			t.Fatalf("the enrollment's grants %s = %v, %v; want %v", what, grantIDs(got), err, want)
+		}
+	}
+
+	read("before any tag", listed)
+	retag(t, m, taggedSecret(nameOf[ended], fixtureOperator, policy.TierAgent, teamProject, values[nameOf[ended]]))
+	read("with "+nameOf[ended]+" tagged TEAM while TEAM is public", listed)
+	for _, grantID := range listed {
+		requireGrantLive(t, m, grantID)
+	}
+
+	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
+	read("once TEAM is private and the session names no project", []string{healthy})
+	if by, _ := endedForGood(t, m, ended); by != GrantEndedActor {
+		t.Fatalf("grant %s of %s, which the project rule refused, revoked by %q; want it ended for good by %q", ended, nameOf[ended], by, GrantEndedActor)
+	}
+	requireGrantLive(t, m, healthy)
 }
 
 // TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded: the proxy names, in the refusal

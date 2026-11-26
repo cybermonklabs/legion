@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // gitHubGitHost is the host GitHub serves a repository's git transport on, at /{owner}/{repo}.
@@ -17,11 +16,11 @@ const gitHubGitHost = "github.com"
 // accountSlot is the slot of the account a GitHub request's path names, and whether slots - the
 // slots of the github-app name the request is handled for, one per installation - hold it:
 // /repos/{owner}/..., /orgs/{owner} and /users/{owner} on an API host, and git's /{owner}/{repo}
-// on github.com. GitHub reads a login without regard to case, and a slot names its account
-// lower-cased (requests.SlotGitHubPrefix), so the account is compared lower-cased. A path that
-// names no account - GraphQL, search, /user - or names one the name holds no installation on
-// answers false, and the request is handled for the account whose placeholder it carries, which
-// is the account its gh configuration names.
+// on github.com. GitHub reads a login without regard to case, and the account's slot is
+// requests.GitHubSlot's, the one function the release writes each installation's slot with, so
+// the two fold an account alike. A path that names no account - GraphQL, search, /user - or names
+// one the name holds no installation on answers false, and the request is handled for the account
+// whose placeholder it carries, which is the account its gh configuration names.
 func accountSlot(host, path string, slots map[string]string) (string, bool) {
 	first, rest, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
 	second, _, _ := strings.Cut(rest, "/")
@@ -37,7 +36,7 @@ func accountSlot(host, path string, slots map[string]string) (string, bool) {
 	default:
 		return "", false
 	}
-	slot := requests.SlotGitHubPrefix + fold.ASCII(account)
+	slot := requests.GitHubSlot(account)
 	_, held := slots[slot]
 	return slot, held
 }
