@@ -81,6 +81,10 @@ func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err err
 	if len(remove) == 0 && freshClone && !rewritten {
 		return c.markDefaultBranchOnly()
 	}
+	// The repack holds the write lock /tar waits on for up to repackTimeout. A cache that answered
+	// ready would pass every pod's wait and stall each one on /tar until its stream bound ends it, so
+	// the cache answers unready now; a pod waits for it as it waits for a cache not yet narrowed.
+	c.health.Store(&Health{Repo: c.opts.Repo.String()})
 	before, err := c.objectBytes()
 	if err != nil {
 		return err
@@ -235,4 +239,32 @@ func (c *cache) removeKeptPacks() error {
 		}
 	}
 	return nil
+}
+
+// packs is the names of the finished packs (`pack-*.pack`) in the clone's objects/pack. The cache's
+// fetch keeps what it brings as one pack (`fetch.unpackLimit=1`), and git writes that pack before it
+// updates the default branch's ref. So a pack that appears across a fetch that failed can hold
+// objects no ref reaches, which only a narrowing repack drops from what /tar streams.
+func (c *cache) packs() (map[string]bool, error) {
+	entries, err := os.ReadDir(filepath.Join(c.dir, "objects", "pack"))
+	if err != nil {
+		return nil, fmt.Errorf("read the cache clone's packs: %w", err)
+	}
+	packs := map[string]bool{}
+	for _, entry := range entries {
+		if name := entry.Name(); entry.Type().IsRegular() && strings.HasPrefix(name, "pack-") && strings.HasSuffix(name, ".pack") {
+			packs[name] = true
+		}
+	}
+	return packs, nil
+}
+
+// packAdded is whether after holds a pack that before does not.
+func packAdded(before, after map[string]bool) bool {
+	for name := range after {
+		if !before[name] {
+			return true
+		}
+	}
+	return false
 }

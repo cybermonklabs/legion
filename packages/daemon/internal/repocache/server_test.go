@@ -2414,6 +2414,45 @@ func TestCacheRepacksAfterTheDefaultBranchHistoryIsRewritten(t *testing.T) {
 	assertTarObjectsAreOnMain(t, c)
 }
 
+// A force-push of the default branch makes the next refresh narrow again, and its repack holds the
+// write lock /tar waits on. While it runs the cache answers unready, so a pod waits for it instead
+// of stalling on /tar, and once it ends the cache serves the rewritten branch alone.
+func TestACacheIsUnreadyWhileARewrittenDefaultBranchIsRepacked(t *testing.T) {
+	remote := newRemote(t)
+	advance(t, remote, "old")
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	opts.Refresh = 50 * time.Millisecond
+	c := start(t, opts)
+	c.ready(t)
+	started, release := holdRepack(t, run)
+	defer release()
+	work := filepath.Join(t.TempDir(), "work")
+	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
+	git(t, work, "reset", "--hard", "HEAD~1")
+	if err := os.WriteFile(filepath.Join(work, "rewritten.txt"), []byte("rewritten\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "add", ".")
+	git(t, work, "commit", "--quiet", "-m", "rewritten")
+	git(t, work, "push", "--quiet", "--force", "origin", "HEAD:main")
+	rewritten := git(t, work, "rev-parse", "HEAD")
+
+	testwait.Receive(t, "the repack of the rewritten default branch", started)
+	// /readyz and /healthz first, and the test ends at a ready answer: a /tar asked of a cache that
+	// answers ready mid-repack blocks on the write lock until the repack ends.
+	for _, path := range []string{"/readyz", "/healthz", "/tar"} {
+		response := c.get(t, path, c.bearer(t))
+		response.Body.Close()
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("%s while the rewritten default branch is repacked answers %d, want 503", path, response.StatusCode)
+		}
+	}
+	release()
+	c.waitFor(t, "at the rewritten default branch", func(_ int, health Health) bool { return health.Head == rewritten })
+	assertTarObjectsAreOnMain(t, c)
+}
+
 func TestCacheRepacksAnInterruptedDefaultBranchFetch(t *testing.T) {
 	remote := newRemote(t)
 	advance(t, remote, "old")
@@ -2515,6 +2554,55 @@ func TestAReplacementCloneStartsItsOwnRepackClock(t *testing.T) {
 	if at := recorded(t, opts.Root); at.Before(before.Truncate(time.Second)) {
 		t.Errorf("the replacement clone left the record at %s, want its own fill's time, after %s", at, before)
 	}
+}
+
+// A fetch can write its pack and then fail to update the default branch's ref (here a concurrent
+// ref lock). That pack holds objects no ref of the cache reaches, and /tar streams every pack: the
+// narrowing after the failed fetch repacks the clone, so neither the cache right after it nor the
+// cache after GitHub's default branch moves back streams an object the default branch does not
+// reach.
+func TestAFetchWhoseRefUpdateFailedLeavesNoObjectOffTheDefaultBranch(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	opts.Log = func(string) {}
+	c := cacheOn(t, opts)
+	if err := c.refresh(context.Background()); err != nil {
+		t.Fatalf("making the cache clone: %v", err)
+	}
+	server := httptest.NewServer(c.handler())
+	defer server.Close()
+	served := &running{opts: opts, url: server.URL}
+	assertTarObjectsAreOnMain(t, served)
+	tip := git(t, remote, "rev-parse", "refs/heads/main")
+	advance(t, remote, "fetched before its ref update failed")
+	run.instead("fetch", func(ctx context.Context, command workspace.Command) (workspace.Result, error) {
+		lock := filepath.Join(c.dir, "refs", "heads", "main.lock")
+		if err := os.WriteFile(lock, []byte("a concurrent ref lock\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(lock)
+		answer, err := run.runner.Run(ctx, command)
+		if err == nil && answer.ExitCode == 0 {
+			t.Fatal("the fetch updated main through a held ref lock")
+		}
+		return answer, err
+	})
+	if err := c.refresh(context.Background()); err == nil {
+		t.Fatal("the refresh succeeded although its fetch could not update main")
+	}
+	assertTarObjectsAreOnMain(t, served)
+	// GitHub's default branch moves back; only another branch keeps what the failed fetch brought.
+	git(t, remote, "update-ref", "refs/heads/cold/x", "refs/heads/main")
+	git(t, remote, "update-ref", "refs/heads/main", tip)
+	run.instead("fetch", nil)
+	if err := c.refresh(context.Background()); err != nil {
+		t.Fatalf("the refresh after GitHub's default branch moved back: %v", err)
+	}
+	if status, health, _ := healthzOf(t, c); status != http.StatusOK || !health.Ready || !health.DefaultBranchOnly {
+		t.Fatalf("/healthz answers %d %+v, want ready and defaultBranchOnly", status, health)
+	}
+	assertTarObjectsAreOnMain(t, served)
 }
 
 func TestCacheDoesNotPublishAMarkerBeforeValidatingTheClone(t *testing.T) {

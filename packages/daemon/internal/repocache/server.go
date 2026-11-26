@@ -491,6 +491,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.owned, c.narrowed = false, false
+	served := c.health.Load()
 	defer func() {
 		if !c.narrowed {
 			c.health.Store(&Health{Repo: c.opts.Repo.String()})
@@ -527,13 +528,13 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 		return time.Time{}, first, err
 	}
 	if !first {
-		if interrupted {
-			if err := c.clear(defaultBranchFetchFile); err != nil {
-				return time.Time{}, first, err
-			}
-			interrupted = false
-		}
 		if err := c.mark(defaultBranchFetchFile); err != nil {
+			return time.Time{}, first, err
+		}
+	}
+	var packsBefore map[string]bool
+	if !first {
+		if packsBefore, err = c.packs(); err != nil {
 			return time.Time{}, first, err
 		}
 	}
@@ -547,13 +548,22 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 		return time.Time{}, first, err
 	}
 	if present {
-		rewritten := interrupted || headMissing
+		rewritten := headMissing
 		if previous != "" {
 			changed, err := c.defaultBranchRewritten(ctx, previous)
 			if err != nil {
 				return time.Time{}, first, err
 			}
 			rewritten = rewritten || changed
+		}
+		// A fetch that failed after it wrote its pack (its ref update refused, say) leaves objects
+		// no ref reaches; the narrowing's repack drops them before the cache serves again.
+		if fetchErr != nil && packsBefore != nil {
+			packsAfter, err := c.packs()
+			if err != nil {
+				return time.Time{}, first, err
+			}
+			rewritten = rewritten || packAdded(packsBefore, packsAfter)
 		}
 		if err := c.narrow(ctx, first, rewritten); err != nil {
 			return time.Time{}, first, fmt.Errorf("narrow the cache after its fetch: %w", c.removeCloneAfterNarrowingOutOfSpace(err))
@@ -567,6 +577,13 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 		}
 	}
 	if fetchErr != nil {
+		// A cache that served before the fetch serves the clone as it now is, still as of its last
+		// fetch: the narrowing after the failed fetch answered unready while it repacked.
+		if served != nil && served.Ready && c.narrowed {
+			if err := c.publishLocked(ctx, served.LastFetchAt); err != nil {
+				return time.Time{}, first, errors.Join(fetchErr, err)
+			}
+		}
 		return time.Time{}, first, fetchErr
 	}
 	fetched := time.Now()
