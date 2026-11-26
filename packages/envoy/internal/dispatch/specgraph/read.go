@@ -243,16 +243,23 @@ type document struct {
 	data []byte
 }
 
+// yamlStop is the fault of the YAML that stopped the reading of a file: its line, and the words of
+// yaml.v3 for it, cut, as the Detail of its bad-yaml problem holds them after "bad-yaml: ".
+type yamlStop struct {
+	line  int
+	fault string
+}
+
 // readDocuments reads the documents of one spec file, the steps of readFile before the schema: it
 // decodes each document with yaml.v3 into a yaml.Node, then into a value, and writes the value as
 // JSON. A fault of the YAML is bad-yaml: one that ends the stream stops the reading, keeps the
-// documents before it and answers stopped; one that only its document holds, such as a key written
-// two times, a key that is not a string or a null at a place, keeps the document with no data. A
-// null is named by its place (nullPlace, in the order of the JSON form), as decodeJSON names a null
-// of a JSON file. A file with no document is no-node.
+// documents before it and answers its stop (nil for a file read whole); one that only its document
+// holds, such as a key written two times, a key that is not a string or a null at a place, keeps
+// the document with no data. A null is named by its place (nullPlace, in the order of the JSON
+// form), as decodeJSON names a null of a JSON file. A file with no document is no-node.
 // The detail of a null is bad-yaml: the value at "<JSON pointer>" is null, or bad-yaml: the
 // document is null for a document that is null.
-func readDocuments(name string, data []byte) (documents []document, problems []Problem, stopped bool) {
+func readDocuments(name string, data []byte) (documents []document, problems []Problem, stop *yamlStop) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	for {
 		var doc yaml.Node
@@ -265,8 +272,9 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 			if readerFaults[strings.TrimPrefix(err.Error(), "yaml: ")] {
 				line = max(refusedLine(data), 1)
 			}
-			problems = append(problems, yamlProblem(name, yamlStops, err.Error(), line))
-			stopped = true
+			stop = &yamlStop{}
+			stop.line, stop.fault = yamlFault(err.Error(), line)
+			problems = append(problems, readerProblem(Position{File: name, Line: stop.line}, "", yamlStops, stop.fault))
 			break
 		}
 		d := document{line: doc.Line}
@@ -305,18 +313,25 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 	if len(documents) == 0 && len(problems) == 0 {
 		problems = append(problems, readerProblem(Position{File: name, Line: 1}, "", noNode))
 	}
-	return documents, problems, stopped
+	return documents, problems, stop
 }
 
 // yamlProblem is the bad-yaml problem of the kind kind (yamlStops or yamlDocument) for one message
-// of yaml.v3, without its "yaml: " prefix, at the line the message names, else at line. Each value
-// of the input that the message holds is cut (cutYAMLValues).
+// of yaml.v3, at its line and in its words (yamlFault).
 func yamlProblem(name string, kind problemKind, msg string, line int) Problem {
+	line, msg = yamlFault(msg, line)
+	return readerProblem(Position{File: name, Line: line}, "", kind, msg)
+}
+
+// yamlFault is the line and the words of one message of yaml.v3: the message without its "yaml: "
+// prefix, each value of the input that it holds cut (cutYAMLValues), at the line that it names,
+// else at line.
+func yamlFault(msg string, line int) (int, string) {
 	msg = strings.TrimPrefix(msg, "yaml: ")
 	if m := yamlLine.FindStringSubmatch(msg); m != nil {
 		line, _ = strconv.Atoi(m[1])
 	}
-	return readerProblem(Position{File: name, Line: line}, "", kind, cutYAMLValues(msg))
+	return line, cutYAMLValues(msg)
 }
 
 // yamlValues are the messages of yaml.v3 (v3.0.1: decode.go and resolve.go) that hold a value of
@@ -397,8 +412,8 @@ func stringKeys(value any) bool {
 func readFile(name string, data []byte) (documents []Document, problems []Problem, uncounted string) {
 	read, problems, stopped := readDocuments(name, data)
 	stop, fault := 0, ""
-	if stopped {
-		stop, fault = problems[len(problems)-1].Pos.Line, strings.TrimPrefix(problems[len(problems)-1].Detail, "bad-yaml: ")
+	if stopped != nil {
+		stop, fault = stopped.line, stopped.fault
 	}
 	var nodes []any
 	var lines []int
@@ -490,11 +505,24 @@ func splitFile(data []byte, documents []document, nodes []any, lines []int, stop
 }
 
 // schemaRefusal is one place where the data of a node breaks the schema: its detail, "<where>:
-// <message>", and whether the value at that place is one that no node holds as the data writes it:
-// a key that the node takes no field for (additional properties), or a value of another type.
+// <message>"; whether the value at that place is one that no node holds as the data writes it, a
+// key that the node takes no field for (additional properties) or a value of another type; and
+// whether the place is the kind of the node.
 type schemaRefusal struct {
-	detail  string
-	dropped bool
+	detail    string
+	dropped   bool
+	kindPlace bool
+}
+
+// problemKind is the kind of the problem of r for a node that its document gives (node) and holds
+// in its kind (keptKind; false for a component of a kind that is not "component" or "interface"):
+// schemaDropped when the document gives no node, when r refuses a key or a type, and when r is at
+// the kind that the node does not hold; else schemaKept.
+func (r schemaRefusal) problemKind(node, keptKind bool) problemKind {
+	if !node || r.dropped || r.kindPlace && !keptKind {
+		return schemaDropped
+	}
+	return schemaKept
 }
 
 // schemaRefusals is each place where the data inst breaks the schema, each detail once, in the
@@ -508,7 +536,8 @@ func schemaRefusals(inst any) []schemaRefusal {
 	for _, leaf := range schemaLeaves(refused) {
 		_, extra := leaf.ErrorKind.(*kind.AdditionalProperties)
 		_, otherType := leaf.ErrorKind.(*kind.Type)
-		all = append(all, schemaRefusal{detail: schemaDetail(leaf), dropped: extra || otherType})
+		all = append(all, schemaRefusal{detail: schemaDetail(leaf), dropped: extra || otherType,
+			kindPlace: slices.Equal(leaf.InstanceLocation, []string{"kind"})})
 	}
 	slices.SortFunc(all, func(a, b schemaRefusal) int { return strings.Compare(a.detail, b.detail) })
 	return slices.CompactFunc(all, func(a, b schemaRefusal) bool { return a.detail == b.detail })
@@ -531,11 +560,7 @@ func schemaProblems(tree Tree) []Problem {
 			continue
 		}
 		for _, r := range schemaRefusals(inst) {
-			refusal := schemaKept
-			if r.dropped {
-				refusal = schemaDropped
-			}
-			problems = append(problems, readerProblem(n.pos, n.id, refusal, r.detail))
+			problems = append(problems, readerProblem(n.pos, n.id, r.problemKind(true, true), r.detail))
 		}
 	}
 	return problems
@@ -559,11 +584,7 @@ func readNode(name string, d document) (any, []Problem) {
 	node, keptKind, droppedLimit := nodeOf(d.data, typ, pos)
 	var problems []Problem
 	for _, r := range schemaRefusals(inst) {
-		refusal := schemaKept
-		if node == nil || r.dropped || !keptKind && strings.HasPrefix(r.detail, "/kind: ") {
-			refusal = schemaDropped
-		}
-		problems = append(problems, readerProblem(pos, id, refusal, r.detail))
+		problems = append(problems, readerProblem(pos, id, r.problemKind(node != nil, keptKind), r.detail))
 	}
 	if droppedLimit != "" {
 		problems = append(problems, readerProblem(pos, id, timeLimitDropped, Cut(droppedLimit)))

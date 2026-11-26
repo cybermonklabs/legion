@@ -692,7 +692,7 @@ func TestReadLayoutCutsEachDocumentWhereYAMLReadsIt(t *testing.T) {
 			if (name == "LF alone") != (len(problems) == 0) {
 				t.Fatalf("problems %+v: want none for LF alone and one or more for each other file", problems)
 			}
-			if stopped {
+			if stopped != nil {
 				if l.Uncounted["terms.yaml"] == "" {
 					t.Fatal("the reading of the file stops, and Uncounted does not name it")
 				}
@@ -708,7 +708,7 @@ func TestReadLayoutCutsEachDocumentWhereYAMLReadsIt(t *testing.T) {
 			}
 			for i, d := range documents {
 				alone, problems, stopped := readDocuments("terms.yaml", []byte(d.Text))
-				if stopped || len(alone) != 1 || !bytes.Equal(alone[0].data, whole[i].data) {
+				if stopped != nil || len(alone) != 1 || !bytes.Equal(alone[0].data, whole[i].data) {
 					t.Errorf("the text %q of document %d, read alone, gives %d documents (problems %+v), want the document of line %d, %s",
 						d.Text, i+1, len(alone), problems, whole[i].line, whole[i].data)
 				}
@@ -780,4 +780,67 @@ func specFile(t *testing.T, nodes ...any) []byte {
 		b.WriteString(document)
 	}
 	return []byte(b.String())
+}
+
+// readDocuments gives the line and the words of the fault that stopped the reading as a value, the
+// same as the problem that it gives for that fault, so readFile reads neither from a problem's text
+// or from the place of a problem in the list. A file that the reader reads whole gives no stop.
+func TestReadDocumentsGivesTheStopOfTheReading(t *testing.T) {
+	t.Parallel()
+	const whole = "---\ntype: term\nid: a-term\nname: a term\ndefinition:\n  - A term is a word.\n"
+	_, problems, stop := readDocuments("terms.yaml", []byte(whole+"---\nname: [unclosed\n"))
+	if stop == nil || len(problems) == 0 {
+		t.Fatalf("a stopped reading gives the stop %+v and the problems %+v", stop, problems)
+	}
+	if last := problems[len(problems)-1]; last.Pos.Line != stop.line || last.Detail != "bad-yaml: "+stop.fault || last.Effect != LosesNode {
+		t.Errorf("the stop is %+v, and its problem %+v", stop, last)
+	}
+	if _, _, stop := readDocuments("terms.yaml", []byte(whole)); stop != nil {
+		t.Errorf("a file read whole gives the stop %+v", stop)
+	}
+}
+
+// A refusal of the schema says whether it is at the kind of the node, and one method gives its
+// problem kind for the reader and for a tree built with no reader: a refusal of a key or of a type,
+// or one of a document that gives no node, drops the node, and so does one of the kind of a
+// component that the node does not hold; each other refusal keeps the node.
+func TestASchemaRefusalGivesItsKindByItsPlace(t *testing.T) {
+	t.Parallel()
+	refusals := func(document string) []schemaRefusal {
+		t.Helper()
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return schemaRefusals(inst)
+	}
+	kindOfComponent := refusals(`{"type":"component","id":"a-part","name":"a part","kind":"widget","purpose":["It holds a part."]}`)
+	if len(kindOfComponent) == 0 || !slices.ContainsFunc(kindOfComponent, func(r schemaRefusal) bool { return r.kindPlace }) {
+		t.Fatalf("the refusals of a component of the kind widget are %+v, want one at its kind", kindOfComponent)
+	}
+	extraKey := refusals(`{"type":"term","id":"a-term","name":"a term","definition":["A term is a word."],"surprise":true}`)
+	if len(extraKey) != 1 || extraKey[0].kindPlace || !extraKey[0].dropped {
+		t.Fatalf("the refusals of a term with a key that it does not take are %+v, want one that drops it, not at its kind", extraKey)
+	}
+	badID := refusals(`{"type":"term","id":"A-term","name":"a term","definition":["A term is a word."]}`)
+	if len(badID) != 1 || badID[0].kindPlace || badID[0].dropped {
+		t.Fatalf("the refusals of a term with an id that breaks the pattern are %+v, want one that keeps it", badID)
+	}
+	for _, row := range []struct {
+		name           string
+		r              schemaRefusal
+		node, keptKind bool
+		want           problemKind
+	}{
+		{"a value that the node keeps", badID[0], true, true, schemaKept},
+		{"a key that the node takes no field for", extraKey[0], true, true, schemaDropped},
+		{"a document that gives no node", badID[0], false, true, schemaDropped},
+		{"the kind of a component that the node does not hold", schemaRefusal{kindPlace: true}, true, false, schemaDropped},
+		{"the kind of a component that the node holds", schemaRefusal{kindPlace: true}, true, true, schemaKept},
+		{"another place of a component whose kind the node does not hold", badID[0], true, false, schemaKept},
+	} {
+		if got := row.r.problemKind(row.node, row.keptKind); got != row.want {
+			t.Errorf("%s: %d, want %d", row.name, got, row.want)
+		}
+	}
 }
