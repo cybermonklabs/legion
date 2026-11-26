@@ -2,8 +2,12 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -161,4 +165,399 @@ func TestAStepBesideAFixIsToldToPushToItsOwnBranch(t *testing.T) {
 			}
 		}
 	})
+}
+
+// deletions is each deletion of branches beside a fix queued for LEGION-208, oldest first, as
+// `<generation> <task> fix <n>` (record.BesideBranchesDelete, fix 0 for every fix of the task).
+func (r *fixRig) deletions() []string {
+	r.t.Helper()
+	var lines []string
+	for _, row := range issueOutboxOf(r.t, r.pool, "LEGION-208", string(record.OutboxKindBesideBranchesDelete)) {
+		var deletion record.BesideBranchesDelete
+		if err := json.Unmarshal(row.payload, &deletion); err != nil {
+			r.t.Fatalf("decode the deletion %s: %v", row.payload, err)
+		}
+		lines = append(lines, fmt.Sprintf("%d %s fix %d", deletion.Generation, deletion.Task, deletion.Fix))
+	}
+	return lines
+}
+
+// assertWayTaken fails unless the latest fix of LEGION-208's task took way.
+func (r *fixRig) assertWayTaken(way int) {
+	r.t.Helper()
+	if fix := r.latestFix(); fix.Way != way {
+		r.t.Fatalf("the fix took way %d, want %d: %+v", fix.Way, way, fix)
+	}
+}
+
+// failedClaimWithReport is LEGION-208 whose review requested changes beside fix 1, the fix's step
+// getting its report, and whose fix's claim then failed, ending the fix with no commit: way 2.
+func failedClaimWithReport(t *testing.T, engine *Engine) *fixRig {
+	t.Helper()
+	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.reviewedX()
+	r.move(TriggerReviewRejected, "", reviewReport("the widget renders twice"))
+	r.apply("fix-claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: "the process died"})
+	r.assertWayTaken(wayAfterFix)
+	return r
+}
+
+// allCIPasses applies, at head, the states of LEGION-208's checks with each one a CI job runs
+// passed there.
+func (r *fixRig) allCIPasses(head string) {
+	r.t.Helper()
+	r.at(head, noCIJob("k-unit"), ciPassing("k-ci2"), ciPassing("k-ci"))
+}
+
+// parks is a person's move of LEGION-208 to backlog, which takes it out of the workflow (leave).
+func (r *fixRig) parks() {
+	r.t.Helper()
+	parked := personsTodo("LEGION-208")
+	parked.Status = "backlog"
+	if result := r.apply("parked", parked); result.Refusal != nil {
+		r.t.Fatalf("the person's move to backlog was refused: %+v", result.Refusal)
+	}
+}
+
+// The branches beside a fix go once no step can need them, never at the way after the fix: a way 2
+// with commits of the fix's own, a way 2 with no commit (a step's report the fix got), a way 3 and a
+// way 1 delete none, since a step beside the fix may have pushed after the fix's end push, and the
+// step a way 2 runs again takes its commits from its kept branch; nor does a fix whose claim failed,
+// at a way 2 with a report or a way 3 without one, whose worker-died notice reaches the owner. A
+// stop deletes none, and tells the owner by a task-stopped notice of the fix with no StoppedBy.
+// Where no step of the task can run again, every branch of the task's fixes goes, once: the
+// release of an end hold into the retro, a move into the retro that nothing holds, a leave, a new
+// generation, and a version that removes the stopped task. A task with no fix deletes nothing at
+// any end.
+//
+// The controls, kept: with noEndBesideDelete the release into the retro deletes nothing; with
+// besideDeleteAsBefore the failed claim's way 2 and the stop each delete the fix's branches; and
+// with deleteAfterEveryCompletion the no-commit way 2 and the way 3 each do.
+func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
+	fix1 := []string{"1 a fix 1"}
+	task := []string{"1 a fix 0"}
+	t.Run("a new-commit way 2 deletes none", func(t *testing.T) {
+		r := fixAtTheEnd(t, returnEngine())
+		r.fixEnds(headTwo)
+		r.assertWayTaken(wayAfterFix)
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+	t.Run("a no-commit way 2 with a report deletes none", func(t *testing.T) {
+		r := fixAfterReview(t, returnEngine(), TriggerReviewRejected, false, fixHead)
+		r.assertWayTaken(wayAfterFix)
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+	t.Run("way 3 deletes none", func(t *testing.T) {
+		r := fixAtTheEnd(t, returnEngine())
+		r.fixEnds(fixHead)
+		r.assertWayTaken(wayOn)
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+	t.Run("way 1 deletes none", func(t *testing.T) {
+		r := planningFix(t)
+		r.apply("fix-back", fixMoveBack(phase.Planning))
+		r.move(TriggerReviewApproved, "", reviewReport("approved"))
+		r.assertWayTaken(wayReturn)
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+	t.Run("a failed claim at a way 2 with a report deletes none", func(t *testing.T) {
+		r := failedClaimWithReport(t, returnEngine())
+		assertStrings(t, "the deletions", r.deletions(), nil)
+		if died := r.workerDied(); len(died) != 1 || !strings.HasPrefix(died[0], string(claim.RoleImplementer)+": ") {
+			t.Fatalf("the worker-died notices = %q, want the fix's one", died)
+		}
+	})
+	t.Run("a failed claim at a way 3 deletes none", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.apply("fix-claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: "the process died"})
+		r.reviewedX()
+		r.move(TriggerReviewApproved, "", reviewReport("approved"))
+		r.assertWayTaken(wayOn)
+		assertStrings(t, "the deletions", r.deletions(), nil)
+		if died := r.workerDied(); len(died) != 1 {
+			t.Fatalf("the worker-died notices = %q, want the fix's one", died)
+		}
+	})
+	t.Run("a stop deletes none and tells the owner", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.stop()
+		assertStrings(t, "the deletions", r.deletions(), nil)
+		var unsigned []record.Notice
+		for _, notice := range noticesOf(t, r.pool, "LEGION-208", "task-stopped") {
+			if notice.StoppedBy == "" {
+				unsigned = append(unsigned, notice)
+			}
+		}
+		if len(unsigned) != 1 || unsigned[0].Role != claim.RoleImplementer {
+			t.Fatalf("the task-stopped notices with no StoppedBy = %+v, want the fix's one", unsigned)
+		}
+	})
+	t.Run("the release of an end hold into the retro deletes the task's branches", func(t *testing.T) {
+		r := fixAtTheEnd(t, returnEngine())
+		r.allCIPasses(fixHead)
+		r.fixEnds(fixHead)
+		r.assertRetroStarted()
+		assertStrings(t, "the deletions", r.deletions(), task)
+	})
+	t.Run("a move into the retro that nothing holds deletes the task's branches", func(t *testing.T) {
+		r := fixAtTheEnd(t, returnEngine())
+		r.fixEnds(headTwo)
+		r.move(TriggerTesterPassed, "", record.PhaseRow{})
+		r.allCIPasses(headTwo)
+		r.move(TriggerReviewApproved, "", reviewReport("approved"))
+		r.assertRetroStarted()
+		assertStrings(t, "the deletions", r.deletions(), task)
+	})
+	t.Run("a leave deletes the task's branches", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.parks()
+		assertStrings(t, "the deletions", r.deletions(), task)
+	})
+	t.Run("a new generation deletes the old generation's branches once", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			issue.Generation++
+			issue.Phase, issue.Hold = phase.Admitted, nil
+			issue.Status, issue.DispatchStatus = "todo", "todo"
+			if err := r.engine.store.PutIssue(ctx, tx, issue); err != nil {
+				return err
+			}
+			return r.engine.store.ClearTreeGeneration(ctx, tx, issue.Tree, stepClock.Add(time.Hour))
+		})
+		assertStrings(t, "the deletions", r.deletions(), task)
+	})
+	t.Run("a version that removes the stopped task deletes its branches", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.stop()
+		other := givenTask(t, "Build the other widget.", "implementer", "reviewer")
+		other.ID = "b"
+		version := ownersPlan(t, "LEGION-208", 1, 3, other)
+		version.Plan.ArtifactID = "plan-artifact" // the document of the version in force (seedStepsPlan)
+		mustTake(t, "the version without task a", r.apply("version-3", version))
+		assertStrings(t, "the deletions", r.deletions(), task)
+	})
+	t.Run("a task with no fix deletes nothing at any end", func(t *testing.T) {
+		r := reviewing(t)
+		r.allCIPasses(fixHead)
+		r.move(TriggerReviewApproved, "", reviewReport("approved"))
+		r.assertRetroStarted()
+		r.parks()
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+
+	t.Run("the control: noEndBesideDelete deletes nothing at the release into the retro", func(t *testing.T) {
+		engine := returnEngine()
+		engine.noEndBesideDelete = true
+		r := fixAtTheEnd(t, engine)
+		r.allCIPasses(fixHead)
+		r.fixEnds(fixHead)
+		r.assertRetroStarted()
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+	t.Run("the control: besideDeleteAsBefore deletes at a failed claim and at a stop", func(t *testing.T) {
+		engine := returnEngine()
+		engine.besideDeleteAsBefore = true
+		assertStrings(t, "the deletions of the failed claim", failedClaimWithReport(t, engine).deletions(), fix1)
+		engine = returnEngine()
+		engine.besideDeleteAsBefore = true
+		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.stop()
+		assertStrings(t, "the deletions of the stop", r.deletions(), fix1)
+	})
+	t.Run("the control: deleteAfterEveryCompletion deletes at a no-commit way 2 and a way 3", func(t *testing.T) {
+		engine := returnEngine()
+		engine.deleteAfterEveryCompletion = true
+		assertStrings(t, "the deletions of the no-commit way 2", fixAfterReview(t, engine, TriggerReviewRejected, false, fixHead).deletions(), fix1)
+		engine = returnEngine()
+		engine.deleteAfterEveryCompletion = true
+		r := fixAtTheEnd(t, engine)
+		r.fixEnds(fixHead)
+		assertStrings(t, "the deletions of the way 3", r.deletions(), fix1)
+	})
+}
+
+// testerWaitReasons is the reason of each phase-finished notice of LEGION-208's tester whose testing
+// move waits for the head's set of checks, oldest first.
+func (r *fixRig) testerWaitReasons() []string {
+	r.t.Helper()
+	var reasons []string
+	for _, notice := range noticesOf(r.t, r.pool, "LEGION-208", "phase-finished") {
+		if notice.Role == claim.RoleTester && notice.WaitsFor == waitsForSet {
+			reasons = append(reasons, notice.Reason)
+		}
+	}
+	return reasons
+}
+
+// A tester that completes at Z, a commit of its own branch beside a fix that no pull request heads,
+// while the pull request heads X, holds its testing move for good, since Dispatch computes no state
+// at Z: the issue stays in testing, and the owner's one phase-finished notice gives the reason that
+// says so (offHeadWaitReason of Z and X). The control, kept: a completion at X, the pull request's
+// head, whose set Dispatch has not published yet, keeps the plain wait for its states, and the two
+// reasons differ, so a reason that names every wait alike fails here.
+func TestATestingMoveAtAHeadOfNoPullRequestSaysWhy(t *testing.T) {
+	const besideHead = "3333333333333333333333333333333333333333"
+	t.Run("a completion at a head of no pull request", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.testerCompletesAt(besideHead, "test-1")
+		assertPhase(t, r.pool, phase.Testing)
+		assertStrings(t, "the tester's wait reasons", r.testerWaitReasons(), []string{offHeadWaitReason(besideHead, fixHead)})
+	})
+	t.Run("the control: a completion at the pull request's head", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.testerCompletesAt(fixHead, "test-1")
+		assertPhase(t, r.pool, phase.Testing)
+		reasons := r.testerWaitReasons()
+		if len(reasons) != 1 || reasons[0] == offHeadWaitReason(fixHead, fixHead) || reasons[0] == offHeadWaitReason(besideHead, fixHead) {
+			t.Fatalf("the tester's wait reasons at the pull request's head = %q, want one, the plain wait for the states, unlike the reason at a head of no pull request", reasons)
+		}
+	})
+}
+
+// No fix opens beside a fix whose way is pending. Fix 1 runs beside the running tester, whose start
+// is bound to its branch B1, and ends with no commit while the tester still runs, so its way waits
+// for the tester's end. A second check, k-ci2, fails at the head meanwhile: no fix 2 opens, and the
+// failure has no row yet, so the fix rule reads it again at the next fact. The tester's pass takes
+// fix 1's way (3, each step keeps its result), and the fix rule at the tail of that same fact opens
+// fix 2 for k-ci2. The tester's start kept B1 to its end, and no deletion of fix 1's branches is
+// queued. The control, kept: with the seam openBesidePendingWay, fix 2 opens while fix 1's way is
+// pending, which the subtest asserts.
+func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
+	pending := func(t *testing.T, engine *Engine) *fixRig {
+		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.fixEnds(fixHead)
+		if fix := r.latestFix(); fix.State != record.FixEnded || fix.Way != 0 {
+			t.Fatalf("fix 1 after its end beside the running tester = %+v, want ended with its way pending", fix)
+		}
+		r.fails(fixHead, "k-ci2")
+		return r
+	}
+	t.Run("fix 2 opens only after the tester's end takes fix 1's way", func(t *testing.T) {
+		r := pending(t, returnEngine())
+		assertStrings(t, "the fixes while fix 1's way is pending", r.fixes(), []string{fixOf(1, "ended", "k-ci")})
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			row, err := r.engine.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, "a", "k-ci2", fixHead)
+			if err == nil && row != nil {
+				err = fmt.Errorf("k-ci2's failure while fix 1's way is pending has a row %+v, want none", *row)
+			}
+			return err
+		})
+		if got, want := r.besideMarks(2), "0 "+besideFix1(t, claim.RoleTester); got != want {
+			t.Fatalf("the tester's start names %q, want %q: started before fix 1, bound to its branch beside fix 1 until it ends", got, want)
+		}
+
+		// The tester's end and the fix rule at its tail, in one transaction, as applyAndFix runs a
+		// fact's handler and then the rule.
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			pr, err := r.engine.store.PullRequest(ctx, tx, issue.Key)
+			if err != nil {
+				return err
+			}
+			if err := r.engine.transition(ctx, tx, issue, TriggerTesterPassed, "", record.PhaseRow{}, pr, moveWhy{}); err != nil {
+				return err
+			}
+			return r.engine.fixRule(ctx, tx, issue.Key)
+		})
+
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			fix, err := r.engine.store.FixAt(ctx, tx, issue.Key, issue.Generation, "a", 1)
+			if err == nil && (fix == nil || fix.Way != wayOn) {
+				err = fmt.Errorf("fix 1 after the tester's end = %+v, want way %d taken", fix, wayOn)
+			}
+			return err
+		})
+		assertStrings(t, "the fixes after the tester's end", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
+		assertStrings(t, "the deletions", r.deletions(), nil)
+	})
+	t.Run("the control: openBesidePendingWay opens fix 2 while the way is pending", func(t *testing.T) {
+		engine := returnEngine()
+		engine.openBesidePendingWay = true
+		r := pending(t, engine)
+		assertStrings(t, "the fixes while fix 1's way is pending", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
+	})
+}
+
+// A way 2 keeps the branches beside its fix, and the step it runs again takes its commits from its
+// own. Fix 1 runs beside the running tester, which is bound to B1; fix 1 ends with commits of its own
+// at Y while the tester runs, so its way waits; the tester then pushes c2 to B1, at P, after the
+// fix's end push. The tester's pass takes way 2: no deletion is queued, and the tester's start that
+// the way runs again holds fix 1, its kept branch B1 and the pushed head P (startFacts.Kept,
+// Branch, Pushed), from which its task tells it to take c2. The control, kept: with the seam
+// besideDeleteAsBefore the way 2 queues the deletion of fix 1's branches.
+func TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn(t *testing.T) {
+	const pushed = "4444444444444444444444444444444444444444"
+	pendingWay2 := func(t *testing.T, engine *Engine) *fixRig {
+		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.fixEnds(headTwo)
+		if fix := r.latestFix(); fix.State != record.FixEnded || fix.Way != 0 {
+			t.Fatalf("fix 1 after its end beside the running tester = %+v, want ended with its way pending", fix)
+		}
+		r.recordsPush(claim.RoleTester, pushed)
+		r.move(TriggerTesterPassed, "", record.PhaseRow{})
+		r.assertWayTaken(wayAfterFix)
+		return r
+	}
+	t.Run("the way keeps B1 and the rerun tester holds it", func(t *testing.T) {
+		r := pendingWay2(t, returnEngine())
+		assertStrings(t, "the deletions", r.deletions(), nil)
+		facts := r.startFactsIn(phase.Testing)
+		if !facts.Kept || facts.Fix != 1 || facts.Branch != besideFix1(t, claim.RoleTester) || facts.Pushed != pushed {
+			t.Fatalf("the rerun tester's start facts = %+v, want fix 1's kept branch %s at %s", facts, besideFix1(t, claim.RoleTester), pushed)
+		}
+	})
+	t.Run("the control: besideDeleteAsBefore deletes fix 1's branches at the way", func(t *testing.T) {
+		engine := returnEngine()
+		engine.besideDeleteAsBefore = true
+		assertStrings(t, "the deletions", pendingWay2(t, engine).deletions(), []string{"1 a fix 1"})
+	})
+}
+
+// A fix whose own branch cannot be named opens not at all (refuseFixName): with the seam
+// failFixName, which makes every name of a branch beside a fix fail, a CI check that fails at the
+// head of a task in reviewing that takes a fix starts no fix, its failure's row goes to the owner,
+// and the owner is told once, by one ci-failed notice. Its red is the refusal taken out, where the
+// same failure opens fix 1.
+func TestAFixWhoseBranchCannotBeNamedIsRefused(t *testing.T) {
+	engine := returnEngine()
+	engine.failFixName = true
+	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
+	r.fails(fixHead, "k-ci")
+	assertStrings(t, "the fixes", r.fixes(), nil)
+	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		row, err := r.engine.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, "a", "k-ci", fixHead)
+		if err == nil && (row == nil || row.WentTo != record.CIFailureToOwner) {
+			err = fmt.Errorf("k-ci's failure row = %+v, want the owner's", row)
+		}
+		return err
+	})
+	r.assertToldOwnerOnce("k-ci")
+}
+
+// The worker-died notice of a fix's failed claim names where the work beside the fix stands: the
+// sentence built from the typed facts of fix 1 (besideWorkSentence), the prefix of the branches
+// beside it (claim.BesideFixPrefix) and the fix's own branch F (claim.BesideBranch). Its red is the
+// sentence taken out of the notice.
+func TestAFailedClaimOfAFixNamesWhereItsWorkStands(t *testing.T) {
+	prefix, err := claim.BesideFixPrefix("LEGION-208", 1, "a", 1)
+	if err != nil {
+		t.Fatalf("name the prefix beside fix 1: %v", err)
+	}
+	sentence := besideWorkSentence("LEGION-208", 1, "a", 1)
+	if !strings.Contains(sentence, prefix) || !strings.Contains(sentence, besideFix1(t, claim.RoleImplementer)) {
+		t.Fatalf("the sentence of fix 1's work = %q, want it to name the prefix %s and F %s", sentence, prefix, besideFix1(t, claim.RoleImplementer))
+	}
+	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.apply("fix-claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: "the process died"})
+	died := r.workerDied()
+	if len(died) != 1 || !strings.Contains(died[0], strings.TrimSpace(sentence)) {
+		t.Fatalf("the worker-died notices = %q, want the fix's one naming %q", died, sentence)
+	}
 }

@@ -140,7 +140,7 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 	judgement, judged := judgeStates(held)
 	switch {
 	case !judged:
-		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForSet})
+		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForSet, PullRequestHead: offHead(head, pr)})
 	case len(judgement.Waiting) > 0:
 		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForChecks, Waiting: judgement.Waiting})
 	case len(judgement.Failing) > 0:
@@ -187,15 +187,28 @@ const (
 // testingMove is one wait or one move back of the testing move at the tested head Head
 // (decideTesting): a wait names what it waits for (WaitsFor), the fence's serial (Serial) and the
 // checks whose states it waits for (Waiting); a move back has no WaitsFor, and names each check
-// that does not pass (Failing). Its sentence is the words of the task of the step the work goes
-// back to and of the architect's notice, and its notice carries the sentence and these values, so
-// the words and the fields are one value.
+// that does not pass (Failing). A wait for the set of a head that no open pull request heads names
+// the head the pull request stands at instead (PullRequestHead), since no state will come there.
+// Its sentence is the words of the task of the step the work goes back to and of the architect's
+// notice, and its notice carries the sentence and these values, so the words and the fields are
+// one value.
 type testingMove struct {
-	Head     string
-	WaitsFor string
-	Serial   int64
-	Waiting  []string
-	Failing  []record.FailingCheck
+	Head            string
+	WaitsFor        string
+	Serial          int64
+	Waiting         []string
+	Failing         []record.FailingCheck
+	PullRequestHead string
+}
+
+// offHead is the head the open pull request pr stands at where the tested head is another commit,
+// "" where pr is no open pull request or heads the tested head: a set of check states at a commit
+// that heads no pull request never comes, which the testing move's wait then says (offHeadWaitReason).
+func offHead(tested string, pr *record.PullRequest) string {
+	if pr == nil || pr.State != record.PullRequestOpen || pr.HeadSHA == "" || pr.HeadSHA == tested {
+		return ""
+	}
+	return pr.HeadSHA
 }
 
 // sentence is the move in words, written from its fields alone.
@@ -207,6 +220,9 @@ func (m testingMove) sentence() string {
 	case waitsForFence:
 		return fmt.Sprintf("the move waits for Dispatch's check states through serial %d at %s", m.Serial, m.Head)
 	case waitsForSet:
+		if m.PullRequestHead != "" {
+			return offHeadWaitReason(m.Head, m.PullRequestHead)
+		}
 		return "the move waits for Dispatch's states at " + m.Head
 	case waitsForChecks:
 		return "the move waits for the states of " + strings.Join(m.Waiting, ", ") + " at " + m.Head

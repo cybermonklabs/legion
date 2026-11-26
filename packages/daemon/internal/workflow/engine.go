@@ -210,6 +210,15 @@ type Engine struct {
 	noAskAtWay                 bool
 	askAtWayWithNoRules        bool
 	wayFromRecordedHead        bool
+	// noRunFixesCIMark leaves out the mark of a run's tasks as taking a fix at the run's first
+	// step (takeFirstPlan). Only a test sets it.
+	noRunFixesCIMark bool
+	// openBesidePendingWay opens a fix of a task while the task's latest fix ended with its way
+	// pending (openFix). Only a test sets it.
+	openBesidePendingWay bool
+	// failFixName makes every name of a fix's own branch fail (openFix), so the fix rule's refusal
+	// of a fix whose branch cannot be named (refuseFixName) can be reached. Only a test sets it.
+	failFixName bool
 	// For the branches beside a fix (fix_branches.go), each the fault its test plants first:
 	// noEndBesideDelete takes out the deletion of the branches beside a task's fixes that its move
 	// into the retro with no hold queues, at a transition and at the release of an end hold
@@ -2803,6 +2812,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if hold != "" {
 		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, why, hold, waits)
 	}
+	// A task that passes into its retro with nothing holding it runs no step again, so the branches
+	// beside its fixes go (queueTaskEnd).
+	if row.To == phase.Retro {
+		if err := e.queueTaskEnd(ctx, tx, issue, w); err != nil {
+			return err
+		}
+	}
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
 		return err
@@ -2964,7 +2980,11 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, moverOf(ctx), why)); err != nil {
 		return err
 	}
-	return e.notice(ctx, tx, issue.Key, endHoldNotice(issue, w, pr, hold, waits))
+	acts, err := e.ciActsOf(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, endHoldNotice(issue, w, pr, hold, waits, acts))
 }
 
 // queueMovedNews queues the reconcile of issue's tree's news of its approved design

@@ -236,24 +236,24 @@ func (e *Engine) endFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	}
 	e.logOnCommit(ctx, "workflow: a failed CI check at a task's end that no fix takes is told to its owner", "issue", issue.Key, "task", w.Task,
 		"check", state.Check, "head", pass.head, "fixEnded", fixed)
-	return e.notice(ctx, tx, issue.Key, ciFailedNotice(issue, w, state.Check, pass.head, fixed))
+	acts, err := e.ciActsOf(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, ciFailedNotice(issue, w, state.Check, pass.head, fixed, acts))
 }
 
 // ciFailedNotice is the ci-failed notice to the owner of issue, on w, the walk of its run, of
 // check failing at head where no fix takes it, fixEnded where its one fix ran and ended: what
-// failed, and the owner's acts, the move back, and the stop of its task where the issue runs a
-// plan.
-func ciFailedNotice(issue record.Issue, w Walk, check, head string, fixEnded bool) record.Notice {
+// failed, and the owner's acts (acts, ciActsOf): the move back, and the stop of its task only
+// where that stop is taken.
+func ciFailedNotice(issue record.Issue, w Walk, check, head string, fixEnded bool, acts ciActs) record.Notice {
 	why := "no fix takes it"
 	if fixEnded {
 		why += ": its one fix ended"
 	}
-	act := "send it back with request_backward_move"
-	if w.Stored {
-		act = "send the task back with request_backward_move, or stop it with stop_task"
-	}
 	return record.Notice{Kind: "ci-failed", Role: claim.RoleArchitect, Phase: record.StandsAt(issue), Reason: fmt.Sprintf(
-		"Check %s fails at %s of task %s of %s, and %s. Decide with the person: %s.", check, head, w.Task, issue.Key, why, act)}
+		"Check %s fails at %s of task %s of %s, and %s. Decide with the person: %s.", check, head, w.Task, issue.Key, why, acts.decide())}
 }
 
 // stepEntry is the open entry of role's phases row of issue, one raised that its completion has
@@ -312,11 +312,24 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 	if err != nil {
 		return err
 	}
+	// The last fix ended while a step beside it runs, and the way after it waits for that step's
+	// end (afterFix). A fix opened now could not take that step's commits, which stay on its
+	// branch beside the last fix until its run ends, so the failure waits with no row written: the
+	// fix rule reads it again at the fact that takes the way.
+	if latest != nil && latest.State == record.FixEnded && latest.Way == 0 && !e.openBesidePendingWay {
+		e.logOnCommit(ctx, "workflow: a failed CI check waits for the way after the last fix", "issue", issue.Key, "task", w.Task,
+			"fix", latest.Fix, "check", check, "head", pass.head)
+		return nil
+	}
 	number := 1
 	if latest != nil {
 		number = latest.Fix + 1
 	}
-	if _, err := claim.BesideBranch(issue.Key, issue.Generation, w.Task, number, claim.RoleImplementer); err != nil {
+	_, err = claim.BesideBranch(issue.Key, issue.Generation, w.Task, number, claim.RoleImplementer)
+	if err == nil && e.failFixName {
+		err = fmt.Errorf("the seam failFixName names no branch beside fix %d", number)
+	}
+	if err != nil {
 		return e.refuseFixName(ctx, tx, pass, check, failure, row, err)
 	}
 	fix := record.TaskFix{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Fix: number, State: record.FixReading,
@@ -573,8 +586,12 @@ type startFacts struct {
 	Own                                        bool
 	Check, Head, CICase, Job, Page, ReadFailed string
 	Branch, Pushed, FixDir                     string
-	MergeHead, MergeBase                       string
-	Failed                                     []string
+	// Kept is a start of a step that a way 2 runs again after fix Fix ended, whose branch beside
+	// that fix (Branch) the daemon holds a push of (Pushed): the way keeps that branch, and the step
+	// takes its commits from it.
+	Kept                 bool
+	MergeHead, MergeBase string
+	Failed               []string
 	// Cases is the ci_case of each check of Failed that a fix holds.
 	Cases map[string]string
 }
@@ -595,6 +612,9 @@ func (e *Engine) startFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if open == nil {
 		if facts, bound, err := e.boundFacts(ctx, tx, issue, w, place.Position); err != nil || bound {
+			return facts, err
+		}
+		if facts, kept, err := e.keptFacts(ctx, tx, issue, w, place.Position); err != nil || kept {
 			return facts, err
 		}
 	}
@@ -652,6 +672,34 @@ func (e *Engine) besideFacts(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		facts.Branch, facts.Pushed = branch, open.Pushed[string(role)]
 	}
 	return facts, nil
+}
+
+// keptFacts is the start facts of a step at place of w's task of issue that a way 2 runs again
+// after the task's latest fix ended (startFacts, while no fix of the task is open): where the
+// daemon holds a push of the step's own branch beside that fix (record.TaskFix.Pushed), the way kept
+// that branch (deletesAtWay), and the start, made after the fix ended, takes its commits from it
+// (Kept). The role is the role of the step's phase, a phase of a step of the plan, which admitted
+// never is; the implementer's branch beside the fix is the fix's own, which its end push took
+// whole. false for every other start.
+func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (startFacts, bool, error) {
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.Way != wayAfterFix || fix.EndedAt == nil || place <= fix.Place {
+		return startFacts{}, false, err
+	}
+	role := RoleFor(w.steps()[place-1])
+	pushed := fix.Pushed[string(role)]
+	if role == claim.RoleImplementer || pushed == "" {
+		return startFacts{}, false, nil
+	}
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
+	if err != nil || start.StartedAt.Before(*fix.EndedAt) {
+		return startFacts{}, false, err
+	}
+	branch, ok := e.besideBranchOf(issue, w.Task, fix.Fix, role)
+	if !ok {
+		return startFacts{}, false, nil
+	}
+	return startFacts{Fix: fix.Fix, Check: fix.Check, Head: fix.EndHead, Branch: branch, Pushed: pushed, Kept: true}, true, nil
 }
 
 // boundFacts is the start facts of a step at place of w's task of issue whose open start is bound
@@ -738,6 +786,8 @@ func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	switch {
 	case err != nil || facts.Own:
 		return "", err
+	case facts.Kept:
+		return keptSentence(facts), nil
 	case facts.Fix > 0:
 		return besideStepSentence(facts), nil
 	case len(facts.Failed) == 0:
@@ -969,19 +1019,15 @@ func (e *Engine) tellFixStarted(ctx context.Context, tx pgx.Tx, issue record.Iss
 // fixStartedBody is the body of the fix-started row to role, a step beside the fix of news, or the
 // owner for the architect, branch being its branch beside the fix ("" for the reviewer): the fix,
 // its check, head and job, and the step it runs again in its own working copy; that the failure is
-// the fix's (for the tester, whose testing still judges the check, that its report can fail for
-// it); and how it pushes until its step ends, where it records each result and what it does where
-// GitHub refuses its push. The owner is told what it accepts on instead of where it records.
+// the fix's, so the step's report does not fail for it (the testing step leaves each check a CI job
+// runs to its task's end); and how it pushes until its step ends, where it records each result and
+// what it does where GitHub refuses its push. The owner is told what it accepts on instead of where
+// it records.
 func fixStartedBody(key string, news fixStarted, role claim.Role, branch string) string {
 	fix := news.fix
 	body := fmt.Sprintf("A fix of task %s of %s runs: check %s failed at %s (CI job %s). It is step %d (%s) again, in a working copy of its own.",
 		fix.Task, key, fix.Check, fix.Head, jobOf(fix), fix.Place, news.step)
-	if role == claim.RoleTester {
-		body += fmt.Sprintf(" Leave the fixing of that failure to the fix, and run its job no more. Your testing still judges each check a CI job runs, %s among them, "+
-			"so your report can fail for it: a failed report moves nothing while the fix runs, and the way after the fix reads it.", fix.Check)
-	} else {
-		body += " Leave that failure to the fix: your report does not fail for it, and you run its job no more."
-	}
+	body += " Leave that failure to the fix: your report does not fail for it, and you run its job no more."
 	if branch == "" {
 		return body + " Until your step ends, push nothing to the branch of the task."
 	}
@@ -1356,6 +1402,11 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 			return err
 		}
 	}
+	if e.deletesAtWay(*fix, way) {
+		if err := e.queueBesideDelete(ctx, tx, issue, w.Task, fix.Fix); err != nil {
+			return err
+		}
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
@@ -1388,6 +1439,23 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	return e.mergeForwardAfterFix(ctx, tx, issue.Key)
+}
+
+// deletesAtWay says whether the way after fix, way, deletes the branches beside it
+// (queueBesideDelete): never. A step beside the fix can push to its branch after the fix's end
+// push, and nothing records what that push took, so each branch stays until no step of the task
+// can run again (queueTaskEnd, a leave, a new generation, a version that removes the task), and the
+// step a way 2 runs again takes its commits from its own (keptFacts). The seams:
+// besideDeleteAsBefore deletes after every way 2 or 3, and deleteAfterEveryCompletion after every
+// way 2 or 3 of the fix's own completion.
+func (e *Engine) deletesAtWay(fix record.TaskFix, way int) bool {
+	switch {
+	case way != wayAfterFix && way != wayOn:
+		return false
+	case e.besideDeleteAsBefore:
+		return true
+	}
+	return e.deleteAfterEveryCompletion && fix.ClaimFailed == "" && fix.Result == string(ResultPassed)
 }
 
 // moveFromHold is the one move that returns a held task, and the move of the way after a fix

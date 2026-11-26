@@ -242,8 +242,12 @@ func TestAFixStartSurvivesAdmissionInItsOwnFact(t *testing.T) {
 	if len(starts) != 1 {
 		t.Fatalf("the fix's starts after its job's read = %d, want one standing when the fact committed", len(starts))
 	}
-	if got, want := r.sends(claim.RoleImplementer, starts[0]), (runtime.Adoption{FixFrom: fixLineHead}); got != want {
-		t.Fatalf("the fix's adoption = %+v, want %+v: a working copy of its own at the head its check failed at", got, want)
+	branch, err := claim.BesideBranch(fixLineIssue, 1, "a", 1, claim.RoleImplementer)
+	if err != nil {
+		t.Fatalf("name the fix's own branch: %v", err)
+	}
+	if got, want := r.sends(claim.RoleImplementer, starts[0]), (runtime.Adoption{FixFrom: fixLineHead, FixBranch: branch}); got != want {
+		t.Fatalf("the fix's adoption = %+v, want %+v: a working copy of its own at the head its check failed at, on its own branch", got, want)
 	}
 
 	t.Run("control: a start in the line of starts is finished by the admission", func(t *testing.T) {

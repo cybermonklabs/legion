@@ -71,9 +71,13 @@ func (e *Engine) refuseFixName(ctx context.Context, tx pgx.Tx, pass *fixPass, ch
 	if err2 != nil || !told {
 		return err2
 	}
-	notice := ciFailedNotice(issue, w, check, pass.head, false)
+	acts, err2 := e.ciActsOf(ctx, tx, issue, w)
+	if err2 != nil {
+		return err2
+	}
+	notice := ciFailedNotice(issue, w, check, pass.head, false, acts)
 	notice.Reason = fmt.Sprintf("Check %s fails at %s of task %s of %s, and no fix of task %s can run: Legion cannot name a branch beside it (%v). "+
-		"Decide with the person: send the task back with request_backward_move, or stop it with stop_task.", check, pass.head, w.Task, issue.Key, w.Task, err)
+		"Decide with the person: %s.", check, pass.head, w.Task, issue.Key, w.Task, err, acts.decide())
 	return e.notice(ctx, tx, issue.Key, notice)
 }
 
@@ -390,3 +394,15 @@ func recordAtHead(head string) string {
 // refusedPushSentence is what a step beside a fix does where GitHub refuses the push to its own
 // branch: it pushes nothing else, and names each commit by its id, with GitHub's answer.
 const refusedPushSentence = " If GitHub refuses that push, push nothing else, and name each commit by its id, with GitHub's answer, in your report."
+
+// keptSentence is what the task of a step that a way 2 runs again says of its kept branch beside
+// the fix (fixLines), from the start's facts (startFacts, Kept): the fix ended, and the commits the
+// step pushed to its own branch while the fix ran stay there, at the pushed head, kept by the way;
+// the step takes first each of them whose change the task's branch does not hold yet, since the
+// fix's end push may have taken some, then pushes to the task's branch as its task says.
+func keptSentence(facts startFacts) string {
+	return fmt.Sprintf(" Fix %d of this task ended at %s, and the steps after it run again. Your own branch %s keeps the commits you pushed there beside the fix, at %s. "+
+		"Take them first: run jj -R \"$LEGION_WORKSPACE\" git fetch --remote origin --branch %s, then copy onto your working copy each of those commits whose change the branch of the task does not hold yet, "+
+		"with jj -R \"$LEGION_WORKSPACE\" duplicate <commit> --insert-before @, and never rebase or rewrite one. Then push to the branch of the task as this task says.",
+		facts.Fix, facts.Head, facts.Branch, facts.Pushed, facts.Branch)
+}

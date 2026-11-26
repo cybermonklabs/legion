@@ -39,7 +39,15 @@ import (
 // is why a base push is the one fact Apply's askMergeState leaves alone: what tells a redelivered
 // push from a first delivery is the commit the record held when the push arrived, and this walk
 // is the last reader of it.
+//
+// A push of a branch beside a fix (claim.BesideBranch) is such a push too, and one no pull request
+// sits on: before the pull requests on the base are read, the head it left is kept for the fix and
+// the role the branch is of (recordBesidePush), so a step's next task names where its pushed commits
+// stand, and a deleted branch's key goes.
 func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) (intake.Result, error) {
+	if err := e.recordBesidePush(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	open, err := e.store.OpenPullRequestsOnBase(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil {
 		return intake.Result{}, err
