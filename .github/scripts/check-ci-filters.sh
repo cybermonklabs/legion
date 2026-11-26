@@ -150,8 +150,9 @@
 #      its job or step on what no run of it ever is, and the dead code reads as live - a step
 #      behind `if: github.event_name == 'push'`, or a job behind `if: github.ref ==
 #      'refs/heads/main'`, runs in no run of this workflow while its text says it runs on main.
-#      A cache that must be filled on a push to main belongs in .github/workflows/ci-caches.yaml;
-#      a job that must run at main's tip is reached by the workflow_dispatch the bypass check
+#      A cache that must be filled on a push to main belongs in .github/workflows/ci-caches.yaml,
+#      and ci-caches-changes.yaml holds only the changes job's two entries, which must land once
+#      per commit; a job that must run at main's tip is reached by the workflow_dispatch the bypass check
 #      (.github/workflows/main-bypass-check.yaml) sends. It reads ci.yaml, and with it every
 #      workflow ci.yaml calls that is ci.yaml's alone: no other workflow of .github/workflows
 #      names it in a `uses: ./.github/workflows/...` and its `on:` declares workflow_call and
@@ -165,31 +166,33 @@
 #      alone, since a merge_group run's github.ref really is a branch ref
 #      (refs/heads/gh-readonly-queue/...) and a startsWith on it is live. As everywhere here, the
 #      same test written as a function call is the review's to catch, not this check's.
-#  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` is neither exactly that
+#  11. a cache family a fill workflow saves (CACHE_WORKFLOWS: .github/workflows/ci-caches.yaml
+#      and ci-caches-changes.yaml) whose `key:` is neither exactly that
 #      of the matching actions/cache/restore nor that key followed by `-${{ github.sha }}`, or
 #      whose `path:` is not exactly that restore's, for a restore of ci.yaml or of a workflow
 #      ci.yaml calls - dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs
 #      restore go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
 #      of .github/workflows that restores it (the release builds, the nightly browser re-record,
-#      ci-caches.yaml's own restores), since a drift there misses as silently (the keys compared
+#      the fill workflows' own restores), since a drift there misses as silently (the keys compared
 #      as text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming
 #      the file the restore is in, or that none of ci.yaml's files restores; a family saved both
-#      under `-${{ github.sha }}` and without it; a save of ci-caches.yaml whose key holds
+#      under `-${{ github.sha }}` and without it, in one fill workflow or across two; a save of a
+#      fill workflow whose key holds
 #      hashFiles(), or names `steps.<id>.outputs.cache-primary-key` of no actions/cache/restore
 #      of its job (a save under that output takes that restore's key text); an
-#      actions/cache/restore of ci-caches.yaml of a family it saves under `-${{ github.sha }}`
+#      actions/cache/restore of a fill workflow of a family it saves under `-${{ github.sha }}`
 #      that sets lookup-only at all, or whose restore-keys are not exactly its key followed by
-#      `-`; any other actions/cache/restore of ci-caches.yaml that is not `lookup-only: true`
+#      `-`; any other actions/cache/restore of a fill workflow that is not `lookup-only: true`
 #      or that carries restore-keys; and an actions/cache/restore of any workflow of the
 #      directory whose family no actions/cache/save of a workflow or of a composite action of
 #      .github/actions writes (a save that names its restore's cache-primary-key writes that
 #      restore's family; one whose family cannot be read is named in the refusal, which then says
-#      that no save it can read writes the family). ci-caches.yaml fills
+#      that no save it can read writes the family). The fill workflows fill
 #      the entries ci.yaml restores, and a key or a path that drifts apart makes every restore
 #      miss silently: nothing fails, every job just rebuilds from nothing what the fill already
 #      built. A save is matched to a restore by
 #      family, the key's text up to its first `${{`, which is the Go version the entry is keyed
-#      on. A family ci.yaml restores that ci-caches.yaml does not save is no failure when another
+#      on. A family ci.yaml restores that no fill workflow saves is no failure when another
 #      workflow saves it: go-docs is saved by docs-site.yaml, the build job docs-pages.yaml shares
 #      with ci.yaml's docs job. A family no save writes is one, since a misspelled family name
 #      (go-envoy-tests- for go-envoy-test) would otherwise be a family of its own that nothing
@@ -201,7 +204,7 @@
 #      own; no entry carries the restores' key itself, so GitHub gives each restore the newest
 #      entry whose key starts with it. The fill builds on that newest entry, so its own restore
 #      must download it, and its restore-keys must hold its Go version. Every other restore of
-#      ci-caches.yaml is a lookup, which must download nothing: the workflow asks only whether
+#      a fill workflow is a lookup, which must download nothing: the workflow asks only whether
 #      that exact key is already there, no step of it reads a restored entry, and a prefix hit
 #      would answer for an older key and skip the build that fills this one, leaving it empty.
 #  12. a job of ci.yaml whose `if:` lacks `(github.event_name != 'merge_group' ||
@@ -263,14 +266,15 @@
 #      have, a job the file the entry names does not have (the job that runs the untagged tests
 #      may be in any of those files, since it keeps its caller in ci.yaml), a step that job does
 #      not have, or a step whose run: holds no -run is a failure of its own.
-#  16. a `go test -race` build of .github/workflows/ci-caches.yaml's job ci_job_reads.py's
-#      DAEMON_RACE_FILL_JOB names whose packages are not ci_job_reads.py's
-#      DAEMON_RACE_PACKAGES, in that order. That build fills the cache ci.yaml's race step
-#      restores, so a package it names that the lane does not is a race binary no job of
-#      ci.yaml restores, and one the lane names that it does not is a binary that step links
+#  16. a `go test -race` build of a .github/workflows/ci-caches.yaml job ci_job_reads.py's
+#      RACE_FILLS names whose packages are not that entry's lane, in its order: the daemon's
+#      DAEMON_RACE_FILL_JOB against DAEMON_RACE_PACKAGES, and the envoy race lane's
+#      ENVOY_RACE_FILL_JOB against every job's packages of ENVOY_RACE_LANE. Each build fills the
+#      cache its lane's race steps restore, so a package it names that the lane does not is a race
+#      binary no job restores, and one the lane names that it does not is a binary those steps link
 #      from nothing on every run - in either direction nothing fails, which is how
-#      ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
-#      package, the job and both lists; that job with no race build at all fails too, and so
+#      ./internal/record/ stayed in the daemon's fill after the lane dropped it. It fails naming
+#      the package, the job and both lists; a fill job with no race build at all fails too, and so
 #      does a ci-caches.yaml with no such job, since the lane would then be filled by nobody. A
 #      race build of another job fills another family and is not this rule's. And a fill job
 #      ci_job_reads.py's RACE_FILL_SCRIPTS names whose steps in the script's directory do not run
@@ -468,14 +472,15 @@
 # ci_job_reads.py runs go_build_tags' tag_sets and compiled as it is imported, to give each
 # darwin vet step one Run per tag set and to read which test files a runner compiles, and
 # go_legs' go_packages, to hold the legs and name a package no legs line names in the plain gates'
-# Runs; rule 20 runs go_build_tags' platforms. A `go list -find` still resolves every import, so under the machine's GOPROXY it
-# fetched every module a cold runner's cache lacks, about half of the changes job's generation,
-# and in a workspace wrote into go.work.sum the checksum of each go.mod the committed files lacked
-# (packages/envoy/infra/go.work.sum lacked two). Each runs with GOPROXY=off (go_legs' with GOFLAGS
-# empty too), so it fetches nothing. A run of any mode that
-# changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS workflows, and
-# generate's output and the .inputs file beside it, below), still fails naming each: for a
-# go.work.sum, commit what the run wrote. The tree is read before the first go
+# Runs; rule 20 runs go_build_tags' platforms. A `go list -find` still resolves every import, so
+# under the machine's GOPROXY it fetched every module a cold runner's cache lacks, about half of
+# the changes job's generation, and in a workspace wrote into go.work.sum the checksum of each
+# go.mod the committed files lacked (packages/envoy/infra/go.work.sum lacked two). Each runs with
+# GOPROXY=off (go_legs' listing and declared_tests' calls of compiled with GOFLAGS empty too), so
+# it fetches nothing. A run of any mode that changes a file of the tree, but those its mode writes
+# (the PUSH_WORKFLOWS workflows, and generate's output and the .inputs file beside it, below),
+# still fails naming each: for a go.work.sum, commit what the run wrote. The tree is read before
+# the first go
 # command and after the last: each file git lists, tracked or untracked and not ignored (the files
 # the engine reads), by its bytes and execute bit, read off the file rather than taken as unchanged
 # because git says so (an assume-unchanged mark, a normalized line ending), so a file edited before
@@ -585,7 +590,9 @@ export CI_FILTERS_MODE="${1:-check}"
 # ci_job_reads.py runs go_build_tags.py's go commands as it is imported, and again after main().
 # The first reading comes before the audit hook too, since it opens every file of the tree and none
 # of those opens is the computation's. A run whose imports fail is a failure before the second
-# read has anything to add.
+# read has anything to add. The generate mode starts its TypeScript listings
+# (ci_ts_listing.start) right after the engine's own import, so tsc and Bun list while the table
+# loads and the go commands run; they read the tree and write nothing in it.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
 import hashlib
 import os
@@ -664,6 +671,9 @@ with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     import ci_filter_coverage
     ci_filter_coverage.OPENED = opened
+    if os.environ["CI_FILTERS_MODE"] == "generate":
+        import ci_ts_listing
+        ci_ts_listing.start()
     started = time.monotonic()
     try:
         import ci_job_reads

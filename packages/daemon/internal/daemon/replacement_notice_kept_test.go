@@ -109,7 +109,11 @@ func TestAWorkspaceTakenNoticeTheStoreRefusedGoesOutOnceTheStoreTakesIt(t *testi
 
 // wantRoundOpenWhileRefused sweeps roundSweeps times and holds every role of the issue to its
 // round, and the outbox to no workspace-taken notice: the store refuses the notice, and the round
-// ends only once the notice is queued.
+// ends only once the notice is queued. The round's pod is replaced by then, so it then takes the
+// scripted drift back, as the pod that replaced it drifts from nothing
+// (TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds). Left in place, the drift is every
+// claim's, and the first sweep after the round's end that reads a relaunched worker in a pod
+// opens a new round over that pod, which nobody answers, so wantRoundEnded waits for good.
 func (r *podUpdateRig) wantRoundOpenWhileRefused() {
 	r.t.Helper()
 	for range roundSweeps {
@@ -123,6 +127,7 @@ func (r *podUpdateRig) wantRoundOpenWhileRefused() {
 	if told := r.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
 		r.t.Fatalf("the store refused every workspace-taken notice, yet the outbox holds %+v", told)
 	}
+	r.drifts()
 }
 
 // wantRoundEnded sweeps until the implementer and the tester record no round.

@@ -61,7 +61,7 @@ func TestATradeNamesOnlyProjectsItsPersonSeesUnderItsEntry(t *testing.T) {
 	})
 	t.Run("a machine credential and a sign-in carry the asked list", func(t *testing.T) {
 		asked := []string{"OTHER", "PRIV"}
-		machine, err := set.Machine(credentialID, person, "ada-devbox", asked)
+		machine, err := set.Machine(credentialID, person, "ada-devbox", asked, exchange.ApproverUnrestricted)
 		if err != nil || !slices.Equal(machine.Projects, asked) {
 			t.Fatalf("Machine(%v) = %+v, %v; want exactly that list", asked, machine, err)
 		}

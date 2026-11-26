@@ -33,6 +33,12 @@ Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If anoth
 path under its front-matter `supersedes:` key, use that file instead; if one has a line
 `Extends docs/solutions/<hit path>`, read both.
 
+A `docs/solutions/` page that sends the controller a defect, a flake, a notice, a pull request to
+queue or a READY is older than the skills: `skill://legion-worker/references/findings.md` replaces
+its routing of a finding, and `skill://legion-architect/references/operations.md` its merge-queue
+steps. A finder fixes a defect or writes it to its owner, and the controller queues no pull
+request: the architect of its tree enqueues one that no merger merges.
+
 ## Output
 
 Report as `skill://dispatch-first` says, naming `docs/solutions/` and the codebase queries you ran.
