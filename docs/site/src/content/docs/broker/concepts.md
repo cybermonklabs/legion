@@ -1777,25 +1777,35 @@ may decode into a `/` the prefix never saw; `\`, or `%5C` in any case (`path has
 which some servers read as `/`; a segment whose text before its first `;` is `.` or `..`, with
 the `;` sent as it is or as `%3B` and the dots as they are or as `%2E` (`path has a parameter on
 a dot segment`), since Tomcat, Jetty and Spring take a `;` parameter off a segment before they
-resolve it, so `/v1/..;/admin` reads to them as `/admin`; and `%252F`, `%252E` or `%255C` in any
-case in the path as sent (`path has a double-encoded character`), which a server that decodes
-twice reads as `/`, `.` or `\`. Then come the kind's rows (`not allowed by rule`) and the
-profile's (`not allowed by the profile's rule`). After them, still only where one of the two has
-an `allow`, a request that carries `X-HTTP-Method-Override`, `X-HTTP-Method` or
-`X-Method-Override` is refused (`request carries a method override header`), and so is one whose
-query holds a parameter named `_method`, with any value or none (`request carries a method
-override parameter`), because a service that honours one acts on the method it names and not on
-the one the allow read. The proxy reads each parameter's name as the frameworks that honour it do
-(Express, Symfony and Laravel among them): it decodes the name's percent-escapes, with `+` as a
-space, takes off leading spaces, reads `.`, a space and `[` as `_`, and folds ASCII case, so
-`_meth%6Fd`, `%5Fmethod`, `.method` and `+_method` each count as `_method`; a name with a `%` that
-starts no valid escape is refused for the same reason, since what a service makes of it is not
-known. A `_method` field of a form body is not refused: the decision never reads the body, which
-the proxy streams to the service unread, and Rails, Laravel and Symfony honour that field too, so
-a kind whose service does must not count on its `allow` to bound the method of a form post. A kind
-with no `allow` bounds no path or method, so none of these refusals applies to it, and its
-clients' paths pass as they are: `gcloud storage` sends the `/` of an object's name as `%2F`, and
-an S3 key may hold `//`.
+resolve it, so `/v1/..;/admin` reads to them as `/admin`; and a path that, decoded once, still
+holds `%2F`, `%2E`, `%5C` or `%25` in any case (`path has a double-encoded character`). A `%` can
+reach the once-decoded path only from a `%25` in the path as sent, so this reads every spelling a
+server that decodes twice would turn into `/`, `.` or `\` (`%252F`, `%25%32%46` and
+`%25%32%45%25%32%45` among them), and the `%25` catches a server that decodes three times or
+more. Then come the kind's rows (`not allowed by rule`) and the profile's (`not allowed by the
+profile's rule`). After them, still only where one of the two has an `allow`, a request that
+carries `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` is refused (`request
+carries a method override header`), and so is one whose query holds a parameter named `_method`,
+with any value or none (`request carries a method override parameter`), because a service that
+honours one acts on the method it names and not on the one the allow read. The proxy reads the
+query as the frameworks that honour that parameter do (Express, Symfony and Laravel among them),
+and refuses wherever one of them would read `_method`, or more. It splits the query into
+parameters on `&` and on `;`, since a PHP service may be set to split on `;` too. It decodes each
+name's percent-escapes, with `+` as a space, and cuts the name at its first NUL byte, as PHP and
+Symfony do, so `_method%00x` is `_method`. It takes off leading spaces, reads `.`, a space and `[`
+as `_`, and folds ASCII case. PHP reads `.` and a space as `_` too, but drops a name that starts
+with `[`, so reading `[` as `_` refuses a name such as `[method` that PHP would not read at all:
+it refuses more, never less. So `_meth%6Fd`, `%5Fmethod`, `.method`, `+_method` and `_method%00x`
+each count as `_method`, and a name with a `%` that starts no valid escape is refused for the
+same reason, since what a service makes of it is not known. Two forms of `_method` are not
+refused. A `_method` field of a form body: the decision never reads the body, which the proxy
+streams to the service unread, and Rails, Laravel and Symfony honour that field too, so a kind
+whose service does must not count on its `allow` to bound the method of a form post. And
+`_method[]`: PHP makes `$_GET['_method']` an array of it, which Symfony's method override
+ignores, and Express's `methodOverride('_method')` reads no key `_method[]`. A kind with no
+`allow` bounds no path or method, so none of these refusals applies to it, and its clients' paths
+pass as they are: `gcloud storage` sends the `/` of an object's name as `%2F`, and an S3 key may
+hold `//`.
 
 A name's fingerprint is part of what a grant of it was decided under. For a name behind a kind it
 holds the kind and that kind's `allow`, and the secret's `proxy-narrowed` tag; for a profile it
