@@ -95,38 +95,52 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/ciphertoken). A verified caller is the session the
 // token names, acting for the person it names, or, where the broker names none, for the service
-// it names: the fleet of the machine holding it, or the account an operator's entry lists. It is
-// never retried as another credential.
+// it names: the fleet of the machine holding it, the account an operator's entry lists, or a
+// job's identity. It is never retried as another credential. The credential carries the token's
+// project scope and its list as the broker answered them (model.Credential.ProjectScope,
+// Projects), which is what tells the callers that name a service and no person apart.
 //
-// A caller that names a service and no person under the project scope person is a machine nobody
-// has signed in on (`agent-secrets login`). It reads as any session does, and
-// writeNeedsASignedInPerson refuses its every write at the one chokepoint (project_scope.go), so
-// no write is recorded under an empty writer. It holds no OAuth scope either, so the rows a
-// person's own credential reaches turn it away earlier still (gateRouteScopes): there is no
-// person for it to act as.
+// A job's token is one of those: the exchange mints it from a job entry, which names an identity
+// (a pod's Kubernetes service account, a workflow, or a Google account), that identity's projects
+// and no person. Its service is that identity, and its project scope is `named` with the one
+// project its entry names or `public` with its entry's private projects, beside which it reaches
+// every public project. It writes as its session, for its service and under no person:
+// writeNeedsASignedInPerson lets a broker credential naming no person write under those two
+// scopes alone (project_scope.go). A `named` one sets Actor.Project (below), so the project check
+// judges it as it judges a person's named token for that project; a `public` one names no one
+// project, so the project check holds it to none and its writes that belong to the deployment
+// follow the rule of a token naming no project. It holds no OAuth scope, so the rows that need
+// `person` or `approve` turn it away (gateRouteScopes).
 //
-// A caller that names a service and no person under the project scope named is an account
-// entry's that names no person and no project (cipher/exchange's Set.Pod): its service is the
-// account, system:serviceaccount:<namespace>:<name>, and its writes are recorded under that
-// account, as the session the token names acting for that service and for no person
+// A caller that names a service and no person under the project scope named and names no project
+// is an account entry's that names no person and no project (cipher/exchange's Set.Pod): its
+// service is the account, system:serviceaccount:<namespace>:<name>, and its writes are recorded
+// under that account, as the session the token names acting for that service and for no person
 // (model.Actor.Service). writeNeedsASignedInPerson lets it write, since there is somebody to
 // record the write under: the account the operator listed. It holds no OAuth scope, so a route
 // that needs `person` or `approve` refuses it (gateRouteScopes), and it names no project, so it
 // writes wherever Dispatch's own rules let a credential naming none write.
+//
+// A caller that names a service and no person under the project scope person is a machine nobody
+// has signed in on (`agent-secrets login`). It reads as any session does, and
+// writeNeedsASignedInPerson refuses its every write at the one chokepoint, so no write is
+// recorded for a machine nobody stands behind. It holds no OAuth scope either, so the rows a
+// person's own credential reaches turn it away earlier still (gateRouteScopes): there is no
+// person for it to act as.
 //
 // A read-only token writes nothing (ciphertoken.Caller.ReadOnly, which only a verifier built with
 // Options.ServesReadOnly answers). It is the read entry's token, which names a service and no
 // person and holds the scope read alone, or a token narrowed to reading because its trade asked
 // for read, which names the person or the service, and the projects, that the same trade would
 // have named without read: an account entry's naming no person among them, narrowed, names its
-// account and writes nothing, as every read-only token does. Its credential is marked read-only
-// (model.Credential.ReadOnly), with the token's cut (model.Credential.Cut), and
-// refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route outside the read class
-// (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
-// entry's write as its account and everything else the route does. While no build answers a read
-// at a past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
-// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
-// does.
+// account and writes nothing, as every read-only token does. The broker narrows no job's token.
+// Its credential is marked read-only (model.Credential.ReadOnly), with the token's cut
+// (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route
+// outside the read class (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in
+// check, an account entry's write as its account and everything else the route does. While no
+// build answers a read at a past time, it answers one that carries a cut 403
+// AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. On a read it serves, it is the
+// session it names, reading as that session does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //
@@ -196,7 +210,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// proves a session, not that any person stands behind the request. A token that names a
 	// service and no person gets none either, whatever scope the broker answered: there is no
 	// person for it to act as, and a scope that said otherwise would let it act as the session's
-	// own id on the routes that read what belongs to a person.
+	// own id on the routes that read what belongs to a person. A job's token, named or public, is
+	// one of those.
 	//
 	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
 	// token without read would be: one narrowed from a token that acts as its person still acts
@@ -228,11 +243,19 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it, and the actor is Proven. A read-only token
 		// is marked as one, with the cut it reads at, which are what refuseReadOnlyToken reads, and
-		// the project scope is carried as its base word (ciphertoken.Caller.ProjectScope), which is
-		// how writeNeedsASignedInPerson tells an account entry's token naming no person from a
-		// machine's nobody signed in on.
-		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, Cut: caller.Cut, ProjectScope: caller.ProjectScope},
-		Proven:     true,
+		// the project scope and the list are carried as the broker answered them, the scope as its
+		// base word (ciphertoken.Caller.ProjectScope), which is what writeNeedsASignedInPerson
+		// reads of a caller naming a service and no person: a job's token and an account entry's
+		// token naming no person write, and a machine's nobody signed in on does not.
+		Credential: &model.Credential{
+			Scopes:       scopes,
+			Session:      caller.Session,
+			ReadOnly:     caller.ReadOnly,
+			Cut:          caller.Cut,
+			ProjectScope: caller.ProjectScope,
+			Projects:     caller.Projects,
+		},
+		Proven: true,
 	}
 	// A caller names a person or a service, never both and never neither (ciphertoken.Caller),
 	// and the two fields are set from the token alone, never from a body. whoami reports both.
@@ -243,16 +266,21 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		actor.Service = &caller.Service
 	}
 	// Only a token an operator's entry mapped to one project names that project as the one it
-	// may write, which is today's named-scope rule; a named token naming none (the shared
-	// public-session account's, and an account entry's naming no person) writes, as a token
-	// naming no project does, wherever Dispatch's own rules let it, and ciphertoken refuses a
-	// named token naming two. A token narrowed from a named one names its project too, as the
-	// project it reads as, and writes none.
-	// A token acting as its person carries the list
-	// its trade asked for (ciphertoken.Caller.Projects), and that list limits no write here: a
-	// dev box session's person writes wherever they may, and the token of a machine naming a
-	// service and no person names no project at all. Nor does a token of the project scope none,
-	// the read entry's or one narrowed from it, which names no project and writes none.
+	// may write, which is today's named-scope rule, and a job's named token, whose entry names one
+	// project, names it the same way, so the project check judges the two alike; a named token
+	// naming none (the shared public-session account's, and an account entry's naming no person)
+	// writes, as a token naming no project does, wherever Dispatch's own rules let it, and
+	// ciphertoken refuses a named token naming two, and a named token naming no person, no
+	// project and a service that is no account. A token narrowed from a named one names its
+	// project too, as the project it reads as, and writes none.
+	// A token acting as its person carries the list its trade asked for
+	// (ciphertoken.Caller.Projects), and that list limits no write here: a dev box session's
+	// person writes wherever they may, and the token of a machine naming a service and no person
+	// names no project at all. A job's public token names no one project either, so it writes
+	// wherever a token naming no project may: the private projects of its list, which the
+	// credential carries (model.Credential.Projects), limit no write here. Nor does a token of the
+	// project scope none, the read entry's or one narrowed from it, which names no project and
+	// writes none.
 	if oneProject {
 		actor.Credential.NamedProject = caller.Projects[0]
 	}

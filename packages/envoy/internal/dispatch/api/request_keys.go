@@ -120,9 +120,9 @@ const (
 	// spill does, so a keyed 25 MiB upload costs no more memory than an unkeyed one.
 	keyedBodyInMemory = 1 << 20
 	// keyedBodyMax is the largest body an upload route reads: an upload's file and a megabyte of
-	// fields (uploadArtifactFor). The handoff write reads handoffRequestLimit, the markdown round
-	// trip markdownRoundTripLimit, and every other route a JSON body of at most
-	// maxJSONRequestBytes (routeBody).
+	// fields (uploadArtifactFor). The handoff write reads handoffRequestLimit, the inline and the
+	// file round trips markdownRoundTripLimit and fileRoundTripLimit, and every other route a JSON
+	// body of at most maxJSONRequestBytes (routeBody).
 	keyedBodyMax = maxArtifactBlobSize + 1<<20
 	// keyedBookkeeping bounds the layer's work around the handler - the claim before it, and each
 	// statement recording its answer after it - which runs on past a client that went away, since
@@ -499,8 +499,8 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 
 // routeBody is the largest body a route reads and the 413 it answers one past that with: an
 // upload's file and a megabyte of fields (uploadArtifactFor) for an upload route, a handoff
-// write's own limit (handoffRequestLimit) for that one, the markdown round trip's
-// (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
+// write's own limit (handoffRequestLimit) for that one, each round trip's (markdownRoundTripLimit,
+// fileRoundTripLimit) for those two, and a JSON body (decodeJSON) for every other. The
 // limit is the most the keyed layer spools before its handler runs - a body past it is
 // refused whatever its key, so the layer answers the 413 itself rather than spool it - and
 // the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
@@ -513,6 +513,8 @@ func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
 		return handoffRequestLimit, errHandoffTooLarge
 	case route == markdownRoundTripRoute:
 		return markdownRoundTripLimit, errMarkdownRoundTripTooLarge
+	case route == fileRoundTripRoute:
+		return fileRoundTripLimit, errFileRoundTripTooLarge
 	default:
 		return maxJSONRequestBytes, errJSONTooLarge
 	}

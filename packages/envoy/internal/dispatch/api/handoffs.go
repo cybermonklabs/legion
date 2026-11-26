@@ -26,8 +26,8 @@ var handoffPhasePattern = regexp.MustCompile(contracts.HandoffPhasePattern)
 const handoffRequestLimit = 6*contracts.DispatchHandoffBodyMax + 4<<10
 
 // handoffWritePattern is the handoff write's route pattern, and handoffWriteRoute that route:
-// with the markdown round trip, one of the two JSON routes whose body limit is its own rather
-// than maxJSONRequestBytes (routeBody), with errHandoffTooLarge the refusal past it, so the
+// with the two markdown round trips, one of the three JSON routes whose body limit is its own
+// rather than maxJSONRequestBytes (routeBody), with errHandoffTooLarge the refusal past it, so the
 // drain, the keyed layer and createHandoff answer a body too large for it alike.
 const (
 	handoffWritePattern = "/api/v1/issues/{key}/handoffs/{phase}"
