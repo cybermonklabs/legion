@@ -330,7 +330,8 @@ type stepsPrinted struct {
 // attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>`, then, where
 // the record holds a commit, ` at <start|->..<end|->`, and for a fix ` fix of <check>`. startCommit
 // and endCommit are the commits as printed, ten characters or `-` each, and "" on a line with no
-// ` at`; fixOf is the check, the rest of the line, and "" for a run that fixes none.
+// ` at`; fixOf is the check id the column names, read back from either spelling the command
+// prints (stepCheckOf), and "" for a run that fixes none.
 type stepLine struct {
 	text                                 string
 	task, kind, role, typ                string
@@ -343,6 +344,22 @@ type stepLine struct {
 // <start>..<end>`, each commit its first ten characters or `-`, then, for a fix, ` fix of <check>`,
 // the check the rest of the line.
 var stepTailPattern = regexp.MustCompile(`^(?: at ([0-9a-f]{10}|-)\.\.([0-9a-f]{10}|-))?(?: fix of (.+))?$`)
+
+// stepCheckOf is the check id the `fix of` column names, from the two spellings the command
+// prints: a plain word as it stands, and an id that is no plain word as one JSON string, which
+// reads back as the id. A value that opens on a quotation mark and is no JSON string is an
+// error, never an id taken as it stands: a column that read a broken quotation as a check of its
+// own is how text forged inside an id would pass for one.
+func stepCheckOf(printed string) (string, error) {
+	if !strings.HasPrefix(printed, `"`) {
+		return printed, nil
+	}
+	var check string
+	if err := json.Unmarshal([]byte(printed), &check); err != nil {
+		return "", fmt.Errorf("the check %s is no JSON string: %v", printed, err)
+	}
+	return check, nil
+}
 
 // parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
 // tasks`, then exactly n lines of runs.
@@ -357,8 +374,8 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		return printed, fmt.Errorf("the header %q: %v", lines[0], err)
 	}
 	for _, text := range lines[1:] {
-		// steps.ts joins the columns with one space each, and a check may hold a space, so the
-		// twelfth space ends the columns and the rest of the line is what follows the result.
+		// steps.ts joins the columns with one space each, and a check id may hold a space, quoted,
+		// so the twelfth space ends the columns and the rest of the line is what follows the result.
 		fields := strings.SplitN(text, " ", 13)
 		var tail string
 		if len(fields) == 13 {
@@ -376,10 +393,14 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		if err != nil {
 			return printed, fmt.Errorf("the line %q: attempt %v", text, err)
 		}
+		check, err := stepCheckOf(after[3])
+		if err != nil {
+			return printed, fmt.Errorf("the line %q: %v", text, err)
+		}
 		printed.lines = append(printed.lines, stepLine{
 			text: text, task: fields[0], step: step, kind: fields[2], role: fields[3], typ: fields[4], attempt: attempt,
 			agent: fields[7], model: fields[8], started: fields[9], ended: fields[10], result: fields[11],
-			startCommit: after[1], endCommit: after[2], fixOf: after[3],
+			startCommit: after[1], endCommit: after[2], fixOf: check,
 		})
 	}
 	if len(printed.lines) != printed.steps {
@@ -499,10 +520,13 @@ func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
 
 // The driver reads the words steps.ts prints after a run's result: ` at <start>..<end>`, the
 // commits the run's task's head was at when it started and when it ended, each cut to ten
-// characters or `-` where the record holds none yet, and then, for a fix, ` fix of <check>`, the CI
-// check it fixes, which is the rest of the line. A run with neither prints its twelve columns
-// alone. The control is a line with another word after its result, a range with one commit, and a
-// `fix of` with no check: each is no run.
+// characters or `-` where the record holds none yet, and then, for a fix, ` fix of <check>`, the
+// CI check it fixes, which is the rest of the line. The command prints that id in two spellings,
+// and the driver reads the id back from either: as it stands where it is a plain word, which is
+// what every live check id is, and otherwise as one JSON string. A run with neither prints its
+// twelve columns alone. The control is a line with another word after its result, a range with
+// one commit, a `fix of` with no check, and a check that opens on a quotation mark and is no
+// JSON string: each is no run of the command's.
 func TestTheDriverReadsARunsCommitsAndTheCheckItFixes(t *testing.T) {
 	t.Parallel()
 	const key = "SR-1"
@@ -516,7 +540,8 @@ func TestTheDriverReadsARunsCommitsAndTheCheckItFixes(t *testing.T) {
 		}
 		return strings.Join(lines, "\n") + "\n"
 	}
-	out := printed("", " at a1b2c3d4e5..b2c3d4e5f6 fix of k-ci", " at b2c3d4e5f6..-", " fix of k ci: two")
+	out := printed("", " at a1b2c3d4e5..b2c3d4e5f6 fix of k-ci", " at b2c3d4e5f6..-",
+		` fix of "k ci: two"`, ` fix of "k-ci\nforged"`)
 	parsed, err := parseSteps(key, out)
 	if err != nil {
 		t.Fatalf("parse %q: %v", out, err)
@@ -525,7 +550,8 @@ func TestTheDriverReadsARunsCommitsAndTheCheckItFixes(t *testing.T) {
 	for _, line := range parsed.lines {
 		got = append(got, [3]string{line.startCommit, line.endCommit, line.fixOf})
 	}
-	want := [][3]string{{"", "", ""}, {"a1b2c3d4e5", "b2c3d4e5f6", "k-ci"}, {"b2c3d4e5f6", "-", ""}, {"", "", "k ci: two"}}
+	want := [][3]string{{"", "", ""}, {"a1b2c3d4e5", "b2c3d4e5f6", "k-ci"}, {"b2c3d4e5f6", "-", ""},
+		{"", "", "k ci: two"}, {"", "", "k-ci\nforged"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("the commits and checks of %q read as %q, want %q", out, got, want)
 	}
@@ -536,5 +562,10 @@ func TestTheDriverReadsARunsCommitsAndTheCheckItFixes(t *testing.T) {
 		if _, err := parseSteps(key, printed(tail)); err == nil || !strings.Contains(err.Error(), "is no run") {
 			t.Errorf("a run ending %q read as %v, want an error saying the line is no run", tail, err)
 		}
+	}
+	// A value that opens on a quotation mark and is no JSON string is no check: the line fails,
+	// and nothing of it is read as an id of its own.
+	if _, err := parseSteps(key, printed(` fix of "k ci`)); err == nil || !strings.Contains(err.Error(), "is no JSON string") {
+		t.Errorf(`a run ending ' fix of "k ci' read as %v, want an error saying the check is no JSON string`, err)
 	}
 }
