@@ -516,12 +516,21 @@ func AnswerKinds() []string {
 // end (graphstore.CurrentTupleRead), as t.kind, t.to_kind, t.to_id and t.asserted, which the
 // caller's `where asserted` cuts to the facts that stand. A fact of a kind a reader does not read
 // is left by it, as Read leaves one. It is the one reading of the node's answer in SQL, which
-// every statement that reads the answer off the node shares: api's ask reads
-// (askNodeAnswerOf), docs' text routes and writes (askNodeAnswers), the answers a session was
-// delivered (sessionanswers' nodeAnswer) and the replay's check of the answers it serves
-// (loadtest's servedAnswersQuery).
+// every statement that reads the answer off the node shares: api's ask reads (askNodeAnswerOf),
+// docs' text routes and writes (askNodeAnswers), the answers a session was delivered
+// (sessionanswers' nodeAnswer), and the replay's check of the answers it serves, through
+// NodeAnswerTuplesIn (loadtest's servedAnswersQuery).
 func NodeAnswerTuples(id string) string {
-	return graphstore.CurrentTupleRead(
+	return NodeAnswerTuplesIn(`graph_tuples`, id)
+}
+
+// NodeAnswerTuplesIn is NodeAnswerTuples over table, graph_tuples under the name the calling
+// statement gives it (graphstore.CurrentTupleReadIn): the replay's check of the answers it serves
+// reads public.graph_tuples, since every statement of loadtest names the schema of each table it
+// reads (loadtest's servedAnswersQuery). table is a constant of the caller's own text, never a
+// request's value, as id is.
+func NodeAnswerTuplesIn(table, id string) string {
+	return graphstore.CurrentTupleReadIn(table,
 		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
 		`t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+id+` and t.kind in ('`+strings.Join(AnswerKinds(), `', '`)+`')`)
@@ -594,10 +603,9 @@ func (n *NodeAnswer) Read(kind, value string) error {
 // and asks_resolution_state_check): the answer state the node holds, open where it holds none - an
 // ask no settlement has written (Settle); its answer on an answered ask alone, with its words,
 // selection, time and person; and its resolution on a resolved ask alone. The node holds no act
-// (model.AskAnswer.Act), so the answer carries the row's where the row holds the node's own
-// answer, the same person's at the same time, and none otherwise. A row that names no node
-// (Named) is left as it reads, its answer's only record. api's ask reads and docs' text routes
-// both read an ask's answer through it.
+// (model.AskAnswer.Act), so the answer carries the row's where the node holds the row's answer
+// (Gave), and none otherwise. A row that names no node (Named) is left as it reads, its answer's
+// only record. api's ask reads and docs' text routes both read an ask's answer through it.
 func (n NodeAnswer) ApplyTo(ask *model.Ask) {
 	if !n.Named {
 		return
@@ -613,11 +621,22 @@ func (n NodeAnswer) ApplyTo(ask *model.Ask) {
 		if n.AnsweredAt != nil {
 			answer.At = *n.AnsweredAt
 		}
-		if row != nil && row.At.Equal(answer.At) && model.CanonicalLogin(row.User) == answer.User {
+		if row != nil && n.Gave(*row) {
 			answer.Act = row.Act
 		}
 		ask.Answer = answer
 	case StateResolved:
 		ask.Resolution = n.Resolution
 	}
+}
+
+// Gave reports whether the node holds answer, an answer an ask's row holds: the node holds an
+// answered time equal to answer's, and its answered_by names the person node Settle points
+// answered_by at for answer (AnswererOf), none for a person the store cannot key. It is the one
+// test of whether the node holds a row's answer, so every reader that asks it applies one rule to
+// the login: ApplyTo, which carries the row's act onto the node's answer where it holds, and docs'
+// writes on a fleet of one build, which keep the row where an answered row's node does not hold its
+// answer (keptFromItsNode).
+func (n NodeAnswer) Gave(answer model.AskAnswer) bool {
+	return n.AnsweredAt != nil && n.AnsweredAt.Equal(answer.At) && n.AnsweredBy == AnswererOf(answer)
 }

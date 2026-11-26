@@ -345,15 +345,17 @@ func approvalOrigin(ctx context.Context, tx pgx.Tx, artifactID string, newest mo
 
 // asksAgreeWithTheirNodes reports whether tree, a version, holds an ask block (held), and whether
 // each agrees with its node: a block the row of artifactID indexes agrees with that row and with
-// its ask's node as the transaction reads it (askAgreesWithItsNode, askNodeAnswers), and a block
-// no row of this document indexes is a copy of an ask on another document of its owner
-// (readBlockAsks, settlement's own classification) that agrees with its source and its source's
-// node (copyAgreesWithItsSource). A version holding no ask block agrees; one holding a block id
-// twice, which settlement reads no block under (askNodes), or a block neither indexed nor a copy -
-// one forged on the socket, or one whose update the room has not credited yet - does not, and
-// leaves its decisions unknown to every carry rule. The rows, the sources and their nodes are read
-// only for a version holding an ask block, and the owner only for one holding a block no row
-// indexes; the carry opens no ask from what it reads, so it takes no copy lock.
+// its ask's node as the transaction reads it (askAgreesWithItsNode, askNodeAnswers), or with the
+// row alone where the row names no node, its answer's only record (onItsNode), and a block no row
+// of this document indexes is a copy of an ask on another document of its owner (readBlockAsks,
+// settlement's own classification) that agrees with its source and its source's node, or its
+// source's row where that row names none (copyAgreesWithItsSource). A version holding no ask block
+// agrees; one holding a block id twice, which settlement reads no block under (askNodes), or a
+// block neither indexed nor a copy - one forged on the socket, or one whose update the room has not
+// credited yet - does not, and leaves its decisions unknown to every carry rule. The rows, the
+// sources and their nodes are read only for a version holding an ask block, and the owner only for
+// one holding a block no row indexes; the carry opens no ask from what it reads, so it takes no
+// copy lock.
 func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (held, agrees bool, err error) {
 	nodes, readable := askNodes(tree)
 	if !readable || len(nodes) == 0 {

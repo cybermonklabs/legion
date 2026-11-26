@@ -69,9 +69,10 @@ func answerDigest(state, user string, selected []string, text *string) string {
 // its answer as its node holds them, as every read of an ask shows them (api's
 // askNodeAnswerColumn): each value and relation of its answer that stands on the node where the
 // row names one - the newest tuple of each, while it asserts, read as every statement that reads
-// the answer off the node reads it (asks.NodeAnswerTuples, from public's table: publicTuples) -
-// and open where the node holds no state; the row's own state and answer where the row names no
-// node.
+// the answer off the node reads it, from public's table (asks.NodeAnswerTuplesIn), since every
+// statement of this package names the schema of each Dispatch table it reads, as a schema named
+// as the database's login shadows public for every unqualified name (dispatch://INFRA-988) - and
+// open where the node holds no state; the row's own state and answer where the row names no node.
 var servedAnswersQuery = `
 select a.block_id,
        case when a.node_kind is null then a.state else coalesce(f.state, 'open') end,
@@ -84,24 +85,10 @@ select a.block_id,
            max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswer + `') as answer,
            max(n.to_id) filter (where n.kind = '` + graphstore.TupleSelected + `') as selected,
            max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredBy + `') as answered_by
-      from (` + publicTuples(asks.NodeAnswerTuples(`a.id::text`)) + `) n
+      from (` + asks.NodeAnswerTuplesIn(`public.graph_tuples`, `a.id::text`) + `) n
      where n.asserted
   ) f
  where a.block_artifact_id = $1 and a.block_id is not null`
-
-// publicTuples is read, a read of graph_tuples as the store's one reading of the log writes it
-// (graphstore.CurrentTupleRead), with the table named under its schema, public: every statement
-// of this package names the schema of each Dispatch table it reads, since a schema named as the
-// database's login shadows public for every unqualified name (dispatch://INFRA-988), and the
-// store's reading names none. A read that does not name the table once in that form is one this
-// cannot qualify, and the program fails as it starts rather than read the shadow.
-func publicTuples(read string) string {
-	const unqualified = "from graph_tuples t"
-	if strings.Count(read, unqualified) != 1 {
-		panic("loadtest: the store's reading of the log does not read `" + unqualified + "` once, so its schema cannot be named")
-	}
-	return strings.Replace(read, unqualified, "from public.graph_tuples t", 1)
-}
 
 // servedAnswers is the served answer of the ask of each typed ask block of the local document
 // local, by block id (servedAnswersQuery).

@@ -243,9 +243,9 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 		for index := range entries {
 			id := entries[index].BlockID
 			if ask, held := indexed[id]; held {
-				entries[index] = textAskOf(id, shown(ask), "", "")
+				entries[index] = textAskOf(id, shown(ask), "")
 			} else if source, copied := sources[id]; copied {
-				entries[index] = textAskOf(id, shown(source.ask), source.ask.ID, source.document)
+				entries[index] = textAskOf(id, shown(source.ask), source.document)
 			} else if closed && parsed[id] {
 				// A readable block no ask indexes on a closed issue's document opens no ask until
 				// the issue reopens (reconcileAskBlocks), and the close withdrew every ask of the
@@ -289,7 +289,7 @@ var askNodeAnswersQuery = `
 // reads them (api's askNodeAnswerColumn). An ask whose row names no node - one a process of the
 // release before wrote, until the boot step's backfill marks it, or one whose relations are past
 // the store's bound (graphstore.AskFacts) - is absent, and reads as its row holds it, its answer's
-// only record (asks.NodeAnswer.ApplyTo, keptFromItsNode); an ask whose node holds no answer_state
+// only record (asks.NodeAnswer.ApplyTo, onItsNode); an ask whose node holds no answer_state
 // - one this build opened, or one a process of the release before answered, before the decisions
 // step states it - reads open (asks.NodeAnswer.ApplyTo). An ask whose answer state the ledger
 // that queues tx's writes has planned a change of (Ledger.PlanSettle) - a reopen's restore,
@@ -362,14 +362,14 @@ func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
 }
 
 // textAskOf is the entry of the ask block blockID whose ask is ask, or, for a copy, whose source,
-// the ask source on the document whose address is copied, is, as every read of an ask shows it
+// the ask on the document whose address is copied, is ask, as every read of an ask shows it
 // (asks.NodeAnswer.ApplyTo): under the names the roll window writes into the block while another
 // build serves (rollWindowAskWrite) - the state; who answered, when, the options chosen (never a
-// nil list) and the words, for an answered ask; and for a copy, the source ask and its document.
-func textAskOf(blockID string, ask model.Ask, source, copied string) model.TextAsk {
+// nil list) and the words, for an answered ask; and for a copy, ask's id and its document.
+func textAskOf(blockID string, ask model.Ask, copied string) model.TextAsk {
 	entry := model.TextAsk{BlockID: blockID, State: ask.State}
 	if copied != "" {
-		entry.CopiedFrom, entry.CopiedFromDocument = source, copied
+		entry.CopiedFrom, entry.CopiedFromDocument = ask.ID, copied
 	}
 	if answer := ask.Answer; entry.State == asks.StateAnswered && answer != nil {
 		selected := append([]string{}, answer.Selected...)
