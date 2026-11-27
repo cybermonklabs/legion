@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -90,29 +91,23 @@ func (h *harness) waitForRequest(after uint64) contracts.CIVerifyRequest {
 // waitForRequestOf is waitForRequest for the head at sha.
 func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	return testwait.Until(h.t, "a verify request past the head's previous revision", func() (contracts.CIVerifyRequest, bool) {
 		for _, request := range h.requests() {
 			if request.Head.SHA == sha && request.Revision > after {
-				return request
+				return request, true
 			}
 		}
-	}
-	h.t.Fatalf("the listener wrote no verify request of the head at %s past revision %d", sha, after)
-	return contracts.CIVerifyRequest{}
+		return contracts.CIVerifyRequest{}, false
+	})
 }
 
 // waitForState polls the head's record until done holds of it.
 func (h *harness) waitForState(why string, done func(cistore.State) bool) cistore.State {
 	h.t.Helper()
-	var state cistore.State
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		var ok bool
-		if state, _, ok = h.record(); ok && done(state) {
-			return state
-		}
-	}
-	h.t.Fatalf("%s: the record is %+v", why, state)
-	return state
+	return testwait.Until(h.t, why, func() (cistore.State, bool) {
+		state, _, ok := h.record()
+		return state, ok && done(state)
+	})
 }
 
 // The listener could not write the creation of a queued run (it answered GitHub 503), and then

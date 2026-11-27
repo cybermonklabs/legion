@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A head whose checks reached the listener through no webhook at all settles after one pass: the
@@ -937,14 +938,10 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 				defer close(done)
 				h.reconciler.Pass(ctx)
 			}()
-			for until := time.Now().Add(20 * time.Second); h.github.countPath("/repos/"+rowRepository) == 0; {
-				if time.Now().After(until) {
-					cancel()
-					<-done
-					h.t.Fatalf("the pass never asked GitHub about the repository:\n%s", h.logs.String())
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			testwait.Until(h.t, "the pass's GitHub repository request before cancellation", func() (int, bool) {
+				count := h.github.countPath("/repos/" + rowRepository)
+				return count, count != 0
+			})
 			cancel()
 			<-done
 		},

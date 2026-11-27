@@ -775,9 +775,9 @@ resolver tests that replace the default logger.
 
 `internal/dispatch/cireconcile` also runs 4 at once through `storetest.SetDefaultParallel`.
 Each harness has its own database, GitHub stand-in and NATS account on the package's shared
-server. Tests of a pass ending on its bound move a `clocktest.Fake` through the reconciler's
-unexported bound hook, which checks the configured `PassTimeout` and preserves
-`context.DeadlineExceeded`. Outside the pacing tests, one deadline control keeps the real timer.
+server. Tests of a pass ending on its bound give the reconciler a `clocktest.Fake` through its
+unexported `clock.Clock` field. The harness's clock wrapper checks the configured `PassTimeout`;
+the fake preserves `context.DeadlineExceeded`. Outside the pacing tests, one deadline control keeps the real timer.
 Pacing tests also retain real pass bounds. They and the settlement quiet-window tests stay
 serial, with a comment naming the wall-clock span.
 

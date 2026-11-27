@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The record each pass leaves in ci_reconcile_passes, and the reading of it the API answers
@@ -145,39 +146,29 @@ func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (
 // to wait on but the row.
 func waitForPass(t *testing.T, pool *store.Pool, id int64, want PassState) PassRecord {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	var last []PassRecord
-	for time.Now().Before(deadline) {
-		last = recent(t, pool)
-		for _, pass := range last {
+	return testwait.Until(t, "the pass row in its expected state", func() (PassRecord, bool) {
+		for _, pass := range recent(t, pool) {
 			if pass.ID == id && pass.State == want {
-				return pass
+				return pass, true
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("pass %d never read as %q: %+v", id, want, last)
-	return PassRecord{}
+		return PassRecord{}, false
+	})
 }
 
 // waitForRow polls until the table holds a pass of this instance with no end time, which is the
 // row a pass writes when it starts, and answers its id.
 func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	ctx := testwait.Context(t)
+	return testwait.Until(t, "the instance's open pass row", func() (int64, bool) {
 		var id int64
-		err := pool.QueryRow(t.Context(), `
+		err := pool.QueryRow(ctx, `
 			select id from ci_reconcile_passes where instance = $1 and ended_at is null
 			order by started_at desc, id desc limit 1
 		`, instance).Scan(&id)
-		if err == nil {
-			return id
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("no open pass row of %s was written", instance)
-	return 0
+		return id, err == nil
+	})
 }
 
 // A pass that is still reading GitHub reads as running: its row has no end time, its process is
@@ -195,9 +186,8 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	// GitHub never answers the second page and the pass's bound is the test's (boundByTheTest),
-	// so the pass is running for as long as the test reads its row, and ends when the test ends
-	// its bound.
+	// The pass stays open until the test ends its fake deadline, or GitHub's real 20 s request
+	// timeout ends the held second-page read. The row reads below occur inside that window.
 	h.reconciler.PassTimeout = 10 * time.Second
 	h.boundByTheTest()
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)

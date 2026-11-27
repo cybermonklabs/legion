@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // head is one open pull request of the harness's repository as the tests below give it: pull
@@ -539,6 +540,7 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 // context; the write is given whatever context the client chose for it.
 type boundRecordLimits struct {
 	githubapp.Limits
+	t     *testing.T
 	falls func()
 	mu    sync.Mutex
 	pass  context.Context
@@ -559,7 +561,7 @@ func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.
 		if l.falls != nil {
 			l.falls()
 		}
-		<-pass.Done()
+		testwait.Receive(l.t, "the pass deadline inside the rate-limit write", pass.Done())
 	}
 	return l.Limits.Record(ctx, scope, wait)
 }
@@ -578,7 +580,7 @@ func TestALimitAnsweredAsTheBoundFallsIsALimit(t *testing.T) {
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.PassTimeout = 2 * time.Second
 	h.boundByTheTest()
-	h.reconciler.GitHub = h.github.client(&boundRecordLimits{Limits: ratelimit.New(h.pool), falls: h.endBound})
+	h.reconciler.GitHub = h.github.client(&boundRecordLimits{Limits: ratelimit.New(h.pool), t: t, falls: h.endBound})
 	h.github.rateLimitNext(suitesOf(head(8)))
 
 	h.pass()

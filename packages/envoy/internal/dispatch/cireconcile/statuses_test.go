@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // todaysHeadsQuery is the query a pass sent every repository before it read commit statuses,
@@ -116,16 +117,10 @@ func statesOf(state *cistore.State) map[string]string {
 // on the second.
 func (h *harness) settlementNaming(sub *nats.Subscription, why string, want []cistore.StatusRef) cistore.Summary {
 	h.t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
+	return testwait.Until(h.t, why+": the settlement naming the expected statuses", func() (cistore.Summary, bool) {
 		settled := h.settlement(sub, why)
-		if slices.Equal(settled.Statuses, want) {
-			return settled
-		}
-		if time.Now().After(deadline) {
-			h.t.Fatalf("%s: the last settlement names statuses %v, want %v", why, settled.Statuses, want)
-		}
-	}
+		return settled, slices.Equal(settled.Statuses, want)
+	})
 }
 
 // requestsFor is every request since index from whose URL names the commit sha, oldest first,

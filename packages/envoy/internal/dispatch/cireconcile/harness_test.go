@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -185,23 +186,23 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 	}
 }
 
-// boundByTheTest puts this harness's passes under a bound the test ends (endBound) where the wall
-// clock would end PassTimeout's: the Reconciler's bound (Reconciler.bound) is a deadline
-// PassTimeout ahead on a fake clock, which moves only when the test ends it. Its end is the end
-// PassTimeout's passing makes -- the pass's context, and every context made from it, reports
-// context.DeadlineExceeded -- at the moment the test is about, so the load of the tests beside
-// it can end a pass neither sooner nor later than that. A pass the test never ends is bound and
-// never cut short, as a pass that finishes inside its bound is.
-//
-// A pass that puts a bound on itself other than its PassTimeout fails the test.
+// boundByTheTest gives the pass a fake clock. The test ends its deadline at a held read or write,
+// and checkedPassClock checks that production requested the configured PassTimeout.
 func (h *harness) boundByTheTest() {
 	h.bound = clocktest.New(time.Now())
-	h.reconciler.bound = func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-		if want := h.reconciler.PassTimeout; timeout != want {
-			h.t.Errorf("the pass bound itself at %s, want its PassTimeout, %s", timeout, want)
-		}
-		return h.bound.WithTimeout(ctx, timeout)
+	h.reconciler.passClock = checkedPassClock{Clock: h.bound, h: h}
+}
+
+type checkedPassClock struct {
+	clock.Clock
+	h *harness
+}
+
+func (c checkedPassClock) WithTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if want := c.h.reconciler.PassTimeout; timeout != want {
+		c.h.t.Errorf("the pass bound itself at %s, want its PassTimeout, %s", timeout, want)
 	}
+	return c.Clock.WithTimeout(ctx, timeout)
 }
 
 // boundEndsAtTheStall is boundByTheTest with the bound ended at the moment GitHub begins holding
@@ -275,9 +276,7 @@ func (h *harness) startListener() {
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
-	ready, cancelReady := context.WithTimeout(h.ctx, 10*time.Second)
-	defer cancelReady()
-	if err := listener.WaitForCacheReady(ready); err != nil {
+	if err := listener.WaitForCacheReady(testwait.Context(h.t)); err != nil {
 		h.t.Fatalf("the listener's cache is not ready: %v", err)
 	}
 	loop, endLoop := context.WithCancel(h.ctx)
@@ -432,7 +431,7 @@ func (h *harness) subscribe() *nats.Subscription {
 // settlement is the next settlement published for the head, which must arrive.
 func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary {
 	h.t.Helper()
-	message, err := sub.NextMsg(15 * time.Second)
+	message, err := sub.NextMsgWithContext(testwait.Context(h.t))
 	if err != nil {
 		h.t.Fatalf("%s: no settlement was published: %v", why, err)
 	}
@@ -465,15 +464,12 @@ func (h *harness) settledRecord() (cistore.State, uint64) {
 	h.t.Helper()
 	var state cistore.State
 	var revision uint64
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+	testwait.Until(h.t, "the head's settled record with a stable revision", func() (cistore.State, bool) {
 		next, nextRevision, ok := h.record()
-		if ok && next.SettledEmitted && next.Claim == nil && nextRevision == revision {
-			return next, revision
-		}
+		settled := ok && next.SettledEmitted && next.Claim == nil && nextRevision == revision
 		state, revision = next, nextRevision
-		time.Sleep(50 * time.Millisecond)
-	}
-	h.t.Fatalf("the head's record did not settle: %+v", state)
+		return next, settled
+	})
 	return state, revision
 }
 

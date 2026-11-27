@@ -95,6 +95,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -201,9 +202,8 @@ type Reconciler struct {
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
 	now func() time.Time
-	// bound is the pass deadline constructor. Nil uses context.WithTimeout; tests can end
-	// a clocktest deadline at a held read or write without waiting PassTimeout out.
-	bound func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc)
+	// passClock owns pass deadlines. Nil uses clock.Real; tests give it a clocktest.Fake.
+	passClock clock.Clock
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which an old name and the name it was renamed to share as one entry:
@@ -349,12 +349,11 @@ func (r *Reconciler) clock() time.Time {
 	return time.Now()
 }
 
-// withBound is ctx with the pass's own bound of timeout on it (Reconciler.bound).
-func (r *Reconciler) withBound(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if r.bound != nil {
-		return r.bound(ctx, timeout)
+func (r *Reconciler) deadlineClock() clock.Clock {
+	if r.passClock != nil {
+		return r.passClock
 	}
-	return context.WithTimeout(ctx, timeout)
+	return clock.Real()
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the
