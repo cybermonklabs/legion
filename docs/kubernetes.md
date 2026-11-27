@@ -1062,8 +1062,8 @@ the loader gives both the same line and its reason (`readSessionStore`, `interna
 runtime.kubernetes.session_store must name a store that keeps sessions in a database, and is
 required (INFRA-80): an issue pod's disk is the pod's own ephemeral volume, deleted with the pod,
 so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it,
-the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three
-such failures retire the claim
+and the next launch finds no session to resume, so the claim starts a fresh agent without that
+conversation (internal/supervise's startFresh)
 ```
 
 There is no silent default, because a default would be a deployment that boots and then loses every conversation at the first pod replacement.
@@ -1275,8 +1275,9 @@ give it no rights beyond the database of those two tables, and treat its URL as 
 A resume is held to the table, and to nothing on a disk.
 A role's launcher looks the recorded session up in the table before it starts the child (`internal/launcher`, `resumable`, `sessionWritten`)
 — under `postgres` through the same URL file the child will read, and under `cloudsql-iam` through its own pgx client over the socket its proxy has just bound and proven, which is that generation's own (`Endpoint.ClientURL`)
-— and refuses the start when the table holds no such session (`resume session <path>: the session table holds no such session`):
-a launch failure, never a fresh agent, and three of them retire the claim.
+— and refuses the start when the table holds no such session (`resume session <path>: the session table holds no such session`).
+The daemon reads that refusal as `runtime.ErrSessionFileMissing` (`startRefusal`, `internal/runtime/sandbox/launcher.go`), forgets the session and starts a fresh agent in the same try, charged nothing (`startFresh` and `SessionLossGone`, `internal/supervise/machine.go`);
+the loss is posted on the issue and told to its architect and to the new agent, as [Cutting over an instance from tmux to pods](#cutting-over-an-instance-from-tmux-to-pods) says.
 A database it cannot reach is asked again with a backoff (half a second, doubling to four seconds) for up to 30 seconds
 — under `postgres` the URL file read afresh each time, since that file is a projection something else may replace — and only then refuses the start.
 Neither `workspace-init` looks for a session file, and neither is told to expect one: there is no disk on which a session could be waiting.
@@ -1337,7 +1338,7 @@ So a link, a fifo or anything else that is no regular file at one of those paths
 a resume over it fails, and a save is tried again at the next save.
 Then Claude Code starts.
 On a fresh session the launcher writes `<transcript>.legion-saved` beside the transcript once its first save has committed, and the claim boot of claude-envoy waits for that file as well as the transcript before it registers the session.
-A transcript the daemon has recorded is then always in the table: otherwise the next pod's resume would be refused, and three refusals retire the claim.
+A transcript the daemon has recorded is then always in the table: otherwise the next pod's resume finds no session, and the claim starts a fresh agent that has lost the conversation.
 After Claude Code exits, the launcher makes one last save before the generation's proxy closes.
 Its deadline is the stop's grace less the proxy's 1 s drain.
 This save is best effort: at the 9 s floor of `worker_stop_timeout_seconds`, a worker that spends its whole 5 s agent grace can leave it no time.

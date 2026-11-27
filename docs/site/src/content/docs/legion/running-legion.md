@@ -872,10 +872,10 @@ What each part is for:
   in the same section lists what a deployment makes true for it, and the order to turn it on.
   Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store of
   earlier releases, are refused with the same line and its reason: an issue pod's disk is deleted
-  with the pod, so a conversation kept as a file on it dies with the pod and the next launch's
-  resume fails on the missing file, retiring the claim after three failures. A kept volume does
-  not change this: a reset or a suspension of the issue deletes that volume. Name the store and
-  its key, and have the database reachable from the pods, before the daemon boots.
+  with the pod, so a conversation kept as a file on it dies with the pod, and the next launch
+  finds no session to resume, so the claim starts a fresh agent without that conversation. A kept
+  volume does not change this: a reset or a suspension of the issue deletes that volume. Name the
+  store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
