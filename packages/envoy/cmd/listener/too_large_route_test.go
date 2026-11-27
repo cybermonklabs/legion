@@ -83,60 +83,28 @@ func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 	return before
 }
 
-// headerBandText is a message for POST /v1/messages/publish on topic under idempotency key key
-// whose envelope, as the route builds it, is within the server's max payload by itself, and past
-// it by one byte with the Nats-Msg-Id header its publish carries: the band in which only a size
-// check that counts the header refuses it before the publish.
-func headerBandText(t *testing.T, topic, key string, maxPayload int) string {
+// storedSize is what the route's stored publish of item holds against the server's max payload:
+// its encoding and the Nats-Msg-Id header it is stored under, the dedupe key and the topic
+// (bus.ForwardMsgID), which a minted key earns.
+func storedSize(t *testing.T, item contracts.Envelope) int {
 	t.Helper()
-	dedupeKey := publishDedupePrefix + key
-	envelopeSize := func(text string) int {
-		item := contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", Message: text}, contracts.ExpectsReplyUnset), topic, dedupeKey)
-		encoded, err := json.Marshal(item)
-		if err != nil {
-			t.Fatalf("encode the envelope: %v", err)
-		}
-		return len(encoded)
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("encode the envelope: %v", err)
 	}
-	header := (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(dedupeKey, topic)}}}).Size()
-	// A text past the summary's 160 runes is the envelope's payload whole, so each further 'm' adds
-	// one byte to the envelope, and its ids and issue time have a fixed width.
-	const base = 1000
-	text := strings.Repeat("m", base+(maxPayload+1-header)-envelopeSize(strings.Repeat("m", base)))
-	if size := envelopeSize(text); size > maxPayload || size+header != maxPayload+1 {
-		t.Fatalf("UNKNOWN: the envelope takes %d bytes and its header %d against the max payload of %d: the row wants the envelope within it and the message one byte past it", size, header, maxPayload)
-	}
-	return text
+	return len(encoded) + (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(item.DedupeKey, item.Topic)}}}).Size()
 }
 
-// stampBandText is a message for POST /v1/messages/publish on topic from sender, under idempotency
-// key key, whose envelope with the Nats-Msg-Id header its publish carries is within the server's
-// max payload, and one byte past it once the route adds sender's own stamp (senderStamp): the band
-// the route's check does not cover, which the publish's own check of the same rule refuses. The
-// stamp is read through the route's own function, so a stamp that gains a field moves this row
-// with it.
-func stampBandText(t *testing.T, rig *knownSessionRig, topic, sender, key string, maxPayload int) string {
+// bandText is a text of 'm's whose message, as size measures it, takes exactly want bytes. Past the
+// summary's 160 runes a text is the envelope's payload whole, and the envelope's ids and issue time
+// have a fixed width, so each further 'm' adds one byte; size is a row's own measure of the
+// message it sends, under the idempotency key it sends.
+func bandText(t *testing.T, size func(text string) int, want int) string {
 	t.Helper()
-	stamp := senderStamp(context.Background(), rig.deps.registry, rig.deps.sessions, sender)
-	if stamp == nil {
-		t.Fatalf("UNKNOWN: %s has no sender stamp, so this row's band is empty", sender)
-	}
-	dedupeKey := publishDedupePrefix + key
-	size := func(text string, with *contracts.EnvelopeSender) int {
-		item := contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{
-			Source: "agent", SourceSession: sender, Message: text,
-		}, contracts.ExpectsReplyUnset), topic, dedupeKey)
-		item.Sender = with
-		encoded, err := json.Marshal(item)
-		if err != nil {
-			t.Fatalf("encode the envelope: %v", err)
-		}
-		return len(encoded) + (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(dedupeKey, topic)}}}).Size()
-	}
 	const base = 1000
-	text := strings.Repeat("m", base+(maxPayload+1)-size(strings.Repeat("m", base), stamp))
-	if bare, stamped := size(text, nil), size(text, stamp); bare > maxPayload || stamped != maxPayload+1 {
-		t.Fatalf("UNKNOWN: the message takes %d bytes without the stamp and %d with it, against the max payload of %d: the row wants it within the bound without the stamp and one byte past it with", bare, stamped, maxPayload)
+	text := strings.Repeat("m", base+want-size(strings.Repeat("m", base)))
+	if got := size(text); got != want {
+		t.Fatalf("UNKNOWN: the solved text's message takes %d bytes, want %d", got, want)
 	}
 	return text
 }
@@ -163,6 +131,16 @@ func stampBandText(t *testing.T, rig *knownSessionRig, topic, sender, key string
 // and a live deadline, each published, which the same watch sees, so a watch that could not see
 // a send cannot pass the refusals; and a small publish from the limited sender after the refusal,
 // which is the 429, so the limited row's count was empty when its 413 came.
+//
+// The band the route's check leaves is a message within the bound until the route adds its sender
+// stamp (senderStamp). A publish of one is 413 whatever is left of its deadline, refused by the
+// publish's own check before that reads its context. A send of one to a stopped session, under a
+// live deadline, is 413 only after the route's own work for it: the watch must see the session read
+// and the wake report, which show the message passed the route's check, and nothing on the
+// target's subjects, which shows the publish sent nothing. Each band message is sized, under the
+// idempotency key its request sends, to be within the bound without the stamp and one byte past it
+// with, so a message outside the band fails the row: a smaller one is published, a larger one is
+// refused before the route's reads.
 func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing.T) {
 	t.Parallel()
 	rig := newQuietKnownSessionRig(t)
@@ -235,7 +213,16 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	oversized := strings.Repeat("m", 2<<20)
-	band := headerBandText(t, topic, id.New(), maxPayload)
+	// The header band: an envelope within the bound by itself and one byte past it with the
+	// Nats-Msg-Id header its publish carries, under the key the request sends.
+	headerKey := id.New()
+	headerEnvelope := func(text string) contracts.Envelope {
+		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", Message: text}, contracts.ExpectsReplyUnset), topic, publishDedupePrefix+headerKey)
+	}
+	band := bandText(t, func(text string) int { return storedSize(t, headerEnvelope(text)) }, maxPayload+1)
+	if encoded, err := json.Marshal(headerEnvelope(band)); err != nil || len(encoded) > maxPayload {
+		t.Fatalf("UNKNOWN: the header band's envelope takes %d bytes by itself (%v), want it within the max payload of %d", len(encoded), err, maxPayload)
+	}
 	for _, deadline := range []struct {
 		name string
 		ctx  context.Context
@@ -249,7 +236,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 			{"a send to a live session", "/v1/messages/send", map[string]string{"target_session": live, "message": oversized}},
 			{"a send to a stopped session", "/v1/messages/send", map[string]string{"target_session": stopped, "message": oversized}},
 			{"a send to a session neither store knows", "/v1/messages/send", map[string]string{"target_session": unknown, "message": oversized}},
-			{"a publish within the bound but for its header", "/v1/messages/publish", map[string]string{"topic": topic, "message": band, "idempotency_key": id.New()}},
+			{"a publish within the bound but for its header", "/v1/messages/publish", map[string]string{"topic": topic, "message": band, "idempotency_key": headerKey}},
 		} {
 			refused(row.name+", "+deadline.name, request(deadline.ctx, row.path, row.body))
 		}
@@ -266,28 +253,66 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	}
 	watch.through(t, conn)
 
-	// The band the route's check does not cover: a message within the bound until the route adds
-	// its sender stamp. The publish route answers it 413 whatever is left of its deadline, because
-	// the publish makes the same size check before it reads that deadline; the send route reads
-	// its target first, so with the deadline spent that read answers, which is what the changelog
-	// and docs/architecture.md say of this band.
-	stampBand := stampBandText(t, rig, topic, live, id.New(), maxPayload)
+	stamp := senderStamp(context.Background(), rig.deps.registry, rig.deps.sessions, live)
+	if stamp == nil {
+		t.Fatalf("UNKNOWN: %s has no sender stamp, so the stamp band is empty", live)
+	}
+	// stampBand is a text whose envelope, as build makes it under key, is within the bound without
+	// the stamp and one byte past it with.
+	stampBand := func(name string, build func(text string) contracts.Envelope) string {
+		t.Helper()
+		stamped := func(text string) contracts.Envelope {
+			item := build(text)
+			item.Sender = stamp
+			return item
+		}
+		text := bandText(t, func(text string) int { return storedSize(t, stamped(text)) }, maxPayload+1)
+		if bare := storedSize(t, build(text)); bare > maxPayload {
+			t.Fatalf("UNKNOWN: %s takes %d bytes without the stamp, want it within the max payload of %d", name, bare, maxPayload)
+		}
+		return text
+	}
+	publishKey := id.New()
+	publishBand := stampBand("the publish's band message", func(text string) contracts.Envelope {
+		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", SourceSession: live, Message: text}, contracts.ExpectsReplyUnset), topic, publishDedupePrefix+publishKey)
+	})
 	for _, deadline := range []struct {
 		name string
 		ctx  context.Context
 	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
 		recorder := request(deadline.ctx, "/v1/messages/publish", map[string]string{
-			"topic": topic, "message": stampBand, "source_session": live, "idempotency_key": id.New(),
+			"topic": topic, "message": publishBand, "source_session": live, "idempotency_key": publishKey,
 		})
 		refused("a publish over the bound only with the sender stamp, "+deadline.name, recorder)
 	}
-	sendBand := request(spent, "/v1/messages/send", map[string]string{
-		"target_session": stopped, "message": stampBand, "source_session": live,
+
+	sendKey := id.New()
+	sendBand := stampBand("the send's band message", func(text string) contracts.Envelope {
+		return contracts.AgentSendEnvelope(stopped, sendKey, listenerMessage(listenerwire.MessageBody{Source: "agent", SourceSession: live, Message: text}, contracts.ExpectsReplyUnset))
 	})
-	if sendBand.Code != http.StatusServiceUnavailable {
-		t.Errorf("a send over the bound only with the sender stamp, its deadline spent: status = %d, want the 503 of the target read that answers first; body = %.300s", sendBand.Code, sendBand.Body.String())
+	const sendBandName = "a send to a stopped session over the bound only with the sender stamp, its deadline live"
+	recorder := request(context.Background(), "/v1/messages/send", map[string]string{
+		"target_session": stopped, "message": sendBand, "source_session": live, "idempotency_key": sendKey,
+	})
+	if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), "max payload of 1048576 bytes") {
+		t.Errorf("%s: status = %d, want 413 naming the server's max payload; body = %.300s", sendBandName, recorder.Code, recorder.Body.String())
 	}
-	watch.through(t, conn)
+	if retry := recorder.Header().Get("Retry-After"); retry != "" {
+		t.Errorf("%s carries Retry-After %q", sendBandName, retry)
+	}
+	// The wake report this send raised is published once its slot is given back
+	// (wakeReporter.report), so the watch below sees it.
+	testwait.Eventually(t, "the band send's wake report to be published", func() bool { return len(rig.deps.wakes.slots) == 0 })
+	sent := watch.through(t, conn)
+	readSession := slices.ContainsFunc(sent, func(subject string) bool { return strings.Contains(subject, "KV_"+bus.SessionBucket) })
+	if !readSession || !slices.Contains(sent, bus.LegionWakeTopic) {
+		t.Errorf("%s sent %v while the route ran, want the session read and the wake report: without them the 413 is the route's own check, and the message is not in the band", sendBandName, sent)
+	}
+	for _, subject := range []string{contracts.LegacyAgentSubject(stopped), bus.DeliverSubject(stopped)} {
+		if slices.Contains(sent, subject) {
+			t.Errorf("%s sent %v while the route ran, including %s: the message was published", sendBandName, sent, subject)
+		}
+	}
 
 	for _, control := range []struct {
 		name string

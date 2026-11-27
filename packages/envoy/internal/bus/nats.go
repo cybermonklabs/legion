@@ -2862,6 +2862,13 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 	return ack.Sequence, nil
 }
 
+// expectLastSubjectSequence is the header of a stored write that lands only while the stream's
+// last sequence on its subject is expected, as nats.ExpectLastSequencePerSubject writes it, on the
+// message for the same reason msgIDHeader is.
+func expectLastSubjectSequence(expected uint64) nats.Header {
+	return nats.Header{nats.ExpectedLastSubjSeqHdr: []string{strconv.FormatUint(expected, 10)}}
+}
+
 // publishStoredRaw publishes the raw bytes data to the notification stream on subject - bytes of
 // the caller's own rather than an envelope - under header, the stored write's one header or none
 // (msgIDHeader, expectLastSubjectSequence), and returns the server's acknowledgement. It is the
@@ -2973,6 +2980,17 @@ func ForwardMsgID(dedupeKey, subject string) string {
 // the next holder of the role is handed.
 func KeptMsgID(dedupeKey, role string) string {
 	return ForwardMsgID(dedupeKey, KeptRoleSubject(role))
+}
+
+// storedMsgID is the message id an envelope is stored under on its own topic: the dedupe key and
+// the topic together where the dedupe key names the upstream event
+// (contracts.DedupeKeyNamesTheUpstreamEvent), because one upstream event can be published on
+// several topics under one key and each copy must be retained, and none otherwise.
+func storedMsgID(item contracts.Envelope) string {
+	if !contracts.DedupeKeyNamesTheUpstreamEvent(item) {
+		return ""
+	}
+	return ForwardMsgID(item.DedupeKey, item.Topic)
 }
 
 // ErrNoForwardMsgID is the ErrRefused of a forward sent with no Nats-Msg-Id. A forward's one

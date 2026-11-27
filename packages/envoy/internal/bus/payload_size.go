@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/nats-io/nats.go"
 
@@ -25,16 +24,8 @@ import (
 // answer, though the bus was never asked. The sends that make it are every one a caller's payload
 // reaches: PublishStoredAck and the raw stored writes through publishStoredRaw,
 // PublishCoreContext, StartRequestStoredTo, a window's sends (window.send, window.request) and
-// SessionConsumers.Publish. A window checks its deadline first, so a send past it keeps the
-// ErrWindowDeadline its caller counts (WindowUntil).
-//
-// Client.maxPayload is the max payload of the server the client's connection is on, read where a
-// connection becomes the client's and at every connect and reconnect of it, and 0 until the
-// client's first connection has connected, which refuses nothing, as nats.go itself sends an
-// unconnected connection's message without measuring it (!nc.initc). The check reads that field
-// and no state of nats.go's: nats.Conn.MaxPayload takes nats.go's connection lock, which a
-// reconnect attempt holds across its dial and handshake (nats.go v1.55.0 doReconnect,
-// :3554-3581), up to connectTimeout.
+// SessionConsumers.Publish. A publish window reads its deadline before this check (WindowUntil). It
+// reads Client.maxPayload, whose comment says why that field and not nats.Conn.MaxPayload.
 func (c *Client) checkSend(msg *nats.Msg) error {
 	return payloadTooLarge(int64(messageBytes(msg)), c.maxPayload.Load())
 }
@@ -115,24 +106,6 @@ func msgIDHeader(msgID string) nats.Header {
 		return nil
 	}
 	return nats.Header{nats.MsgIdHdr: []string{msgID}}
-}
-
-// expectLastSubjectSequence is the header of a stored write that lands only while the stream's
-// last sequence on its subject is expected, as nats.ExpectLastSequencePerSubject writes it, on the
-// message for the same reason msgIDHeader is.
-func expectLastSubjectSequence(expected uint64) nats.Header {
-	return nats.Header{nats.ExpectedLastSubjSeqHdr: []string{strconv.FormatUint(expected, 10)}}
-}
-
-// storedMsgID is the message id an envelope is stored under on its own topic: the dedupe key and
-// the topic together where the dedupe key names the upstream event
-// (contracts.DedupeKeyNamesTheUpstreamEvent), because one upstream event can be published on
-// several topics under one key and each copy must be retained, and none otherwise.
-func storedMsgID(item contracts.Envelope) string {
-	if !contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		return ""
-	}
-	return ForwardMsgID(item.DedupeKey, item.Topic)
 }
 
 // byteCount is an io.Writer that counts the bytes written to it and keeps none of them.

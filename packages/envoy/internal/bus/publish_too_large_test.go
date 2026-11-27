@@ -157,8 +157,8 @@ func sizeText(size, maxPayload int) string {
 // stores it, so the count is no stricter than the server's; one byte more is refused, and so is
 // its publish, in the same words. The encoding is what counts, not the payload's length: a payload
 // of '<', which the encoding writes as six bytes each (\u003c), is refused though the payload
-// alone is a quarter of the bound. A client that has not connected yet knows no max payload and
-// refuses nothing, leaving the publish to answer for itself.
+// alone is a quarter of the bound. A client that knows no max payload is
+// TestAClientThatHasNotConnectedRefusesNoMessageForItsSize's.
 func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.T) {
 	t.Parallel()
 	rig := newSizeRig(t)
@@ -201,17 +201,6 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 	if published := rig.client.Publish(pastBound); published == nil || published.Error() != checked.Error() {
 		t.Fatalf("the publish of a message one byte past the bound answered %v, want the check's own refusal %q", published, checked)
 	}
-
-	t.Run("a client that has not connected", func(t *testing.T) {
-		unconnected, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(testnats.SeedOnly("")), WithConnectInBackground())
-		if err != nil {
-			t.Fatalf("connect in the background: %v", err)
-		}
-		t.Cleanup(unconnected.Close)
-		if err := unconnected.TooLargeToPublish(pastBound); err != nil {
-			t.Fatalf("a client that knows no max payload refused a message of %d bytes: %v", rig.maxPayload+1, err)
-		}
-	})
 }
 
 // Every send a caller's payload reaches refuses a message past the server's max payload, its
@@ -219,20 +208,27 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 // message before sending it, but only after a JetStream publish has read its context, and a core
 // publish is refused on an ended context first (publishConfirmed), so a message the bus can never
 // send was answered as a bus that did not answer whenever the caller's time had run out before
-// the send. Each send is asked with its time already spent - an ended context, a forward's window
-// of no time - except the relay frame, whose send reads no time while its connection is up, and
-// the publish window's two sends, which read their own deadline first (below) and so are asked
-// under a live one. Each is asked a body past the bound by itself and, where the send writes a
-// header, a body within the bound that the header takes one byte past it. The controls are each
-// send with a small body under the same time: it is refused for that time and not for its size
-// (the window's sends and the relay frame are sent), so the check cannot pass by refusing every
-// send as too large.
-func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t *testing.T) {
+// the send. Each send is asked under what makes that matter: an ended context, a forward's window
+// of no time. Two kinds of send are asked otherwise. The relay frame reads no time while its
+// connection is up. The publish window's two sends read their own deadline before the size
+// (WindowUntil), so they are asked under a live deadline, each on a window of its own, and each
+// refusal must come before the window pinned the connection (window.lifeEnded is nil): nats.go's
+// own refusal of the same message names the same size in the same words (refused), so only the
+// pin tells the window's own check from nats.go's. Each send is asked a body past the bound by
+// itself and, where the send writes a header, a body within the bound that the header takes one
+// byte past it. The controls are each send with a small body under the same conditions: it is
+// refused for that ended context or empty window and not for its size, or it is sent, so the
+// check cannot pass by refusing every send as too large.
+func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsContext(t *testing.T) {
 	t.Parallel()
 	rig := newSizeRig(t)
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
-	liveWindow := rig.client.WindowUntil(func() time.Time { return time.Now().Add(time.Minute) })
+	// freshWindow is a publish window of its own under a live deadline, so a send on it pins the
+	// connection only once it is past every refusal of its own.
+	freshWindow := func() *window {
+		return rig.client.WindowUntil(func() time.Time { return time.Now().Add(time.Minute) }).(*window)
+	}
 	spentWindow := rig.client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })
 	consumers, err := ConnectSessionConsumers([]string{rig.url}, 0, nil)
 	if err != nil {
@@ -243,43 +239,51 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t 
 	holder := contracts.LegacyAgentSubject("ses_spent_time")
 	storedID, forwardID := storedMsgID(sizeEnvelope(stored, "")), ForwardMsgID("dispatch-size", holder)
 	frame := nats.Header{"Envoy-Test-Frame": []string{"1"}}
-	isSpent := func(want error) func(error) bool {
+	refusedFor := func(want error) func(error) bool {
 		return func(err error) bool { return errors.Is(err, want) && !errors.Is(err, ErrTooLarge) }
 	}
+	sent := func(err error) bool { return err == nil }
+	// lastWindow is the window the last window send was made on, which pinned reads.
+	var lastWindow *window
+	pinned := func() bool { return lastWindow.lifeEnded() != nil }
 	for _, path := range []struct {
-		name    string
-		topic   string
-		header  nats.Header
-		send    func(data string) error
-		control func(error) bool
+		name, when string
+		topic      string
+		header     nats.Header
+		send       func(data string) error
+		control    func(error) bool
+		// pinned, for a window's send, reports whether that send pinned the connection.
+		pinned func() bool
 	}{
-		{"a stored publish", stored, msgIDHeader(storedID), func(payload string) error {
+		{"a stored publish", "its context ended", stored, msgIDHeader(storedID), func(payload string) error {
 			_, err := rig.client.PublishAckWithin(ended, sizeEnvelope(stored, payload))
 			return err
-		}, isSpent(context.Canceled)},
-		{"a core publish", core, nil, func(payload string) error {
+		}, refusedFor(context.Canceled), nil},
+		{"a core publish", "its context ended", core, nil, func(payload string) error {
 			return rig.client.PublishCoreContext(ended, core, sizeEnvelope(core, payload))
-		}, isSpent(context.Canceled)},
-		{"a raw stored write", "", expectLastSubjectSequence(0), func(data string) error {
+		}, refusedFor(context.Canceled), nil},
+		{"a raw stored write", "its context ended", "", expectLastSubjectSequence(0), func(data string) error {
 			_, err := rig.client.PublishCursorAt(ended, stored+"-cursor", []byte(data), 0)
 			return err
-		}, isSpent(context.Canceled)},
-		{"a role forward", core, msgIDHeader(forwardID), func(payload string) error {
+		}, refusedFor(context.Canceled), nil},
+		{"a role forward", "its window of no time", core, msgIDHeader(forwardID), func(payload string) error {
 			forward, err := rig.client.StartRequestStoredTo(holder, sizeEnvelope(core, payload), forwardID, 0)
 			if err == nil {
 				_, err = forward.Wait()
 			}
 			return err
-		}, isSpent(ErrWindowEndedBeforePublish)},
-		{"a publish window's send", stored, msgIDHeader(storedID), func(payload string) error {
-			return <-liveWindow.PublishStoredAsync(stored, sizeEnvelope(stored, payload), storedID)
-		}, func(err error) bool { return err == nil }},
-		{"a publish window's request", core, msgIDHeader(forwardID), func(payload string) error {
-			return <-liveWindow.Request(holder, sizeEnvelope(core, payload), RequestOptions{MsgID: forwardID})
-		}, func(err error) bool { return err == nil }},
-		{"a relay frame", "", frame, func(data string) error {
+		}, refusedFor(ErrWindowEndedBeforePublish), nil},
+		{"a publish window's send", "its deadline live", stored, msgIDHeader(storedID), func(payload string) error {
+			lastWindow = freshWindow()
+			return <-lastWindow.PublishStoredAsync(stored, sizeEnvelope(stored, payload), storedID)
+		}, sent, pinned},
+		{"a publish window's request", "its deadline live", core, msgIDHeader(forwardID), func(payload string) error {
+			lastWindow = freshWindow()
+			return <-lastWindow.Request(holder, sizeEnvelope(core, payload), RequestOptions{MsgID: forwardID})
+		}, sent, pinned},
+		{"a relay frame", "its connection up", "", frame, func(data string) error {
 			return consumers.Publish(ended, &nats.Msg{Subject: DeliverSubject("ses_spent_time"), Header: frame, Data: []byte(data)})
-		}, func(err error) bool { return err == nil }},
+		}, sent, nil},
 	} {
 		header := messageBytes(&nats.Msg{Header: path.header})
 		// body is what the send is handed for a message whose data takes size bytes: an envelope's
@@ -303,7 +307,10 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t 
 		for _, row := range rows {
 			err := path.send(body(row.data))
 			if says := sizeText(row.data+header, rig.maxPayload); !errors.Is(err, ErrTooLarge) || !strings.Contains(err.Error(), says) {
-				t.Errorf("%s of %s, its time spent: %v, want ErrTooLarge saying %q", path.name, row.name, err, says)
+				t.Errorf("%s of %s, %s: %v, want ErrTooLarge saying %q", path.name, row.name, path.when, err, says)
+			}
+			if path.pinned != nil && path.pinned() {
+				t.Errorf("%s of %s, %s, pinned the connection before it was refused: the refusal was nats.go's, not the window's own check", path.name, row.name, path.when)
 			}
 		}
 		small := "{}"
@@ -311,14 +318,16 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t 
 			small = "p"
 		}
 		if err := path.send(small); !path.control(err) {
-			t.Errorf("control: %s of a small body, its time spent: %v, want the send's own answer to that time, not ErrTooLarge", path.name, err)
+			t.Errorf("control: %s of a small body, %s: %v, want the send's own answer to that, not ErrTooLarge", path.name, path.when, err)
+		}
+		if path.pinned != nil && !path.pinned() {
+			t.Errorf("control: %s of a small body, %s, was sent without pinning the connection, so the pin tells nothing", path.name, path.when)
 		}
 	}
 
-	// A publish window reads its own deadline before anything else, so a send past it keeps the
-	// ErrWindowDeadline its caller takes for a send to make again (internal/dispatch/outbox's
-	// sendChains counts a refusal once per event). The rows are the window's two sends, each of a
-	// body past the bound by itself.
+	// A publish window reads its own deadline before the size (WindowUntil). The rows are the
+	// window's two sends, each of a body past the bound by itself, on a window whose deadline has
+	// passed.
 	for _, past := range []struct {
 		name string
 		send func(payload string) error
@@ -332,7 +341,7 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsTime(t 
 	} {
 		err := past.send(sizedPayload(t, stored, rig.maxPayload+1))
 		if !errors.Is(err, ErrWindowDeadline) || errors.Is(err, ErrTooLarge) {
-			t.Errorf("%s of a body past the bound, its deadline passed: %v, want ErrWindowDeadline, which its caller sends again", past.name, err)
+			t.Errorf("%s of a body past the bound, its deadline passed: %v, want ErrWindowDeadline (WindowUntil)", past.name, err)
 		}
 	}
 }
@@ -369,8 +378,9 @@ func TestARefusalNatsGoMakesIsTheSameErrTooLargeHeadersIncluded(t *testing.T) {
 // A client whose first connection has not connected keeps no max payload, as nats.go itself keeps
 // none until the server's INFO arrives, and sends an unconnected connection's message without
 // measuring it (!nc.initc). So the size checks refuse nothing on it, whatever the message's size:
-// a publish of a body many times any server's bound is answered by the wait for that connection,
-// here a deadline already past, and never as too large. The row is cybermonklabs/legion#5734's
+// a publish of a body twice any server's default bound is answered by the wait for that
+// connection, here a deadline already past, and never as too large. A max payload of 0 refuses
+// nothing at any size, so 2 MiB proves the row. The row is cybermonklabs/legion#5734's
 // TestABoundOfZeroRefusesNothingForItsSize (the Envoy flakes peer's builder), which closed in
 // favour of this pull request.
 func TestAClientThatHasNotConnectedRefusesNoMessageForItsSize(t *testing.T) {
@@ -384,16 +394,17 @@ func TestAClientThatHasNotConnectedRefusesNoMessageForItsSize(t *testing.T) {
 		t.Fatalf("UNKNOWN: a connection that has not connected reports a max payload of %d, want none, so this row checks nothing", known)
 	}
 	const topic = "notifications.team.unconnected"
-	big := sizeEnvelope(topic, strings.Repeat("p", 64<<20))
+	payload := strings.Repeat("p", 2<<20)
+	big := sizeEnvelope(topic, payload)
 	if err := client.TooLargeToPublish(big); err != nil {
 		t.Errorf("TooLargeToPublish on a client that knows no max payload = %v, want nil", err)
 	}
-	if err := client.checkSend(&nats.Msg{Subject: topic, Data: []byte(strings.Repeat("p", 64<<20))}); err != nil {
+	if err := client.checkSend(&nats.Msg{Subject: topic, Data: []byte(payload)}); err != nil {
 		t.Errorf("checkSend on a client that knows no max payload = %v, want nil", err)
 	}
 	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	if _, err := client.PublishAckWithin(spent, big); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTooLarge) {
-		t.Errorf("a stored publish of a 64 MiB message under a deadline already past = %v, want the wait's own context.DeadlineExceeded", err)
+		t.Errorf("a stored publish of a 2 MiB message under a deadline already past = %v, want the wait's own context.DeadlineExceeded", err)
 	}
 }
