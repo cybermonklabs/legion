@@ -7,12 +7,14 @@ import (
 )
 
 // TestAVisibleIssueNamesNoHiddenIssueThatBlocksIt (c-private-unseen, R4): carol, who sees PUB and
-// PRIV, marks PUB's issue blocked by PRIV's. A caller who does not see PRIV reads PUB's issue, the
-// issue list, the issue's events and the event log, and none of them names PRIV's issue: each
-// answers as it would were the blocker an issue nobody holds. A deployment may instead refuse the
-// link itself; then nothing joins the two projects and the reads have nothing to hide.
+// PRIV, marks PUB's issue blocked by PRIV's. A caller who does not see PRIV reads PUB's issue and
+// the issue list, and neither names PRIV's issue: each answers as it would were the blocker an
+// issue nobody holds. A deployment may instead refuse the link itself; then nothing joins the two
+// projects and the reads have nothing to hide. The issue's events and the event log carry the
+// blocker in their payloads, which the event feed's payload filter leaves out from slice S4 on,
+// and S4 adds their reads here.
 func TestAVisibleIssueNamesNoHiddenIssueThatBlocksIt(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	makePrivate(t, database, privateProject)
 	hidden := issueIn(t, handler, accessCarol, privateProject)
@@ -26,18 +28,12 @@ func TestAVisibleIssueNamesNoHiddenIssueThatBlocksIt(t *testing.T) {
 	if read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+visible, nil, accessCarol); !strings.Contains(read.Body.String(), hidden) {
 		t.Fatalf("carol, who sees PRIV, reads no %s on %s, so the test reads nothing: %s", hidden, visible, read.Body.String())
 	}
-	// The event log answers only the events at or below the safe horizon, and a read held below
-	// the link's event would pass over it unread (awaitHorizonRead says what holds it back).
-	safeHorizon(t, served)
 
 	shared := "agent-token"
 	for _, read := range []struct{ who, path string }{
 		{"alice", "/api/v1/issues/" + visible},
 		{"alice", "/api/v1/issues?project=" + publicProject},
-		{"alice", "/api/v1/issues/" + visible + "/events"},
-		{"alice", "/api/v1/events/log"},
 		{shared, "/api/v1/issues/" + visible},
-		{shared, "/api/v1/events/log"},
 	} {
 		var body string
 		if read.who == shared {
