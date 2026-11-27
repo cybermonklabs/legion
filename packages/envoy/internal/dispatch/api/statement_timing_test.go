@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -37,15 +40,28 @@ const (
 // Which protocol each statement is under, and why:
 //
 //   - Protocol 1 pairs, whose two sides one schema runs: the issue list unpaged and paged, the
-//     project list, agentLastActivity, the issue's children, and the five statements of
-//     search's document arm - searchQuery, searchQueryMeaning, relatedKeywordQuery,
-//     relatedMeaningQuery and relatedProbeSQL. The listing and the project list add no
-//     migration, agentLastActivity reads events_session_actor_created_at_idx, which migration
-//     0026 built, the children read walks issues_parent_key, and the document arm's older text
-//     reads artifact_versions, a table this release's schema still holds; so on a database at
-//     this release's schema both texts of each are measurable, and the pair is the committed
-//     regression check. The two related statements are gated on the document arm they share
-//     and reported whole beside it, for the reason given where that pair is measured.
+//     project list, agentLastActivity, the issue's children, the five statements of search's
+//     document arm - searchQuery, searchQueryMeaning, relatedKeywordQuery, relatedMeaningQuery
+//     and relatedProbeSQL - the newest event under each priority (priorityNewestEventQuery),
+//     with a report of the same statement with its walk keyed
+//     (priorityNewestEventKeyedWalkQuery) and one of main's text with its walk keyed
+//     (keyedWalkOverMainsNewestEventQuery), and the move into backlog or icebox
+//     (backlogMoveLateral) in the second fault and in the listing with ?moved=true, each without
+//     and with events_backlog_moves, with a reading of each walk over the members alone: main's
+//     (memberWalkQuery) and the walk keyed through issues_parent_key (keyedMemberWalkQuery). The
+//     listing and the project list add no migration, agentLastActivity reads
+//     events_session_actor_created_at_idx, which migration 0026 built, the children read walks
+//     issues_parent_key, the document arm's older text reads artifact_versions, a table this
+//     release's schema still holds, and the newest event and its keyed walks read issues_pkey,
+//     issues_parent_key and events_issue_key_seq_key, which no
+//     migration of this release adds; so on a database at this release's schema both texts of
+//     each are measurable, and the pair is the committed regression check. The move's two
+//     sides are one text, and the before side drops events_backlog_moves, which migration
+//     20261125131100 of this release adds, in its measuring transaction, which is rolled back; so
+//     the same database holds both of its sides too. The two related statements are gated on the
+//     document arm they share and reported whole beside it, for the reason given where that pair
+//     is measured. The newest event and the backlog move are gated on their top plan node's shared
+//     buffers too, for the reason given where each is measured.
 //
 //   - Protocol 2, one side alone: listIssueAsksQueryAll, listIssueRootMessagesQuery and
 //     listArtifactAsksQueryOpen, whose texts this release does not edit at all - their gain is
@@ -64,7 +80,8 @@ const (
 // holds as an oracle - issue_list_equality_test.go, agent_activity_test.go,
 // issue_children_test.go and document_search_oracle_test.go - read from there rather than
 // copied a second time: two copies of one statement drift apart, and those oracles are what the
-// package's equality tests are held to.
+// package's equality tests are held to. The newest event's before text is main's, which
+// priority_newest_event_test.go holds as its oracle in the same way.
 func TestStatementTimings(t *testing.T) {
 	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
@@ -168,8 +185,11 @@ func TestStatementTimings(t *testing.T) {
 	// list of their own rather than nil: over a NULL array the filter is null of every row, and
 	// `where not` would then drop the lot and measure a statement that reads nothing.
 	excludedOwners := []any{[]string{"issue:" + subjects.Issue}}
-	relatedKeywordExcludingArguments := slices.Concat(relatedKeywordArguments, excludedOwners)
-	relatedMeaningExcludingArguments := slices.Concat(relatedMeaningArguments, excludedOwners)
+	// The acting credential is each of this release's related statements' last parameter, and
+	// the check binds one that proves no author (relatedSearch), which documentSearchSeen binds
+	// too. Main's two related texts, which the Before branch measures, bind none.
+	relatedKeywordExcludingArguments := slices.Concat(relatedKeywordArguments, excludedOwners, documentSearchSeen())
+	relatedMeaningExcludingArguments := slices.Concat(relatedMeaningArguments, excludedOwners, documentSearchSeen())
 	// The probe is measured on a subject of its own, subjects.ProbeLexemes, the project's twenty
 	// rarest words rather than the three the other statements are measured on. Twenty is the
 	// list a question of a paragraph or two hands the picker, and rare is what it hands it: of
@@ -272,7 +292,8 @@ func TestStatementTimings(t *testing.T) {
 	// The after side is the scoped excluding shape: relatedArguments binds the subject's
 	// project, which is what the check sends such a call (relatedMeaningStatementFor).
 	runner.Report(t, "relatedMeaningQuery, the whole statement, over main's document arm",
-		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningArguments, Setup: meaningSetup},
+		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: slices.Concat(relatedMeaningArguments, documentSearchSeen()),
+			Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
 	// This release's probe reads the reader's viewer at $5, one that sees every project.
@@ -306,7 +327,8 @@ func TestStatementTimings(t *testing.T) {
 // release's arm $5 the reader's viewer.
 func documentLegStatement(documentLeg string, termWeights func(lexemes int) string) string {
 	return `
-with q as materialized (select $1::tsquery as tsq, ''::text as term, ''::text as own_key),
+with q as materialized (select $1::tsquery as tsq, ''::text as term, '{}'::text[] as own_keys,
+                               ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
 ` + termWeights(3) + `document_arm as (
 ` + documentLeg + `
 )
@@ -374,7 +396,9 @@ func TestRelatedTermsRefreshTiming(t *testing.T) {
 	}
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	project := runner.Subjects().Project
-	database := openRefreshTimingStore(t)
+	// The refresh runs each project of a pass in a transaction of its own, so it takes a pool
+	// rather than the one connection the statement timings share.
+	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))
 	projects := refreshTimingProjects(t, database)
 
 	before := mainRefreshPass(t, database, projects)
@@ -408,19 +432,6 @@ func TestRelatedTermsRefreshTiming(t *testing.T) {
 			t.Errorf("round %d took %v, not below the released whole pass at %v", round+1, took, before)
 		}
 	}
-}
-
-// openRefreshTimingStore opens a pool on the measurement database. The refresh takes a pool, not
-// the one connection the statement timings share: a pass runs each project in a transaction of
-// its own.
-func openRefreshTimingStore(t *testing.T) *store.Store {
-	t.Helper()
-	database, err := store.Open(context.Background(), os.Getenv(benchtime.DatabaseURLEnv))
-	if err != nil {
-		t.Fatalf("open the measurement database: %v", err)
-	}
-	t.Cleanup(database.Pool.Close)
-	return database
 }
 
 // refreshTimingProjects is every project a whole pass refreshes, in the order

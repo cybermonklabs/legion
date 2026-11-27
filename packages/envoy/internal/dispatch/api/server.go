@@ -321,6 +321,9 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
+	// GitHubRate is the process's one count of its calls to GitHub, which the GitHub client
+	// counts on (githubapp.WithRateCounter) and the rate reading reports; nil counts none.
+	GitHubRate *githubrate.Counter
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -414,9 +417,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
-	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
-	// GitHub budgets the App and each installation, not this process.
-	var githubOptions []githubapp.Option
+	// The GitHub client counts its calls on the process's one Counter for the rate reading, and
+	// obeys and records the rate limits every process shares (github_rate_limits): GitHub budgets
+	// the App and each installation, not this process.
+	githubOptions := []githubapp.Option{githubapp.WithRateCounter(input.GitHubRate)}
 	if input.Store != nil {
 		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
 	}
@@ -1064,14 +1068,16 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// body's first read, and otherwise closes the connection once the answer begins rather
 		// than wait on a body that never comes. It decides from the expect-continue reader its
 		// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
-		// Body, so it is not that trackTransactions hands this layer a copy of the request: the
+		// Body, so it is not that routeContext hands this layer a copy of the request: the
 		// handling holds with the drain's body put on net/http's own request. What keeps the body
 		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
 		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
 	}
-	handler = s.decideBrokerToken(trackTransactions(handler))
+	// The row's request context is made once, with its transaction tracking and its calls to
+	// GitHub tagged as the API's (routeContext).
+	handler = s.decideBrokerToken(routeContext(handler))
 	if route.Method+" "+route.Pattern == statusChangeRoute {
 		// Outside every layer above and outside decideBrokerToken, so it sees each answer the
 		// route gives, and inside compression, so it reads the JSON a layer wrote rather than
@@ -1120,9 +1126,36 @@ func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 			refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))), s.clock())
 }
 
+// trackTransactions marks the request's context for the pool's nested-acquire check
+// (store.WithTransactionTracking), for a mount beside the route table: the websockets.
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	}
+}
+
+// routeContext is the request context of a row of the route table, made in one copy of the
+// request: transaction tracking, as trackTransactions marks it, and every call to GitHub the row
+// makes tagged as the API's (GitHubCaller), as TagGitHubCalls tags it.
+func routeContext(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r.WithContext(githubrate.WithCaller(store.WithTransactionTracking(r.Context()), GitHubCaller)))
+	}
+}
+
+// GitHubCaller is the caller kind of every call to GitHub an API request makes
+// (githubrate.WithCaller), which the rate reading counts the process's own calls by: the rows of
+// the route table, and the GitHub proxy the routes package mounts beside them.
+const GitHubCaller = "api"
+
+// TagGitHubCalls tags the request's calls to GitHub as the API's (GitHubCaller): the handler's
+// own, those of the keyed layer's run of it, which keeps the request's values past its cancel,
+// and those of an architecture sync a route starts, whose flight keeps its starter's values. The
+// route table's rows take it with their transaction tracking (routeContext); the routes package's
+// GitHub proxy, which is no row, takes it alone.
+func TagGitHubCalls(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r.WithContext(githubrate.WithCaller(r.Context(), GitHubCaller)))
 	}
 }
 
@@ -1796,9 +1829,7 @@ var approveOnlyRefusal = sync.OnceValue(func() string {
 			listed = append(listed, route)
 		}
 	}
-	slices.SortFunc(listed, func(left, right routeDecl) int {
-		return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
-	})
+	slices.SortFunc(listed, byPatternThenMethod)
 	names := make([]string, len(listed))
 	for index, route := range listed {
 		names[index] = route.Method + " " + route.Pattern

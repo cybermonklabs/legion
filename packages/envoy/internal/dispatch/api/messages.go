@@ -30,8 +30,13 @@ const maxMessageReplyPreview16 = 160
 type createMessageInput struct {
 	Body      string  `json:"body" required:"true"`
 	InReplyTo *string `json:"in_reply_to"`
-	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2").
+	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2"). Quote
+	// and Occurrence are the words of that block the reply quotes, in its plain text, and which
+	// of their matches in the block they are, counted from 0, as model.AnchorInput holds them for
+	// a document's text.
 	InReplyToBlock *string      `json:"in_reply_to_block"`
+	Quote          *string      `json:"quote"`
+	Occurrence     *int         `json:"occurrence"`
 	Target         *string      `json:"target"`
 	Delivery       *string      `json:"delivery"`
 	Urgency        *string      `json:"urgency"`
@@ -101,6 +106,10 @@ type createAgentMessageInput struct {
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`
 	InReplyToBlock *string `json:"in_reply_to_block"`
+	// Quote and Occurrence are the words of block InReplyToBlock the reply quotes, as
+	// createMessageInput's.
+	Quote      *string `json:"quote"`
+	Occurrence *int    `json:"occurrence"`
 	// ConnectedOnly asks that this message reach a session that is running now or not at all:
 	// the send is made with the listener's connected_only, which refuses a session the listener
 	// knows and that is not running rather than storing the message for it, and the attempt
@@ -133,7 +142,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	target := "session:" + r.PathValue("session_id")
 	messageInput := createMessageInput{
 		Body: input.Body, InReplyTo: input.InReplyTo, InReplyToBlock: input.InReplyToBlock,
-		Target: &target, Delivery: &input.Delivery,
+		Quote: input.Quote, Occurrence: input.Occurrence, Target: &target, Delivery: &input.Delivery,
 	}
 	delivery, err := validateCreateMessage(&messageInput)
 	if err != nil {
@@ -551,7 +560,9 @@ func (s *server) createStoredMessage(
 	// point, this message's own index, the event, its stamp, what the node write stated and a
 	// targeted message's first delivery attempt go in one batch (store.WriteBatch): the message is
 	// known before the insert runs, and the stamp and the node's cause name the event's id as the
-	// id sequence left it.
+	// id sequence left it. The insert stores the words of the block the reply quotes from the
+	// block it carries (replyQuote).
+	quote, occurrence := replyQuote(message.ReplyBlock)
 	var event model.Event
 	var receipt *model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -561,9 +572,9 @@ func (s *server) createStoredMessage(
 		}
 		graphstore.QueueNodes(b, messageNode)
 		b.Queue("", `
-			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, createdAt)
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, replies_to_quote, replies_to_occurrence, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, quote, occurrence, createdAt)
 		// The recovery point right after its message and before the event append: a repeat that
 		// took the key over meanwhile refuses it, and this transaction rolls back.
 		if err := queueRequestKeyRecovery(ctx, b, messageRecovery{MessageID: messageID, Delivery: delivery}); err != nil {
@@ -719,6 +730,9 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 	input.Target = target
 	if input.InReplyToBlock != nil && input.InReplyTo == nil {
 		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "in_reply_to_block requires in_reply_to, the message whose block it names")
+	}
+	if err := replyQuoteRefusal("INVALID_MESSAGE", "in_reply_to_block", input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		return "", err
 	}
 	if input.Urgency != nil && !validMessageUrgency(*input.Urgency) {
 		return "", errorf(http.StatusBadRequest, "MESSAGE_INPUT", "urgency must be one of low, med, high, blocking")

@@ -1469,8 +1469,11 @@ type commentReplyInput struct {
 	Attempt int          `json:"attempt" required:"true"`
 	Body    *string      `json:"body"`
 	Error   *string      `json:"error"`
-	// ReplyToBlock is the id of the block of comment {id} the reply answers ("b2").
+	// ReplyToBlock is the id of the block of comment {id} the reply answers ("b2"), and Quote
+	// and Occurrence the words of that block the reply quotes, as commentInput's.
 	ReplyToBlock *string `json:"reply_to_block"`
+	Quote        *string `json:"quote"`
+	Occurrence   *int    `json:"occurrence"`
 }
 
 // commentReplyPlan is everything a delivery callback's reply is decided on, read and planned
@@ -1794,16 +1797,18 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// a reply left out of the store writes none.
 	var reply model.Comment
 	nodeKind, nodeAddress := plan.stored.rowNode()
+	quote, occurrence := replyQuote(plan.replyBlock)
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		if !plan.stored.unprojected {
 			graphstore.QueueNodes(b, plan.stored.written)
 		}
 		b.Queue("", `
-			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block,
+			                      replies_to_quote, replies_to_occurrence, answers, node_kind, node_address, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 			returning `+commentColumns+`
 		`, plan.id, comment.IssueKey, comment.ArtifactID, author, *input.Body, plan.thread.ReplyTo, plan.thread.AskID, turn,
-			plan.thread.ReplyBlock.nodeID(), plan.thread.Answers, nodeKind, nodeAddress, plan.createdAt).QueryRow(func(row pgx.Row) error {
+			plan.thread.ReplyBlock.nodeID(), quote, occurrence, plan.thread.Answers, nodeKind, nodeAddress, plan.createdAt).QueryRow(func(row pgx.Row) error {
 			var err error
 			reply, err = scanComment(row)
 			return err

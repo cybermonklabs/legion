@@ -127,7 +127,7 @@ func (w *wanted) sees(sessionID, project string) (bool, error) {
 // destinations needed and whose read of its id failed (loadRecipients). The event's list ends
 // there (eventDestinations), so it names none of the sessions the read would have added, and
 // planChains holds its owner's later events back from every session key the list neither names nor
-// the event already reached (batchEvent.incomplete).
+// the event already reached or refused (batchEvent.incomplete).
 type unansweredRecipients struct{ err error }
 
 func (e *unansweredRecipients) Error() string { return e.err.Error() }
@@ -328,11 +328,11 @@ type queryer interface {
 // run fails fails only the events that asked it: each such event's destinations end at the step
 // that needed it, after its owner topic, route and claimant (eventDestinations), the event's
 // owner's later events are held back from every session key its list neither names nor the event
-// already reached (planChains), and the batch's other events, those that asked the same statement
-// for other ids among them, are untouched. So a row no recipient read can take - a credit list
-// jsonb_array_elements refuses - backs off the events that read it and holds back their owners'
-// later session copies, and nothing else. A recipient read that fails for the stop or for the
-// connection fails every event that asked it, as each run alone would.
+// already reached or refused (planChains), and the batch's other events, those that asked the same
+// statement for other ids among them, are untouched. So a row no recipient read can take - a
+// credit list jsonb_array_elements refuses - backs off the events that read it and holds back
+// their owners' later session copies, and nothing else. A recipient read that fails for the stop
+// or for the connection fails every event that asked it, as each run alone would.
 func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error) {
 	found := &lookups{
 		asks: map[string][]string{}, roots: map[string]json.RawMessage{},

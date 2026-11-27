@@ -1095,8 +1095,11 @@ type messageReplyInput struct {
 	Attempt int          `json:"attempt" required:"true"`
 	Body    *string      `json:"body"`
 	Error   *string      `json:"error"`
-	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
+	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2"), and Quote
+	// and Occurrence the words of that block the reply quotes, as createMessageInput's.
 	InReplyToBlock *string `json:"in_reply_to_block"`
+	Quote          *string `json:"quote"`
+	Occurrence     *int    `json:"occurrence"`
 }
 
 // messageReplyPlan is everything a session's reply to a message delivery is decided on, read
@@ -1118,8 +1121,9 @@ type messageReplyPlan struct {
 }
 
 // planMessageReply plans one session reply above every row lock the route takes: the block the
-// reply names with the index its message owes, and the reply's own index and references, for an
-// id and a created_at reserved here. Nothing it plans is written here.
+// reply names, with the words of it the reply quotes (quote, occurrence), and the index its
+// message owes, and the reply's own index and references, for an id and a created_at reserved
+// here. Nothing it plans is written here.
 //
 // The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
 // named by the fields that row will hold (planPendingItem, refs.PendingSource), as
@@ -1188,6 +1192,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.InReplyToBlock != nil && input.Body == nil {
 		writeError(w, "INVALID_MESSAGE", http.StatusBadRequest, "in_reply_to_block names the block a reply's body answers; an error report has none")
+		return
+	}
+	if err := replyQuoteRefusal("INVALID_MESSAGE", "in_reply_to_block", input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 
@@ -1505,11 +1513,12 @@ func followUpRequested(r *http.Request) (bool, error) {
 // naming a block of parent stores it and previews that block's text in place of the parent's.
 //
 // plan carries the row: its id and created_at, written explicitly because its index and its
-// references were planned for them before this insert ran, the body, the block it names, the
-// step that writes its index and the write of its node (planMessageReply). A follow-up names no
-// block, and its thread and issue are the first reply's, so the plan's serves both rows the route
-// can insert. Nothing of the body and nothing of the reply's own row is read here, so this write
-// holds the transaction id for its own statements alone (INFRA-636).
+// references were planned for them before this insert ran, the body, the block it names with the
+// words of it the reply quotes (replyQuote), the step that writes its index and the write of its
+// node (planMessageReply). A follow-up names no block, and its thread and issue are the first
+// reply's, so the plan's serves both rows the route can insert. Nothing of the body and nothing
+// of the reply's own row is read here, so this write holds the transaction id for its own
+// statements alone (INFRA-636).
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {

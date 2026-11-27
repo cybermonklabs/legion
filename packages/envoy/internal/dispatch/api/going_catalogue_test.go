@@ -482,8 +482,14 @@ func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
 		if action.Action != "dispatch_issue" {
 			continue
 		}
-		if !strings.HasPrefix(action.Description, "Create a native Dispatch issue") {
-			t.Fatalf("the issue create's description is %q, want the tool spec's own", action.Description)
+		want := ""
+		for _, tool := range contracts.DispatchTools {
+			if tool.Name == action.Action {
+				want = tool.Description
+			}
+		}
+		if want == "" || action.Description != want {
+			t.Fatalf("the issue create's description is %q, want the tool spec's own, %q", action.Description, want)
 		}
 		if len(action.Routes) != 1 || action.Routes[0].Method != http.MethodPost || action.Routes[0].Pattern != "/api/v1/issues" {
 			t.Fatalf("the issue create names the routes %v", action.Routes)

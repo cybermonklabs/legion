@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
@@ -98,9 +99,10 @@ func (r *registeredInstance) get() string {
 // id rather than be handed it.
 //
 // renames is the rename pairs the boot read, which each pass names its repositories by
-// (cireconcile.Reconciler.Renames).
+// (cireconcile.Reconciler.Renames). counted is the process's one count of its calls to GitHub,
+// which the pass's client counts on for the rate reading (nil counts none).
 func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer, verdict string,
-	interval time.Duration, instance *registeredInstance, renames refs.Renames) (*cireconcile.Reconciler, error) {
+	interval time.Duration, instance *registeredInstance, renames refs.Renames, counted *githubrate.Counter) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
 	}

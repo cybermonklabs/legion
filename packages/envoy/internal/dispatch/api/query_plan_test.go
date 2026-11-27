@@ -106,6 +106,11 @@ func TestCommentQueriesAvoidSequentialCommentsScan(t *testing.T) {
 			args: []any{"TEST-1", ""},
 		},
 		{
+			name: "select comment thread page",
+			sql:  commentThreadPageQuery,
+			args: append((threadPage{limit: 20}).args("TEST-1"), "", "in"),
+		},
+		{
 			name: "load comment reply chain",
 			sql:  replyChainQuery("reply_to"),
 			args: []any{"10000000-0000-0000-0000-000000000001", planViewer},

@@ -1,10 +1,12 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -297,8 +299,50 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	plan, err := workflowstore.NewestPlan(r.Context(), s.deps.Store.Pool, key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}
+	if plan != nil {
+		// A planned step stands where the newest run of it stands among the records of the plan's
+		// own run of the issue (its generation): the runs come in the order they happened. A run is
+		// of the step only where it stands at the step's place with the step's role: a later version
+		// of the plan in force can put another step at a place where an earlier step already ran.
+		// A run names no agent key, so a step `role:key` is matched by its role, which this release
+		// names at most once in a task. Its state is a word of contracts' PLANNED_STEP_STATES, which
+		// PlannedStep.State's enum tag holds (TestTheStepRouteNamesContractsWords).
+		type stepOf struct {
+			task string
+			step int
+			role string
+		}
+		newest := map[stepOf]string{}
+		for _, step := range steps {
+			if step.Generation == plan.Generation && step.Kind == workflowstore.StepKindStep {
+				newest[stepOf{step.Task, step.Place, step.Role}] = step.Result
+			}
+		}
+		for _, task := range plan.Tasks {
+			tasks[task.ID] = len(read.Tasks)
+			planned := model.StepTask{Task: task.ID, Planned: make([]model.PlannedStep, len(task.Steps)), Steps: []model.StepRecord{}}
+			for index, name := range task.Steps {
+				role, _, _ := strings.Cut(name, ":")
+				state := contracts.PlannedStepNotStarted
+				if result, ran := newest[stepOf{task.ID, index + 1, role}]; ran {
+					state = cmp.Or(result, contracts.PlannedStepRunning)
+				}
+				planned.Planned[index] = model.PlannedStep{Step: index + 1, Name: name, State: state}
+			}
+			if task.Needs != nil {
+				needs := append([]string{}, (*task.Needs)...)
+				planned.Needs = &needs
+			}
+			read.Tasks = append(read.Tasks, planned)
+		}
+	}
 	for _, step := range steps {
 		index, known := tasks[step.Task]
 		if !known {

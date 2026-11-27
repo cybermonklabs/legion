@@ -139,7 +139,7 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 	case err != nil:
 		return cannotJudge(stderr, *dir, err)
 	case len(j.problems) > 0:
-		// A block that does not parse is missing from the tree, so a check in it would go uncited.
+		// A document that does not read into its node is missing from the tree, so a check in it would go uncited.
 		j.sayProblems(stderr)
 		return 2
 	}

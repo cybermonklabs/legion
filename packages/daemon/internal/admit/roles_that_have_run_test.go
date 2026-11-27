@@ -16,7 +16,7 @@ import (
 
 // A re-admitted tree brings back the roles of its members that have run, and no others. The claim
 // row is what says a role has run: a re-admission clears the generation's facts and never a claim
-// (record.ClearTreeGeneration touches pull_requests, design_gates, phases and issues), and a
+// (workflow.Engine.ClearTreeGeneration touches pull_requests, phases and design_gates), and a
 // claim's token carries no generation (claim.NewToken), so the row outlives the generation that
 // wrote it — which is why every state here asserts that the rows it seeded are still there after
 // the re-admission. A role that holds none has never run, and a session started for it would hold

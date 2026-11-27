@@ -54,6 +54,7 @@ const PAYLOAD_TYPES = [
   "IssueEventPayload",
   "IssuePullRequestAttributionEventPayload",
   "IssueReleasedEventPayload",
+  "IssueRoleHoldersChangedEventPayload",
   "MessageAcceptedEventPayload",
   "MessageDeliveryEventPayload",
   "MessageEventPayload",
@@ -108,12 +109,12 @@ const CONSTANT_LIST_TYPES = [
  * already describes it is a failure rather than a slow return to two spellings of one shape.
  *
  * Most rows the route table holds are named by the generated module rather than by a type here,
- * so what a schema yields is mostly what only the bus carries. Eleven are the exception, and what
+ * so what a schema yields is mostly what only the bus carries. Twelve are the exception, and what
  * makes them one is not a measurement taken once but `src/dispatch-api-owned.ts`, which holds
  * each of those names to the shape the document declares for it, in both directions and at
  * compile time, over the union `scripts/gen-api.ts` renders from the same list it filters the
- * aliases by. So a regeneration that moves one of the eleven reds the typecheck by that name, and
- * a twelfth is added by passing that assertion rather than by being written here.
+ * aliases by. So a regeneration that moves one of the twelve reds the typecheck by that name, and
+ * a thirteenth is added by passing that assertion rather than by being written here.
  */
 const SCHEMA_DERIVATIONS = 64;
 

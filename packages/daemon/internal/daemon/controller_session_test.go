@@ -165,6 +165,7 @@ func linesOf(t *testing.T, logs *syncBuffer, msg string) []map[string]any {
 // internal/config's the default of 90. The control: on main the keeper does nothing for a working
 // claim, so row (a) fails.
 func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	working := func(turnStart time.Time, run supervise.SessionRun) supervise.Claim {
 		return supervise.Claim{State: supervise.StateWorking, Session: "ses_controller", LastTurnStart: turnStart,
@@ -245,6 +246,7 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 // 72. The control: on main no code reads the age of the controller's session, so every relaunch
 // resumes the old session and the (a) rows fail.
 func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	idle := func(session string) supervise.Claim {
 		return supervise.Claim{State: supervise.StateIdle, Session: session, LastTurnStart: now.Add(-2 * time.Hour),
@@ -350,6 +352,7 @@ func storedDelivery(sup *supervisor) (supervise.Delivery, bool) {
 // control: on main the message reads as an operator's delivery, which resumes the claim whoever
 // suspended it, so both rows find the controller launching with the message queued.
 func TestTheStartMessageDoesNotUndoAnOperatorsSuspension(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	// wantUndisturbed is the controller after the keeper's start message: suspended by the operator
 	// on session, holding no delivery in memory or in the store, launched no more than launches
@@ -435,6 +438,7 @@ func TestTheStartMessageDoesNotUndoAnOperatorsSuspension(t *testing.T) {
 // internal/supervise's test of the same name holds the replacement under R1. The control: on main
 // no relaunch replaces a session for its age, so none of the three is written.
 func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	old := sessionAged(now, 73*time.Hour)
 	k, sup, _, logs := keptController(t, supervise.Claim{State: supervise.StateIdle, Session: old,
@@ -497,6 +501,7 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 // machine, and its turn-bound test the same line for the controller's first session. The
 // control: on main no Error line is written.
 func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *testing.T) {
+	t.Parallel()
 	t.Run("f: a fresh session that never finished a turn is retried with the keeper's waits, not replaced", func(t *testing.T) {
 		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateReady, Session: "ses_fresh",
 			Abandoned: supervise.AbandonedSession{Session: "ses_old", Why: "its launches ended before it finished a turn", At: time.Now().Add(-time.Hour), Told: true}})

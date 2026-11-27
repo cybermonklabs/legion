@@ -185,15 +185,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
       # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
-      # reads its own stack's database", the rows of replace-blocks-guard.test.ts that need a
-      # server, and the rows of node-projects-horizon-hold.test.ts that need one. Each reads
-      # LEGION_TEST_PG_DSN and skips without it. They need a login role that may create
-      # databases: psql-session.test.ts, replace-blocks-guard.test.ts and
-      # node-projects-horizon-hold.test.ts each make a database of their own and drop it with
-      # e2e/psql.ts's dropDatabase, which needs no superuser (dropDatabase's doc comment says
-      # why). They need a database the DSN names: harness-stacks.test.ts runs `select 1` on it,
-      # and replace-blocks-guard.test.ts takes it for the shared one its guard refuses. They need
-      # no extension, as psql-session.test.ts's head says. psql is on the runner already.
+      # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a
+      # server. Each reads LEGION_TEST_PG_DSN and skips without it. They need a login role that
+      # may create databases: psql-session.test.ts and replace-blocks-guard.test.ts each make a
+      # database of their own and drop it with e2e/psql.ts's dropDatabase, which needs no
+      # superuser (dropDatabase's doc comment says why). They need a database the DSN names:
+      # harness-stacks.test.ts runs `select 1` on it, and replace-blocks-guard.test.ts takes it
+      # for the shared one its guard refuses. They need no extension, as psql-session.test.ts's
+      # head says. psql is on the runner already.
       #
       # The runner's own PostgreSQL. GitHub's runner-images readme for Ubuntu 24.04
       # (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md, "#### PostgreSQL", read on

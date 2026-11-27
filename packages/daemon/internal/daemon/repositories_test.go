@@ -850,6 +850,65 @@ func TestTheStatesWebhookAppGapsAreTheLiveRepositoriesThatHoldOne(t *testing.T) 
 	}
 }
 
+// The repositories block names a record kept on a configured pair's `from` under the pair's `to`
+// exactly where the rename rule serves it there (servesLocked): GitHub answered the `to` served
+// and the `from` not; GitHub answered neither name yet, which serves the pair as the operator
+// configured it; and never where GitHub answered both names served, since each is then a
+// repository of its own. The entry reads its Apps and its read error from the served name's entry,
+// and shows Apps only once GitHub answered both reads.
+func TestTheRepositoriesBlockServesAPairsOldNameWhereTheRenameRuleDoes(t *testing.T) {
+	t.Parallel()
+	renames := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	live := liveOf(t, "sjawhar/legion", "Acme/Widgets", "acme/widgets")
+	both := appInstallations{implement: appInstallation{answered: true, installed: true}, review: appInstallation{answered: true, installed: true}}
+	neither := appInstallations{implement: appInstallation{answered: true}, review: appInstallation{answered: true}}
+	installed := &api.AppInstallationsView{Implement: true, Review: true}
+	const widgetsFailed = "the implement App's installation on Acme/Widgets could not be read: GitHub answered 502"
+	type read struct {
+		apps      appInstallations
+		readError string
+	}
+	for _, tc := range []struct {
+		name  string
+		reads map[string]read
+		want  api.LiveRepositoryView
+	}{
+		{
+			name:  "the transfer answered",
+			reads: map[string]read{"sjawhar/legion": {apps: neither}, "cybermonklabs/legion": {apps: both}},
+			want:  api.LiveRepositoryView{Repo: "sjawhar/legion", ServedAs: "cybermonklabs/legion", Apps: installed},
+		},
+		{
+			name: "no read of either name answered",
+			reads: map[string]read{"cybermonklabs/legion": {
+				apps: appInstallations{implement: appInstallation{answered: true, installed: true}}, readError: "GitHub answered 502"}},
+			want: api.LiveRepositoryView{Repo: "sjawhar/legion", ServedAs: "cybermonklabs/legion", ReadError: "GitHub answered 502"},
+		},
+		{
+			name:  "both names served",
+			reads: map[string]read{"sjawhar/legion": {apps: both}, "cybermonklabs/legion": {apps: both}},
+			want:  api.LiveRepositoryView{Repo: "sjawhar/legion", Apps: installed},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repos := newRepositories("LEGION", renames)
+			repos.keepRead(ghrepo.MustParse("Acme/Widgets"), appInstallations{}, widgetsFailed)
+			for name, r := range tc.reads {
+				repos.keepRead(ghrepo.MustParse(name), r.apps, r.readError)
+			}
+			view := repos.view(live, nil)
+			want := []api.LiveRepositoryView{{Repo: "Acme/Widgets", ReadError: widgetsFailed}, tc.want}
+			if !reflect.DeepEqual(view.Live, want) {
+				t.Fatalf("live = %+v\nwant %+v", view.Live, want)
+			}
+			if view.WithoutWebhookApp != nil || view.Caches != nil {
+				t.Fatalf("withoutWebhookApp = %+v, caches = %+v, want neither", view.WithoutWebhookApp, view.Caches)
+			}
+		})
+	}
+}
+
 // One lookup of the entries answers for a repository, and every reader takes it from that lookup:
 // what an issue on it is recorded with (ResolveRepository), whether release_children waits for it
 // (repositoryUnread), and whether the preparation of a todo issue on it reads GitHub itself
@@ -1111,14 +1170,14 @@ func TestAnUnrecordedIssuesLaunchWorksItsResolvedRepository(t *testing.T) {
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
 		workspaceHeld:   func(string, ghrepo.Repository) bool { return held }}
 
-	if repo, branch, err := w.launchRepository(ctx, "LEGION-9"); err != nil || repo.String() != "Acme/Widgets" || branch != "release/v7.1" {
+	if repo, branch, err := launchedRepository(ctx, w, "LEGION-9"); err != nil || repo.String() != "Acme/Widgets" || branch != "release/v7.1" {
 		t.Fatalf("LEGION-9's launch works %s@%s, %v; want its resolved Acme/Widgets@release/v7.1", repo, branch, err)
 	}
-	if repo, _, err := w.launchRepository(ctx, "LEGION-9"); err != nil || repo.String() != "Acme/Widgets" || client.detailReads("LEGION-9") != 1 {
+	if repo, _, err := launchedRepository(ctx, w, "LEGION-9"); err != nil || repo.String() != "Acme/Widgets" || client.detailReads("LEGION-9") != 1 {
 		t.Fatalf("LEGION-9's second launch works %s, %v, after %d reads of Dispatch; want Acme/Widgets kept for the issue, Dispatch read once", repo, err, client.detailReads("LEGION-9"))
 	}
 	held = false
-	if _, _, err := w.launchRepository(ctx, "LEGION-9"); err != nil || client.detailReads("LEGION-9") != 2 {
+	if _, _, err := launchedRepository(ctx, w, "LEGION-9"); err != nil || client.detailReads("LEGION-9") != 2 {
 		t.Fatalf("LEGION-9's launch once its workspace is gone = %v after %d reads of Dispatch, want Dispatch read again", err, client.detailReads("LEGION-9"))
 	}
 
@@ -1128,11 +1187,11 @@ func TestAnUnrecordedIssuesLaunchWorksItsResolvedRepository(t *testing.T) {
 		{"LEGION-12", "prepare zeta/tools, the repository Dispatch resolves LEGION-12 to: the review App is not installed on zeta/tools"},
 		{"LEGION-13", "prepare zeta/gadgets, the repository Dispatch resolves LEGION-13 to: the implement App's installation on zeta/gadgets could not be read: GitHub answered 502"},
 	} {
-		if repo, _, err := w.launchRepository(ctx, tc.key); err == nil || err.Error() != tc.want {
+		if repo, _, err := launchedRepository(ctx, w, tc.key); err == nil || err.Error() != tc.want {
 			t.Fatalf("%s's launch works %s, %v; want it refused with %q", tc.key, repo, err, tc.want)
 		}
 	}
-	if repo, _, err := w.launchRepository(ctx, "LEGION-14"); err != nil || repo.String() != "Acme/Widgets" {
+	if repo, _, err := launchedRepository(ctx, w, "LEGION-14"); err != nil || repo.String() != "Acme/Widgets" {
 		t.Fatalf("LEGION-14's launch after the refusals works %s, %v; want Acme/Widgets: one launch's refusal stops nothing else", repo, err)
 	}
 }
@@ -1157,7 +1216,7 @@ func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T
 		workspaceHeld:   func(string, ghrepo.Repository) bool { return true }}
 	cached := func() []string { return repositoryNames(w.cacheRepositories()) }
 
-	if _, _, err := w.launchRepository(ctx, "LEGION-9"); err != nil || !slices.Equal(cached(), []string{"Acme/Widgets"}) {
+	if _, _, err := launchedRepository(ctx, w, "LEGION-9"); err != nil || !slices.Equal(cached(), []string{"Acme/Widgets"}) {
 		t.Fatalf("LEGION-9's first launch = %v with the cache set %v, want Acme/Widgets in it", err, cached())
 	}
 	if err := w.refreshLive(ctx); err != nil {
@@ -1166,7 +1225,7 @@ func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T
 	if got := cached(); len(got) != 0 {
 		t.Fatalf("the cache set after the read of the live records = %v, want none: no live record names Acme/Widgets", got)
 	}
-	repo, branch, err := w.launchRepository(ctx, "LEGION-9")
+	repo, branch, err := launchedRepository(ctx, w, "LEGION-9")
 	if err != nil || repo.String() != "Acme/Widgets" || branch != "main" {
 		t.Fatalf("LEGION-9's second launch works %s@%s, %v; want the kept Acme/Widgets@main", repo, branch, err)
 	}

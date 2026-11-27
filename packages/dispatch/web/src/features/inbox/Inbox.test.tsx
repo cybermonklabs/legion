@@ -3267,58 +3267,59 @@ const heldSteps = [
   ["k", "the first row", 0, []],
 ] as const;
 
-test.each(
-  heldSteps
-)("%s from a question held past %s steps from where that row stood", async (key, _place, heldIndex, expected) => {
-  const user = userEvent.setup();
-  const narrow = widenToReadingPane();
-  const rows = [
-    inboxIssue("ask-a", "CORE-1", "Which approach?"),
-    inboxIssue("ask-b", "CORE-2", "Which format?"),
-    inboxIssue("ask-c", "CORE-3", "Which owner?"),
-  ];
-  const held = rows[heldIndex];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
-  const getAsk = mockAskReads(rows);
-  const getIssue = mockIssueReads();
-  const { queryClient, unmount } = renderInbox();
+test.each(heldSteps)(
+  "%s from a question held past %s steps from where that row stood",
+  async (key, _place, heldIndex, expected) => {
+    const user = userEvent.setup();
+    const narrow = widenToReadingPane();
+    const rows = [
+      inboxIssue("ask-a", "CORE-1", "Which approach?"),
+      inboxIssue("ask-b", "CORE-2", "Which format?"),
+      inboxIssue("ask-c", "CORE-3", "Which owner?"),
+    ];
+    const held = rows[heldIndex];
+    let served: InboxRow[] = rows;
+    const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+    const getAsk = mockAskReads(rows);
+    const getIssue = mockIssueReads();
+    const { queryClient, unmount } = renderInbox();
 
-  try {
-    await screen.findByTestId("inbox-pane");
-    for (let above = 0; above < heldIndex; above += 1) {
-      await user.keyboard("j");
-      await waitFor(() => expect(selectedIds()).toEqual([rows[above + 1].id]));
+    try {
+      await screen.findByTestId("inbox-pane");
+      for (let above = 0; above < heldIndex; above += 1) {
+        await user.keyboard("j");
+        await waitFor(() => expect(selectedIds()).toEqual([rows[above + 1].id]));
+      }
+      await waitFor(() => expect(selectedIds()).toEqual([held.id]));
+      // Typed and unsent: the column keeps this question once its row goes.
+      const draft = within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer");
+      await user.clear(draft);
+      await user.click(draft);
+      await user.paste("Whichever the mirror already holds.");
+
+      served = rows.filter((row) => row.id !== held.id);
+      await act(async () => {
+        queryClient.setQueryData<AskRead>(["ask-thread", held.id], retracted(held));
+        await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      });
+      await waitFor(() => expect(rowIds()).toEqual(served.map((row) => row.id)));
+      expect(selectedIds()).toEqual([]);
+
+      await user.keyboard(key);
+      // Settled first, so a row the step should have left alone has its chance to show up.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(selectedIds()).toEqual([...expected]);
+    } finally {
+      unmount();
+      narrow();
+      getAsk.mockRestore();
+      getInbox.mockRestore();
+      getIssue.mockRestore();
     }
-    await waitFor(() => expect(selectedIds()).toEqual([held.id]));
-    // Typed and unsent: the column keeps this question once its row goes.
-    const draft = within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer");
-    await user.clear(draft);
-    await user.click(draft);
-    await user.paste("Whichever the mirror already holds.");
-
-    served = rows.filter((row) => row.id !== held.id);
-    await act(async () => {
-      queryClient.setQueryData<AskRead>(["ask-thread", held.id], retracted(held));
-      await queryClient.refetchQueries({ queryKey: ["inbox"] });
-    });
-    await waitFor(() => expect(rowIds()).toEqual(served.map((row) => row.id)));
-    expect(selectedIds()).toEqual([]);
-
-    await user.keyboard(key);
-    // Settled first, so a row the step should have left alone has its chance to show up.
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(selectedIds()).toEqual([...expected]);
-  } finally {
-    unmount();
-    narrow();
-    getAsk.mockRestore();
-    getInbox.mockRestore();
-    getIssue.mockRestore();
   }
-});
+);
 
 test("the keys act on the selected row and the pane: Enter, 1-9, x, h and Escape", async () => {
   const user = userEvent.setup();

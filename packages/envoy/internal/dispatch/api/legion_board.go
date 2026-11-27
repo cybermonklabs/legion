@@ -1,13 +1,14 @@
 // legion_board.go serves GET /api/v1/projects/{key}/legion/board, one project's Legion board from
-// what the sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind
-// sends (live_frames.go's legionBoardView). No dashboard page draws it: the route and the live
-// view kind are all there is of it.
+// what Dispatch recorded of its daemon (dispatch://INFRA-1077, dispatch://INFRA-3931), and the
+// body the `legion` live view kind sends (live_frames.go's legionBoardView). No dashboard page
+// draws it: the route and the live view kind are all there is of it.
 //
-// The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
-// daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this
-// reads the newest value of each field it recorded, the newest read's own verdict, and the
-// project's issues. A board that called the daemon would read it once per open page and once per
-// event burst, which is what the per-minute lease exists to prevent.
+// The answer is read from what Dispatch holds, never from the daemon: the Legion intake
+// (internal/dispatch/legion) records each value that moved, from the daemon's state events and
+// from a whole read where the events cannot carry the state, and this reads the newest value of
+// each field it recorded, the read of the daemon that readDaemonRead picks from legion_reads, and
+// the project's issues. A board that called the daemon would read its whole state once per open
+// page and once per event burst.
 //
 // Two disciplines, as in the metrics package:
 //
@@ -84,17 +85,17 @@ type legionBoardResponse struct {
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the P0
 // holders, the live trees, the queue's length, and the last read of the daemon — when it was
-// made, whether it succeeded and why it did not. SlotCap is null until a read records the
-// daemon's admission block, Trees is 0 until a daemon that reports its live trees does
-// (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never answered at
-// all, which shows the board with empty columns.
+// made, whether it succeeded and why it did not, as readDaemonRead picks them. SlotCap is null
+// until a read records the daemon's admission block, Trees is 0 until a daemon that reports its
+// live trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
+// answered at all, which shows the board with empty columns.
 //
-// P0Holders is the daemon's own number of P0 holders, copied from the newest admission block a
-// read recorded (dispatch://INFRA-5636): a P0 issue holds its slot outside the cap, so this is
-// what tells a reader why SlotsInUse can be more than SlotCap. The board counts none itself. It
-// is null, never 0, where that block gives no number (a daemon before that change sends none)
-// and where no read has recorded a block: 0 would say no P0 issue holds a slot, which nothing
-// read says.
+// P0Holders is the daemon's own number of P0 holders, copied from the newest admission block
+// Dispatch recorded, from a whole read of the daemon's state or from its state events
+// (dispatch://INFRA-5636): a P0 issue holds its slot outside the cap, so this is what tells a
+// reader why SlotsInUse can be more than SlotCap. The board counts none itself. It is null, never
+// 0, where that block gives no number (a daemon before that change sends none) and where nothing
+// has recorded a block: 0 would say no P0 issue holds a slot, which nothing recorded says.
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
@@ -178,13 +179,14 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 }
 
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the
-// newest read of its daemon and the project's legion_current in one snapshot (readSampled: the
+// newest read of its daemon and the project's legion_current in one snapshot (readRecorded: the
 // header, the cards and the issues the daemon reports), the project's own issues in Dispatch's
 // rank order, and the phase work of the issues its tree walk can climb onto that the daemon
 // reports nothing of.
 type legionBoardPopulation struct {
 	project string
-	// read is the newest legion_reads row, nil for a project whose daemon was never read.
+	// read is the header's read of the daemon (readDaemonRead), nil for a project whose daemon was
+	// never read.
 	read *legionBoardDaemonRead
 	// admission is the daemon's admission block as the newest read recorded it, nil while no read
 	// has recorded one: before the first read of a daemon, and for a daemon that sends none.
@@ -212,8 +214,8 @@ type legionBoardPopulation struct {
 	ranked []string
 }
 
-// legionBoardDaemonRead is the newest legion_reads row: when the read was made, whether it
-// succeeded, and why it did not.
+// legionBoardDaemonRead is the header's read of the daemon: when the newest record of it was made,
+// whether it succeeded, and why it did not.
 type legionBoardDaemonRead struct {
 	at      time.Time
 	ok      bool
@@ -221,7 +223,7 @@ type legionBoardDaemonRead struct {
 }
 
 // legionBoardIssue is one issue the board may show: the newest observation of each field the
-// sampler records, and the title, priority and parent Dispatch holds for the same key.
+// intake records, and the title, priority and parent Dispatch holds for the same key.
 type legionBoardIssue struct {
 	key string
 	// state is the issue's newest observations, read through the one per-issue rule an issue's
@@ -373,7 +375,7 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx, v
 	return &read, nil
 }
 
-// readCurrent reads the project's legion_current through legion.ReadCurrent inside readSampled's
+// readCurrent reads the project's legion_current through legion.ReadCurrent inside readRecorded's
 // transaction, so the cards and the tree walk answer the snapshot the header does. Its Newest are
 // the cards, and the project's own rows under legion.AdmissionKey (observeProject); its Reported
 // is the walk's (treeNode).

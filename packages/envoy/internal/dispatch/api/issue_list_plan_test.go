@@ -18,12 +18,20 @@ import (
 // and where it hangs. `loops` and `actual rows` are only in an ANALYZE plan, which is why these
 // tests run the statements rather than only plan them. The rows each filter threw away and the
 // shared buffers the node and the nodes below it accessed are what the speed test counts
-// (speedWork); the buffer counts are only in a plan run with BUFFERS.
+// (speedWork); the buffer counts are only in a plan run with BUFFERS. The direction an index scan
+// reads its index in (an issue's entries newest first only where it is Backward), the conditions
+// it reads its index by and tests each row by, and the name of the subplan a node begins are what
+// the backlog move's check and the newest event's walk read (requireBacklogMoveThroughItsIndex,
+// logNewestEventWalk).
 type analyzedNode struct {
 	NodeType         string         `json:"Node Type"`
 	Relationship     string         `json:"Parent Relationship,omitempty"`
+	SubplanName      string         `json:"Subplan Name,omitempty"`
 	RelationName     string         `json:"Relation Name,omitempty"`
 	IndexName        string         `json:"Index Name,omitempty"`
+	ScanDirection    string         `json:"Scan Direction,omitempty"`
+	IndexCond        string         `json:"Index Cond,omitempty"`
+	Filter           string         `json:"Filter,omitempty"`
 	Rows             float64        `json:"Actual Rows"`
 	Loops            float64        `json:"Actual Loops"`
 	RemovedByFilter  float64        `json:"Rows Removed by Filter,omitempty"`

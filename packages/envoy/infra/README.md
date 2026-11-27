@@ -185,8 +185,8 @@ file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` 
 refused reload blocks every later one, a `users` change's included, until the server restarts);
 and, while `authCallout` is set, a change of the callout's lines (`core.Authorization.CalloutLines()`:
 the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag), which a
-change of `authCallout`, of `privateProjects` or of the keys in `users`, a user added or removed
-among them, makes (`auth_users` lists every user's key).
+change of `authCallout`, of `privateProjects`, of the keys in `users`, a user added or removed
+among them, or of the session listener's key makes (`auth_users` lists every user's key).
 [A reload, not a replacement](docs/nats-hub.md#a-reload-not-a-replacement) says why a change of
 the ping lines or the server tag, either of which nats-server can reload, rolls the pods too.
 The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's ConfigMap
@@ -214,12 +214,12 @@ The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's Con
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside a session listener, `listener` or `tailnet.listener`, and so beside `tailnet`, which always runs one: the listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines, followed beside `privateProjects` by the server tag ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag, so a change to `authCallout`, to the keys of `users` while it is set, to `privateProjects`, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. Set, the chart waits on the hub pods' NetworkPolicy, so no pod takes the server tag, by reload or by restart, before the policy that closes the monitoring port, 8222, is applied. Nothing orders its removal, so turn it off only after every project is public again, and give `monitorNamespaces` back only in a later apply, after the removal has restarted every hub pod on the untagged lines (see [The auth service](docs/nats-hub.md#the-auth-service)). |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). The session listener, `listener` or `tailnet.listener`, stays beside it: the listener connects as a user with a stored seed, whose key is in `auth_users`, so it never reaches the auth service, and `privateProjects` refuses it. While `sessionUser` is set, a client presenting no credential still becomes the session user past the auth service. Set, `auth.conf` ends with the ping lines, followed beside `privateProjects` by the server tag ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag, so a change to `authCallout`, to the keys of `users` or the listener's key while it is set, to `privateProjects`, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, beside the session listener (`listener` or `tailnet.listener`), whose user connects by a stored seed, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. Set, the chart waits on the hub pods' NetworkPolicy, so no pod takes the server tag, by reload or by restart, before the policy that closes the monitoring port, 8222, is applied. Nothing orders its removal, so turn it off only after every project is public again, and give `monitorNamespaces` back only in a later apply, after the removal has restarted every hub pod on the untagged lines (see [The auth service](docs/nats-hub.md#the-auth-service)). |
 | `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
-| `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
+| `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener. Beside `authCallout` its user connects by its seed and skips the callout, as `tailnet.listener`'s does. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default, which also names the listener's NATS user, so it must be a valid NATS user name too: 1 to 48 lower-case letters, digits and hyphens, with no hyphen first or last, and so no dot or space; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -281,7 +281,11 @@ input:
   `clientNamespaces`, any of `oidcIssuer`, `oidcAudience` and `oidcAccounts`;
 - no `users` without a session listener, and a user refused as
   [The hub's users](docs/nats-hub.md#the-hubs-users) lists, a user whose machine id gives the
-  session listener's durable among them; the listener's user is named after its machine id.
+  session listener's durable among them; the listener's user is named after its machine id, so a
+  listener `machineId` that is no valid NATS user name, such as a dotted one, is refused naming
+  the input that declares the listener, `listener` or `tailnet.listener`, as `listener "envoy.hub":
+  name must match ^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`, though the shared machine-id rule takes
+  it.
 
 Once each Pulumi input resolves, before any child takes it, it refuses a blank or
 whitespace-only `kubeconfig` or `tailnetAuthKey`, or one holding an nkey seed, naming the input and
@@ -2642,7 +2646,7 @@ The listener's outputs are `containerName` and `port`.
 
 | Input | Default | What it is |
 | --- | --- | --- |
-| `machineId` | required | The listener's name, `ENVOY_MACHINE_ID`. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names. |
+| `machineId` | required | The listener's name, `ENVOY_MACHINE_ID`. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names, and a `.`, `*`, `>`, `/` or `\` becomes `%` and two hex digits, so `host.example.internal` names `listener-host%2Eexample%2Einternal`. |
 | `natsUrls` | required | The NATS servers to connect to. May come from another resource or stack. |
 | `image` | required | The listener image, such as `ghcr.io/cybermonklabs/legion/envoy:<tag>`. |
 | `containerName` | `envoy-listener` | The container's name. |
@@ -2674,10 +2678,14 @@ The listener refuses these before it registers anything, with an error naming wh
   names the input and never the value, as `envoy-infra:host:Listener example-host-a: image holds an
   nkey seed (not echoed)`, since each would reach a resource's inputs, an alias or another refusal.
   `seed` is the one input that is a seed;
-- an empty `machineId`, one with leading or trailing whitespace, or one holding `.`, `*`, `>`, `/`,
-  `\`, a control character, or whitespace other than an interior ordinary space, or one over 246 bytes: none can be used
-  the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>` the
-  listener uses;
+- an empty `machineId`, one with leading or trailing whitespace, or one holding `%`, a control
+  character, or whitespace other than an interior ordinary space, or one whose durable
+  `listener-<machineId>` is over 255 bytes, each escape counted as three (a plain id of up to 246
+  bytes fits). The listener refuses the same `%` and the same over-long durable at start, since an
+  id holding `%` could give the names of another id. It escapes every other character NATS refuses
+  in its durable and queue group names, so the control characters and the other whitespace are
+  refused here because a hub's grant entries or the watchdog's heredoc and environment file cannot
+  carry them. The listener trims leading and trailing whitespace, which would change both names;
 - a `port` outside 1-65535, a `senderMessagesPerMinute` outside 1 to 60000, a
   `senderMessageBurst` below 1, or a `senderMessageBurst` without `senderMessagesPerMinute`;
 - `watchdog` with a `containerName` other than `envoy-listener`;
@@ -3050,7 +3058,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 
 | Input | Default | What it is |
 | --- | --- | --- |
-| `machineId` | required | `ENVOY_MACHINE_ID`, the listener's name. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names. |
+| `machineId` | required | `ENVOY_MACHINE_ID`, the listener's name. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names, and a `.`, `*`, `>`, `/` or `\` becomes `%` and two hex digits. |
 | `natsUrls` | required | The NATS servers. May come from another resource as an output of the whole list, such as `nats.internal_url.apply(lambda url: [url])`. |
 | `image` | required | The listener image, such as `ghcr.io/cybermonklabs/legion/envoy@sha256:<digest>`. |
 | `region` | required | The container's `awslogs-region`. |
@@ -3101,9 +3109,9 @@ the input:
   counts as missing) or given while it does not, each input checked before the list; then a
   `webhooks` other than `[]` or exactly `["github", "slack"]`, then a `senderMessagesPerMinute`
   outside 1 to 60000, a `senderMessageBurst` below 1 or one without `senderMessagesPerMinute`; an
-  empty `machineId`, one with
-  leading or trailing whitespace, or one holding `.`, `*`, `>`, `/`, `\`, a control character, or
-  whitespace other than an interior ordinary space, or one over 246 bytes; a `listenHost` holding
+  empty `machineId`, one with leading or trailing whitespace, or one holding `%`, a control
+  character, or whitespace other than an interior ordinary space, or one whose durable
+  `listener-<machineId>` is over 255 bytes, each escape counted as three; a `listenHost` holding
   a control character; a blank `listenHost`; a `natsReplicas` below 1 or above 5; an empty
   `subnetIds`; a `baseTags` holding `service`.
 - Either, without an `aws` provider (see [Providers and transformations](#providers-and-transformations)).
@@ -3925,10 +3933,11 @@ callout is a `nats:AuthCallout` alike. `gcp:NatsHub` and `gcp:ClusteredNatsHub` 
 server's from their `users`, `listener` and `sessionUser`, with `authCallout` and
 `privateProjects` as `callout` and `privateProjects` (see
 [The hub's users](docs/nats-hub.md#the-hubs-users) and
-[The auth service](docs/nats-hub.md#the-auth-service)). A hub refuses its own listener beside
-`authCallout`, naming both: the listener connects as a user whose seed the hub stores, and its
-service identity, with which it would connect through the auth service, arrives in a later
-change. With `privateProjects`, a hub also refuses an
+[The auth service](docs/nats-hub.md#the-auth-service)). A hub's own listener stays beside
+`authCallout`: it connects as a user whose seed the hub stores, so its key is in `auth_users` and
+it never reaches the auth service; `privateProjects` refuses it, as every user but the service's,
+until its service identity, with which it would connect through the auth service, arrives in a
+later change. With `privateProjects`, a hub also refuses an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
 <machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
@@ -4177,10 +4186,15 @@ Each of its refusals is a `core.InputError` naming the input it refuses: `author
 
 ### Permission sets
 
-`core` also builds the grants Envoy's own clients need from Envoy's own names
-(`packages/envoy/internal/bus` and `packages/envoy/internal/contracts`), so no consumer spells
-Envoy's subjects. Each is a `core.Permissions`, a publish and a subscribe `Rules` that a user takes
-as its `Publish` and `Subscribe`. Below, `<m>` is the machine id with each space as `-`.
+`core` also hands out the grants Envoy's own clients need, so no consumer spells Envoy's subjects.
+Each is a `core.Permissions`, a publish and a subscribe `Rules` that a user takes as its `Publish`
+and `Subscribe`, each an allow list and a deny list. The grants themselves are `natsgrant`'s
+(`packages/envoy/natsgrant`), built from Envoy's own names (`packages/envoy/internal/bus` and
+`packages/envoy/internal/contracts`), and `core` wraps each. The NATS auth service answers each
+connection it admits with a grant of the same table ([The auth service](docs/nats-hub.md#the-auth-service)),
+so a hub's static user and an admitted connection of the same kind hold the same lists, deny
+lists included. Below, `<m>` is the machine id as `bus.ListenerDurable` spells it: each space as
+`-`, and each character NATS refuses in a consumer name as `%` and two hex digits.
 
 `ListenerPermissions(machineID)` is what `envoy-listener` needs as that machine. Every entry below
 but the session consumers' is the base `HostPermissions` and `DispatchPermissions` are built from.
@@ -4188,7 +4202,8 @@ It publishes to:
 
 - every notification topic, `notifications.>`: the subjects of the `ENVOY_NOTIFICATIONS` stream,
   the role lanes, every exception lane, and every other `notifications.` topic a caller may
-  publish straight onto NATS (one the stream does not capture);
+  publish straight onto NATS (one the stream does not capture), but the two lanes its publish
+  deny names (below);
 - the stream's `$JS.API.STREAM.INFO`, `CREATE` and `UPDATE`, its stored-message get
   `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, its durable consumer `listener-<m>`'s
   `$JS.API.CONSUMER.INFO` and `CREATE`, the durable's acknowledgements
@@ -4244,6 +4259,42 @@ them.
 The auth service's per-session credentials, which give each session a NATS user of its own, are what narrow
 that reach; nothing here can, since one user serves every session on the host.
 
+Its publish deny names the two lanes of `notifications.>` that one user alone publishes, so the
+server refuses both to every other set built on these entries:
+
+- `notifications.dispatch.>`, Dispatch's lane. Only Dispatch's user publishes it: `envoy-dispatch`'s
+  outbox publishes every issue, document and project event there. `DispatchPermissions` takes
+  this lane off its deny.
+- `notifications.github.>`, GitHub's lane. Only the user of the listener that receives GitHub's
+  webhook publishes it: that listener's webhook route and CI summary loop publish every GitHub
+  event there. `WebhookListenerHostPermissions` takes this lane off its deny, and so does the auth
+  service's `webhook-listener` kind (`natsgrant.WebhookListener`). Its `listener` kind keeps the
+  deny.
+
+The Legion daemon trusts an event on Dispatch's lane as Dispatch's, and it applies a merge and a
+deciding review from an event on GitHub's lane. The deny refuses a direct publish on either lane by
+a session on a host. A caller of a listener's `/v1/messages/publish` publishes with the listener's
+user, so the deny covers that caller too, except on the two listeners whose user publishes the
+lane: the listener beside `envoy-dispatch`, which shares Dispatch's user, and the webhook listener.
+No grant can refuse that caller there, so the route refuses a topic under `notifications.dispatch.`
+or `notifications.github.` on every listener: it answers `400` naming the lane and publishes
+nothing.
+
+The deny alone does not stop a session on a shared host user from posing as Dispatch or as
+GitHub. The base entries keep the stream's create and update,
+`$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS` and `$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS`, so
+every set built on them but the edge listener's holds both: `ListenerPermissions`,
+`ListenerHostPermissions`, `WebhookListenerHostPermissions`, `DispatchPermissions` and
+`HostPermissions`, and the auth service's `listener`, `webhook-listener` and `dispatch` kinds.
+`EdgePermissions` and the `edge-listener` kind take both off. No session shares the user of any
+of them but `HostPermissions`, which the host's listener and every session on the host share.
+Such a session can update the stream to add a subject transform, or a `Sources` entry with
+transforms, and then publish on a subject the deny allows. The stream stores that message under
+Dispatch's lane or GitHub's, and the daemon trusts it there. No other session can:
+`SessionPermissions`, the hub's shared session user, and `natsgrant.Session`, the grant of a
+session the auth service admits, hold no stream call. The gap stays open for a host's sessions
+until they connect through the auth service in place of the shared host user.
+
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
 `notifications.role.> envoy-roles`, so each role message is forwarded once whichever machine's
 listener takes it, and in the machine's own group, `notifications.role.> envoy-listener-<m>`, which
@@ -4297,8 +4348,13 @@ session on the host share: in each direction the listener's base entries, the se
 left out, then each of the session's the base lacks, and `notifications.>` itself, which keeps a
 shared host user's sessions at today's reach until the auth service's per-session credentials;
 a listener connecting as this user can give its sessions no consumer, so it refuses their
-registrations `no_grant`. A `gcp:NatsHub` user with `machineId` holds it, and a hub's own
-`listener` holds `ListenerPermissions` for the hub's hostname. Sharing one user makes the host one
+registrations `no_grant`. Its publish direction keeps the base entries' deny of Dispatch's lane
+and GitHub's lane, so no session on the host publishes directly on either. A session on the host
+can still have a message stored under either lane, by a stream update that adds a subject
+transform, until the host's sessions connect through the auth service (see the base entries'
+deny above). A
+`gcp:NatsHub` user with `machineId` holds it, and a hub's own `listener` holds
+`ListenerPermissions` for the hub's hostname. Sharing one user makes the host one
 trust domain: any process that reaches the server as it, a listener's own process or any session on
 the host, holds the whole grant above, host sessions included, since sessions run as the Unix user
 that already reads the host's seed. This repository's listener and a session, connected as one
@@ -4322,13 +4378,31 @@ sets therefore allow the same calls a listener makes; the
 subscribe stays rather than being dropped because a change to a set rewrites every hub's rendered
 authorization, which replaces a VM hub's instance and reaches a clustered hub only as a live
 reload. This repository's listener runs under this set against the real servers below: it answers
-a registration `consumer` and relays a send on the session's relay subject, with no refusal.
+a registration `consumer` and relays a send on the session's relay subject, with no refusal. It
+keeps the base entries' deny of Dispatch's lane and GitHub's lane.
+
+`WebhookListenerHostPermissions(machineID)` is the grant of the user of the listener that
+receives GitHub's webhook, whose `ENVOY_WEBHOOKS` names `github`: `ListenerHostPermissions(machineID)`
+with GitHub's lane, `notifications.github.>`, taken off its publish deny. It still denies
+Dispatch's lane. A `gcp:NatsHub` user with `listenerMachineId` and `githubWebhook: true` holds it.
+The auth service answers such a listener, listed as a `webhook-listener` entry of
+`BROKER_NATS_SERVICES`, with the same grant in its `ListenerPermissions` form,
+`natsgrant.WebhookListener`. A listener that receives GitHub's webhook under any other set or
+kind has every GitHub event it publishes refused, its webhook deliveries and its CI settlements
+alike.
 
 `EdgePermissions(machineID, projects)` is the grant of an edge listener's own NATS user: the
 listener that serves the sessions of an outside person's projects (`ENVOY_EDGE_PROJECTS`), which no
 session and no other listener shares. It is `ListenerPermissions(machineID)` with these changes and
-no other. It refuses a machine id that is not one subject token and a project list that is empty
-or not project keys, sorted, each once. In place of `notifications.>` it publishes this list and
+no other, its publish deny included: it denies Dispatch's lane and GitHub's lane, as every set
+built on the listener grant does, since an edge listener publishes neither. Its publish list names
+neither lane, so the deny refuses nothing that list admits today; it keeps both lanes refused if
+the list grows. It refuses a machine id that holds a wildcard, white space, a control character or
+`%`, and a project list that is empty or not project keys, sorted, each once. It takes a dotted
+machine id, such as a fully qualified host name, as a listener's durable does: its inbox prefix and
+its relay receipts spell the id as the durable spells it, each dot as `%2E`, so each is one subject
+token. An id with none of the characters that spelling escapes (a dot, `/` or `\` among those it
+takes) keeps its prefix byte for byte. In place of `notifications.>` it publishes this list and
 no other notification topic: `notifications.agent.>` (a send); `notifications.role.<KEY>.>` for
 each project (a role message in the form that names the project); `notifications.envoy.deliver.*`
 (a relay frame); `notifications.envoy.relayreply.>` (every edge machine's relay receipts, since the
@@ -4372,7 +4446,8 @@ copies. Every listener on this build that is not an edge listener creates the DP
 this build starts before an edge listener does. It subscribes its own machine's inbox prefix
 `_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
 other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
-machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine
+machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, the machine id in both
+spelled as its durable spells it, so no edge machine
 subscribes another machine's receipts, and no stream it reads captures them, and no role lane: every
 connection of an edge listener names its inboxes under that prefix, and a shared listener forwards
 a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
@@ -4508,11 +4583,26 @@ this set; its seed belongs to the daemon, not to a host or session.
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
 `ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,
-delete and acknowledgements of Dispatch's `delivery-events` and `delivery-jobs`
-durables; the key-value calls for `envoy_webhook_redelivery`; publication of every session's
-agent-stream control subject; and subscription to every session's agent-stream frames. A
-`gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
-of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
+delete and acknowledgements of Dispatch's `delivery-events`, `delivery-jobs` and
+`legion-state-events` durables (`core.DispatchDurables()`; the last is the Legion state intake's,
+on every Legion daemon's state lane); the key-value calls for `envoy_webhook_redelivery`;
+publication of every session's agent-stream control subject; and subscription to every session's
+agent-stream frames. A `gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the
+user, so it holds none of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
+Its publish deny is the base entries' with Dispatch's lane, `notifications.dispatch.>`, taken
+off, so it still publishes that lane: `envoy-dispatch` publishes every event there. It still
+denies GitHub's lane: Dispatch publishes nothing there, and its redelivery sweep asks GitHub to
+send a missed delivery to the webhook listener again. It also denies the listener's resume lane,
+`notifications.envoy.resume.>`, which holds each session's resume record: the floor its consumer
+starts again at. Only a listener that holds the session consumers' calls writes a record
+(`bus.SessionConsumers`), and this set holds none of them, so no Dispatch path publishes there. A
+user that could would write a whole record, a floor and the stream's id, which
+`$JS.API.STREAM.INFO` reads. A session that comes back would then start past the messages stored
+while it was away. The listener sets and `HostPermissions` keep the lane. This set keeps the kept
+lane, `notifications.envoy.kept.>`, and the wake topic, `notifications.legion.wake`, since this
+user publishes both: the outbox keeps a role route's copy on the kept lane, and the listener beside
+`envoy-dispatch` keeps a role message with no holder there, moves the kept lane's drain cursors,
+and reports role and agent wakes and its `listener_ready` on the wake topic.
 Whatever holds its seed, `envoy-dispatch` or the listener beside it, can still read every session's
 frames and send control to any session; its filtered create on `delivery-events` lets it create
 that durable on any filter, so it can read any retained notification; and, since NATS checks no

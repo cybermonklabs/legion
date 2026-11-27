@@ -449,8 +449,7 @@ type routeDecl struct {
 	// for a person's approve grant, binds to its own pod's key and spends through its proxy, never
 	// released (model.Credential.ApproveOnly). It acts as its person with the scopes person and
 	// approve (brokerApproveOnlyScopes), and every route that does not state ApproveOnly, and GET
-	// /ws/live beside them,
-	// answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
+	// /ws/live beside them, answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
 	// (refuseApproveOnlyToken), so a route added later stays closed to it until its file states
 	// it.
 	//
@@ -540,6 +539,24 @@ const commentPartiesDescription = "A party address the body writes names that pa
 func goingCatalogueDescription() string {
 	return fmt.Sprintf("The catalogue of operations an agent may propose on Dispatch's graph: %d of the %d tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
 		len(goingToolRoutes), len(contracts.DispatchTools))
+}
+
+// replyQuoteDescription is what each of the six rows that write a reply to a block says of the
+// words of that block the reply quotes (replyQuoteRefusal, namedBlock.setQuote): field is the
+// row's block field and code the code its route gives a bad one. It is one definition, as
+// searchDescription is, so that the six rows state one rule.
+func replyQuoteDescription(field, code string) string {
+	return fmt.Sprintf("Beside %[1]s, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without %[1]s, an empty quote and an occurrence below 0 are each 400 %[2]s, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
+		field, code)
+}
+
+// threadPageDescription is what each of the three issue thread lists says of its page
+// (parseThreadPage, selectThreads): entries is the route's own sentence on what its thread and
+// its row are, and filters its own sentences on ?person= and the keys only it takes. It is one
+// definition, as replyQuoteDescription is, so that the three rows state one rule.
+func threadPageDescription(entries, filters string) string {
+	return fmt.Sprintf("?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. %[3]s A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to %[1]d, and %[2]d without it. before is the position of the page's last thread, <last_activity_at>,<id>, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. %[4]s Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to %[1]d, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
+		contracts.MaxThreadPageLimit, contracts.DefaultThreadPageLimit, entries, filters)
 }
 
 // routes is every declared route this server mounts, each handler bound to s: every declaration
@@ -808,10 +825,16 @@ func (s *server) routes() []apiRoute {
 		}
 		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], reads, read, slices.Contains(approveScopeRoutes, name)}
 	}
-	slices.SortFunc(routes, func(left, right apiRoute) int {
-		return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
-	})
+	slices.SortFunc(routes, func(left, right apiRoute) int { return byPatternThenMethod(left.routeDecl, right.routeDecl) })
 	return routes
+}
+
+// byPatternThenMethod is the one order every reader of the declarations walks them in: by pattern,
+// and by method where one pattern has more than one. routes() sorts what it mounts with it, and so
+// does the approve-only refusal, whose message promises the order routes() mounts them in
+// (approveOnlyRefusal).
+func byPatternThenMethod(left, right routeDecl) int {
+	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
 }
 
 // bound is handler, a method of the server, served by s.

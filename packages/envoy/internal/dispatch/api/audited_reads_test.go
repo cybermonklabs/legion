@@ -11,42 +11,74 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// auditedRead is one of the three reads the index audit of 2026-10-25 named: the statement, the
-// relation whose read was unindexed, the index that serves it after migrations 20261101182426
-// to 20261101182440, and the parameter type and literal its prepared form is explained with.
+// auditedRead describes a read named by the index audit of 2026-10-25 or a thread page
+// statement: the relation it must search, the index that serves it, and the parameter types
+// and literals used to explain its prepared form.
 type auditedRead struct {
-	name      string
-	query     string
-	relation  string
-	index     string
-	parameter string
-	literal   string
+	name       string
+	query      string
+	relation   string
+	index      string
+	parameters []string
+	literals   []string
 }
 
 var auditedReads = []auditedRead{
 	{
-		name:      "an issue's asks, every state",
-		query:     listIssueAsksQueryAll,
-		relation:  "asks",
-		index:     "asks_issue_key",
-		parameter: "text",
-		literal:   "'TEST-1'",
+		name:       "an issue's asks, every state",
+		query:      listIssueAsksQueryAll,
+		relation:   "asks",
+		index:      "asks_issue_key",
+		parameters: []string{"text"},
+		literals:   []string{"'TEST-1'"},
 	},
 	{
-		name:      "an issue's root messages",
-		query:     listIssueRootMessagesQuery,
-		relation:  "messages",
-		index:     "messages_issue_roots",
-		parameter: "text",
-		literal:   "'TEST-1'",
+		name:       "an issue's root messages",
+		query:      listIssueRootMessagesQuery,
+		relation:   "messages",
+		index:      "messages_issue_roots",
+		parameters: []string{"text"},
+		literals:   []string{"'TEST-1'"},
 	},
 	{
-		name:      "a document's open asks",
-		query:     listArtifactAsksQueryOpen,
-		relation:  "asks",
-		index:     "asks_artifact_id",
-		parameter: "uuid",
-		literal:   "'00000000-0000-4000-8000-00000000000a'",
+		name:       "a document's open asks",
+		query:      listArtifactAsksQueryOpen,
+		relation:   "asks",
+		index:      "asks_artifact_id",
+		parameters: []string{"uuid"},
+		literals:   []string{"'00000000-0000-4000-8000-00000000000a'"},
+	},
+	{
+		name:       "an issue's comment thread page",
+		query:      commentThreadPageQuery,
+		relation:   "comments",
+		index:      "comments_issue_created",
+		parameters: []string{"text", "text", "timestamptz", "uuid", "integer", "text", "text"},
+		literals:   []string{"'TEST-1'", "''", "null", "null", "20", "''", "'in'"},
+	},
+	{
+		name:       "an issue's message thread page",
+		query:      messageThreadPageQuery,
+		relation:   "messages",
+		index:      "messages_issue_roots",
+		parameters: []string{"text", "text", "timestamptz", "uuid", "integer", "text", "text"},
+		literals:   []string{"'TEST-1'", "''", "null", "null", "20", "'in'", "'legion-daemon:TEST'"},
+	},
+	{
+		name:       "an issue's ask thread page, every state",
+		query:      askThreadPageQueryAll,
+		relation:   "asks",
+		index:      "asks_issue_key",
+		parameters: []string{"text", "text", "timestamptz", "uuid", "integer"},
+		literals:   []string{"'TEST-1'", "''", "null", "null", "20"},
+	},
+	{
+		name:       "an issue's open ask thread page",
+		query:      askThreadPageQueryOpen,
+		relation:   "asks",
+		index:      "asks_open",
+		parameters: []string{"text", "text", "timestamptz", "uuid", "integer"},
+		literals:   []string{"'TEST-1'", "''", "null", "null", "20"},
 	},
 }
 
@@ -107,7 +139,7 @@ func createAuditedAsk(t *testing.T, handler http.Handler, target, question strin
 	}
 }
 
-// newAuditedReadFixture is the issue and the document the three reads are read for, in a project
+// newAuditedReadFixture is the issue and the document the reads are read for, in a project
 // big enough that each read reaches a few rows of a table holding many: that is the shape
 // production has, and the shape that decides a planner's choice between two indexes.
 //
@@ -128,6 +160,7 @@ func newAuditedReadFixture(t *testing.T) *store.Store {
 	root := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Ship the build tonight"}, "alice")
 	createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Sounds good", "in_reply_to": root.ID}, "bob")
 	createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A second thread"}, "alice")
+	createThreadComment(t, handler, issue.Key, map[string]any{"body": "A comment thread"}, "alice")
 
 	ctx := context.Background()
 	for _, bulk := range []struct {
@@ -150,6 +183,12 @@ func newAuditedReadFixture(t *testing.T) *store.Store {
 			insert into messages (issue_key, author, body, in_reply_to)
 			select m.issue_key, '{"kind":"user","id":"bob"}', 'Reply to ' || m.body, m.id
 			from messages m where m.in_reply_to is null and m.issue_key <> $1
+		`},
+		{"their comments", `
+			insert into comments (issue_key, author, body)
+			select 'TEST-' || (n % 39 + 2), '{"kind":"user","id":"alice"}', 'Comment ' || n
+			from generate_series(1, 400) n
+			where $1 <> ''
 		`},
 		{"their asks", `
 			insert into asks (issue_key, author, question)

@@ -100,12 +100,13 @@ func (s *server) attemptWriter(ctx context.Context, actor model.Actor) (model.Ac
 // answers as a send to a stopped session does - queued, with the envelope it stored, or with
 // none and duplicate when the stream already held it.
 //
-// The listener's delivery of that copy finds no record of the session and gives it up after its
-// retry window with the agent wake, which brings a released Legion pod back. The session reads the
-// copy from its consumer when it registers again under its id, since that consumer starts at the
-// first message stored on the subject that the session has not acknowledged. A repeat under the
-// same key - the delivery sweep resuming an attempt whose sender died between this publish and its
-// settle, or a Retry in the same mode - is the duplicate the stream reports, not a second copy.
+// The listener's delivery of that copy finds no record of the session, waits once for its agent
+// wait and then reports the agent wake, which brings a released Legion pod back. The session
+// reads the copy from its consumer when it registers again under its id, since that consumer
+// starts at the first message stored on the subject that the session has not acknowledged. A
+// repeat under the same key - the delivery sweep resuming an attempt whose sender died between
+// this publish and its settle, or a Retry in the same mode - is the duplicate the stream reports,
+// not a second copy.
 //
 // A session that may not be shown project, the message's (deliveryProject), has nothing queued:
 // the attempt settles failed with why (withheldFromSession), as its listener send would have.

@@ -99,6 +99,7 @@ github.com/sjawhar/envoy/internal/dispatch/api TestNearCopyRefusalReplay needs D
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedRecallOnDuplicates needs DISPATCH_RECALL_CORPUS, a corpus scripts/related-recall.sh writes
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedCheckLatencyOnRecallCorpus needs DISPATCH_RECALL_CORPUS and DISPATCH_RECALL_LATENCY_ISSUE
 github.com/sjawhar/envoy/internal/dispatch/api TestSearchLatencyOnCorpus needs DISPATCH_BENCH_DATABASE_URL, a restored corpus copy
+github.com/sjawhar/envoy/internal/dispatch/api TestThreadPagesHoldTheirBoundOnTheLargestIssues is a measurement on a database DISPATCH_BENCH_DATABASE_URL names, which CI leaves unset
 github.com/sjawhar/envoy/internal/dispatch/api TestStatementTimings is a measurement on the seeded database DISPATCH_BENCH_DATABASE_URL names (benchtime.Open), which CI leaves unset
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedTermsRefreshTiming is a measurement on that same seeded database (benchtime.Open), run only with DISPATCH_BENCH_TIMING=1 on a quiet machine
 github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set
