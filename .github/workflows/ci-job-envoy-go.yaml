@@ -494,12 +494,19 @@ jobs:
     # Each step's limit must leave its go test's -timeout room to fire before the runner cancels
     # the job: about 2 minutes of setup, the store-form count's own 5 (two packages, which go test
     # starts at once, so its -timeout bounds the step), the skip counter's test's own
-    # timeout-minutes of 15 and the two vets' minutes, so 35.
+    # timeout-minutes of 15, the two vets' minutes and the route adopter's own 5 after install-jj's
+    # seconds, so 35.
     #
-    # Budget (ci-budgets.md's Budgets note): 2100 s, the 35 minutes main's #5576 gives this job,
-    # plus its slowest retried step alone — the ci-ok report's 2460 s, above packages/envoy's
-    # `go mod download` at 5 x 180 + 150 = 1050 s. 2100 + 2460 = 4560 s -> 77 min.
-    timeout-minutes: 77
+    # Budget (.github/ci-budgets.md#the-budgets-note): 2100 s, the 35 minutes main's #5576 gives
+    # this job, plus its slowest retried step alone — install-jj, which main's #5409 added, whose
+    # two `ci_tools_fetch` calls and whose `mise install` of the jj release are
+    # 3416 + 450 = 3866 s, above the ci-ok report's 2460 s and packages/envoy's `go mod download`
+    # at 5 x 180 + 150 = 1050 s. The steps before install-jj took 223 s at most in three
+    # merge-group runs on 2026-11-27 (the slowest, job 140285945576, at main's e40deb10), which
+    # had no module download step, so that step counts at its 1050 s: 1273 s, and with
+    # install-jj's rounded limit of 65 minutes, 3900 s, the second sum is 1273 + 3900 = 5173 s,
+    # under the first. 2100 + 3866 = 5966 s -> 100 min.
+    timeout-minutes: 100
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -518,7 +525,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 77 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 100 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -602,6 +609,20 @@ jobs:
       # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
       - name: Vet agent-secrets' moto run (no moto)
         run: go vet -tags moto ./cmd/cipher/
+        working-directory: packages/envoy
+      # The route adopter's rows run under git and under jj, and those that need jj fail rather
+      # than skip on GitHub Actions without it, so jj is installed first. -v names each row in the
+      # log, which a leg's go test -json report does not; .github/go-legs.yaml puts the package
+      # `elsewhere`, with this job, so no leg runs it and this is its one run (ADOPTER_PACKAGES in
+      # .github/scripts/ci_job_reads.py). The package took 4.5 s in job 139022226359; the -timeout
+      # fires before the step's limit.
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
+      - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
+      - name: Test the route adopter under git and jj
+        timeout-minutes: 5
+        run: go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

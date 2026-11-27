@@ -459,9 +459,9 @@ jobs:
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
       # the CI-filter check's go list over a scratch module, the build-cache prune's builds of a
-      # scratch module and the build-tag lister, none of which that entry is filled for. The
-      # daemon's go.mod is still the one Go pin of this repository's three modules that a job
-      # without one of its own reads.
+      # scratch module, the testcontainers link check's go list over fixture modules and the
+      # build-tag lister, none of which that entry is filled for. The daemon's go.mod is still the
+      # one Go pin of this repository's three modules that a job without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -513,6 +513,13 @@ jobs:
       - name: Test the build cache prune of the cache fills
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_cache_working_set_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-cache-working-set.test.sh .github/scripts/go-cache-working-set.test.sh
+
+      # After setup-go: the ci-filters job's check that no command and no self-starting test
+      # binary links testcontainers-go, over fixture modules whose stand-in for it is a local
+      # replace, so it downloads nothing.
+      - name: Test the testcontainers link check
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"testcontainers_links_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/testcontainers_links.test.sh .github/scripts/testcontainers_links.test.sh
 
       # After setup-go: its fixtures run the real go list over a scratch module with no
       # requirement, which reads no module cache and no network.

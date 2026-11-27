@@ -125,7 +125,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-26 at its 18.18.6-sami.20261126-222037 pin, jj's on 2026-11-26 at
+# Oh My Pi's was read on 2026-11-27 at its 18.18.6-sami.20261127-010836 pin, jj's on 2026-11-26 at
 # its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
@@ -135,7 +135,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # sami-build.yml workflow at refs/heads/release-candidate (`gh attestation verify <archive> --repo
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
-ARG OMP_SHA256=cf15c8c6c9f3e03712455ede9c6390699f7884cf92f7ae3796e50e90d9ab6e08
+ARG OMP_SHA256=01dcd8d691a7acd8c9da7175715225b23e937f23e6ef66a61cdb93874870b493
 ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
@@ -2063,8 +2063,8 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     agent-secrets --help >/dev/null; \
     rm -rf /home/legion/.omp/profiles/legion/logs /home/legion/.config/go
 # The Kubernetes runtime sets every container's command explicitly
-# (packages/daemon/internal/runtime/sandbox/manifest.go): the init containers run `legion
-# workspace-init fetch …` and `legion workspace-init provision …`, and the main container runs `legion
+# (packages/daemon/internal/runtime/sandbox/manifest.go): the init container runs `legion
+# workspace-init provision …`, and the main container runs `legion
 # worker-shim --connect tcp://<daemon>:<worker_stream_port> --boot-token-file … -- omp --mode rpc …`.
 # This ENTRYPOINT therefore only makes `docker run <image> version` and `docker run <image>
 # probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy

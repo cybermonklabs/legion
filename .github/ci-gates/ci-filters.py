@@ -13,6 +13,9 @@ GATE = gate("ci_filters", "ci-filters", runs=[
 ], reads=reads(
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
     (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+    # Its go list closures, every command's and every self-starting test binary's of the
+    # daemon and envoy modules, are inside the daemon and envoy runs above.
+    (".github/scripts/testcontainers_links.py", at("ci-filters", TC_LINKS_STEP)),
     (".github/ci-gates/**", f"{at('ci-filters', CHECK_STEP)} reads every gate from them, which every filter is "
                             f"computed from"),
     (".github/scripts/ci_filter_sources.py", "ci_job_reads.py reads the gate files and the //ci: lines through it"),
@@ -58,7 +61,7 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                      "this check's own answer"),
 ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
             for name, path in PUSH_WORKFLOWS.items()))
-  + setup_go("ci-filters", f"{DAEMON}/go.mod"))
+  + setup_go("ci-filters", f"{DAEMON}/go.mod") + go_modules("ci-filters"))
 GATE = with_reads(GATE, [
     Read('**/*.go', "filter ci_filters held **/*.go by hand before the filters were computed: it selected 78 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('**/go.mod', "filter ci_filters held **/go.mod by hand before the filters were computed: it selected 1 file(s) no other read of this gate declares"),

@@ -32,16 +32,20 @@ env:
 jobs:
   ci-filters:
     runs-on: ubuntu-24.04-arm
-    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 63 s
-    # measured maximum, plus its slowest retried step alone — the ci-ok report, which is this
-    # job's only download: its `gh api` reads of the jobs and of the queue's tip and the POST of
-    # the check run, 3 x (5 x 30 + 150) = 900 s, and two calls of runner-shutdown.sh's check-run
-    # read and annotations loop, 2 x (300 + 480) = 1560 s, 2460 s together (ci-budgets.md's
-    # Budgets note, "The ci-ok report"). 600 + 2460 = 3060 s, a whole number of minutes, so the
-    # budget is the next one strictly above it -> 52 min.
-    timeout-minutes: 52
+    # Budget (.github/ci-budgets.md#the-budgets-note): 600 s, the 10 minutes this job carried,
+    # above its 63 s measured maximum, plus its slowest retried step alone — the ci-ok report:
+    # its `gh api` reads of the jobs and of the queue's tip and the POST of the check run,
+    # 3 x (5 x 30 + 150) = 900 s, and two calls of runner-shutdown.sh's check-run read and
+    # annotations loop, 2 x (300 + 480) = 1560 s, 2460 s together (ci-budgets.md's Budgets note,
+    # "The ci-ok report"), above the workspace's `go mod download` at 5 x 180 + 150 = 1050 s.
+    # That is 600 + 2460 = 3060 s. The steps before the report took 74 s at most in three
+    # merge-group runs on 2026-11-27 (the slowest, job 140285945501, at main's e40deb10), which
+    # had no module download step, so that step counts at its 1050 s: 1124 s, and with the
+    # report's rounded limit of 43 minutes, 2580 s, the second sum is the larger.
+    # 1124 + 2580 = 3704 s -> 62 min.
+    timeout-minutes: 62
     env:
-      JOB_TIMEOUT_MINUTES: 52 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 62 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,6 +58,31 @@ jobs:
           cache: false
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
+
+      # The workspace's Go modules, which the testcontainers check below lists with their
+      # third-party packages, downloaded once and retried before it (ci-budgets.md's Retries
+      # note). Here rather than before the filter check above, whose go list runs with
+      # GOPROXY=off over an empty module cache of its own and reads none of them. go.work binds
+      # packages/daemon and packages/envoy, so `go mod download` at the root resolves both
+      # modules' build list, as e2e.yaml's step of this name measures. 180 s per attempt, as that
+      # note derives.
+      - name: Download the Go modules this job builds
+        if: ${{ !cancelled() }}
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's Go modules" 180 -- go mod download
+
+      # testcontainers-go's package init reads every process on the machine at each start of a
+      # binary that links it, so no command and no test binary that starts itself may link it
+      # (the script's header says which binaries those are and why). Here because this job runs
+      # on every change to Go code or a module file and already lists both modules. Unlike the
+      # filter check above it lists with the module cache go fills as it needs, since a chain
+      # through a third-party package is part of what it reads.
+      - name: Check no command or self-starting test binary links testcontainers-go
+        if: ${{ !cancelled() }}
+        run: .github/scripts/testcontainers_links.py
 
       - name: Check every workflow file GitHub can read and its size
         if: ${{ !cancelled() }}
