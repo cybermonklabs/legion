@@ -490,7 +490,8 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	if ctx.Err() != nil {
 		return result{}, ctx.Err()
 	}
-	if killed() {
+	// CONTROL ONLY: a timeout read from the deadline having passed, not from the kill.
+	if killed() || bounded.Err() != nil {
 		res.exitCode, res.timedOut = -1, r.commandTimeout
 		return res, nil
 	}
