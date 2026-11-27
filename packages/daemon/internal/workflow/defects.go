@@ -111,11 +111,12 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 // reason, which only a new approved version of the Verification document changes
 // (DEFECT_IS_A_CHECK), and for a defect a merged change carried, which is done
 // (DEFECT_IN_MERGED_CHANGE). A defect a withdrawal already ended is answered withdrawn again, and
-// nothing is written. Otherwise the defect ends with the reason, and the stored wait names the
-// withdrawal once, in the version close-wait.md writes for it; in verifying that is the close's
-// own judgement (judgeCloseNoting), since a withdrawal is an event the close is judged on again.
-// 409 DEFECT_REQUEST_OF_A_PERSON, a request a person made, is Task 13's: no kind of reason this
-// release writes is a request.
+// nothing is written. A request for new work a person made (record.DefectKindRequest with
+// record.RequesterPerson) is refused DEFECT_REQUEST_OF_A_PERSON: only that person ends it with no
+// pull request, by setting the issue done. Otherwise the defect ends with the reason, and the
+// stored wait names the withdrawal once, in the version close-wait.md writes for it; in verifying
+// that is the close's own judgement (judgeCloseNoting), since a withdrawal is an event the close is
+// judged on again.
 func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.DefectWithdrawal) (intake.Result, error) {
 	issue, refusal, err := e.defectIssue(ctx, tx, fact.Issue, "this withdrawal changed nothing")
 	if err != nil || refusal != nil {
@@ -146,6 +147,10 @@ func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.De
 			"defect %d of %s was carried by change %d, which merged: it is done. This withdrawal changed nothing.", defect.ID, issue.Key, defect.CarriedBy)), nil
 	case defect.WithdrawnAt != nil:
 		return intake.Result{Defect: &intake.DefectAnswer{Defect: defect.ID, State: intake.DefectWithdrawn}}, nil
+	case defect.Kind == record.DefectKindRequest && defect.Role == record.RequesterPerson:
+		return refused("DEFECT_REQUEST_OF_A_PERSON", fmt.Sprintf(
+			"defect %d of %s is a person's request for new work. Only that person ends it with no pull request, so ask them to set %s to done. This withdrawal changed nothing.",
+			defect.ID, issue.Key, issue.Key)), nil
 	}
 	now := e.now()
 	reason := strings.TrimSpace(fact.Reason)
