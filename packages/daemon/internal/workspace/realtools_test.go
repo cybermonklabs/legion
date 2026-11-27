@@ -123,7 +123,7 @@ func slowCleanFilter(repository, filterMark, gitMark, lockSeen string) string {
 	return testexec.MarkStart(`"`+filterMark+`"`) +
 		`; read -r up </proc/uptime; read -r stat </proc/$PPID/stat; printf '%s\n%s\n' "$up" "$stat" >"` + gitMark + `"` +
 		`; [ -e "` + filepath.Join(repository, ".git", "index.lock") + `" ] && : >"` + lockSeen + `"` +
-		`; sleep 300; cat`
+		`; while :; do printf x; sleep 0.05; done` // EXPERIMENT ONLY (never for merge): the git wakes every 50 ms to read a byte
 }
 
 // lockBound is how soon after the kernel started the git of TestARealGitStoppedAtItsBudgetLeavesNoLock
