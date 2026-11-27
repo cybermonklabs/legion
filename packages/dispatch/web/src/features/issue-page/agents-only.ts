@@ -3,6 +3,12 @@ import type { Ask, Comment, MessageRead } from "../../api/types";
 /** What the rule reads of a comment. */
 type CommentTurn = Pick<Comment, "anchor" | "ask_id" | "author" | "id" | "reply_to">;
 
+/** What the rule reads of a message thread: its root's author and id, and each reply's id. */
+interface MessageThread {
+  readonly message: Pick<MessageRead["message"], "author" | "id">;
+  readonly replies: readonly Pick<MessageRead["message"], "id">[] | null;
+}
+
 /** How the session id of the Legion daemon begins: the daemon of a project writes as the session
  *  `legion-daemon:<PROJECT>`, which `shortSessionId` of `@legion/contracts` reads by the same
  *  prefix. */
@@ -44,7 +50,7 @@ const DAEMON_SESSION = "legion-daemon:";
  */
 export function agentsOnlyIds(
   comments: readonly CommentTurn[] | undefined,
-  messages: readonly MessageRead[] | undefined,
+  messages: readonly MessageThread[] | undefined,
   asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): ReadonlySet<string> {
   const questions =
@@ -86,6 +92,56 @@ export function agentsOnlyIds(
     for (const one of [thread.message, ...(thread.replies ?? [])]) ids.add(one.id);
   }
   return ids;
+}
+
+/** The id a person's reply is read under before the server has stored it: no id the server
+ *  gives, which is a uuid, so it names no turn the reads hold. */
+const NEW_TURN = "";
+
+/** The author of that reply: a person, whose kind is all the rule reads of an author. */
+const PERSON = { id: "", kind: "user" } as const;
+
+/**
+ * Whether the history draws a person's reply to `under`, a comment or a message of the issue by
+ * its id and kind: whether `under` is in the set above over the reads with that reply added, as
+ * the server stores it, which climbs a reply to the head of its thread - the ask the thread hangs
+ * under, or its root comment (`comment_create.go`'s `threadHeadOf`). A person's turn takes a
+ * comment thread out of the set, so the outline then draws that thread whole, the reply under the
+ * comment it answers; a message thread the Legion daemon began stays in it, whoever replies. An
+ * ask and a statement are never in the set, so a reply to one is never the history's. The line at
+ * the foot asks it as its reply lands, before the read that brings the reply has answered
+ * (`outline-writer.tsx`'s `land`), so the page takes the reader to the part that draws the reply.
+ */
+export function historyHoldsReply(
+  under: { readonly id: string; readonly kind: string },
+  comments: readonly CommentTurn[] | undefined,
+  messages: readonly MessageThread[] | undefined,
+  asks: readonly Pick<Ask, "id" | "kind">[] | undefined
+): boolean {
+  const answered =
+    under.kind === "comment" ? comments?.find((one) => one.id === under.id) : undefined;
+  const withComment =
+    answered === undefined
+      ? comments
+      : [
+          ...(comments ?? []),
+          {
+            anchor: null,
+            ask_id: answered.ask_id,
+            author: PERSON,
+            id: NEW_TURN,
+            reply_to: answered.ask_id === null ? (answered.reply_to ?? answered.id) : null,
+          },
+        ];
+  const withMessage =
+    under.kind === "message"
+      ? messages?.map((thread) =>
+          [thread.message, ...(thread.replies ?? [])].some((one) => one.id === under.id)
+            ? { ...thread, replies: [...(thread.replies ?? []), { id: NEW_TURN }] }
+            : thread
+        )
+      : messages;
+  return agentsOnlyIds(withComment, withMessage, asks).has(under.id);
 }
 
 /**

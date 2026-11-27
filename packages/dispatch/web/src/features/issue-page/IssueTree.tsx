@@ -1210,7 +1210,12 @@ export function IssueTree({
   // Each landing goes to its node as `reach` does and notes that node (`landedOn`): a read that
   // drops its row before the reader's next key or press is their write's (`heldRow`). A write
   // that answered a turn of a thread the panel's history holds, of which the tree draws no row,
-  // is the history's to land (`HeldLanding.in`), and the tree leaves it alone.
+  // is the history's to land (`HeldLanding.in`), and the tree leaves it alone. A reply that took
+  // such a thread out of the history - a person's reply to an agents' comment thread tied to no
+  // text (`agents-only.ts`) - is the tree's, and the comment it answers is a row only from the
+  // read that brings the reply: the tree waits for that row as it waits for the new one, with
+  // none of the reader's nodes under it before, since it drew no row there to hold one. Where no
+  // read draws that row, the late fallback ends the landing with the focus where it is.
   const landing = writer?.landing?.in === "outline" ? writer.landing : undefined;
   const heldAtMount = useRef(landing);
   const landedFrom = useRef<
@@ -1233,16 +1238,12 @@ export function IssueTree({
       return;
     }
     const parent = landingParent(root, landing.under);
-    if (parent === undefined) {
-      line.landed();
-      return;
-    }
     if (landing.to === "self") {
       line.landed();
-      reachWritten(parent.id);
+      if (parent !== undefined) reachWritten(parent.id);
       return;
     }
-    const own = parent.children.filter((child) => readerWrote(child, reader));
+    const own = (parent?.children ?? []).filter((child) => readerWrote(child, reader));
     const held = landedFrom.current;
     if (held?.landing !== landing) {
       landedFrom.current = { before: new Set(own.map((child) => child.id)), landing };

@@ -24,7 +24,7 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
-import { agentsOnlyIds, issueAsks } from "./agents-only";
+import { agentsOnlyIds, historyHoldsReply, issueAsks } from "./agents-only";
 import { FOOT_BOX } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
@@ -143,13 +143,17 @@ export interface Landing {
 
 /**
  * A landing as the writer holds it (`OutlineWriter.landing`): what the line asked for, and which
- * part of the page takes the reader there. `history` where `under` is a turn of a thread the
- * panel's history holds (`agents-only.ts`), of which the outline draws no row: the history takes
- * the reader to their new turn in that thread, or back to that turn (`IssueHistory.tsx`).
- * `outline` for every other landing, which the outline takes (`IssueTree.tsx`). It is told once,
- * as the line asks (`land`), by the one rule of which turns the history draws, from the reads the
- * outline and the history draw the conversation from, so no landing is taken by both of them and
- * none is left by both.
+ * part of the page takes the reader there. `history` where the panel's history draws what the
+ * landing goes to (`agents-only.ts`), of which the outline draws no row: the reader's new turn
+ * under `under`, in a thread the history holds whoever writes in it (`historyHoldsReply`), or,
+ * for a `self` landing, `under` itself, a turn of a thread the history holds. The history takes
+ * the reader to that new turn, or back to that turn (`IssueHistory.tsx`). `outline` for every
+ * other landing, which the outline takes (`IssueTree.tsx`): among them a reply that takes its
+ * thread out of the history, which the outline draws whole, the reply under the turn it answers,
+ * once the read that brings the reply answers. It is told once, as the line asks (`land`), by the
+ * one rule of which turns the history draws, from the reads the outline and the history draw the
+ * conversation from with the reader's new turn among them, so no landing is taken by both of
+ * them and none is left by both.
  */
 export interface HeldLanding extends Landing {
   readonly in: "history" | "outline";
@@ -246,18 +250,24 @@ export function OutlineWriterProvider({
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
-  // Which part of the page takes a landing (`HeldLanding.in`): the history where what the write
-  // answered is a turn of a thread it holds, by the rule the outline leaves those threads out by
-  // and the history draws them by (`agentsOnlyIds`), over the same reads under the same keys and
-  // the same asks (`issueAsks`), so while the asks read is out or has failed the writer takes the
-  // same asks for questions as they do, and lands no turn where neither draws it.
+  // Which part of the page takes a landing (`HeldLanding.in`): the history where it draws what
+  // the landing goes to, by the rule the outline leaves those threads out by and the history
+  // draws them by (`agents-only.ts`), over the same reads under the same keys and the same asks
+  // (`issueAsks`), so while the asks read is out or has failed the writer takes the same asks for
+  // questions as they do, and lands no turn where neither draws it. A `newest` landing goes to the
+  // reader's new turn under `under`, which these reads do not hold yet: it is drawn where the rule
+  // puts it once they do (`historyHoldsReply`), so a reply that takes an agents' comment thread
+  // out of the history goes to the outline, which draws it under the comment it answers. A `self`
+  // landing goes to `under` itself, where the reads put it now.
   const land = useCallback(
     (asked: Landing) => {
+      const { under } = asked;
+      const held = issueAsks(openAsks, asks.data);
       const history =
-        asked.under !== undefined &&
-        agentsOnlyIds(comments.data, messages.data, issueAsks(openAsks, asks.data)).has(
-          asked.under.id
-        );
+        under !== undefined &&
+        (asked.to === "newest"
+          ? historyHoldsReply(under, comments.data, messages.data, held)
+          : agentsOnlyIds(comments.data, messages.data, held).has(under.id));
       setLanding({ ...asked, in: history ? "history" : "outline" });
     },
     [asks.data, comments.data, messages.data, openAsks]

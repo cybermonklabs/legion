@@ -503,18 +503,25 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
 
 /**
  * The tree under the providers the page's `slots/providers.tsx` draws around its body - the row
- * writer and the Contents list's requests - with `reader` signed in, and the writer's read of the
- * issue's messages answering `messages`. It hands back the list's ask and its Focus branch
- * toggle, the writer's landing, a switch that takes the tree off the page and draws it again (a
- * view drawn in its place and turned off), and a redraw over another tree (a read answering).
+ * writer and the Contents list's requests - with `reader` signed in, and the writer's reads of the
+ * issue's messages and comments answering `messages` and `comments`. It hands back the list's ask
+ * and its Focus branch toggle, the writer's landing, a switch that takes the tree off the page and
+ * draws it again (a view drawn in its place and turned off), and a redraw over another tree (a
+ * read answering).
  */
-function renderPageTree(root: TreeNode, reader = "alice", messages: readonly MessageRead[] = []) {
+function renderPageTree(
+  root: TreeNode,
+  reader = "alice",
+  messages: readonly MessageRead[] = [],
+  comments: readonly Comment[] = []
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["whoami"], { kind: "user", login: reader });
   // The writer's own reads, answered, so it asks the network for nothing.
-  for (const read of ["asks", "comments"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], [...comments]);
   client.setQueryData(["issue-messages", KEY], [...messages]);
   const held: PageHold = {};
   const draw = (drawn: TreeNode) => (
@@ -8794,6 +8801,73 @@ test("a landing under a turn of the history is left to the history, and one unde
       "comment-3"
     )
   );
+  expect(tree.writer()?.landing).toBeUndefined();
+});
+
+// Decision 573: a person's reply to an agents' comment tied to no text takes that thread out of
+// the history (`agents-only.ts`), so its landing is the outline's. The outline draws no row of the
+// comment until the read that brings the reply answers, which draws the comment and the reply
+// together. The tree looked for the comment once, as the landing was asked, and gave the landing
+// up where it drew no row of it; it waits for that row as it waits for the reply's, through a read
+// that draws neither, and takes the reader to the reply under the comment once a read draws both.
+test("a reply that takes an agents' comment thread out of the history lands on the reply's row under the comment, once a read draws both", async () => {
+  setViewport(1440);
+  const planner = { id: "planner", kind: "session" } as const;
+  const agent = {
+    anchor: null,
+    ask_id: null,
+    author: planner,
+    id: "comment-agent",
+    reply_to: null,
+  } as Comment;
+  const issue = (thread: TreeNode[]) =>
+    node({
+      children: [node({ id: "comment-1", text: "The first words.", type: "comment" }), ...thread],
+      id: KEY,
+      type: "issue",
+    });
+  const mine = node({
+    at: "2026-11-16T09:00:00Z",
+    author: { id: "alice", kind: "user" },
+    id: "comment-mine",
+    text: "My reply.",
+    type: "comment",
+  });
+  const tree = renderPageTree(issue([]), "alice", [], [agent]);
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  await tree.land(agent.id);
+  // Another read draws the tree again, still with no row of the agent's comment.
+  tree.redraw(issue([]));
+  expect(
+    tree.writer()?.landing,
+    "the outline gave up the landing before a read drew the comment it answers"
+  ).toBeDefined();
+  expect(
+    tree.writer()?.landing?.in,
+    "a person's reply to an agents' comment thread is not the outline's to land"
+  ).toBe("outline");
+
+  tree.redraw(
+    issue([
+      node({
+        author: planner,
+        children: [mine],
+        held: 1,
+        id: agent.id,
+        text: "Status: the plan is drafted and waits on its review.",
+        type: "comment",
+      }),
+    ])
+  );
+  await waitFor(() =>
+    expect(
+      focusedRow(container),
+      "the outline did not take the reader to their reply under the agent's comment"
+    ).toBe("comment-mine")
+  );
+  expect(rowsFor(container, agent.id), "the agent's comment is not drawn").toHaveLength(1);
   expect(tree.writer()?.landing).toBeUndefined();
 });
 

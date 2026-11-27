@@ -4,7 +4,7 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 
 import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
-import type { Comment, IssueDetails } from "../../api/types";
+import type { Comment, IssueDetails, MessageRead } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -116,15 +116,97 @@ test("unmounting the writer cancels a pending focus frame so a later box does no
   }
 });
 
-// Decision 127: a reply the line sends to a turn of a thread the history holds lands in the
-// history (`HeldLanding.in`), by the rule the outline leaves those threads out by and the history
-// draws them by (`agents-only.ts`), read over the asks both read it over: the asks the issue holds
-// open, then the asks read (`issueAsks`). An agent's comment under an open approval request is
-// such a thread, which the outline draws no row of. The writer read the rule over the asks read
-// alone, and while that read was out took every ask for a question: the reply's landing went to
-// the outline, which draws no row for the turn and drops it, and which the history leaves alone,
-// so the reader's new turn took no focus.
-test("with the asks read out, a reply to an agent's comment under an open approval request lands in the history", async () => {
+/** The writer of issue CORE-1 over `comments` and `messages`, held under the keys the tree reads
+ *  them by, with the asks read answered with none and no ask the issue holds open. */
+function drawWriter(
+  comments: readonly Comment[],
+  messages: readonly MessageRead[]
+): { readonly unmount: () => void; readonly writer: () => OutlineWriter | undefined } {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["asks", "CORE-1"], []);
+  client.setQueryData(["comments", "CORE-1"], [...comments]);
+  client.setQueryData(["issue-messages", "CORE-1"], [...messages]);
+  const held: { writer?: OutlineWriter } = {};
+  function Capture(): null {
+    held.writer = useOutlineWriter();
+    return null;
+  }
+  const view = render(
+    <QueryClientProvider client={client}>
+      <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
+        <Capture />
+      </OutlineWriterProvider>
+    </QueryClientProvider>
+  );
+  return {
+    unmount: () => {
+      view.unmount();
+      client.clear();
+    },
+    writer: () => held.writer,
+  };
+}
+
+// Decision 573: a person's reply to a turn of an agents' comment thread tied to no text, a thread
+// the history holds, takes that thread out of the history (`agents-only.ts`), and the outline then
+// draws the thread whole, the reply under the comment it answers: the reply lands in the outline,
+// whichever turn of the thread it answers. The writer decided from the reads before the reply,
+// which still held the thread in the history, and sent the landing there: the history waited for
+// a turn it never drew, the outline left the landing alone, and the focus fell to the page's body.
+test("a reply to a turn of an agents' comment thread tied to no text lands in the outline, which draws the thread once a person wrote in it", () => {
+  const planner = { id: "planner", kind: "session" };
+  const head = { anchor: null, ask_id: null, author: planner, id: "c-agent", reply_to: null };
+  const reviewer = { id: "reviewer", kind: "session" };
+  const reply = { ...head, author: reviewer, id: "c-agent-reply", reply_to: head.id };
+  const page = drawWriter([head, reply] as Comment[], []);
+  try {
+    for (const turn of [head, reply]) {
+      act(() => page.writer()?.land({ to: "newest", under: { id: turn.id, kind: "comment" } }));
+      expect(
+        page.writer()?.landing,
+        `the reply to ${turn.id}, a turn of an agents' comment thread, did not land in the outline`
+      ).toMatchObject({ in: "outline", under: { id: turn.id } });
+    }
+  } finally {
+    page.unmount();
+  }
+});
+
+// Decision 127, which decision 573 leaves standing: a thread the Legion daemon began stays in the
+// history whoever writes in it, so a reply to any turn of it lands there.
+test("a reply to a turn of the Legion daemon's message thread lands in the history, which holds that thread whoever writes in it", () => {
+  const root = { author: { id: "legion-daemon:CORE", kind: "session" }, id: "m-daemon" };
+  const answer = { author: { id: "alice", kind: "user" }, id: "m-alice" };
+  const thread = {
+    message: root as MessageRead["message"],
+    replies: [answer as MessageRead["message"]],
+  };
+  const page = drawWriter([], [thread]);
+  try {
+    for (const turn of [root, answer]) {
+      act(() => page.writer()?.land({ to: "newest", under: { id: turn.id, kind: "message" } }));
+      expect(
+        page.writer()?.landing,
+        `the reply to ${turn.id}, a turn of the daemon's thread, did not land in the history`
+      ).toMatchObject({ in: "history", under: { id: turn.id } });
+    }
+  } finally {
+    page.unmount();
+  }
+});
+
+// Decision 127: the writer reads the rule (`agents-only.ts`) over the asks the outline and the
+// history read it over: the asks the issue holds open, then the asks read (`issueAsks`). An
+// agent's comment under an open approval request is a turn of a thread the history holds, which
+// the outline draws no row of. The writer read the rule over the asks read alone, and while that
+// read was out took every ask for a question: a landing back on that comment, once the line's
+// target is ended, went to the outline, which draws no row for it and drops it, and which the
+// history leaves alone, so the focus went nowhere. A reply to that comment is a person's turn in
+// the thread, which takes the thread out of the history (decision 573): the outline then draws the
+// comment under the issue, since it draws no approval request, with the reply under it.
+test("with the asks read out, a reply to an agent's comment under an open approval request lands in the outline, and the line's target ended on it lands in the history", async () => {
   const approval = { id: "ask-approval", kind: "approval" };
   const comment = {
     anchor: null,
@@ -161,7 +243,12 @@ test("with the asks read out, a reply to an agent's comment under an open approv
     act(() => held.writer?.land({ to: "newest", under: { id: comment.id, kind: "comment" } }));
     expect(
       held.writer?.landing,
-      "the reply to a turn of the history did not land in the history"
+      "a person's reply to an agent's comment under an approval request did not land in the outline"
+    ).toMatchObject({ in: "outline", under: { id: comment.id } });
+    act(() => held.writer?.land({ to: "self", under: { id: comment.id, kind: "comment" } }));
+    expect(
+      held.writer?.landing,
+      "the line's target ended on a turn of the history did not land in the history"
     ).toMatchObject({ in: "history", under: { id: comment.id } });
   } finally {
     view.unmount();
