@@ -44,7 +44,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
+  const { namesHeld, readsHeld, root, warm } = useOutlineReads(issue);
   // Decisions' flag counts the decisions marked `waiting` for the reader.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // What each control draws after its name (`viewRowSignals`), computed in a task of its own
@@ -58,6 +58,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
     readsHeld,
     root,
     viewer,
+    warm,
   });
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
@@ -145,6 +146,7 @@ function useDeferredSignals({
   readsHeld,
   root,
   viewer,
+  warm,
 }: {
   readonly filter: string;
   readonly namesHeld: boolean;
@@ -152,6 +154,7 @@ function useDeferredSignals({
   readonly readsHeld: boolean;
   readonly root: TreeNode;
   readonly viewer: string | undefined;
+  readonly warm: boolean;
 }): Readonly<Record<Filter, PresetSignal | undefined>> | undefined {
   const wordsReady = namesHeld || filter === "";
   const allReady = wordsReady && readsHeld && viewer !== undefined;
@@ -178,7 +181,7 @@ function useDeferredSignals({
         : undefined,
     [countedPreset, filter, namesHeld, ready, readsHeld, root, viewer]
   );
-  return useCountsAfterDrawing(root, count);
+  return useCountsAfterDrawing(root, count, warm);
 }
 
 /**
