@@ -46,7 +46,6 @@ The repository is the one this script sits in, so a copy of it in a fixture tree
 tree's file and module: go-legs.test.sh runs it so.
 """
 
-import os
 import re
 import subprocess
 import sys
@@ -54,6 +53,7 @@ import zlib
 from pathlib import Path
 
 import yaml
+from go_build_tags import go_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 LEGS = ".github/go-legs.yaml"
@@ -301,8 +301,12 @@ def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) ->
 
 def go_packages(module: str) -> list:
     """The packages `go list ./...` prints in the module, as directories under it. It lists them as
-    `go list -e -find -f {{.Dir}} ./...` with GOPROXY=off and GOFLAGS empty, as
-    go_build_tags.compiled does. `-find` names each package without loading its imports, so an
+    `go list -e -find -f {{.Dir}} ./...` under go_build_tags.go_environment() with GOPROXY=off and
+    GOFLAGS empty, as go_build_tags.compiled does: none of the caller's Go variables but those
+    naming where go keeps or fetches files, and no `go env -w` file, so a caller's GOTOOLCHAIN,
+    GOFLAGS or GOOS changes no listing (a caller's GOTOOLCHAIN=local with an older go first on
+    PATH made this listing refuse go.work, and with it every filter the check computes).
+    `-find` names each package without loading its imports, so an
     import no module cache holds fails nothing. Module mode still resolves imports, and in a
     workspace it downloads a module the cache lacks and writes its checksum into go.work.sum when a
     proxy answers, so GOPROXY=off is what keeps the listing offline: a cold machine, the changes
@@ -313,7 +317,8 @@ def go_packages(module: str) -> list:
     constraint excludes is no package either way."""
     directory = ROOT / module
     listing = subprocess.run(["go", "list", "-e", "-find", "-f", "{{.Dir}}", "./..."], cwd=directory,
-                             capture_output=True, text=True, env={**os.environ, "GOPROXY": "off", "GOFLAGS": ""})
+                             capture_output=True, text=True,
+                             env={**go_environment(), "GOPROXY": "off", "GOFLAGS": ""})
     if listing.returncode != 0:
         sys.stderr.write(listing.stderr)
         raise RuntimeError(f"`go list ./...` in {module} failed (its errors are above), so which packages the "
@@ -330,10 +335,11 @@ def go_packages(module: str) -> list:
 
 def go_tests(module: str, package: str, flags: list) -> list:
     """The top-level tests `go test -list .` prints for the package under the leg's build flags:
-    each name -run matches, a benchmark's apart."""
+    each name -run matches, a benchmark's apart. It runs under go_build_tags.go_environment() too,
+    so a caller's GOTOOLCHAIN or GOFLAGS changes no listing."""
     target = package_argument(package)
     listing = subprocess.run(["go", "test", "-list", ".", *flags, target], cwd=ROOT / module,
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env=go_environment())
     if listing.returncode != 0:
         sys.stderr.write(listing.stdout + listing.stderr)
         raise RuntimeError(f"`go test -list . {' '.join(flags + [target])}` in {module} failed (its output is "

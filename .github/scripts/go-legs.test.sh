@@ -34,7 +34,9 @@ export GOWORK=off GOFLAGS='' GOPROXY=off GOTOOLCHAIN=local
 tree() {
   local root="$work/$1" text="$2"
   mkdir -p "$root/.github/scripts" "$root/mod/a" "$root/mod/b/c" "$root/mod/testonly" "$root/mod/tagged"
-  cp "$script_dir/go_legs.py" "$root/.github/scripts/"
+  # go_build_tags.py too: go_legs.py imports its go_environment for the go commands below, and the
+  # copy under test imports the copy beside it, never this checkout's.
+  cp "$script_dir/go_legs.py" "$script_dir/go_build_tags.py" "$root/.github/scripts/"
   printf 'module example.com/mod\n\ngo 1.21\n' > "$root/mod/go.mod"
   printf 'package a\n' > "$root/mod/a/a.go"
   printf 'package b\n' > "$root/mod/b/b.go"
