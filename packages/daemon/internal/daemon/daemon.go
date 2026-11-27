@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -1740,7 +1741,7 @@ func reconfigureCloneCredential(ctx context.Context, cfg config.Config, tools ma
 		return err
 	}
 	for _, clone := range clones {
-		changed, err := workspace.ConfigureRepositoryCredential(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), clone.Clone)
+		changed, err := workspace.ConfigureRepositoryCredential(ctx, workspace.NewRunner(procgroup.NoReaper, workspace.CommandTimeout, tools), clone.Clone)
 		if err != nil {
 			return fmt.Errorf("set the shared clone %s's git credential helper: %w", clone.Clone, err)
 		}

@@ -164,7 +164,8 @@ type Config struct {
 	//
 	// Every child the shim starts and waits for itself starts through one guard (s.children),
 	// whether or not this is set, so the reaper never takes the exit of Oh My Pi, of the secrets
-	// keygen or renewer, of a command the daemon asked for, or of the warm-up's codegraph.
+	// keygen or renewer, of a command the daemon asked for, of the git and jj that make a task's
+	// working copy, or of the warm-up's codegraph.
 	// TestEveryChildTheShimWaitsForStartsThroughItsGuard reads every start the shim's process
 	// reaches.
 	ReapOrphans bool
@@ -260,8 +261,9 @@ type shim struct {
 
 	// children is the guard every child the shim starts and waits for itself starts through: Oh
 	// My Pi (spawnOnce), the secrets keygen and renewer (identity, startRenewer), every command the
-	// daemon asked for (openWorkspace) and the warm-up's codegraph (warmCodegraph). Under
-	// Config.ReapOrphans its reaper passes each of them over until its own wait has read its exit.
+	// daemon asked for (openWorkspace), the git and jj that make a task's working copy
+	// (adoptionDir) and the warm-up's codegraph (warmCodegraph). Under Config.ReapOrphans its
+	// reaper passes each of them over until its own wait has read its exit.
 	children *subreaper.Guard
 
 	// loop ends with the shim: every dial, connection, and backoff is bound to it.

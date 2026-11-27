@@ -122,7 +122,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		timeout := time.Second
-		run := NewRunner(timeout, map[string]string{"git": fakeGit})
+		run := NewRunner(procgroup.NoReaper, timeout, map[string]string{"git": fakeGit})
 
 		started := time.Now()
 		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})

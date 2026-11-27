@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // checkoutDelay is how long the jj the cases below start sleeps before a checkout, and
@@ -46,7 +48,7 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 	t.Helper()
 	run := newLocalRunner(t)
 	run.timeout = budget
-	run.runner = NewRunner(budget, slowCheckoutTools(t, delay))
+	run.runner = NewRunner(procgroup.NoReaper, budget, slowCheckoutTools(t, delay))
 	return run
 }
 

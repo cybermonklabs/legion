@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -693,7 +694,7 @@ func newTasksCopies(r *tasksRig) *tasksCopies {
 	home := t.TempDir()
 	repo := ghrepo.MustParse(liveRepo)
 	c := &tasksCopies{t: t, stateDir: r.cfg.StateDir, origin: r.gh.repo.Dir(), home: home, dirs: map[string]string{},
-		run: tasksCopyRunner{runner: workspace.NewRunner(workspace.CommandTimeout, tasksCopyTools(t)), github: workspace.GitHubURL(repo),
+		run: tasksCopyRunner{runner: workspace.NewRunner(procgroup.NoReaper, workspace.CommandTimeout, tasksCopyTools(t)), github: workspace.GitHubURL(repo),
 			origin: r.gh.repo.Dir(), env: append(fixtureenv.Home(home), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid")}}
 	for _, issue := range r.issues {
 		c.keys = append(c.keys, issue.key)

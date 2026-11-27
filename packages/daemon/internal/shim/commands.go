@@ -243,7 +243,8 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 // the task's working copy beside it otherwise (workspace.TaskDir), a branch of another issue
 // refused. A task's working copy that is not there yet is made here, a workspace of the issue's
 // clone on the task's branch as origin has it (workspace.ProvisionTask, under the clone's lock
-// across processes), with the git and jj of PATH and the adoption's budget for each command. Each
+// across processes), with the git and jj of PATH, started through the shim's guard as every child
+// it waits for is (shim.children), and the adoption's budget for each command. Each
 // task's working copy is warmed for CodeGraph as the issue's is (warmCodegraphOf).
 func (s *shim) adoptionDir(ctx context.Context, budget time.Duration, jj, issue, branch string) (string, error) {
 	if branch == "" {
@@ -261,7 +262,7 @@ func (s *shim) adoptionDir(ctx context.Context, budget time.Duration, jj, issue,
 		if err != nil {
 			return "", fmt.Errorf("worker-shim: git is not on PATH (%s); no git to make the working copy of %s with", os.Getenv("PATH"), branch)
 		}
-		run := workspace.NewRunner(budget, map[string]string{"git": git, "jj": jj})
+		run := workspace.NewRunner(s.children.Starter(), budget, map[string]string{"git": git, "jj": jj})
 		if _, err := workspace.ProvisionTask(ctx, run, issue, branch, func(line string) { s.log.Printf("[worker-shim] %s", line) }); err != nil {
 			return "", fmt.Errorf("worker-shim: make the working copy of %s: %w", branch, err)
 		}
