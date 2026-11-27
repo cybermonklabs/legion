@@ -18,7 +18,8 @@
 //     measures. The Legion history is written into the same tables in both, since every table it
 //     writes is one main has; the tables this head derives from those rows (DerivedTables) the
 //     fixture never writes, so the mode differs from Legion only in the schema it requires of the
-//     database.
+//     database. The project's setting is written as the database's own server writes one
+//     (PutLegionSettings), so a base older than main's Legion state intake takes it too.
 //   - Attribution (-attribution): k15's case of D1 (Attribution).
 //   - Delivery (-delivery): deliveryseed's delivery history of the project over the days its
 //     caller names (the command's -days, a week by default), or deliveryseed's own default of
@@ -46,6 +47,7 @@ package evalfixture
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -371,7 +373,7 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 	if err := observedCases(ctx, pool, history); err != nil {
 		return LegionResult{}, err
 	}
-	if _, err := legion.PutSettings(ctx, pool, project, StateURL, actor); err != nil {
+	if err := PutLegionSettings(ctx, pool, project, actor); err != nil {
 		return LegionResult{}, err
 	}
 	firstSlot, firstClaim, err := firstObservations(ctx, pool, project)
@@ -389,6 +391,39 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 		From: history.From, To: history.To, Windows: windows,
 		Tables: LegionTables, DerivedByThisHead: DerivedTables, History: history,
 	}, nil
+}
+
+// PutLegionSettings writes project's legion_settings row, naming StateURL, with actor as the
+// author of a new row: the setting each mode that writes a Legion history gives its project, here
+// and in evalbench. Where the database's catalog (ExistingTables) holds legion_event_cursors, it
+// calls legion.PutSettings, which in the same transaction resets the project's row of that table
+// and notifies legion.SettingsChannel, so this head's database and a base that holds main's Legion
+// state intake get the setting as the server writes it. That table is the intake's, made by main's
+// migration 20261118212431_legion_events (cybermonklabs/legion#4432), so a base of main older than
+// it lacks the table, and legion.PutSettings fails there on the reset. Where the catalog lacks it,
+// PutLegionSettings writes the row with the one upsert that such a base's own legion.PutSettings
+// runs, and nothing else. The catalog decides, never a list of bases.
+func PutLegionSettings(ctx context.Context, pool *store.Pool, project string, actor model.Actor) error {
+	intake, err := ExistingTables(ctx, pool, []string{"legion_event_cursors"})
+	if err != nil {
+		return err
+	}
+	if len(intake) > 0 {
+		_, err = legion.PutSettings(ctx, pool, project, StateURL, actor)
+		return err
+	}
+	createdBy, err := json.Marshal(actor)
+	if err != nil {
+		return fmt.Errorf("encode the Legion setting's author: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into legion_settings (project, state_url, created_by, updated_at)
+		values ($1, $2, $3, now())
+		on conflict (project) do update set state_url = excluded.state_url, updated_at = now()`,
+		project, StateURL, createdBy); err != nil {
+		return fmt.Errorf("write the Legion setting of %s: %w", project, err)
+	}
+	return nil
 }
 
 // DeliveryResult is what the Delivery mode wrote: deliveryseed's summary line, its two ends, and

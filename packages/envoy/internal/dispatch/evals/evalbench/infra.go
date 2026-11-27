@@ -355,10 +355,11 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 }
 
 // writeInfra writes INFRA's project, whose default repository is the first of Repos, its issues,
-// events, handoffs and observations, and its legion_settings row, and answers the history. The
-// project names alice as its default assignee, the column every project fills (store migration
-// 20261111210103), as the smaller projects' Legion history does; no eval and no count the load
-// prints reads it.
+// events, handoffs and observations, and its legion_settings row (evalfixture.PutLegionSettings,
+// which writes it at a base older than main's Legion state intake too), and answers the history.
+// The project names alice as its default assignee, the column every project fills (store
+// migration 20261111210103), as the smaller projects' Legion history does; no eval and no count
+// the load prints reads it.
 //
 // The default is written where both heads read it, the project's default_repo (store migration
 // 20261119000230), which main has too. Main at the commit this head merges reads a project's
@@ -387,7 +388,7 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 	if err := copyObservations(ctx, pool, history); err != nil {
 		return infraHistory{}, err
 	}
-	if _, err := legion.PutSettings(ctx, pool, Project, evalfixture.StateURL, actor); err != nil {
+	if err := evalfixture.PutLegionSettings(ctx, pool, Project, actor); err != nil {
 		return infraHistory{}, fmt.Errorf("write INFRA's legion_settings: %w", err)
 	}
 	return history, nil
