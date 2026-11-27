@@ -91,6 +91,10 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (createIssue, putProjectGatedSteps, lockEventOwner): taking the row first and the lock at
 	// the append below would wait, holding the row, on an issue create that holds the lock in its
