@@ -184,21 +184,31 @@ function refusedBy(...lines: string[]): string[] {
   }
 }
 
+/** The line a script of the tree writes to keep its own directory in `lib`, which a source line
+ *  built on `$lib` is read through. */
+const ownLib = 'lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)';
+
 // #4296's loopback-dsn.sh writes this line. Read by its last segments it names
 // scripts/e2e/lib/pg-url.sh, a file that does not exist; resolved, it names the one it sources.
 test("a sourced path that climbs out of its own directory names the file it reaches", () => {
-  expect(sourcedBy('. "$psql_env_dir/../../../packages/envoy/scripts/lib/pg-url.sh"')).toEqual([
-    "packages/envoy/scripts/lib/pg-url.sh",
-  ]);
+  expect(
+    sourcedBy(
+      'psql_env_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)',
+      '. "$psql_env_dir/../../../packages/envoy/scripts/lib/pg-url.sh"'
+    )
+  ).toEqual(["packages/envoy/scripts/lib/pg-url.sh"]);
 });
 
 // The shape INFRA-3862's coordinator reports: a script sourcing a library of another package by a
 // path holding /lib/<name>.sh. Matched by its tail it reads as a library of scripts/e2e/lib,
 // which is where the suite's ENOENT came from.
 test("a sourced library of another package is read from that package, not from scripts/e2e/lib", () => {
-  expect(sourcedBy('. "$co/packages/envoy/scripts/lib/pg-url.sh"')).toEqual([
-    "packages/envoy/scripts/lib/pg-url.sh",
-  ]);
+  expect(
+    sourcedBy(
+      'co=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)',
+      '. "$co/packages/envoy/scripts/lib/pg-url.sh"'
+    )
+  ).toEqual(["packages/envoy/scripts/lib/pg-url.sh"]);
 });
 test("a sourced path against the checkout names the file it reaches", () => {
   expect(sourcedBy('. "$root/packages/envoy/scripts/lib/exec-env.sh"')).toEqual([
@@ -207,13 +217,13 @@ test("a sourced path against the checkout names the file it reaches", () => {
 });
 
 test("a sourced path against the script's own directory names the file beside it", () => {
-  expect(sourcedBy('. "$lib/port-file.sh"')).toEqual(["scripts/e2e/lib/port-file.sh"]);
+  expect(sourcedBy(ownLib, '. "$lib/port-file.sh"')).toEqual(["scripts/e2e/lib/port-file.sh"]);
 });
 
 // Two shapes that fell between the walk's pattern and the refusal's, so each was read by one of
 // them and not the other, or by neither. One matcher now reads both.
 test("a sourced path written without quotes names the file it reaches", () => {
-  expect(sourcedBy(". $lib/port-file.sh")).toEqual(["scripts/e2e/lib/port-file.sh"]);
+  expect(sourcedBy(ownLib, ". $lib/port-file.sh")).toEqual(["scripts/e2e/lib/port-file.sh"]);
 });
 
 test("a source line that goes on past its path is read, and refused where the path is a variable", () => {
@@ -228,7 +238,7 @@ test("a source line that goes on past its path is read, and refused where the pa
 // so its library was neither read nor refused. The `$(dirname …)` forms hold quotes of their own
 // inside their substitution, and still end where their own closing quote is.
 test("a source line with a quote in its trailing comment reads the library it names", () => {
-  expect(sourcedBy('. "$lib/port-file.sh" # see "notes"')).toEqual([
+  expect(sourcedBy(ownLib, '. "$lib/port-file.sh" # see "notes"')).toEqual([
     "scripts/e2e/lib/port-file.sh",
   ]);
 });
@@ -285,10 +295,10 @@ test("control: a quoted word the shell ends at its quote still reads the file it
     '. "$lib/port-file.sh";',
     '. "$lib/port-file.sh" # a comment',
   ];
-  expect(lines.map((line) => sourcedBy(line))).toEqual(
+  expect(lines.map((line) => sourcedBy(ownLib, line))).toEqual(
     lines.map(() => ["scripts/e2e/lib/port-file.sh"])
   );
-  expect(refusedBy(...lines)).toEqual([]);
+  expect(refusedBy(ownLib, ...lines)).toEqual([]);
 });
 
 // A path that reaches a directory is no library: bash's `.` refuses one, and the walk, taking it
@@ -299,13 +309,101 @@ test("a sourced path that reaches a directory is refused, and the walk reads on"
     '. "$root/packages/envoy/scripts/lib"',
     ". ../lib",
   ]);
-  expect(sourcedBy('. "$root/packages/envoy/scripts/lib"', '. "$lib/port-file.sh"')).toEqual([
-    "scripts/e2e/lib/port-file.sh",
-  ]);
+  expect(
+    sourcedBy(ownLib, '. "$root/packages/envoy/scripts/lib"', '. "$lib/port-file.sh"')
+  ).toEqual(["scripts/e2e/lib/port-file.sh"]);
 });
 
 // The file check's own control: a link to a library is read as the library it links to.
 test("control: a sourced path that is a link to a file is read", () => {
-  expect(sourcedBy('. "$lib/port-file-link.sh"')).toEqual(["scripts/e2e/lib/port-file-link.sh"]);
-  expect(refusedBy('. "$lib/port-file-link.sh"')).toEqual([]);
+  expect(sourcedBy(ownLib, '. "$lib/port-file-link.sh"')).toEqual([
+    "scripts/e2e/lib/port-file-link.sh",
+  ]);
+  expect(refusedBy(ownLib, '. "$lib/port-file-link.sh"')).toEqual([]);
+});
+
+// A path built on a variable other than `$root` is read through that variable's assignment in the
+// same script, and only there. Read by trying the directory beside the script and then the
+// checkout, a variable that named another directory reached the file of the same name beside the
+// script: a real file, read, while the shell sources a different one.
+test("a sourced path on a variable this script assigns elsewhere is refused, not read beside it", () => {
+  const lines = ["drivers=/no/such/directory", '. "$drivers/port-file.sh"'];
+  expect(sourcedBy(...lines)).toEqual([]);
+  expect(refusedBy(...lines)).toEqual(['. "$drivers/port-file.sh"']);
+});
+
+test("a sourced path on a variable this script never assigns is refused", () => {
+  expect(refusedBy('. "$drivers/port-file.sh"')).toEqual(['. "$drivers/port-file.sh"']);
+});
+
+test("a sourced path on a variable this script assigns a second time is refused", () => {
+  expect(refusedBy(ownLib, "lib=/no/such/directory", '. "$lib/port-file.sh"')).toEqual([
+    '. "$lib/port-file.sh"',
+  ]);
+});
+
+// `read`, `for` and `printf -v` assign a variable too, and a script that gives the directory a
+// second value that way is one this reader cannot be sure of. The same words inside text a
+// command prints are no assignment, and must not make it unsure.
+test("a variable given a second value by read is refused, and the word read in text is not", () => {
+  for (const second of [
+    "read -r lib </dev/null",
+    "if ! read -r lib </dev/null; then exit 1; fi",
+    "for lib in /a /b; do :; done",
+    'printf -v lib "%s" /elsewhere',
+  ]) {
+    expect({ second, refused: refusedBy(ownLib, second, '. "$lib/port-file.sh"') }).toEqual({
+      second,
+      refused: ['. "$lib/port-file.sh"'],
+    });
+  }
+  const lines = [ownLib, 'echo "could not read the file lib names"', '. "$lib/port-file.sh"'];
+  expect(refusedBy(...lines)).toEqual([]);
+  expect(sourcedBy(...lines)).toEqual(["scripts/e2e/lib/port-file.sh"]);
+});
+
+// The controls for the stricter rule: every spelling of a script's own directory the repository
+// writes, assigned to a variable or written in the source line itself, and a directory under
+// `$root`, read through to the file the shell sources.
+test("control: a variable assigned the script's own directory, or a path under root, is read", () => {
+  const cases: [string[], string][] = [
+    [[ownLib, '. "$lib/port-file.sh"'], "scripts/e2e/lib/port-file.sh"],
+    [
+      ['script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)', '. "$script_dir/port-file.sh"'],
+      "scripts/e2e/lib/port-file.sh",
+    ],
+    [
+      [
+        'repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)',
+        '. "$repo_root/scripts/e2e/lib/port-file.sh"',
+      ],
+      "scripts/e2e/lib/port-file.sh",
+    ],
+    [
+      [
+        "case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac",
+        '. "$here/port-file.sh"',
+      ],
+      "scripts/e2e/lib/port-file.sh",
+    ],
+    [
+      ["drivers=$root/packages/envoy/scripts/lib", '. "$drivers/pg-url.sh"'],
+      "packages/envoy/scripts/lib/pg-url.sh",
+    ],
+  ];
+  expect(cases.map(([lines]) => sourcedBy(...lines))).toEqual(cases.map(([, file]) => [file]));
+  expect(cases.flatMap(([lines]) => refusedBy(...lines))).toEqual([]);
+});
+
+test("control: each spelling of the script's own directory written in the source line is read", () => {
+  const lines = [
+    '. "$(dirname "${BASH_SOURCE[0]}")/port-file.sh"',
+    '. "$(dirname -- "${BASH_SOURCE[0]}")/port-file.sh"',
+    '. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/port-file.sh"',
+    '. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/port-file.sh"',
+  ];
+  expect(lines.map((line) => sourcedBy(line))).toEqual(
+    lines.map(() => ["scripts/e2e/lib/port-file.sh"])
+  );
+  expect(refusedBy(...lines)).toEqual([]);
 });
