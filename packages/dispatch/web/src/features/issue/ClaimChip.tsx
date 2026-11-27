@@ -124,15 +124,16 @@ export function claimIsTakeable(
  * server uses. The judgement is remade on each render, so it follows the registry poll and the
  * issue read rather than a timer of the chip's own.
  *
- * The chip is one group: "Claimed by", the holder, the age, then what the liveness adds (lapsed,
- * not running). A session title can be any length, and no name may widen the page.
- * `pillClassName` sets `shrink-0`, and no class reliably beats it: `shrink` is in the same
- * Tailwind group, and `[flex-shrink:1]` measured a computed `flex-shrink` of 0 on the built page,
- * so the shrink is an inline style, which cannot lose whatever the stylesheet order. The chip also
- * caps itself at the row's width. Only the holder's name ellipsizes, inside `TruncatedText`; the
- * chip's own `title`, which opens with "Claimed by" and the whole name, shows over it too.
- * "Claimed by", the age and "not running" stay whole, because a chip reading "Claimed…" would
- * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
+ * Its groups, in this order: Holder ("Claimed by" and the holder) and Since (the age, then what
+ * the liveness adds: not running, unresponsive). A session title can be any length, and no name
+ * may widen the page: the chip caps itself at the row's width, and where Holder and Since do not
+ * fit on one line, Since moves to the next line whole - a board card, a table's cell - and the
+ * chip's corners follow (`usePillWrapped`). Holder stays on one line, where only the holder's
+ * name ellipsizes, inside `TruncatedText`; the chip's own `title`, which opens with "Claimed by"
+ * and the whole name, shows over it too. "Claimed by", the age and "not running" are never cut,
+ * because a chip reading "Claimed…" would say nothing; a part of Since wider than the chip alone
+ * wraps inside itself. The name is an inline link, so it keeps the chip's line box at a phone
+ * width.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the chip carries no
  * `title`, so everything a reader there acts on is drawn instead, in that page's words with
@@ -150,9 +151,8 @@ export function claimIsTakeable(
  * width needs. A table that wraps its titles draws its claims so (`IssuesTable`'s
  * `wrapTitles`): the priorities page's fault lists and a priority's work table, where a
  * session's name runs as long as its writer made it and no column could hold every one on a
- * line. In that shape, here and inside `NoTooltips`, a chip on one line is a pill and a chip on
- * more than one has 8 px corners, read off the drawn chip (`usePillWrapped`), so its fill holds
- * its words.
+ * line. Every chip that is a pill, on one line, has the full radius, and on more than one 8 px
+ * corners, read off the drawn chip (`usePillWrapped`), so its fill holds its words.
  */
 export function ClaimChip({
   author = false,
@@ -173,14 +173,23 @@ export function ClaimChip({
   const text = useAgentText();
   const inDetails = page !== null && inRow;
   // Inside `NoTooltips`, and where the host asks it to (`wraps`), nothing of the claim stops its
-  // line from wrapping, in a row of Details and in the pill alike: in the pill each part may
-  // shrink, and in both a long part breaks inside itself only where no break between words is
-  // left, since the holder's name and the instants are values, which wrap there. Elsewhere each
-  // part stays whole, as on `main`, and the holder's name ellipsizes.
+  // line from wrapping, in a row of Details and in the pill alike, and the holder's name wraps:
+  // each part may shrink, and a long part breaks inside itself only where no break between words
+  // is left, since the holder's name and the instants are values, which wrap there. Elsewhere
+  // Holder holds its line and the holder's name ellipsizes, and the parts of Since move to the
+  // next line whole, as Since does.
   const wrapping = page !== null || wraps;
-  const part = wrapping ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
-  // Whether the pill that wraps takes more than one line, which its corners follow.
-  const pill = usePillWrapped(claim !== null && wrapping && !inDetails);
+  const part = "min-w-0 [overflow-wrap:anywhere]";
+  // The groups' own boxes where Holder holds its line; elsewhere each part is the pill's own
+  // item, or a word of the sentence in a row of Details, with no box between.
+  const holderGroup = wrapping
+    ? undefined
+    : "inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap";
+  const sinceGroup = wrapping
+    ? undefined
+    : "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1";
+  // Whether the pill takes more than one line, which its corners follow.
+  const pill = usePillWrapped(claim !== null && !inDetails);
   if (claim === null) {
     return null;
   }
@@ -241,100 +250,109 @@ export function ClaimChip({
             // own 20 px line would let it reach into. From 1280 px the link has no padding, and
             // the line is text-sm's own.
             `block min-w-0 max-w-full text-sm leading-7 [overflow-wrap:anywhere] xl:leading-5 ${pageInkText}`
-          : // Inside `NoTooltips` the pill's tone is the new issue page's (`pillClassName`'s
-            // `onPage`), and it wraps there as where the host asks it to.
-            `${pillClassName(takeable ? "label" : "selected-label", page !== null, wrapping, pill.wrapped)} min-w-0 max-w-full gap-1`
+          : // Every pill is in the shape that wraps (`pillClassName`'s `wraps`), so Since can move
+            // under Holder; inside `NoTooltips` its tone is the new issue page's (`onPage`).
+            `${pillClassName(takeable ? "label" : "selected-label", page !== null, true, pill.wrapped)} min-w-0 max-w-full gap-1`
       }
       data-testid="issue-claim"
       ref={pill.ref}
-      style={{ flexShrink: 1 }}
       title={tooltips ? claimTitle() : undefined}
     >
-      {inDetails ? null : (
-        <span className="shrink-0" {...page?.pageChrome}>
-          {page?.PROPERTY_LABELS.claim ?? "Claimed by"}
+      <ChipGroup box={holderGroup}>
+        {inDetails ? null : (
+          <span className="shrink-0" {...page?.pageChrome}>
+            {page?.PROPERTY_LABELS.claim ?? "Claimed by"}
+          </span>
+        )}
+        {wrapping ? (
+          <AgentName actor={claim.actor} author={author} inline />
+        ) : (
+          <TruncatedText>
+            <AgentName actor={claim.actor} author={author} className="min-w-0 truncate" inline />
+          </TruncatedText>
+        )}
+      </ChipGroup>
+      <ChipGroup box={sinceGroup}>
+        {space}
+        <span aria-hidden="true" className={part} {...page?.pageChrome}>
+          ·
         </span>
-      )}
-      {wrapping ? (
-        <AgentName actor={claim.actor} author={author} inline />
-      ) : (
-        <TruncatedText>
-          <AgentName actor={claim.actor} author={author} className="min-w-0 truncate" inline />
-        </TruncatedText>
-      )}
-      {space}
-      <span aria-hidden="true" className={part} {...page?.pageChrome}>
-        ·
-      </span>
-      {space}
-      <Timestamp at={claim.at} className={part} exact />
-      {lapsed ? (
-        <>
-          {space}
-          <span aria-hidden="true" className={part} {...page?.pageChrome}>
-            ·
-          </span>
-          {space}
-          <span className={part} data-testid="issue-claim-lapsed" {...page?.pageChrome}>
-            {page?.CONTROL_LABELS.not_running ?? "not running"}
-          </span>
-        </>
-      ) : null}
-      {unresponsive ? (
-        <>
-          {space}
-          <span aria-hidden="true" className={part} {...page?.pageChrome}>
-            ·
-          </span>
-          {space}
-          <span className={part} data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
-            {page?.CONTROL_LABELS.unresponsive ?? "unresponsive"}
-            {heardAt === null ? null : (
-              <span data-testid="issue-claim-unresponsive-since">
-                {` ${page?.CONTROL_LABELS.unresponsive_since ?? "since"} `}
-                <Timestamp at={heardAt} exact />
-              </span>
-            )}
-            {takeableAt === null ? null : (
-              <span data-testid="issue-claim-takeable">
-                {takeable ? (
-                  `, ${page?.CONTROL_LABELS.takeable_now ?? "takeable now"}`
-                ) : page === null ? (
-                  <>
-                    , takeable <Timestamp at={takeableAt} />
-                  </>
-                ) : (
-                  <>
-                    {`, ${page.CONTROL_LABELS.takeable} `}
-                    {/* The moment itself, and no relative age: the words before it end in
+        {space}
+        <Timestamp at={claim.at} className={part} exact />
+        {lapsed ? (
+          <>
+            {space}
+            <span aria-hidden="true" className={part} {...page?.pageChrome}>
+              ·
+            </span>
+            {space}
+            <span className={part} data-testid="issue-claim-lapsed" {...page?.pageChrome}>
+              {page?.CONTROL_LABELS.not_running ?? "not running"}
+            </span>
+          </>
+        ) : null}
+        {unresponsive ? (
+          <>
+            {space}
+            <span aria-hidden="true" className={part} {...page?.pageChrome}>
+              ·
+            </span>
+            {space}
+            <span className={part} data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
+              {page?.CONTROL_LABELS.unresponsive ?? "unresponsive"}
+              {heardAt === null ? null : (
+                <span data-testid="issue-claim-unresponsive-since">
+                  {` ${page?.CONTROL_LABELS.unresponsive_since ?? "since"} `}
+                  <Timestamp at={heardAt} exact />
+                </span>
+              )}
+              {takeableAt === null ? null : (
+                <span data-testid="issue-claim-takeable">
+                  {takeable ? (
+                    `, ${page?.CONTROL_LABELS.takeable_now ?? "takeable now"}`
+                  ) : page === null ? (
+                    <>
+                      , takeable <Timestamp at={takeableAt} />
+                    </>
+                  ) : (
+                    <>
+                      {`, ${page.CONTROL_LABELS.takeable} `}
+                      {/* The moment itself, and no relative age: the words before it end in
                         "from", and a `Timestamp` would finish the sentence with "in 3 minutes"
                         or, inside the last minute of the wait, with "just now" - which reads as
                         free while the server still refuses the take. */}
-                    <time className={part} dateTime={takeableAt} {...page.authorText}>
-                      {exactTimeLabel(new Date(takeableAt))}
-                    </time>
-                  </>
-                )}
-              </span>
-            )}
-          </span>
-        </>
-      ) : null}
-      {/* Where a tooltip carries it, the title's `uncheckedNote` says it; inside `NoTooltips` the
+                      <time className={part} dateTime={takeableAt} {...page.authorText}>
+                        {exactTimeLabel(new Date(takeableAt))}
+                      </time>
+                    </>
+                  )}
+                </span>
+              )}
+            </span>
+          </>
+        ) : null}
+        {/* Where a tooltip carries it, the title's `uncheckedNote` says it; inside `NoTooltips` the
           chip says it, because a claim nobody could judge is not a held one and a reader on a
           phone or on the keyboard has no other way to that. */}
-      {unchecked && page !== null ? (
-        <>
-          {space}
-          <span aria-hidden="true" className={part} {...page.pageChrome}>
-            ·
-          </span>
-          {space}
-          <span className={part} data-testid="issue-claim-unchecked" {...page.pageChrome}>
-            {page.CONTROL_LABELS.unchecked}
-          </span>
-        </>
-      ) : null}
+        {unchecked && page !== null ? (
+          <>
+            {space}
+            <span aria-hidden="true" className={part} {...page.pageChrome}>
+              ·
+            </span>
+            {space}
+            <span className={part} data-testid="issue-claim-unchecked" {...page.pageChrome}>
+              {page.CONTROL_LABELS.unchecked}
+            </span>
+          </>
+        ) : null}
+      </ChipGroup>
     </span>
   );
+}
+
+/** One of `ClaimChip`'s groups, Holder or Since: a box of its own where it has one (`box`), else
+ *  its parts alone. */
+function ChipGroup({ box, children }: { box: string | undefined; children: ReactNode }): ReactNode {
+  return box === undefined ? children : <span className={box}>{children}</span>;
 }
