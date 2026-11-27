@@ -24,8 +24,9 @@ import (
 // the notice and has answered nothing, the hook runs to completion, which is where a lane meets
 // the daemon — the publish is outside every transaction of the row's run. The publish is then
 // given answer, nil for the delivery; a kept publish (PublishKept) is answered the same way and
-// never kept.
+// never kept. Its role read is fakeRoleListener's.
 type hookPublisher struct {
+	fakeRoleListener
 	mu        sync.Mutex
 	hook      func() error
 	answer    error

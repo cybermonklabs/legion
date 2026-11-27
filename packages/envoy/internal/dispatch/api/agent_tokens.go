@@ -22,7 +22,7 @@ const agentTokenPrefixLength = 8
 // A person's personal tokens are kept in two tables. agent_tokens holds every token that may
 // write. agent_read_tokens holds every read-only token: one that holds read (model.ScopeRead),
 // alone or beside person, which Dispatch answers on the reads of its read class alone
-// (refuseReadOnlyToken). A build before read-only tokens looks a bearer up in agent_tokens alone,
+// (refuseLimitedToken). A build before read-only tokens looks a bearer up in agent_tokens alone,
 // so it finds no read-only token and answers it 401, rather than read its scopes and let it
 // write (migration 20261120023712_agent_read_tokens). Both tables carry the same columns, and
 // agentTokenColumns is what every statement here answers of a row, as scanAgentToken reads it.

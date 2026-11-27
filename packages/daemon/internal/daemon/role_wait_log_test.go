@@ -354,9 +354,9 @@ func TestRoleWaitLoggedOnceAtErrorForAReadyRoleThatTakesNothing(t *testing.T) {
 // more than 20 runs on the capped backoff. Three such waits: a role whose claim has not said it is
 // ready (R1); a ready session whose 30 seconds to claim its role's name (roleNameBound) have not
 // passed at the run that writes the 30-minute line, which is the name not taken yet rather than a
-// role taking nothing; and the controller topic under `controller: operator`, which no claim of
-// this daemon holds, so no ready of the daemon's record can say its role took nothing. Each row is
-// refused at every run until it has waited through twenty, then taken.
+// role taking nothing; and the controller's role topic under `controller: operator`, which no claim
+// of this daemon holds, so no ready of the daemon's record can say its role took nothing. Each row
+// is refused at every run until it has waited through twenty, then taken.
 func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 	t.Parallel()
 	t.Run("a merge forward to a role whose claim is not ready", func(t *testing.T) {
@@ -441,8 +441,12 @@ func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 		start := clock.Now()
 		denied := fmt.Errorf("publish notice: listener returned 403 Forbidden: {\"error\":\"envoy: the message bus denied the publish\"}: %w",
 			notify.ErrPublishDenied{Message: "envoy: the message bus denied the publish under this listener's own permissions"})
+		// The registered controller session holds the role live at every read before the publish
+		// (controllerHolds), so each run reaches the publish the listener refuses.
 		publisher := &outboxPublisher{err: denied}
 		runner, _, pool := runnerIn(t, phase.Implementing, "in_progress", publisher, quietLogger())
+		registerProjectControllerAs(t, pool.Config().ConnString(), "LEGION", "ses_controller")
+		publisher.holds(legionController, "ses_controller")
 		id := queueRow(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner,
 			Phase: phase.Planning}, start))
 		rig := newRoleWaitRig(t, runner, pool, clock, id)
@@ -451,7 +455,7 @@ func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 		publisher.refuseWith(nil)
 		rig.endsAtItsNextRun()
 		wantWaitLogged(t, rig.logs.String(), id, "LEGION-208", record.OutboxKindControllerNotice, rig.runs, waitLog{level: slog.LevelWarn,
-			attempts: roleWaitLongAttempts, waitsFor: []any{"topic", notify.ControllerTopic("legion")}, answer: true, end: "run"})
+			attempts: roleWaitLongAttempts, waitsFor: []any{"topic", controllerRoleTopic}, answer: true, end: "run"})
 	})
 }
 

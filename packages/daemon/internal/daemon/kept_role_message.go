@@ -168,17 +168,23 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // role_keep.go), and a row ends at its own, so no session is handed a message older than that,
 // and each message names its move back or its phases, so its reader judges which round it was for.
 //
-// Every executor that publishes to a role's topic, or to the controller topic held to a claim
+// Every executor that publishes to a role's topic, the controller's role topic among them
 // (record.OutboxKind.WaitsForRole: notice, controller_notice, merge_queue_removal,
 // merge_holds_changed, merge_forward, hook_prompt, phase_ended, role_message and update_ask),
 // passes through the one gate roleWaitGate (daemon/role_wait.go,
 // dispatch://INFRA-4131/spec#b-r-wait-ready) before publishing, and turns every listener refusal
 // that keeps its row into a roleWait on the capped backoff (dispatch://INFRA-4131/spec#b-r-capped):
 // whoever changes the rule for waiting on a role changes roleWaitGate and role_wait.go rather than
-// chasing the nine executors apart. The executors still own their own non-claim ends and what each
-// listener refusal ends rather than keeps (notice's fence and architectEnded, roleMessage's
-// no-holder/capability/denied ends, updateAsk's round and no-holder end, keptRoleMessageEnded's
-// hour, and deliverHeld's design-gate and session checks).
+// chasing the nine executors apart. The executors still own their own non-claim ends and waits,
+// and what each listener refusal ends rather than keeps (notice's fence and architectEnded,
+// roleMessage's no-holder/capability/denied ends, updateAsk's round and no-holder end,
+// keptRoleMessageEnded's hour, deliverHeld's design-gate and session checks, and controllerNotice's
+// read that the registered controller session holds the controller's role live, controllerHolds,
+// whose wait is a roleWait too). The seven of them other than this function's two kinds publish
+// with keep: false: deliverNotice, the three through deliverHeld and controllerNotice hold their
+// own row, and a kept copy beside it would be a second keeper of one message; roleMessage's message
+// is stale by the time a role nobody holds is claimed; and updateAsk's round ends at its bound
+// whether or not the role answers.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, token claim.Token, m keptRoleMessage) (*keptRoleMessageUndelivered, error) {
 	wake, err := r.claimWakeOf(ctx, token)
 	if err != nil {

@@ -56,11 +56,14 @@ var roleWaitCases = []roleWaitCase{
 	{kind: record.OutboxKindUpdateAsk, role: claim.RoleImplementer, endsNoClaim: true, endsOnClaimEnd: true, updateRound: "pod:uid-1"},
 }
 
-// roleWaitPublisher is a notify.Publisher that counts every publish attempt (Publish and
+// roleWaitPublisher is the listener (outboxNotices) that counts every publish attempt (Publish and
 // PublishKept), records each publish with the clock moment it arrived at, runs during while the
 // publish is in flight where it is set, and answers each with err (or takes it with holder when
-// err is nil).
+// err is nil). Its role read is fakeRoleListener's: newRoleWaitHarness names the registered
+// controller session the controller role's live holder, so a controller notice's read before its
+// publish (controllerHolds) passes and each run the gate admits reaches the publish err answers.
 type roleWaitPublisher struct {
+	fakeRoleListener
 	clock     *heldClock
 	holder    func() string
 	err       error
@@ -143,14 +146,17 @@ func newRoleWaitHarness(t *testing.T, tc roleWaitCase, refusal error) *roleWaitH
 		t.Fatalf("seed LEGION-208's pull request: %v", err)
 	}
 	var token claim.Token
-	var topic string
 	if tc.kind == record.OutboxKindControllerNotice {
+		// The controller's role (claim.ControllerToken), whose registered session, the one its
+		// claim records (claim), holds it live at the listener.
 		token = claim.ControllerToken("legion")
-		topic = notify.ControllerTopic("legion")
+		session := "ses-" + string(tc.role)
+		registerProjectControllerAs(t, pool.Config().ConnString(), "LEGION", session)
+		publisher.holds(string(token), session)
 	} else {
 		token = mustClaimToken(t, "LEGION-208", tc.role)
-		topic = notify.RoleTopicPrefix + string(token)
 	}
+	topic := notify.RoleTopicPrefix + string(token)
 	trees, ok := runner.trees.(*store.Store)
 	if !ok {
 		t.Fatalf("runner.trees is %T, want *store.Store", runner.trees)
@@ -670,8 +676,10 @@ func TestRoleWaitLaunchThatFailsOrRetiresEndsTheRow(t *testing.T) {
 	}
 }
 
-// S14 (R2): a controller_notice under `controller: operator`, whose topic is held to no claim of
-// this daemon, publishes on R2's capped waits when the listener refuses it.
+// S14 (R2): a controller_notice under `controller: operator`, whose topic, the controller's role
+// topic, is held to no claim of this daemon, publishes on R2's capped waits when the listener
+// refuses it while the registered controller session holds the role live at each read before the
+// publish (controllerHolds).
 func TestRoleWaitUnheldControllerTopicKeepsTheCappedWaits(t *testing.T) {
 	t.Parallel()
 	tc := roleWaitCase{kind: record.OutboxKindControllerNotice, role: claim.RoleController, controllerLaunched: false}

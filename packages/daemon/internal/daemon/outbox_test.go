@@ -1177,19 +1177,23 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 	}
 }
 
-// A controller notice row goes to the controller topic of the daemon's own project, the one its
-// controller subscribes to, and to no issue topic, under the row's own key, as the Notice it is.
-func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
+// A controller notice row goes to the role topic of the daemon's own project's controller, once
+// the registered controller session holds that role live, and to no issue topic, under the row's
+// own key, as the Notice it is.
+func TestOutboxControllerNoticeGoesToTheControllersRoleTopicAlone(t *testing.T) {
 	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
 	row.ID = 57
+	pool := isolatedOutboxPool(t)
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &outboxPublisher{}
+	publisher.holds(legionController, "ses_controller")
 
-	if err := (&outbox{project: "legion", notices: publisher}).execute(context.Background(), row); err != nil {
+	if err := (&outbox{project: "legion", dispatchProject: "LEGION", pool: pool, records: record.NewStore(), notices: publisher}).execute(context.Background(), row); err != nil {
 		t.Fatalf("execute controller notice: %v", err)
 	}
-	if got := publisher.topics(); fmt.Sprint(got) != "[notifications.legion.legion.controller]" {
-		t.Fatalf("controller notice topics = %v, want the controller topic alone", got)
+	if got := publisher.topics(); fmt.Sprint(got) != "["+controllerRoleTopic+"]" {
+		t.Fatalf("controller notice topics = %v, want the controller's role topic alone", got)
 	}
 	if got := publisher.keys(); fmt.Sprint(got) != "[legion-outbox:57]" {
 		t.Fatalf("controller notice keys = %v, want the row's own key", got)
@@ -2827,8 +2831,10 @@ func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Sto
 
 // outboxPublisher is the listener as a publish that it answers with err meets it: every publish
 // is recorded, kept or not, and a kept publish (PublishKept) is answered as a live holder's 200
-// when err is nil, never as kept.
+// when err is nil, never as kept. Its role read is fakeRoleListener's: no holder of any role until
+// a test names one (holds).
 type outboxPublisher struct {
+	fakeRoleListener
 	mu      sync.Mutex
 	publish []outboxPublish
 	err     error

@@ -3120,10 +3120,12 @@ type Store interface {
 	// project token the tree_lifecycles table is keyed by, the value OpenTreeLifecycle takes, not
 	// the Dispatch project key.
 	TreeLifecycles(ctx context.Context, tx pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error)
-	// ControllerRegistered says whether a session holds the current controller registration of the
-	// Dispatch project key project (controller.Record.Registered's rule), reading the controllers
-	// table under the project token (claim.ProjectToken) `legion controller start` mints under.
-	ControllerRegistered(ctx context.Context, tx pgx.Tx, project string) (bool, error)
+	// ControllerSession is the session that holds the current controller registration of the
+	// Dispatch project key project (controller.Record.Session, which controller.Record.Registered
+	// tests), read from the controllers table under the project token (claim.ProjectToken) `legion
+	// controller start` mints under, and "" when no session holds one. A caller that wants whether
+	// some session holds the registration reads this and compares against "".
+	ControllerSession(ctx context.Context, tx pgx.Tx, project string) (string, error)
 	// ControllerNoticePending says whether the outbox of the Dispatch project key project still
 	// holds an unpublished controller notice of kind, so a wake is never queued behind an
 	// identical one. Issue "" reads every issue of the project, which is what a wake about the

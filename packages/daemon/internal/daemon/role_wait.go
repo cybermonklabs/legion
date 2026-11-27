@@ -46,21 +46,23 @@ const (
 	waitEndedLine       = "outbox row's wait ended"
 )
 
-// roleWaiting is the wait of a row that publishes to one role, or to the controller topic, and
-// waits for that role to take it (dispatch://INFRA-4131/spec#b-r-wait-ready and #b-r-capped): what
-// the row's run read of the role's claim and what the listener answered, which decide when the row
-// runs again (roleWaitNext), what it waits for (record.OutboxWait.WaitFor) and how its wait is
-// logged (logWait). Every executor of a kind that waits for its role (record.OutboxKind.WaitsForRole)
-// returns one, through roleWait, for each answer of the listener that keeps its row.
+// roleWaiting is the wait of a row that publishes to one role's topic, the controller's among
+// them, and waits for that role to take it (dispatch://INFRA-4131/spec#b-r-wait-ready and
+// #b-r-capped): what the row's run read of the role's claim and what the listener answered, which
+// decide when the row runs again (roleWaitNext), what it waits for (record.OutboxWait.WaitFor) and
+// how its wait is logged (logWait). Every executor of a kind that waits for its role
+// (record.OutboxKind.WaitsForRole) returns one, through roleWait, for each answer of the listener
+// that keeps its row, and controllerNotice for each wait of its read of the role's holder
+// (controllerHolds), which publishes nothing.
 type roleWaiting struct {
 	// topic is the topic the row publishes to, and token the claim it is held to
-	// (outbox.heldTopic): the claim a role topic names, or the project's controller claim for the
-	// controller topic under `controller: daemon`.
+	// (outbox.heldTopic): the claim the role topic names, the project's controller claim for the
+	// controller's role topic under `controller: daemon` among them.
 	topic string
 	token claim.Token
 	// held is whether topic is held to a claim of this daemon at all. It is false for the
-	// controller topic under `controller: operator`, the operator's own controller's, which no
-	// claim this daemon records can say is ready.
+	// controller's role topic under `controller: operator`, the operator's own controller's, which
+	// no claim this daemon records can say is ready.
 	held bool
 	// view is the role's claim as the run read it (outbox.supervisedClaim), the zero view where
 	// this daemon supervises none.

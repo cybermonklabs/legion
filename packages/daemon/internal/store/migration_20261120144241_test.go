@@ -241,7 +241,7 @@ func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
 
 // registerProjectController records project's controller as the daemon does at
 // `legion controller start`, under the project token, so the give-ups below are counted in a
-// notice (record.Postgres.ControllerRegistered).
+// notice (record.Postgres.ControllerSession).
 func registerProjectController(t *testing.T, store *Store, project string) {
 	t.Helper()
 	ctx := t.Context()

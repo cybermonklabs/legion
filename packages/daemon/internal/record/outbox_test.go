@@ -465,8 +465,8 @@ func TestEveryOutboxKindIsClassifiedForTheRoleWait(t *testing.T) {
 	decided := map[OutboxKind]bool{
 		// The architect's notice, published to the architect that owns the issue.
 		OutboxKindNotice: true,
-		// The controller's notice, published to the controller's topic, which a claim of this
-		// daemon holds under `controller: daemon`.
+		// The controller's notice, published to the controller's role topic, which a claim of
+		// this daemon holds under `controller: daemon`.
 		OutboxKindControllerNotice: true,
 		// The merger's messages that its pull request left the merge queue and that the
 		// project's merge holds changed, and a merge forward's messages to the roles it asks.

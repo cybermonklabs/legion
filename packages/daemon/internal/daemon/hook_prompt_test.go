@@ -253,21 +253,21 @@ func (l *storingListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // rekeyingPublisher is a daemon whose retry carries a message id of its own, the control of
 // TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce: each publish goes out under the row's
-// key with the attempt's number after it.
+// key with the attempt's number after it. Its role read is the wrapped listener's.
 type rekeyingPublisher struct {
-	notify.Publisher
+	outboxNotices
 	attempts int
 }
 
 func (p *rekeyingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
 	p.attempts++
-	return p.Publisher.PublishKept(ctx, topic, message, payload, fmt.Sprintf("%s:attempt-%d", key, p.attempts))
+	return p.outboxNotices.PublishKept(ctx, topic, message, payload, fmt.Sprintf("%s:attempt-%d", key, p.attempts))
 }
 
 // maybeStoredRow drives one hook-prompt row against a listener that stores its first publish and
 // answers it 503 maybe_stored, through the daemon's own publisher over HTTP (notify.HTTPPublisher)
 // wrapped by wrap, and answers why the holder did not receive the prompt once, or "".
-func maybeStoredRow(t *testing.T, wrap func(notify.Publisher) notify.Publisher) string {
+func maybeStoredRow(t *testing.T, wrap func(outboxNotices) outboxNotices) string {
 	t.Helper()
 	listener := &storingListener{stored: map[string]bool{}}
 	server := httptest.NewServer(listener)
@@ -309,13 +309,13 @@ func TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce(t *testing.T) {
 	t.Parallel()
 	t.Run("the retry carries the first publish's key", func(t *testing.T) {
 		t.Parallel()
-		if failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return p }); failure != "" {
+		if failure := maybeStoredRow(t, func(p outboxNotices) outboxNotices { return p }); failure != "" {
 			t.Fatal(failure)
 		}
 	})
 	t.Run("control: a retry under a new key", func(t *testing.T) {
 		t.Parallel()
-		failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return &rekeyingPublisher{Publisher: p} })
+		failure := maybeStoredRow(t, func(p outboxNotices) outboxNotices { return &rekeyingPublisher{outboxNotices: p} })
 		if failure == "" {
 			t.Fatal("the row passed with each retry under a new key, so it does not show the retry's key keeps the holder to one copy")
 		}
@@ -410,7 +410,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 // hookRunner is an outbox runner over an isolated database holding LEGION-208 in implementing,
 // the phase a move back to implementing leaves it in, with the admission slot its work holds. It
 // drains on the caller's goroutine (RunOnce).
-func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
+func hookRunner(t *testing.T, publisher outboxNotices) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	runner, sup, pool := runnerIn(t, phase.Implementing, "in_progress", publisher, quietLogger())
 	holdSlot(t, pool, "LEGION-208")
@@ -420,7 +420,7 @@ func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor,
 // runnerIn is an outbox runner over an isolated database holding LEGION-208 in phase at with
 // Dispatch status status, its tree admitted, and a supervisor with no claim on it yet. It
 // publishes to publisher, logs to log, and drains on the caller's goroutine (RunOnce).
-func runnerIn(t *testing.T, at phase.Phase, status string, publisher notify.Publisher, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
+func runnerIn(t *testing.T, at phase.Phase, status string, publisher outboxNotices, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
