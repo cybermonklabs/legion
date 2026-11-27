@@ -1285,7 +1285,7 @@ architecture-check and spec-check at this paragraph's end). dispatch-two-builds 
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
 ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of eight families with
+included). The jobs that cache Go restore, in steps of their own, one of nine families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
@@ -1298,7 +1298,9 @@ the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
 whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
-dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-race (every leg of
+dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-smoke
+(envoy-smoke, whose smoke test and envoy-infra live tests build in two workspaces no other family
+holds together; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
 envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane, whose race objects
 no other family holds; .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family), go-envoy-darwin-vet
 (envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
@@ -1316,7 +1318,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy, go-envoy-test, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
+go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
 restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;

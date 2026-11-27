@@ -14,9 +14,9 @@ name: CI caches
 # request lands in that run's own scope, which the next pull request's run cannot read, so it
 # would reach nobody.
 #
-# Seven Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
+# Eight Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 # architecture and on the Go version the family's own module installs: go-notices, go-daemon,
-# go-envoy, go-envoy-test, go-envoy-race, go-envoy-darwin-vet and go-envoy-infra. Which jobs read
+# go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race, go-envoy-darwin-vet and go-envoy-infra. Which jobs read
 # each, why the key carries the architecture, and which runners each family is filled on:
 # why: .github/ci-notes/ci-caches.md#the-go-families-their-readers-and-their-runners
 #
@@ -445,6 +445,72 @@ jobs:
           KEY: ${{ steps.go-envoy-test.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-test-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
+  # go-envoy-smoke: what ci.yaml's envoy-smoke compiles, on ubuntu-24.04, its one runner - the
+  # smoke test in the root workspace, and envoy-infra's host live tests and plugin in the infra
+  # module's go.work - and no more, which no other family holds together.
+  # why: .github/ci-notes/ci-caches.md#the-envoy-smoke-family
+  envoy-smoke:
+    if: inputs.only != 'dispatch-builds'
+    runs-on: ubuntu-24.04
+    # Cold: the three builds 232 s, the save 13 s (scratch run 45998597537). 30 is about seven
+    # times that.
+    timeout-minutes: 30
+    outputs:
+      # The key this job saved, named by family and architecture as the other fills' are.
+      go-envoy-smoke-x64: ${{ steps.saved.outputs.go-envoy-smoke-x64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+
+      # The newest entry of the family, found as the daemon job's restore finds its own.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - id: go-envoy-smoke
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-envoy-smoke-working-set"
+
+      # envoy-smoke's three go commands, each in its own directory and workspace: the two test
+      # binaries built and started as that job's go test starts them, `-run '^$'` running no test,
+      # so no image and no Docker are needed, and the plugin built as its schema step builds it.
+      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-starts-each-test-binary
+      - name: Build and start the smoke and live test binaries, running no test, and build the plugin
+        run: |
+          (cd packages/envoy && go test -count=1 -run '^$' -tags smoke ./internal/smoke/)
+          (cd packages/envoy/infra && go test -count=1 -run '^$' -tags pulumilive ./host/)
+          (cd packages/envoy/infra && go build -o "$RUNNER_TEMP/pulumi-resource-envoy-infra" ./cmd/pulumi-resource-envoy-infra)
+
+      - name: Delete the build cache's entries the builds did not use, and the module zips
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-smoke-working-set"
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}
+
+      - name: Name the key this job saved by its architecture
+        id: saved
+        env:
+          KEY: ${{ steps.go-envoy-smoke.outputs.cache-primary-key }}-${{ github.sha }}
+        run: echo "go-envoy-smoke-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
+
   # go-envoy-race: the race build of every leg of envoy's race lane (ci_job_reads.py's
   # ENVOY_RACE_LANE), on ubuntu-24.04-arm, its runner, and the program pg-connection-ceiling.sh
   # runs in those jobs.
@@ -598,7 +664,7 @@ jobs:
   # saved its new one.
   # why: .github/ci-notes/ci-caches.md#what-the-refill-superseded-job-deletes-and-why-it-is-a-job-of-its-own
   refill-superseded:
-    needs: [daemon, notices, envoy, envoy-test, envoy-race, envoy-darwin-vet]
+    needs: [daemon, notices, envoy, envoy-test, envoy-smoke, envoy-race, envoy-darwin-vet]
     if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
     strategy:
       fail-fast: false
@@ -611,6 +677,7 @@ jobs:
           - { job: envoy, family: go-envoy, arch: arm64 }
           - { job: envoy-test, family: go-envoy-test, arch: x64 }
           - { job: envoy-test, family: go-envoy-test, arch: arm64 }
+          - { job: envoy-smoke, family: go-envoy-smoke, arch: x64 }
           - { job: envoy-race, family: go-envoy-race, arch: arm64 }
           - { job: envoy-darwin-vet, family: go-envoy-darwin-vet, arch: x64 }
     runs-on: ubuntu-24.04-arm

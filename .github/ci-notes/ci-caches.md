@@ -8,7 +8,7 @@ holds the derivation or the record its text rests on; its other `# why:` lines n
 
 ## The Go families, their readers and their runners
 
-Seven Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
+Eight Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 of its module files too, for the reason its job gives): go-notices (lint's notices step),
 go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build,
@@ -21,7 +21,10 @@ jobs call: those three build the Dispatch server and the real broker's commands,
 the go-envoy entry's build of the listener and natsd alone does not hold, the two jobs of
 .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step and twobuild test step build
 out of that same set, and dispatch-memory and dispatch-multiprocess, whose ceiling step and tests
-read its modules and objects), go-envoy-race (every leg of envoy-go-race, envoy-go-race-api and
+read its modules and objects), go-envoy-smoke (envoy-smoke, whose three go commands build in two
+workspaces: the smoke test in the root one, envoy-infra's host live tests and plugin in the infra
+module's; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
+envoy-go-race, envoy-go-race-api and
 envoy-go-race-docs, the envoy race lane), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose
 build cache is a directory of its own, the GOCACHE of that step's env) and go-envoy-infra
 (envoy-infra-build and envoy-infra-go, and the build job of release-envoy-infra.yaml).
@@ -33,19 +36,21 @@ leg per runner: go-notices and go-envoy-race on ubuntu-24.04-arm alone, where li
 lane run; go-daemon, go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on
 ubuntu-24.04 both, since each has a reader on each (typecheck and the envoy lanes but one on the
 first; daemon-go, plugin-pack, pi-legion, envoy-go-build, envoy-go-checks, envoy-go-claim-model,
-the browser lane, the two-build jobs and the release builds on the second); and
-go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-go-build runs. A leg builds what that
+the browser lane, the two-build jobs and the release builds on the second); and go-envoy-smoke
+and go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-smoke and envoy-go-build run. A leg
+builds what that
 runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its arm64 leg
 runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
 
 go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
-other six after it: the go-notices entry holds go-licenses, a program lint's notices step runs,
+other seven after it: the go-notices entry holds go-licenses, a program lint's notices step runs,
 and a run of a workflow file older than the architecture in the key restores by go-notices-<os>-,
 which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what that did). One Go
 setup per leg, since the key carries the version that module's go.mod names: the daemon's go.mod
 for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
-go-envoy, go-envoy-test, go-envoy-race and go-envoy-darwin-vet; the infra module's for
-go-envoy-infra.
+go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and go-envoy-darwin-vet (go-envoy-smoke
+builds in the infra module's workspace too, on that same Go, as envoy-smoke does); the infra
+module's for go-envoy-infra.
 
 A fill's restore asks for the readers' key, with that key and a `-` as its restore-keys. GitHub
 matches the key itself as a prefix too, so an entry of another Go version is restored only when
@@ -144,6 +149,65 @@ forced-order.sh's builds (envoy-go-race's last two steps) compile a hooked copy 
 under the odatrace tag; this entry gives them the race standard library and the modules below
 nats-server, and they compile the hooked copy and what imports it as before.
 
+## The envoy-smoke family
+
+go-envoy-smoke holds what ci.yaml's envoy-smoke compiles, and no more: the smoke test
+(`go test -tags smoke ./internal/smoke/`) in the root workspace, and envoy-infra's host live tests
+(`go test -tags pulumilive ./host/`) and plugin (`go build ./cmd/pulumi-resource-envoy-infra`) in
+the infra module's go.work. Before it the job restored no build cache, the one Go job of ci.yaml
+that restored none, and compiled all three from nothing on every run. Over the 99 green merge-group
+jobs of 2026-11-26T12:00Z to 2026-11-27T07:30Z the job took 689 s at the median; in 20 of their
+logs the live step spent 182 s from its last `go: downloading` line to its first `=== RUN`, and
+the smoke step 34 s. That compile is CPU-bound on the job's runner (ubuntu-24.04, 4 CPUs): the
+host test binary built from empty caches in 211 to 216 s at 341 to 344% CPU and wrote 2,959 MB of
+build cache (scratch run 45994580307).
+
+Why a family of its own. Each other family holds one workspace's build. go-envoy-test restored in
+14 to 22 s and took the smoke step's compile to 1 s, but left the live step's at 174 and 228 s: the
+infra workspace chooses other versions of the modules the two share (golang.org/x/sys 0.49 there,
+0.50 in the root workspace), and holds the Pulumi SDKs, which no envoy job builds. go-envoy-infra's
+x86_64 entry holds the infra build, and took the live compile to 12 s, but restored in 32 to 56 s:
+its 1,114 MB unpack to 1,565 MB of modules and 6,938 MB of build cache, since its fill also builds
+the darwin vets and the natslive test binaries (ci-caches.yaml's envoy-infra job), and this job reads
+about 3 GB of it. The restore's time is the unpacking: 42 of its 49 s in job 140490649374, the
+download 7. Two
+restores into one module cache do not both land
+(.github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names).
+The job's own entry, built from nothing with its three go commands, is 592 MB: 1,095 MB of modules
+and 3,088 MB of build cache.
+
+Measured on CI's runner, ubuntu-24.04, in scratch runs 45994580307 and 45998597537 (branch
+probe/envoy-smoke-time, never merged). Each job ran envoy-smoke's own steps with one restore step
+or none, and its time below leaves out the probe's own steps:
+
+| restored | jobs | job, s | restore, s | live step, s (compile) | smoke step, s (compile) |
+| --- | --- | --- | --- | --- | --- |
+| nothing | 6 | 681.5 | - | 324.2 (191.6) | 112.8 (35.5) |
+| go-envoy-test | 2 | 681.5 | 18.0 | 333.0 (200.8) | 76.5 (0.9) |
+| go-envoy-infra | 6 | 522.7 | 49.3 | 138.2 (12.1) | 90.2 (13.7) |
+| the job's own entry | 3 | 479.0 | 24.3 | 132.3 (6.0) | 76.7 (0.8) |
+
+Run 45998597537 ran the first, third and fourth at once: 702.3, 526.3 and 479.0 s. Before the go
+steps, `go list -deps -test -f '{{.Stale}}'` read 480 of the smoke test's 482 packages, 1,004 of
+the live test's 1,005 and 947 of the plugin's 948 stale with nothing restored, and 1 of each on the
+job's own entry. The tests themselves took the same time in every row (the live package 126 to
+132 s, the smoke package 76 to 78 s), and all 17 jobs passed the same 8 smoke and 58 live tests
+and subtests, none failed or skipped: the entry removes compile, not test. What the job has left
+is mostly waits: once compiled, the live package ran at 19 to 25% of the VM's CPU.
+
+The fill is go-envoy-test's: it restores the newest entry, marks it unused, builds and starts the
+two test binaries as the job's go test does (`-run '^$'`, so no image or Docker is needed) and
+builds the plugin, deletes what those builds did not use and the module zips, and saves under the
+readers' key and the commit; refill-superseded deletes the entry it replaced. It runs on
+ubuntu-24.04 alone, envoy-smoke's runner. Its key holds no module-file hash, as go-envoy-test's
+holds none: the fill runs on every push, and Go's build cache is content-addressed. The scratch
+fill built the two test binaries with `go test -c`, which leaves out the compile of each test main
+(the section below): the one stale package of each test on that entry was its test main
+(`internal/smoke.test` and `host.test`, `build ID mismatch`, read again with `go list -f
+'{{.StaleReason}}'` on a cache built the same way), and the fill's `-run '^$'` start compiles it
+too. The plugin's one stale package is the command itself, which no build installs. The entry holds no test result for a job to report as cached:
+the fill's `-count=1` records none, and no run of ci.yaml saves a cache.
+
 ## Why the go-envoy-test fill starts each test binary
 
 The fill used to build each test binary with `go test -c -o /dev/null ./...`, and that left out
@@ -188,7 +252,7 @@ fetched that zip on every run. The script now reads the tree's directory from `g
 which fetches nothing, and keeps `go mod download` for a version no cache holds (its -server
 2.10.29 run). So every fill that saves a module cache deletes its zips before the save: the end
 command of .github/scripts/go-cache-working-set.sh does it for go-daemon, go-notices, go-envoy,
-go-envoy-test and go-envoy-race, and its zips command alone for go-envoy-infra, which builds from nothing and runs
+go-envoy-test, go-envoy-smoke and go-envoy-race, and its zips command alone for go-envoy-infra, which builds from nothing and runs
 no begin. The go-envoy-darwin-vet fill runs end too, on the go-envoy entry it restores for its
 module cache; its save holds only its own darwin build cache directory, so the zips it deletes
 are in no entry and the delete changes nothing it saves. A job that does need a zip downloads it
@@ -273,7 +337,7 @@ them.
 
 ## What the refill-superseded job deletes, and why it is a job of its own
 
-The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-race and
+The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and
 go-envoy-darwin-vet that the fills replaced, deleted once each fill has saved its new one. Each
 fill saves a new entry, over a
 gigabyte for most families, so without this the entries would pile up: GitHub drops an entry only
