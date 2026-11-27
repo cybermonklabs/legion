@@ -196,7 +196,7 @@ function ThreeThingsOf({ issue, route }: SlotProps): ReactNode {
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const counts = useMemo(
-    () => briefCounts({ namesHeld, readsHeld, root }, filter, preset),
+    () => briefCounts({ namesHeld, readsHeld, root }, { filter, preset }),
     [filter, namesHeld, preset, readsHeld, root]
   );
   const lineNames = useIssueNames(issue.key);

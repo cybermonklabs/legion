@@ -52,7 +52,7 @@ import {
 import { TreeReadFailed } from "../tree-read/view-read";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
-import { useFollowing } from "./following";
+import { DROPPED_ADDRESS, useDroppedAddress, useFollowing } from "./following";
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
 export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNode {
@@ -161,6 +161,19 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
     : (addressView(address, addressed.reveal, root, fallback, graph.data) ??
       (zoomUnheld ? { keepsNode: true, preset: "graph" } : undefined));
   const keptZoom = zoomed === undefined ? undefined : address.zoom;
+  // Whether the address `undrawn` opens in this one's place names none of the ids this one
+  // named - its node, or the node Graph's address zooms to - so the page opens it with the focus
+  // on no row (`DROPPED_ADDRESS`), as it opens no row an address named an item of that the tree
+  // holds no node of and no line is drawn for: a message Conversation draws no row of, which
+  // opens no view (decision 553 (1), root R20). The outline's opening waits on what waits on the
+  // reader only on every other address of the conversation (`IssueTree`'s `rootRow`).
+  const drops =
+    undrawn !== undefined &&
+    (address.target?.kind === "node" || address.zoom !== undefined) &&
+    !(undrawn.keepsNode && address.target !== undefined) &&
+    !(undrawn.preset === "graph" && keptZoom !== undefined);
+  const dropped = useDroppedAddress();
+  const opens = !dropped && !(address.target?.kind === "item" && addressed.reveal === undefined);
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   // Whether the reader has acted since they followed the address, after which the address's row
@@ -202,7 +215,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             draws no row, so the outline says so over the tree, with a Retry. */}
         <TreeReadFailed issue={issue} />
         {undrawn !== undefined ? (
-          <Navigate replace to={viewPath(key, undrawn, keptZoom, search, hash)} />
+          <Navigate
+            replace
+            state={drops ? DROPPED_ADDRESS : undefined}
+            to={viewPath(key, undrawn, keptZoom, search, hash)}
+          />
         ) : fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
@@ -249,7 +266,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
               ancestor ?? (address.target?.kind === "children" ? undefined : addressed.reveal)
             }
             root={view.root}
-            rootRow={view.rootRow}
+            rootRow={view.rootRow && opens}
             {...(address.zoom === undefined ? {} : { zoomAt: address.zoom })}
           />
         )}
@@ -282,7 +299,8 @@ interface AddressView {
  * holds none of opens Graph at it where Graph's read answers a node of its id, and else - Graph's
  * read lacking it, or refused - Conversation's own address without it. On Graph's address, a
  * node its read holds none of opens Graph's address without it, zoomed as the address zooms where
- * the tree holds that node (`viewPath`). No line is drawn for a node no read holds. In a filter's
+ * the tree holds that node (`viewPath`). No line is drawn for a node no read holds, and an
+ * address that then names no id opens with the focus on no row (`DROPPED_ADDRESS`). In a filter's
  * place, where the stage draws the outline because that filter's view draws no row for the node
  * (`StageSlot`), the outline is Conversation's, and a node it draws no row of opens the filter of
  * its kind or Graph as on Conversation's address, but never the filter it stands in, whose view

@@ -16,7 +16,6 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -50,6 +49,7 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { shaped, specRef } from "./decisions-filter/decisions-fixtures";
+import { readComment } from "./outline-fixtures";
 import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
@@ -613,24 +613,12 @@ test("the header counts a Change under the decision whose block of the spec hold
 test("the header counts a decision whose only Change the tree read answers deleted, and not one whose Change stands", async () => {
   const spec = { artifact_id: issue.primary_artifact_id, slug: "spec" };
   const changeOf = (id: string, deleted: boolean): Comment => ({
-    ...commentDeliveryFields(),
-    anchor: null,
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
+    ...readComment(id, 0),
     body: deleted ? "" : "Say which pages this covers.",
     created_at: "2026-11-11T09:00:00Z",
     ...(deleted
       ? { deleted_at: "2026-11-11T10:00:00Z", deleted_by: { id: "alice", kind: "user" } }
       : {}),
-    edited_at: null,
-    id,
-    issue_key: "CORE-1",
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
   });
   // A `decision` block of the spec tied to `r1`, waiting for review, at `position`.
   const waiting = (id: string, position: number) =>

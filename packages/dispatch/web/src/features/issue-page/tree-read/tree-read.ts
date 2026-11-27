@@ -38,6 +38,7 @@ import { presetOf } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
+import { olderCommentsBefore } from "./comment-positions";
 import {
   blocksOfRole,
   compareCommentPositions,
@@ -45,7 +46,6 @@ import {
   mergeTreePages,
   nextTreeCursor,
   nodesRemaining,
-  olderCommentsBefore,
   type TreeBlock,
 } from "./tree-nodes";
 

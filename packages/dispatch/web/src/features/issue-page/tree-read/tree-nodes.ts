@@ -73,6 +73,7 @@ import {
   stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
+import { splitPosition } from "./comment-positions";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
@@ -1517,17 +1518,6 @@ export function nextTreeCursor(page: TreeAnswer): string | undefined {
 }
 
 /**
- * Where the next older comment page of an outline read's answer starts (`comments_before`,
- * `<made_at>,<id>` of the oldest comment the answer holds), which `?comments_before=` reads the
- * 200 comments older than; undefined where no older comment remains: null, left out, or empty, as
- * a view's answer, which answers none, leaves it.
- */
-export function olderCommentsBefore(answer: TreeAnswer): string | undefined {
-  const before = answer.comments_before;
-  return typeof before === "string" && before !== "" ? before : undefined;
-}
-
-/**
  * How two comment positions (`<made_at>,<id>`, `comments_before`) stand in the read's order of
  * comments, by `made_at` and then by id: below 0 where `left` is the older, above 0 where it is the
  * newer, 0 where they are one.
@@ -1536,12 +1526,6 @@ export function compareCommentPositions(left: string, right: string): number {
   const [leftAt, leftId] = splitPosition(left);
   const [rightAt, rightId] = splitPosition(right);
   return compareTimes(leftAt, rightAt) || compareIds(leftId, rightId);
-}
-
-/** A comment position's `made_at` and id: the text before its first comma, and the rest. */
-function splitPosition(position: string): readonly [string, string] {
-  const comma = position.indexOf(",");
-  return comma < 0 ? [position, ""] : [position.slice(0, comma), position.slice(comma + 1)];
 }
 
 /** How two times the read writes stand, by the instants they name (`compareTimestamps`, which

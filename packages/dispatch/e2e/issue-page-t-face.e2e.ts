@@ -258,6 +258,12 @@ const WORDS_LINE_PX = 24;
  *  the seed writes carries (`verificationDocument`): when it runs, its surface and its run. */
 const CHECK_FACTS = ["when", "surface", "run"] as const;
 
+/** A run of 64 hex digits, a sha256 digest as an image's address names it, which no break
+ *  opportunity splits: only the row's break rule (`RowText.tsx`'s `overflow-wrap: anywhere`)
+ *  keeps it inside its column at 390 px. The store address beside it breaks after each `/` and
+ *  at its hyphens with no break rule at all. */
+const UNBROKEN_RUN = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
 /** What row 14 reads of the whole issue beyond what `seedWholeIssue` writes. */
 interface FacesSeed {
   /** The first statement, by its block id, which a check serves and so holds nodes. */
@@ -265,7 +271,7 @@ interface FacesSeed {
   readonly key: string;
   /** The planner's statement of twenty lines, by its block id. */
   readonly longStatement: string;
-  /** The post whose words hold a long store address, by its id. */
+  /** The post whose words hold a long store address and an unbroken run, by its id. */
   readonly longAddress: string;
   readonly specSlug: string;
 }
@@ -273,7 +279,8 @@ interface FacesSeed {
 /** The whole issue, with a statement of twenty lines the planner writes through the route an
  *  agent writes through, and alice's post whose words hold a long `dispatch://` store address,
  *  which the row's words draw as written: a store address names no node a reference chip names,
- *  and nothing links one that names no node of the tree (`refs/store-address.ts`). */
+ *  and nothing links one that names no node of the tree (`refs/store-address.ts`); and, after
+ *  it, an unbroken run (`UNBROKEN_RUN`). */
 async function seedFaces(): Promise<FacesSeed> {
   const seeded = await seedWholeIssue();
   const lines = Array.from(
@@ -295,7 +302,7 @@ async function seedFaces(): Promise<FacesSeed> {
   );
   const address = `dispatch://interaction/${crypto.randomUUID()}`;
   const post = await createComment(seeded.key, {
-    body: `The planner keeps the thread's store at ${address} until the run ends.`,
+    body: `The planner keeps the thread's store at ${address} until the run ends, from image sha256:${UNBROKEN_RUN}.`,
   });
   const slug = (await artifactSlugs(seeded.key))(seeded.specArtifactId);
   return {

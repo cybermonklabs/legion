@@ -15,7 +15,7 @@ import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import type { TreeFilter } from "../../../api/queries";
 import type { Ask, IssueDetails, MessageRead } from "../../../api/types";
-import { parseIssuePath } from "../../refs/routes";
+import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import {
   artifact,
   issueDetails,
@@ -781,20 +781,52 @@ const WAITING_QUESTION = {
   waiting_on_person: "alice",
 } as const;
 
-// R9: an id no read holds opens the address without it, the focus included, as that address
-// draws it. Graph's own address takes the stage's first focus on the tree's first row, not on
-// the open question the outline would open on; Graph's address with an id no read holds is
-// replaced by Graph's own, and the stage, which waited on Graph's landing while the address named
-// the id, takes the focus there as on Graph's own address.
-test("Graph's address with an id no read holds opens with the focus where Graph's own address puts it", async () => {
+/** A message of the issue that a person wrote, which Conversation's read holds no node of: its own
+ *  read and the messages read answer it, and the outline draws no row for it. */
+const PERSON_MESSAGE = "5b8e2f14-6c3d-4a97-b1e0-3d9f7a2c6e41";
+const PERSON_THREAD = {
+  message: {
+    author: { id: "alice", kind: "user" },
+    body: "Ship it on Friday.",
+    created_at: "2026-11-05T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
+    deliveries: [],
+    edited_at: null,
+    id: PERSON_MESSAGE,
+    in_reply_to: null,
+    issue_key: KEY,
+  },
+  replies: [],
+} as unknown as MessageRead;
+
+// R9, R20 and decision 553 (1): an address that names an id no read holds opens the outline's own
+// address without it, Conversation's or Graph's, with no line and with the focus on no row: the
+// row that address opens on - the open question that waits on the reader, or Graph's first row,
+// which the stage gives Graph's address - is not the node the address named, and a focus there
+// would land the reader on the wrong row. The address of a message of the issue that Conversation
+// draws no row of opens the same way. The outline's own address still opens on the question, and
+// Graph's on its first row, and no later frame moves either.
+test("an address naming an id no read holds, or a message the outline draws no row of, opens with the focus on no row", async () => {
   spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
+  spyOn(api, "listIssueMessages").mockResolvedValue([PERSON_THREAD]);
+  spyOn(api, "getMessage").mockResolvedValue(PERSON_THREAD as never);
   answerTree([
     ...commentNodes(TWO_THREADS),
     treeNode(WAITING_QUESTION.id, "ask", KEY, { text: WAITING_QUESTION.question }),
   ]);
+  const conversation = presetPath(KEY, "conversation");
   const graph = presetPath(KEY, "graph");
-  const firstRow = '[data-issue-body] [data-node-row][data-node-id="head-a"]';
-  for (const from of [graph, `${graph}?node=nobody`]) {
+  const message = buildIssuePath({ id: PERSON_MESSAGE, key: KEY, kind: "message" });
+  const question = `[data-issue-body] [data-node-row][data-node-id="${WAITING_QUESTION.id}"]`;
+  for (const [from, to, opensOn] of [
+    [conversation, conversation, WAITING_QUESTION.id],
+    [graph, graph, "head-a"],
+    [`${conversation}?node=nobody`, conversation, undefined],
+    [`${graph}?node=nobody`, graph, undefined],
+    [`${graph}/nobody`, graph, undefined],
+    [message, message, undefined],
+  ] as const) {
     const view = render(
       <MemoryRouter initialEntries={[from]}>
         <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -802,17 +834,25 @@ test("Graph's address with an id no read holds opens with the focus where Graph'
         </AppProviders>
       </MemoryRouter>
     );
-    await waitFor(() => expect(seen.address, `${from} opened at another address`).toBe(graph));
+    await waitFor(() => expect(seen.address, `${from} opened at another address`).toBe(to));
     await waitFor(() =>
       expect(
-        view.container.querySelector(`[data-node-row][data-node-id="${WAITING_QUESTION.id}"]`),
+        view.container.querySelector(question),
         `${from} drew no row of the open question`
       ).not.toBeNull()
     );
-    await rowTakesFocus(view, firstRow, `${from}, the first row`);
-    // No later frame moves it to the open question.
-    await waitInAct(50);
-    expect(focusedRow(), `${from} moved the first focus off the first row`).toBe("head-a");
+    if (opensOn !== undefined) {
+      await rowTakesFocus(
+        view,
+        `[data-issue-body] [data-node-row][data-node-id="${opensOn}"]`,
+        `${from}, its opening`
+      );
+    }
+    // No later frame moves the focus: off the row it opened on, or onto a row where it opened
+    // on none.
+    await waitInAct(100);
+    await nextFrame();
+    expect(focusedRow(), `${from} put the focus on a row the address did not name`).toBe(opensOn);
     cleanup();
   }
 });

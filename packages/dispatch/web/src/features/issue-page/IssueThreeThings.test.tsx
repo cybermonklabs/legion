@@ -137,7 +137,8 @@ function Head({
   );
   const [lineNames, setLineNames] = useState<LineNames | undefined>(undefined);
   const counts = useMemo(
-    () => briefCounts({ namesHeld: held, readsHeld: held, root }, query, "graph"),
+    () =>
+      briefCounts({ namesHeld: held, readsHeld: held, root }, { filter: query, preset: "graph" }),
     [held, query, root]
   );
   return (
