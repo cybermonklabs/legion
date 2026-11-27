@@ -19,12 +19,16 @@ const ciVariable = "GITHUB_ACTIONS"
 // runCompare is "spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]": it
 // compares the files of dir with the approved spec and answers 0 when the approved spec held each
 // text that they hold, 1 when it did not, and 2 for files with a problem of Parse that can lose a
-// node or change one (its Effect is specgraph.LosesNode), a directory or a file it cannot read, a
-// directory that holds no spec file without --allow-empty, or arguments it does not take. A problem
-// of Parse that keeps each node (specgraph.KeepsEachNode), such as a heading that names code, is
-// tree's to judge, and compare compares those files: each node holds the text that the files
-// write, except a raw 0xA0 or 0x85 byte where its opening line's attributes take white space (after
-// {, between two attributes or before }), which it drops as white space.
+// node or change one (its Effect is specgraph.LosesNode), a file that is not as print writes it
+// among them, a directory or a file it cannot read, a directory that holds no spec file without
+// --allow-empty, or arguments it does not take. The printed form is the one form that each YAML
+// library reads alike, so compare trusts no reading of another form, and the not-printed line names
+// the way out, spec-check print. A problem of Parse that leaves each node as a printed file writes
+// it (specgraph.KeepsEachNode), a value that the schema refuses and the node keeps or an empty
+// file, is tree's to judge, and compare compares those files. For files with a problem that it
+// refuses (refusedProblems), it writes one line on stderr for each such problem,
+// "<dir>/<file>:<line>: <node>: <detail>", then "<dir>: the files do not parse, or are not as
+// print writes them, so no comparison was made".
 //
 // It answers 2, before it reads an argument, in a CI job: R2 gives the comparison at each push to
 // Dispatch, and no CI job compares the files. No route of the Dispatch server calls
@@ -74,10 +78,11 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	case err != nil:
 		return cannotJudge(stderr, dir, err)
 	case len(lost) > 0:
-		// The tree misses the text of a block that the grammar refuses, or of a line that its node
-		// leaves out, so a comparison of the tree would pass that text.
+		// The tree misses the text of a document that the reader does not read into its node, or of a
+		// value that its node drops, or holds yaml.v3's reading of a file that another library can
+		// read as another text, so a comparison of the tree would pass that text.
 		judged{dir: dir, problems: lost}.sayProblems(stderr)
-		say(stderr, "%s: the files do not parse, so no comparison was made", dir)
+		say(stderr, "%s: the files do not parse, or are not as print writes them, so no comparison was made", dir)
 		return 2
 	}
 
@@ -87,7 +92,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		say(stdout, "%s: the comparison fails on %s", dir, count(len(c.Problems), "node"))
 		return 1
 	}
-	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
+	current, _ := a.Current() // ReadApproved refused every document that would be a problem here
 	others, held := notCurrentLines(current, c, a)
 	all := len(current.Statements)
 	// The verb and its pronoun take the number of held. The noun is in the singular only for 1 of
@@ -116,6 +121,8 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 // refusedProblems is each problem of Parse in problems for which compare refuses the files: each
 // one whose Effect is not specgraph.KeepsEachNode. So a problem with no Effect is refused, as one
 // that loses a node is, and no problem reads as one that keeps each node by default.
+// Only compare reads the Effect: tree and print (judgeFiles), and state (specgraph.ReadScenario),
+// refuse each problem of Parse whatever its Effect.
 func refusedProblems(problems []specgraph.Problem) []specgraph.Problem {
 	return slices.DeleteFunc(problems, func(p specgraph.Problem) bool { return p.Effect == specgraph.KeepsEachNode })
 }
@@ -123,18 +130,19 @@ func refusedProblems(problems []specgraph.Problem) []specgraph.Problem {
 // notCurrentLines is one line for each node of current, the current approved spec, that the files
 // do not hold at its current text, of each kind (R2: the change that lands a statement writes it
 // and its checks into the files): "<kind> <id>: not in the files", or "<kind> <id>: the files hold
-// approved version 1, and version 2 is current", in the order of kinded. held is the number of
-// statements that the files hold at their current text.
+// approved version 1, and version 2 is current", in the order of specgraph.Nodes, each id cut. held
+// is the number of statements that the files hold at their current text.
 func notCurrentLines(current specgraph.Tree, c specgraph.Comparison, a specgraph.Approved) (lines []string, held int) {
-	for _, n := range kinded(current) {
-		h := c.Holds[n.id]
+	for _, n := range specgraph.Nodes(current) {
+		id, kind := n.NodeID(), n.KindName()
+		h := c.Holds[id]
 		switch {
 		case !h.Present:
-			lines = append(lines, n.kind+" "+n.id+": not in the files")
+			lines = append(lines, kind+" "+specgraph.Cut(id)+": not in the files")
 		case !h.Current:
-			versions := a.Nodes[n.id].Versions
-			lines = append(lines, fmt.Sprintf("%s %s: the files hold approved version %d, and version %d is current", n.kind, n.id, h.Version, versions[len(versions)-1].Version))
-		case n.kind == "statement":
+			versions := a.Nodes[id].Versions
+			lines = append(lines, fmt.Sprintf("%s %s: the files hold approved version %d, and version %d is current", kind, specgraph.Cut(id), h.Version, versions[len(versions)-1].Version))
+		case kind == "statement":
 			held++
 		}
 	}
@@ -144,44 +152,17 @@ func notCurrentLines(current specgraph.Tree, c specgraph.Comparison, a specgraph
 // removedLines is one line for each node of tree whose id is in removed, the nodes that the
 // approved spec removed and the files still hold (R28: "the files hold one that is no longer
 // approved"): "<kind> <id>: the files hold it, and the approved spec removed it", in the order of
-// kinded, and an id once.
+// kinded, and an id once, cut.
 func removedLines(tree specgraph.Tree, removed []string) []string {
 	var lines []string
 	named := map[string]bool{} // an id the files hold two times is one line
-	for _, n := range kinded(tree) {
-		if slices.Contains(removed, n.id) && !named[n.id] {
-			named[n.id] = true
-			lines = append(lines, n.kind+" "+n.id+": the files hold it, and the approved spec removed it")
+	for _, n := range specgraph.Nodes(tree) {
+		if id := n.NodeID(); slices.Contains(removed, id) && !named[id] {
+			named[id] = true
+			lines = append(lines, n.KindName()+" "+specgraph.Cut(id)+": the files hold it, and the approved spec removed it")
 		}
 	}
 	return lines
-}
-
-// kindedNode is the id of one node of a tree and the word for its kind: statement, check,
-// component, interface or term.
-type kindedNode struct{ kind, id string }
-
-// kinded is each node of tree with its kind: statements, then checks, components and interfaces,
-// then terms, each in the tree's order.
-func kinded(tree specgraph.Tree) []kindedNode {
-	nodes := make([]kindedNode, 0, len(tree.Statements)+len(tree.Checks)+len(tree.Components)+len(tree.Terms))
-	for _, s := range tree.Statements {
-		nodes = append(nodes, kindedNode{"statement", s.ID})
-	}
-	for _, c := range tree.Checks {
-		nodes = append(nodes, kindedNode{"check", c.ID})
-	}
-	for _, c := range tree.Components {
-		kind := "component"
-		if c.Interface {
-			kind = "interface"
-		}
-		nodes = append(nodes, kindedNode{kind, c.ID})
-	}
-	for _, t := range tree.Terms {
-		nodes = append(nodes, kindedNode{"term", t.ID})
-	}
-	return nodes
 }
 
 // readApproved reads the approved spec at path with specgraph.ReadApproved, and answers the path

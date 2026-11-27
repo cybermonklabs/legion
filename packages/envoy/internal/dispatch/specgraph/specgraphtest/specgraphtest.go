@@ -14,7 +14,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -47,10 +46,6 @@ func PutTree(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
-// testAttributes is each attribute of a check's block that names the test of a program, which a
-// check of another procedure does not hold.
-var testAttributes = []string{"runner", "selector", "job"}
-
 // subjectRead is, for a check of production and for one of the graph, the member of a result that
 // names the subject that the check reads, the value that As writes there (the deploy d1 and the
 // transaction tx1 of production-and-graph's subject), and the member of the other of the two
@@ -62,11 +57,11 @@ var subjectRead = map[string]struct{ member, value, other string }{
 
 // As is the scenario at the root of fsys with its check id written as a check of procedure and
 // subject, which a test reads as a check of that kind. In each approved version of the check's
-// block, and in its block in each spec file (files/<commit>/spec.md): the attributes procedure and
-// subject set to procedure and subject, and the attributes that name a program's test (runner,
-// selector and job) taken out when procedure is no program. As writes no such attribute: a check
-// written as a program keeps the test that its block names, as production-and-graph's program check
-// of production does, and the reader refuses a program check that names none. For a check of
+// document, and in its document in each spec file (files/<commit>/spec.yaml): the members procedure
+// and subject set to procedure and subject, and the member test, which names a program's runner,
+// selector and job, taken out when procedure is no program. As writes no such member: a check
+// written as a program keeps the test that its document names, as production-and-graph's program
+// check of production does, and the reader refuses a program check that names none. For a check of
 // production, each result of it that read a transaction of the graph reads the deploy d1 instead,
 // as a result of production reads a deploy; for a check of the graph, each result of it that read a
 // deploy reads the transaction tx1 instead, as a result of the graph reads a transaction. For a
@@ -74,8 +69,8 @@ var subjectRead = map[string]struct{ member, value, other string }{
 // planted its fault on (planted_on) reads that commit as its commit, with no planted_on and no
 // fault_paths, as a failing example of such a check counts at its commit: only a program check of
 // the code counts one from planted_on. Each other file holds the bytes of fsys. As refuses a
-// scenario whose approved spec holds no node id, a spec file that does not hold the check's block
-// once, and a block that sets no procedure or no subject, so that no test passes on a change that
+// scenario whose approved spec holds no node id, a spec file that does not hold the check's document
+// once, and a document that sets no procedure or no subject, so that no test passes on a change that
 // changed nothing.
 func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 	out := fstest.MapFS{}
@@ -90,30 +85,34 @@ func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 	if err != nil {
 		return nil, fmt.Errorf("specgraphtest: %w", err)
 	}
-	written := func(block string) (string, error) { return writtenAs(block, procedure, subject) }
+	written := func(document string) (string, error) { return writtenAs(document, procedure, subject) }
 	if err := editJSON(out, "approved.json", func(v any) error { return editVersions(v, id, written) }); err != nil {
 		return nil, err
 	}
-	specs, err := fs.Glob(out, "files/*/spec.md")
+	specs, err := fs.Glob(out, "files/*/spec.yaml")
 	if err != nil || len(specs) == 0 {
 		return nil, fmt.Errorf("specgraphtest: no spec file under files/ (%v)", err)
 	}
 	for _, path := range specs {
 		text := string(out[path].Data)
-		header := ":::check{#" + id + " "
-		if n := strings.Count(text, header); n != 1 {
-			return nil, fmt.Errorf("specgraphtest: %s holds the block of %s %d times, want once", path, id, n)
+		marker := "\nid: " + id + "\n"
+		at := strings.Index(text, marker)
+		if at < 0 || strings.Index(text[at+len(marker):], marker) >= 0 {
+			return nil, fmt.Errorf("specgraphtest: %s holds the document of %s other than once", path, id)
 		}
-		start := strings.Index(text, header)
-		end := strings.Index(text[start:], "\n:::")
-		if end < 0 {
-			return nil, fmt.Errorf("specgraphtest: %s: the block of %s has no end", path, id)
+		start := strings.LastIndex(text[:at], "---\n")
+		if start < 0 {
+			return nil, fmt.Errorf("specgraphtest: %s: the document of %s has no start", path, id)
 		}
-		block, err := writtenAs(text[start:start+end], procedure, subject)
+		end := len(text)
+		if next := strings.Index(text[start+4:], "\n---\n"); next >= 0 {
+			end = start + 4 + next + 1
+		}
+		document, err := writtenAs(text[start:end], procedure, subject)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		out[path] = &fstest.MapFile{Data: []byte(text[:start] + block + text[start+end:])}
+		out[path] = &fstest.MapFile{Data: []byte(text[:start] + document + text[end:])}
 	}
 	read, reads := subjectRead[subject]
 	planted := subject == "code" && procedure != "program"
@@ -145,33 +144,49 @@ func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 	return out, nil
 }
 
-// attribute is the attribute name of a block's first line and its value.
-func attribute(name string) *regexp.Regexp {
-	return regexp.MustCompile(` ` + name + `="[^"]*"`)
-}
-
-// writtenAs is the block of a check, its first line and the lines after it, written as a check of
-// procedure and subject (As): only its first line changes.
-func writtenAs(block, procedure, subject string) (string, error) {
-	end := strings.IndexByte(block, '\n')
-	if end < 0 {
-		end = len(block)
-	}
-	header := block[:end]
-	if !attribute("procedure").MatchString(header) || !attribute("subject").MatchString(header) {
-		return "", fmt.Errorf("specgraphtest: the block %q sets no procedure or no subject", header)
-	}
-	header = attribute("procedure").ReplaceAllLiteralString(header, ` procedure="`+procedure+`"`)
-	header = attribute("subject").ReplaceAllLiteralString(header, ` subject="`+subject+`"`)
-	if procedure != "program" {
-		for _, name := range testAttributes {
-			header = attribute(name).ReplaceAllLiteralString(header, "")
+// writtenAs is the printed YAML document of a check, written as a check of procedure and subject:
+// for no program, without the line "test:" and the lines indented under it, and with each other
+// line as it was, such as time_limit, which the printer writes after the test part.
+func writtenAs(document, procedure, subject string) (string, error) {
+	write := func(key, value string) error {
+		prefix := key + ": "
+		start := strings.Index(document, prefix)
+		if start < 0 {
+			return fmt.Errorf("specgraphtest: the document sets no %s", key)
 		}
+		end := strings.IndexByte(document[start:], '\n')
+		if end < 0 {
+			return fmt.Errorf("specgraphtest: the document's %s has no line end", key)
+		}
+		document = document[:start] + prefix + value + document[start+end:]
+		return nil
 	}
-	return header + block[end:], nil
+	if err := write("procedure", procedure); err != nil {
+		return "", err
+	}
+	if err := write("subject", subject); err != nil {
+		return "", err
+	}
+	if procedure != "program" {
+		var kept []string
+		inTest := false
+		for line := range strings.Lines(document) {
+			switch {
+			case line == "test:\n":
+				inTest = true
+			case inTest && strings.HasPrefix(line, " "):
+			default:
+				inTest = false
+				kept = append(kept, line)
+			}
+		}
+		document = strings.Join(kept, "")
+	}
+	return document, nil
 }
 
-// editVersions changes the block of each version of the node id of the approved spec v by write.
+// editVersions changes the document of each version of the node id of the approved spec v by
+// write.
 func editVersions(v any, id string, write func(string) (string, error)) error {
 	file, _ := v.(map[string]any)
 	nodes, _ := file["nodes"].([]any)
@@ -185,12 +200,12 @@ func editVersions(v any, id string, write func(string) (string, error)) error {
 		versions, _ := n["versions"].([]any)
 		for _, version := range versions {
 			version, _ := version.(map[string]any)
-			block, _ := version["block"].(string)
-			written, err := write(block)
+			document, _ := version["document"].(string)
+			written, err := write(document)
 			if err != nil {
 				return err
 			}
-			version["block"] = written
+			version["document"] = written
 		}
 	}
 	if !found {
