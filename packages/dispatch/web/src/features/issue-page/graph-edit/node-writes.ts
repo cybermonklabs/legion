@@ -697,6 +697,24 @@ function writeOf<T>(chain: Chain, label: string, request: WriteRequest<T>) {
   } as const;
 }
 
+/**
+ * Gives up Graph's read of `issue` where one is out, as an act's write is about to go: a read of
+ * several pages out then can read a page before the write moves or takes a node and another page
+ * after it, and so answer with the node on no page, or on two, in place of the read the write's
+ * answer was written into - a new row's node read under its new parent before the move and at the
+ * end of the issue's own blocks after it is on none. TanStack's `cancelQueries` ends it at once,
+ * its request aborted and the answer held before it put back (`revert`), so the write goes in the
+ * same turn, and nothing is done where no read is out. The read given up stays owed, marked
+ * stale: the read after a taken answer (R7) reads the tree again, and so does the read the settle
+ * of the issue's writes makes after a refused one (`subscribeTreeFreshness`).
+ */
+function giveUpGraphRead(client: QueryClient, issue: string): void {
+  const { queryKey } = outlineQuery(issue, "graph");
+  if ((client.getQueryState(queryKey)?.fetchStatus ?? "idle") === "idle") return;
+  void client.cancelQueries({ exact: true, queryKey });
+  void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+}
+
 /** The `PATCH` of a move, or of a new row's placing, labelled `label` in the write store: a taken
  *  answer is written into the held read at its place, and the chain goes on. */
 function sendMove(
@@ -706,6 +724,7 @@ function sendMove(
   request: WriteRequest<NodeMoved>,
   label: string
 ): void {
+  giveUpGraphRead(client, chain.issue);
   const sent = writesOf(client).run(writeOf(chain, label, request));
   void sent.then(
     (answer) => {
@@ -733,6 +752,7 @@ function sendDelete(
   act: DeleteAct,
   request: WriteRequest<NodeDeleted>
 ): void {
+  giveUpGraphRead(client, chain.issue);
   const sent = writesOf(client).run(writeOf(chain, CONTROL_LABELS.edit_delete, request));
   void sent.then(
     () => {

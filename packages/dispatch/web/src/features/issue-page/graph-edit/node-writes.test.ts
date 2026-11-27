@@ -1164,3 +1164,40 @@ test("a tree read out as the placing PATCH goes is given up and never lands over
     isInvalidated: true,
   });
 });
+
+// R4: a move's PATCH gives up Graph's read out as it goes, as a placing does: that read can read a
+// page before the move and another after it, and its answer would land over the held read the
+// move's answer was written into. The read given up is owed, and the move's answer stands.
+test("a tree read out as a move's PATCH goes is given up and its answer stands", async () => {
+  const out = Promise.withResolvers<void>();
+  const patches = answerPatches({ ...moved.move_up, gate: out.promise });
+  const signals: AbortSignal[] = [];
+  spies.push(
+    spyOn(api, "getIssueTree").mockImplementation(async (_key, _query = {}, init = {}) => {
+      if (init.signal !== undefined) signals.push(init.signal);
+      return Promise.withResolvers<TreeAnswer>().promise;
+    })
+  );
+  const { queryKey } = outlineQuery(KEY, "graph");
+  const { client, writes } = mount();
+  act(() => readOutlinesAgain(client, KEY, ["graph"]));
+  expect(signals, "Graph's read was not read again").toHaveLength(1);
+  let taken: Promise<unknown> | undefined;
+  await act(async () => {
+    taken = writes().move(STATEMENT, "move_up");
+  });
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  const state = client.getQueryState(queryKey);
+  expect(
+    { fetchStatus: state?.fetchStatus, isInvalidated: state?.isInvalidated },
+    "the read out as the move went is not given up and owed"
+  ).toEqual({ fetchStatus: "idle", isInvalidated: true });
+  expect(signals[0]?.aborted, "the read out as the move went was not aborted").toBe(true);
+  await act(async () => {
+    out.resolve();
+    await taken;
+  });
+  expect<unknown>(heldNode(client, STATEMENT)?.placement_seq).toBe(
+    moved.move_up.body.placement_seq
+  );
+});
