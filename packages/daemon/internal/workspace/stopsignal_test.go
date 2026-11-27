@@ -88,9 +88,10 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// at the end is one the command's own SIGTERM handler removed.
 		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
+		holdOutside(t) // CONTROL (never merged)
 		call := calling(t)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, held("sh", "-c", script, "sh", lock, ready, mark, readyAt))
 		returned := time.Now()
 		cpu := processCPU(t)
 		elapsed := returned.Sub(started)
@@ -159,10 +160,11 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := testexec.MarkStart(`"$6"`) + `; ` + waitInto("forked", "self") + `; sh -c "$2" sh "$3" "$4" "$5" & read -r word <"$4"; ` + waitInto("heard", "self") + `; trap '' TERM; ` + markWaited("self", `"$7"`, `"$forked"`, `"$heard"`) + `; : >"$1"; ` + commandLives
 
 		returned := make(chan error, 1)
+		holdOutside(t) // CONTROL (never merged)
 		call := calling(t)
 		started := time.Now()
 		go func() {
-			_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped, helperWaited, mark, readyAt})
+			_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, held("sh", "-c", script, "sh", ready, helper, marker, trapped, helperWaited, mark, readyAt))
 			returned <- err
 		}()
 		var err error
@@ -215,8 +217,9 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// up on its own (commandLives), exit 0 and not timed out. The Timeout is stopTimeout, so a
 		// git whose runner kept to main's second, and which the machine held for less than a
 		// second more, has its trap installed when it passes.
-		run := NewRunner(stopTimeout, map[string]string{"git": fakeGit})
+		run := NewRunner(stopTimeout, map[string]string{"git": heldTool(t, dir, "held-git", fakeGit)}) // CONTROL (never merged)
 
+		holdOutside(t) // CONTROL (never merged)
 		call := calling(t)
 		started := time.Now()
 		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: stopTimeout})
