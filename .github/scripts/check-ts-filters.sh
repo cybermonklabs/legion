@@ -180,7 +180,7 @@ def read_filters() -> tuple:
                                                          f"file CI_FILTERS_FILE names: {type(exc).__name__}: {exc}")),
               file=sys.stderr)
         raise SystemExit(1) from exc
-    if text.startswith(engine.FAIL_OPEN_HEAD):
+    if text.startswith(wp.FAIL_OPEN_HEAD):
         print(engine.annotation_line(engine.error(SHOWN, f"the changes job could not compute its filters and selected "
                                                          f"every job: {text.splitlines()[0]}")), file=sys.stderr)
         raise SystemExit(1)
@@ -194,7 +194,7 @@ def read_filters() -> tuple:
     if not isinstance(loaded, dict) or not loaded:
         print(engine.annotation_line(engine.error(SHOWN, "the generated filters hold no filter")), file=sys.stderr)
         raise SystemExit(1)
-    filters = {str(name): engine.flatten(value) for name, value in loaded.items()}
+    filters = {str(name): wp.flatten(value) for name, value in loaded.items()}
     return text.splitlines(), filters, {name: quantifier or "some" for name in filters}
 
 

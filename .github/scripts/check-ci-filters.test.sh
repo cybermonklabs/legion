@@ -159,8 +159,37 @@ def alone_held(root, alone, packages):
     return "held"
 
 
+def writer_words():
+    """Each of the seven words the rule 8 harness reads too, read by the reduction of a go test
+    line in the filter engine, by ci_job_reads.events_writer over a job file whose step runs it,
+    and by workflow_paths.names_events_writer: one line per word, agree or DISAGREE, and the
+    verdicts. (This program is a single-quoted shell word, so it holds no apostrophe.)"""
+    import tempfile
+    import workflow_paths
+    writer = workflow_paths.EVENTS_WRITER
+
+    def engine(word):
+        return ci_filter_coverage.reduce_line(f"{word} go test ./x")[5] == ""
+
+    def job_reads(word):
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml") as job:
+            job.write(f"        run: {word} go test ./x\n")
+            job.flush()
+            reads.job_file = lambda _job: job.name
+            return bool(reads.events_writer("unit"))
+
+    lines = []
+    for word in [writer, f"../../{writer}", f"./../../{writer}", f"/runner/work/{writer}", f"x{writer}", f"{writer}c",
+                 "../.github/scripts/other.py"]:
+        verdicts = {reader(word) for reader in (workflow_paths.names_events_writer, engine, job_reads)}
+        verdict = "agree" if len(verdicts) == 1 else "DISAGREE"
+        lines.append(f"{word}: {verdict} {sorted(verdicts)}")
+    return "\n".join(lines)
+
+
 questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held,
-             "envoy_legs_held": envoy_legs_held, "plain_run": plain_run, "alone_held": alone_held}
+             "envoy_legs_held": envoy_legs_held, "plain_run": plain_run, "alone_held": alone_held,
+             "writer_words": writer_words}
 
 
 def field():
@@ -3825,11 +3854,29 @@ replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: .
 run_check "$root"
 check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 8 files (filter app)$')"
+root=$(fixture events-writer-dot)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ./../.github/scripts/go_test_events.py go test ./cmd/app ./lib"
+run_check "$root"
+check "a path to the writer that starts ./, as rule 8 reads it, reduces the same way" "$(is "$status" 0)"
+check "and counts the same files" "$(contains "$out" '^report: app: 8 files (filter app)$')"
 root=$(fixture events-writer-other)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/other.py go test ./cmd/app ./lib"
 run_check "$root"
 check "a script of another name in its place is not reduced" \
   "$(contains "$out" 'runs `../.github/scripts/other.py go test ./cmd/app ./lib`, which this check does not reduce (it starts with `../.github/scripts/other.py`, not go)')"
+
+# Five readers name the events writer in a go test step, each through workflow_paths'
+# names_events_writer; the filter engine's two are held here, over the seven words rule 8's harness
+# and go-test-step-expansion.test.sh read too.
+echo "case: the filter engine names the events writer as workflow_paths.names_events_writer does, ./../../ among them"
+agree=$(ask writer_words)
+check "reads each of the seven words" "$(is "$(printf '%s\n' "$agree" | grep -c ': \(agree\|DISAGREE\) \[')" 7)"
+check "and reduce_line, ci_job_reads.events_writer and names_events_writer agree on every one" \
+  "$(is "$(printf '%s\n' "$agree" | grep -c ': DISAGREE ')" 0)"
+check "naming the writer by its path from any directory, ./../../ included" \
+  "$(is "$(printf '%s\n' "$agree" | grep -Fxc './../../.github/scripts/go_test_events.py: agree [True]')" 1)"
+check "four words name it, and the three that only end in its name, or carry a suffix, or name another script do not" \
+  "$(is "$(printf '%s\n' "$agree" | grep -c ': agree \[True\]$'),$(printf '%s\n' "$agree" | grep -c ': agree \[False\]$')" 4,3)"
 
 echo "case: an earlier step writes GOFLAGS to GITHUB_ENV before a claimed simple go command"
 root=$(fixture github-env-goflags)

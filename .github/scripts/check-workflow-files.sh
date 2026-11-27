@@ -68,9 +68,13 @@
 #      with no step after it
 #      (after the pool's next `harness-pool.sh wait`, for a command the pool starts) that runs
 #      `uses: ./.github/actions/go-test-events-upload` with `check-run-id: ${{ job.check_run_id }}`
-#      and `if: always()` (or `always() && ` the one condition every such step of the job
-#      carries). That action uploads `${{ runner.temp }}/go-test-events/` as the artifact
-#      `go-test-events-<the job's check run id>`, with `if-no-files-found: error`. A go test's
+#      under the condition that runs it whenever one of those steps ran and never when none was
+#      due: `if: always()` when one of them runs whenever the job does (no `if:`, success(),
+#      always() or !cancelled()), else `always() && ` the one condition they share, or `always() &&
+#      (A || B)` for the conditions they carry. That action uploads
+#      `${{ runner.temp }}/go-test-events/` as the artifact `go-test-events-<the job's check run
+#      id>`, with `if-no-files-found: error`, so a run whose go test ran and kept no file fails, and
+#      the condition keeps that error off a run whose go test steps were rightly skipped. A go test's
 #      flags are read as the shell splits its words. A command stands where bash runs it: at a
 #      line's start or after an operator, behind `!`, `{`, a case pattern's `)`, a function's
 #      `name()` or a keyword (if, while, until, then, do, else), after a redirection
@@ -83,20 +87,25 @@
 #      behind any options (`bash -o pipefail -c`), a `$'...'` string decoded, unless the shell's
 #      options, read to their last state, let it run nothing (--help, --version, -D, or -n or -o
 #      noexec that no later +n or +o noexec undoes). A go test that runs detached is refused:
-#      behind `setsid -f` with no -w, or in the background (`&`, of its own list, of a compound it
-#      stands in, or of a `bash -c`, env -S or heredoc shell that runs it) with no wait for it: a
-#      `wait` of the same shell after it, where it runs whenever the `&` did (not in a subshell, a
-#      pipeline, a function's body, an if, a loop or a case the `&` does not stand in), in the
-#      foreground, bare, or naming `$!` or a variable assigned `$!` while no other job (`&`,
-#      `<(...)`, coproc, bg, eval, source or a function of the shell) had changed it. Such a step
-#      can end before its events are written, and does not fail when go test does. A
+#      behind `setsid -f` with no -w, in a process substitution (`>(...)`, `<(...)`), which bash does
+#      not wait for, or in the background (`&`, of its own list, of a compound it stands in, or of
+#      a `bash -c`, env -S or heredoc shell that runs it) with no wait for it: a `wait` of the same
+#      shell after it, where it runs whenever the `&` did (not in a subshell, a pipeline, a
+#      function's body, an if, a loop or a case the `&` does not stand in), in the foreground, and
+#      naming `$!` or a variable assigned `$!` while no other job (`&`, `<(...)`, coproc, bg, eval,
+#      source or a function of the shell) had changed it. Such a step can end before its events
+#      are written, and a bare `wait`, which returns 0 whatever the job's status, would let it pass
+#      when go test fails. A
 #      script named as `"$(dirname "$0")/x.sh"` is looked for by its name beside the script that
 #      names it. A go test inside quotes or a heredoc of text runs nothing; a heredoc a shell takes
-#      is a script, and an unquoted one's `$(...)` runs. These forms are not seen, each with its
-#      reason in .github/go-test-step-misses.tsv: eval, coproc, flock, a shell's script from a pipe
-#      (`| bash`) or a here-string (`<<<`), python3 -c, stdbuf, ionice and taskset; and a go test
-#      no run reaches (`if false`, an uncalled function), or whose variable go word the step
-#      assigns no go (`TOOL=true; "$TOOL" test`), is refused as if it ran. Without -v or
+#      is a script, and an unquoted one's `$(...)` runs. A line that runs, at a command's place, a
+#      runner whose command rule 8 cannot read - eval, coproc, flock, a shell that reads its script
+#      from a pipe (`| bash`) or a here-string (`<<<`), python3 -c, stdbuf, ionice or taskset - and
+#      names a go test, or a script that runs one, in its own words is refused, kept or not; a go
+#      test such a runner takes from what the line does not spell out is not seen. A go test no run
+#      reaches (`if false`, an uncalled function), or whose variable go word the step assigns no go
+#      (`TOOL=true; "$TOOL" test`), is refused as if it ran. Each over-refusal has its reason in
+#      .github/go-test-step-misses.tsv. Without -v or
 #      -json a go test step's log says only `ok <package> <time>`, so the events that writer keeps,
 #      uploaded under the job's id, are the one record of which tests the step ran, passed and
 #      skipped; a step without it keeps none, and its tests read as run nowhere. Each refusal

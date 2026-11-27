@@ -103,9 +103,9 @@ How it reads a step:
   * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
     and the packages it prints are the command's packages;
   * a line that sets variables before its command (`GODEBUG=checkfinalizers=1 go test …`) or runs
-    it under the wrappers GO_WRAPPERS names (`race_memory.py go test …`, `go_test_events.py go
+    it under the wrappers go_wrapper names (`race_memory.py go test …`, `go_test_events.py go
     test …`, or both, one behind the other) is the go command behind them: neither changes which
-    test functions run. A value holding `$` and a wrapper that tuple does not name are refused
+    test functions run. A value holding `$` and a wrapper go_wrapper does not name are refused
     rather than guessed at;
   * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
     the job's matrix, each with the row's value written in, since each row is a job of its own:
@@ -152,7 +152,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import os
 import re
 import shlex
 import subprocess
@@ -162,7 +161,7 @@ from pathlib import Path
 
 import yaml
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
-from workflow_paths import EVENTS_WRITER
+from workflow_paths import names_events_writer
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -510,18 +509,25 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="3e6907af86346b1a6a6436afe98ff6af4368d6b601a0178baa3862908fe5964d",
+        sha256="6aea0abcddaf97dc4633a73753932ffb8b61bd9c2940bf75547f8ae5b038656a",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
-# The wrappers a step runs a go command under, the events writer (workflow_paths.EVENTS_WRITER)
-# among them. Each bounds how the test binary runs or keeps its events, and changes which tests it
-# runs in no way, so the command behind it is read as though it stood alone; one this tuple does
-# not name is refused rather than guessed at. Matched by the end of the word, since a step writes
-# the path from its own working directory.
-GO_WRAPPERS = (".github/scripts/race_memory.py", EVENTS_WRITER)
+# The wrappers a step runs a go command under: the events writer, which a word names as every reader
+# of a go test step matches it (workflow_paths.names_events_writer), and the memory sampler, a word
+# naming it by its path from the step's directory as a step writes it. Each bounds how the test
+# binary runs or keeps its events, and changes which tests it runs in no way, so the command behind
+# it is read as though it stood alone; any other wrapper is refused rather than guessed at.
+SAMPLER = ".github/scripts/race_memory.py"
+
+
+def go_wrapper(word: str) -> bool:
+    """Whether a word is one of the wrappers a step runs a go command under."""
+    return names_events_writer(word) or word == SAMPLER or word.endswith("/" + SAMPLER)
+
+
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
@@ -744,12 +750,11 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str, 
     # which bash reads as part of the name.
     alone = script.strip(" \t\n")
     # The events writer runs the script as it stands, handing it only the file its report goes to,
-    # so a path of the writer before the script, as the step's directory reaches it, reads as the
-    # script's own run, piped from a lister or not.
+    # so a word naming the writer before the script (workflow_paths.names_events_writer) reads as
+    # the script's own run, piped from a lister or not.
     def behind_writer(text: str) -> str:
         first, _, rest = text.partition(" ")
-        relative = os.path.relpath(EVENTS_WRITER, workdir or ".")
-        return rest if first in {relative, f"./{relative}"} else text
+        return rest if names_events_writer(first) else text
 
     piped = XARGS_AUDITED.match(alone)
     if piped:
@@ -856,7 +861,7 @@ def go_command(line: str) -> tuple[list[str], str]:
     and `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go_test_events.py
     ../../.github/scripts/race_memory.py go test …`. Neither the variables nor the wrappers change
     which test functions the command runs, which is all this script reads, so all are dropped and
-    what is left is the go command. A value holding `$`, and a wrapper GO_WRAPPERS does not name,
+    what is left is the go command. A value holding `$`, and a wrapper go_wrapper does not name,
     are left where they are, so the caller refuses the line rather than guessing. The text is cut
     word by word off the line itself, so the quoting of what is left - a `-run` pattern above all -
     is the line's own.
@@ -875,7 +880,7 @@ def go_command(line: str) -> tuple[list[str], str]:
         break
     # The wrappers, one behind another, dropped only where a go command stands behind the last.
     behind = rest
-    while len(head := behind.split(None, 1)) == 2 and head[0].endswith(GO_WRAPPERS):
+    while len(head := behind.split(None, 1)) == 2 and go_wrapper(head[0]):
         behind = head[1]
     if behind != rest and behind.split(None, 1)[0] == "go":
         rest = behind

@@ -47,7 +47,7 @@ from pathlib import Path
 
 import yaml
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import EVENTS_WRITER, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, names_events_writer, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -967,17 +967,6 @@ class Selection:
         return found
 
 
-def flatten(value) -> list:
-    """A filter's patterns, an anchor's nested list flattened into it as dorny/paths-filter does."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [p for item in value for p in flatten(item)]
-    if isinstance(value, dict):  # the change-type form: {added|modified|...: pattern(s)}
-        return [p for item in value.values() for p in flatten(item)]
-    return []
-
-
 # Where every filter of the changes job is. No file of the repository holds them: the changes job
 # computes them when it runs (`check-ci-filters.sh generate`, through GENERATE_SCRIPT, which falls
 # open to selecting every job when that fails) into the runner's temporary directory, and its one
@@ -988,10 +977,6 @@ GENERATED_INPUT = "${{ runner.temp }}/ci-filters.yaml"
 GENERATED_FILE = "the generated filters (check-ci-filters.sh generate)"
 GENERATE_SCRIPT = ".github/scripts/ci-filters-generate.sh"
 GENERATE_RUN = f'{GENERATE_SCRIPT} "$RUNNER_TEMP/ci-filters.yaml"'
-# The first line of a filters file GENERATE_SCRIPT wrote because the computation failed: every
-# filter `'**'`, so every job runs. A reader of the file (check-ts-filters.sh,
-# check-image-trigger-paths.sh) refuses one, since it holds nothing to check a filter against.
-FAIL_OPEN_HEAD = "# FAIL-OPEN:"
 
 
 def filter_input_steps(job: dict) -> list:
@@ -1716,11 +1701,6 @@ PACKAGE = re.compile(r"\.\.?(/[A-Za-z0-9_./-]*)?")
 FLAG = re.compile(r"-v|-race|-count=[0-9]+|-timeout=[0-9]+[smh]|-buildvcs=false")
 DURATION = re.compile(r"[0-9]+[smh]")
 TAGS = re.compile(r"[A-Za-z0-9_,]+")
-# The script every go test step of CI runs its go test under (workflow_paths.EVENTS_WRITER): it
-# runs `go test -json` with the step's own flags and packages, so the command compiles what the go
-# test behind it does. Named by its path from the step's directory, `../` repeated or nothing
-# before it; the gate that claims the line declares the script as a read of its own.
-EVENTS_WRITER_WORD = re.compile(rf"(?:\.\./)*{re.escape(EVENTS_WRITER)}")
 
 
 def reduce_line(line: str) -> tuple:
@@ -1742,8 +1722,10 @@ def reduce_line(line: str) -> tuple:
             return *unreduced, f"it sets {assignment.group(1)}, which can change what go compiles"
         words = words[1:]
     # The events writer runs the go test behind it with its flags and packages unchanged (and
-    # -json, which moves no file go compiles), so the go command is what is left.
-    if len(words) > 2 and EVENTS_WRITER_WORD.fullmatch(words[0]) and words[1:3] == ["go", "test"]:
+    # -json, which moves no file go compiles), so the go command is what is left. A word names the
+    # writer as every reader of a go test step matches it (workflow_paths.names_events_writer); the
+    # gate that claims the line declares the script as a read of its own.
+    if len(words) > 2 and names_events_writer(words[0]) and words[1:3] == ["go", "test"]:
         words = words[1:]
     if not words or words[0] != "go":
         return *unreduced, f"it starts with `{words[0] if words else line}`, not go"

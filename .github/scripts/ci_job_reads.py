@@ -75,7 +75,7 @@ from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact,
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import compiled, go_skips_dir, tag_sets
-from workflow_paths import EVENTS_WRITER
+from workflow_paths import EVENTS_WRITER, names_events_writer
 import go_legs
 
 ENVOY = "packages/envoy"
@@ -405,14 +405,20 @@ def job_self(job):
 # job's upload and prints the log go test prints without -json
 # (.github/scripts/check-workflow-files.sh's rule 8 holds every step to it). A step names it from
 # its own directory, `../../` from packages/envoy or packages/daemon, `../../../` from
-# packages/envoy/infra and nothing from the root.
+# packages/envoy/infra and nothing from the root, and a word of a line names it as every reader of
+# a go test step matches it (workflow_paths.names_events_writer). A line's words are what lies
+# between its blanks, quotes and shell operators.
+WORD_BREAKS = re.compile(r"[\s\"'`;&|()<>]+")
+
+
 def events_writer(job):
     """The events writer, a read of each job whose file runs it on a line that is no comment: the
     job's steps run it, so its filter must name it, and reading the file rather than listing the
     jobs leaves no table that a step newly run under it could be missing from."""
     path = Path(job_file(job))
     lines = path.read_text().splitlines() if path.is_file() else []
-    if not any(EVENTS_WRITER in line and not line.lstrip().startswith("#") for line in lines):
+    if not any(not line.lstrip().startswith("#") and any(map(names_events_writer, WORD_BREAKS.split(line)))
+               for line in lines):
         return []
     return reads((EVENTS_WRITER, f"{job_file(job)}: its go test steps run under it"))
 

@@ -765,7 +765,7 @@ def merge_table(base_rev: str, branch_rev: str, main_rev: str, report: list) -> 
 def filters_of(text: str | None) -> dict:
     """Each filter of a filters file's text, by name: its patterns, an anchor's list flattened in."""
     import yaml
-    from ci_filter_coverage import flatten
+    from workflow_paths import flatten
     return {name: flatten(value) for name, value in (yaml.safe_load(text or "") or {}).items()}
 
 

@@ -2,21 +2,22 @@
 shell: a script's lines as the shell reads them (logical_lines), where a word stands as the command
 it runs (COMMAND_PLACE, the one grammar every pattern of the rule is built on), the go test and the
 script runs at those places (GO_TEST, RUNS, go_tests), the compound commands each line stands in
-(Frame), and whether such a command runs detached, so its step can end before it has written its
-events (detached_at). go_test_steps.py imports it from beside its own file; what it reads is held
-to bash by .github/scripts/go_test_step_forms.py.
+(Frame), whether such a command runs detached, so its step can end before it has written its
+events or with a status that is not its own (detached_at), and the runners whose command no
+reading of the step can follow (opaque). go_test_steps.py imports it from beside its own file;
+what it reads is held to bash by .github/scripts/go_test_step_forms.py.
 """
 
 from __future__ import annotations
 
 import re
 
-from workflow_paths import EVENTS_WRITER
+from workflow_paths import EVENTS_WRITER, EVENTS_WRITER_WORD
 
-# The writer is named by its repository path at the end of the word, whatever directory a step puts
-# before it (`../../`, or a variable's `"$envoy/../../"`), quoted or not; race_memory.py may stand
-# between it and the go test it samples, since it appends what it reads to the file the writer
-# names.
+# The writer is named as every reader of a go test step names it (workflow_paths.EVENTS_WRITER_WORD:
+# its repository path at the end of the word, whatever directory a step puts before it, `../../`
+# or a variable's `"$envoy/../../"`), quoted or not; race_memory.py may stand between it and the go
+# test it samples, since it appends what it reads to the file the writer names.
 WRITER = EVENTS_WRITER
 
 # Where a shell word stands as the command it runs, the one grammar of this rule (COMMAND_PLACE):
@@ -114,7 +115,7 @@ WORD = rf"(?P<arg>[\"']?(?P<word>(?:{DIRNAME}|[^\s\"';&|()`])+)[\"']?)"
 # handed and appends what it reads to the writer's file) after it or not.
 PATH_WORD = r"[\"']?[^\s\"';&|()]*"
 SAMPLER = rf"(?:{PATH_WORD}race_memory\.py[\"']?\s+)?"
-WRAPPER = rf"(?:python3?\s+)?[\"']?(?:[^\s\"';&|()]*/)?{re.escape(WRITER)}[\"']?\s+{SAMPLER}"
+WRAPPER = rf"(?:python3?\s+)?[\"']?{EVENTS_WRITER_WORD}[\"']?\s+{SAMPLER}"
 # go test's command word: go, quoted or not; a variable, braced or not, quoted or not (a command
 # held in one, `"${go_cmd[@]}" test` or `"$GO" test`, is read as a go, since the word after it is
 # go test's: a script that builds its go command's environment that way runs go test through it);
@@ -164,12 +165,14 @@ ENV_SPLIT = re.compile(COMMAND_PLACE + rf"(?P<env>(?:[^\s\"';&|()`]*/)?env)(?:\s
 # (--wait) waits for it: the step, and so the job's upload, can end before its events are written.
 FORKED = re.compile(r"(?:^|[\s/])setsid(?P<options>(?:\s+(?:-[cfw]+|--(?:ctty|fork|wait)))*)")
 # A `wait` at a command's start, `command` before it or not: what a shell that put a command in the
-# background (`&`) waits for it with, when it stands where waited() asks; an assignment of the last
-# background job's id (`pid=$!`), which a wait may name; what makes `$!` name another job wherever
-# it stands (a lone `&`, a process substitution); and where a command's first word stands, which
-# job_word() reads with its quoting off (`"f"`, `\f`, `"eval"`), so a call of a function of the
-# shell, or of coproc, bg, eval or a sourced file, is found however it is written, and a word the
-# shell expands (`"$FN"`) is one this reading cannot name.
+# background (`&`) waits for it with, when it stands where waited() asks and names that job (`$!`,
+# or a variable assigned it): a bare wait returns 0 whatever the job's status, so after one the
+# step does not fail when go test does. An assignment of the last background job's id (`pid=$!`),
+# which a wait may name; what makes `$!` name another job wherever it stands (a lone `&`, a process
+# substitution); and where a command's first word stands, which job_word() reads with its quoting
+# off (`"f"`, `\f`, `"eval"`), so a call of a function of the shell, or of coproc, bg, eval or a
+# sourced file, is found however it is written, and a word the shell expands (`"$FN"`) is one this
+# reading cannot name.
 WAIT = re.compile(START + r"\s*(?:command\s+)?(?P<wait>wait)(?![\w-])")
 PID = re.compile(r"(?:^|(?<=[\s;&|(]))(?P<name>[A-Za-z_]\w*)=(?P<quote>\"?)\$!(?P=quote)(?=[\s;&|)]|$)")
 JOB = re.compile(r"(?P<job>(?<![&<>|])&(?![&>])|[<>]\()")
@@ -180,20 +183,38 @@ FIRST_WORD = re.compile(COMMAND_PLACE + r"(?:command\s+)?(?![A-Za-z_]\w*=)(?=(?P
 ASSIGNED = re.compile(r"(?:^|(?<=[\s;&|(]))(?P<name>[A-Za-z_]\w*)(?P<append>\+?)=")
 VARIABLE = re.compile(r"\"?\$\{?(?P<name>[A-Za-z_]\w*)(?:\[@\])?\}?\"?")
 NAMED = re.compile(r"(?<![\w${!#])[A-Za-z_]\w*(?![\w=+\[])")
+# The runners whose command no reading of the step can follow (opaque): eval, which runs a string
+# the shell builds; coproc; flock, stdbuf, ionice and taskset, which run the command after options
+# this reading does not read; python3 -c, a program in another language; and a shell that reads its
+# script from a here-string (`bash <<<`) or a pipe (`| bash`, PIPED_SHELL). A line that runs one at a
+# command's place and names a go test anywhere in its text (NAMED_GO_TEST, quoted or not), or names
+# a script that runs one in a word of its own (line_words), is refused by go_test_steps.py: whether
+# that go test keeps its events is no reading's to say. A go test such a runner takes from what the
+# line does not spell out (`eval "$cmd"`, cmd set on another line) is not seen, and
+# .github/go-test-step-misses.tsv says so of each.
+OPAQUE = re.compile(COMMAND_PLACE + rf"(?P<runner>(?:eval|coproc)(?![\w-])"
+                    rf"|(?:[^\s\"';&|()`]*/)?(?:flock|stdbuf|ionice|taskset)(?![\w-])"
+                    rf"|python3?(?:\s+-[A-Za-z]+)*?\s+-[A-Za-z]*c(?=\s)"
+                    rf"|(?:[^\s\"';&|()`]*/)?{SHELLS}(?:\s+{SHELL_OPTION})*\s*<<<)")
+PIPED_SHELL = re.compile(rf"\|&?\s*(?P<runner>(?:[^\s\"';&|()`]*/)?{SHELLS}(?:\s+{SHELL_OPTION})*)\s*(?=$|[;&|)])")
+NAMED_GO_TEST = re.compile(r"(?:^|(?<=[\s\"'`;&|()=]))(?:\"?\$\{?[A-Za-z_]\w*(?:\[@\])?\}?\"?|[^\s\"'`;&|()=]*/go[\"']?"
+                           r"|[\"']?go[\"']?)\s+(?:-C(?:\s+|=)\S+\s+)?test(?![\w.-])")
 
 
 class Frame:
-    """A compound command a line of a shell stands in: a subshell `( )` (a `$( )` and backquotes
-    among them), a brace group, a function's body, an if, a loop or a case. An if's branches and a
-    case's arms are frames of their own, of one compound (`group`, its first frame), which holds
-    what its close showed: whether it runs in a shell of its own (`subshell`: a subshell, an element
-    of a pipeline, a compound put in the background) and where it was put in the background."""
+    """A compound command a line of a shell stands in: a subshell `( )` (a `$( )`, a process
+    substitution `<( )` or `>( )` and backquotes among them), a brace group, a function's body, an
+    if, a loop or a case. An if's branches and a case's arms are frames of their own, of one
+    compound (`group`, its first frame), which holds what its close showed: whether it runs in a
+    shell of its own (`subshell`: a subshell, an element of a pipeline, a compound put in the
+    background) and where it was put in the background. `procsub`: the frame is a process
+    substitution, which bash never waits for before the step ends."""
 
-    __slots__ = ("kind", "group", "subshell", "background")
+    __slots__ = ("kind", "group", "subshell", "background", "procsub")
 
-    def __init__(self, kind: str, subshell: bool = False, group: Frame | None = None) -> None:
+    def __init__(self, kind: str, subshell: bool = False, group: Frame | None = None, procsub: bool = False) -> None:
         self.kind, self.group = kind, group or self
-        self.subshell, self.background = subshell, None
+        self.subshell, self.background, self.procsub = subshell, None, procsub
 
 
 class Shell:
@@ -613,7 +634,7 @@ def frame_tokens(line: str) -> list[tuple[int, int, str, str, bool, str]]:
                 words.append("()")
             elif char in "()":
                 found.append((at, at + 1, "open" if char == "(" else "close", "paren", was_piped, ""))
-                command = True
+                command, target = True, False
             elif char == "`":
                 backquotes += 1
                 found.append((at, at + 1, "open" if backquotes % 2 else "close", "backquote", False, ""))
@@ -655,7 +676,9 @@ def scan_frames(lines: list[Line]) -> None:
         line.frames, line.events = tuple(stack), []
         for at, end, op, kind, piped, name in frame_tokens(line):
             if op == "open":
-                frame = Frame(kind, subshell=piped or kind in ("paren", "backquote"))
+                # A `(` right after `<` or `>` opens a process substitution.
+                frame = Frame(kind, subshell=piped or kind in ("paren", "backquote"),
+                              procsub=kind == "paren" and line[at - 1:at] in ("<", ">"))
                 stack.append(frame)
             elif not stack or stack[-1].kind != kind and not (kind == "brace" and stack[-1].kind == "function"):
                 continue
@@ -733,15 +756,16 @@ def starts_job(line: Line, position: int) -> bool:
 
 def waited(line: Line, at: int, later: list[tuple[int, Line]]) -> bool:
     """Whether the shell that put a list in the background at `at` of the line waits for it before
-    the step ends: with a `wait` of that same shell after it, standing where it runs whenever the
-    list did (runs_whenever) and naming no job but that one. A bare wait waits for every job. `$!`
-    names that job while nothing between its `&` and the read starts another (a lone `&`, a
-    process substitution, or a command starts_job names); a variable names it when assigned `$!`
-    while that held, at a place the `&` reaches too (runs_whenever: not in a subshell, a
-    conditional, a loop or a function the `&` is outside of), and not assigned or named again
-    there before the wait - an assignment the run may skip (`( pid=0 )`, `if false; then pid=0;
-    fi`) leaves it. A wait anywhere else (`(wait)`, `if false; then wait; fi`, `f() { wait; }`,
-    `wait | cat`, `wait &`), or naming another job (`x & sleep 0 & wait $!`), is none."""
+    the step ends, with the list's own status: with a `wait` of that same shell after it, standing
+    where it runs whenever the list did (runs_whenever) and naming that job and no other. A bare
+    wait is none: it waits for every job and returns 0 whatever their status. `$!` names that job
+    while nothing between its `&` and the read starts another (a lone `&`, a process substitution,
+    or a command starts_job names); a variable names it when assigned `$!` while that held, at a
+    place the `&` reaches too (runs_whenever: not in a subshell, a conditional, a loop or a function
+    the `&` is outside of), and not assigned or named again there before the wait - an assignment
+    the run may skip (`( pid=0 )`, `if false; then pid=0; fi`) leaves it. A wait anywhere else
+    (`(wait $!)`, `if false; then wait $!; fi`, `f() { wait $!; }`, `wait $! | cat`, `wait $! &`),
+    or naming another job (`x & sleep 0 & wait $!`), is none."""
     target, pids, own = frames_at(line, at), set(), True
     for other, start in [(line, at + 1)] + [(text, 0) for _, text in later if text.shell is line.shell]:
         outside = unquoted(other)
@@ -782,6 +806,8 @@ def runs_whenever(line: Line, position: int, target: list[Frame]) -> bool:
 
 
 def waits_here(line: Line, match: re.Match, target: list[Frame], pids: set[str], own: bool) -> bool:
+    """Whether a wait waits for the job (waited): where it runs whenever the job's `&` did, in the
+    foreground, and naming that job alone, `$!` while it is the job's or a variable that holds it."""
     if not runs_whenever(line, match.start("wait"), target):
         return False
     end = command_end(line, match.end("wait"))
@@ -789,17 +815,23 @@ def waits_here(line: Line, match: re.Match, target: list[Frame], pids: set[str],
         return False
     if line[end:end + 1] == "&" and line[end:end + 2] != "&&" and line[end + 1:end + 2] != ">":
         return False
-    return all((own and word in ("$!", '"$!"', "${!}", '"${!}"'))
-               or ((variable := VARIABLE.fullmatch(word)) is not None and variable.group("name") in pids)
-               for word in line[match.end("wait"):end].split())
+    words = line[match.end("wait"):end].split()
+    return bool(words) and all((own and word in ("$!", '"$!"', "${!}", '"${!}"'))
+                               or ((variable := VARIABLE.fullmatch(word)) is not None and variable.group("name") in pids)
+                               for word in words)
 
 
 def background_unwaited(line: Line, position: int, later: list[tuple[int, Line]]) -> bool:
-    """Whether the command at a position of the line is put in the background, with its own list
-    or as part of a compound it stands in, and its shell does not wait for it (waited)."""
+    """Whether the command at a position of the line stands in a process substitution, which bash
+    does not wait for before the step ends and whose status no command of the step reads, or is put
+    in the background, with its own list or as part of a compound it stands in, and its shell does
+    not wait for it (waited)."""
+    frames = frames_at(line, position)
+    if any(frame.procsub for frame in frames):
+        return True
     spot, _ = list_end(line, position)
     spots = [(line, spot)] if spot is not None else []
-    spots += [frame.group.background for frame in frames_at(line, position) if frame.group.background]
+    spots += [frame.group.background for frame in frames if frame.group.background]
     for spot_line, at in spots:
         after = later if spot_line is line else next(
             (later[index + 1:] for index, (_, text) in enumerate(later) if text is spot_line), [])
@@ -810,9 +842,10 @@ def background_unwaited(line: Line, position: int, later: list[tuple[int, Line]]
 
 def detached_at(match: re.Match, line: Line, group: str, later: list[tuple[int, Line]] = ()) -> bool:
     """Whether the command a match found runs detached, so its step can end before it has written
-    its events: in a shell that runs detached, behind `setsid -f` with no -w (the match's words
-    before `group`), or in the background (`&`) with no wait for it (background_unwaited; `later`:
-    the lines after this one)."""
+    its events, or end with a status that is not its own: in a shell that runs detached, behind
+    `setsid -f` with no -w (the match's words before `group`), in a process substitution, or in
+    the background (`&`) with no wait that names it (background_unwaited; `later`: the lines after
+    this one)."""
     if line.detached or forked(line[match.start():match.start(group)]):
         return True
     return background_unwaited(line, match.start(group), list(later))
@@ -830,6 +863,44 @@ def go_tests(line: Line) -> list[re.Match]:
     a sourced file, a name the shell builds), so `TOOL=true; "$TOOL" test` is refused, an
     over-refusal .github/go-test-step-misses.tsv lists."""
     return commands(GO_TEST, line, "go")
+
+
+def opaque(line: str) -> str | None:
+    """The first runner of the line whose command no reading can follow (OPAQUE, PIPED_SHELL) that
+    stands at a command's place, its words made one blank apart; None when the line runs none."""
+    found = commands(OPAQUE, line, "runner") + commands(PIPED_SHELL, line, "runner")
+    return " ".join(min(found, key=lambda match: match.start("runner")).group("runner").split()) if found else None
+
+
+def names_go_test(line: str) -> bool:
+    """Whether a line's text names a go test anywhere, quoted or not (NAMED_GO_TEST)."""
+    return NAMED_GO_TEST.search(line) is not None
+
+
+def line_words(line: str) -> list[str]:
+    """The shell words of a line, their quoting off (shell_word), but those the shell expands when
+    the step runs (a `$` or a backquote outside single quotes) and those inside a `$(...)`, a
+    process substitution or backquotes: a word the shell builds names no script this reading can
+    know, and a substitution's command runs at a command's place of its own, which RUNS reads."""
+    words, at, opened, ticks, outside = [], 0, [], 0, unquoted(line)
+    while at < len(line):
+        char = line[at]
+        if outside[at] and char in "()`":
+            if char == "(":
+                opened.append(line[at - 1:at] in ("$", "<", ">"))
+            elif char == ")" and opened:
+                opened.pop()
+            ticks += char == "`"
+            at += 1
+            continue
+        if char.isspace() or (outside[at] and char in ";&|<>"):
+            at += 1
+            continue
+        end, text, expands = shell_word(line, at)
+        if text and not expands and not any(opened) and ticks % 2 == 0:
+            words.append(text)
+        at = max(end, at + 1)
+    return words
 
 
 def go_test_parts(match: re.Match, line: str) -> tuple[str, str, int]:

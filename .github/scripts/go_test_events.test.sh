@@ -7,8 +7,9 @@
 # long lines, fuzz, time out, exit inside a test and fail to build, and compares what it prints
 # with what plain `go test` prints for the same packages, the times in both read as `Ns`. The
 # controls run it over a stand-in `go` that writes no event, over scripts that append to
-# TEST_EVENTS_FILE or do not, over an events file that keeps nothing, and over the real
-# backend-count.sh cut short by SIGTERM.
+# TEST_EVENTS_FILE or do not, over an events file that keeps nothing, over the real
+# backend-count.sh cut short by SIGTERM, and over stand-ins whose events a file size limit cuts
+# short, whose events hold one the log's renderer cannot print, and that SIGTERM cuts short.
 #
 # Its own go test runs are a fixture: they are the runs each case compares the script's with, over
 # a module of this harness's making, and no test of this repository, so the CI step that runs this
@@ -360,8 +361,8 @@ check "the log holds no test's own line" "$(is "$(contains "$(cat "$work/kept.ou
 check "the events are in go-test-events/<step id>.jsonl" "$([ -s "$events/unit.jsonl" ] && echo true || echo false)"
 check "a top-level test's pass is kept" "$(is "$(pass_of "$events/unit.jsonl" TestPlain)" 1)"
 check "a subtest's pass is kept under its full name" "$(is "$(pass_of "$events/unit.jsonl" TestNested/inner)" 1)"
-check "each test's pass, skip and fail event keeps its elapsed seconds and its time" \
-  "$(is "$(jq -c 'select(.Test and (.Action == "pass" or .Action == "skip" or .Action == "fail")) | (has("Elapsed") and has("Time"))' "$events/unit.jsonl" | sort -u | paste -sd, -)" true)"
+check "each test's pass and skip event keeps its elapsed seconds and its time" \
+  "$(is "$(jq -c 'select(.Test and (.Action == "pass" or .Action == "skip")) | (has("Elapsed") and has("Time"))' "$events/unit.jsonl" | sort -u | paste -sd, -)" true)"
 check "a skipped test is kept as a skip, not a pass" \
   "$(is "$(jq -c 'select(.Test == "TestSkipped") | .Action' "$events/unit.jsonl" | sort -u | paste -sd, -)" '"output","run","skip"')"
 check "TestMain's own line, which -v alone prints, is kept in the events" \
@@ -384,6 +385,8 @@ check "a passing subtest's log stays out" "$(is "$(contains "$(cat "$work/kept.o
 check "the events hold the deepest failure" \
   "$(is "$(jq -c 'select(.Action == "fail" and .Test == "TestBroken/fails/deeper")' "$events/fail.jsonl" | wc -l | tr -d ' ')" 1)"
 check "and the passing test of the failed package" "$(is "$(pass_of "$events/fail.jsonl" TestFine)" 1)"
+check "each failed test's fail event, its three of them, keeps its elapsed seconds and its time, as a pass and a skip do" \
+  "$(is "$(jq -s -r '[.[] | select(.Test and .Action == "fail")] | "\(length) \(map(select(has("Elapsed") and has("Time"))) | length)"' "$events/fail.jsonl")" "3 3")"
 
 echo "case: what a test prints to stdout is where go test prints it, a passing test's and a failed one's"
 compare print -count=1 ./print/
@@ -657,5 +660,121 @@ check "cut short, the step exits as its signal says (143)" "$(is "$cut_status" 1
 check "and keeps both passes the stand-in wrote" "$(is "$kept_passes" 11)"
 cut_short probe-after "$after"
 check "control: the counter that appends after go test returns keeps neither" "$(is "$kept_passes" 00)"
+
+# A write to the events file that fails: the stand-in writes 200 tests' events, far past a file
+# size limit of 4 KiB, which fails a write past it with EFBIG as a full disk fails one with ENOSPC
+# (Python ignores SIGXFSZ, so the write fails rather than the process); then it prints a line,
+# waits a second as a running test would, marks that it has ended, and exits with STUB_STATUS. The
+# file holds an earlier go test's event of the same step, which must outlive the cut.
+echo "case: a write to the events file that fails, as on a full disk, stops the keeping and not the run"
+disk_stub="$work/disk-stub"
+mkdir -p "$disk_stub"
+cat >"$disk_stub/go" <<'SH'
+#!/bin/sh
+i=0
+while [ "$i" -lt 200 ]; do
+  printf '{"Action":"run","Package":"example.com/disk","Test":"TestDisk%d"}\n' "$i"
+  printf '{"Action":"pass","Package":"example.com/disk","Test":"TestDisk%d","Elapsed":0}\n' "$i"
+  i=$((i + 1))
+done
+echo "a line go test prints after the write fails"
+sleep 1
+: >"$STUB_DONE"
+exit "${STUB_STATUS:-0}"
+SH
+chmod +x "$disk_stub/go"
+earlier='{"Action":"pass","Package":"example.com/earlier","Test":"TestEarlier","Elapsed":0}'
+# full <name> <status>: the writer over the stand-in, with the file limit; its stdout, stderr and
+# status, and in $waited whether the stand-in had ended when the writer returned.
+full() {
+  printf '%s\n' "$earlier" >"$events/$1.jsonl"
+  set +e
+  (ulimit -f 4 && cd "$module" && exec env RUNNER_TEMP="$runner" PATH="$disk_stub:$PATH" TEST_EVENTS_FILE="$events/$1.jsonl" \
+    STUB_DONE="$work/$1.done" STUB_STATUS="$2" "$writer" go test -count=1 ./pass/) >"$work/kept.out" 2>"$work/kept.err"
+  kept_status=$?
+  set -e
+  waited=$([ -e "$work/$1.done" ] && echo true || echo false)
+}
+full disk 3
+check "go test's own status decides the step (3)" "$(is "$kept_status" 3)"
+check "the writer returned only once go test had ended" "$(is "$waited" true)"
+check "and printed the line go test printed after the failed write" "$(contains "$(cat "$work/kept.out")" '^a line go test prints after the write fails$')"
+check "names the file and the error" \
+  "$(contains "$(cat "$work/kept.err")" "writing this run's events to $events/disk.jsonl failed (\[Errno 27\] File too large)")"
+check "and cuts the file back to the earlier go test's event, so it holds no part of this run" "$(is "$(cat "$events/disk.jsonl")" "$earlier")"
+full disk-passed 0
+check "a run whose go test passed fails all the same, its record lost (1)" "$(is "$kept_status" 1)"
+check "and its file holds no pass of it" "$(is "$(pass_of "$events/disk-passed.jsonl" TestDisk0)" 0)"
+
+# A fault of the writer's own rendering: an output event whose Output is a number, which the log's
+# renderer cannot print, between two tests' events; the stand-in then ends a second later.
+echo "case: a fault of the log's rendering stops the log and not the run: every event is kept, go test waited for, and the step fails naming it"
+fault_stub="$work/fault-stub"
+mkdir -p "$fault_stub"
+cat >"$fault_stub/go" <<'SH'
+#!/bin/sh
+printf '%s\n' '{"Action":"start","Package":"example.com/fault"}' \
+  '{"Action":"run","Package":"example.com/fault","Test":"TestBefore"}' \
+  '{"Action":"output","Package":"example.com/fault","Test":"TestBefore","Output":5}' \
+  '{"Action":"pass","Package":"example.com/fault","Test":"TestBefore","Elapsed":0}' \
+  '{"Action":"run","Package":"example.com/fault","Test":"TestAfter"}' \
+  '{"Action":"pass","Package":"example.com/fault","Test":"TestAfter","Elapsed":0}' \
+  '{"Action":"pass","Package":"example.com/fault","Elapsed":0}'
+sleep 1
+: >"$STUB_DONE"
+SH
+chmod +x "$fault_stub/go"
+kept PATH="$fault_stub:$PATH" TEST_EVENTS_FILE="$events/fault.jsonl" STUB_DONE="$work/fault.done" -- go test -count=1 ./pass/
+check "the step fails though go test passed (1)" "$(is "$kept_status" 1)"
+check "the writer returned only once go test had ended" "$([ -e "$work/fault.done" ] && echo true || echo false)"
+check "every event is kept, those after the fault among them" \
+  "$(is "$(pass_of "$events/fault.jsonl" TestBefore)$(pass_of "$events/fault.jsonl" TestAfter)" 11)"
+check "and names the fault" "$(contains "$(cat "$work/kept.err")" 'the log could not be printed past this point (TypeError: ')"
+
+# A go test step cancelled: the stand-in writes one test's pass and a second test's start, then
+# waits as that test would; on SIGTERM it writes one more event, marks that it has ended and exits
+# 143. The control is a copy of the writer that does not hand go test the signal.
+echo "case: a go test step cancelled by SIGTERM: the writer hands go test the signal and keeps every event it wrote, the last after the signal"
+term_stub="$work/term-stub"
+mkdir -p "$term_stub" "$work/unforwarded"
+cat >"$term_stub/go" <<'SH'
+#!/bin/sh
+trap 'echo "{\"Action\":\"output\",\"Package\":\"example.com/term\",\"Test\":\"TestRunning\",\"Output\":\"signalled\"}"; : >"$STUB_DONE"; exit 143' TERM
+printf '%s\n' '{"Action":"run","Package":"example.com/term","Test":"TestDone"}' \
+  '{"Action":"pass","Package":"example.com/term","Test":"TestDone","Elapsed":0}' \
+  '{"Action":"run","Package":"example.com/term","Test":"TestRunning"}'
+: >"$STUB_READY"
+# The sleep holds no end of go test's stdout, which the writer reads to its end.
+sleep 30 >/dev/null &
+wait $!
+SH
+chmod +x "$term_stub/go"
+python3 -c 'import sys, pathlib; s = pathlib.Path(sys.argv[1]).read_text(); old = "    forward_signals(child)\n    # A write that fails"; assert s.count(old) == 1; pathlib.Path(sys.argv[2]).write_text(s.replace(old, "    # A write that fails"))' \
+  "$writer" "$work/unforwarded/go_test_events.py"
+# cancel <name> <writer>: the writer over the stand-in, sent SIGTERM once the stand-in waits; its
+# status in $cancel_status and, in $waited, whether the stand-in had ended when the writer returned.
+cancel() {
+  set +e
+  env RUNNER_TEMP="$runner" TEST_EVENTS_FILE="$events/$1.jsonl" PATH="$term_stub:$PATH" STUB_READY="$work/$1.ready" \
+    STUB_DONE="$work/$1.done" setsid python3 "$2" go test -count=1 ./pass/ >"$work/$1.out" 2>"$work/$1.err" &
+  local pid=$!
+  for _ in $(seq 300); do [ -e "$work/$1.ready" ] && break; sleep 0.1; done
+  sleep 0.5
+  kill -TERM "$pid"
+  wait "$pid"
+  cancel_status=$?
+  waited=$([ -e "$work/$1.done" ] && echo true || echo false)
+  kill -KILL -- "-$pid" 2>/dev/null
+  set -e
+}
+cancel term "$writer"
+check "the step exits as its signal says (143)" "$(is "$cancel_status" 143)"
+check "the writer returned only once go test had handled the signal and ended" "$(is "$waited" true)"
+check "the pass of the test that ended before the signal is kept" "$(is "$(pass_of "$events/term.jsonl" TestDone)" 1)"
+check "and the test the signal cut short has its start and the line it wrote after the signal, and no pass or fail" \
+  "$(is "$(jq -r 'select(.Test == "TestRunning") | .Action' "$events/term.jsonl" | paste -sd, -)" 'run,output')"
+cancel term-unforwarded "$work/unforwarded/go_test_events.py"
+check "control: a writer that does not hand go test the signal returns before go test has ended" "$(is "$waited" false)"
+check "and keeps no line go test wrote after it" "$(is "$(jq -r 'select(.Test == "TestRunning") | .Action' "$events/term-unforwarded.jsonl" | paste -sd, -)" 'run')"
 
 summary "go_test_events.py"

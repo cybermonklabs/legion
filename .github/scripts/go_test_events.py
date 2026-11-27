@@ -40,6 +40,16 @@ that ran builds or tests always writes events, a build failure among them, so th
 the events were lost: a stand-in go, a script that kept its report to itself, a file that could not
 be written or kept.
 
+A write to the events file that fails (a full disk, a file size limit) stops the keeping and not the
+run: this script goes on reading go test's output and printing its log, waits for go test, cuts the
+file back to the bytes it held before this run, so no event of the run is left to read as a
+complete record of it, and fails the step, naming the error. A line of the log it cannot print (a
+stdout that is gone, a fault of its own rendering) stops the log the same way: every event is still
+kept, go test is still waited for, and the step fails, naming the error. So the file never holds
+part of a run, and nothing is lost without the step saying so. One run of this script appends to a
+file no other run appends to at the same time: a step's go tests run one after another, and rule 8
+refuses a go test the step leaves running.
+
 The log is the one go test prints without -json, rebuilt from the events. go test prints a test
 binary's output as the binary writes it: what a test prints to stdout, where it prints it; a failed
 test's report (its `--- FAIL:` line, then its t.Log and t.Error lines indented under it, each failed
@@ -73,8 +83,11 @@ a test that passed in a failed package it is not printed. A t.Log line is never 
 so the log never gains a line. A line of go's stdout that is no event is printed as it is and
 kept out of the file.
 
-Exit status: go test's (or COMMAND's), 1 when the run wrote no event, 2 when this script was
-called wrongly or cannot name or open the events file.
+Exit status: go test's (or COMMAND's), 128+N when signal N ended it, as a shell gives it; when the
+run kept no event, when its events could not all be written, or when its log could not be printed,
+that status, or 1 when it is 0; 127 when go or COMMAND cannot start; 2 when this script was called
+wrongly, refuses the step (one with no `id:` of its own, one that passes -json or hands the test
+binary a -test.v, a go command that is not go test) or cannot name or open the events file.
 """
 
 from __future__ import annotations
@@ -643,6 +656,34 @@ def no_events(path: Path, status: int) -> int:
     return status or 1
 
 
+def lost_record(path: Path, start: int, status: int, error: Exception) -> int:
+    """A run whose events could not all be written: the file cut back to the `start` bytes it held
+    before the run, so it holds no part of the run's record, and the step failed with go test's
+    status, or 1 where that is 0, naming the error."""
+    try:
+        os.truncate(path, start)
+        cut = f"cut back to the {start} bytes it held before this run, so it holds no event of it"
+    except OSError as cut_error:
+        cut = (f"not cut back to the {start} bytes it held before this run ({cut_error}), so its events "
+               f"from byte {start} on are an incomplete record of it")
+    print(f"go_test_events: writing this run's events to {path} failed ({error}): the file is {cut}, and "
+          f"the step fails (go test exited {status})", file=sys.stderr)
+    return status or 1
+
+
+def attempt(failed: Exception | None, action) -> Exception | None:
+    """`action` run unless an earlier one failed: the first failure, which stops the ones after it.
+    Any exception counts, a fault of the renderer's own among them, so that no fault of the record
+    or the log stops the run they are of."""
+    if failed is not None:
+        return failed
+    try:
+        action()
+    except Exception as error:
+        return error
+    return None
+
+
 def run_go_test(go: list[str], args: list[str], path: Path) -> int:
     """The first form: go test -json, every event kept and the log printed. `go` is the command
     up to `test`: `go`, or `go -C <directory>`."""
@@ -664,18 +705,45 @@ def run_go_test(go: list[str], args: list[str], path: Path) -> int:
         print(f"go_test_events: cannot run go: {error}", file=sys.stderr)
         return no_events(path, 127)
     forward_signals(child)
+    # A write that fails stops the keeping (`lost`), and a line of the log that cannot be printed
+    # stops the log (`broken`); neither stops the reading, so go test is drained and waited for.
+    lost: Exception | None = None
+    broken: Exception | None = None
+
+    def keep(line: bytes) -> None:
+        # A write the file takes part of (at a full disk or a size limit) goes on with the rest,
+        # which then fails with the file's own error.
+        data = memoryview(line if line.endswith(b"\n") else line + b"\n")
+        while data:
+            written = events.write(data)
+            if not written:
+                raise OSError(f"the events file took none of the last {len(data)} bytes of an event")
+            data = data[written:]
+
+    def show(text: str) -> None:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
     with events:
         for line in child.stdout:
             event = parse_event(line)
             if event is None:
-                sys.stdout.write(line.decode(errors="replace"))
-                sys.stdout.flush()
+                broken = attempt(broken, lambda: show(line.decode(errors="replace")))
                 continue
-            events.write(line if line.endswith(b"\n") else line + b"\n")
-            render.event(event)
+            lost = attempt(lost, lambda: keep(line))
+            broken = attempt(broken, lambda: render.event(event))
     status = status_of(child.wait())
-    render.finish()
-    return status if kept_since(path, start) else no_events(path, status)
+    broken = attempt(broken, render.finish)
+    if lost is not None:
+        return lost_record(path, start, status, lost)
+    if not kept_since(path, start):
+        return no_events(path, status)
+    if broken is not None:
+        print(f"go_test_events: the log could not be printed past this point ({type(broken).__name__}: "
+              f"{broken}); every event of the run is kept in {path}, but the step fails rather than read "
+              f"as one whose log is whole (go test exited {status})", file=sys.stderr)
+        return status or 1
+    return status
 
 
 def run_command(argv: list[str], path: Path) -> int:

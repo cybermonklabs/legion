@@ -4,8 +4,8 @@ negates, a dorny/paths-filter filter under its predicate quantifier, and a workf
 the YAML those filters are written in, read as strictly as those readers read it: a mapping's
 repeated keys, a loader that refuses a file holding one, and the readers of a composed node
 (mapping_get, scalar) every rule of check-workflow-files.sh reads a workflow with. It also names
-the go test events writer (EVENTS_WRITER), the one path each reader of a go test step builds its
-match of that writer from.
+the go test events writer (EVENTS_WRITER) and holds the one matcher of it (EVENTS_WRITER_WORD,
+names_events_writer) that every reader of a go test step uses.
 
 check-image-trigger-paths.sh and check-ci-filters.sh (through ci_filter_coverage.py) import it from
 the repository they check, running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3`
@@ -25,10 +25,38 @@ SKIP_DIRS = {".git", ".jj", "node_modules", ".venv", "vendor"}
 # The script every go test step of ci.yaml's run runs its go test under: it runs `go test -json`
 # with the step's own flags and packages, keeps every event in the step's file for the job's
 # upload, and prints the log go test prints without -json. A step names it from its own
-# directory (`../../` from packages/envoy or packages/daemon, nothing from the root), so each
-# reader matches it by this path's end: check-workflow-files.sh's rule 8 (go_test_steps.py), the
-# filter engine (ci_filter_coverage.py and ci_job_reads.py) and go-test-step-expansion.py.
+# directory (`../../` from packages/envoy or packages/daemon, nothing from the root), so a word
+# names it when it is this path, or a path that ends `/` and this path (EVENTS_WRITER_WORD: `../../`,
+# `./../../`, a variable's `$envoy/../../`), with no blank, quote or shell operator before it.
+# Every reader of a go test step matches it with this one pattern: check-workflow-files.sh's rule 8
+# (go_test_shell.py inside a line, go_test_steps.py for a Python argv's word), the filter engine
+# (ci_filter_coverage.py and ci_job_reads.py) and go-test-step-expansion.py, through
+# names_events_writer.
 EVENTS_WRITER = ".github/scripts/go_test_events.py"
+EVENTS_WRITER_WORD = rf"(?:[^\s\"';&|()]*/)?{re.escape(EVENTS_WRITER)}"
+
+
+def names_events_writer(word: str) -> bool:
+    """Whether a word, its quoting off, names the events writer (EVENTS_WRITER_WORD)."""
+    return re.fullmatch(EVENTS_WRITER_WORD, word) is not None
+
+
+# The first line of a filters file .github/scripts/ci-filters-generate.sh wrote because the
+# computation failed: every filter `'**'`, so every job runs. A reader of the file
+# (check-ts-filters.sh, check-workflow-files.sh's rule 8, check-image-trigger-paths.sh) refuses one,
+# or reads it as holding nothing, since it holds nothing to check a filter against.
+FAIL_OPEN_HEAD = "# FAIL-OPEN:"
+
+
+def flatten(value) -> list:
+    """A filter's patterns, an anchor's nested list flattened into it as dorny/paths-filter does."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [p for item in value for p in flatten(item)]
+    if isinstance(value, dict):  # the change-type form: {added|modified|...: pattern(s)}
+        return [p for item in value.values() for p in flatten(item)]
+    return []
 
 
 def walk(root: Path = Path(".")) -> list[str]:

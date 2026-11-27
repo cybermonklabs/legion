@@ -16,14 +16,17 @@ A form is a context crossed with a go spelling and an indirection:
     `bash -n +n -c`, `bash -o noexec +o noexec -c` and `sh -c`, on one line or over several; in a
     heredoc a shell runs; before or after an assignment of GO no run of the go test sees (after it,
     in a subshell, a `bash -c`, an `if false` or an uncalled function); in the background with a
-    `wait` for it (on the next line or the same, in a brace group, of `$!` or of a variable assigned
-    `$!`, another job started after that assignment or not); in the background (alone, at a
-    pipeline's or an and-or list's end, in a subshell or a brace group, in a `bash -c` string, an
-    env -S string or a heredoc a shell runs) or behind `setsid -f` with no wait for it, or with a
-    wait that waits for nothing: in a subshell, a pipeline, an `if false`, an uncalled function,
-    itself in the background, outside the subshell the `&` stands in, or naming `$!` or a pid
-    variable once another job (`&`, `<(...)`) has changed it (DETACHED); and behind each command
-    rule 8 does not read (UNSEEN);
+    wait that names it (on the next line or the same, in a brace group, of `$!` or of a variable
+    assigned `$!`, another job started after that assignment or not); in the background with a bare
+    `wait`, which waits for it and returns 0 whatever its status, and read by `cat < <(...)`, whose
+    status is cat's (LOSES); in a process substitution (`: > >(x)`), which bash does not wait for,
+    and one `wait $!` waits for; in the background (alone, at a pipeline's or an and-or list's end,
+    in a subshell or a brace group, in a `bash -c` string, an env -S string or a heredoc a shell
+    runs) or behind `setsid -f` with no wait for it, or with a wait that waits for nothing: in a
+    subshell, a pipeline, an `if false`, an uncalled function, itself in the background, outside the
+    subshell the `&` stands in, or naming `$!` or a pid variable once another job (`&`, `<(...)`) has
+    changed it (DETACHED); and behind each runner whose command rule 8 cannot read (OPAQUE: eval,
+    coproc, flock, a shell reading a pipe or a here-string, python3 -c, stdbuf, ionice, taskset);
   - a go spelling is the command word of go test: `go`, `$GO`, `"$GO"`, `${GO}`, `"${GO}"`, the
     stand-in's absolute path (the shape of /usr/local/go/bin/go), `"$GOROOT/bin/go"` and
     `"$(go env GOROOT)/bin/go"`; env -S expands `${NAME}` alone and runs no `$(...)`, so its
@@ -39,13 +42,16 @@ A composed form is one of OUTERS around each context, in the step's run:, with t
 whole script (in the background, with a wait after it or not, behind `!`, in a subshell, a brace
 group, an if or after `&&`, behind time, in `bash -c`, `sh -c` or a heredoc bash runs, and in `bash
 -c` behind env, nice, timeout, setsid -w, xargs and a redirection). It keeps its events when both
-keep them, runs detached when either does, and is unseen when its context is. dash, which runs
-`sh -c`, has none of the forms SH_SKIPS names, so `sh -c` holds no such context.
+keep them, runs detached when either does, else loses go test's status when either does, and is
+opaque when its context is. dash, which runs `sh -c`, has none of the forms SH_SKIPS names, so
+`sh -c` holds no such context.
 Each form is a step of a workflow of its own, with an id and the job's upload after it. Bare, rule
-8 must refuse each of its steps by number as running go test other than through the writer. Kept,
-the go test runs behind .github/scripts/go_test_events.py (written as a step at the root names
-it): rule 8 must pass the workflow and count one command for each step, or, for a DETACHED
-context, refuse each step as one that can end before its events are written. The writer's first
+8 must refuse each of its steps by number as running go test other than through the writer, or,
+for an OPAQUE context, as running it behind a runner it cannot read. Kept, the go test runs behind
+.github/scripts/go_test_events.py (written as a step at the root names it): rule 8 must pass the
+workflow and count one command for each step, or, for a step bash leaves detached or with a status
+not go test's, refuse each step as one that can end before its events are written or with another
+status; an OPAQUE form's kept step it refuses too, an over-refusal the list names. The writer's first
 form takes the word `go` alone (its main()), so the kept form of every spelling is routed as the
 writer takes it, `<writer> go test`: `<writer> "$GO" test` would run go test through the writer's
 second form, which keeps no event. That form is the same for each spelling, so it is made and
@@ -64,24 +70,29 @@ step must run `go test ./pkg`, a kept one must also leave an event in the TEST_E
 writer appends to, and a negative one must run no test (a `-c` or a `-list` runs none). A form bash
 does not run that way is an error of this generator (exit 2). Whether a kept step ran detached is
 read from bash itself, not from the form's label: a kept step that can put a command in the
-background holds its go test at a gate, which the runner opens on what it sees the step do (runs()),
-and a form whose label that reading contradicts fails the generator (MISLABELLED). Before any step
-runs, probe() holds the gate's detector to this machine's kernel, and stops the generator (exit 2)
-where it would be blind.
+background holds its go test at a gate, which the runner opens on what it sees the step do (runs()).
+Whether such a step keeps go test's status is read from bash too: it runs a second time, ungated,
+with a go test that fails (FORMS_STATUS), and keeps it when bash's exit status differs between the
+two runs - but for a form status_masked names, whose foreground form decides its status without
+the go test (`if x; then :; fi`, or an outer's shell that takes the errexit `x; y` needs), which
+must differ in neither. A form whose label that reading contradicts fails the generator
+(MISLABELLED). Before any step runs, probe() holds the gate's detector to this machine's kernel,
+and stops the generator (exit 2) where it would be blind.
 
 It fails (exit 1) on:
-  - a miss: a bare step rule 8 does not refuse, a kept form it counts short, or a DETACHED kept
-    step it does not refuse, that no row of .github/go-test-step-misses.tsv (a pattern of form
-    ids and the reason it is a known limit) matches;
-  - a false refusal: a kept form of a context that keeps its events which rule 8 refuses, and a
-    negative form it refuses or counts that no row of that list names;
+  - a miss: a bare step rule 8 does not refuse, a kept form it counts short, or a kept step bash
+    left detached or with another status that it does not refuse, that no row of
+    .github/go-test-step-misses.tsv (a pattern of form ids and the reason it is a known limit)
+    matches; no row excuses a miss of an OPAQUE form, which rule 8 refuses by its runner;
+  - a false refusal: a kept form in which bash keeps the events and go test's status but which rule
+    8 refuses, and a negative form it refuses or counts, that no row of that list names;
   - a row of that list that matches no miss and no over-refusal.
 A later reviewer extends CONTEXTS, OUTERS, NEGATIVES, SPELLINGS or INDIRECTIONS rather than
 planting forms by hand.
 
   python3 .github/scripts/go_test_step_forms.py [--module DIR] [--only PATTERN] [--list]
     --module DIR      read the forms with the go_test_steps.py of DIR (and the modules beside it it
-                      imports), such as an earlier tree's, or a copy with one rule taken out
+                      imports), such as a copy with one rule taken out
     --only PATTERN    make only the forms whose id matches PATTERN (fnmatch), and hold only the
                       rows of the list that match one of them; a pattern that matches none is an
                       error (exit 2)
@@ -92,7 +103,6 @@ from __future__ import annotations
 
 import fcntl
 import fnmatch
-import inspect
 import json
 import os
 import re
@@ -122,14 +132,17 @@ EVENTS = ('{"Action":"start","Package":"forms/pkg"}', '{"Action":"run","Package"
 # go test writes its events after the marker (detached), or when the step's shell is asleep and
 # nothing of its process tree can wake it but the held go test (quiescent()), so the shell is
 # waiting on that go test and returns only after it has written them (kept). No step waits a set
-# time. Bash detaches a command only behind a lone `&`, `setsid` or `coproc` (CAN_DETACH), so a step
-# whose text holds none of them returns after its go test whatever its label says and needs no gate,
-# and a bare or negative step measures no boundary at all.
-CAN_DETACH = re.compile(r"(?<![&>|<])&(?![&>])|\bsetsid\b|\bcoproc\b")
+# time. Bash runs a command beside the shell only behind a lone `&`, `setsid`, `coproc` or a process
+# substitution's `<(` or `>(` (CAN_DETACH), so a step whose text holds none of them returns after its
+# go test, with the status its own commands give, whatever its label says, and needs no gate, and a
+# bare or negative step measures no boundary at all.
+CAN_DETACH = re.compile(r"(?<![&>|<])&(?![&>])|\bsetsid\b|\bcoproc\b|[<>]\(")
 # What the runner appends to the events file once the step's shell has returned, before it opens
 # the gate: every event line before it was written while the step ran, and every line after it came
 # too late for the job's upload.
 BOUNDARY = '{"Action":"BOUNDARY"}'
+# The stand-in exits with FORMS_STATUS (0 when unset), after its events: the run that reads whether a
+# step keeps go test's status sets it to 1.
 STAND_IN = """#!/bin/sh
 if [ -n "${{FORMS_GATE:-}}" ]; then flock "$FORMS_GATE" true; fi
 printf '%s\\n' "$*" >> "$FORMS_RECORD"
@@ -137,6 +150,7 @@ if [ "$1" = env ] && [ "$2" = GOROOT ]; then printf '%s\\n' "$GOROOT"; exit 0; f
 for word in "$@"; do
   if [ "$word" = -json ]; then printf '%s\\n' {events}; fi
 done
+exit "${{FORMS_STATUS:-0}}"
 """.format(events=" ".join("'" + event + "'" for event in EVENTS))
 # The system calls, by number on each machine, in which a process of a step sleeps until another
 # process of the step, or the gate, acts: a wait for a child (wait4, waitid, rt_sigsuspend, pause),
@@ -156,11 +170,15 @@ def sq(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-KEEPS, DETACHED, UNSEEN = "keeps", "detached", "unseen"
-# Each context: how it places the command `x`, and what the writer before x does for its events.
-# KEEPS: they are all written before the step ends. DETACHED: the step can end first, so rule 8
-# refuses the kept form too. UNSEEN: rule 8 does not read the command x stands behind, and
-# .github/go-test-step-misses.tsv says why; a kept form keeps its events all the same.
+KEEPS, DETACHED, LOSES, OPAQUE = "keeps", "detached", "loses", "opaque"
+# Each context: how it places the command `x`, and what the writer before x does for its events and
+# for go test's status. KEEPS: they are all written before the step ends, and the step's status
+# follows go test's as its context's foreground form's does. DETACHED: the step can end first, so
+# rule 8 refuses the kept form too. LOSES: they are written before the step ends, but the command
+# that waits for x returns a status of its own (a bare `wait`, a process substitution's reader), so
+# the step does not fail when go test does, and rule 8 refuses the kept form too. OPAQUE: rule 8
+# cannot read the command x stands behind, and refuses the line, the kept form too, an over-refusal
+# .github/go-test-step-misses.tsv names with its reason.
 CONTEXTS = {
     "plain": (lambda x: x, KEEPS),
     "negation": (lambda x: f"! {x}", KEEPS),
@@ -183,7 +201,7 @@ CONTEXTS = {
     "then": (lambda x: f"if true; then {x}; fi", KEEPS),
     "else": (lambda x: f"if false; then :; else {x}; fi", KEEPS),
     "while-condition": (lambda x: f"while {x}; do break; done", KEEPS),
-    "until-condition": (lambda x: f"until {x}; do :; done", KEEPS),
+    "until-condition": (lambda x: f"until {x}; do break; done", KEEPS),
     "loop-body": (lambda x: f"for i in 1; do {x}; done", KEEPS),
     "and": (lambda x: f"true && {x}", KEEPS),
     "or": (lambda x: f"false || {x}", KEEPS),
@@ -231,12 +249,13 @@ CONTEXTS = {
     "sh-c": (lambda x: f"sh -c {sq(x)}", KEEPS),
     "heredoc-bash": (lambda x: f"bash <<'SCRIPT'\n{x}\nSCRIPT", KEEPS),
     "heredoc-bash-options": (lambda x: f"bash -o pipefail <<'SCRIPT'\n{x}\nSCRIPT", KEEPS),
-    "background-wait": (lambda x: f"{x} &\nwait", KEEPS),
-    "background-wait-same-line": (lambda x: f"{x} & wait", KEEPS),
-    "background-wait-brace": (lambda x: f"{x} &\n{{ wait; }}", KEEPS),
+    "background-wait-bare": (lambda x: f"{x} &\nwait", LOSES),
+    "background-wait-bare-same-line": (lambda x: f"{x} & wait", LOSES),
+    "background-wait-same-line": (lambda x: f"{x} & wait $!", KEEPS),
+    "background-wait-brace": (lambda x: f"{x} &\n{{ wait $!; }}", KEEPS),
     "background-wait-last": (lambda x: f"{x} &\nwait $!", KEEPS),
     "background-wait-pid": (lambda x: f"{x} &\npid=$!\nwait \"$pid\"", KEEPS),
-    "background-brace-lines-wait": (lambda x: f"{{\n{x}\n}} &\nwait", KEEPS),
+    "background-brace-lines-wait": (lambda x: f"{{\n{x}\n}} &\nwait $!", KEEPS),
     "background": (lambda x: f"{x} &", DETACHED),
     "background-pipeline": (lambda x: f"{x} | cat &", DETACHED),
     "background-and-list": (lambda x: f"{x} && true &", DETACHED),
@@ -257,7 +276,7 @@ CONTEXTS = {
     "background-wait-pid-before-other": (lambda x: f"{x} &\npid=$!\nsleep 0 &\nwait \"$pid\"", KEEPS),
     "background-wait-pid-conditional": (lambda x: f"{x} &\npid=0\nif false; then pid=$!; fi\nwait \"$pid\" || true", DETACHED),
     "background-wait-pid-subshell": (lambda x: f"pid=0\n{x} &\n( pid=$! )\nwait \"$pid\" || true", DETACHED),
-    "background-wait-pid-or": (lambda x: f"{x} &\npid=0\nfalse || pid=$!\nwait \"$pid\" || true", KEEPS),
+    "background-wait-pid-or": (lambda x: f"{x} &\npid=0\nfalse || pid=$!\nwait \"$pid\"", KEEPS),
     "background-wait-helper-before": (lambda x: f"f() {{ :; }}\n{x} &\nwait $!", KEEPS),
     "background-wait-helper-after": (lambda x: f"{x} &\nwait $!\nf() {{ :; }}", KEEPS),
     "background-wait-helper-called": (lambda x: f"f() {{ :; }}\n{x} &\nf\nwait $!", KEEPS),
@@ -277,16 +296,44 @@ CONTEXTS = {
     "env-split-background": (lambda x: f"env -S {sq(x)} &", DETACHED),
     "heredoc-bash-background": (lambda x: f"bash <<'SCRIPT' &\n{x}\nSCRIPT", DETACHED),
     "setsid-f": (lambda x: f"setsid -f {x}", DETACHED),
-    "eval": (lambda x: f"eval {sq(x)}", UNSEEN),
-    "coproc": (lambda x: f"coproc {x}\nwait", UNSEEN),
-    "flock": (lambda x: f'flock "$FORMS_LOCK" {x}', UNSEEN),
-    "pipe-to-bash": (lambda x: f"printf '%s\\n' {sq(x)} | bash", UNSEEN),
-    "here-string": (lambda x: f"bash <<< {sq(x)}", UNSEEN),
-    "python3-c": (lambda x: f"python3 -c 'import os, sys; os.execvp(sys.argv[1], sys.argv[1:])' {x}", UNSEEN),
-    "stdbuf": (lambda x: f"stdbuf -oL {x}", UNSEEN),
-    "ionice": (lambda x: f"ionice -c 3 {x}", UNSEEN),
-    "taskset": (lambda x: f"taskset -c 0 {x}", UNSEEN),
+    "process-substitution": (lambda x: f": > >({x})", DETACHED),
+    "process-substitution-wait": (lambda x: f": > >({x})\nwait $!", KEEPS),
+    "process-substitution-read": (lambda x: f"cat < <({x})", LOSES),
+    "eval": (lambda x: f"eval {sq(x)}", OPAQUE),
+    "coproc": (lambda x: f"coproc {x}\nwait", OPAQUE),
+    "flock": (lambda x: f'flock "$FORMS_LOCK" {x}', OPAQUE),
+    "pipe-to-bash": (lambda x: f"printf '%s\\n' {sq(x)} | bash", OPAQUE),
+    "here-string": (lambda x: f"bash <<< {sq(x)}", OPAQUE),
+    "python3-c": (lambda x: f"python3 -c 'import os, sys; os.execvp(sys.argv[1], sys.argv[1:])' {x}", OPAQUE),
+    "stdbuf": (lambda x: f"stdbuf -oL {x}", OPAQUE),
+    "ionice": (lambda x: f"ionice -c 3 {x}", OPAQUE),
+    "taskset": (lambda x: f"taskset -c 0 {x}", OPAQUE),
 }
+# The contexts whose own foreground form decides the step's status without the go test's (an if,
+# while or until condition, `while !` and `until !`, which end the same way whether it passes or
+# fails, and find, whose -exec, -execdir, -ok and -okdir do not pass on its status): a kept step of
+# one keeps go test's status nowhere, and where it is gated (gated()) it is held to that.
+STATUS_MASKED = frozenset({"if-condition", "while-condition", "until-condition", "while-negation", "until-negation",
+                           "find-exec", "find-execdir", "find-ok", "find-okdir"})
+# The contexts whose go test decides the status only through errexit (a command after it would
+# decide it otherwise) or pipefail (a pipeline's last command would), which the step's own `bash -eo
+# pipefail` sets, as a script of a form does (SHEBANG); the outers that run their script in a shell
+# of its own, which sets neither; and `!`, under which bash ignores errexit.
+NEEDS_ERREXIT = frozenset({"assignment-after", "background-wait-helper-after"})
+NEEDS_PIPEFAIL = frozenset({"before-pipe", "before-pipe-both", "brace-tee"})
+FRESH_SHELL = frozenset({"bash-c", "sh-c", "heredoc-bash", "env", "nice", "timeout", "setsid-w", "xargs", "redirection"})
+
+
+def status_masked(form: str) -> bool:
+    """Whether a form's status is the go test's in no run, by its context (STATUS_MASKED) or by
+    what its outer takes from it: errexit or pipefail, which a context may need (NEEDS_ERREXIT,
+    NEEDS_PIPEFAIL)."""
+    parts = form.split("/")
+    context, outer = parts[-2], parts[1] if parts[0] == "composed" else ""
+    return (context in STATUS_MASKED or (outer in FRESH_SHELL and context in NEEDS_ERREXIT | NEEDS_PIPEFAIL)
+            or (outer == "negation" and context in NEEDS_ERREXIT))
+
+
 # Each go spelling; {stand_in} is the stand-in's absolute path.
 SPELLINGS = {
     "go": "go",
@@ -301,10 +348,10 @@ SPELLINGS = {
 # env -S expands `${NAME}` and nothing else: a `$NAME` it refuses, a `$(...)` it runs no command for.
 ONLY_SPELLINGS = {name: ("go", "braced", "quoted-braced", "absolute") for name in ("env-split", "env-split-background")}
 # Each outer: how it holds a whole script, `t`, which may span lines, and what it does for the
-# events of the script's go test.
+# events of the script's go test and for its status.
 OUTERS = {
     "background": (lambda t: f"{{\n{t}\n}} &", DETACHED),
-    "background-wait": (lambda t: f"{{\n{t}\n}} &\nwait", KEEPS),
+    "background-wait": (lambda t: f"{{\n{t}\n}} &\nwait $!", KEEPS),
     "negation": (lambda t: f"! {{\n{t}\n}}", KEEPS),
     "subshell": (lambda t: f"(\n{t}\n)", KEEPS),
     "brace": (lambda t: f"{{\n{t}\n}}", KEEPS),
@@ -327,7 +374,8 @@ OUTERS = {
 SH_SKIPS = ("before-pipe-both", "redirect-both", "redirect-first-here-string", "time", "time-p", "coproc",
             "here-string", "function-keyword", "bash-c-ansi", "bash-c-ansi-escape", "bash-c-ansi-octal",
             "bash-c-ansi-lines", "bash-c-ansi-scalar", "bash-c-ansi-surrogate",
-            "background-wait-last-substitution")
+            "background-wait-last-substitution", "process-substitution", "process-substitution-wait",
+            "process-substitution-read")
 # Each negative form: a step that names go test where bash runs none.
 NEGATIVES = {
     "bash-help": f"bash --help -c {sq(GO_LINE)}",
@@ -367,7 +415,9 @@ NEGATIVES = {
     "ansi-nul": r"bash -c $':\0; go test ./pkg'",
     "ansi-nul-octal": r"bash -c $':\000; go test ./pkg'",
 }
-SHEBANG = "#!/usr/bin/env bash\n"
+# A script of a form runs under errexit and pipefail, as a step's run: does (and as this
+# repository's scripts do), so a command after a failed one in it decides no status.
+SHEBANG = "#!/usr/bin/env bash\nset -eo pipefail\n"
 
 
 def indirect(kind: str, wrap, command: str, home: str) -> tuple[dict[str, str], list[str]]:
@@ -408,9 +458,11 @@ def workflow(steps: list[str]) -> str:
 
 
 def composed_class(outer: str, inner: str) -> str:
-    if inner == UNSEEN:
-        return UNSEEN
-    return DETACHED if DETACHED in (outer, inner) else KEEPS
+    """A composed form's class: opaque when its context is, else detached when either is, else
+    losing go test's status when either does, else keeping both."""
+    if inner == OPAQUE:
+        return OPAQUE
+    return next((kind for kind in (DETACHED, LOSES) if kind in (outer, inner)), KEEPS)
 
 
 def forms(stand_in: str, writer: str) -> tuple[dict, dict]:
@@ -461,9 +513,9 @@ def gated(variant: str, texts: list[str]) -> bool:
     """Whether a step's go test waits at the gate for the runner (runs()): a kept step whose run: or
     a script of its form holds what can put a command in the background (CAN_DETACH). The test is on
     the form's text and not its label, so a label that calls a backgrounding form keeps, or one that
-    cannot detach detached, is measured all the same, and MISLABELLED names it. An UNSEEN form is
+    cannot detach detached, is measured all the same, and MISLABELLED names it. An OPAQUE form is
     gated too: its label is not held to the boundary, but its verdict reads the boundary, and an
-    ungated one raced, flipping between two misses the list names from one run to the next."""
+    ungated one raced, flipping between two verdicts from one run to the next."""
     return variant == "kept" and any(CAN_DETACH.search(text) for text in texts)
 
 
@@ -544,19 +596,19 @@ def quiescent(shell: int, gate: str, waits: frozenset) -> bool:
 
 
 def runs(tree: Path, env: dict, text: str, variant: str, scratch: Path, gate_it: bool,
-         waits: frozenset) -> tuple[bool, bool]:
+         waits: frozenset) -> tuple[bool, bool, int | None]:
     """What bash does with the step `text` at the tree's root, under the shell and options a
     runner's `run:` uses: whether it runs it as its variant asks (a bare step runs the stand-in's go
     test, a kept one also leaves an event of it in TEST_EVENTS_FILE, and a negative one runs no go
-    test of the package), and whether the step ran detached - the events of a kept step were not
-    all there when bash returned, which is the runtime boundary a job's upload would read. The
-    runner appends BOUNDARY to the events file once the step's shell has returned; a step that
-    cannot detach has every command done by then. A gated step (gated()) holds its go test until
-    the runner opens the gate: when the shell is quiescent, waiting on that go test, so the shell
-    returns after it has written its events, or after the shell has returned and the marker is
-    written, so the go test writes after the marker. Which comes first is what the step does, and
-    the order of the marker and the events is then made by the gate, however the box is loaded.
-    A bare or negative step is never detached: it keeps no events to be late."""
+    test of the package), whether the step ran detached - the events of a kept step were not
+    all there when bash returned, which is the runtime boundary a job's upload would read - and
+    bash's exit status. The runner appends BOUNDARY to the events file once the step's shell has
+    returned; a step that cannot detach has every command done by then. A gated step (gated())
+    holds its go test until the runner opens the gate: when the shell is quiescent, waiting on that
+    go test, so the shell returns after it has written its events, or after the shell has returned
+    and the marker is written, so the go test writes after the marker. Which comes first is what
+    the step does, and the order of the marker and the events is then made by the gate, however the
+    box is loaded. A bare or negative step is never detached: it keeps no events to be late."""
     scratch.mkdir(parents=True)
     record, events, step, gate = scratch / "record", scratch / "events.jsonl", scratch / "step.sh", scratch / "gate"
     step.write_text(text + "\n")
@@ -582,7 +634,7 @@ def runs(tree: Path, env: dict, text: str, variant: str, scratch: Path, gate_it:
         except subprocess.TimeoutExpired:
             shell.kill()
             shell.wait()
-            return False, False
+            return False, False, None
         with open(events, "a") as file:
             file.write(BOUNDARY + "\n")
     finally:
@@ -591,7 +643,7 @@ def runs(tree: Path, env: dict, text: str, variant: str, scratch: Path, gate_it:
     written = events.read_text()
     kept_at_boundary = EVENTS[1] in written.split(BOUNDARY)[0]
     if variant == "negative":
-        return not ran_test(record.read_text().split("\n") if record.is_file() else []), False
+        return not ran_test(record.read_text().split("\n") if record.is_file() else []), False, shell.returncode
     # A detached go test is still running when bash has returned: wait for what it writes, to
     # a deadline that bounds a step that never writes it.
     deadline = time.monotonic() + 10
@@ -599,8 +651,26 @@ def runs(tree: Path, env: dict, text: str, variant: str, scratch: Path, gate_it:
         ran = ran_test(record.read_text().split("\n") if record.is_file() else [])
         kept = variant == "bare" or EVENTS[1] in events.read_text()
         if (ran and kept) or time.monotonic() > deadline:
-            return ran and kept, variant == "kept" and not kept_at_boundary
+            return ran and kept, variant == "kept" and not kept_at_boundary, shell.returncode
         time.sleep(0.005)
+
+
+def failing_status(tree: Path, env: dict, text: str, scratch: Path) -> int | None:
+    """The exit status bash gives the step `text` when its go test fails (the stand-in exits 1,
+    FORMS_STATUS), ungated and under the same shell and options as runs(): the second run of a gated
+    kept step, whose status follows go test's when it differs from the first run's. None when bash
+    has not returned at the deadline."""
+    scratch.mkdir(parents=True)
+    step = scratch / "step.sh"
+    step.write_text(text + "\n")
+    run_env = dict(env, FORMS_RECORD=str(scratch / "record"), TEST_EVENTS_FILE=str(scratch / "events.jsonl"),
+                   FORMS_LOCK=str(scratch / "lock"), FORMS_STATUS="1")
+    try:
+        return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(step)], cwd=tree, env=run_env,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=60).returncode
+    except subprocess.TimeoutExpired:
+        return None
 
 
 def probe(scratch: Path) -> tuple[frozenset | None, str]:
@@ -724,28 +794,18 @@ def read_with(directory: Path, tree: Path, texts: dict) -> dict:
 
 
 def read_here(directory: str) -> None:
-    """The --read mode: reads {key: workflow text} on stdin, prints each one's refusals and count.
-    A module whose check takes a cache returns its census; an earlier one, whose census is the
-    module's own dict, is read before and after."""
+    """The --read mode: reads {key: workflow text} on stdin, prints each one's refusals and count."""
     sys.path.insert(0, directory)
     import yaml
     import go_test_steps
-    check = go_test_steps.check_go_test_events
-    cache = {} if "cache" in inspect.signature(check).parameters else None
-    out = {}
+    cache, out = {}, {}
     for key, text in json.load(sys.stdin).items():
         problems = []
 
         def problem(_path, message, line=None):
             problems.append(message)
 
-        root = yaml.compose(text)
-        if cache is None:
-            before = go_test_steps.census["commands"]
-            check(WORKFLOW, root, problem)
-            commands = go_test_steps.census["commands"] - before
-        else:
-            commands = check(WORKFLOW, root, problem, cache).commands
+        commands = go_test_steps.check_go_test_events(WORKFLOW, yaml.compose(text), problem, cache).commands
         out[key] = {"problems": problems, "commands": commands}
     print(json.dumps(out))
 
@@ -771,27 +831,49 @@ def names(problems: list[str], number: int) -> list[str]:
     return [text for text in problems if f"step {number} of job {JOB} (Form step {number}) runs " in text]
 
 
-def verdict(keeps: str, variant: str, read: dict, steps: int, detached: bool) -> str | None:
+def unrefused(problems: list[str], steps: int, phrase: str) -> list[int]:
+    """The steps of a form no refusal holding `phrase` names."""
+    return [n for n in range(1, steps + 1) if not any(phrase in text for text in names(problems, n))]
+
+
+def verdict(keeps: str, variant: str, read: dict, steps: int, refuse: bool) -> str | None:
     """What is wrong with rule 8's reading of one variant of a form: None, or `miss: ...` or
-    `false: ...` (`over: ...` for a negative form, which a row may list). `detached` is the
-    runtime boundary's answer, not the form's label: whether bash returned before the step's
-    events were all written, which is what a job's upload would read. A kept step that ran
-    detached must be refused for that; one that did not must be counted, whatever its class."""
+    `false: ...` (`over: ...` for a negative form, which a row may list). `refuse` is bash's answer,
+    not the form's label: whether it returned before the step's events were all written, which is
+    what a job's upload would read, or with a status that does not follow go test's (measured()). A
+    kept step bash left so must be refused for that; one it did not must be counted, whatever its
+    class. An OPAQUE form, whose command rule 8 cannot read, must be refused as that, bare or kept,
+    the kept one an over-refusal a row of the list names."""
     problems = read["problems"]
     if variant == "negative":
         return f"over: refused or counted: {' | '.join(problems) or read['commands']}" if problems or read["commands"] else None
+    if keeps == OPAQUE:
+        unnamed = unrefused(problems, steps, "rule 8 cannot read the command")
+        if unnamed:
+            return f"miss: {variant}, step(s) {', '.join(map(str, unnamed))} not refused as behind a runner rule 8 cannot read"
+        return "false: refused: " + " | ".join(problems) if variant == "kept" else None
     if variant == "bare":
-        unnamed = [n for n in range(1, steps + 1) if not any("other than through" in t for t in names(problems, n))]
+        unnamed = unrefused(problems, steps, "other than through")
         return f"miss: bare, step(s) {', '.join(map(str, unnamed))} not refused" if unnamed else None
-    if detached:
-        unnamed = [n for n in range(1, steps + 1)
-                   if not any("before the command has written them" in t for t in names(problems, n))]
-        return f"miss: detached, step(s) {', '.join(map(str, unnamed))} not refused" if unnamed else None
-    if problems and keeps != UNSEEN:
+    if refuse:
+        unnamed = unrefused(problems, steps, "before the command has written them")
+        return (f"miss: detached or losing go test's status, step(s) {', '.join(map(str, unnamed))} not refused"
+                if unnamed else None)
+    if problems:
         return "false: refused: " + " | ".join(problems)
     if read["commands"] < steps:
         return f"miss: kept, {read['commands']} of {steps} command(s) counted"
     return None
+
+
+def measured(late: bool, gated_form: bool, depends: bool, masked: bool) -> str:
+    """A kept form's class as bash ran it: DETACHED when its events were not all written when bash
+    returned; LOSES when it can put a command beside the shell (gated) and bash's status did not
+    follow go test's, its foreground form being one that keeps it (not masked, in status_masked's
+    sense); else KEEPS."""
+    if late:
+        return DETACHED
+    return LOSES if gated_form and not depends and not masked else KEEPS
 
 
 def main() -> int:
@@ -839,13 +921,21 @@ def main() -> int:
         gates = {(form, variant): gated(variant, steps + list(scripts.values()))
                  for form, variants in generated.items() for variant, (scripts, steps) in variants.items()}
         with ThreadPoolExecutor(max_workers=len(os.sched_getaffinity(0))) as pool:
-            measured = list(pool.map(lambda unit: runs(tree, env, unit[3], unit[1], work / "runs" / str(unit[4]),
-                                                       gates[(unit[0], unit[1])], waits),
-                                     [(*unit, number) for number, unit in enumerate(units)]))
-        ran = [did for did, _ in measured]
+            measured_runs = list(pool.map(lambda unit: runs(tree, env, unit[3], unit[1], work / "runs" / str(unit[4]),
+                                                           gates[(unit[0], unit[1])], waits),
+                                          [(*unit, number) for number, unit in enumerate(units)]))
+            # The second run of each gated kept step, with a go test that fails.
+            failing = [number for number, (form, variant, _, _) in enumerate(units) if gates[(form, variant)]]
+            failed_statuses = dict(zip(failing, pool.map(
+                lambda number: failing_status(tree, env, units[number][3], work / "fails" / str(number)), failing)))
+        ran = [did for did, _, _ in measured_runs]
         boundary = dict.fromkeys(gates, False)
-        for (form, variant, _, _), (_, late) in zip(units, measured):
+        depends = dict.fromkeys(gates, True)
+        for number, ((form, variant, _, _), (_, late, status)) in enumerate(zip(units, measured_runs)):
             boundary[(form, variant)] = boundary[(form, variant)] or late
+            if number in failed_statuses:
+                ran[number] = ran[number] and failed_statuses[number] is not None
+                depends[(form, variant)] = depends[(form, variant)] and failed_statuses[number] != status
         not_run = [f"{form} ({variant}, step {index + 1})" for (form, variant, index, _), did in zip(units, ran) if not did]
         read = read_with(module, tree, {f"{form}#{variant}": workflow(steps)
                                         for form, variants in generated.items()
@@ -858,16 +948,22 @@ def main() -> int:
     used, unlisted, listed, false, over, mislabelled = set(), [], [], [], [], []
     for form, variants in generated.items():
         for variant, (_, steps) in variants.items():
-            detached = boundary[(form, variant)]
-            # An UNSEEN form carries no claim about its events: rule 8 does not read its command.
-            if variant == "kept" and classes[form] != UNSEEN and detached != (classes[form] == DETACHED):
-                mislabelled.append((form, "detached" if detached else "keeps", classes[form]))
-            found = verdict(classes[form], variant, read[f"{form}#{variant}"], len(steps), detached)
+            masked = status_masked(form)
+            found_class = measured(boundary[(form, variant)], gates[(form, variant)], depends[(form, variant)], masked)
+            # An OPAQUE form carries no claim about its events: rule 8 does not read its command.
+            if variant == "kept" and classes[form] != OPAQUE:
+                if found_class != classes[form]:
+                    mislabelled.append((form, found_class, classes[form]))
+                elif gates[(form, variant)] and found_class == KEEPS and masked and depends[(form, variant)]:
+                    mislabelled.append((form, "status-following", "masked (status_masked)"))
+            found = verdict(classes[form], variant, read[f"{form}#{variant}"], len(steps), found_class != KEEPS)
             if found is None:
                 if "--list" in args:
                     print(f"{form}\t{variant}\tread")
                 continue
-            row = next((pattern for pattern in rows if fnmatch.fnmatchcase(form, pattern)), None)
+            # No row excuses a miss of an OPAQUE form: rule 8 refuses one by its runner.
+            row = None if classes[form] == OPAQUE and found.startswith("miss:") else next(
+                (pattern for pattern in rows if fnmatch.fnmatchcase(form, pattern)), None)
             # A refusal of a form bash keeps, and a refusal of a negative form, are over-refusals:
             # each fails the generator unless a row of the list names it with its reason.
             if row is None and found.startswith(("false:", "over:")):
@@ -886,21 +982,31 @@ def main() -> int:
     for form, variant, found in false:
         print(f"FALSE REFUSAL {form} ({variant}): {found.split(': ', 1)[1]}")
     for form, measured_class, labelled in mislabelled:
-        print(f"MISLABELLED {form}: bash leaves its kept step's events {'un' if measured_class == 'detached' else ''}written "
-              f"when it returns, so its class is {measured_class}, and CONTEXTS or OUTERS calls it {labelled}")
+        what = {DETACHED: "leaves its kept step's events unwritten when it returns",
+                LOSES: "returns from its kept step with a status that does not follow go test's",
+                KEEPS: "returns from its kept step with its events written and go test's status",
+                "status-following": "returns from its kept step with a status that follows go test's"}[measured_class]
+        print(f"MISLABELLED {form}: bash {what}, so its class is {measured_class}, and CONTEXTS, OUTERS or "
+              f"status_masked calls it {labelled}")
     for problem in problems:
         print(problem)
     variants = sum(len(v) for v in generated.values())
     negatives = sum(1 for form in generated if classes[form] == "negative")
+    # The kept forms bash returned from with their events written and a status that does not follow
+    # go test's, where their foreground form's would (status_masked).
+    lost = sum(1 for (form, variant), gate in gates.items()
+               if gate and not depends[(form, variant)] and not boundary[(form, variant)] and not status_masked(form))
     print(f"go_test_step_forms: {len(generated)} forms ({len(CONTEXTS)} contexts, {len(SPELLINGS)} go spellings, "
           f"{len(INDIRECTIONS)} indirections, {len(OUTERS)} outers, {len(NEGATIVES)} negatives"
           f"{'' if only == '*' else f', those --only {only} matches'}), {negatives} of them negative: {variants} "
           f"form variants, {len(units)} steps, {sum(1 for form, variant, _, _ in units if gates[(form, variant)])} "
           f"of them holding their go test at the gate; bash runs {len(units) - len(not_run)} of them as "
-          f"their variant asks and leaves {sum(1 for key in boundary if boundary[key])} kept form(s) detached at its return, which "
-          f"{len(mislabelled)} form(s) are labelled against; rule 8 of {module} misses {len(listed) + len(unlisted)} "
-          f"form variant(s), {len(listed)} listed in {MISSES.name} and {len(unlisted)} unlisted, refuses {len(over)} "
-          f"negative form(s) the list accepts, and refuses {len(false)} form variant(s) falsely")
+          f"their variant asks and leaves {sum(1 for key in boundary if boundary[key])} kept form(s) detached at its "
+          f"return and {lost} with a status that does not follow go test's, which {len(mislabelled)} form(s) are "
+          f"labelled against; rule 8 of {module} misses "
+          f"{len(listed) + len(unlisted)} form variant(s), {len(listed)} listed in {MISSES.name} and {len(unlisted)} "
+          f"unlisted, refuses {len(over)} form variant(s) the list accepts as over-refusals, and refuses {len(false)} "
+          f"form variant(s) falsely")
     if not_run:
         return 2
     return 1 if unlisted or false or problems or mislabelled else 0

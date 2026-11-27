@@ -25,8 +25,12 @@
 # which nothing uploads there, so it is removed when the run ends. A compile writes no events.
 #
 # It runs from the module whatever the caller's directory, takes exactly one argument, and exits
-# 2 on any other; it exits 1 when go list fails or keeps no package, and otherwise with go test's
-# own status.
+# 2 on any other. It exits with go list's own status when go list fails, and 1 when go list keeps
+# no package. Otherwise a compile exits with go test's status, and a run with the events writer's,
+# which .github/scripts/go_test_events.py's header gives: go test's own (128+N for a signal), or 1
+# where that is 0 and the run kept no event, could not write them all or could not print its log;
+# 127 when go cannot start; and 2 when the writer refuses the run, as for a runner step with no
+# `id:` of its own.
 set -euo pipefail
 
 EXCLUDE='/internal/textcheck$'

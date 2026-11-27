@@ -4,11 +4,15 @@ description: >-
   the events .github/scripts/go_test_events.py kept for each of the job's go test steps, the files
   `$RUNNER_TEMP/go-test-events/<step id>.jsonl`, as the artifact `go-test-events-<the job's
   check run id>`, the id the jobs API and the job's URL give, so a reader fetches one job's events
-  by that id (docs/testing.md, "Which tests a CI job ran"). Call it with `if: always()`, or
-  `always() && ` the one condition the job's go test steps share, so a failed, timed-out or
-  cancelled job's events are kept too; .github/scripts/check-workflow-files.sh's rule 8 holds every
-  such job to this one step. A job that kept no file fails here (if-no-files-found: error), as a go
-  test step that kept no event fails, so a run whose record cannot be kept never reads as green.
+  by that id (docs/testing.md, "Which tests a CI job ran"). Call it under the condition that runs
+  it whenever one of the job's go test steps ran and never when none was due: `if: always()` when
+  one of them runs whenever the job does, else `always() && ` the one condition they share, or
+  `always() && (A || B)` for the conditions they carry, so a failed, timed-out or cancelled job's
+  events are kept too; .github/scripts/check-workflow-files.sh's rule 8 holds every such job to
+  this one step and that condition. A job that kept no file fails here (if-no-files-found: error),
+  as a go test step that kept no event fails, so a run whose go test ran and whose record cannot be
+  kept never reads as green, and the condition keeps that error off a run whose go test steps were
+  rightly skipped.
 
 inputs:
   check-run-id:

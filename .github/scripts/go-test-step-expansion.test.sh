@@ -83,6 +83,29 @@ check "a variable, the writer and the sampler are all dropped" \
   "$(is "$(command_of 'RACE_MEM_LIMIT_KB=1 ../../.github/scripts/go_test_events.py ../../.github/scripts/race_memory.py go test -json ./pkg')" "go test -json ./pkg")"
 check "the writer before a script is left in place, for the caller to read" \
   "$(is "$(command_of '../../../.github/scripts/go_test_events.py scripts/race-unit.sh run')" "../../../.github/scripts/go_test_events.py scripts/race-unit.sh run")"
+check "a path to the writer that starts ./ is the writer too" \
+  "$(is "$(command_of './../../.github/scripts/go_test_events.py go test -count=1 ./pkg')" "go test -count=1 ./pkg")"
+check "and a word that only ends in its name is no writer, left for the caller to refuse" \
+  "$(is "$(command_of 'x.github/scripts/go_test_events.py go test -count=1 ./pkg')" "x.github/scripts/go_test_events.py go test -count=1 ./pkg")"
+
+# Five readers name the events writer in a go test step, each through workflow_paths'
+# names_events_writer; this script's wrappers are held here, over the seven words rule 8's harness
+# and check-ci-filters.test.sh read too.
+echo "case: the wrappers name the events writer as workflow_paths.names_events_writer does, ./../../ among them"
+agree=$(py '
+import workflow_paths
+writer = workflow_paths.EVENTS_WRITER
+for word in [writer, f"../../{writer}", f"./../../{writer}", f"/runner/work/{writer}", f"x{writer}", f"{writer}c",
+             "../.github/scripts/other.py"]:
+    verdicts = {workflow_paths.names_events_writer(word), ex.go_command(f"{word} go test ./x")[1] == "go test ./x"}
+    verdict = "agree" if len(verdicts) == 1 else "DISAGREE"
+    print(f"{word}: {verdict} {sorted(verdicts)}")')
+check "reads each of the seven words" "$(is "$(printf '%s\n' "$agree" | grep -c ': \(agree\|DISAGREE\) \[')" 7)"
+check "and go_command and names_events_writer agree on every one" "$(is "$(printf '%s\n' "$agree" | grep -c ': DISAGREE ')" 0)"
+check "naming the writer by its path from any directory, ./../../ included" \
+  "$(is "$(printf '%s\n' "$agree" | grep -Fxc './../../.github/scripts/go_test_events.py: agree [True]')" 1)"
+check "four words name it, and the three that only end in its name, or carry a suffix, or name another script do not" \
+  "$(is "$(printf '%s\n' "$agree" | grep -c ': agree \[True\]$'),$(printf '%s\n' "$agree" | grep -c ': agree \[False\]$')" 4,3)"
 
 echo "case: a -run pattern keeps its quoting"
 line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"

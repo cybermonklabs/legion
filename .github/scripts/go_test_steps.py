@@ -27,8 +27,9 @@ from typing import Callable, NamedTuple
 import yaml
 from go_test_events import ENV_FILE, TRUE, GoArgs
 from go_test_shell import (ASSIGNS, POOL_WAIT, RUNS, TEES, commands, detached_at, flag_words, go_test_parts,
-                           go_tests, logical_lines, runs_script, unquoted)
-from workflow_paths import EVENTS_WRITER, PathsFilter, mapping_get, scalar
+                           go_tests, line_words, logical_lines, names_go_test, opaque, runs_script, unquoted)
+from workflow_paths import (EVENTS_WRITER, FAIL_OPEN_HEAD, PathsFilter, flatten, mapping_get, names_events_writer,
+                            scalar)
 
 Problem = Callable[..., None]
 
@@ -92,16 +93,11 @@ def writes_json(rest: str) -> bool:
     return known(value) and value in TRUE
 
 
-def names_writer(word: str) -> bool:
-    """Whether a word is the writer's repository path, or a path that ends in it."""
-    return word == WRITER or word.endswith("/" + WRITER)
-
-
 def resolve(word: str, places: list[Path]) -> Path | None:
     """The repository script a command word names, looked for from each of `places`: a file whose
     name ends .sh or .py, or one whose first line names a shell (`#!/usr/bin/env bash`), the writer
     aside. A word the shell builds (`$dir/x.sh`, `"$(dirname "$0")/x.sh"`) is looked for by its file
-    name in the first place."""
+    name in the first place. A word no file can be named by (too long, a NUL in it) names none."""
     if "$" in word:
         candidates = [places[0] / Path(word).name]
     else:
@@ -109,9 +105,9 @@ def resolve(word: str, places: list[Path]) -> Path | None:
     for candidate in candidates:
         try:
             relative = candidate.resolve().relative_to(Path.cwd().resolve())
-        except ValueError:
-            continue
-        if not relative.is_file() or relative == Path(WRITER):
+            if not relative.is_file() or relative == Path(WRITER):
+                continue
+        except (OSError, ValueError):
             continue
         if relative.suffix in SCRIPT_SUFFIXES:
             return relative
@@ -137,14 +133,16 @@ class Keep(Enum):
 
 class GoTest(NamedTuple):
     """A go test command a script runs: its file, its line, the command, how it keeps its events,
-    whether it runs detached, and whether the writer runs it under a go word it does not take
-    (misspelled_go)."""
+    whether it runs detached, whether the writer runs it under a go word it does not take
+    (misspelled_go), and the runner, if any, whose command no reading can follow (go_test_shell's
+    opaque) on a line that names it: such a go test is `unread`, and its command is that line."""
     file: Path
     line: int
     command: str
     keep: Keep
     detached: bool = False
     misspelled: bool = False
+    unread: str = ""
 
 
 class Unparsable(NamedTuple):
@@ -233,9 +231,9 @@ def python_argv(node: ast.AST) -> tuple[bool, list[ast.AST]] | None:
         return element.value if isinstance(element, ast.Constant) and isinstance(element.value, str) else None
 
     start, writer = 0, False
-    if text(0) in ("python3", "python") and names_writer(text(1) or ""):
+    if text(0) in ("python3", "python") and names_events_writer(text(1) or ""):
         start, writer = 2, True
-    elif names_writer(text(0) or ""):
+    elif names_events_writer(text(0) or ""):
         start, writer = 1, True
     if text(start) != "go":
         return None
@@ -305,12 +303,38 @@ def run_under(reached: ScriptRead, detached: bool, writer: bool) -> tuple[GoTest
                  for test in reached.tests)
 
 
+def unread_line(line: str, places: list[Path], cache: dict, seen: frozenset) -> tuple[str, ScriptRead]:
+    """For a line that runs, at a command's place, a runner whose command no reading can follow
+    (go_test_shell's opaque: eval, coproc, flock, stdbuf, ionice, taskset, python3 -c, a shell
+    reading a pipe or a here-string): that runner, when the line names a go test anywhere in its
+    text or a word of it names a repository script that runs one (resolve, from `places`), else "";
+    and what reading those scripts found, which rule 8 holds to the filter as every script it reads.
+    `seen`: the scripts being read further up (script_tests)."""
+    runner = opaque(line)
+    if not runner:
+        return "", ScriptRead()
+    tests, unparsable, scripts, cut = [], [], [], set()
+    for word in line_words(line):
+        inner = resolve(word, places)
+        if inner is None or inner in scripts:
+            continue
+        reached = script_tests(inner, cache, seen)
+        tests += reached.tests
+        unparsable += reached.unparsable
+        scripts += [path for path in reached.scripts if path not in scripts]
+        cut |= reached.cut
+    named = names_go_test(line) or bool(tests)
+    return runner if named else "", ScriptRead(tuple(tests), tuple(unparsable), tuple(scripts), frozenset(cut))
+
+
 def script_tests(script: Path, cache: dict, seen: frozenset = frozenset()) -> ScriptRead:
     """Every go test command the script runs, itself or through the scripts it runs, followed
     until nothing more joins (a script `seen` holds is being read further up, and is cut). A
-    compile-only go test -c runs no test, and a fixture harness's runs are its own. A Python script
-    is read for its go test argvs alone (python_tests). `cache` keeps each read that no cut left
-    incomplete, so the read of a script is the same whichever step reaches it first."""
+    compile-only go test -c runs no test, and a fixture harness's runs are its own. A line that
+    runs a go test, or a script that runs one, behind a runner no reading can follow (unread_line)
+    is a go test of its own, `unread`. A Python script is read for its go test argvs alone
+    (python_tests). `cache` keeps each read that no cut left incomplete, so the read of a script is
+    the same whichever step reaches it first."""
     if script in seen:
         return ScriptRead(cut=frozenset({script}))
     if str(script) in FIXTURES:
@@ -342,6 +366,12 @@ def script_tests(script: Path, cache: dict, seen: frozenset = frozenset()) -> Sc
             unparsable += reached.unparsable
             scripts += [path for path in reached.scripts if path not in scripts]
             cut |= reached.cut
+        runner, through = unread_line(line, [script.parent, script.parent.parent, Path(".")], cache, seen | {script})
+        unparsable += through.unparsable
+        scripts += [path for path in through.scripts if path not in scripts]
+        cut |= through.cut
+        if runner:
+            tests.append(GoTest(script, number, " ".join(line.split()), Keep.NONE, unread=runner))
     read = ScriptRead(tuple(tests), tuple(unparsable), tuple(scripts), frozenset(cut - {script}))
     if not read.cut:
         cache[script] = read
@@ -352,14 +382,16 @@ class StepScan(NamedTuple):
     """What one step's run: holds: the go test commands it keeps (`kept`), and what each refusal
     names: those it runs other than through the writer (`bare`), those of a script it runs under
     the writer that keep nothing (`leaky`), those that run detached, those the writer runs under a
-    go word it does not take (`misspelled`), and the Python scripts it reaches that do not parse;
-    whether it sets TEST_EVENTS_FILE itself, queues a go test in the harness pool, or waits for the
-    pool; and every script it read."""
+    go word it does not take (`misspelled`), the lines that run a go test behind a runner no
+    reading can follow (`unread`), and the Python scripts it reaches that do not parse; whether it
+    sets TEST_EVENTS_FILE itself, queues a go test in the harness pool, or waits for the pool; and
+    every script it read."""
     kept: int
     bare: list[str]
     leaky: list[str]
     detached: list[str]
     misspelled: list[str]
+    unread: list[str]
     unparsable: list[str]
     assigns: bool
     pooled: bool
@@ -367,15 +399,24 @@ class StepScan(NamedTuple):
     scripts: tuple[Path, ...]
 
 
+UNREAD = "on a line that names go test or a script that runs one"
+
+
 def scan_step(run: str, workdir: Path, cache: dict) -> StepScan:
     """Read one step's run: for rule 8, run from `workdir`."""
-    kept, bare, leaky, detached, misspelled, unparsable, scripts = 0, [], [], [], [], [], []
+    kept, bare, leaky, detached, misspelled, unread, unparsable, scripts = 0, [], [], [], [], [], [], []
     assigns = pooled = pool_wait = False
     lines = logical_lines(run)
     for at, (_, text) in enumerate(lines):
         later = lines[at + 1:]
         pool_wait = pool_wait or bool(commands(POOL_WAIT, text, "pool"))
         assigns = assigns or bool(commands(ASSIGNS, text, "name"))
+        runner, through = unread_line(text, [workdir, Path(".")], cache, frozenset())
+        scripts += [path for path in through.scripts if path not in scripts]
+        unparsable += [f"{file}, a Python script this check cannot parse ({file}:{line}: {error})"
+                       for file, line, error in through.unparsable]
+        if runner:
+            unread.append(f"`{runner}` {UNREAD} (`{' '.join(text.split())}`)")
         for match in go_tests(text):
             command, rest, _ = go_test_parts(match, text)
             if compile_only(rest):
@@ -397,6 +438,9 @@ def scan_step(run: str, workdir: Path, cache: dict) -> StepScan:
             scripts += [path for path in read.scripts if path not in scripts]
             unparsable += [f"{script}, {'' if file == script else f'which runs {file}, '}a Python script this check "
                            f"cannot parse ({file}:{line}: {error})" for file, line, error in read.unparsable]
+            unread += [f"{script}, which runs `{test.unread}` {UNREAD} ({test.file}:{test.line})"
+                       for test in read.tests if test.unread]
+            read = read._replace(tests=tuple(test for test in read.tests if not test.unread))
             if not read.tests:
                 continue
             pooled = pooled or bool(match.group("pooled"))
@@ -416,7 +460,8 @@ def scan_step(run: str, workdir: Path, cache: dict) -> StepScan:
                 bare.append(f"{script}, which runs `{unkept[0].command}` ({unkept[0].file}:{unkept[0].line})")
             elif not any(test.misspelled for test in reached):
                 kept += 1
-    return StepScan(kept, bare, leaky, detached, misspelled, unparsable, assigns, pooled, pool_wait, tuple(scripts))
+    return StepScan(kept, bare, leaky, detached, misspelled, unread, unparsable, assigns, pooled, pool_wait,
+                    tuple(scripts))
 
 
 def step_env_names(*holders) -> set[str]:
@@ -441,14 +486,47 @@ def step_if(step: object) -> str:
     return condition(scalar(mapping_get(step, "if")) or "")
 
 
+def joined(base: str, condition: str) -> str:
+    """`base && ` a condition, parenthesized when it holds `||`, which binds looser than `&&`."""
+    return f"{base} && ({condition})" if "||" in condition else f"{base} && {condition}"
+
+
 def with_shared(bases: set[str], conditions: set[str]) -> set[str]:
     """The conditions `bases` name, and each of them joined to the one condition every go test step
-    of the job carries, bare or parenthesized, when they all carry one."""
+    of the job carries, parenthesized, or bare where it holds no `||`, when they all carry one."""
     out = set(bases)
     if len(conditions) == 1 and "" not in conditions:
         (only,) = conditions
-        out |= {f"{base} && {only}" for base in bases} | {f"{base} && ({only})" for base in bases}
+        out |= {joined(base, only) for base in bases} | {f"{base} && ({only})" for base in bases}
     return out
+
+
+# The `if:` under which a go test step runs whenever its job runs as far as it: none, which GitHub
+# reads as success(), and the status checks that run it after a failed step too.
+UNCONDITIONAL = frozenset({"success()", "always()", "!cancelled()"})
+
+
+def due_when(step: object) -> str:
+    """A go test step's condition as its job's upload reads it: "" for one that runs whenever the
+    job runs as far as it (UNCONDITIONAL), else its `if:` (step_if)."""
+    when = step_if(step)
+    return "" if when in UNCONDITIONAL else when
+
+
+def upload_when(conditions: list[str]) -> str:
+    """The `if:` the job's upload carries, from its go test steps' conditions (due_when, in step
+    order): `always()` when one of them runs whenever the job runs as far as it, since a run that
+    ran none of them then failed or was cancelled first; else `always() && ` the one condition they
+    share, or all of theirs, in order, joined with `||`. The upload then runs whenever a go test
+    step ran, after a failed or cancelled step too, so the action's if-no-files-found: error fails a
+    run whose go test ran and kept no file; and it is skipped on a run whose go test steps were
+    rightly not due, which that error would otherwise turn red."""
+    distinct = list(dict.fromkeys(conditions))
+    if "" in distinct:
+        return "always()"
+    if len(distinct) == 1:
+        return joined("always()", distinct[0])
+    return f"always() && ({' || '.join(distinct)})"
 
 
 class StepAt(NamedTuple):
@@ -512,7 +590,7 @@ def check_job(path: Path, job_id: str, root: object, job: object, steps: yaml.Se
     """Rule 8 over one job's steps, then its upload (check_upload)."""
     commands, kept_steps, scripts = 0, 0, {}
     last_step = last_pooled = None
-    step_conditions, uploads = set(), []
+    step_conditions, uploads = [], []
     # Steps that queue a go test with harness-pool.sh start, and steps that wait for the pool:
     # such a go test has written all its events only once a wait after it has returned.
     waits = []
@@ -545,21 +623,30 @@ def check_job(path: Path, job_id: str, root: object, job: object, steps: yaml.Se
             problem(path, f"{where} runs a script under {WRITER}, and the script runs {', '.join(scan.leaky)}, "
                           f"which neither runs under that writer nor tees its output into {ENV_FILE} on "
                           f"its own line, so those tests' events are kept nowhere.", line=line)
+        if scan.unread:
+            problem(path, f"{where} runs {', '.join(scan.unread)}: rule 8 cannot read the command eval, coproc, "
+                          f"flock, stdbuf, ionice, taskset, python3 -c, or a shell that reads its script from a "
+                          f"pipe or a here-string runs, so it cannot tell whether that go test keeps its events. "
+                          f"Run the go test at a command's place, as `<path to {WRITER}> go test ...`, or the "
+                          f"script that runs it as `<path to {WRITER}> <script> ...`.", line=line)
         if scan.detached:
             problem(path, f"{where} runs {', '.join(scan.detached)} detached: behind `setsid -f` with no `-w`, "
-                          f"or in the background (`&`) with no `wait` of the same shell after it that runs whenever "
-                          f"it does (not in a subshell, a pipeline, a function, an if or a loop of its own), "
-                          f"either of which returns while the command runs, so the step can end, and the job "
-                          f"upload its events, before the command has written them, and the step does not fail "
-                          f"when go test does. Give setsid -w (`setsid -fw`) or take -f off, and `wait` for a "
-                          f"command started with `&` in the shell that started it.", line=line)
+                          f"in a process substitution (`>(...)`, `<(...)`), or in the background (`&`) with no "
+                          f"`wait $!` or `wait \"$pid\"` for it (`pid=$!`), of the same shell after it, that runs "
+                          f"whenever it does (not in a subshell, a pipeline, a function, an if or a loop of its "
+                          f"own). Bash waits for none of these, so the step can end, and the job upload its "
+                          f"events, before the command has written them; and a bare `wait`, which waits for "
+                          f"every job, returns 0 whatever their status, so after one the step does not fail "
+                          f"when go test does. Give setsid -w (`setsid -fw`) or take -f off, run the command "
+                          f"outside the process substitution, and wait for a command started with `&` by its "
+                          f"pid, in the shell that started it.", line=line)
         if scan.misspelled:
             problem(path, f"{where} runs {', '.join(scan.misspelled)} through {WRITER} with a go word other "
                           f"than `go`: the writer's first form takes `go` alone, and it runs any other word as "
                           f"a command that tees its own events, which go test does not, so the step keeps no "
                           f"event and fails. Write `go` right after the writer (`<path to {WRITER}> go test "
                           f"...`), with the go to run first on PATH.", line=line)
-        if not scan.kept and not scan.bare and not scan.misspelled:
+        if not scan.kept and not scan.bare and not scan.misspelled and not scan.unread:
             continue
         if scan.kept:
             commands += scan.kept
@@ -567,10 +654,11 @@ def check_job(path: Path, job_id: str, root: object, job: object, steps: yaml.Se
         last_step = StepRef(index, name, line)
         if scan.pooled:
             last_pooled = StepRef(index, name, line)
-        step_conditions.add(step_if(step))
+        step_conditions.append(due_when(step))
         step_id = scalar(mapping_get(step, "id")) or ""
         if not step_id or step_id.startswith("__"):
-            problem(path, f"{where} runs go test{'' if scan.bare else f' through {WRITER}'} and has no id: of "
+            through = "" if scan.bare or scan.unread else f" through {WRITER}"
+            problem(path, f"{where} runs go test{through} and has no id: of "
                           f"its own, which names its events file (<id>.jsonl) and which a reader asks for; "
                           f"GitHub's own name for it moves when a step is added above it, and the writer "
                           f"refuses it. Give the step an id:.", line=line)
@@ -579,13 +667,15 @@ def check_job(path: Path, job_id: str, root: object, job: object, steps: yaml.Se
     return Census(commands, kept_steps, int(kept_steps > 0), scripts)
 
 
-def check_upload(path: Path, job_id: str, last_step: StepRef, last_pooled: StepRef | None, step_conditions: set[str],
+def check_upload(path: Path, job_id: str, last_step: StepRef, last_pooled: StepRef | None, step_conditions: list[str],
                  uploads: list, waits: list, problem: Problem) -> None:
     """A job whose last go test step is `last_step` uploads its events after it, and after the
-    pool's wait when it queues a go test in the pool (`last_pooled`)."""
-    # The upload runs whenever a go test step ran: always(), or always() and the one condition
-    # every such step of the job carries, and nothing else that could hold it back.
-    conditions = with_shared({"always()"}, step_conditions)
+    pool's wait when it queues a go test in the pool (`last_pooled`), under the condition
+    upload_when gives, or, for the one condition the go test steps share, that condition
+    parenthesized (with_shared)."""
+    due = upload_when(step_conditions)
+    shared = set(step_conditions)
+    conditions = {due} if due == "always()" or len(shared) > 1 else with_shared({"always()"}, shared) - {"always()"}
     # A go test the pool runs has written all its events once a wait after its start returned.
     boundary = last_step.index
     skippable_note = ""
@@ -594,7 +684,7 @@ def check_upload(path: Path, job_id: str, last_step: StepRef, last_pooled: StepR
         # upload does, after a failed step too, so its condition is always() or !cancelled(),
         # with or without the one condition the job's go test steps share. The upload must
         # follow the first such wait; a skippable one before it changes nothing.
-        runs_after_failure = with_shared({"always()", "!cancelled()"}, step_conditions)
+        runs_after_failure = with_shared({"always()", "!cancelled()"}, shared)
         guaranteed = [index for index, when in waits if index > last_pooled.index and when in runs_after_failure]
         skippable = [(index, when) for index, when in waits if index > last_pooled.index and when not in runs_after_failure]
         if not guaranteed:
@@ -627,10 +717,11 @@ def check_upload(path: Path, job_id: str, last_step: StepRef, last_pooled: StepR
                       f"step {last_step.index}, {last_step.name}"
                       f"{f', and the pool it queues go test in is waited for at step {boundary}' if boundary != last_step.index else ''}"
                       f"{skippable_note}"
-                      f") and no step after it uploads the events: add a step `uses: {UPLOAD_ACTION}` "
-                      f"with `if: always()` (or `always() && ` the one condition its go test steps share) "
-                      f"and `with:` {wanted}, so a reader fetches them by the job's id, a failed or "
-                      f"cancelled run's among them.",
+                      f") and no step after it uploads the events under the condition that runs it whenever a "
+                      f"go test step of the job ran: add a step `uses: {UPLOAD_ACTION}` with `if: {due}` and "
+                      f"`with:` {wanted}, so a reader fetches them by the job's id, a failed or cancelled "
+                      f"run's among them, and a run whose go test steps were not due does not fail on the "
+                      f"upload's if-no-files-found: error.",
                 line=last_step.line)
 
 
@@ -643,19 +734,11 @@ def check_upload(path: Path, job_id: str, last_step: StepRef, last_pooled: StepR
 # from .github/ci-gates), and the ci-filters job hands this check the file it computed in
 # CI_FILTERS_FILE, read as the job's dorny/paths-filter step reads it, under some-with-excludes.
 # With no CI_FILTERS_FILE (workflow-files.yaml's run, a local run) the hold is UNKNOWN, and says
-# so, rather than compute the filters, which takes Go, Bun and a minute.
+# so, rather than compute the filters, which takes Go, Bun and a minute. A filters file written
+# because the filters could not be computed (its first line FAIL_OPEN_HEAD) and a filter's patterns
+# (flatten, the change-type form among them) are read as every reader of a filters file reads them,
+# with workflow_paths.py's definitions.
 CHECK_FILTER = "ci_filters"
-# The first line of a filters file written because the filters could not be computed: every filter
-# in it is '**', which selects every path and so holds nothing (ci-filters-generate.sh).
-FAIL_OPEN_HEAD = "# FAIL-OPEN:"
-
-
-def flat(value) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [pattern for item in value for pattern in flat(item)]
-    return []
 
 
 def hold_scripts_to_filter(reached: dict[Path, StepAt], problem: Problem) -> str:
@@ -675,7 +758,7 @@ def hold_scripts_to_filter(reached: dict[Path, StepAt], problem: Problem) -> str
         return unknown + f"cannot read CI_FILTERS_FILE's {filters}: {type(error).__name__}"
     if text.startswith(FAIL_OPEN_HEAD):
         return unknown + f"{filters} was written because the filters could not be computed"
-    patterns = flat(document.get(CHECK_FILTER)) if isinstance(document, dict) else []
+    patterns = flatten(document.get(CHECK_FILTER)) if isinstance(document, dict) else []
     if not patterns:
         return unknown + f"{filters} holds no {CHECK_FILTER} filter"
     selects = PathsFilter(patterns, "some-with-excludes")
