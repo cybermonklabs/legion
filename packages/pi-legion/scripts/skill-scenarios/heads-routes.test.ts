@@ -764,6 +764,51 @@ test("gh run list prints the workflow runs, all or one head's, as gh does", () =
   );
 });
 
+// Catches: `gh workflow list` with no route, a rig error in an architect's run of the other head's
+// world (`gh workflow list --repo example/widgets`). It answers the world's workflows, one for each
+// name the world's runs carry, each active: under `--json` the four fields gh names, else off a
+// terminal each name, state and id with a tab between two and no header. The world's repository may
+// be named before the command or after it; another repository, and a limit below the count, have no
+// route. The routes stand last in the table, so no call another route answers is answered anew.
+test("gh workflow list prints the world's workflows, as gh does", () => {
+  const failed = renderHeadsRoutes(world({ named: [USAGE_FAILED] }));
+  const listed = answer(failed, "gh workflow list --json id,name,path,state -R example/widgets");
+  expect(listed).toEqual([
+    { id: expect.any(Number), name: "ci", path: ".github/workflows/ci.yml", state: "active" },
+    {
+      id: expect.any(Number),
+      name: "usage-test",
+      path: ".github/workflows/usage-test.yml",
+      state: "active",
+    },
+  ]);
+  const workflows = listed as { id: number; name: string; state: string }[];
+  expect(new Set(workflows.map((workflow) => workflow.id)).size).toBe(2);
+  const text = workflows.map((w) => `${w.name}\t${w.state}\t${w.id}`).join("\n");
+  for (const call of [
+    "gh workflow list --repo example/widgets",
+    "gh workflow list",
+    "gh workflow ls -R example/widgets --all",
+    "gh -R example/widgets workflow list",
+    "gh --repo=example/widgets workflow list -L 10",
+    "gh workflow list -R https://github.com/example/widgets",
+  ])
+    expect({ call, text: answer(failed, call) }).toEqual({ call, text });
+  expect(answer(failed, "gh -R example/widgets workflow list --json name")).toEqual(listed);
+  for (const call of [
+    "gh workflow list -R skills-rig/project",
+    "gh -R skills-rig/project workflow list",
+    "gh workflow list --limit 1",
+  ])
+    expect(() => routeOf(failed, call)).toThrow("no route names");
+  // The table before these routes is the one the stand-in served: none of it answers the list.
+  const before = failed.routes.filter((route) => !/workflow \(list\|ls\)/.test(route.match));
+  expect(failed.routes.slice(0, before.length)).toEqual(before);
+  expect(
+    before.filter((route) => new RegExp(route.match, "s").test("gh workflow list --repo example/widgets"))
+  ).toEqual([]);
+});
+
 // Catches: a compare of the base with a head that is not GitHub's, and a compare with a commit
 // the world does not hold answered as if it did (an architect compared the base with one).
 test("compare: the base with each head by name or sha, and GitHub's 404 for an unknown commit", () => {
