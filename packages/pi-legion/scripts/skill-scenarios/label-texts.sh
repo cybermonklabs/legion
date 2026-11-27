@@ -2,7 +2,8 @@
 # label-texts.sh: the one entry the skill-scenario rig calls for a label's own texts. Every Legion
 # text an agent of the rig gets comes from the label's own code, built in the label's own tree:
 # five tests of the label's daemon module. Three of them each read a request and write an answer,
-# one runs the label's whole daemon in the rig's own case, and one runs it for a scored run.
+# and one runs the label's whole daemon for a scored run. The fifth, TestRigDaemon, runs that
+# daemon in its own case; it is a check of its own (CI's daemon-go job), and no verb runs it.
 # This script lives in the label's checkout and runs that checkout's tests. Its request and answer
 # files are the shapes of scored-runs-contracts.ts (C2 and C8).
 #
@@ -10,9 +11,11 @@
 #       Compiles the three test binaries with `go test -c -tags e2e`, once for each state of the
 #       label's tree (its commit, and the digest of its changes when it has any), into
 #       $RIG_TEXTS_BIN/<commit>[-<digest>]/. The tag puts TestRigDaemonLive into the daemon
-#       binary. Then it runs the own case of TestRigWorld, TestRigLaunch, TestRigPlanCheck and
-#       TestRigDaemon, with no request, and prints the four `--- PASS:` lines. With --compile it
-#       makes the binaries and runs no test.
+#       binary. Then it runs the own case of TestRigWorld, TestRigLaunch and TestRigPlanCheck,
+#       with no request, and prints the three `--- PASS:` lines. It runs no case of TestRigDaemon:
+#       that test's daemon rig fails for reasons a build does not own (a NATS that other clients
+#       share, a route of the label that is still to come), so it stands as its own check. With
+#       --compile it makes the binaries and runs no test.
 #   label-texts.sh world <request> <answer>        runs TestRigWorld      (internal/workflow)
 #   label-texts.sh launch <request> <answer>       runs TestRigLaunch     (internal/daemon)
 #   label-texts.sh plan-check <request> <answer>   runs TestRigPlanCheck  (internal/api)
@@ -257,7 +260,8 @@ build() {
   for entry in "${tests[@]}"; do
     read -r pkg _ name <<<"$entry"
     # TestRigDaemonLive has no own case: with no request it fails, naming RIG_TEXTS_REQUEST.
-    [ "$name" = TestRigDaemonLive ] || run_test "$pkg" "$name"
+    # TestRigDaemon is a check of its own, run by CI's daemon-go job, never a step of a build.
+    [ "$name" = TestRigDaemonLive ] || [ "$name" = TestRigDaemon ] || run_test "$pkg" "$name"
   done
 }
 
