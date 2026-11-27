@@ -471,6 +471,13 @@ Go for it (packages/daemon/go.mod). The `legion` build of the private-name port
 harness, which put that binary's whole closure on this filter, is the
 private-names-port job's now, with the private_names_port filter.
 
+## test: Both keyed-write harnesses read the route answers
+
+Both keyed-write harnesses read the route answers from the generated API
+document: packages/envoy-client/test/keyed-layer.ts and route-answers.ts, whose
+`document` reads packages/contracts/schemas/dispatch-openapi.json, which the
+Bun suites of scripts/dispatch and scripts/e2e/lib this job runs import by path.
+
 ## test: Each harness step's own gate, named here so the job runs
 
 Each harness step's own gate, named here so the job runs for the change that
@@ -2754,11 +2761,13 @@ to one area's code can run that area's legs:
   preloads pg_stat_statements, started by the job on port 5433 for them; envoy-go-skips, the skip
   counter's own test, the store-form count and the two vets; and envoy-go-natslive, the
   container-backed matrix, the integration suite and the callout check.
-- envoy-go-race's step in five legs: the listener's tests in two, a group each
+- envoy-go-race's step in six legs: the listener's tests in two, a group each
   (`.github/go-legs/packages/envoy/cmd/listener.yaml`, written by `.github/scripts/go_legs_groups.py`
   as the daemon's are), the bus with the registry store, the session cache, kvwatch and the NATS
-  credentials, Dispatch's store and delivery, and the NATS auth service with the sign-in code flow,
-  which also runs the forced-order steps.
+  credentials, Dispatch's delivery with the NATS auth service and the sign-in code flow, and the
+  Dispatch store's tests in two more, a group each
+  (`.github/go-legs/packages/envoy/internal/dispatch/store.yaml`), the last of which also runs the
+  forced-order steps.
 
 envoy-go-alone runs the rows whose assertion is a bound on how long something takes, on a runner
 nothing else loads, since beside a leg's other packages such a row measures the load as much as the
@@ -2780,6 +2789,17 @@ each; the race legs, with the listener whole in one, 1,057, 577, 671 and 362 s, 
 forced-order steps' minute in the last. cmd/listener ran 902 s alone, 226 serial tests summing
 781 s and 698 parallel ones 824 s at its -parallel 8, so its tests are split in two groups,
 modelled at 442 s each.
+
+The Dispatch store and delivery then shared a leg, and the store set the job's time: in the 12
+green merge groups of 2026-11-27 10:48Z-16:49Z that leg was the longest of the five every time,
+639-715 s as a job, the store's package 583-654 s and delivery's 511-537 s beside it. Both
+packages spend most of that in their serial tests, which wait rather than compute: in throwaway
+run 46045787549 (main 45c293ad, vmstat every 2 s and each test process's CPU time) the store's
+serial tests took 362 s of its 630 s with its process using 0.38 of a core, and delivery's 459 s
+of its 530 s at 0.09 of a core; the listener's legs and the bus's are the same shape, their
+serial tests at 0.03-0.11 of a core. Serial tests of one package cannot run beside each other, so
+the store's are split in two groups, each a leg of its own, and delivery moves beside the NATS
+auth service, whose leg was idle as well.
 
 The rules the legs keep are the daemon's
 ([ci-job-daemon-go.md](ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs)): each package
@@ -2902,8 +2922,8 @@ say why the document service runs alone.
 api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
 runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
 746.718 s. The packages left in envoy-go-race shared one runner until their sum, about 4,000 s
-of package time over four slots, set that job's 20 minutes; they now run in five legs, a runner
-each, the listener's tests split over two of them
+of package time over four slots, set that job's 20 minutes; they now run in six legs, a runner
+each, the listener's tests split over two of them and the Dispatch store's over two more
 ([why](#why-envoys-go-tests-run-in-legs)). Running a heavy package apart also reads its seconds
 as its own job's, and leaves the others' numbers standing when one is red.
 

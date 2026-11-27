@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/fileowner"
@@ -52,7 +53,9 @@ const (
 // inherited ones: the loopback addresses, the suffixes of a cluster's and a tailnet's own names,
 // the two metadata addresses and the four private ranges. They never reach the airlock proxy,
 // which refuses a private address anyway, and a request to one of them must not wait on a proxy
-// that will not carry it.
+// that will not carry it. An entry that covers a host the release binds is left out, as an
+// inherited one is (airlockNoProxy): Dispatch's tailnet name is under `.ts.net`, and its writes
+// must reach the proxy.
 var airlockFixedNoProxy = []string{
 	"localhost",
 	"127.0.0.1",
@@ -851,7 +854,16 @@ func airlockProxyURL(release *AirlockRelease) (string, error) {
 // AGENT_SECRETS_URL in the child's environment on purpose (sessionIdentityVars), so a nested
 // `agent-secrets` call reaches the broker as this same session. Without this entry that nested
 // call would go to the broker through the proxy, and the proxy refuses a private address — which
-// a broker reached over a tailnet or inside a cluster always is.
+// a broker reached over a tailnet or inside a cluster always is. It is held to the bound hosts as
+// every other entry is: a broker host that is a bound host, or a parent domain or a subdomain of
+// one, is left out, since kept it would send that bound host's requests straight out with a
+// placeholder in them; the nested call then goes to the proxy, which refuses it, and no request of
+// a bound host leaves without the proxy.
+//
+// The inherited list is read as the clients that read it split it, on commas and on white space
+// (Bun's fetch, which `dispatch` runs on, takes `other.test dispatch.example.test` as two
+// entries), so each piece is held to the bound hosts on its own, and the list is written back
+// with commas alone.
 func airlockNoProxy(environ []string, release *AirlockRelease) string {
 	inherited := envValue(environ, "no_proxy")
 	if inherited == "" {
@@ -863,17 +875,24 @@ func airlockNoProxy(environ []string, release *AirlockRelease) string {
 	}
 
 	entries := make([]string, 0, len(airlockFixedNoProxy)+8)
-	for _, entry := range strings.Split(inherited, ",") {
-		entry = strings.TrimSpace(entry)
+	pieces := strings.FieldsFunc(inherited, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	for _, entry := range pieces {
 		// "*" turns the proxy off for everything, so no bound host would reach it. A list that
 		// holds it holds nothing else that matters.
-		if entry == "" || entry == "*" || overlapsBoundHost(entry, bound) {
+		if entry == "*" || overlapsBoundHost(entry, bound) {
 			continue
 		}
 		entries = append(entries, entry)
 	}
-	entries = append(entries, airlockFixedNoProxy...)
-	if host := brokerHostname(envValue(environ, "AGENT_SECRETS_URL")); host != "" {
+	// A fixed entry is held to the bound hosts as an inherited one is: `.ts.net` covers a bound
+	// host on the tailnet, Dispatch's own name among them, and kept, it would send that host's
+	// requests straight out with a placeholder in them rather than through the proxy.
+	for _, entry := range airlockFixedNoProxy {
+		if !overlapsBoundHost(entry, bound) {
+			entries = append(entries, entry)
+		}
+	}
+	if host := brokerHostname(envValue(environ, "AGENT_SECRETS_URL")); host != "" && !overlapsBoundHost(host, bound) {
 		entries = append(entries, host)
 	}
 
@@ -905,7 +924,8 @@ func brokerHostname(base string) string {
 // overlapsBoundHost reports whether a NO_PROXY entry could take a bound host's request past the
 // proxy. An entry and a bound host overlap when they name the same host or one is a parent domain
 // of the other, each read without its port, its leading dot or its "*." — the two spellings of a
-// suffix in a NO_PROXY list and in an airlock entry's hosts. The test is deliberately generous in
+// suffix in a NO_PROXY list and in an airlock entry's hosts — and without a trailing dot, the
+// spelling of the same name as fully qualified (noProxyHost). The test is deliberately generous in
 // both directions: "api.example.com" in the list is dropped against the bound "*.example.com"
 // because it names a host the proxy must carry, and "example.com" is dropped against the bound
 // "api.example.com" because every reader of NO_PROXY but none takes a bare domain to cover its
@@ -929,8 +949,10 @@ func overlapsBoundHost(entry string, hosts []string) bool {
 }
 
 // noProxyHost is the host a NO_PROXY entry or an airlock entry's host names, lower-cased and
-// without the port, the leading dot or the "*." a suffix is written with. A CIDR block or an
-// address keeps its own text, which matches no host name.
+// without the port, the leading dot or the "*." a suffix is written with, and without one trailing
+// dot: "example.test." is the fully qualified spelling of example.test, and Bun's fetch, which
+// `dispatch` runs on, reads a NO_PROXY entry written so as covering the host and its subdomains.
+// A CIDR block or an address keeps its own text, which matches no host name.
 func noProxyHost(entry string) string {
 	host := strings.ToLower(strings.TrimSpace(entry))
 	host = strings.TrimPrefix(host, "*")
@@ -947,5 +969,5 @@ func noProxyHost(entry string) string {
 			host = host[:colon]
 		}
 	}
-	return host
+	return strings.TrimSuffix(host, ".")
 }
