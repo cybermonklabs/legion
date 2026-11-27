@@ -4584,9 +4584,13 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 // (the seed's RegisteredAt, which record.PendingBasisSeedOf normalized once as it queued the seed)
 // and what the read found (basisReadFound), so the same read again of the same wait is a
 // duplicate, while a read of a later registration on the same request or a read that finds
-// anything else, another closer included, is a fact of its own. A failed read, of any of the
-// three, is the row's error, and the row is retried on its backoff (permanentRefusal names no
-// pending-basis seed): no event waits on it.
+// anything else, another closer included, is a fact of its own. A read that finds what an earlier
+// read of the same wait found is that duplicate, which ApplyFact drops before any handler runs, so
+// no workflow line follows it; the seed writes one line of its own for it, naming what it found,
+// since the same silence otherwise hides every seed whose world did not change (a step whose
+// ancestor a status write had just put back, INFRA-3904's 29-minute silence, read as nothing at
+// all). A failed read, of any of the three, is the row's error, and the row is retried on its
+// backoff (permanentRefusal names no pending-basis seed): no event waits on it.
 func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
 	if r.dispatch == nil {
 		return errors.New("pending-basis seed executor has no Dispatch client")
@@ -4599,8 +4603,15 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 		ArtifactID: payload.ArtifactID, BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, Read: read}
 	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%d:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, payload.RegisteredAt.UnixMicro(),
 		payload.BasisArtifactID, payload.BasisVersion, basisReadFound(read))
-	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
+	result, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...)
+	if err != nil {
 		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)
+	}
+	if result.Duplicate {
+		r.log.Info("outbox pending-basis seed read what an earlier read of the same wait found, so its fact is a duplicate and changes nothing",
+			"row", row.ID, "issue", row.Issue, "step", payload.Step, "ask", payload.Ask, "basis", payload.BasisArtifactID,
+			"basis_version", payload.BasisVersion, "ancestor", read.Approval.IssueKey, "ancestor_status", read.Ancestor.Status,
+			"found", basisReadFound(read))
 	}
 	return nil
 }
