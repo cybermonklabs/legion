@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -32,10 +33,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -65,6 +70,12 @@ const (
 	asOfSearchWord        = "lighthouse"
 	asOfBroadenedQuery    = "lighthouse marmalade"
 	asOfEditedMessageWord = "plover"
+	// asOfOtherPerson is the second person among the callers (asOfRig.callers), the other one
+	// newTestServer seeds beside brokerTestPerson, and asOfOtherSession the session their machine
+	// login's token acts for. The comment brokerTestPerson keeps to herself (asOfWorld.hidden) is
+	// hidden from them.
+	asOfOtherPerson  = "bob"
+	asOfOtherSession = "ses_f6e5d4c3b2a1"
 )
 
 // asOfAgentSession is the session that asks the world's questions and requests its approval, the
@@ -91,6 +102,9 @@ type asOfWorld struct {
 	deleted map[string]string
 	// What writeAfterTheCut writes to: the asks it answers and closes, and the posts it deletes.
 	openQuestion, handbookAsk, deletedComment, deletedMessage string
+	// hidden is the comment brokerTestPerson keeps to herself (seedHiddenComment): the world's
+	// search word matches it at the cut, and its node is reserved for her, its author.
+	hidden string
 }
 
 // asOfWrite sends one write of the world as login, by the test identity's header, and fails the
@@ -270,6 +284,47 @@ func seedAsOfWorld(t *testing.T, handler http.Handler) *asOfWorld {
 	return w
 }
 
+// seedHiddenComment writes the comment brokerTestPerson keeps to herself (asOfWorld.hidden): a
+// comment of hers on the parent that holds the world's search word, written through the route,
+// whose node is then reserved for her, as a later release's author-private write marks one. No
+// route writes such a node yet, so the store's own writer (graphstore.Write) moves the comment's
+// node to the visibility graphstoretest.VisibilityFor answers for author on the credential that
+// wrote it (graphstore.ProvesAuthor) and states that attribute beside it, as
+// TestAPersonPageDecidesAndListsInOneSnapshot reserves one. Written through the route, the comment
+// has the event the keyword table's fill reads, so a search at the cut matches it as a search at
+// the present does. Reserved, it is seen by its author alone: the read-only token that holds
+// person names her and sees it, and the one that names asOfOtherPerson does not.
+//
+// It is a comment, and no block of a document, because a keyword search answers a comment as a
+// hit of its own, and binds the visibility predicate over it: the search's kinds
+// (searchKindsCTE, refs.VisibleEnd) at the present and at the cut, and each post kind's boundary
+// at the cut (searchAsOfBoundedPosts, refs.VisibleKind). So the comment is in an answer whole or
+// not at all. A block reserved for its author in a document every caller may see would change
+// only which block the document's hit names (searchPageAndTailReading).
+func (w *asOfWorld) seedHiddenComment(t *testing.T, handler http.Handler, database *store.Store) {
+	t.Helper()
+	w.hidden = decodeBody[model.Comment](t, asOfWrite(t, handler, http.MethodPost, "/api/v1/issues/"+w.parent+"/comments",
+		map[string]any{"body": "The " + asOfSearchWord + " notes its author keeps to herself."}, brokerTestPerson)).ID
+	ctx := t.Context()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		node, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindComment, w.hidden)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("the store holds no node of the comment")
+		}
+		visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(node.MadeBy))
+		if err != nil {
+			return err
+		}
+		node.Visibility = visibility
+		return graphstore.Write(ctx, tx, []graphstore.Node{node}, nil)
+	}); err != nil {
+		t.Fatalf("reserve the comment %s for its author, %s: %v", w.hidden, brokerTestPerson, err)
+	}
+}
+
 // writeAfterTheCut makes every later write of the check t-routes' run text and the two the plan
 // adds: edits, new comments, messages, asks and answers, a closed ask, an issue status change, a
 // new document version, a new check result, a document removed, a comment and an issue message
@@ -338,12 +393,15 @@ func (w *asOfWorld) writeAfterTheCut(t *testing.T, handler http.Handler) {
 }
 
 // asOfRead is one request of a row: its target, path and query; whether it names the document
-// removed after the cut, which answers 404 as of the cut; and whether it names what the world
-// holds only after the cut, which answers 404 at the cut and so as of it.
+// removed after the cut, which answers 404 as of the cut; whether it names what the world holds
+// only after the cut, which answers 404 at the cut and so as of it; and whether it is a search
+// whose query matches the comment reserved for its author (asOfWorld.hidden) at the cut, which
+// must show that comment to its author and hide it from asOfOtherPerson (hiddenShown).
 type asOfRead struct {
 	target  string
 	removed bool
 	missing bool
+	hidden  bool
 }
 
 // asOfRow is one route of kind answers and the reads the harness makes of it. window, where it
@@ -361,14 +419,14 @@ func asOfOne(target func(w *asOfWorld) string) func(w *asOfWorld) []asOfRead {
 	return func(w *asOfWorld) []asOfRead { return []asOfRead{{target: target(w)}} }
 }
 
-// asOfSearchReads is a search route's three reads: a query the world's text matched at the cut;
-// two words that matched nothing together at the cut, which the read at the cut broadened; and a
-// word only the edited message's text at the cut holds, which the fill reads from its edit
-// (message.edited).
+// asOfSearchReads is a search route's three reads: a query the world's text matched at the cut,
+// the comment reserved for its author among it (asOfWorld.hidden); two words that matched nothing
+// together at the cut, which the read at the cut broadened; and a word only the edited message's
+// text at the cut holds, which the fill reads from its edit (message.edited).
 func asOfSearchReads(path string) func(w *asOfWorld) []asOfRead {
 	return func(*asOfWorld) []asOfRead {
 		return []asOfRead{
-			{target: path + "?" + url.Values{"q": {asOfSearchWord}, "keywords_only": {"true"}}.Encode()},
+			{target: path + "?" + url.Values{"q": {asOfSearchWord}, "keywords_only": {"true"}}.Encode(), hidden: true},
 			{target: path + "?" + url.Values{"q": {asOfBroadenedQuery}, "keywords_only": {"true"}}.Encode()},
 			{target: path + "?" + url.Values{"q": {asOfEditedMessageWord}, "keywords_only": {"true"}}.Encode()},
 		}
@@ -435,11 +493,13 @@ var asOfEqualityRows = []asOfRow{
 }
 
 // asOfReader is one credential the rows are read with: what a failure calls it, the token the
-// stub broker answers for, and whether its credential holds the person scope.
+// stub broker answers for, whether its credential holds the person scope, and the person it
+// names, empty for a credential that names none.
 type asOfReader struct {
 	name   string
 	token  string
 	person bool
+	login  string
 }
 
 // asOfRig is the server under test with the broker that answers its callers' tokens, the key
@@ -503,34 +563,45 @@ func newAsOfRigOn(t *testing.T, database *store.Store) *asOfRig {
 	return &asOfRig{brokerTokenRig: rig, key: newBrokerCaller(t)}
 }
 
-// callers are the three credentials every row is read with, each said to the stub broker: a
+// callers are the four credentials every row is read with, each said to the stub broker: a
 // read-only token, INFRA-4619's read entry's token (readOnlyToken); a read-only token that holds
 // person, the token narrowed from a machine login's (ciphertokentest.NarrowedAnswers), here
-// alice's; and a caller the read filter at this head holds, a session token that names a service
-// and no person, so the
-// person scope refuses it on each person route. Each is held to be the credential it is said to
-// be, so a row cannot pass for want of one.
+// alice's (brokerTestPerson), who wrote the comment the world reserves for its author
+// (asOfWorld.hidden); the same token of a second person's machine login, asOfOtherPerson's, from
+// whom INFRA-1149's visibility hides that comment; and a caller the read filter at this head
+// holds, a session token that names a service and no person, so the person scope refuses it on
+// each person route. Each is held to be the credential it is said to be, the person it names
+// included, so a row cannot pass for want of one.
 func (r *asOfRig) callers(t *testing.T) []asOfReader {
 	t.Helper()
-	person := ciphertokentest.NarrowedAnswers(t, r.key.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	expires := time.Now().Add(time.Hour).Unix()
+	person := ciphertokentest.NarrowedAnswers(t, r.key.jkt, brokerTestSession, expires)["machine-login"]
 	person.Person = brokerTestPerson
+	other := ciphertokentest.NarrowedAnswers(t, r.key.jkt, asOfOtherSession, expires)["machine-login"]
+	other.Person = asOfOtherPerson
 	answers := []struct {
 		caller   asOfReader
 		answer   ciphertoken.Introspection
 		readOnly bool
 	}{
 		{asOfReader{name: "a read-only token", token: "asof-read-only"}, readOnlyToken(r.key.jkt), true},
-		{asOfReader{name: "a read-only token that holds person", token: "asof-read-only-person", person: true}, person, true},
+		{asOfReader{name: "a read-only token that holds person", token: "asof-read-only-person", person: true, login: brokerTestPerson}, person, true},
 		{asOfReader{name: "a token without person", token: "asof-no-person"}, serviceOnlyToken(r.key.jkt), false},
+		{asOfReader{name: "a read-only token that holds person and names " + asOfOtherPerson, token: "asof-read-only-other-person",
+			person: true, login: asOfOtherPerson}, other, true},
 	}
 	callers := make([]asOfReader, 0, len(answers))
 	for _, said := range answers {
 		r.broker.Says(said.caller.token, said.answer)
 		actor, _, err := r.served.brokerTokenActor(r.key.presenting(t, http.MethodGet, "/api/v1/whoami", said.caller.token, nil))
+		named := ""
+		if actor.Owner != nil {
+			named = *actor.Owner
+		}
 		if err != nil || actor.Credential == nil || actor.Credential.ReadOnly != said.readOnly ||
-			actor.Credential.Holds(model.ScopePerson) != said.caller.person || !actor.Credential.Cut.IsZero() {
-			t.Fatalf("%s: Dispatch's actor is %+v (%v), want a credential read-only %t, holding person %t, with no cut",
-				said.caller.name, actor, err, said.readOnly, said.caller.person)
+			actor.Credential.Holds(model.ScopePerson) != said.caller.person || named != said.caller.login || !actor.Credential.Cut.IsZero() {
+			t.Fatalf("%s: Dispatch's actor is %+v (%v), want a credential read-only %t, holding person %t, naming the person %q, with no cut",
+				said.caller.name, actor, err, said.readOnly, said.caller.person, said.caller.login)
 		}
 		callers = append(callers, said.caller)
 	}
@@ -539,12 +610,12 @@ func (r *asOfRig) callers(t *testing.T) []asOfReader {
 
 // cutCaller is a read-only token that holds person and carries cut, said to the stub broker: the
 // token narrowed from a machine login's trade with a cut (ciphertokentest.NarrowedAnswers,
-// machine-login-with-a-cut), cut at cut and here alice's, so it is the read-only token that holds
-// person among callers but for its cut (cutTokenAnswer). Dispatch's credential of it is held to be
-// read-only, to hold person and to carry cut (sayCutToken).
+// machine-login-with-a-cut), cut at cut and here alice's, so it is alice's read-only token that
+// holds person among callers but for its cut (cutTokenAnswer). Dispatch's credential of it is held
+// to be read-only, to hold person and to carry cut (sayCutToken).
 func (r *asOfRig) cutCaller(t *testing.T, cut asof.Cut) asOfReader {
 	t.Helper()
-	caller := asOfReader{name: "a read-only token that holds person, cut at the cut", token: "asof-cut", person: true}
+	caller := asOfReader{name: "a read-only token that holds person, cut at the cut", token: "asof-cut", person: true, login: brokerTestPerson}
 	sayCutToken(t, r.brokerTokenRig, r.key, caller.token, cut)
 	return caller
 }
@@ -609,7 +680,7 @@ func withAsOfValue(t *testing.T, target, value string) string {
 
 // TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen is the check t-routes: each route of
 // kind answers, read with as_of at the cut, answers exactly what it answered at the cut, and
-// nothing written after it, for each of three callers. Every read at the cut is made first, once
+// nothing written after it, for each of four callers. Every read at the cut is made first, once
 // the world has settled and the event horizon has reached it; the cut is the database's clock
 // after the last of them; 5 ms later the world is written again; and once that has settled, and
 // the keyword table's fill has read every event past the cut (fillTextVersionsPast), each route
@@ -617,8 +688,8 @@ func withAsOfValue(t *testing.T, target, value string) string {
 // asOfComparison, and every statement it sends is held to the writes a read may make: the DPoP
 // proof's replay row, a personal token's last_used_at and the caches Dispatch rebuilds.
 //
-// Each route is then read once more, with no as_of, by a fourth caller: a read-only token whose
-// cut is the harness's cut and that is otherwise the read-only token that holds person
+// Each route is then read once more, with no as_of, by a fifth caller: a read-only token whose
+// cut is the harness's cut and that is otherwise alice's read-only token that holds person
 // (asOfRig.cutCaller). Its answer is held to that token's read at the cut, as an as_of read is.
 //
 // Each read at the cut must reach the row's own route (the mux names its pattern) and be served:
@@ -626,10 +697,22 @@ func withAsOfValue(t *testing.T, target, value string) string {
 // person route, which the as_of read must then be refused alike, and 404 for a read of what only
 // the writes after the cut made. And the writes after the cut must change what each row reads at
 // the present, for one caller at least, so no row passes because nothing it reads moved.
+//
+// Before the cut, the world gains a comment of alice's that its search word matches and whose
+// node is reserved for her (seedHiddenComment), so INFRA-1149's visibility hides it from one of
+// the callers, bob's (asOfOtherPerson). Each search read whose query matches it (asOfRead.hidden)
+// must show it to alice's caller and not to bob's, at the cut and as of it (hiddenShown), so a
+// search row cannot pass because the comment matched nothing or because no caller had it hidden.
 func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 	rig := newAsOfRig(t)
 	world := seedAsOfWorld(t, rig.handler)
+	world.seedHiddenComment(t, rig.handler, rig.database)
 	callers := rig.callers(t)
+	author := slices.IndexFunc(callers, func(caller asOfReader) bool { return caller.login == brokerTestPerson })
+	if author < 0 || !slices.ContainsFunc(callers, func(caller asOfReader) bool { return caller.login == asOfOtherPerson }) {
+		t.Fatalf("the callers name no %s or no %s, so the comment %s keeps to herself is shown to none of them or hidden from none, and the cut token's reads have no read at the cut to be held to",
+			brokerTestPerson, asOfOtherPerson, brokerTestPerson)
+	}
 	mux, ok := rig.handler.(*http.ServeMux)
 	if !ok {
 		t.Fatalf("the rig's handler is %T, want the *http.ServeMux register mounted", rig.handler)
@@ -648,6 +731,9 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 				if problem := servedAtTheCut(row.route, read, caller, answer); problem != "" {
 					t.Fatalf("%s as %s, %s: %s", row.route, caller.name, read.target, problem)
 				}
+				if problem := world.hiddenShown(read, caller, answer); problem != "" {
+					t.Fatalf("%s as %s, %s: at the cut, %s", row.route, caller.name, read.target, problem)
+				}
 				then[readKey{rowIndex, readIndex, callerIndex}] = answer
 			}
 		}
@@ -658,11 +744,8 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 	rig.settle(t)
 	fillTextVersionsPast(t, rig.database, cut)
 	cutCaller := rig.cutCaller(t, cut)
-	person := slices.IndexFunc(callers, func(caller asOfReader) bool { return caller.person })
-	if person < 0 {
-		t.Fatal("no caller of the harness holds person, so the cut token's reads have no read at the cut to be held to")
-	}
-	t.Logf("the cut is %s; %d rows, %d callers and the token cut at the cut", cut, len(asOfEqualityRows), len(callers))
+	t.Logf("the cut is %s; %d rows, %d callers and the token cut at the cut; the comment %s reserved for %s",
+		cut, len(asOfEqualityRows), len(callers), world.hidden, brokerTestPerson)
 
 	for rowIndex, row := range asOfEqualityRows {
 		t.Run(row.route, func(t *testing.T) {
@@ -676,6 +759,9 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 					comparison := asOfComparison{route: row.route, cut: cut, world: world, window: row.window, removed: read.removed}
 					problems := comparison.problems(atTheCut, answer)
 					problems = append(problems, asOfReadWrites(rig.statements.take())...)
+					if problem := world.hiddenShown(read, caller, answer); problem != "" {
+						problems = append(problems, "as of the cut, "+problem)
+					}
 					if len(problems) > 0 {
 						t.Errorf("%s as %s, %s:\n  %s", row.route, caller.name, read.target, strings.Join(problems, "\n  "))
 					}
@@ -683,7 +769,7 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 				rig.statements.take()
 				answer := rig.read(t, cutCaller, read.target, true)
 				comparison := asOfComparison{route: row.route, cut: cut, world: world, window: row.window, removed: read.removed}
-				problems := comparison.problems(then[readKey{rowIndex, readIndex, person}], answer)
+				problems := comparison.problems(then[readKey{rowIndex, readIndex, author}], answer)
 				problems = append(problems, asOfReadWrites(rig.statements.take())...)
 				if len(problems) > 0 {
 					t.Errorf("%s as %s, %s:\n  %s", row.route, cutCaller.name, read.target, strings.Join(problems, "\n  "))
@@ -694,6 +780,31 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 			}
 		})
 	}
+}
+
+// hiddenShown says how answer, caller's answer to read at the cut or as of it, fails to show the
+// comment reserved for its author (asOfWorld.hidden) to that author, brokerTestPerson, or fails to
+// hide it from asOfOtherPerson, and is empty when it does both. It holds nothing of a read whose
+// query does not match the comment (asOfRead.hidden) or of a caller that names neither person.
+// The comment is shown when the search's page holds a comment hit of its id.
+func (w *asOfWorld) hiddenShown(read asOfRead, caller asOfReader, answer asOfAnswer) string {
+	if !read.hidden || (caller.login != brokerTestPerson && caller.login != asOfOtherPerson) {
+		return ""
+	}
+	var page model.SearchResponse
+	if err := json.Unmarshal(answer.body, &page); answer.status != http.StatusOK || err != nil {
+		return fmt.Sprintf("the search answered %d %s (%v), want 200 with a page of hits", answer.status, abbreviateAnswer(answer.body), err)
+	}
+	shown := slices.ContainsFunc(page.Results, func(hit model.SearchResult) bool { return hit.Kind == "comment" && hit.ID == w.hidden })
+	switch author := caller.login == brokerTestPerson; {
+	case author && !shown:
+		return fmt.Sprintf("the answer lacks the comment %s, which %s keeps to herself and this caller, %s, may see: %s",
+			w.hidden, brokerTestPerson, caller.login, abbreviateAnswer(answer.body))
+	case !author && shown:
+		return fmt.Sprintf("the answer holds the comment %s, which %s keeps to herself and this caller, %s, may not see",
+			w.hidden, brokerTestPerson, caller.login)
+	}
+	return ""
 }
 
 // movedSinceTheCut reports whether present, a read after the writes that followed the cut, is not
