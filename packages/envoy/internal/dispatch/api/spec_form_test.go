@@ -65,7 +65,7 @@ func specFormOn(t testing.TB, specRoots, serverURL string, documents docs.API) *
 }
 
 // A refusal's body holds at most 500 findings and counts every one, and its error lists the first
-// 20 and the command that lists the rest.
+// 20 and names the command, which lists them, the first 500 at most.
 func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 	findings := make([]specFormFinding, 501)
 	for index := range findings {

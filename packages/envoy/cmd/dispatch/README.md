@@ -6450,8 +6450,7 @@ Each item below names a path with its method and identity, then its purpose.
       So when a sentence ends with such an initialism, the rules count it and the next sentence as one: write the initialism in full there.
       Nothing in code font ends a sentence.
       A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
-      Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font, each only where the text that it makes breaks no rule that the text does not break.
-      So in a statement of two sentences, where the space makes three, the finding tells the writer to put the name in code font.
+      Its finding names the word and says that Dispatch cannot find the end of the sentence.
       A word that starts with a scheme and `//`, such as `https://`, or with `www.` is an address that the words show.
       Such an address is one word, so no stop in it breaks this rule, and a stop after the address ends the sentence.
       A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
@@ -6573,7 +6572,7 @@ Each item below names a path with its method and identity, then its purpose.
       A finding is its rule and its `detail`, the rule's words at its place.
       Each line of `error` writes a finding as its `detail`.
       `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
-      `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+      `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and names the `dispatch spec-form` command, which lists them, the first 500 at most.
       The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
       A person's approval of a covered document gets the same refusal through three routes.
       These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
