@@ -95,11 +95,7 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int,
 					out = append(out, modelEdge{to: ns, label: "hold abort from prepare: started", op: true})
 				}
 			case 'H':
-				all := sc.Ops
-				if r.SetCommand {
-					all = append([]modelOp{{cmd: cmdSet}}, sc.Ops...)
-				}
-				for _, o := range all {
+				for _, o := range sc.Ops {
 					if !admitted(r, t, sc, s, o) {
 						continue
 					}

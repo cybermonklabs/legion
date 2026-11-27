@@ -322,6 +322,9 @@ func scenarios(r modelRules, fail, ownRunOnly bool) []modelScenario {
 	out = append(out, hub)
 	for i := range out {
 		out[i].Fail, out[i].OwnRunOnly = fail, ownRunOnly
+		if r.SetCommand {
+			out[i].Ops = append([]modelOp{{cmd: cmdSet}}, out[i].Ops...)
+		}
 	}
 	return out
 }

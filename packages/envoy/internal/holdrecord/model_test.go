@@ -656,10 +656,10 @@ var (
 // without DiskGoneRestore, without RestoreBack, without ReleasedPrepareAbort, without
 // ReleasedNoJournalAbort, and with each stop recording its own run alone.
 //
-// Cost, measured with /usr/bin/time -v on the whole of TestTheHoldJournalModel at its default
-// (every profile at bound 2, and v62 at bound 3), -test.parallel=4 as on a 4-CPU runner, two large
-// walks at once (failWalks) and a 4 GiB soft memory limit: peak RSS 5,509,668 kB, wall 3:15.1, on a
-// dev box. Each large walk is about 1.3 to 1.5 million states.
+// Cost, measured with getrusage(RUSAGE_CHILDREN) on the whole of TestTheHoldJournalModel at its
+// default (every profile at bound 2, and v62 at bound 3), GOMAXPROCS=4 and -test.parallel=4, two
+// large walks at once (failWalks) and a 4 GiB soft memory limit: peak RSS 829,824 kB, wall 18.1 s
+// on a dev box. Each large walk is about 1.3 to 1.5 million states.
 var pinnedBound2 = map[string]modelCount{
 	"v63":                        {1450140, 0, nil},
 	"v63-WayOut":                 {1430444, 14517, map[string]int{classWayOut: 14517}},
@@ -723,11 +723,10 @@ func TestTheVisitedSetKeepsStatesWithOneHashApart(t *testing.T) {
 // over an earlier run's change (classEveryRun). At every hub-restore state of the current rules the
 // package's Step1, Proven, Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
-	// A soft memory limit keeps the walks' heap near their live size, about 1.4 GiB each, rather
-	// than twice it, so two at once stay inside a CI runner. It is lifted in Cleanup, which runs
-	// after the parallel subtests; a defer would run before they resume. Bound 3's opt-in walk
-	// holds more than 4 GiB live, where the limit would only make the collector run without end,
-	// so it runs without the limit, in the capped scope its comment names.
+	// A soft memory limit bounds heap growth if the model grows. The complete default run at
+	// parallelism 4 peaks below 1 GiB RSS (pinnedBound2). Cleanup restores the limit after the
+	// parallel subtests; a defer would run before they resume. Bound 3's opt-in walk has no measured
+	// live size with this representation, so it runs without the limit in the capped scope below.
 	if os.Getenv("HOLDRECORD_MODEL_BOUND3") != "1" {
 		prev := debug.SetMemoryLimit(4 << 30)
 		t.Cleanup(func() { debug.SetMemoryLimit(prev) })
@@ -832,11 +831,11 @@ func TestTheHoldJournalModel(t *testing.T) {
 		})
 	}
 	// Bound 3 of the frozen v62 is the bundle's own count, 139,812 states, and runs always. Bound 3
-	// of the current rules runs only when HOLDRECORD_MODEL_BOUND3=1 is set, and it is not pinned: in
-	// a 64 GiB scope (systemd-run --user --scope -p MemoryMax=64G) it had not finished after 17
-	// minutes, at 56.4 GiB RSS, and was stopped, so no count of it exists. When it does run, it
-	// asserts no counterexample and logs its state count. Without the variable its subtest is not
-	// created, so the package prints no skip.
+	// of the current rules runs only when HOLDRECORD_MODEL_BOUND3=1 is set, and it is not pinned.
+	// Before compact states, a 64 GiB scope (systemd-run --user --scope -p MemoryMax=64G) had not
+	// finished it after 17 minutes, at 56.4 GiB RSS, and was stopped. No count of it exists. When it
+	// does run, it asserts no counterexample and logs its state count. Without the variable its
+	// subtest is not created, so the package prints no skip.
 	bound3 := []struct {
 		r          modelRules
 		fail       bool
