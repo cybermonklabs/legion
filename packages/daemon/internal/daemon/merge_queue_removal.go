@@ -199,7 +199,9 @@ type heldMessage struct {
 // resume, for its turn, reading the claim again at most parkedWakeBound apart (parkedWait), as it
 // waits while the listener answers that nobody holds the role (notify.ErrNoHolder) or that its
 // holder is unresponsive (notify.ErrHolderUnresponsive). A role with no claim yet, its start still
-// owed, is no end either: the row waits for it.
+// owed, or with a claim no launch has reached, is no end either: the row waits for the claim's
+// first launch to register its session, whatever the listener would answer, since a publish before
+// it reaches no session of the claim and a listener that takes it would name no launch told.
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that launch will not hold its
@@ -273,11 +275,15 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
 	launch := r.supervisedClaim(m.token)
+	if launch.Generation == 0 {
+		return wait.Errorf("%s waits for its %s's claim to be launched and register its session: no launch of it holds the role yet",
+			m.what, m.role)
+	}
 	if supervise.Unregistered(launch.State) {
 		return wait.Errorf("%s waits for its %s's launch %d, which is %s, to register its session: a publish now would reach an earlier launch's session or none",
 			m.what, m.role, launch.Generation, launch.State)
 	}
-	if m.end != nil && launch.Generation != 0 && launch.Generation <= m.toldThrough {
+	if m.end != nil && launch.Generation <= m.toldThrough {
 		if err := r.endUndelivered(ctx, row, m.end); err != nil {
 			return err
 		}

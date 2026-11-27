@@ -7,7 +7,8 @@
 # which asks nothing either; retro's completion moves it to merging, where the merger is started
 # and asked on its own Envoy role topic to merge the base forward and resolve the conflict itself,
 # the implementer's topic takes no merge-forward message, and the architect is told once in a
-# checks-red notice naming merging and the merger. The merger's push of its merge lands, and the
+# checks-red notice naming merging and the merger. The merger's take of its merging task is held
+# while its own merge is owed. The merger's push of its merge lands, which ends that hold, and the
 # merger is told to merge only once the reviewer's approval of the new head is on the pull request,
 # while the reviewer is asked to read the merge with `git show --remerge-diff`. A required check
 # that settles red on the new head is told to the merger and the architect, not to the

@@ -403,6 +403,28 @@ func (w *takeDriver) mustTake(t *testing.T, what string) takenTask {
 	return taken
 }
 
+// mustBeHeld is the claim's next take refused by a hold, failing t unless the first take the
+// plugin asks is answered refused naming hold, within the bound mustTake gives. It answers the
+// task the hold refused, which the plugin takes again at the value the hold's end writes.
+func (w *takeDriver) mustBeHeld(t *testing.T, what, hold string) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))
+	for {
+		value, answer, asked, err := w.poll()
+		switch {
+		case err != nil:
+			t.Fatalf("%s: %v", what, err)
+		case asked && (answer.Outcome != string(supervise.TakeOutcomeRefused) || answer.Hold != hold):
+			t.Fatalf("%s: task %d answered %+v, want it refused naming the hold %q", what, value.Number, answer, hold)
+		case asked:
+			return value.Number
+		case time.Now().After(deadline):
+			t.Fatalf("%s: the plugin asked no take within the bound", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // mustStartTurn is startTurn failing t.
 func (w *takeDriver) mustStartTurn(t *testing.T) {
 	t.Helper()

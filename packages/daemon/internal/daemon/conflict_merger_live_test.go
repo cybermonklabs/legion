@@ -249,7 +249,9 @@ func (r *conflictMergerLive) acceptingRecordsTheConflict() {
 // (record.ConflictMergeNext), starts the merger, and publishes the ask to the merger's own role
 // topic, which says the merge and its conflict are the merger's to resolve. The implementer's
 // topic takes nothing, and the architect is told once, in a checks-red notice naming merging and
-// the merger. The merger registers and takes its merging task. Nothing repeats.
+// the merger. The merger registers, and its take of its merging task, which adopts the working
+// copy its own merge writes, is refused naming the in-turn hold while that merge is owed and not
+// landed (supervise.HoldInTurn; R2's first hold, the asked role's own included). Nothing repeats.
 func (r *conflictMergerLive) mergingAsksTheMerger() {
 	t := r.t
 	r.arch.startTurn()
@@ -313,6 +315,10 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	r.note("read back: the ask rests on GitHub's answer %q for %s, read at %s", answered, mergerAcceptedHead, readAt.UTC().Format(time.RFC3339Nano))
 	launch := r.awaitLaunch(r.token(claim.RoleMerger))
 	r.note("read back: the merger was launched, generation %d", launch.Generation)
+	// The ask waits for the merger's launch to register its session (the daemon's deliverHeld), as
+	// Envoy's listener makes it wait while no session holds the role, so the merger registers first.
+	r.merger = r.claimant(claim.RoleMerger, "ses_merger")
+	r.note("read back: the merger registered its session ses_merger")
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: mergerAcceptedHead,
 		Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext, MergeState: answered, StateReadAt: readAt}
 	told := r.awaitHeard(claim.RoleMerger, 1, bound)
@@ -344,9 +350,9 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	}
 	r.note("read back: one checks-red notice on the architect's role topic, naming %s — %s", red[0].Phase, red[0].Reason)
 
-	r.merger = r.claimant(claim.RoleMerger, "ses_merger")
-	task := r.merger.takeTask("Phase: merging")
-	r.note("read back: the merger registered and took its merging task — %s", firstLine(task.Text))
+	held := r.merger.worker.mustBeHeld(t, "the merger's take of its merging task while its merge is owed", supervise.HoldInTurn)
+	r.note("read back: the merger's take of task %d was refused naming the hold %q: its own merge forward is owed and not landed",
+		held, supervise.HoldInTurn)
 	r.published(r.key)
 	time.Sleep(liveSettle)
 	red, other = checksRed()
@@ -373,7 +379,8 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 // approval of it is on the pull request; the reviewer is asked on its own to read the merge with
 // `git show --remerge-diff` and approve the new head or request changes. The record holds the
 // merge forward asked of the merger, landed at the new head, with the reviewer's review asked. The
-// merger's connection is sent nothing, and the issue stays in merging.
+// merger's connection is sent nothing, and the issue stays in merging. The landing ends the hold
+// on the merger's take, and the merger takes its merging task.
 func (r *conflictMergerLive) mergerMergeLands() {
 	t := r.t
 	r.github.conflicts(false)
@@ -414,6 +421,8 @@ func (r *conflictMergerLive) mergerMergeLands() {
 		t.Fatalf("%s is in %s at %+v after the landing, want merging at %s", r.key, got.Phase, got.PullRequest, mergerMergeHead)
 	}
 	r.note("read back: %s is still in merging, its pull request at %s", r.key, mergerMergeHead)
+	task := r.merger.takeTask("Phase: merging")
+	r.note("read back: the landing ended the hold, and the merger took its merging task — %s", firstLine(task.Text))
 }
 
 // Step 4. CI settles a required check red on the merger's head. In merging the CI result is the
