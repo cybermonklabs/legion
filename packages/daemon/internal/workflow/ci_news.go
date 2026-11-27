@@ -41,6 +41,23 @@ type ciReader struct {
 // never made: the hold's own release decides. A released claim is a reader all the same, which
 // the row wakes.
 func (e *Engine) ciReaders(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) ([]ciReader, error) {
+	if recipients, err := e.ciReceivers(ctx, tx, issue); err != nil {
+		return nil, err
+	} else {
+		readers := make([]ciReader, 0, len(recipients))
+		for _, to := range recipients {
+			var entry int64
+			if to.role != claim.RoleArchitect {
+				row, err := e.phaseRow(ctx, tx, issue.Key, to.role)
+				if err != nil {
+					return nil, err
+				}
+				entry = row.Entry
+			}
+			readers = append(readers, ciReader{role: to.role, issue: to.issue, reader: record.CIReader{Phase: record.StandsAt(issue), Entry: entry}})
+		}
+		return readers, nil
+	}
 	var readers []ciReader
 	standsAt := record.StandsAt(issue)
 	switch role := RoleFor(standsAt); {
