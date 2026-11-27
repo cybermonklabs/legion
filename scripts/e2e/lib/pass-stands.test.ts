@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { passStands, passStandsAnswer } from "./pass-stands";
 
-// verification-results.ts's head checks judge k1's head line with these. The rows are head lines
-// the `dispatch` command prints (render-results.ts): a recorded check's (checkLines), one of a check
-// CI proves (ciCheckLines, `yes, from ci`), and k1Line's placeholder where a read holds no k1 line.
+// verification-results.ts's head checks judge k1's head line with these. Most rows are a recorded
+// check's head line as the `dispatch` command prints it (render-results.ts, checkLines), and the
+// placeholder k1Line gives where a read holds no k1 line. Two rows are not printed head lines: one
+// is the answer line ciCheckLines prints under a CI check's head line (`  A pass stands: yes, from
+// ci.`), and one adds that answer to a recorded check's head line, which no code prints, to show
+// that roles after `yes` are not a bare yes.
 const compared =
   "- k1 (before_merge). Compared with the head of pull request #61 at 61a1 (opened).";
 const notKnown = `${compared} A pass stands: not known.`;
