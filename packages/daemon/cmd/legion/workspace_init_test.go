@@ -41,7 +41,8 @@ const winitHelper = workspace.GitHubCredentialHelper
 
 // fakeJJ is the jj first on the issue volume's PATH. It records every invocation as one line,
 // "<WINIT_TAG> <argv>" without the runner's leading --config pin, and runs the real jj with that
-// pin — with WINIT_HOLD set, the `jj git init --colocate` that completes the directly filled clone
+// pin and with WINIT_GIT_STARTER=jj, which each git that jj starts records (fakeGit) — with
+// WINIT_HOLD set, the `jj git init --colocate` that completes the directly filled clone
 // opens the directory's `release` fifo, writes its pid to its `held` fifo, waits on `release` until
 // the test closes its end there, and exits without initializing. A fresh provisioning's first jj
 // command is that init, so a process held there is mid-provisioning. With WINIT_CUT_CHECKOUT set,
@@ -60,7 +61,7 @@ fi
 if [ -n "$WINIT_CUT_CHECKOUT" ] && [ "$1 $2" = "sparse reset" ]; then
 	exec "$WINIT_CUT_CHECKOUT" "$@"
 fi
-PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
+PATH="${PATH#*:}" WINIT_GIT_STARTER=jj exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
 
 // fakeGit maps GitHub to the fixture remote while recording the one-shot provisioning credential:
@@ -72,8 +73,22 @@ PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 // then counts itself in that directory's `attempts`, and an attempt whose number names a file there
 // fails as git does: it writes the file to stderr with @TOKEN@ replaced by the token it was handed,
 // and exits with the status the directory's `status` file holds. Every other invocation is the real
-// git's.
+// git's. With WINIT_GIT_CONFIG_LOG set, every invocation first appends one line to that file, in
+// one write: who started it (WINIT_GIT_STARTER, "jj" for fakeJJ's children, else workspace-init),
+// GIT_CONFIG_COUNT, each GIT_CONFIG_KEY_<i>=GIT_CONFIG_VALUE_<i> pair in order, and its argv,
+// separated by tabs (gitConfigCalls). jj's own git children reach this git too: the runner hands jj
+// --config=git.executable-path=<this git>, and fakeJJ passes that flag on.
 const fakeGit = `#!/bin/sh
+if [ -n "$WINIT_GIT_CONFIG_LOG" ]; then
+	tab=$(printf '\t')
+	line="${WINIT_GIT_STARTER:-workspace-init}$tab${GIT_CONFIG_COUNT-unset}"
+	i=0
+	while [ "$i" -lt "${GIT_CONFIG_COUNT:-0}" ]; do
+		eval "line=\"\$line\$tab\${GIT_CONFIG_KEY_$i-}=\${GIT_CONFIG_VALUE_$i-}\""
+		i=$((i + 1))
+	done
+	printf '%s\t%s\n' "$line" "$*" >> "$WINIT_GIT_CONFIG_LOG"
+fi
 while [ "$1" = "-c" ]; do
 	shift 2
 done
@@ -180,6 +195,8 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
 		"WINIT_CUT_CHECKOUT":   "",
+		"WINIT_GIT_CONFIG_LOG": "",
+		"WINIT_GIT_STARTER":    "",
 		"JJ_USER":              "Legion test",
 		"JJ_EMAIL":             "legion-test@example.invalid",
 		"XDG_CONFIG_HOME":      filepath.Join(dir, "config"),
