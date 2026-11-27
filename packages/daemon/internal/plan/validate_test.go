@@ -110,7 +110,9 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
 			{Task: "", Reason: "the plan has 3 tasks that no task needs (a, b, c), and the work of each would merge by itself." + yet},
 		}},
-		{name: "needs", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-2/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c")),
+		// c is needed by a reference to its block in the plan's own document (planDocument): a
+		// reference into another document or issue names no task of this plan (resolveNeeds).
+		{name: "needs", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-1/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c")),
 			want: []Refusal{
 				{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
 				{Task: "a", Reason: "task a needs b, c." + yet},
