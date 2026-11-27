@@ -220,13 +220,19 @@ What the placement cannot hold is a table the run has drifted from. The legs are
 same EXPECTED row time whatever the table says, so an entry that is wrong by a factor moves no
 leg's placement and the whole error lands on the runner. Merge group 45894990792 is the
 reading: its four legs each read 2,112 to 2,113 s of expected row time out of 8,451 s, and ran
-browser steps of 476, 742, 439 and 631 s, the heaviest 1.24 times the mean. The table it read
+browser steps of 476, 742, 439 and 631 s, the heaviest 1.30 times the mean. The table it read
 was of 2026-11-22, and 430 of that run's 2,125 rows sat in files it had no entry for, which is
 the warning each of its legs had already printed. Placing that run's own rows by a table read
-on 2026-11-26 gives 2,143, 2,117, 2,119 and 2,112 s of real row time, 1.010 times the mean:
-the same machines and the same rows, 178 s off the slowest leg. The table is the balance, so
-`bun e2e/tools/shard-weights.ts --main 17` is due on either warning a leg prints, and a leg
-that warns is a leg the split has stopped balancing.
+on 2026-11-26 gives 2,143, 2,117, 2,119 and 2,112 s of real row time, 1.010 times the mean, but
+in sample: that table holds the run among its 17. On lanes it had not seen, each row weighed at
+its median over the runs that held it, it placed the seven merge groups that ran next at 1.006
+over four legs and 1.028 over six, and the sixteen after main made the 35 rows of stub
+`layout-rule.stub.e2e.ts` take about 740 s, where the table held 450, at 1.094 and 1.165
+([the browser step's budget](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)).
+The table is the balance, so `bun e2e/tools/shard-weights.ts --main 17` is due on either warning
+a leg prints, and a leg that warns is a leg the split has stopped balancing; a measured file that
+grows slower warns of nothing. This change reads the table again on 2026-11-27 at 03:22Z, from
+17 of main's runs that all ran after that file grew.
 
 Each leg also writes two row lists into the rows/ directory its blob upload carries: every row
 of the selection it read, and the rows Playwright gave it to run
@@ -310,7 +316,7 @@ which passed. The browser step over them, in seconds:
 
 The browser step's budget was its `timeout-minutes: 11`, that maximum by the rule in this file's
 head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
-It is a hang guard now, 15 minutes, read from the legs of 2026-11-21 and 2026-11-22 rather than
+It is a hang guard now, 17 minutes, read from the legs of 2026-11-21 and 2026-11-22 rather than
 from this census's maximum, for the reason
 [the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)
 gives with its derivation. The step grows with the suite, not with its rows getting slower: run
@@ -379,8 +385,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 900 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,705 s, 28 min 25 s, rounded up to the 29 minutes
+browser step's 1,020 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 1,825 s, 30 min 25 s, rounded up to the 31 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -401,9 +407,17 @@ and no `exclude`, so the total is the leg count - and the browser step hands it 
 .github/scripts/dispatch-browser-shard-suite.sh, which makes it the `--shard` denominator, and
 carries it in the step's own name. The split by row time
 (packages/dispatch/e2e/shard-reporter.ts) reads the count back from that same `--shard`, and
-packages/dispatch/e2e/__tests__/shard-split.test.ts reads the matrix out of this workflow, so
-the count a run proves is the count the run uses. Nothing repeats the number, which is what a
-denominator larger than the leg list would cost: the missing legs' rows unrun, with nothing red.
+packages/dispatch/e2e/__tests__/shard-split.test.ts reads the matrix out of this workflow and
+refuses one whose total is not the list's length. The dispatch_ui gate declares that read
+(.github/ci-gates/dispatch-ui.py), so a change to the matrix alone runs that test, and the count
+a run proves is the count the run uses. No step, script or test writes the number a second
+time, and a second copy is where a denominator larger than the leg list would come from: the
+missing legs' rows unrun, with nothing red. Prose gives it only in this section, which says why
+it is six, in this file's head, and with the figure measured at it: the browser step's drift
+factor, read over six legs
+([the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)),
+which the step's comment and `packages/dispatch/e2e/shard-split.ts#tableDaysAtMost` cite. A
+new count reads that factor again.
 
 WHY SIX AND NOT MORE. Read on 2026-11-26 at about 21:50Z from the jobs API, over every
 successful merge-group run of ci.yaml created between 19:15Z and 21:00Z that day: ten runs, the
@@ -421,7 +435,8 @@ group's, and the two costs that decide the count are these:
   leg, and a leg more buys another one.
 - WHAT A LEG RUNS: 8,491 s of row time, the 2,122 rows of 45894990792's merged report, over
   3.92 workers (`step = 24.0 s + 0.2549 x row time`, the fit over 68 legs of main). Placing
-  that run's own rows by the table read on 2026-11-26 (`placeUnits`, e2e/shard-split.ts) gives
+  that run's own rows by the table read on 2026-11-26, which holds that run among its 17 and so
+  balances it better than a lane it has not seen (`placeUnits`, e2e/shard-split.ts), gives
   a heaviest job of 684 s at four legs, 577 at five, 504 at six, 455 at seven and 420 at eight.
 
 A leg also starts later than the one before it: the median spread between the first and the
@@ -439,19 +454,23 @@ ran 51 to 92 s against the same fixed cost - already more machine than rows. Six
 pull-request lane about 220 s a leg and buy the references lane some 20 s for two more
 machines; a count read from the full lane alone would take that trade further for nothing.
 
-WHAT SIX LEGS MEASURED. Two full lanes at the commit that raised the count: run 45906816199,
-dispatched, and run 45907841842, this change's own pull request with the lane's label on it.
-Their legs ran 562, 577, 598, 521, 517 and 507 s, and 552, 457, 575, 574, 498 and 503 s: the
-heaviest 598 and 575 s, 1.093 and 1.092 times its run's mean, against 862, 736 and 839 s and
-1.24, 1.16 and 1.21 in the three merge groups above. Their browser steps ran 380 to 482 s and
-355 to 463 s where the arithmetic above gives 374 to 391 s; with no row retried in either run,
-what is left is the runner spread the guard's 1.75 stands for. The leg phase - the first leg's
-start to the last leg's end - was 698 and 665 s against 942, 802 and 849 s. Both runs waited
-144 to 488 s for a runner on each job of the lane, where the merge groups above waited 2 to
-334 s; the binaries job, which no leg count touches, waited 351 and 343 s against 7 to 334 s,
-so that wait is the load on the runners at that hour and not the two legs more. Each merge job
-read the legs' lists and reported that "the 6 shard legs read one selection of" 2,124 and
-2,125 rows "and ran each of them on exactly one leg".
+WHAT SIX LEGS MEASURED. Three full lanes: run 45906816199, dispatched at the commit that raised
+the count; run 45907841842, this change's own pull request with the lane's label on it, at the
+same commit; and run 45919361601, the same pull request at 0fcba2722c. Their legs ran 562, 577,
+598, 521, 517 and 507 s; 552, 457, 575, 574, 498 and 503 s; and 582, 550, 418, 582, 568 and
+576 s: the heaviest 598, 575 and 582 s, 1.093, 1.092 and 1.066 times its run's mean, against 862,
+736 and 839 s and 1.24, 1.16 and 1.21 in the three merge groups above. Their browser steps ran
+380 to 482 s, 355 to 463 s and 323 to 479 s where the arithmetic above gives 374 to 391 s; with
+no row retried in any of them, what is left is the runner spread the guard's 1.75 stands for.
+Of those 18 steps the nearest-rank p90 is 479 s, which the browser step's guard is read against
+in its own section. The leg phase - the first leg's start to the last leg's end - was 698, 665
+and 582 s against 942, 802 and 849 s. The first two runs waited 144 to 488 s for a runner on
+each job of the lane, where the merge groups above waited 2 to 334 s; the binaries job, which no
+leg count touches, waited 351 and 343 s against 7 to 334 s, so that wait is the load on the
+runners at that hour and not the two legs more. The third waited 2 to 4 s a job and started all
+six legs in the same second, so its phase is its heaviest leg. Each merge job read the legs'
+lists and reported that "the 6 shard legs read one selection of" 2,124, 2,125 and 2,134 rows
+"and ran each of them on exactly one leg".
 
 ## What the shard job downloads in place of a Go build
 
@@ -648,11 +667,11 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 15`, is a hang guard. It is not the maximum plus 15 per
+The step's budget, `timeout-minutes: 17`, is a hang guard. It is not the maximum plus 15 per
 cent of this file's head, because on this step that rule made the limit a verdict on the
 runner: the 11 minutes it gave cut shard (4) of run 44985914477 (job 137096923636) with 401 rows
 passed and none failed, on a machine that ran them slower than another of the same minute.
-How the 15 minutes are read:
+How the 17 minutes are read:
 
 - The legs: every shard leg whose browser step ran to an end, of the merge-group runs of
   ci.yaml whose head holds 4f5bf22eb9 and the nightly on main, from 2026-11-21 17:51Z to
@@ -666,61 +685,80 @@ How the 15 minutes are read:
   1,698 / R, where R is the median row time of its leg under the count split (1,739, 2,062,
   1,383 and 1,607 s) and 1,698 s a quarter of their sum. Median 454 s, p90 534 s, maximum 696 s,
   the last the leg the 11 minutes cut.
-- The balanced leg now: 8,491 s of row time over the six legs of the matrix
-  (#how-many-legs-the-lane-runs-and-where-that-count-is-written) is 1,415 s a leg, where the
-  census's was 1,698. The same rescale carries the three figures to it, 24.0 + (t - 24.0) x
-  1,415 / 1,698: median 382 s, p90 449 s, maximum 584 s. A leg count or a suite that moves
-  that row time moves this line and the arithmetic below it, and nothing else of this
+- The balanced leg now: the row time the placement expects of each leg, a median as R is. At
+  0fcba2722c every leg of the matrix
+  (#how-many-legs-the-lane-runs-and-where-that-count-is-written) printed 1,502 or 1,503 s of
+  the run's 9,014 s (run 45919361601), and under the table this change reads again leg 1 of a
+  listing of the full lane prints 1,500 s of 9,001 s, where the census's was 1,698. The same
+  rescale carries the three figures to it, 24.0 + (t - 24.0) x 1,500 / 1,698: median 404 s,
+  p90 475 s, maximum 618 s, and the 18 browser steps of the matrix's first three full lanes
+  agree, at a nearest-rank p90 of 479 s. Not 8,491 s over the legs, one run's real row time
+  (45894990792's): that is one run's sum, not a median, and it gave 1,415 s, a p90 of 449 s and
+  a guard under what its own rule asks. A leg count or a suite that moves the expected row time
+  a leg prints moves this line and the arithmetic below it, and nothing else of this
   derivation.
 - The factor: 1.75, the slowest runner seen. The leg that was cut ran its 401 rows at a
   per-row median 1.75 times the time job 137096931568 of run 44985911309 took for the same rows,
   started 3 s later (p10 1.42, p90 2.12; 660 s against 391 s of step).
-- The drift: 1.11, the worst share of the mean the heaviest leg took under a row-time table
-  (packages/dispatch/e2e/shard-weights.json) up to 7 days old. Read on 2026-11-22 with this
-  change's own code - each table built by `packages/dispatch/e2e/tools/shard-weights.ts#weightsOf` from the
-  `report.json` of each run's `dispatch-browser-report-1` artifact, the lane placed by
-  `placeUnits` - over two tables:
+- The drift: 1.165, the worst share of the mean the heaviest of six legs took under a row-time
+  table (packages/dispatch/e2e/shard-weights.json) up to 7 days old. Each table is built by
+  `packages/dispatch/e2e/tools/shard-weights.ts#weightsOf` from the `report.json` of each run's
+  `dispatch-browser-report-1` artifact, the lane placed by `placeUnits`, and the lane's rows
+  each weighed at its median over the runs named. Read on 2026-11-22 over four legs with this
+  change's own code, and on 2026-11-27 over four and six from the same reports (their 1,614
+  rows, which give 1.110 and 1.024 for the first two at four legs):
   - a table of 2026-11-18, 4 days old, from ci.yaml merge-group runs 44409818750, 44418436030,
     44418744571, 44418795005, 44419183723, 44423948511, 44424277368 and 44424671868, placed the
-    lane at 1,765, 1,520, 1,616 and 1,890 s: 1.113 times the mean;
+    lane at 1,765, 1,520, 1,616 and 1,890 s: 1.113 times the mean; over six legs, 1.063;
   - a table of 2026-11-15, 7 days old, from runs 43742873016, 43756837053, 43760034112,
     43770938377, 43771792014 and 43774018034 (the six of that day's last ten on main's
-    first-parent history that kept a report), at 1,692, 1,723, 1,712 and 1,665 s: 1.015;
-  - the lane is the 1,617 rows the shard command lists at main f02514268a, each weighed by its
-    median over main's 17 runs 44955285815, 44955287410, 44963209611, 44966750516,
-    44966794515, 44966795777, 44966798236, 44973942358, 44979022185, 44979030337,
+    first-parent history that kept a report), at 1,692, 1,723, 1,712 and 1,665 s: 1.015; over
+    six legs, 1.130;
+  - the lane of those two is the 1,617 rows the shard command lists at main f02514268a, each
+    weighed by its median over main's 17 runs 44955285815, 44955287410, 44963209611,
+    44966750516, 44966794515, 44966795777, 44966798236, 44973942358, 44979022185, 44979030337,
     44980842865, 44981988875, 44982147987, 44983017182, 44989017422, 44991587611 and
-    44997869666; a table of those same runs places it at 1.001.
+    44997869666; a table of those same runs places it at 1.001, and at 1.000 over four legs and
+    over six read again;
+  - a table of 2026-11-26 at 22:00Z, from 17 of main's runs, on the lane of the 16 merge
+    groups from 45906648273 (22:44Z) to 45924909095 (01:51Z the next day), 2,131 rows: 1.094
+    over four legs and 1.165 over six. Within the day main had made the 35 rows of stub
+    `layout-rule.stub.e2e.ts` take about 740 s, where the table held 450, and the placement put
+    them on one leg. The seven merge groups before that, which the table had not seen either, it
+    placed at 1.006 and 1.028.
 
-  The drift is not a function of age: the older table did better. Each old table lacks the
-  files the issue page's specs were split into since (155 and 173 of the lane's rows), places
-  them by the chromium median, and the greedy placement turns on small differences of weight,
-  so where those files land is close to chance. 1.11 is the worse of the two. Without it, a p90
-  leg on the slowest runner seen under such a table would end at about 872 s, past the 786 s
-  (449 x 1.75) a guard without it would be, and be cut with its rows passing.
-- 449 s x 1.75 x 1.11 = 872 s, rounded up to 15 minutes, 900 s.
+  The drift is not a function of age: the oldest table did not do worst. A table holds no
+  entry for a file split or added since, which it places by the project's median, or an old
+  time for a file whose rows changed; the greedy placement turns on small differences of
+  weight, so where those files land is close to chance. Six legs take the same error on a
+  smaller leg, so as a larger share of it. 1.165 is the worst of the three at six legs. Without
+  it, a p90 leg on the slowest runner seen under such a table would end at about 968 s, past
+  the 831 s (475 x 1.75) a guard without it would be, and be cut with its rows passing.
+- 475 s x 1.75 x 1.165 = 968 s, rounded up to 17 minutes, 1,020 s.
 
 What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
 `packages/dispatch/e2e/playwright.config.ts#testTimeout` or the longer one a row sets, and the leg goes on. What
-reaches 15 minutes is a leg that has stopped running rows - a stack that never comes up in
+reaches 17 minutes is a leg that has stopped running rows - a stack that never comes up in
 `globalSetup`, a teardown or a blob write that never returns, a worker that stops reporting -
 whose log has stopped gaining rows. The runner cancels the step and names it (`The action
-'<step name>' has timed out after 15 minutes.`). The leg's blob report is never written, since
+'<step name>' has timed out after 17 minutes.`). The leg's blob report is never written, since
 Playwright writes it when the run ends: the always-run upload finds no file (run 44985914477's
 cut shard 4 logged `No files were found with the provided path: /__w/_temp/leg-report`), and
 the merge job says so by name - reading one's `no blob report arrived from: shard-4` and
 reading three's `... uploaded no blob report, so the merged report holds none of its rows` - and
 fails on the leg's result. No row's verdict rests on the guard: the p90 leg on the slowest
-runner seen, under a table up to a week old, ends at about 872 s, under it, and the slowest of the
-347 legs, rescaled, at 584 s. What it costs is time: a hung leg is cut four minutes later than
+runner seen, under a table up to a week old, ends at about 968 s, under it, and the slowest of the
+347 legs, rescaled, at 618 s. What it costs is time: a hung leg is cut six minutes later than
 at the 11.
 
 The week is what the guard holds, so each leg says when its table is past it: below its
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
 before the run, or when a tenth of its rows sit in files the table has no entry for
 (`packages/dispatch/e2e/shard-split.ts#tableWarnings`). Either one means
-`bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at the count split's 1.21, a
-p90 leg on that runner would end near 951 s.
+`bun e2e/tools/shard-weights.ts --main 17` is due. Past the week no table was measured, so
+nothing says the guard holds a healthy leg placed by one. Neither warning sees a measured file
+that grew slower, as `layout-rule.stub.e2e.ts` did: only a leg that runs well past the expected
+row time it printed shows that.
 
 ## Why the file store's address is set on the step and not in the environment
 

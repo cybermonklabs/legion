@@ -36,6 +36,9 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
      "`packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts#each budget of the repeat workflow is exactly its rule over the measurement beside it` reads it at a new URL and holds the workflow's "
      "budgets to the measurements beside them, and `packages/dispatch/e2e/__tests__/unit-repeat.test.ts#a step the run cancels names its running row, as GitHub's runner signals it` runs the test step's own "
      f"text as GitHub's runner cancels it, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
+    (".github/workflows/dispatch-browser.yaml",
+     "`packages/dispatch/e2e/__tests__/shard-split.test.ts#shardLegs` reads the shard job's matrix out of it at a new URL, the leg count "
+     f"that file's listings prove the split over, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
     (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/__tests__/psql-password.test.ts#../../envoy/scripts/lib/pg-url.sh` sources it, and "
                                        "`packages/dispatch/e2e/acceptance/replace-blocks.sh#pg-url.sh` does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
                                        f"{at('dispatch-ui', 'Test dispatch dashboard')} runs both"),

@@ -52,14 +52,10 @@ shard=$1
 legs=$2
 lane=$3
 connections=$4
-# Both are whole numbers before the comparisons below, which `test` ends the script on rather
-# than refusing, and this leg must be one of the legs the job runs: a `--shard` numerator above
-# its denominator is a run Playwright refuses, and one below a denominator larger than the
-# matrix would leave the missing legs' rows unrun with nothing red.
-case "$shard$legs" in
-  '' | *[!0-9]*) usage "$@" ;;
-esac
-[ "$legs" -ge 1 ] && [ "$shard" -ge 1 ] && [ "$shard" -le "$legs" ] || usage "$@"
+# Each is a whole number from 1, and this leg must be one of the legs the job runs: a `--shard`
+# numerator above its denominator is a run Playwright refuses, and one below a denominator larger
+# than the matrix would leave the missing legs' rows unrun with nothing red.
+[[ $shard =~ ^[1-9][0-9]*$ && $legs =~ ^[1-9][0-9]*$ ]] && (( shard <= legs )) || usage "$@"
 
 # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
 # makes (mkdtempSync in os.tmpdir(), in e2e/harness-pool.ts's startPool) among it, which is what

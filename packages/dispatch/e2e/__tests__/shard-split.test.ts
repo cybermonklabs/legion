@@ -130,29 +130,86 @@ test("a project another names as a dependency or teardown is a setup project, an
   expect(dependencyProjects([{}, { dependencies: [] }])).toEqual(new Set());
 });
 
-/** How many legs the shard job of `.github/workflows/dispatch-browser.yaml` runs, read from its
- *  matrix: the matrix is the one place the count is written, and `${{ strategy.job-total }}`
- *  counts it into the `--shard` denominator the browser step passes
- *  `.github/scripts/dispatch-browser-shard-suite.sh`. A matrix that is not 1 to N in order is
- *  refused here rather than proved: `--shard=N/M` numbers the legs that way, so a list with a
+const browserWorkflowPath = fileURLToPath(
+  new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url)
+);
+
+/** The parts of `.github/workflows/dispatch-browser.yaml` the leg count is read from: a part the
+ *  file lacks reads as undefined, which `shardLegs` names. */
+type BrowserWorkflow = {
+  jobs?: { shard?: { strategy?: { matrix?: Record<string, unknown> | null } } };
+} | null;
+
+/** How many legs the shard job runs, read from its matrix: the matrix is the one place the count
+ *  is written, and `${{ strategy.job-total }}` counts it into the `--shard` denominator the
+ *  browser step passes `.github/scripts/dispatch-browser-shard-suite.sh`. That total is the
+ *  length of the `shard` list only while the matrix holds that one key, with no `include`,
+ *  `exclude` or second dimension, so any other matrix is refused here rather than proved. So is
+ *  a list that is not 1 to N in order: `--shard=N/M` numbers the legs that way, so a list with a
  *  hole in it would leave rows to a leg no job runs. */
-function shardLegs(): number {
-  const path = fileURLToPath(
-    new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url)
-  );
-  const matrix = /^\s+shard: \[([\d, ]+)\]$/m.exec(readFileSync(path, "utf8"));
-  if (!matrix) throw new Error(`no \`shard: [...]\` matrix in ${path}`);
-  const listed = (matrix[1] as string).split(",").map((leg) => Number(leg.trim()));
-  const counted = listed.map((_, index) => index + 1);
-  if (listed.join(" ") !== counted.join(" ")) {
+function shardLegs(workflow: BrowserWorkflow): number {
+  const matrix = workflow?.jobs?.shard?.strategy?.matrix;
+  if (typeof matrix !== "object" || matrix === null) {
+    throw new Error(`no jobs.shard.strategy.matrix in ${browserWorkflowPath}`);
+  }
+  const keys = Object.keys(matrix);
+  if (keys.length !== 1 || keys[0] !== "shard") {
     throw new Error(
-      `the shard matrix of ${path} is ${listed.join(", ")}, not 1 to ${listed.length}`
+      `the shard job's matrix in ${browserWorkflowPath} holds ${keys.join(", ")}, not the one key ` +
+        "shard, so strategy.job-total need not be its leg count"
+    );
+  }
+  const listed = matrix.shard;
+  if (
+    !Array.isArray(listed) ||
+    listed.length === 0 ||
+    listed.some((leg, index) => leg !== index + 1)
+  ) {
+    throw new Error(
+      `the shard matrix of ${browserWorkflowPath} is ${JSON.stringify(listed)}, not 1 to N`
     );
   }
   return listed.length;
 }
 
-const legs = shardLegs();
+const browserWorkflow = Bun.YAML.parse(
+  readFileSync(browserWorkflowPath, "utf8")
+) as BrowserWorkflow;
+const legs = shardLegs(browserWorkflow);
+
+test("the leg count is the shard matrix's one list of 1 to N, and any other matrix is refused", () => {
+  // The controls: each plants one fault in a parsed copy of the workflow. An `include` or a second
+  // dimension changes `strategy.job-total` without changing the list; a hole or an empty list
+  // numbers the legs other than `--shard` does.
+  const planted = (change: (matrix: Record<string, unknown>) => void) => () => {
+    const copy = structuredClone(browserWorkflow);
+    const matrix = copy?.jobs?.shard?.strategy?.matrix;
+    if (typeof matrix !== "object" || matrix === null) throw new Error("no matrix to plant in");
+    change(matrix);
+    return shardLegs(copy);
+  };
+  expect(
+    planted((matrix) => {
+      matrix.include = [{ shard: legs + 1 }];
+    })
+  ).toThrow("not the one key shard");
+  expect(
+    planted((matrix) => {
+      matrix.browser = ["chromium", "webkit"];
+    })
+  ).toThrow("not the one key shard");
+  expect(
+    planted((matrix) => {
+      matrix.shard = [1, 3];
+    })
+  ).toThrow("not 1 to N");
+  expect(
+    planted((matrix) => {
+      matrix.shard = [];
+    })
+  ).toThrow("not 1 to N");
+});
+
 const rowKey = (row: ListedRow) => `${row.project} › ${row.file} › ${row.title}`;
 
 /** One selection listed whole and then each of its legs through the reporter, one listing after
@@ -199,7 +256,7 @@ for (const [name, listed] of Object.entries(selections)) {
             selection: whole.map(rowKey),
           }))
         ),
-        `the four legs of ${name} against its whole listing`
+        `the ${legs} legs of ${name} against its whole listing`
       ).toEqual([]);
       const units = new Map<string, Unit>();
       for (const row of whole) {

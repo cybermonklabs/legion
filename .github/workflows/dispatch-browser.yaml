@@ -105,8 +105,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:398fb2e8a6c44a549a3b0a9c9bf562948c83a16917b2d3ce09190b2f663c3df3
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 900 + 120 + 120 + 565 = 1,705 s, 28 min 25 s, rounded up to the 29 minutes below.
-    timeout-minutes: 29
+    # 1,020 + 120 + 120 + 565 = 1,825 s, 30 min 25 s, rounded up to the 31 minutes below.
+    timeout-minutes: 31
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#how-many-legs-the-lane-runs-and-where-that-count-is-written
@@ -172,15 +172,16 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # A hang guard, not a verdict: 449 s x 1.75 x 1.11 = 872 s -> 15 min. 449 s is the p90
+        # A hang guard, not a verdict: 475 s x 1.75 x 1.165 = 968 s -> 17 min. 475 s is the p90
         # of 347 legs of 2026-11-21/22 each rescaled to the balanced leg the time split now gives
-        # (8,491 s of row time over the legs of the matrix above; step = 24.0 s + 0.2549 x row
-        # time over 68 legs of main); 1.75 is the slowest runner seen (run 44985914477 ran its
-        # rows 1.75 times slower, per-row median, than a runner of the same minute); 1.11 is the
-        # worst share of the mean the heaviest leg took under a row-time table up to 7 days old.
-        # A p90 leg on that runner under such a table ends under it, so no row's verdict rests on
-        # it; it cuts a leg that has stopped running rows.
-        timeout-minutes: 15
+        # (the 1,500 s of row time each leg of the matrix above prints as expected of it, a median
+        # as the census's own leg row time is; step = 24.0 s + 0.2549 x row time over 68 legs of
+        # main); 1.75 is the slowest runner seen (run 44985914477 ran its rows 1.75 times slower,
+        # per-row median, than a runner of the same minute); 1.165 is the worst share of the mean
+        # the heaviest of six legs took under a row-time table up to 7 days old. A p90 leg on that
+        # runner under such a table ends under it, so no row's verdict rests on it; it cuts a leg
+        # that has stopped running rows.
+        timeout-minutes: 17
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ strategy.job-total }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"
