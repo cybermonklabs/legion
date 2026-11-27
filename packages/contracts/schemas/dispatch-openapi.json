@@ -10726,7 +10726,10 @@
             }
           }
         },
-        "x-auth": "any"
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
       },
       "patch": {
         "description": "Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; whatever DISPATCH_SIGNIN_PASSKEY says, giving the project to another owner while a person its list names directly holds a passkey a link of someone else enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, until that link's maker resets the person; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names a project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when neither names this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. For a full switch, of a project DISPATCH_PRIVATE_PROJECTS names, private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. A project DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names and DISPATCH_PRIVATE_PROJECTS does not is made private before its full switch: its switch writes nothing to that bucket and answers private_before_full_switch true. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes.",

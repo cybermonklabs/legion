@@ -75,8 +75,9 @@ type AppContext struct {
 	Store      *store.Store
 	ServerURL  string
 	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
-	// none): a request whose Host is its host is answered as that origin (publicOrigin), and
-	// /auth/whoami names it after ServerURL's.
+	// none): a request whose Host is its host is answered as that origin (publicOrigin), except
+	// /auth/start and /auth/callback, which answer 404 there (googleSignInHere), and /auth/whoami
+	// names it after ServerURL's.
 	OutsideOrigin string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
@@ -463,8 +464,8 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.googleSignInHere(r.authStart)))
+	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.googleSignInHere(r.authCallback)))
 	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
 	// The signed-in person's own login and the event log's head, which names no row.
 	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
@@ -486,7 +487,7 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 // ───── auth ─────────────────────────────────────────────────────────────────
 
 // authStart sends the browser to the issuer to sign in, to come back to the canonical origin's
-// callback (callbackURL), whichever origin it started at. The
+// callback (callbackURL), the only origin that serves Google's sign-in (googleSignInHere). The
 // sign-in in flight (its state, its nonce, the page it returns to and when it lapses) travels in
 // the browser's dispatch_oauth_state cookie, signed under a key
 // derived from the current signing key (signOAuthState), and no process keeps it: whichever process
@@ -837,13 +838,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	if isReservedPath(strings.ToLower(normalized), serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
-		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
-			api.WriteJSON(w, http.StatusNotFound, map[string]string{
-				"code":  "NOT_FOUND",
-				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1 lists every route",
-			})
-		})(w, req)
+		accesslog.HandlerFunc(unmatchedRoute, writeNoRoute)(w, req)
 		return
 	}
 	if r.ctx.WebDistDir == "" {
@@ -893,6 +888,17 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	servePage(w, req, filepath.Join(r.ctx.WebDistDir, "index.html"))
+}
+
+// writeNoRoute answers the 404 a path under serverRoots that no route serves answers. A route's
+// gate that answers as a path no route serves (googleSignInHere) writes it directly, so the
+// request's one access-log line is its route's own, as every request's is.
+func writeNoRoute(w http.ResponseWriter, req *http.Request) {
+	api.WriteJSON(w, http.StatusNotFound, map[string]string{
+		"code":  "NOT_FOUND",
+		"error": "no route for " + req.Method + " " + req.URL.Path,
+		"hint":  "GET /api/v1 lists every route",
+	})
 }
 
 // isMissingFile reports whether os.Stat's err means no file is there: the path does not exist,
@@ -1147,8 +1153,26 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
+// googleSignInHere serves next, the Google sign-in's start or callback, at the canonical origin
+// alone: on the outside origin's host, at any port, it answers the 404 a path no route serves
+// answers (writeNoRoute, logged once, as its route), with passkey sign-in on or off, since Google
+// signs in the Workspace's people alone and they sign in at the canonical origin, and a person from
+// outside signs in with a passkey or not at all. The host is compared by name at any port, as
+// markOutsideOrigin marks it: a browser sends the outside host's cookies to every port of it, and
+// the router issues the session there under the outside origin's name, so a Google sign-in served
+// at another port would set the outside origin's session for a person of the Workspace.
+func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if r.ctx.OutsideOrigin != "" && sameHostName(r.ctx.OutsideOrigin, req.Host) {
+			writeNoRoute(w, req)
+			return
+		}
+		next(w, req)
+	}
+}
+
 // callbackURL is the sign-in callback of the canonical origin (publicOrigin with no outside
-// origin), the one callback the issuer's client lists.
+// origin), the only origin that serves Google's sign-in (googleSignInHere).
 func callbackURL(serverURL string, req *http.Request) string {
 	return publicOrigin(serverURL, "", req) + "/auth/callback"
 }

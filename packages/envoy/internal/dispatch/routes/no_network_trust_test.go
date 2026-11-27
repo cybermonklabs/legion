@@ -123,19 +123,15 @@ func newProcessWalk(t *testing.T) processWalk {
 		}
 		// The origin is answered as itself, so the walk at the outside origin is not the canonical
 		// origin walked again: a sign-in started at a canonical origin comes back to its own
-		// callback, and a browser write at the outside origin naming the canonical one is refused.
+		// callback, and the outside origin serves no Google sign-in, its start answering 404.
+		start := at.send(t, "GET /auth/start", nil)
+		location := start.Header().Get("Location")
 		if at.host == outsideHost {
-			write := at.send(t, "POST /auth/logout", func(r *http.Request) {
-				r.Header.Set("Origin", "https://"+canonicalHost)
-				r.AddCookie(&http.Cookie{Name: "dsession", Value: "a-session"})
-			})
-			if write.Code != http.StatusForbidden || !strings.Contains(write.Body.String(), "invalid request origin") {
-				t.Fatalf("POST /auth/logout %s naming the canonical origin answered %d %s, want 403 invalid request origin", at.name, write.Code, firstLine(write.Body.String()))
+			if start.Code != http.StatusNotFound || location != "" {
+				t.Fatalf("GET /auth/start %s answered %d to %q, want the 404 of a path no route serves", at.name, start.Code, location)
 			}
 			continue
 		}
-		start := at.send(t, "GET /auth/start", nil)
-		location := start.Header().Get("Location")
 		target, err := url.Parse(location)
 		if want := "https://" + at.host + "/auth/callback"; err != nil || target.Query().Get("redirect_uri") != want {
 			t.Fatalf("GET /auth/start %s answered %d to %q, want a sign-in that comes back to %s", at.name, start.Code, location, want)

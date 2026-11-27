@@ -527,6 +527,7 @@ var routeScopes = map[string]routeScopeSet{
 	// and default assignees an assignee picker reads.
 	"GET /api/v1/settings/project-default-assignees":         {model.ScopePerson},
 	"PUT /api/v1/projects/{key}/default-assignee":            {model.ScopePerson},
+	"GET /api/v1/projects/{key}/access":                      {model.ScopePerson},
 	"PATCH /api/v1/projects/{key}/access":                    {model.ScopePerson, model.ScopeApprove},
 	"PUT /api/v1/projects/{key}/access/people/{email}":       {model.ScopePerson, model.ScopeApprove},
 	"GET /api/v1/users":                                      {model.ScopePerson},

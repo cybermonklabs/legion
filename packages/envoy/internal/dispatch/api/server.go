@@ -1153,8 +1153,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
 		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
-			accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves, false,
-				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
+			accesslog.HandlerOn(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(s.signInStillResolves, false,
+				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))), s.clock()))
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))

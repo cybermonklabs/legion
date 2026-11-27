@@ -162,7 +162,7 @@ func newContractRig(t *testing.T) *contractRig {
 	t.Cleanup(Register(dispatchMux, t.Context(), deps).Wait)
 
 	return &contractRig{
-		Dispatch: dispatchMux, BrokerURL: brokerServer.URL, brokerStore: brokerStore, issuer: issuer, issuerKey: issuerKey,
+		Dispatch: approvetimingtest.Approves(brokerServer.URL, dispatchMux), BrokerURL: brokerServer.URL, brokerStore: brokerStore, issuer: issuer, issuerKey: issuerKey,
 		requestMachine: reqMachine, machineLogins: mach,
 	}
 }

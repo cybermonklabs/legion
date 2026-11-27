@@ -45,11 +45,20 @@ func newOriginRig(t *testing.T, rule identity.SignInRule, outside string) *signI
 	return rig
 }
 
-// Google's sign-in starts at the canonical origin: on the canonical Host the start comes back to
-// the canonical callback and asks Google for hd, the domain whose people alone sign in with Google.
-// With no outside origin, the canonical Host's redirect is byte for byte today's.
+// Google's sign-in starts at the canonical origin alone: on the outside origin's Host, in any case,
+// GET /auth/start and GET /auth/callback answer the 404 a path no route serves answers, with no
+// state cookie; on the canonical Host the start comes back to the canonical callback and asks
+// Google for hd, the domain whose people alone sign in with Google. With no outside origin, the
+// canonical Host's redirect is byte for byte today's.
 func TestGoogleSignInStartsAtTheCanonicalOriginAlone(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
+	for _, target := range []string{"http://outside.test/auth/start", "http://OUTSIDE.test/auth/start", "http://outside.test/auth/callback?code=c&state=s"} {
+		response := httptest.NewRecorder()
+		rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusNotFound || len(response.Result().Cookies()) != 0 {
+			t.Errorf("GET %s: %d %v %s, want the 404 of a path no route serves, with no cookie", target, response.Code, response.Header(), response.Body.String())
+		}
+	}
 	location, _ := rig.start(t, "http://canon.test/auth/start")
 	if got := location.Query().Get("redirect_uri"); got != canonicalOrigin+"/auth/callback" {
 		t.Errorf("GET http://canon.test/auth/start: redirect_uri %q, want %q", got, canonicalOrigin+"/auth/callback")

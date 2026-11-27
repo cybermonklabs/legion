@@ -592,6 +592,13 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/me/agent-tokens",
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
+		// Who may see a project is this change's own row (INFRA-3862). It names or acts as a
+		// person — the project's owner, the people a list names — which Dispatch takes from the
+		// credential and never from the request, so a credential the deployment configured is
+		// nobody to change it.
+		"GET /api/v1/projects/{key}/access",
+		"PATCH /api/v1/projects/{key}/access",
+		"PUT /api/v1/projects/{key}/access/people/{email}",
 		"GET /api/v1/users",
 		// A person's own page is no older row either: it reads what one person wrote and what
 		// reached them, so a credential that proves no person has no business on it.
