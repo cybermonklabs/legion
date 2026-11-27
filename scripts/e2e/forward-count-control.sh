@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live control of the count of returns from the retro and the merge (C7 of
-# dispatch://INFRA-5581's design, check `c-forward-count-control`). It drives
+# the forward-only design, check `c-forward-count-control`). It drives
 # packages/daemon/internal/daemon/forward_count_live_test.go, which this script builds with
 # `-tags e2e`: nine issues in three projects (ACME, DECOY, CLEAR) walk through three real daemons
 # over one real Dispatch, each return is the role's own `request_backward_move` through the

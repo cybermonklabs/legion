@@ -1,6 +1,6 @@
 //go:build e2e
 
-// The live control of the count of returns (C7 of dispatch://INFRA-5581's design): nine issues in
+// The live control of the count of returns (C7 of the forward-only design): nine issues in
 // three projects walk through real daemons to their retro and their merge, each return is the
 // role's own `request_backward_move` through the daemon's route, and the count program reads what
 // Dispatch, GitHub and the roles' transcripts then hold. scripts/e2e/forward-count-control.sh
@@ -72,7 +72,7 @@ const (
 const (
 	acmeOneReason = "the change's reader keeps the file open after it answers, so a second read of one path answers the first entry. " +
 		"I fix that in this round rather than merge it."
-	acmeTwoReason = "the required check " + forwardCountJob + " failed at this head: its one case reported a failure, so the head must change."
+	acmeTwoReason   = "the required check " + forwardCountJob + " failed at this head: its one case reported a failure, so the head must change."
 	acmeThreeReason = "r2 of the spec is unmet at this head: the reader answers exit 1 for a file it cannot open, and r2 asks for exit 2."
 	decoyOneReason  = "the change's conflict handling loses data: resolveTree drops the base's side where both sides changed one line, " +
 		"so a merge of main silently takes this branch's text."
@@ -342,7 +342,6 @@ const forwardCountVerification = ":::check{#" + forwardCountCheck +
 	` negative_control="Break the unit limits and watch the run fail." ci_check="` + forwardCountJob + "\"}\n" +
 	"The unit limits hold at the head.\n:::\n"
 
-
 // project makes one project with its issues, opens a pull request of its own for each on the
 // stand-in, publishes GitHub's opened of it, and boots a daemon of that project at the shared
 // Dispatch. It answers the walk's rig.
@@ -516,7 +515,7 @@ func (l *forwardCountLive) writeTranscript(issue, session string, number int) {
 	clear := fmt.Sprintf(`{"headRefOid":%q,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}`, stepRecordsHead)
 	conflicting := fmt.Sprintf(`{"data":{"repository":{"pullRequest":{"headRefOid":%q,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"}}}}`,
 		stepRecordsHead)
-	curl := fmt.Sprintf("curl -fsS -H \"Authorization: bearer $GH_TOKEN\" %s/graphql -d @query.json", l.standIn.url)
+	curl := fmt.Sprintf("curl -fsS -H @auth-header %s/graphql -d @query.json", l.standIn.url)
 	view := fmt.Sprintf("gh pr view %d --json headRefOid,mergeable,mergeStateStatus", number)
 	var lines []string
 	add := func(line map[string]any) {
@@ -1034,4 +1033,3 @@ func (g *forwardCountGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		"pullRequest": map[string]any{"timelineItems": map[string]any{"nodes": nodes}},
 	}}})
 }
-

@@ -90,11 +90,16 @@ export async function forwardIssues(file: string, worldDir: string): Promise<voi
 export async function resultsHold(file: string, head: string): Promise<boolean> {
   const { issue } = ForwardFixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const read = await getIssueResults(issue, { as: "agent" });
+  // A read that names no checks enumerated nothing: it is no evidence that every check passed.
+  if (read.checks === null || read.checks === undefined || read.checks.length === 0) {
+    console.log(`the results of ${issue} name no check, so no before_merge check can be read as passed at ${head}`);
+    return false;
+  }
   const missing = read.checks
     .filter((check) => check.when === "before_merge")
     .filter(
       (check) =>
-        !check.results.some(
+        !(check.results ?? []).some(
           (result) =>
             result.verdict === "pass" &&
             result.commit_sha === head &&

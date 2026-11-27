@@ -484,7 +484,7 @@ describe("the source of an answer: the merger's own reads", () => {
   test("the result of a curl to GitHub's GraphQL host that reads the head CONFLICTING is an answer", () => {
     const lines = [
       call("2026-11-20T10:00:00Z", "c1", "bash", {
-        command: "curl -fsS -H \"Authorization: bearer $TOKEN\" https://api.github.com/graphql -d @query.json",
+        command: "curl -fsS -H @auth-header https://api.github.com/graphql -d @query.json",
       }),
       answered(
         "2026-11-20T10:00:01Z",

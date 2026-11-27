@@ -3873,16 +3873,19 @@ const GhLine = z.looseObject({
   resolved: z.string().optional(),
 });
 
+/** One part of an agent's own output: a tool call with its arguments, or text it wrote. */
+type AgentPart = { tool: string | undefined; args: unknown; text: string };
+
 /** Each part of an assistant message of the run's agent and of its subagents: its text, its
  * thinking, or a tool call with its arguments. A user message (the task) and a tool's result are
  * no part of it. */
-function agentParts(runDir: string): { tool: string | undefined; args: unknown; text: string }[] {
+function agentParts(runDir: string): AgentPart[] {
   return [session(runDir), ...subagentSessions(runDir).map((sub) => sub.entries)].flatMap(
     (entries) =>
       entries.flatMap((entry) =>
         entry.message?.role !== "assistant"
           ? []
-          : (entry.message.content ?? []).flatMap((part) => {
+          : (entry.message.content ?? []).flatMap((part): AgentPart[] => {
               if (part.type === "toolCall")
                 return [
                   {

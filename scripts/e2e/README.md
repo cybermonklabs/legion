@@ -6403,7 +6403,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   bash scripts/e2e/forward-count-control.sh [--control unread|no-failure|blocked|captured]     # → "forward count control e2e: PASS …", exit 0
 ```
 
-The live control of the count of returns from the retro and the merge (C7 of dispatch://INFRA-5581's design, the check `c-forward-count-control`).
+The live control of the count of returns from the retro and the merge (C7 of the forward-only design, the check `c-forward-count-control`).
 Nine issues in three projects (`ACME`, `DECOY`, `CLEAR`) walk through three real daemons over one real Dispatch, each return is the role's own `request_backward_move` through `POST /legion/v1/phase/backward`, and the count's `collect` then reads Dispatch, the run's GitHub stand-in and the DECOY mergers' transcripts.
 It runs on any Linux host with `go`, `git`, `jj` 0.38 or later, `awk`, `bun` (after `bun install` at the checkout's root) and `python3`, as [`step-records.sh`](#step-recordssh) does, and `LEGION_TEST_PG_DSN` is required with the same bounds: its host must be loopback, and the driver creates Dispatch's own database on that server and drops it on exit.
 A run takes ten to twenty-five minutes: three daemons boot, and nine issues walk their plans.

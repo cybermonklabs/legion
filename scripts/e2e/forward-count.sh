@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live count of the returns of the retro and the merge, over a window of days and the projects
-# a Legion daemon runs (C7 of dispatch://INFRA-5581's design; the checks `c-forward-count-history`
+# a Legion daemon runs (C7 of the forward-only design; the checks `c-forward-count-history`
 # and `v-forward-count`). It runs the count program's two phases:
 #
 #   bash scripts/e2e/forward-count.sh --from 2026-11-10 --to 2026-11-23 [--readings <file>]

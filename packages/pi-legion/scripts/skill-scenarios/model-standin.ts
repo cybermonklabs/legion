@@ -15,7 +15,7 @@
  * `standin/standin-model`, the `model` line of the label's built-from.
  *
  * Its second mode, SKILL_SCENARIOS_MODEL=standin-report, is a path check's scripted model (C4 of
- * dispatch://INFRA-5581's plan). It plays the two calls of `standin-script.json` beside its log
+ * the forward-only plan). It plays the two calls of `standin-script.json` beside its log
  * (STANDIN_SCRIPT, which rig.sh's forward_script writes), `{calls: [{tool, input}, {tool, input}]}`,
  * by the tool results a Messages request carries back of the calls it answered: with none it
  * answers one `tool_use` block of the first call, with one the second call, and with two its fixed

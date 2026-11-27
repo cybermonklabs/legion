@@ -78,7 +78,7 @@ the reason states. The program's records, not your answer alone, decide what hol
 One JSON line for each return you read, in `readings.jsonl`:
 
 ```json
-{"return":"INFRA-5410/default/retro/1","reader":"1","model":"<provider>/<model>","own":true,"confirmed":{"news":false}}
+{"return":"ACME-1/default/retro/1","reader":"1","model":"<provider>/<model>","own":true,"confirmed":{"news":false}}
 ```
 
 - `return` is the return's `id`, as `returns.jsonl` prints it.

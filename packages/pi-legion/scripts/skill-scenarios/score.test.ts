@@ -4270,7 +4270,7 @@ test("a scored run whose label's built-from names no model line is a rig error, 
   });
 });
 
-// pathCheck (C4 of dispatch://INFRA-5581's plan): whether the scripted model's two calls of a run
+// pathCheck (C4 of the forward-only plan): whether the scripted model's two calls of a run
 // reached the label's daemon through the real pane, its plugin and its `legion` tool. Each row of
 // C4's table has a run that breaks that row alone.
 describe("pathCheck", () => {
@@ -4439,7 +4439,7 @@ describe("pathCheck", () => {
   });
 });
 
-// forwardOnly (C7 of dispatch://INFRA-5581's plan): the clauses of C5's worlds on made runs, each
+// forwardOnly (C7 of the forward-only plan): the clauses of C5's worlds on made runs, each
 // run a directory as rig.sh's run_forward leaves it: ready.json and record.json of the label's
 // daemon, the gh stand-in's calls.jsonl, the transcript and readings.json.
 describe("forwardOnly", () => {

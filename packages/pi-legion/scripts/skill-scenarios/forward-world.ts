@@ -1,7 +1,7 @@
 /**
  * The worlds of the scenarios `forward-only` and `forward-owner`: each a directory of
  * `worlds/<scenario>/<world>/` whose agent is a real pane of the label's whole daemon (C4, C5 of
- * dispatch://INFRA-5581's plan). rig.sh, seed.ts and score.ts read a world through this module.
+ * the forward-only plan). rig.sh, seed.ts and score.ts read a world through this module.
  *
  * A world's directory holds:
  *   world.json      ForwardWorldFile: `daemon: "label"`, the role and the moment of the agent, the

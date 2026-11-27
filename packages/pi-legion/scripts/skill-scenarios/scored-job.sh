@@ -74,7 +74,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
 rig=$here/rig.sh
 usage="usage: scored-job.sh owner-walk <label group> [--case <case>] [--count <n>] | scored-job.sh <forward-only|forward-owner> <label> [--world <world>] [--count <n>] [--path-check [--path-control intercept]]"
-# The one model of a forward scenario's runs (C5 of dispatch://INFRA-5581's plan).
+# The one model of a forward scenario's runs (C5 of the forward-only plan).
 forward_model=claude-opus-5-5
 
 say() { printf 'scored-job: %s\n' "$*"; }

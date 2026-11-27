@@ -4612,7 +4612,7 @@ esac
 }
 
 // A world whose world.json names `daemon: label` runs its agent as a real pane of the label's whole
-// daemon (C4 of dispatch://INFRA-5581's plan): the rig runs the label's `label-texts.sh daemon`,
+// daemon (C4 of the forward-only plan): the rig runs the label's `label-texts.sh daemon`,
 // and starts neither the daemon stand-in nor an Oh My Pi of its own.
 describe("a world with daemon: label", () => {
   // Catches: a label-daemon run that still starts daemon-standin.ts or Oh My Pi in RPC mode, so the
@@ -5008,7 +5008,7 @@ describe("a world with daemon: label", () => {
   });
 });
 
-// C6 of dispatch://INFRA-5581's plan: the decision on a control cell, the first of its rows whose
+// C6 of the forward-only plan: the decision on a control cell, the first of its rows whose
 // condition holds, and whether the head's Job of that world may start (row 5 alone).
 describe("a control cell", () => {
   /** One launch of a made cell: a rig error, or a scored run, its pass, whether it noticed the

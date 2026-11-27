@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// The count of returns from the retro and the merge (C7 of the forward-only design,
-// dispatch://INFRA-5581), in two phases:
+// The count of returns from the retro and the merge (C7 of the forward-only design), in two
+// phases:
 //
 //   bun forward-count.ts collect --dispatch-url <url> --token-file <file> --github-api-url <url> \
 //     [--github-token-file <file>] --projects <K1,K2,…> --from <YYYY-MM-DD> --to <YYYY-MM-DD> \
