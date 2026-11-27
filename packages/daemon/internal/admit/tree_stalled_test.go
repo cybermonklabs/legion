@@ -528,33 +528,46 @@ func TestAWaitForChecksIsAWaitByDesign(t *testing.T) {
 // whether or not the line can move, as it reads a wait on work outside the tree
 // (everyIssueWaitsByDesign).
 //
-// The control is the same project on a database of its own, under the same clock, with its one
-// root stopped in implementing: it is told. So the pass this test runs sees a stall where one
-// stands, and the silence of the first case is its phase's alone.
+// The controls are the same project on a database of its own, under the same clock. With its one
+// root stopped in implementing, it is told. So the pass this test runs sees a stall where one
+// stands, and the silence of the first case is its phase's alone. With its root in verifying over
+// a child stopped in implementing, it is told as well: the phase silences its own issue and never
+// the tree, so a stopped issue beneath a merged root still names that tree.
 func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
 	bound := deploymentBound(t, "")
-	const root = "LEGION-960"
+	const root, child = "LEGION-960", "LEGION-961"
 	// onlyTree is a project whose one tree is root, standing in standing at that phase's own
 	// Dispatch status, with the slot its phase keeps (seedQuietRoot), its pull request in pr and
-	// its architect idle, measured an hour past the bound.
-	onlyTree := func(t *testing.T, standing phase.Phase, pr record.PullRequestState) (*pgxpool.Pool, *Admission) {
+	// its architect idle, measured an hour past the bound. Where beneath names a phase, the tree
+	// also holds child, standing there with the slot that phase keeps and its implementer idle.
+	onlyTree := func(t *testing.T, standing phase.Phase, pr record.PullRequestState, beneath phase.Phase) (*pgxpool.Pool, *Admission) {
 		t.Helper()
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
 		admission.UseStalledTreeNotice(bound)
 		registerController(t, pool)
+		records := claimStore(t, pool)
 		seeded := seedQuietRoot(t, pool, root, "A", standing)
 		seeded.Status, seeded.DispatchStatus = workflow.PhaseStatus(standing), workflow.PhaseStatus(standing)
 		putIssue(t, pool, seeded)
 		seedPullRequest(t, pool, root, 96, pr)
-		seedClaim(t, claimStore(t, pool), root, root, claim.RoleArchitect, supervise.StateIdle)
-		settled := settleMovements(t, pool, root)
+		seedClaim(t, records, root, root, claim.RoleArchitect, supervise.StateIdle)
+		members := []string{root}
+		if beneath != "" {
+			under := seedQuietChild(t, pool, root, child, "A1", beneath, workflow.PhaseStatus(beneath))
+			if record.KeepsSlot(under) {
+				takeSlot(t, pool, child)
+			}
+			seedClaim(t, records, root, child, claim.RoleImplementer, supervise.StateIdle)
+			members = append(members, child)
+		}
+		settled := settleMovements(t, pool, members...)
 		admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
 		return pool, admission
 	}
 
 	t.Run("verifying", func(t *testing.T) {
-		pool, admission := onlyTree(t, phase.Verifying, record.PullRequestMerged)
+		pool, admission := onlyTree(t, phase.Verifying, record.PullRequestMerged, "")
 		// The fixture's own premise, read as the pass reads it: nothing of this project can move
 		// by itself, so the ladder's waits silence nothing here and only a reading of the phase
 		// that ignores the line can keep the root out of the notice.
@@ -575,13 +588,24 @@ func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
 	})
 
 	t.Run("control-implementing", func(t *testing.T) {
-		pool, admission := onlyTree(t, phase.Implementing, record.PullRequestOpen)
+		pool, admission := onlyTree(t, phase.Implementing, record.PullRequestOpen, "")
 
 		tick(t, pool, admission, "implementing-alone")
 
 		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the controller was told of %v, want %v: a root stopped in implementing has stopped, and this pass must see it",
 				got, want)
+		}
+	})
+
+	t.Run("control-stopped-child", func(t *testing.T) {
+		pool, admission := onlyTree(t, phase.Verifying, record.PullRequestMerged, phase.Implementing)
+
+		tick(t, pool, admission, "stopped-child")
+
+		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the controller was told of %v, want %v: %s has stopped in implementing beneath the merged root, and the root's wait silences the root alone",
+				got, want, child)
 		}
 	})
 }
