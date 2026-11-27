@@ -5572,9 +5572,7 @@ test("what references the focused row names each task that serves it by the task
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
-      await expect(tree(page)).toBeVisible();
-      const facts = await focusedRowFacts(page, seeded.statement);
+      const facts = await rowFacts(page, seeded.key, seeded.statement);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
@@ -5787,9 +5785,7 @@ test("what references the focused row names a code block that quotes it by the f
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
-      await expect(tree(page)).toBeVisible();
-      const facts = await focusedRowFacts(page, seeded.task);
+      const facts = await rowFacts(page, seeded.key, seeded.task);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })

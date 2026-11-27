@@ -613,8 +613,9 @@ export function IssueHistory({
   // been elsewhere since; one asked for while Details is shut around the list has no turn on
   // screen to go to, and nor has one whose thread this history no longer holds, as an agents' post
   // a person wrote in, which the outline draws from then on. Each of these ends with the focus
-  // where it is, as the outline ends a landing it draws no row for, and so does one whose new turn
-  // no read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
+  // where it is, as the outline ends a landing under a node it draws no row of, but for one whose
+  // reply takes that node out of this history (`HeldLanding.leavesHistory`), and so does one
+  // whose new turn no read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
   const writer = useOutlineWriter();
   const drawer = useMarginDrawer();
   const landing = writer?.landing?.in === "history" ? writer.landing : undefined;

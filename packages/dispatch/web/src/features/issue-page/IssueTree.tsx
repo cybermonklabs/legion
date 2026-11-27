@@ -1210,12 +1210,16 @@ export function IssueTree({
   // Each landing goes to its node as `reach` does and notes that node (`landedOn`): a read that
   // drops its row before the reader's next key or press is their write's (`heldRow`). A write
   // that answered a turn of a thread the panel's history holds, of which the tree draws no row,
-  // is the history's to land (`HeldLanding.in`), and the tree leaves it alone. A reply that took
-  // such a thread out of the history - a person's reply to an agents' comment thread tied to no
-  // text (`agents-only.ts`) - is the tree's, and the comment it answers is a row only from the
-  // read that brings the reply: the tree waits for that row as it waits for the new one, with
-  // none of the reader's nodes under it before, since it drew no row there to hold one. Where no
-  // read draws that row, the late fallback ends the landing with the focus where it is.
+  // is the history's to land (`HeldLanding.in`), and the tree leaves it alone. A landing under a
+  // node the tree draws no row of - one a filter's view holds no row of - ends at once with the
+  // focus where it is, so the row drawn again later, as the filter is cleared, takes the reader
+  // to no earlier node of theirs under it. A reply that took such a thread out of the history - a
+  // person's reply to an agents' comment thread tied to no text (`agents-only.ts`) - is the
+  // tree's, and the writer says so (`HeldLanding.leavesHistory`): the comment it answers is a row
+  // only from the read that brings the reply, so the tree waits for that row as it waits for the
+  // new one, with none of the reader's nodes under it before, since it drew no row there to hold
+  // one. Where no read draws that row, the late fallback ends the landing with the focus where it
+  // is.
   const landing = writer?.landing?.in === "outline" ? writer.landing : undefined;
   const heldAtMount = useRef(landing);
   const landedFrom = useRef<
@@ -1238,6 +1242,10 @@ export function IssueTree({
       return;
     }
     const parent = landingParent(root, landing.under);
+    if (parent === undefined && !landing.leavesHistory) {
+      line.landed();
+      return;
+    }
     if (landing.to === "self") {
       line.landed();
       if (parent !== undefined) reachWritten(parent.id);

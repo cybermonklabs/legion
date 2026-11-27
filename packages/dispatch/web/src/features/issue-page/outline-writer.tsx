@@ -157,6 +157,13 @@ export interface Landing {
  */
 export interface HeldLanding extends Landing {
   readonly in: "history" | "outline";
+  /** Whether the reader's new turn takes `under` out of the history: a `newest` landing whose
+   *  reads put `under` in the history, which the reply takes out of it (`historyHoldsReply`), as a
+   *  person's reply to an agents' comment thread tied to no text does. The outline draws no row
+   *  of `under` until the read that brings the reply answers, so it waits for that row; it ends
+   *  at once every other landing under a node it draws no row of, such as one a filter's view
+   *  holds no row of (`IssueTree.tsx`). */
+  readonly leavesHistory: boolean;
 }
 
 /** How long a write's landing waits for the read that draws it, in milliseconds: the line's send
@@ -257,18 +264,24 @@ export function OutlineWriterProvider({
   // questions as they do, and lands no turn where neither draws it. A `newest` landing goes to the
   // reader's new turn under `under`, which these reads do not hold yet: it is drawn where the rule
   // puts it once they do (`historyHoldsReply`), so a reply that takes an agents' comment thread
-  // out of the history goes to the outline, which draws it under the comment it answers. A `self`
-  // landing goes to `under` itself, where the reads put it now.
+  // out of the history goes to the outline, which draws it under the comment it answers, and says
+  // so (`HeldLanding.leavesHistory`), since the outline draws that comment only from the read that
+  // brings the reply. A `self` landing goes to `under` itself, where the reads put it now.
   const land = useCallback(
     (asked: Landing) => {
       const { under } = asked;
-      const held = issueAsks(openAsks, asks.data);
+      const everyAsk = issueAsks(openAsks, asks.data);
+      const heldNow =
+        under !== undefined && agentsOnlyIds(comments.data, messages.data, everyAsk).has(under.id);
       const history =
-        under !== undefined &&
-        (asked.to === "newest"
-          ? historyHoldsReply(under, comments.data, messages.data, held)
-          : agentsOnlyIds(comments.data, messages.data, held).has(under.id));
-      setLanding({ ...asked, in: history ? "history" : "outline" });
+        under !== undefined && asked.to === "newest"
+          ? historyHoldsReply(under, comments.data, messages.data, everyAsk)
+          : heldNow;
+      setLanding({
+        ...asked,
+        in: history ? "history" : "outline",
+        leavesHistory: heldNow && !history,
+      });
     },
     [asks.data, comments.data, messages.data, openAsks]
   );

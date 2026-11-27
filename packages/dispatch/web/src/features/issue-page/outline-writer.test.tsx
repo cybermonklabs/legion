@@ -4,7 +4,7 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 
 import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
-import type { Comment, IssueDetails, MessageRead } from "../../api/types";
+import type { Comment, IssueAskRow, IssueDetails, MessageRead } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -68,35 +68,66 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
   }
 });
 
-// When the writer unmounts while its `focus()` is waiting on an animation frame for a field to
-// draw, that frame is cancelled: a box mounted afterwards does not lose the reader's focus to
-// the unmounted writer.
-test("unmounting the writer cancels a pending focus frame so a later box does not take the focus", async () => {
+/** What `drawWriter` reads beside the comments and messages: `openAsks`, the asks the issue holds
+ *  open, none unless given, and `asks`, the answer of the asks read, none unless given; `asks`
+ *  given as `undefined` seeds no answer, so the writer sends the read itself. */
+interface WriterReads {
+  readonly asks?: readonly IssueAskRow[] | undefined;
+  readonly openAsks?: IssueDetails["open_asks"];
+}
+
+/** The writer of issue CORE-1 over `comments` and `messages` and the asks `reads` says, held
+ *  under the keys the tree reads them by, with the query client that holds them. */
+function drawWriter(
+  comments: readonly Comment[],
+  messages: readonly MessageRead[],
+  reads: WriterReads = {}
+): {
+  readonly client: QueryClient;
+  readonly unmount: () => void;
+  readonly writer: () => OutlineWriter | undefined;
+} {
+  const { openAsks = [] } = reads;
+  const asks = "asks" in reads ? reads.asks : [];
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["asks", "CORE-1"], []);
-  client.setQueryData(["asks", "CORE-1", "thread"], []);
-  client.setQueryData(["comments", "CORE-1"], []);
-  client.setQueryData(["issue-messages", "CORE-1"], []);
+  if (asks !== undefined) client.setQueryData(["asks", "CORE-1"], [...asks]);
+  client.setQueryData(["comments", "CORE-1"], [...comments]);
+  client.setQueryData(["issue-messages", "CORE-1"], [...messages]);
   const held: { writer?: OutlineWriter } = {};
   function Capture(): null {
     held.writer = useOutlineWriter();
     return null;
   }
-  const first = render(
+  const view = render(
     <QueryClientProvider client={client}>
-      <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
+      <OutlineWriterProvider issueKey="CORE-1" openAsks={openAsks}>
         <Capture />
       </OutlineWriterProvider>
     </QueryClientProvider>
   );
+  return {
+    client,
+    unmount: () => {
+      view.unmount();
+      client.clear();
+    },
+    writer: () => held.writer,
+  };
+}
+
+// When the writer unmounts while its `focus()` is waiting on an animation frame for a field to
+// draw, that frame is cancelled: a box mounted afterwards does not lose the reader's focus to
+// the unmounted writer.
+test("unmounting the writer cancels a pending focus frame so a later box does not take the focus", async () => {
+  const page = drawWriter([], []);
   let second: RenderResult | undefined;
   try {
-    if (held.writer === undefined) throw new Error("the provider drew no writer");
+    if (page.writer() === undefined) throw new Error("the provider drew no writer");
     // Queue a focus frame while no composer field is in the document, then unmount the writer.
-    act(() => held.writer?.focus());
-    first.unmount();
+    act(() => page.writer()?.focus());
+    page.unmount();
 
     // Mount a fresh box with a field of its own, and let more frames run than the writer waits.
     second = render(
@@ -111,43 +142,9 @@ test("unmounting the writer cancels a pending focus frame so a later box does no
     expect(field).not.toHaveFocus();
   } finally {
     second?.unmount();
-    first.unmount();
-    client.clear();
+    page.unmount();
   }
 });
-
-/** The writer of issue CORE-1 over `comments` and `messages`, held under the keys the tree reads
- *  them by, with the asks read answered with none and no ask the issue holds open. */
-function drawWriter(
-  comments: readonly Comment[],
-  messages: readonly MessageRead[]
-): { readonly unmount: () => void; readonly writer: () => OutlineWriter | undefined } {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  client.setQueryData(["asks", "CORE-1"], []);
-  client.setQueryData(["comments", "CORE-1"], [...comments]);
-  client.setQueryData(["issue-messages", "CORE-1"], [...messages]);
-  const held: { writer?: OutlineWriter } = {};
-  function Capture(): null {
-    held.writer = useOutlineWriter();
-    return null;
-  }
-  const view = render(
-    <QueryClientProvider client={client}>
-      <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
-        <Capture />
-      </OutlineWriterProvider>
-    </QueryClientProvider>
-  );
-  return {
-    unmount: () => {
-      view.unmount();
-      client.clear();
-    },
-    writer: () => held.writer,
-  };
-}
 
 // Decision 573: a person's reply to a turn of an agents' comment thread tied to no text, a thread
 // the history holds, takes that thread out of the history (`agents-only.ts`), and the outline then
@@ -169,6 +166,38 @@ test("a reply to a turn of an agents' comment thread tied to no text lands in th
         `the reply to ${turn.id}, a turn of an agents' comment thread, did not land in the outline`
       ).toMatchObject({ in: "outline", under: { id: turn.id } });
     }
+  } finally {
+    page.unmount();
+  }
+});
+
+// The outline ends at once a landing under a node it draws no row of (`IssueTree.tsx`), but for a
+// reply that takes an agents' comment thread out of the history (decision 573): the outline draws
+// the comment only from the read that brings the reply, so it waits for that row. The writer,
+// which holds the reads, says which landing that is (`HeldLanding.leavesHistory`): the reply to
+// the agents' comment, which the reads before it put in the history, and not a reply to a person's
+// comment, which the outline draws already.
+test("a reply that takes an agents' comment thread out of the history is marked so, and a reply to a row of the outline is not", () => {
+  const agent = {
+    anchor: null,
+    ask_id: null,
+    author: { id: "planner", kind: "session" },
+    id: "c-agent",
+    reply_to: null,
+  };
+  const person = { ...agent, author: { id: "bob", kind: "user" }, id: "c-person" };
+  const page = drawWriter([agent, person] as Comment[], []);
+  try {
+    act(() => page.writer()?.land({ to: "newest", under: { id: agent.id, kind: "comment" } }));
+    expect(
+      page.writer()?.landing,
+      "the reply that takes the agents' comment thread out of the history is not marked so"
+    ).toMatchObject({ in: "outline", leavesHistory: true, under: { id: agent.id } });
+    act(() => page.writer()?.land({ to: "newest", under: { id: person.id, kind: "comment" } }));
+    expect(
+      page.writer()?.landing,
+      "the reply to a person's comment, a row of the outline, is marked as leaving the history"
+    ).toMatchObject({ in: "outline", leavesHistory: false, under: { id: person.id } });
   } finally {
     page.unmount();
   }
@@ -217,42 +246,25 @@ test("with the asks read out, a reply to an agent's comment under an open approv
   } as Comment;
   // The asks read is out, and stays out for the case.
   const asksRead = spyOn(api, "listIssueAsks").mockImplementation(() => new Promise(() => {}));
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  const page = drawWriter([comment], [], {
+    asks: undefined,
+    openAsks: [approval] as unknown as IssueDetails["open_asks"],
   });
-  client.setQueryData(["comments", "CORE-1"], [comment]);
-  client.setQueryData(["issue-messages", "CORE-1"], []);
-  const held: { writer?: OutlineWriter } = {};
-  function Capture(): null {
-    held.writer = useOutlineWriter();
-    return null;
-  }
-  const view = render(
-    <QueryClientProvider client={client}>
-      <OutlineWriterProvider
-        issueKey="CORE-1"
-        openAsks={[approval] as unknown as IssueDetails["open_asks"]}
-      >
-        <Capture />
-      </OutlineWriterProvider>
-    </QueryClientProvider>
-  );
   try {
     await waitFor(() => expect(asksRead, "the writer did not read the asks").toHaveBeenCalled());
-    expect(client.getQueryData(["asks", "CORE-1"]), "the asks read answered").toBeUndefined();
-    act(() => held.writer?.land({ to: "newest", under: { id: comment.id, kind: "comment" } }));
+    expect(page.client.getQueryData(["asks", "CORE-1"]), "the asks read answered").toBeUndefined();
+    act(() => page.writer()?.land({ to: "newest", under: { id: comment.id, kind: "comment" } }));
     expect(
-      held.writer?.landing,
+      page.writer()?.landing,
       "a person's reply to an agent's comment under an approval request did not land in the outline"
     ).toMatchObject({ in: "outline", under: { id: comment.id } });
-    act(() => held.writer?.land({ to: "self", under: { id: comment.id, kind: "comment" } }));
+    act(() => page.writer()?.land({ to: "self", under: { id: comment.id, kind: "comment" } }));
     expect(
-      held.writer?.landing,
+      page.writer()?.landing,
       "the line's target ended on a turn of the history did not land in the history"
     ).toMatchObject({ in: "history", under: { id: comment.id } });
   } finally {
-    view.unmount();
+    page.unmount();
     asksRead.mockRestore();
-    client.clear();
   }
 });

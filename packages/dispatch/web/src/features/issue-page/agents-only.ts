@@ -3,12 +3,6 @@ import type { Ask, Comment, MessageRead } from "../../api/types";
 /** What the rule reads of a comment. */
 type CommentTurn = Pick<Comment, "anchor" | "ask_id" | "author" | "id" | "reply_to">;
 
-/** What the rule reads of a message thread: its root's author and id, and each reply's id. */
-interface MessageThread {
-  readonly message: Pick<MessageRead["message"], "author" | "id">;
-  readonly replies: readonly Pick<MessageRead["message"], "id">[] | null;
-}
-
 /** How the session id of the Legion daemon begins: the daemon of a project writes as the session
  *  `legion-daemon:<PROJECT>`, which `shortSessionId` of `@legion/contracts` reads by the same
  *  prefix. */
@@ -50,7 +44,7 @@ const DAEMON_SESSION = "legion-daemon:";
  */
 export function agentsOnlyIds(
   comments: readonly CommentTurn[] | undefined,
-  messages: readonly MessageThread[] | undefined,
+  messages: readonly MessageRead[] | undefined,
   asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): ReadonlySet<string> {
   const questions =
@@ -107,15 +101,17 @@ const PERSON = { id: "", kind: "user" } as const;
  * the server stores it, which climbs a reply to the head of its thread - the ask the thread hangs
  * under, or its root comment (`comment_create.go`'s `threadHeadOf`). A person's turn takes a
  * comment thread out of the set, so the outline then draws that thread whole, the reply under the
- * comment it answers; a message thread the Legion daemon began stays in it, whoever replies. An
- * ask and a statement are never in the set, so a reply to one is never the history's. The line at
- * the foot asks it as its reply lands, before the read that brings the reply has answered
- * (`outline-writer.tsx`'s `land`), so the page takes the reader to the part that draws the reply.
+ * comment it answers. A reply never moves a message thread, since the rule reads who wrote the
+ * thread's first message alone: one the Legion daemon began stays in the set, whoever replies,
+ * and no other is in it, so the reads need no reply added. An ask and a statement are never in
+ * the set, so a reply to one is never the history's. The line at the foot asks it as its reply
+ * lands, before the read that brings the reply has answered (`outline-writer.tsx`'s `land`), so
+ * the page takes the reader to the part that draws the reply.
  */
 export function historyHoldsReply(
   under: { readonly id: string; readonly kind: string },
   comments: readonly CommentTurn[] | undefined,
-  messages: readonly MessageThread[] | undefined,
+  messages: readonly MessageRead[] | undefined,
   asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): boolean {
   const answered =
@@ -133,15 +129,7 @@ export function historyHoldsReply(
             reply_to: answered.ask_id === null ? (answered.reply_to ?? answered.id) : null,
           },
         ];
-  const withMessage =
-    under.kind === "message"
-      ? messages?.map((thread) =>
-          [thread.message, ...(thread.replies ?? [])].some((one) => one.id === under.id)
-            ? { ...thread, replies: [...(thread.replies ?? []), { id: NEW_TURN }] }
-            : thread
-        )
-      : messages;
-  return agentsOnlyIds(withComment, withMessage, asks).has(under.id);
+  return agentsOnlyIds(withComment, messages, asks).has(under.id);
 }
 
 /**
