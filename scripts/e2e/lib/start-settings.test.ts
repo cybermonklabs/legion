@@ -6,16 +6,19 @@
  *  held-port.py's python3 arguments too, for the whole of its listen, port write and exec.
  *
  *  Two rows. The first drives both shapes with a sentinel password through lib/rig.sh and reads
- *  every argument vector of the chain for it: `start_with_settings`, and `start_held` with
- *  `--setting`, against the same start written the old way, which is the control that the reader
- *  sees a leak when there is one. The second reads every e2e script for a start that still writes
- *  a secret in its arguments and names the file and line of each.
+ *  the chain's argument vectors for it: `start_with_settings`, and `start_held` with `--setting`,
+ *  against the same start written the old way, which is the control that the reader sees a leak
+ *  when there is one. The second reads every e2e script for a start that still writes a secret in
+ *  its arguments and names the file and line of each.
  *
- *  The recorders are how the chain is read through its execs: a `python3` and an `env` first on
- *  the driver's PATH that each append their own /proc/self/cmdline to a file and then exec the
- *  real program (`exec -a`), so the real helper and the real env still run and what each was given
- *  is kept. The service's own /proc/<pid>/cmdline, and that of every process under it, is read
- *  while it runs.
+ *  What the first row reads, and so what it can see. A `python3` and an `env` first on the
+ *  driver's PATH each append their own /proc/self/cmdline to a file and then exec the real program
+ *  (`exec -a`), so the real helper and the real env still run and what each was given is kept; and
+ *  the service's own /proc/<pid>/cmdline, and that of every process under it, is read while it
+ *  runs. That is every program these starts run, but not every program a start could run: a
+ *  start that handed its settings to some other program's arguments, a long-lived `bash -c`
+ *  among them, would leak where this row does not look. The second row does not see it either:
+ *  it reads the starts it knows by name, the rig's wrappers, `held-port.py exec` and `env -i`.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -287,10 +290,11 @@ function scanned(): string[] {
   return sourcedLibraries(...scripts);
 }
 
-/** Every line of a scanned file that sources a library the scan cannot resolve, as
- *  `file:line: the line`. Such a file is never read, so a start that leaks inside it is unseen:
- *  the scan refuses these rather than passing over them. A variable in place of a path is the
- *  shape that would quiet the scan, so it is a refusal and not a skip. */
+/** Every line of a scanned file that sources a library the scan cannot name a file of the tree
+ *  for, as `file:line: the line`. Such a file is never read, so a start that leaks inside it is
+ *  unseen: the scan refuses these rather than passing over them. A variable in place of a path,
+ *  or a directory only the running shell knows, is the shape that would quiet the scan, so it is
+ *  a refusal and not a skip. */
 function unreadable(): string[] {
   return scanned().flatMap((path) => unreadableSources(path));
 }
@@ -339,6 +343,7 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
       "scripts/e2e/lib/loopback-dsn.sh",
       "scripts/e2e/dispatch-session-settings.sh",
       "packages/envoy/scripts/lib/exec-env.sh",
+      "packages/pi-envoy/scripts/role-takeover/clients.sh",
     ]) {
       expect({ name, read: read.includes(name) }).toEqual({ name, read: true });
     }
@@ -392,8 +397,15 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
         },
       ],
       () => {
-        expect(unreadable()).toEqual([`scripts/e2e/sourced-scan-${run}.sh:3: . "$pg_url_lib"`]);
-        expect(startsWithSecretArguments()).toEqual([]);
+        // The control reads its own planted script's lines alone, so a refusal elsewhere in the
+        // tree, which the row above holds, neither hides this one nor fails it for another reason.
+        const planted = `scripts/e2e/sourced-scan-${run}.sh:`;
+        expect(unreadable().filter((found) => found.startsWith(planted))).toEqual([
+          `scripts/e2e/sourced-scan-${run}.sh:3: . "$pg_url_lib"`,
+        ]);
+        expect(
+          startsWithSecretArguments().filter((found) => found.includes(`pg-url-${run}.sh`))
+        ).toEqual([]);
       }
     );
   });

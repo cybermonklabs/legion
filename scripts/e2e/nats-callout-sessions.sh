@@ -536,7 +536,7 @@ client_reply_timeout=60
 # clients.sh's client_fifo, client_ready and send: one stdin fifo per client, its ready line, and
 # one command answered on its stdout.
 # shellcheck source=packages/pi-envoy/scripts/role-takeover/clients.sh
-source "$drivers/clients.sh"
+source "$root/packages/pi-envoy/scripts/role-takeover/clients.sh"
 
 told omp
 omp_auth=("${told_env[@]}")

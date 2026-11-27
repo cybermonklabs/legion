@@ -212,3 +212,21 @@ test("a source line with a quote in its trailing comment reads the library it na
 test("a quoted word this reader cannot close is refused, rather than read as a path", () => {
   expect(refusedBy('. "$lib/port-file.sh')).toEqual(['. "$lib/port-file.sh']);
 });
+
+// A path built on a variable that reaches no file beside the script or under the checkout names
+// a directory only the running shell knows, as `. "$drivers/clients.sh"` does: read as a file the
+// script makes as it runs, the library behind it was passed over. The same holds for a path
+// against `$root` that names no file. Each is refused, quoted, braced or not.
+test("a sourced path that reaches no file of the tree is refused, not passed over", () => {
+  expect(
+    refusedBy(
+      '. "$envoy_lib/pg-url.sh"',
+      ". ${envoy_lib}/pg-url.sh",
+      '. "$root/scripts/e2e/lib/no-such-library.sh"'
+    )
+  ).toEqual([
+    '. "$envoy_lib/pg-url.sh"',
+    ". ${envoy_lib}/pg-url.sh",
+    '. "$root/scripts/e2e/lib/no-such-library.sh"',
+  ]);
+});

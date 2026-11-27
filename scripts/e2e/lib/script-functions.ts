@@ -103,13 +103,17 @@ const checkout = join(import.meta.dir, "..", "..", "..");
 const ownDirectory =
   /^(?:\$\(dirname "\$0"\)|\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd -P\))\/(.+)$/;
 
-/** Where `written` reaches from the script at `from`, or `undefined` when reading it would mean
- *  running the shell: a word that is a variable whole (`. "$lib"`), a glob, any other command
- *  substitution, or a word that still holds a quote, which is one no quote closed. Such a line is
- *  named by `unreadableSources` instead. */
+/** The file `written` reaches from the script at `from`, or `undefined` when this reader cannot
+ *  name one: a word that is a variable whole (`. "$lib"`), a glob, any other command substitution,
+ *  a word that still holds a quote, which is one no quote closed, or a path that names no file of
+ *  the tree. A path built on a variable other than `$root` is tried beside the script and under
+ *  the checkout, and a variable that names some other directory, as `. "$drivers/clients.sh"`
+ *  does, reaches neither: only the running shell knows that directory, so the line is refused
+ *  rather than read as a file the script makes as it runs. Such a line is named by
+ *  `unreadableSources`, and the walk reads only a path this returns. */
 function resolvedSource(from: string, written: string): string | undefined {
   const own = ownDirectory.exec(written);
-  if (own !== null) return resolve(dirname(from), own[1] ?? "");
+  if (own !== null) return existing(resolve(dirname(from), own[1] ?? ""));
   // The own-directory forms hold quotes inside their substitution and are read above; any other
   // word that holds a quote is one sourceWords could not close, so it names no file this reads.
   if (written.includes('"') || written.includes("'")) return undefined;
@@ -117,24 +121,25 @@ function resolvedSource(from: string, written: string): string | undefined {
   const against = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.+)$/.exec(written);
   if (against === null) {
     if (written.includes("$")) return undefined;
-    return isAbsolute(written) ? written : resolve(dirname(from), written);
+    return existing(isAbsolute(written) ? written : resolve(dirname(from), written));
   }
   const [, name, rest = ""] = against;
   if (rest.includes("$")) return undefined;
-  if (name === "root") return resolve(checkout, rest);
-  const beside = resolve(dirname(from), rest);
-  return existsSync(beside) ? beside : resolve(checkout, rest);
+  if (name === "root") return existing(resolve(checkout, rest));
+  return existing(resolve(dirname(from), rest)) ?? existing(resolve(checkout, rest));
 }
 
-/** Every line of the script at `path` that sources a library this file cannot resolve, as
+/** `path` where it names a file, else `undefined`. */
+function existing(path: string): string | undefined {
+  return existsSync(path) ? path : undefined;
+}
+
+/** Every line of the script at `path` that sources a library this file cannot name, as
  *  `<path under the checkout>:<line>: <the line>`. A scan that walks what a script sources must
  *  fail on these: the file behind such a line is never read, so anything in it is unseen. */
 export function unreadableSources(path: string): string[] {
   const found: string[] = [];
   for (const { word, at, line } of sourceWords(readFileSync(path, "utf8"))) {
-    // A path that resolves but names no file of the tree is one the script makes as it runs, as
-    // nats-callout-sessions.sh does with its drivers; the walk skips it and says so here only
-    // where it cannot resolve the path at all, which is the shape that hides a library.
     if (resolvedSource(path, word) !== undefined) continue;
     found.push(`${relative(checkout, path)}:${at}: ${line.trim()}`);
   }
@@ -154,9 +159,9 @@ export function sourcedLibraries(...paths: string[]): string[] {
     read.add(path);
     for (const { word } of sourceWords(readFileSync(path, "utf8"))) {
       const reaches = resolvedSource(path, word);
-      // A line this reader cannot resolve is named by unreadableSources, which reads the same
-      // lines this walk does, so no line falls between the two; the walk goes on rather than
-      // ending on it, and one whose file this tree does not hold is skipped at the top.
+      // A line this reader cannot resolve, a path that names no file among them, is named by
+      // unreadableSources, which reads the same lines this walk does, so no line falls between
+      // the two; the walk goes on rather than ending on it.
       if (reaches !== undefined) pending.push(reaches);
     }
   }
@@ -170,9 +175,9 @@ export function sourcedLibraries(...paths: string[]): string[] {
  * `harness: no definition for <name>` for a name one of those scripts defines, and leaves every
  * other missing command (a binary the machine lacks) as it was, still exit 127. The line goes to
  * the harness's own stderr, saved in a file descriptor when the guard is set up, so a call the
- * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library under
- * scripts/e2e/lib a script among `paths` sources (`. "…/lib/<name>"`) counts as one of them, and
- * the libraries it sources in turn (sourcedLibraries), so a harness passes only the scripts it
+ * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library a script
+ * among `paths` sources, wherever in the checkout its path reaches, counts as one of them, and the
+ * libraries it sources in turn (sourcedLibraries), so a harness passes only the scripts it
  * extracts from. `expectNoMissingHelpers` reads those lines out of a run's output for the
  * harness to fail on.
  */
