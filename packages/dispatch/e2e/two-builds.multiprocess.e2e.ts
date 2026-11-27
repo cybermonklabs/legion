@@ -20,6 +20,7 @@ import {
   syncArchitectureSource,
   uploadAgentPicture,
 } from "./api";
+import { BLOCK_EDITOR_READY_MARK, readMark } from "./block-editor";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
@@ -284,6 +285,9 @@ interface Visit {
   readonly loads?: readonly LazyPiece[];
   /** Runs before the visit's `goto`, and what it sets stays on the walk's one context. */
   readonly prepare?: (page: Page) => Promise<void>;
+  /** A `performance.mark` the page sets once a lazy piece it loads after its landmarks show has
+   *  run, which no landmark shows: the visit waits for it once its landmarks show. */
+  readonly mark?: string;
 }
 
 function heading(page: Page, name: string): Locator {
@@ -535,6 +539,23 @@ function visits(seed: Seeded): readonly Visit[] {
       // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
       // no visit above loads it. This visit is last because the init script stays on the walk's
       // one context: an issue visit after it would draw the new page rather than today's.
+      // Only the block room's visit follows it, and that visit is to draw the new page.
+      prepare: (page) => withIssuePage(page.context(), "alice"),
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
+      ],
+      url: issue,
+    },
+    {
+      // The new page opens its block room once its load has ended, after its heading shows, so
+      // the room's chunks (`block-room.ts`) are asked for only then: the visit waits for the mark
+      // the room sets once its first sync is applied and its block editor built. It turns the new
+      // page on itself, as the visit above does, so it draws that page wherever it stands.
+      loads: ["block-room"],
+      mark: BLOCK_EDITOR_READY_MARK,
       prepare: (page) => withIssuePage(page.context(), "alice"),
       route: "/issues/:key/*",
       shows: (page) => [
@@ -646,6 +667,16 @@ async function walk(
           .toBe(true);
         if (problems.length === 0) {
           await expect(page.locator("#root")).not.toBeEmpty();
+          // A piece loaded after the landmarks show is asked for during this wait, so a failed
+          // asset ends it too, as it ends the landmarks' wait above.
+          const { mark } = visit;
+          if (mark !== undefined) {
+            await expect
+              .poll(async () => problems.length > 0 || (await readMark(page, mark)) !== null, {
+                message: `performance.mark ${mark} is set`,
+              })
+              .toBe(true);
+          }
           await expect.poll(() => pending.size).toBe(0);
         }
       } catch (error) {

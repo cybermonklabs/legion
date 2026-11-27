@@ -45,6 +45,10 @@ export type WalkRoutePath = (typeof walkRoutes)[number]["path"];
 
 /** The chunks a page loads only once it needs them, each named by what shows it has run. */
 export const lazyPieces = {
+  "block-room":
+    "the block room's first-sync splitter and its Web Worker (features/issue-page/sync-parts.ts, " +
+    "sync-parts.worker.ts), which the new issue page loads once its load has ended " +
+    "(features/issue-page/block-room.ts)",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
