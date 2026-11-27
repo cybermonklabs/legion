@@ -16,18 +16,6 @@ import (
 // keptReadsQuestion is the question the kept reads' issues ask on the issue itself.
 const keptReadsQuestion = "Which store holds the list?"
 
-// askQuestion is the question of the ask id, as GET /api/v1/asks/{id} answers it.
-func askQuestion(t *testing.T, handler http.Handler, id string) string {
-	t.Helper()
-	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+id, nil, "alice")
-	if read.Code != http.StatusOK {
-		t.Fatalf("read the ask %s: status=%d body=%s", id, read.Code, read.Body.String())
-	}
-	return decodeBody[struct {
-		Ask model.Ask `json:"ask"`
-	}](t, read).Ask.Question
-}
-
 // TestTheKeptReadsAnswerFromTheStore holds what R21 keeps for one release to the store, on an
 // issue born converted and on one that has not converted, each holding decisionsViewSpec, a plan,
 // a Verification document of one check and a document of notes:
@@ -208,7 +196,7 @@ func TestTheKeptReadsAnswerFromTheStore(t *testing.T) {
 					answers = append(answers, struct {
 						where string
 						holds bool
-					}{"the decisions query's rendering", strings.Contains(rendering, askQuestion(t, handler, ask.id))})
+					}{"the decisions query's rendering", strings.Contains(rendering, readBlockAsk(t, handler, ask.id).Question)})
 				}
 				for _, answer := range answers {
 					if answer.holds != ask.taken {

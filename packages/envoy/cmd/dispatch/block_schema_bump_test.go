@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -15,67 +16,116 @@ import (
 
 // issueTreeMigration is the name every migration of the issue-tree spec takes,
 // <timestamp>_issue_tree_<what>.up.sql, as store's TestThisChildsMigrationsTouchNoTableAboveTheCensusLimit
-// finds them: the type migrations this branch adds are the ones of store.TypeMigrations it names.
+// finds them: the spec's type migrations are the ones of store.TypeMigrations it names.
 var issueTreeMigration = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.up\.sql$`)
 
-// The branch moves the block schema one version, once (R21 of the issue-tree spec): its
-// elements stand at the version after the one the type migrations before it carry, however many
+// blockSchemaBumpBounds is the two type migrations of migrations the bump test migrates a store
+// through: spec, the newest of the issue-tree spec's own (issueTreeMigration), and before, the
+// newest of the others numbered below it. A type migration numbered after spec, which a later
+// change adds with its own move of blocks.json, is neither, so that move is no step of the spec's.
+func blockSchemaBumpBounds(migrations []string) (before, spec string, err error) {
+	for _, name := range migrations {
+		if issueTreeMigration.MatchString(name) {
+			spec = max(spec, name)
+		}
+	}
+	if spec == "" {
+		return "", "", errors.New("store.TypeMigrations names no type migration of the issue-tree spec, so nothing moves the block schema's version")
+	}
+	for _, name := range migrations {
+		if !issueTreeMigration.MatchString(name) && name < spec {
+			before = max(before, name)
+		}
+	}
+	if before == "" {
+		return "", "", fmt.Errorf("store.TypeMigrations names no type migration before %s, so no version stands before the issue-tree spec's", spec)
+	}
+	return before, spec, nil
+}
+
+// migrationVersion is the version of the migration name: the 14 digits it opens with.
+func migrationVersion(t *testing.T, name string) int {
+	t.Helper()
+	version, err := strconv.Atoi(name[:14])
+	if err != nil {
+		t.Fatalf("read the version of %s: %v", name, err)
+	}
+	return version
+}
+
+// blockSchemaVersion is the version the store's type nodes build on database, which this tree's
+// runner has migrated through the migration name and no further.
+func blockSchemaVersion(t *testing.T, database *store.Store, name string) int {
+	t.Helper()
+	schema, err := schemanodes.Read(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("build the schema from the store's nodes through %s: %v", name, err)
+	}
+	return schema.Version
+}
+
+// The issue-tree spec moves the block schema one version, once (R21 of the spec): its elements
+// stand at the version after the one the type migrations before the spec's own carry, however many
 // type migrations it adds. The test reads the version blocks.json gives at this head and the one
-// the store's type nodes build once every migration has run, which must agree, and then the version
-// the nodes build on a store this tree's runner migrated through the newest type migration of
-// store.TypeMigrations this branch did not add and no further: the version the store held before
-// this branch's type migrations moved it. A type migration of this branch that moves the version
-// is numbered after every one it did not add, each of which sets the version on every block type,
-// so that store holds none of this branch's moves. A second bump - blocks.json, or a type
-// migration of this branch, moving past the version after that one - is one step too many, and so
-// is none; and a move of this branch numbered before that migration shows here as a version that
-// store builds already.
-func TestTheBlockSchemaMovesOneVersionPastTheTypeMigrationsBeforeThisBranch(t *testing.T) {
+// the store's type nodes build once every migration has run, which must agree. It then reads the
+// version the nodes build on one store this tree's runner migrated, at two points
+// (blockSchemaBumpBounds): through the newest type migration of store.TypeMigrations that is not
+// the spec's and is numbered below the spec's newest, the version the store held before the spec's
+// type migrations moved it, and then on through the spec's newest, as a deployment's database
+// moves forward. A type migration of the spec that moves the version is numbered after every one
+// before it that it did not add, each of which sets the version on every block type, so the store
+// at the first point holds none of the spec's moves. A second bump between the two points is one
+// step too many, and so is none; and a move of the spec numbered before the first point's
+// migration shows here as a version the store builds there already. A type migration numbered
+// after the spec's newest is at neither point, so its own move of blocks.json is no step here.
+func TestTheIssueTreeSpecMovesTheBlockSchemaOneVersion(t *testing.T) {
 	database := storetest.Open(t)
-	ctx := context.Background()
 	file := readBlockSchemaFile(t)
 
-	head, err := schemanodes.Read(ctx, database.Pool)
+	head, err := schemanodes.Read(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("build the schema from the store's nodes at this head: %v", err)
 	}
 	if head.Version != file.Version {
-		t.Fatalf("the store's type nodes build version %d at this head, and %s is at version %d: a type migration of this branch and the file disagree",
+		t.Fatalf("the store's type nodes build version %d at this head, and %s is at version %d: a type migration and the file disagree",
 			head.Version, blockSchemaFile, file.Version)
 	}
 
-	var before, ours []string
-	for _, name := range store.TypeMigrations {
-		if issueTreeMigration.MatchString(name) {
-			ours = append(ours, name)
-			continue
-		}
-		before = append(before, name)
-	}
-	if len(ours) == 0 {
-		t.Fatal("store.TypeMigrations names no type migration of this branch, so nothing moves the block schema's version")
-	}
-	newest := slices.Max(before)
-	through, err := strconv.Atoi(newest[:14])
+	before, spec, err := blockSchemaBumpBounds(store.TypeMigrations)
 	if err != nil {
-		t.Fatalf("read the version of %s: %v", newest, err)
+		t.Fatal(err)
 	}
-	earlierStore := storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (the block schema bump)", through), func(databaseURL string) error {
-		database, err := store.Open(ctx, databaseURL)
-		if err != nil {
-			return fmt.Errorf("open the database: %w", err)
-		}
-		defer database.Pool.Close()
-		return database.MigrateThrough(ctx, through)
-	})
-	earlier, err := schemanodes.Read(ctx, earlierStore.Pool)
+	through := migrationVersion(t, before)
+	migrated := openMigratedThrough(t, fmt.Sprintf("this tree's runner through %d (the block schema bump)", through), through)
+	earlier := blockSchemaVersion(t, migrated, before)
+	if err := migrated.MigrateThrough(context.Background(), migrationVersion(t, spec)); err != nil {
+		t.Fatalf("migrate the store through %s on through %s: %v", before, spec, err)
+	}
+	moved := blockSchemaVersion(t, migrated, spec)
+	t.Logf("a store migrated through %s, the newest type migration before the issue-tree spec's, builds version %d; through %s, the spec's newest, version %d; %s is at version %d",
+		before, earlier, spec, moved, blockSchemaFile, file.Version)
+	if moved != earlier+1 {
+		t.Fatalf("a store migrated through %s builds version %d and one migrated through %s, the newest type migration before the issue-tree spec's, version %d: the spec moves the block schema %d steps, want one",
+			spec, moved, before, earlier, moved-earlier)
+	}
+}
+
+// The bump test reads its store at the two points the issue-tree spec's type migrations leave it,
+// also once a later change adds a type migration of its own after them: that migration, which
+// moves blocks.json again, is no bound of the test, so the test does not read the later move as a
+// second step of the spec's, or the store before the spec's moves as one past them all.
+func TestTheBlockSchemaBumpBoundsLeaveOutALaterTypeMigration(t *testing.T) {
+	before, spec, err := blockSchemaBumpBounds(store.TypeMigrations)
 	if err != nil {
-		t.Fatalf("build the schema from the store's nodes through %s, the newest type migration before this branch's: %v", newest, err)
+		t.Fatal(err)
 	}
-	t.Logf("the type migrations before this branch's (%d of them) carry version %d; this branch's %v and %s carry version %d",
-		len(before), earlier.Version, ours, blockSchemaFile, file.Version)
-	if file.Version != earlier.Version+1 {
-		t.Fatalf("%s is at version %d and the type migrations before this branch's carry version %d: the branch moves the block schema %d steps, want one",
-			blockSchemaFile, file.Version, earlier.Version, file.Version-earlier.Version)
+	later := slices.Concat(store.TypeMigrations, []string{"29991231235959_graph_supertags_later_change.up.sql"})
+	laterBefore, laterSpec, err := blockSchemaBumpBounds(later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if laterBefore != before || laterSpec != spec {
+		t.Errorf("with a type migration added after the issue-tree spec's, the bump test migrates through %s and %s, want %s and %s as without it",
+			laterBefore, laterSpec, before, spec)
 	}
 }

@@ -342,32 +342,19 @@ export function servedAskOf(
  * the block's own ask, or of the ask on another document of the owner the block is a copy of,
  * with that ask's id and document (`copied_from`, `copied_from_document`). A Dispatch of this
  * release writes none of them into the text and answers them in its `asks` (`liveAskOf`). Only a
- * real opener of the block counts, as the CLI reads one (`askOpenerLines`, `askOpeners`): a line
- * that quotes the opener in fenced code or in front matter is the document's own text. Its
- * attributes are read as the CLI reads them (`askOpenerAttributes`), so the two never read one
- * opener differently. Undefined where the text renders the block no state, or holds no real
- * opener of it, or more than one.
+ * real opener of the block counts, as the CLI reads one (`askOpenerLines`, `askOpeners`), and its
+ * attributes are read as the CLI reads them (`askOpenerAttributes`): a line that quotes the opener
+ * in fenced code or in front matter is the document's own text. Undefined where the text renders
+ * the block no state, or holds no real opener of it, or more than one.
  */
 // kept for one release: release-before-text
 export function renderedAskOf(
   markdown: string | undefined,
   blockId: string
 ): ServedAsk | undefined {
-  const openers = markdown === undefined ? [] : askOpenerLines(markdown);
-  const [opener, ...others] = askOpeners(openers, blockId);
-  if (opener === undefined || others.length > 0) {
-    return undefined;
-  }
-  const attributes: Record<string, unknown> = Object.fromEntries(askOpenerAttributes(opener));
-  // A list of strings is written as its JSON (pmdoc's encodeTypedAttribute).
-  if (typeof attributes.selected === "string") {
-    try {
-      attributes.selected = JSON.parse(attributes.selected);
-    } catch {
-      attributes.selected = undefined;
-    }
-  }
-  return attributes.state === undefined ? undefined : { rendered: recordedAnswer(attributes) };
+  const openers = markdown === undefined ? [] : askOpeners(askOpenerLines(markdown), blockId);
+  const ask = openers.length === 1 ? askOpenerAttributes(openers[0]) : undefined;
+  return ask?.state === undefined ? undefined : { rendered: recordedAnswer(ask) };
 }
 
 /**

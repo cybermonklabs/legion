@@ -924,6 +924,22 @@ func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.
 	}
 }
 
+// numberedMarkdown is format written 16,000 times, numbered 0 to 15,999.
+func numberedMarkdown(format string) string {
+	var markdown strings.Builder
+	for index := range 16_000 {
+		fmt.Fprintf(&markdown, format, index)
+	}
+	return markdown.String()
+}
+
+// refusedAtDecodeCap reports whether answer is the 413 CAP_EXCEEDED that names ygo's
+// 1048576-item decode cap.
+func refusedAtDecodeCap(answer uploadResult) bool {
+	return answer.status == http.StatusRequestEntityTooLarge && strings.Contains(string(answer.body), `"code":"CAP_EXCEEDED"`) &&
+		strings.Contains(string(answer.body), "1048576 items")
+}
+
 // Versions add their structs to a document's live state, and ygo decodes at most 1,048,576 structs
 // in one update. Alternating 16,000 paragraphs and 16,000 headings, each version within both upload
 // limits, take that state past what ygo can decode at the fourteenth version. The version that would
@@ -933,14 +949,7 @@ func TestVersionsCannotLeaveALiveStateTooLargeToDecode(t *testing.T) {
 	t.Parallel()
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
-	numbered := func(format string) string {
-		var markdown strings.Builder
-		for index := range 16_000 {
-			fmt.Fprintf(&markdown, format, index)
-		}
-		return markdown.String()
-	}
-	paragraphs, headings := numbered("p%d\n\n"), numbered("# h%d\n")
+	paragraphs, headings := numberedMarkdown("p%d\n\n"), numberedMarkdown("# h%d\n")
 	var artifactID, lastStored string
 	for upload := range 20 {
 		markdown, marker := paragraphs, "p15999"
@@ -959,9 +968,7 @@ func TestVersionsCannotLeaveALiveStateTooLargeToDecode(t *testing.T) {
 			}
 			continue
 		}
-		if upload < 2 || version.status != http.StatusRequestEntityTooLarge ||
-			!strings.Contains(string(version.body), `"code":"CAP_EXCEEDED"`) ||
-			!strings.Contains(string(version.body), "1048576 items") {
+		if upload < 2 || !refusedAtDecodeCap(version) {
 			t.Fatalf("version %d answered %d %.500s, want 201 until 413 CAP_EXCEEDED names ygo's 1048576-item decode cap", upload+1, version.status, version.body)
 		}
 		if text := server.text(t, artifactID); !strings.Contains(text, lastStored) {
@@ -992,18 +999,7 @@ func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
 	if room == issue.PrimaryArtifactID {
 		t.Fatalf("the spec of %s is a room of its own, want it a fragment of its issue's room", issue.Key)
 	}
-	capRefusal := func(answer uploadResult) bool {
-		return answer.status == http.StatusRequestEntityTooLarge && strings.Contains(string(answer.body), `"code":"CAP_EXCEEDED"`) &&
-			strings.Contains(string(answer.body), "1048576 items")
-	}
-	numbered := func(format string) string {
-		var markdown strings.Builder
-		for index := range 16_000 {
-			fmt.Fprintf(&markdown, format, index)
-		}
-		return markdown.String()
-	}
-	paragraphs, headings := numbered("p%d\n\n"), numbered("# h%d\n")
+	paragraphs, headings := numberedMarkdown("p%d\n\n"), numberedMarkdown("# h%d\n")
 	full := false
 	for version := range 20 {
 		markdown := paragraphs
@@ -1018,7 +1014,7 @@ func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
 		if answer.status == http.StatusCreated {
 			continue
 		}
-		if version < 2 || !capRefusal(answer) {
+		if version < 2 || !refusedAtDecodeCap(answer) {
 			t.Fatalf("spec upload %d answered %d %.500s, want 201 until 413 CAP_EXCEEDED names ygo's 1048576-item decode cap", version+1, answer.status, answer.body)
 		}
 		full = true
@@ -1071,7 +1067,7 @@ func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
 			}
 			continue
 		}
-		if !capRefusal(answer) {
+		if !refusedAtDecodeCap(answer) {
 			t.Fatalf("%s answered %d %.500s, want 201, or 413 CAP_EXCEEDED naming ygo's 1048576-item decode cap", name, answer.status, answer.body)
 		}
 		if count(); held != before || named != 0 {

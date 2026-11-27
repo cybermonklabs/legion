@@ -19,10 +19,6 @@ var (
 	// readsReviewTable matches the table after a from or a join, since a statement reaches it
 	// either way and a join's newest-row pick is as ordinary a shape as a plain read's.
 	readsReviewTable = regexp.MustCompile(`\b(?:from|join)\s+` + reviewTable)
-	// reviewOrderText is the leading term of model.ReviewOrder, the one a statement written with
-	// another order cannot carry: the two after it, created_at and id, are what the wrong order
-	// is made of.
-	reviewOrderText = model.ReviewEventOrder
 )
 
 // The guard reads an order by clause and nothing else, so one edge is outside it: a newest-row
@@ -61,7 +57,10 @@ func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
 			if !readsReviewTable.MatchString(statement) || !ordersRows.MatchString(statement) {
 				continue
 			}
-			if strings.Contains(statement, reviewOrderText) {
+			// model.ReviewEventOrder is the leading term of model.ReviewOrder, the one a statement
+			// written with another order cannot carry: the two after it, created_at and id, are
+			// what the wrong order is made of.
+			if strings.Contains(statement, model.ReviewEventOrder) {
 				continue
 			}
 			offence := filepath.ToSlash(source.path) + ": " + statement
@@ -113,7 +112,7 @@ func TestTheReviewOrderGuardReadsBothOrders(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			refused := readsReviewTable.MatchString(test.statement) &&
 				ordersRows.MatchString(test.statement) &&
-				!strings.Contains(test.statement, reviewOrderText)
+				!strings.Contains(test.statement, model.ReviewEventOrder)
 			if refused != test.refused {
 				t.Fatalf("refused = %t, want %t for %q", refused, test.refused, test.statement)
 			}

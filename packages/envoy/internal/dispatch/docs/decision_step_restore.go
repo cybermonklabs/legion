@@ -243,7 +243,7 @@ func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, d
 	if _, err := conn.lock(ctx, decisionStepLock, true); err != nil {
 		return nil, nil, fmt.Errorf("take the decision step's lock: %w", err)
 	}
-	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
+	owed, err := graphcensus.AsksOwed(ctx, s.database)
 	if err != nil {
 		return nil, nil, err
 	}

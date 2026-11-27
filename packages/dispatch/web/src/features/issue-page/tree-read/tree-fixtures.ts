@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-
 import type { Comment, Decision, IssueTreeEnd, IssueTreeParent } from "../../../api/types";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
@@ -172,46 +169,29 @@ export function markedCommentNode(
     Partial<Pick<Comment, "anchor">>,
   parent?: string
 ): TreeAnswerNode {
-  const node = commentNode(comment, parent);
   return {
-    ...node,
-    ...(comment.edited_at === null || comment.edited_at === undefined
-      ? {}
-      : { edited_at: comment.edited_at }),
-    ...(comment.deleted_at === null || comment.deleted_at === undefined
-      ? {}
-      : { deleted_at: comment.deleted_at, deleted_by: comment.deleted_by ?? null, text: "" }),
+    ...commentNode(comment, parent),
+    ...postMarks(comment),
+    ...(comment.deleted_at === null || comment.deleted_at === undefined ? {} : { text: "" }),
   };
 }
 
-/** The marks of a post the contract's tree node does not declare yet, by the names the read is
- *  to answer them under. */
-const TREE_NODE_MARKS = ["edited_at", "deleted_at", "deleted_by"] as const;
-
-/**
- * Whether the contract's tree node (`IssueTreeNode`, `packages/contracts/schemas/
- * dispatch-openapi.json`) lacks a post's marks (`TREE_NODE_MARKS`), which the page reads a
- * comment's deleted line, its edited mark and a deleted Change from: a case that reads one is
- * skipped while it does, with a line that says which, as `skipWithout` skips a case on a missing
- * program. Call it once, at the test file's module scope, and hand the result to every
- * `skipIf` of the file.
- */
-export function skipWithoutTreeNodeMarks(): boolean {
-  const schema = JSON.parse(
-    readFileSync(
-      fileURLToPath(
-        new URL("../../../../../../contracts/schemas/dispatch-openapi.json", import.meta.url)
-      ),
-      "utf8"
-    )
-  ) as { components: { schemas: { IssueTreeNode: { properties: Record<string, unknown> } } } };
-  const declared = schema.components.schemas.IssueTreeNode.properties;
-  const missing = TREE_NODE_MARKS.filter((mark) => !(mark in declared));
-  if (missing.length === 0) return false;
-  console.warn(
-    `Skipped the cases that read a post's marks on a tree node: IssueTreeNode does not declare ${missing.join(", ")}.`
-  );
-  return true;
+/** A post's marks as the read answers them on its node (`IssueTreeNode`): when its author last
+ *  edited it, and when and by whom they deleted it, each left out where the post holds none. */
+export function postMarks(
+  post: Partial<Pick<Comment, "deleted_at" | "deleted_by" | "edited_at">>
+): Pick<TreeAnswerNode, "deleted_at" | "deleted_by" | "edited_at"> {
+  return {
+    ...(post.edited_at === null || post.edited_at === undefined
+      ? {}
+      : { edited_at: post.edited_at }),
+    ...(post.deleted_at === null || post.deleted_at === undefined
+      ? {}
+      : { deleted_at: post.deleted_at }),
+    ...(post.deleted_by === null || post.deleted_by === undefined
+      ? {}
+      : { deleted_by: post.deleted_by }),
+  };
 }
 
 /** The decisions read's object for a decision whose words are `text`: never kept, replaced or

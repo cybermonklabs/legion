@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -41,37 +40,28 @@ func TestARoomSettlementThatOpensAnAskAndWritesAVersionStatesItsShapedTieAtThatV
 		if err != nil {
 			t.Fatalf("%s: parse the spec: %v", what, err)
 		}
-		before := roomUpdateCount(t, database, room.tree)
+		before := storedUpdateCount(t, database, room.tree)
 		var written error
 		if _, err := spec.Send(func(txn *crdt.Transaction) { written = pmdoc.Update(txn, fragment, tree) }); err != nil || written != nil {
 			t.Fatalf("%s: %v, %v", what, err, written)
 		}
-		waitForStoredUpdates(t, database, room.tree, before)
-		if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-			t.Fatalf("%s: wait for the room's appends: %v", what, err)
-		}
-		if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-			t.Fatalf("%s: settle the issue's room: %v", what, err)
-		}
+		settleLandedWrite(t, ctx, database, service, room, before)
 	}
 	const requirement = ":::requirement{#r1}\nThe store holds the corpus.\n:::\n"
 	settle("write the requirement into the spec's fragment", requirement)
-	before := newestVersionNumber(t, database, room.spec)
+	before := savedVersion(t, database, room.spec)
 
 	shaped := refs.BlockRef(refs.ArtifactRef(&room.issue, "DOC", nil, "spec", "doc", true), "r1")
 	settle("write the ask block into the spec's fragment", requirement+
 		"\n:::ask{#q-tie urgency=\"med\" multiple=\"false\" shaped=\""+shaped+"\"}\nWhich store holds the corpus?\n:::\n")
-	written, tree := newestVersionNumber(t, database, room.spec), newestVersionNumber(t, database, room.tree)
+	written, tree := savedVersion(t, database, room.spec), savedVersion(t, database, room.tree)
 	if written != before+1 || tree == before || tree == written {
 		t.Fatalf("the settlement left the spec at version %d after version %d and the tree artifact at version %d, want the spec one version on and the tree at neither: it is the settlement that writes a version of the spec alone",
 			written, before, tree)
 	}
 
 	ask := blockAskOn(t, service, room.tree, "q-tie")
-	var treeRef string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, room.tree).Scan(&treeRef); err != nil {
-		t.Fatalf("read the ref_key of %s's tree: %v", room.issue, err)
-	}
+	treeRef := refKeyOf(t, database, room.tree)
 	type shapedRow struct {
 		nodeKind, nodeAddress, toKind, toID string
 		version                             int

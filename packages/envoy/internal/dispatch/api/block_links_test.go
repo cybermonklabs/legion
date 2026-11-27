@@ -92,7 +92,7 @@ func compareBlockLinks(t *testing.T, stage string, got []model.BlockLink, want [
 // are exactly its two, newest first, each dated by the version that wrote it; the links back are
 // exactly the spec's one. The spec is a fragment of its issue's room, whose tree keys its blocks'
 // nodes; rollout.md plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes
-// (R5 of this branch's spec).
+// (R5 of the issue-tree spec).
 func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
@@ -186,10 +186,11 @@ func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
 	if paragraphID == "" {
 		t.Fatalf("the inserted paragraph %q is not among GET …/blocks", paragraph)
 	}
+	node := readDecisionDocument(t, database, issue.Key, "spec").address
 	compareBlockLinks(t, "the spec to itself", readBlockLinks(t, handler, specRef, specRef).Links, []blockLink{{
 		Kind:         "mentions",
-		FromDocument: specRef, FromID: readDecisionDocument(t, database, issue.Key, "spec").address(paragraphID), FromKind: "block", FromBlockID: paragraphID,
-		ToDocument: specRef, ToID: readDecisionDocument(t, database, issue.Key, "spec").address("ship_it"), ToKind: "block", ToBlockID: "ship_it",
+		FromDocument: specRef, FromID: node(paragraphID), FromKind: "block", FromBlockID: paragraphID,
+		ToDocument: specRef, ToID: node("ship_it"), ToKind: "block", ToBlockID: "ship_it",
 		CreatedVersion: version.Number, CreatedAt: version.CreatedAt,
 	}})
 }

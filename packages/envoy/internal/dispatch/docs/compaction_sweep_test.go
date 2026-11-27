@@ -199,7 +199,7 @@ func TestDeleteAndRebuildTakeTheDocumentOffTheSweepsList(t *testing.T) {
 	if err := lockDocumentRoom(ctx, tx, rebuilt); err != nil {
 		t.Fatalf("lock the document: %v", err)
 	}
-	head, err := versioned.head(ctx, tx, rebuilt)
+	head, err := roomHead(ctx, tx, rebuilt)
 	if err != nil {
 		t.Fatalf("read the head the rebuild replaces: %v", err)
 	}

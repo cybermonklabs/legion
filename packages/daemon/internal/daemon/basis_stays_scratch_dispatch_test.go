@@ -435,13 +435,19 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 	t := r.t
 	t.Helper()
 	labelled := map[string]any{"labels": []string{"legion"}}
-	run := basisRun{root: r.create(asSession, names[0], labelled), rootVersion: 1}
+	rootFields, rootMemo := labelled, "The revisions name the inputs."
+	if opt.approvedV2 {
+		rootFields = map[string]any{"labels": []string{"legion"}, "spec": memoSpec(rootMemo)}
+	}
+	run := basisRun{root: r.create(asSession, names[0], rootFields), rootVersion: 1}
 	run.grant = r.admit(run.root.Key)
 	if opt.approvedV2 {
 		// R's own gate records the person's approval of v2 as any root's does: its architect
 		// registers v2, the person approves it, its architect hears that approval (hear) and the
 		// tree starts, and two later versions close the step again, its row keeping that approval
-		// as one of an older version.
+		// as one of an older version. A paragraph's version would carry the approval (R14), and so
+		// would any version of a view's spec that leaves its memo (R23), so R opens with a memo and
+		// the first of the two changes the memo's words.
 		second := r.editDocument(run.root.PrimaryArtifactID, insertParagraph("The first revision names the inputs."))
 		if status, refusal := r.gateCall(plainCall(run.grant(), run.root, second)); status != http.StatusOK {
 			t.Fatalf("%s's registration of version %d with no basis = %d %+v, want 200", run.root.Key, second, status, refusal)
@@ -455,16 +461,20 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 		})
 		r.hear(run.root.Key, second)
 		run.ownApproval = &approved
-		r.editDocument(run.root.PrimaryArtifactID, insertParagraph("The second revision names the outputs."))
+		r.revise(run.root.PrimaryArtifactID, rootMemo, "The revisions name the inputs and the outputs.")
 		run.rootVersion = r.editDocument(run.root.PrimaryArtifactID, insertParagraph("The third revision names the limits."))
 		r.quiet(run.root.Key)
 	}
-	fields := map[string]any{"labels": []string{"legion"}}
 	if opt.grandparent {
-		run.grand, _ = r.ancestor(names[2], map[string]any{"labels": []string{"legion"}}, "g1", "g2")
-		fields["parent"] = run.grand.Key
+		run.grand, _ = r.ancestor(names[2], labelled, "g1", "g2")
 	}
-	run.parent, _ = r.ancestor(names[1], fields, "p1", "p2", "p3")
+	run.parent, _ = r.ancestor(names[1], labelled, "p1", "p2", "p3")
+	if opt.grandparent {
+		// P filed under G would be a view on G's spec, on which Dispatch refuses P's own
+		// requirements (R23, 409 REQUIREMENT_BELONGS_TO_ANCESTOR), so P marks P1 to P3 as a root,
+		// which makes its spec its own, and is then set under G.
+		r.patch(run.parent.Key, asPerson, map[string]any{"parent": run.grand.Key})
+	}
 	approval := r.approve(run.parent.PrimaryArtifactID)
 	run.basisVersion = approval.Version
 	if opt.live {
@@ -529,10 +539,12 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	r.tune = func(o *overrides) { o.holdOutbox = held.holds }
 	r.boot()
 
-	// 1. The held seed, P's new version and the changes request on it, the seed, the restart.
+	// 1. The held seed, P's new version and the changes request on it, the seed, the restart. A
+	// paragraph's version of P would carry the person's approval (R14), so each new version of P in
+	// runs 1 to 3 adds words to P3, and the person has approved none of them.
 	one := r.openRun(held, []string{"Kestrel nest monitor", "Raptor habitat survey"}, stayingOptions{holdSeed: true})
 	base := r.firstReads(one)
-	newer := r.editAs(one.parent.PrimaryArtifactID, asPerson, insertParagraph("The survey adds the northern ridge."))
+	newer := r.editAs(one.parent.PrimaryArtifactID, asPerson, amendRequirement("p3", "The survey adds the northern ridge."))
 	r.quiet(one.parent.Key)
 	r.stays(fmt.Sprintf("run 1, the person's version %d of P's primary document, the seed still due", newer), one.root.Key, base)
 	r.requestChanges(one.parent.PrimaryArtifactID, "Name the ridge's access road.")
@@ -558,7 +570,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	// 2. P's open approval request when the daemon starts again.
 	two := r.openRun(held, []string{"Lantern festival lighting", "Riverside carnival logistics"}, stayingOptions{})
 	base = r.firstReads(two)
-	requested := r.editDocument(two.parent.PrimaryArtifactID, insertParagraph("The carnival moves upstream."))
+	requested := r.editDocument(two.parent.PrimaryArtifactID, amendRequirement("p3", "The carnival moves upstream."))
 	ask := r.requestApproval(two.parent.PrimaryArtifactID, "The carnival moves upstream.")
 	r.quiet(two.parent.Key)
 	r.stays(fmt.Sprintf("run 2, P's version %d and its approval request %s", requested, ask), two.root.Key, base)
@@ -576,7 +588,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	// 3. P a live Legion root whose own gate names P's document.
 	three := r.openRun(held, []string{"Orchard irrigation timer", "Valley water allocation"}, stayingOptions{live: true})
 	base = r.firstReads(three)
-	closed := r.editDocument(three.parent.PrimaryArtifactID, insertParagraph("The allocation counts the wells."))
+	closed := r.editDocument(three.parent.PrimaryArtifactID, amendRequirement("p3", "The allocation counts the wells."))
 	r.quiet(three.parent.Key)
 	settled(t, r.d, "close the gate of "+three.parent.Key+" at its version "+fmt.Sprint(closed), func(s api.State) bool {
 		step := stepOf(s, three.parent.Key)

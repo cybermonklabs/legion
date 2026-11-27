@@ -71,7 +71,7 @@ func approvedRecordRoom(t *testing.T, number int) recordRoom {
 		t.Fatalf("parse the spec: %v", err)
 	}
 	written.settleSpecEdit(t, context.Background(), func(*pmdoc.Node) (*pmdoc.Node, error) { return spec, nil })
-	written.approved = newestVersionNumber(t, database, room.spec)
+	written.approved = savedVersion(t, database, room.spec)
 	requireStatedRow(t, database, room.issue, graphstore.QuerySpec, room.spec, written.approved)
 	approveStoredVersion(t, database, room.spec, written.approved, "alice")
 	return written
@@ -79,12 +79,12 @@ func approvedRecordRoom(t *testing.T, number int) recordRoom {
 
 // settleSpecEdit has the peer write into the spec's fragment the tree edit makes of the one the
 // fragment holds, in one transaction of the peer's, waits for the room to store it, and settles the
-// room under ctx (settleOwedNow), whose settlement writes the spec's version, carries an approval
-// to it, and fills its owed digest once it has committed. A fragment that holds nothing yet, which
-// reads no tree, hands edit nil.
+// room under ctx (settleLandedWrite), whose settlement writes the spec's version, carries an
+// approval to it, and fills its owed digest once it has committed. A fragment that holds nothing
+// yet, which reads no tree, hands edit nil.
 func (r recordRoom) settleSpecEdit(t *testing.T, ctx context.Context, edit func(*pmdoc.Node) (*pmdoc.Node, error)) {
 	t.Helper()
-	stored := roomUpdateCount(t, r.database, r.room.tree)
+	stored := storedUpdateCount(t, r.database, r.room.tree)
 	fragment := r.peer.Doc.GetXmlFragment(r.room.spec)
 	var want string
 	var failed error
@@ -109,13 +109,7 @@ func (r recordRoom) settleSpecEdit(t *testing.T, ctx context.Context, edit func(
 	if err := r.peer.WaitForText(fragmentMarkdown(r.room.spec), want, roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of %s's spec: %v", r.room.issue, err)
 	}
-	waitForStoredUpdates(t, r.database, r.room.tree, stored)
-	if err := r.service.waitForDurableAppends(ctx, r.room.tree); err != nil {
-		t.Fatalf("wait for %s's appends: %v", r.room.issue, err)
-	}
-	if err := r.service.settleOwedNow(ctx, r.room.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle %s's room: %v", r.room.issue, err)
-	}
+	settleLandedWrite(t, ctx, r.database, r.service, r.room, stored)
 }
 
 // moveParagraphBeforeRequirement is recordSpec's paragraph moved in the text before the
@@ -133,7 +127,7 @@ func moveParagraphBeforeRequirement(tree *pmdoc.Node) (*pmdoc.Node, error) {
 // replaceWords sets the text of the first text run inside the block of tree whose id is id to
 // words, and fails where tree holds no such block.
 func replaceWords(tree *pmdoc.Node, id, words string) error {
-	block := findBlock(tree, id)
+	block := blockByID(tree, id)
 	if block == nil {
 		return fmt.Errorf("the tree holds no block %s", id)
 	}
@@ -142,19 +136,6 @@ func replaceWords(tree *pmdoc.Node, id, words string) error {
 		return nil
 	}
 	return fmt.Errorf("the block %s holds no text", id)
-}
-
-// findBlock is the node of tree whose block id (pmdoc.BlockIDAttr) is id, nil where none is.
-func findBlock(node *pmdoc.Node, id string) *pmdoc.Node {
-	if held, _ := node.Attrs[pmdoc.BlockIDAttr].(string); held == id {
-		return node
-	}
-	for _, child := range node.Children {
-		if found := findBlock(child, id); found != nil {
-			return found
-		}
-	}
-	return nil
 }
 
 // firstTextRun is the first text node under node, nil where none is.
@@ -267,7 +248,7 @@ func TestTheRecordCarryBacksAnUnmovedRecordAndItsFillHoldsItToTheClaim(t *testin
 	written.settleSpecEdit(t, withRecordCarryForced(context.Background()), func(tree *pmdoc.Node) (*pmdoc.Node, error) {
 		return tree, replaceWords(tree, "r1", "An urgent ask comes last.")
 	})
-	number := newestVersionNumber(t, written.database, spec)
+	number := savedVersion(t, written.database, spec)
 	if number != written.approved+1 {
 		t.Fatalf("the settlement of the requirement's edit left version %d newest, want %d", number, written.approved+1)
 	}

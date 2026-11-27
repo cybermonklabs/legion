@@ -143,29 +143,10 @@ unset BASELINE_BINARY
 
 # The database this driver empties: only a database on this machine whose name begins
 # infra_1253_upgrade, which the upgrade drivers of this issue alone use, and never infra_1253, which
-# `bun run dispatch:local` serves. It is refused before anything is built.
-[[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] || {
-  printf '%s: DATABASE_URL is no postgres:// URL naming a database\n' "$driver" >&2
-  usage
-  exit 2
-}
-readonly database_name="${BASH_REMATCH[4]}"
-readonly maintenance_url="${BASH_REMATCH[1]}${BASH_REMATCH[3]}/postgres${BASH_REMATCH[5]}"
-database_host="${BASH_REMATCH[3]##*@}"
-if [[ "$database_host" == \[* ]]; then database_host="${database_host%%]*}]"; else database_host="${database_host%%:*}"; fi
-case "$database_host" in
-  127.0.0.1 | localhost | '[::1]') ;;
-  *)
-    printf '%s: DATABASE_URL is on %s, not this machine; this driver empties only this pod'"'"'s own infra_1253_upgrade\n' \
-      "$driver" "$database_host" >&2
-    exit 2
-    ;;
-esac
-[[ "$database_name" =~ ^infra_1253_upgrade[a-z0-9_]*$ ]] || {
-  printf '%s: DATABASE_URL names %s; this driver empties only a database whose name begins infra_1253_upgrade\n' \
-    "$driver" "$database_name" >&2
-  exit 2
-}
+# `bun run dispatch:local` serves, named with no connection override that libpq would connect by
+# instead (lib-tree.sh's tree_database_parts). It is refused before anything is built.
+readonly database_names='infra_1253_upgrade*'
+tree_database_parts "$database_url" "$database_names"
 
 # The earlier release, read in full in the checkout lib-baseline.sh builds it from, so the commit
 # read here is the commit built. PRE_1149_SHA must predate the graph store: over a build that holds
@@ -249,16 +230,6 @@ trap 'exit 143' TERM
 # lit VALUE: VALUE as one SQL string literal.
 lit() { printf "'%s'" "${1//\'/\'\'}"; }
 
-# view_arms_empty_database SECTION: drops the database DATABASE_URL names and creates it empty,
-# connecting to the `postgres` database of the same server with the same role, so the next server
-# booted over it migrates it from nothing.
-view_arms_empty_database() {
-  baseline_psql "$maintenance_url" -q -c "drop database if exists \"$database_name\" with (force)" \
-    -c "create database \"$database_name\"" >"$work/reset" 2>&1 ||
-    fail "$1" "drop and create the database $database_name" "psql: $(<"$work/reset")"
-  printf 'database %s dropped and created empty\n' "$database_name"
-}
-
 # view_arms_github SECTION WHAT REPOS: puts REPOS, a JSON object of repositories, as everything the
 # fake GitHub serves.
 view_arms_github() {
@@ -274,7 +245,7 @@ view_arms_github() {
 # GitHub's throwaway App beside the caller's pairs; signs the person in and creates the project.
 view_arms_boot_earlier() {
   local section="$1" commit="$2"
-  view_arms_empty_database "$section"
+  tree_reset_database "$database_url" "$database_names" "$section"
   BASELINE_SHA="$commit"
   BASELINE_EXTRA_ENV="${given_extra_env:+$given_extra_env$'\n'}$github_env"
   # The bearer every server accepts, which baseline_start reads from DISPATCH_TOKEN.
@@ -295,8 +266,7 @@ view_arms_boot_earlier() {
 view_arms_issue() {
   printf 'The issue "%s".\n' "$2" >"$work/spec.md"
   corpus_issue "$1" "$2" "$work/spec.md" "${3:-}" "${4:-}"
-  [[ "$corpus_key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] ||
-    fail "$1" "create the issue \"$2\"" "the key $corpus_key is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$corpus_key"
 }
 
 # view_arms_upload SECTION ISSUE NAME TEXT: the agent uploads TEXT as the document NAME of ISSUE;
@@ -1269,7 +1239,7 @@ done
 # --- empty: a database this head creates ------------------------------------------------------------
 
 section=empty
-view_arms_empty_database "$section"
+tree_reset_database "$database_url" "$database_names" "$section"
 view_arms_boot head-empty
 base="${head_url[head-empty]}"
 tree_wait_backfill "$section" "${head_log[head-empty]}"

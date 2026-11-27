@@ -1,6 +1,6 @@
 package api
 
-//ci:builds packages/envoy ./cmd/dispatch pointersConvert builds envoy-dispatch, whose convert-issues TestEveryPointerAtAMovedNodeIsATupleAndItsProjection runs as the conversion of this issue's spec R6
+//ci:builds packages/envoy ./cmd/dispatch convertIssues builds envoy-dispatch, whose convert-issues TestEveryPointerAtAMovedNodeIsATupleAndItsProjection runs as the conversion of R6 of the issue-tree spec
 
 import (
 	"context"
@@ -17,19 +17,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// pointersCommit is the commit the test stamps the envoy-dispatch it converts with, and names in
-// the server_build_announcements row it writes, so the fleet gate of this issue's spec R6 passes.
-const pointersCommit = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+// conversionCommit is the commit the conversion checks stamp the envoy-dispatch they convert with,
+// and name in the server_build_announcements row they write, so the fleet gate of R6 of the
+// issue-tree spec passes.
+const conversionCommit = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
 
-// pointersConvert runs `envoy-dispatch convert-issues --project <project>` over database, the
-// conversion of this issue's spec R6 by hand, which the checks take as its entry point: with
-// dryRun, `--dry-run`, which moves the nodes as a real run does and rolls the moving transaction
-// back. It fails t unless the command exits 0.
-func pointersConvert(t *testing.T, database *store.Store, project string, dryRun bool) {
+// convertIssues runs `envoy-dispatch convert-issues --project <project>` over database, the
+// conversion of R6 of the issue-tree spec by hand, which the checks take as its entry point: with
+// dryRun, `--dry-run`, which writes as a real run does and rolls each issue's transaction back. It
+// fails t unless the command exits 0.
+func convertIssues(t *testing.T, database *store.Store, project string, dryRun bool) {
 	t.Helper()
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{
 		Name: "envoy-dispatch", Dir: "../../../cmd/dispatch",
-		Flags: []string{"-ldflags", "-X main.buildCommit=" + pointersCommit},
+		Flags: []string{"-ldflags", "-X main.buildCommit=" + conversionCommit},
 	})
 	args := []string{"convert-issues", "--project", project}
 	if dryRun {
@@ -88,16 +89,6 @@ func pointersFarEnds(t *testing.T, database *store.Store, fromKind, fromID, kind
 	return ends
 }
 
-// pointersRefKey is the ref_key of artifact id.
-func pointersRefKey(t *testing.T, database *store.Store, id string) string {
-	t.Helper()
-	var refKey string
-	if err := database.Pool.QueryRow(context.Background(), `select ref_key from artifacts where id = $1::uuid`, id).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of %s: %v", id, err)
-	}
-	return refKey
-}
-
 // Every structured pointer at a node that moves is a tuple, and its row a projection of it (this
 // issue's spec R13): the refs row's to_id, the block_refs row's to_id, the ask's
 // block_artifact_id, the comment's anchor and the check_results pair of check_artifact_id and
@@ -135,7 +126,7 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 	citing := createProjectIssue(t, handler, project, "The citing issue", "The citing issue's spec.\n")
 	cites := uploadDocument(t, handler, "/api/v1/issues/"+citing, "cites.md", "The citing paragraph.\n").Artifact
 
-	specKey := pointersRefKey(t, database, issue.PrimaryArtifactID)
+	specKey := refKeyOf(t, database, issue.PrimaryArtifactID)
 	paragraph := blockIDsByText(t, handler, issue.PrimaryArtifactID)[cited]
 	stayed := blockIDsByText(t, handler, notes.ID)[stays]
 	citingBlock := blockIDsByText(t, handler, cites.ID)["The citing paragraph."]
@@ -143,8 +134,8 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 		t.Fatalf("the blocks of the seeded documents are not listed: cited %q, stays %q, citing %q", paragraph, stayed, citingBlock)
 	}
 	oldAddress := specKey + "#" + paragraph
-	notesAddress := pointersRefKey(t, database, notes.ID) + "#" + stayed
-	citesKey := pointersRefKey(t, database, cites.ID)
+	notesAddress := refKeyOf(t, database, notes.ID) + "#" + stayed
+	citesKey := refKeyOf(t, database, cites.ID)
 	fromNode := citesKey + "#" + citingBlock
 
 	// The five structured pointers, written by SQL as the release before stores them: rows that
@@ -190,7 +181,7 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 		insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version, check_sha256, role, commit_sha, verdict, actor)
 		values ($1, $1, $2::uuid, 'c1', $3, $4, 'implementer', $5, 'fail', '{"kind":"person","id":"alice"}')
 		returning id::text
-	`, issue.Key, verification.ID, latestVersion(t, database, verification.ID).Number, strings.Repeat("ab", 32), pointersCommit).Scan(&resultID); err != nil {
+	`, issue.Key, verification.ID, latestVersion(t, database, verification.ID).Number, strings.Repeat("ab", 32), conversionCommit).Scan(&resultID); err != nil {
 		t.Fatalf("write the check_results row as the release before stores it: %v", err)
 	}
 
@@ -222,10 +213,10 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 	}
 	before := read(slices.Concat(pointers, bodies, untouched))
 
-	pointersOpenTheFleet(t, database)
+	openTheConversionFleet(t, database)
 
 	// The moving transaction rolled back: every pointer stands as it was.
-	pointersConvert(t, database, project, true)
+	convertIssues(t, database, project, true)
 	for index, now := range read(slices.Concat(pointers, bodies, untouched)) {
 		if now != before[index] {
 			t.Errorf("the conversion rolled back left %s as %s, want it as it was: %s", slices.Concat(pointers, bodies, untouched)[index].what, now, before[index])
@@ -234,7 +225,7 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 
 	// The moving transaction committed: each pointer is a tuple at the node's new home and its row
 	// projects it.
-	pointersConvert(t, database, project, false)
+	convertIssues(t, database, project, false)
 	tree, err := issueTreeOf(ctx, database.Pool, issue.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -242,37 +233,36 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 	if tree == "" {
 		t.Fatalf("after its conversion %s holds no tree", issue.Key)
 	}
-	treeKey := pointersRefKey(t, database, tree)
+	treeKey := refKeyOf(t, database, tree)
 	newAddress := treeKey + "#" + paragraph
 	checkAddress := treeKey + "#c1"
 
 	projections := []struct {
-		what                       string
 		row                        pointersRow
 		fromKind, fromID, kind, to string
 		want                       string
 	}{
-		{"the refs row's to_id", pointersRow{"the refs row's to_id", `select coalesce(string_agg(r.to_id, ',' order by r.to_id), '') from refs r where r.from_kind = 'artifact' and r.from_id = $1 and r.to_kind = 'block' and r.to_id <> $2`, []any{cites.ID, notesAddress}},
+		{pointersRow{"the refs row's to_id", `select coalesce(string_agg(r.to_id, ',' order by r.to_id), '') from refs r where r.from_kind = 'artifact' and r.from_id = $1 and r.to_kind = 'block' and r.to_id <> $2`, []any{cites.ID, notesAddress}},
 			"artifact", citesKey, "mentions", "block", newAddress},
-		{"the block_refs row's to_id", pointersRow{"the block_refs row's to_id", `select coalesce(string_agg(r.to_id, ',' order by r.to_id), '') from block_refs r where r.from_node = $1 and r.to_kind = 'block' and r.to_id <> $2`, []any{fromNode, notesAddress}},
+		{pointersRow{"the block_refs row's to_id", `select coalesce(string_agg(r.to_id, ',' order by r.to_id), '') from block_refs r where r.from_node = $1 and r.to_kind = 'block' and r.to_id <> $2`, []any{fromNode, notesAddress}},
 			"block", fromNode, "mentions", "block", newAddress},
-		{"the ask's block_artifact_id", pointersRow{"the ask's block_artifact_id", `select coalesce((select ref_key from artifacts where id = k.block_artifact_id), '') from asks k where k.id = $1::uuid`, []any{askID}},
+		{pointersRow{"the ask's block_artifact_id", `select coalesce((select ref_key from artifacts where id = k.block_artifact_id), '') from asks k where k.id = $1::uuid`, []any{askID}},
 			graphstore.KindAsk, askID, graphstore.TuplePartOf, "artifact", treeKey},
-		{"the ask's block", pointersRow{"the ask's block", `select coalesce((select ref_key from artifacts where id = k.block_artifact_id) || '#' || k.block_id, '') from asks k where k.id = $1::uuid`, []any{askID}},
+		{pointersRow{"the ask's block", `select coalesce((select ref_key from artifacts where id = k.block_artifact_id) || '#' || k.block_id, '') from asks k where k.id = $1::uuid`, []any{askID}},
 			graphstore.KindAsk, askID, graphstore.TupleAskedOn, refs.BlockNodeKind, treeKey + "#k1"},
-		{"the comment's anchor", pointersRow{"the comment's anchor", `select coalesce(` + graphstore.CommentAnchoredInSQL("c") + `, '') from comments c where c.id = $1::uuid`, []any{comment.ID}},
+		{pointersRow{"the comment's anchor", `select coalesce(` + graphstore.CommentAnchoredInSQL("c") + `, '') from comments c where c.id = $1::uuid`, []any{comment.ID}},
 			graphstore.KindComment, comment.ID, graphstore.TupleAnchoredIn, "block", newAddress},
-		{"the check_results pair", pointersRow{"the check_results pair", `select coalesce((select ref_key from artifacts where id = r.check_artifact_id) || '#' || r.check_block_id, '') from check_results r where r.id = $1::uuid`, []any{resultID}},
+		{pointersRow{"the check_results pair", `select coalesce((select ref_key from artifacts where id = r.check_artifact_id) || '#' || r.check_block_id, '') from check_results r where r.id = $1::uuid`, []any{resultID}},
 			graphstore.KindResult, resultID, graphstore.TupleResultOf, "block", checkAddress},
 	}
 	for _, projection := range projections {
 		row := projection.row.read(t, database)
 		ends := pointersFarEnds(t, database, projection.fromKind, projection.fromID, projection.kind, projection.to)
 		if !slices.Equal(ends, []string{projection.want}) {
-			t.Errorf("%s: the store holds the %s tuples %v out of %s %s, want one to the node's new home %s", projection.what, projection.kind, ends, projection.fromKind, projection.fromID, projection.want)
+			t.Errorf("%s: the store holds the %s tuples %v out of %s %s, want one to the node's new home %s", projection.row.what, projection.kind, ends, projection.fromKind, projection.fromID, projection.want)
 		}
 		if row != projection.want {
-			t.Errorf("%s projects %q, want %q, its tuple's far end at the node's new home", projection.what, row, projection.want)
+			t.Errorf("%s projects %q, want %q, its tuple's far end at the node's new home", projection.row.what, row, projection.want)
 		}
 	}
 	var checkKeys string
@@ -318,16 +308,17 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 	}
 }
 
-// pointersOpenTheFleet takes away the live process holdIssuesUnconverted added and announces
-// pointersCommit, so the conversion's fleet gate passes (this issue's spec R6): no live process
-// serves another build, and the newest announcement names the commit the conversion runs against.
-func pointersOpenTheFleet(t *testing.T, database *store.Store) {
+// openTheConversionFleet takes away the live process holdIssuesUnconverted added, which lists no
+// issue room, and writes the announcement of the build the conversion runs as (conversionCommit),
+// so the conversion's fleet gate passes (R6 of the issue-tree spec): no live process serves another
+// build, and the newest announcement names the commit the conversion runs against.
+func openTheConversionFleet(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `delete from server_processes where heartbeat_at > now() + interval '1 hour'`); err != nil {
 		t.Fatalf("take away the live process that lists no issue room: %v", err)
 	}
-	if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, pointersCommit); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, conversionCommit); err != nil {
 		t.Fatalf("announce the build the conversion runs as: %v", err)
 	}
 }

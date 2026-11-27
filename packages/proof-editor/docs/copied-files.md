@@ -90,10 +90,17 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
 
 30. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
 
-29. The `minutes` attribute kind, a duration a plan task's `size` is written in (`45m`, `2h`, `1h30m`).
+31. The `minutes` attribute kind, a duration a plan task's `size` is written in (`45m`, `2h`, `1h30m`).
     In `src/block-schema.ts`: `minutesValueProblem`, the twin of pmdoc's `Minutes`, with its pattern and its bound, and `parseAttribute`'s `minutes` case calling it.
     In `src/typed-block-commands.ts`: `validateValue`'s `minutes` case calling it.
     In `src/tests/block-schema.test.ts`: its import and the suite's case for the kind.
+
+32. A `block[]` attribute's `items`, the item kinds its values may point at besides a block of a document - an issue's ask, comment or message, a block of one, or an issue - with their `item_versions`, and the `parent` attribute.
+    In `src/block-schema.ts`: the import of `PARENT_ATTRIBUTE` and `pointerItemKind` from `@legion/contracts`; `creatableValue` reading `item_versions` for each item a `block[]` value points at; `validateBlockSchema` refusing `items` on any other kind, an item kind `ITEM_KINDS` does not name or one named twice, and a `parent` attribute of any kind but `block[]`; and `parseAttribute`'s `block[]` case passing `attribute.items` to `parseBlockPointers`.
+    In `src/typed-block-commands.ts`: the import of `parentProblem` from `./block-pointers`, and `validateValue`'s `block[]` case passing `attribute.items` to `blockPointersProblem` and refusing what `parentProblem` refuses.
+    In `src/tests/block-schema.test.ts`: the import of `validateBlockSchema`, the shared table's case building each row's attribute with that row's `items`, and the suite's cases for a parent, a size and a needs, and for an issue in a needs.
+
+33. An editor bound to one XmlFragment of the host's Yjs document: `src/lib.ts`'s `CreateProofEditorOptions.fragment` (`'prosemirror'` where it names none), the `ydoc` option's comment, and `collabService.bindXmlFragment` of that fragment in place of `bindDoc`, with a comment saying why: an issue's room holds one fragment per document.
 
 ## The two micromark copies
 

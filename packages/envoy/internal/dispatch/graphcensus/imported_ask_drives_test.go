@@ -44,9 +44,10 @@ const (
 // on a document of its own; the settlement of an ask block whose question a person's edit emptied;
 // the settlement that carries a person's approval onto an approval request a session opened; a
 // person's edit that takes the block of an answered ask out of its document; an upload that changes
-// nothing, whose version no index pass plans; the decisions step's conversion of an issue whose
-// decisions document holds one section a person kept; and the step's catch-up of an unfollow a
-// build before this one recorded.
+// nothing, whose version no index pass plans; the settlement of a person's upload that writes the
+// answered ask's block back, which retracts that person's removal; the decisions step's conversion
+// of an issue whose decisions document holds one section a person kept; and the step's catch-up of
+// an unfollow a build before this one recorded.
 func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -54,28 +55,35 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// What each drive's Ready writes for the drive and its check: the issue the close and the
 	// reopen take, the document the Keep keeps a decision of and the decision's sum, the copy, the
 	// document whose ask block is emptied and that ask, the document the carry settles and its
-	// approval request, the document whose answered ask a person removes, the document an upload
-	// leaves as it was, and the project the decisions step converts.
-	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, unchanged string
+	// approval request, the document whose answered ask a person removes and that ask, the document
+	// an upload leaves as it was, and the project the decisions step converts.
+	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, removedAsk, unchanged string
 	// The token of the version same.md's replacement replaces, read before its drive.
 	var unchangedBase map[string]string
 	const decided = "DECIDE"
+	// The text of removal.md as its session wrote it, which the retraction's drive writes back.
+	const removalText = "# Removal\n\nContext.\n\n:::ask{#" + removedBlock + "}\nWhich block does a person remove?\n:::\n"
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
-		// answer state (asks.Settled.Queue).
+		// answer state (asks.Settled.Queue). The issue is born converted, so the answer moves the
+		// decisions query's record: its write phase marks the issue's queries owed, and the drain the
+		// route runs once it has committed appends a version of the decisions query (drainMark): the
+		// version's node, a query version with its definition_version.
 		Name: "api/ask_transitions.go#closeAskTx, answering", Database: r.database,
-		Sites: []string{"api/ask_transitions.go#closeAskTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/ask_transitions.go#closeAskTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/asks/"+r.ask+"/answer",
 				map[string]any{"text": "The node store.", "expected_edited_at": nil}, "alice", http.StatusOK)
 		},
 		// The answer's text, selection, time, answerer as answered_by and as decided_by, and the
 		// ask's answer_state. alice's node stands from her first comment.
-		Counts: answerCounted,
+		Counts: merged(answerCounted, versionCounted, queryVersionCounted),
 	}, {
-		// The close of an issue of its own holding an open ask, which withdraws the ask.
+		// The close of an issue of its own holding an open ask, which withdraws the ask, and the
+		// version of that issue's decisions query its drain appends once the close has committed
+		// (drainMark), since the withdrawal moves the query's record.
 		Name: "api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", Database: r.database,
-		Sites: []string{"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			closing = decoded[model.Issue](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
 				"project": "SIZE", "title": "What a close withdraws", "force": true,
@@ -91,25 +99,28 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPatch, "/api/v1/issues/"+closing, map[string]any{"status": "done"}, "alice", http.StatusOK)
 		},
-		Counts: resolutionCounted,
+		Counts: merged(resolutionCounted, versionCounted, queryVersionCounted),
 	}, {
-		// The reopen of that issue, which restores the ask its close withdrew.
+		// The reopen of that issue, which restores the ask its close withdrew, and the version of
+		// the decisions query its drain appends (drainMark), as the close's does.
 		Name: "api/issue_ask_lifecycle.go#recordRestoredAsksTx", Database: r.database,
-		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPatch, "/api/v1/issues/"+closing, map[string]any{"status": "todo"}, "alice", http.StatusOK)
 		},
 		// The restore appends the ask's ask.opened, under which its answer_state is open again, and
 		// the retraction of the resolution its close stated.
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: merged(map[graphcensus.StoredKind][]string{
 			{graphstore.KindAsk, graphstore.TupleAnswerState}: {"ask_opened"},
 			{graphstore.KindAsk, graphstore.TupleResolution}:  {"ask_resolved"},
-		},
+		}, versionCounted, queryVersionCounted),
 	}, {
 		// alice's Keep of a decision a session uploaded (keepDecisionNode), at the text_sha256 the
-		// issue's decisions read serves.
+		// issue's decisions read serves. The decisions query takes the decision, and its record
+		// holds the kept_by and the kept_text_sum the Keep states, so the drain the route runs once
+		// the Keep has committed appends a version of the decisions query (drainMark).
 		Name: "api/decisions.go#keepDecisionNode", Database: r.database,
-		Sites: []string{"api/decisions.go#keepDecisionNode"},
+		Sites: []string{"api/decisions.go#keepDecisionNode", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			choices = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -139,10 +150,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+choices+"/blocks/"+choiceBlock+"/keep",
 				map[string]any{"text_sha256": choiceSum}, "alice", http.StatusOK)
 		},
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: merged(map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, refs.TupleKeptBy}:      {"keep"},
 			{refs.BlockNodeKind, refs.ValueKeptTextSum}: {"keep"},
-		},
+		}, versionCounted, queryVersionCounted),
 	}, {
 		// A session's upload of a decision at the end of a document of more blocks than a write
 		// indexes in its own request: the write leaves the blocks to the block-index tick and
@@ -199,12 +210,13 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	}, {
 		// The settlement of a document whose ask block, opened by an earlier settlement, a person's
 		// own editor left with no question: the block fails the strict read, and the settlement
-		// states the reason on the ask's node (stateInvalidReasons), beside the version it writes of
-		// the emptied block, the new text values of the block and of the paragraph it holds, and the
-		// version's node. No server write takes such a block (the edits route refuses it,
-		// INVALID_ASK_BLOCK), so alice's browser writes it.
-		Name: "docs/ask_blocks.go#stateInvalidReasons", Database: r.database,
-		Sites: []string{"docs/ask_blocks.go#stateInvalidReasons"},
+		// states the reason on the ask's node (asks.PlanInvalidReasons, from docs'
+		// stateCopiesAndReadability), beside the version it writes of the emptied block, the new text
+		// values of the block and of the paragraph it holds, and the version's node. No server write
+		// takes such a block (the edits route refuses it, INVALID_ASK_BLOCK), so alice's browser
+		// writes it.
+		Name: "asks/invalid.go#PlanInvalidReasons", Database: r.database,
+		Sites: []string{"asks/invalid.go#PlanInvalidReasons"},
 		Ready: func(t *testing.T) {
 			invalid = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -293,11 +305,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			removal = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
 			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
-				"name": "removal.md", "actor": sessionActor("ses_removed"),
-				"content": "# Removal\n\nContext.\n\n:::ask{#" + removedBlock + "}\nWhich block does a person remove?\n:::\n",
+				"name": "removal.md", "actor": sessionActor("ses_removed"), "content": removalText,
 			}, "", http.StatusCreated)).Artifact.ID
-			ask := r.settledAsk(t, removal, removedBlock)
-			r.request(t, http.MethodPost, "/api/v1/asks/"+ask+"/answer",
+			removedAsk = r.settledAsk(t, removal, removedBlock)
+			r.request(t, http.MethodPost, "/api/v1/asks/"+removedAsk+"/answer",
 				map[string]any{"text": "This one.", "expected_edited_at": nil}, "alice", http.StatusOK)
 		},
 		Drive: func(t *testing.T) {
@@ -337,6 +348,30 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			`, unchanged)
 		},
 		Counts: versionCounted,
+	}, {
+		// The settlement of removal.md once alice's upload has written the answered ask's block
+		// back: the block stands in the document its ask's row names again, so the settlement
+		// retracts the removed_by alice's edit stated (the drive of a person's removal of an
+		// answered ask, above) through planRemovalRetractions, from docs'
+		// stateCopiesAndReadability, and a later removal is judged afresh. The upload is the
+		// Ready's, so the drive reads what the settlement alone appends.
+		Name: "docs/ask_blocks.go#planRemovalRetractions", Database: r.database,
+		Sites: []string{"docs/ask_blocks.go#planRemovalRetractions"},
+		Ready: func(t *testing.T) {
+			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+				"name": "removal.md", "content": removalText, "precondition": r.uploadBase(t, removal),
+			}, "alice", http.StatusCreated)
+		},
+		Drive: func(t *testing.T) {
+			r.documents.SettleNow(removal)
+			r.awaitTrue(t, "the settlement retracting alice's removal of the answered ask", `
+				select not t.asserted from graph_tuples t
+				where t.from_kind = $1 and t.from_id = $2 and t.kind = $3
+				order by t.seq desc limit 1
+			`, graphstore.KindAsk, removedAsk, graphstore.TupleRemovedBy)
+		},
+		// The retraction of alice's removed_by on the answered ask's node.
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindAsk, graphstore.TupleRemovedBy}: {"ask_removal"}},
 	}, {
 		// The decisions step's catch-up (a tick of docs.DecisionStep) of an unfollow a build before
 		// this one recorded: that build deleted the follower row of the follower route's follow and

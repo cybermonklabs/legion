@@ -7,15 +7,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestTheTickSettlesDecisionsQueryDebtsWithoutWork: a database written before this fix can still
+// TestTheTickSettlesDecisionsQueryDebtsWithoutWork: a database the release before wrote can still
 // hold rows for an issue's Decisions query node in the grammar and forms queues, or an owed
 // document_block_versions row. The Decisions query holds no fragment of a room and no block (R15):
 //   - ConvertIssue leaves no queue rows for the Decisions query;
@@ -75,10 +73,10 @@ func TestTheTickSettlesDecisionsQueryDebtsWithoutWork(t *testing.T) {
 		}
 	}
 
-	// Simulate rows already present in a database from before this fix: a decisions query version 2
-	// whose stored rendering writes both a bare `#id` and a dispatch:// issue reference, leaving
-	// document_block_versions.version null (trigger 0122), both rows in refs_grammar_owed (trigger
-	// 20261103205041) and an artifact row in refs_forms_owed (trigger 20261117025904).
+	// Simulate rows already present in a database the release before wrote: a decisions query
+	// version 2 whose stored rendering writes both a bare `#id` and a dispatch:// issue reference,
+	// leaving document_block_versions.version null (trigger 0122), both rows in refs_grammar_owed
+	// (trigger 20261103205041) and an artifact row in refs_forms_owed (trigger 20261117025904).
 	if _, err := database.Pool.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, authors)
 		values ($1::uuid, 2, 'Follow #q1 and dispatch://DOC-2.' || E'\n', '[{"kind":"system","id":"query-drain"}]')
@@ -186,36 +184,8 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	service, server := newTestServiceInstance(t, database)
 	room := createIssueRoom(t, database, 1)
 	writeRoomQueryNodes(t, database, room)
-	peer := connectPeer(t, server.URL, room.verification, "alice")
-	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
-		t.Fatalf("a peer's copy of %s's room: %v", room.issue, err)
-	}
-	stored := roomUpdateCount(t, database, room.tree)
-	const verification = ":::check{#c1}\nThe first check holds.\n:::\n"
-	tree, err := pmdoc.Parse(verification)
-	if err != nil {
-		t.Fatalf("parse the Verification document: %v", err)
-	}
-	want, err := pmdoc.Render(tree)
-	if err != nil {
-		t.Fatalf("render the Verification document: %v", err)
-	}
-	fragment := peer.Doc.GetXmlFragment(room.verification)
-	var updated error
-	if _, err := peer.Send(func(txn *crdt.Transaction) { updated = pmdoc.Update(txn, fragment, tree) }); err != nil || updated != nil {
-		t.Fatalf("write the Verification document of %s: %v, %v", room.issue, err, updated)
-	}
-	if err := peer.WaitForText(fragmentMarkdown(room.verification), want, roomWait(t)); err != nil {
-		t.Fatalf("a peer's copy of %s's verification: %v", room.issue, err)
-	}
-	waitForStoredUpdates(t, database, room.tree, stored)
-	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-		t.Fatalf("wait for %s's appends: %v", room.issue, err)
-	}
-	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle %s's room: %v", room.issue, err)
-	}
-	before := newestVersionNumber(t, database, room.verification)
+	settleVerification(t, ctx, database, service, server.URL, room)
+	before := savedVersion(t, database, room.verification)
 	requireStatedRow(t, database, room.issue, graphstore.QueryVerification, room.verification, before)
 	// Drain any forms rows left by the initial SQL seed of createIssueRoom so the queue starts empty.
 	reconcileRefsForms(t, service)
@@ -232,7 +202,7 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	// 1. A recorded result and its drain write an unchanged version of Verification and leave no
 	//    row in refs_forms_owed; a forms drain pass then counts no document.
 	recordResult(t, database, service, room)
-	after := newestVersionNumber(t, database, room.verification)
+	after := savedVersion(t, database, room.verification)
 	if after != before+1 {
 		t.Fatalf("the result's drain left Verification at version %d, want %d", after, before+1)
 	}
@@ -259,7 +229,7 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 		t.Fatalf("plant a standing refs_forms_owed row for %s: %v", room.verification, err)
 	}
 	recordResult(t, database, service, room)
-	if next := newestVersionNumber(t, database, room.verification); next != after+1 {
+	if next := savedVersion(t, database, room.verification); next != after+1 {
 		t.Fatalf("the second result's drain left Verification at version %d, want %d", next, after+1)
 	}
 	if _, stood := formsOwedRows(t, database)["artifact "+room.verification]; !stood {
@@ -279,7 +249,7 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 		t.Fatalf("the standing Decisions debt was not planted: live %v, seed %v", live, seed)
 	}
 	recordResult(t, database, service, room)
-	if next := newestVersionNumber(t, database, room.verification); next != after+2 {
+	if next := savedVersion(t, database, room.verification); next != after+2 {
 		t.Fatalf("the third result's drain left Verification at version %d, want %d", next, after+2)
 	}
 	if got := decisionsFormsOwedRows(t, database)[row]; !got.Equal(live) {

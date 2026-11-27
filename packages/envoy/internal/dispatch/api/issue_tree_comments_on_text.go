@@ -286,10 +286,12 @@ func (b *issueTreeBuilder) mergeCommentPage(page refs.CommentPage, pastEnd bool,
 // walk took none of the addresses.
 func (b *issueTreeBuilder) resolveTextThreads() error {
 	var unheld []string
+	queued := map[string]bool{}
 	for _, thread := range b.textThreads {
 		if _, held := b.entries[thread.on]; held {
 			thread.node = thread.on
-		} else if thread.on.Kind == refs.BlockNodeKind && !slices.Contains(unheld, thread.on.ID) {
+		} else if thread.on.Kind == refs.BlockNodeKind && !queued[thread.on.ID] {
+			queued[thread.on.ID] = true
 			unheld = append(unheld, thread.on.ID)
 		}
 	}
@@ -346,10 +348,10 @@ func (b *issueTreeBuilder) placeTextComments() error {
 				parent = b.root()
 			}
 		}
-		entry := b.add(target, parent, "", treeRoleTree)
+		entry := b.add(target, parent, "")
 		entry.typ, entry.madeAt, entry.onText = graphstore.KindComment, text.madeAt, true
 		for _, block := range text.blocks {
-			blockEntry := b.add(block, target, "", treeRoleTree)
+			blockEntry := b.add(block, target, "")
 			blockEntry.typ, blockEntry.madeAt, blockEntry.onText = block.Kind, text.madeAt, true
 		}
 	}
@@ -577,7 +579,7 @@ func (b *issueTreeBuilder) anchorContainers(rows pgx.Rows) error {
 		if settled[comment] {
 			continue
 		}
-		typed := pmdoc.IsTypedBlock(refs.TreeNodeType(refs.BlockNodeKind, supertag, opening))
+		typed := pmdoc.IsTypedBlock(refs.TreeNodeType(refs.BlockNodeKind, block, supertag, opening))
 		settled[comment] = gone || typed
 		if anchor := b.anchors[comment]; anchor != nil && typed && !gone && seen {
 			anchor.ContainerNodeID = block
@@ -587,17 +589,6 @@ func (b *issueTreeBuilder) anchorContainers(rows pgx.Rows) error {
 		return fmt.Errorf("read the blocks above the anchors of the comments of %s: %w", b.key, err)
 	}
 	return nil
-}
-
-// storedNodeAnchor is a comment's node anchor as comments.node_anchor stores it (R31): the store
-// kind and id of the node it names, the quote, the occurrence of the quote in the node's text it
-// counts, and whether the quote has left that text.
-type storedNodeAnchor struct {
-	NodeKind   string `json:"node_kind"`
-	NodeID     string `json:"node_id"`
-	Quote      string `json:"quote"`
-	Occurrence int    `json:"occurrence"`
-	Orphaned   bool   `json:"orphaned"`
 }
 
 // commentAnchorOf is the anchor member of a comment the tree read answers (IssueTreeNode.Anchor),
@@ -614,7 +605,8 @@ func commentAnchorOf(document, node []byte, state string) (*model.IssueTreeAncho
 		return &model.IssueTreeAnchor{ArtifactID: anchor.ArtifactID, BlockID: anchor.BlockID, MarkID: anchor.MarkID, Version: anchor.Version,
 			Quote: anchor.Quote, Orphaned: anchor.Orphaned}, nil
 	}
-	var stored storedNodeAnchor
+	// A node anchor is decoded as the comment writer encodes it into comments.node_anchor (R31).
+	var stored model.NodeAnchor
 	if err := json.Unmarshal(node, &stored); err != nil {
 		return nil, err
 	}

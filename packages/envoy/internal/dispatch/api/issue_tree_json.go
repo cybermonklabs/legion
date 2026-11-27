@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"encoding/json/jsontext"
-	"errors"
 	"math"
 	"net/http"
 	"slices"
@@ -32,10 +31,6 @@ import (
 // not allocate its answer's bytes again.
 var treeAnswerBuffers = sync.Pool{New: func() any { return new([]byte) }}
 
-// errTreeTime is a time encoding/json refuses to write: its year or its zone's hour is out of the
-// range RFC 3339 holds.
-var errTreeTime = errors.New("time outside RFC 3339")
-
 // writeIssueTreeRead writes read as the tree read's 200 answer, byte for byte as WriteJSON writes
 // it.
 func writeIssueTreeRead(w http.ResponseWriter, read *model.IssueTreeRead) {
@@ -62,6 +57,7 @@ func writeIssueTreePage(w http.ResponseWriter, read *model.IssueTreeRead, plan *
 			body, err = appendIssueTreeRead(body[:0], read)
 		}
 	}
+	body = append(body, '\n')
 	*buffer = body[:0]
 	if err != nil {
 		WriteJSON(w, http.StatusOK, *read)
@@ -69,7 +65,7 @@ func writeIssueTreePage(w http.ResponseWriter, read *model.IssueTreeRead, plan *
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(append(body, '\n'))
+	_, _ = w.Write(body)
 }
 
 // treePagePlan is what a page of the tree read needs to end at a bound of bytes (cut): of the
@@ -339,6 +335,24 @@ func appendIssueTreeNode(b []byte, node *model.IssueTreeNode) ([]byte, error) {
 	} else if b, err = appendTreeTime(b, *node.MadeAt); err != nil {
 		return b, err
 	}
+	for _, at := range [...]struct {
+		name string
+		at   *time.Time
+	}{{`,"edited_at":`, node.EditedAt}, {`,"deleted_at":`, node.DeletedAt}} {
+		if at.at == nil {
+			continue
+		}
+		b = append(b, at.name...)
+		if b, err = appendTreeTime(b, *at.at); err != nil {
+			return b, err
+		}
+	}
+	if node.DeletedBy != nil {
+		b = append(b, `,"deleted_by":`...)
+		if b, err = appendTreeActor(b, node.DeletedBy); err != nil {
+			return b, err
+		}
+	}
 	b = append(b, `,"attributes":`...)
 	b = appendTreeAttributes(b, node.Attributes)
 	b = append(b, `,"text":`...)
@@ -462,24 +476,15 @@ func appendTreeAttributes(b []byte, attributes map[string]string) []byte {
 }
 
 // appendTreeTime appends t, as json.Marshal writes a time.Time, to b: RFC 3339 with
-// nanoseconds, quoted; a time whose year has other than four digits, or whose zone's hour is 24
-// or more, is errTreeTime.
+// nanoseconds, quoted (time.Time.AppendText); a time whose year is outside 0 to 9999, or whose
+// zone's hour is 24 or more, is AppendText's error, which json.Marshal refuses too.
 func appendTreeTime(b []byte, t time.Time) ([]byte, error) {
 	b = append(b, '"')
-	start := len(b)
-	b = t.AppendFormat(b, time.RFC3339Nano)
-	written := b[start:]
-	switch {
-	case written[len("9999")] != '-':
-		return b, errTreeTime
-	case written[len(written)-1] != 'Z':
-		c := written[len(written)-len("Z07:00")]
-		zone := written[len(written)-len("07:00"):]
-		if ('0' <= c && c <= '9') || int(zone[0]-'0')*10+int(zone[1]-'0') >= 24 {
-			return b, errTreeTime
-		}
+	written, err := t.AppendText(b)
+	if err != nil {
+		return b, err
 	}
-	return append(b, '"'), nil
+	return append(written, '"'), nil
 }
 
 // appendTreeStringPointer appends s, as json.Marshal writes a *string, to b.

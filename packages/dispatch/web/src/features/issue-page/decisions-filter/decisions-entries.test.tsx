@@ -9,13 +9,7 @@ import { api } from "../../../api/client";
 import type { Actor, ArtifactBlock, Comment, IssueDecisions } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
-import {
-  commentNode,
-  markedCommentNode,
-  skipWithoutTreeNodeMarks,
-  treeAnswer,
-  treeNode,
-} from "../tree-read/tree-fixtures";
+import { commentNode, markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
@@ -49,9 +43,6 @@ import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
  * cold case can show that no read of them starts. The view is the one the slot passes: the tree
  * as the Decisions view leaves it (`presetView`).
  */
-
-/** Skips the cases that need the tree read to answer a post's marks on its node. */
-const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
@@ -374,30 +365,27 @@ test("the seam takes a decision node's Change from under its node and another's 
   }
 });
 
-// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
 // `deleted_by`): each entry's Change says when its author last edited it, read from the node the
 // read answers.
-test.skipIf(withoutTreeNodeMarks)(
-  "each Change the seam takes from the tree read carries when its author last edited it",
-  async () => {
-    const editedAt = "2026-11-15T10:00:00Z";
-    const { answer, made } = twoChanges({ edited_at: editedAt });
-    const { hook } = await mountEntries(
-      [decisionNode("noded"), decisionNode("quoted")],
-      decisionsRead(made),
-      [],
-      [],
-      [],
-      { answer }
-    );
-    expect(
-      hook.result.current.parts.yours.map((one) =>
-        one.kind === "decision" ? one.change?.editedAt : undefined
-      )
-    ).toEqual([editedAt, editedAt]);
-    hook.unmount();
-  }
-);
+test("each Change the seam takes from the tree read carries when its author last edited it", async () => {
+  const editedAt = "2026-11-15T10:00:00Z";
+  const { answer, made } = twoChanges({ edited_at: editedAt });
+  const { hook } = await mountEntries(
+    [decisionNode("noded"), decisionNode("quoted")],
+    decisionsRead(made),
+    [],
+    [],
+    [],
+    { answer }
+  );
+  expect(
+    hook.result.current.parts.yours.map((one) =>
+      one.kind === "decision" ? one.change?.editedAt : undefined
+    )
+  ).toEqual([editedAt, editedAt]);
+  hook.unmount();
+});
 
 // A reading of an answered question is a person's write-up of that answer, and no entry of its
 // own: the question it restates is the person's decision. The tree places the reading under the

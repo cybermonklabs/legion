@@ -2096,13 +2096,15 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuild refs: %v", err)
 	}
-	// Every document has a version - the two project documents and the issue's spec - and so do
-	// the issue's tree, whose references an issue room's documents are indexed under, and its
-	// decisions query, each of which an issue born converted is made with: five. The planted row
-	// from a message that does not exist is the one orphan. Each doc is marked owed a block index -
-	// the four of them but the tree, whose room an owed mark on any of its documents reconciles -
-	// and the ask, the comment and the message are each marked owed a block index of their own parts.
-	if report != (refs.Rebuild{Documents: 5, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6, BlocksOwed: 4, ItemsOwed: 3}) {
+	// Every document has a version - the two project documents and the issue's spec - and so does
+	// the issue's tree, whose references an issue room's documents are indexed under: four. The
+	// issue's decisions query holds a version too, which the ask's create wrote (R14), but the
+	// decisions query renders the questions and decisions whose own sources hold their references,
+	// and no live write indexes it, so the rebuild leaves it out. The planted row from a message
+	// that does not exist is the one orphan. Each doc is marked owed a block index - the four of
+	// them but the tree, whose room an owed mark on any of its documents reconciles - and the ask,
+	// the comment and the message are each marked owed a block index of their own parts.
+	if report != (refs.Rebuild{Documents: 4, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6, BlocksOwed: 4, ItemsOwed: 3}) {
 		t.Fatalf("rebuild report = %#v", report)
 	}
 	var documents, owed int

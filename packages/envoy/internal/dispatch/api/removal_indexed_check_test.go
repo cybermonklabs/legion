@@ -18,7 +18,7 @@ import (
 )
 
 // removalIndexedColumns are the five columns whose foreign key to artifacts (id) no plain index
-// led before this issue's work, each now led by an index of its own (R7 of this issue's spec):
+// led in the release before, each now led by an index of its own (R7 of the issue-tree spec):
 // asks.block_artifact_id, whose asks_block_id_unique holds only the rows where block_id is not
 // null; related_checks.source_artifact_id; user_document_reads.artifact_id, whose primary key leads
 // login; write_suggestions.source_artifact_id, whose write_suggestions_pending_artifact holds only
@@ -163,7 +163,7 @@ func removalIndexedLeads(t *testing.T, database *store.Store, table string) map[
 }
 
 // Each foreign-key check of a document's removal probes an index, and the removal's transaction
-// sets a lock_timeout (c-removal-indexed; R7 of this issue's spec).
+// sets a lock_timeout (c-removal-indexed; R7 of the issue-tree spec).
 //
 // On a database migrated to this head, every foreign key that references artifacts (id) is read
 // from pg_constraint, the five of removalIndexedColumns among them. For each key the statement its

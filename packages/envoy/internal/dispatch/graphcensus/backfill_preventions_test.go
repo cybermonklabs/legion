@@ -79,14 +79,12 @@ func seedEndedPreventions(t *testing.T, database *store.Store) endedPreventions 
 			Project: project, MadeAt: at, MadeBy: alice, SourceEvent: graphstore.NoEvent,
 		}
 	}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "write the checks and the risks", func(tx pgx.Tx) error {
 		return graphstore.Write(ctx, tx, []graphstore.Node{
 			node(refs.BlockNodeKind, seed.retiredCheck), node(refs.BlockNodeKind, seed.goneCheck), node(refs.BlockNodeKind, seed.keptCheck),
 			node(graphstore.KindRisk, retiredCheckRisk), node(graphstore.KindRisk, goneCheckRisk), node(graphstore.KindRisk, keptCheckRisk),
 		}, nil)
-	}); err != nil {
-		t.Fatalf("write the checks and the risks: %v", err)
-	}
+	})
 	exec("assert each risk's prevented_by", `
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
 		select $1::text, p.risk, $2::text, $3::text, p.check_id, $4::timestamptz, '{"kind":"user","id":"alice"}'::jsonb, 0, true
@@ -248,14 +246,12 @@ func seedRoomCheckPreventions(t *testing.T, database *store.Store) (retiredCheck
 			Project: project, MadeAt: at, MadeBy: alice, SourceEvent: graphstore.NoEvent,
 		}
 	}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "write the checks and the risks", func(tx pgx.Tx) error {
 		return graphstore.Write(ctx, tx, []graphstore.Node{
 			node(refs.BlockNodeKind, retiredCheck), node(refs.BlockNodeKind, keptCheck),
 			node(graphstore.KindRisk, roomRetiredCheckRisk), node(graphstore.KindRisk, roomKeptCheckRisk),
 		}, nil)
-	}); err != nil {
-		t.Fatalf("write the checks and the risks: %v", err)
-	}
+	})
 	exec("index the room's checks under its tree", `
 		insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt, changed_version, changed_at)
 		values ($1::uuid, 'k9', $2, $4, $2, 'check', '', '', 1, now()), ($1::uuid, 'k1', $3, $4, $3, 'check', '', '', 1, now())

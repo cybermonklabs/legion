@@ -124,10 +124,14 @@ type IssueTreeDocuments struct {
 // /api/v1/issues/{key}/nodes/{id}); a server of the release before sends none. Author is the
 // node's authors as the store records them, `[]` for none. State and Visibility are its node state
 // and visibility.
-// MadeAt is when the node was made, null where the store records no time. Attributes are its
-// values as they stand at the read's cut, but its rank and its text, which members of their own
-// carry. Text is its words, and TextTree their display tree, the one the read of its kind answers,
-// present only for a caller that sent `Dispatch-Trees: 1`.
+// MadeAt is when the node was made, null where the store records no time. EditedAt, DeletedAt and
+// DeletedBy are a comment's or a message's marks, and a block's of one, as the read of the post
+// carries them (GraphNode): when its author last edited it, and when and by whom it was deleted,
+// its text then empty; each absent on a post that holds none and on every other node, and a server
+// of the release before sends none. Attributes are its values as they stand at the read's cut, but
+// its rank and its text, which members of their own carry. Text is its words, and TextTree their
+// display tree, the one the read of its kind answers, present only for a caller that sent
+// `Dispatch-Trees: 1`.
 //
 // NoConversation marks a node of the issue that no conversation node stands above. Document names,
 // for a typed block of a role document, its document and its position in that document as the
@@ -157,6 +161,9 @@ type IssueTreeNode struct {
 	State          string             `json:"state" enum:"live,gone,proposed,settled,overtaken"`
 	Visibility     string             `json:"visibility" enum:"project,author"`
 	MadeAt         *time.Time         `json:"made_at"`
+	EditedAt       *time.Time         `json:"edited_at,omitempty"`
+	DeletedAt      *time.Time         `json:"deleted_at,omitempty"`
+	DeletedBy      *Actor             `json:"deleted_by,omitempty"`
 	Attributes     map[string]string  `json:"attributes"`
 	Text           string             `json:"text"`
 	TextTree       DisplayTree        `json:"text_tree,omitempty"`
@@ -214,7 +221,8 @@ type IssueTreeAnchor struct {
 // MarshalJSON writes each form of the anchor with its own members alone: a document anchor as the
 // comments read writes it (Anchor), its block_id null where it names no block, with its occurrence
 // where the read computed one and its container_node_id where the read resolved one, and a node
-// anchor as its node, its quote, its occurrence and its orphaned mark.
+// anchor as the comments read writes one (CommentNodeAnchor): its node, its quote, its occurrence
+// and its orphaned mark.
 func (a IssueTreeAnchor) MarshalJSON() ([]byte, error) {
 	if a.Node == nil {
 		return json.Marshal(struct {
@@ -224,12 +232,7 @@ func (a IssueTreeAnchor) MarshalJSON() ([]byte, error) {
 		}{Anchor{ArtifactID: a.ArtifactID, BlockID: a.BlockID, MarkID: a.MarkID, Version: a.Version, Quote: a.Quote, Orphaned: a.Orphaned},
 			a.Occurrence, a.ContainerNodeID})
 	}
-	return json.Marshal(struct {
-		Node       *IssueTreeAnchorNode `json:"node"`
-		Quote      string               `json:"quote"`
-		Occurrence *int                 `json:"occurrence"`
-		Orphaned   bool                 `json:"orphaned"`
-	}{a.Node, a.Quote, a.Occurrence, a.Orphaned})
+	return json.Marshal(CommentNodeAnchor{Node: *a.Node, Quote: a.Quote, Occurrence: a.Occurrence, Orphaned: a.Orphaned})
 }
 
 // IssueTreeAnchorNode is the node a node anchor names: its store kind and id, a finding's the
@@ -280,10 +283,14 @@ type IssueTreeDocument struct {
 // answered it, it also answers the decision it is (IssueTreeNode.Decision). A server of the
 // release before sends no answer member, so the document marks each optional.
 type IssueTreeAsk struct {
-	Options    []AskOption `json:"options"`
-	Urgency    string      `json:"urgency"`
-	Multiple   bool        `json:"multiple"`
-	Answer     *string     `json:"answer" required:"false"`
+	Options  []AskOption `json:"options"`
+	Urgency  string      `json:"urgency"`
+	Multiple bool        `json:"multiple"`
+	Answer   *string     `json:"answer" required:"false"`
+	// AnswerTree is Answer read as the tree a reader is shown, present only for a caller that sent
+	// `Dispatch-Trees: 1` and only where the ask holds an answer's text, as the decisions read's
+	// entry answers it: the Decisions tab draws a person's decision by that text.
+	AnswerTree DisplayTree `json:"answer_tree,omitempty"`
 	Selected   []string    `json:"selected" required:"false"`
 	AnsweredBy *string     `json:"answered_by" required:"false"`
 	AnsweredAt *time.Time  `json:"answered_at" required:"false"`

@@ -14,7 +14,7 @@ import (
 
 // readingSupertagsFromDocs is the supertag the typed-node pass gives each reading of the newest
 // version of document, by the reading's block id: reading where the reading stands in a decision,
-// or in an ask block whose ask holds an answer, as docs reads it (shownAsks, which is
+// or in an ask block whose ask holds an answer, as docs reads it (readingShownAsks, which is
 // readingAnswers over the version's own tree), and block otherwise (refs.ReadingHolders names each
 // reading's holder as the pass does).
 func readingSupertagsFromDocs(t *testing.T, service *Service, document string) map[string]string {
@@ -35,7 +35,7 @@ func readingSupertagsFromDocs(t *testing.T, service *Service, document string) m
 	var shown map[string]refs.ShownAsk
 	if len(holding) > 0 {
 		if err := pgx.BeginFunc(ctx, service.store.Pool, func(tx pgx.Tx) (err error) {
-			shown, err = shownAsks(ctx, tx, document, tree, holding)
+			shown, err = readingShownAsks(ctx, tx, document, tree, holding)
 			return err
 		}); err != nil {
 			t.Fatalf("read the asks the ask blocks of %s show: %v", document, err)
@@ -58,7 +58,7 @@ func readingSupertagsFromSQL(t *testing.T, database *store.Store, document strin
 	rows, err := database.Pool.Query(context.Background(), `
 		select d.block_id, `+refs.BlockTypeSupertagSQL("d")+`
 		from document_blocks d where d.artifact_id = $1 and d.type = $2 order by d.block_id
-	`, document, refs.ReadingSupertag)
+	`, document, readingType)
 	if err != nil {
 		t.Fatalf("read the supertag the census gives each reading of %s: %v", document, err)
 	}
@@ -78,7 +78,7 @@ func readingSupertagsFromSQL(t *testing.T, database *store.Store, document strin
 
 // TestTheCensusReadsAReadingAsDocsReadingAnswersDoes holds refs.BlockTypeSupertagSQL, the one
 // rule the block_type census reads a reading's node by, to docs' reading of the same fact
-// (readingAnswers, through shownAsks) over one reading of each case it decides: a reading in a
+// (readingAnswers, through readingShownAsks) over one reading of each case it decides: a reading in a
 // decision; in an ask block that its own document's ask answers, whether the ask is answered or
 // open, and whether the ask was retracted by settlement while it held an answer and came back with
 // its block; in a copy of another document's ask, whether the source is answered or open; and in an

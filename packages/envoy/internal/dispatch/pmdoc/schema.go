@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -72,9 +71,9 @@ func IsTypedBlock(name string) bool {
 }
 
 // BlockTypeAttributes is the attributes the installed schema declares for the typed block name,
-// in declaration order, and false for a type it does not declare. The block index reads a
-// decision's from it to tell a tie its caller writes from one the server derives (refs'
-// DecisionFacts): the schema's `server` flag is what says whose a value is.
+// in declaration order, and false for a type it does not declare. The schema's `server` flag is
+// what says whose a value is: the caller's or the server's. The block index reads a decision's
+// from it to tell a tie its caller writes from one the server derives (refs' DecisionFacts).
 func BlockTypeAttributes(name string) (BlockAttributes, bool) {
 	typ, ok := typedBlock(name)
 	return typ.Attributes, ok
@@ -84,22 +83,30 @@ func BlockTypeAttributes(name string) (BlockAttributes, bool) {
 // type of schema/blocks.json until the store's nodes are installed over it. The block index reads
 // it where it marks gone every typed block a version removes (refs' unheldTypedNodes).
 func TypedBlockNames() []string {
-	return typedBlockNames()
+	return slices.Clone(active.Load().typedBlockNames)
+}
+
+// ServerAttributes is the names of the server attributes the installed schema declares for the
+// typed block name, in declaration order, read off the manifest once when it was compiled; none
+// for a type that declares none or that the schema does not declare. Every caller shares the
+// list, which none writes: settlement reads the decision type's to hold each to the store (docs'
+// decision_blocks.go).
+func ServerAttributes(name string) []string {
+	return active.Load().serverAttributes[name]
+}
+
+// ServerAttributesInMarkdown is the names of the server attributes the installed schema declares
+// for the typed block name that its markdown carries (BlockAttributeSchema.InMarkdown), in
+// declaration order, read off the manifest once when it was compiled; none for a type that
+// declares none or that the schema does not declare. Every caller shares the list, which none
+// writes.
+func ServerAttributesInMarkdown(name string) []string {
+	return active.Load().markdownServerAttributes[name]
 }
 
 func typedBlock(name string) (BlockTypeSchema, bool) {
 	typ, ok := active.Load().types[name]
 	return typ, ok
-}
-
-func typedBlockNames() []string {
-	types := active.Load().schema.Types
-	names := make([]string, 0, len(types))
-	for _, typ := range types {
-		names = append(names, typ.Name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 func validateBlockSchema(value BlockSchema) error {
@@ -506,18 +513,13 @@ func validateBlockPointer(value string, items []BlockItemKind) error {
 	if ref.Kind != "block" {
 		item = ref.Kind
 	}
-	// The kind takes the article its noun does: an ask, a comment, a message.
-	article := "a"
-	if item == "ask" {
-		article = "an"
-	}
 	switch {
 	case read && ref.Kind == "block" && ref.Item != "" && !slices.Contains(items, BlockItemKind(ref.Item)):
-		return fmt.Errorf("%q is a block of %s %s: a block[] attribute points only at a block of a document%s", value, article, ref.Item, declaredItems(items))
+		return fmt.Errorf("%q is a block of %s: a block[] attribute points only at a block of a document%s", value, blockName(ref.Item), declaredItems(items))
 	case read && ref.Kind == "block" && ref.Item != "":
-		return fmt.Errorf("%q is not a block of %s %s as Dispatch writes one: %s, the item's whole lower-case uuid, the block id percent-encoded in upper-case hex except ASCII letters, digits and -, and no pin", value, article, ref.Item, itemForm(BlockItemKind(ref.Item)))
+		return fmt.Errorf("%q is not a block of %s as Dispatch writes one: %s, the item's whole lower-case uuid, the block id percent-encoded in upper-case hex except ASCII letters, digits and -, and no pin", value, blockName(ref.Item), itemForm(BlockItemKind(ref.Item)))
 	case read && (item == "ask" || item == "comment" || item == "message") && slices.Contains(items, BlockItemKind(item)):
-		return fmt.Errorf("%q is not %s %s as Dispatch writes one: %s, the item's whole lower-case uuid, and no pin", value, article, item, itemForm(BlockItemKind(item)))
+		return fmt.Errorf("%q is not %s as Dispatch writes one: %s, the item's whole lower-case uuid, and no pin", value, blockName(item), itemForm(BlockItemKind(item)))
 	}
 	return fmt.Errorf("%q is not a block reference as Dispatch writes one: dispatch://<ISSUE>/spec#b-<id>, or dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>, the id percent-encoded in upper-case hex except ASCII letters, digits and -, optionally pinned @v<N>%s", value, declaredItems(items))
 }
@@ -638,7 +640,7 @@ func parseTypedAttributeValue(name string, attr BlockAttributeSchema, raw any) (
 	case BlockAttributeBlockList:
 		values, err := ParseBlockPointerValue(text, attr.Items)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrBlockPointer, err)
 		}
 		if err := parentCount(name, values); err != nil {
 			return nil, err

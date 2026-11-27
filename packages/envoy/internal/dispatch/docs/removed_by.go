@@ -148,10 +148,7 @@ func holdRoomRemovals(ctx context.Context, q Queryer, artifactID string, live *p
 		return nil
 	}
 	held := openAskBlockIDs(live)
-	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), func(blockID string) bool {
-		_, kept := held[blockID]
-		return !kept
-	}, dropper{person: true, remover: person, actor: author}, true)
+	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), keptOutOf(held), dropper{person: true, remover: person, actor: author}, true)
 }
 
 // roomReadTree is the room a version of artifactID takes, as holdRoomRemovals compares it with the

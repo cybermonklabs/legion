@@ -380,7 +380,7 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 	}
 	before := deliverSubjectOf(t, js, bus.DispatchDeliveryDurable)
 	window := readBusSettings(t, js).Consumers[bus.DispatchDeliveryDurable].MaxAckPending
-	stop(t, holder)
+	stopProcess(t, holder)
 	over := handOver{
 		stopping: builds.buildName(holder), taking: builds.buildName(standby), at: time.Now(),
 		sequences: sequences, window: window,

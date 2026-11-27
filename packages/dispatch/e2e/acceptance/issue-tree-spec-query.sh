@@ -5,10 +5,10 @@
 # root's r-document-tree.
 #
 # It runs over infra_1253_upgrade, the database the Verification preamble gives the drivers that
-# read rows an earlier release wrote. It refuses to run, with a FAIL line, where the database
-# answers `select 'a' < 'B'` false: such a database's own collation orders as bytes do, so a read
-# that ordered ranks by it could not be told from one that orders them byte for byte. It then
-# empties that database and boots the base-commit server on it through lib-baseline.sh
+# read rows an earlier release wrote. It empties that database, and refuses to run, with a FAIL
+# line, where the emptied database answers `select 'a' < 'B'` false: such a database's own
+# collation orders as bytes do, so a read that ordered ranks by it could not be told from one that
+# orders them byte for byte. It then boots the base-commit server on it through lib-baseline.sh
 # (BASELINE_SHA or BASELINE_BINARY), signs the person in, creates the project PROJECT and, through
 # that server's API, writes one issue with no parent that is not done: a spec of two requirement
 # blocks, a Verification document of two check blocks, each serving one of them, and a plan of one
@@ -109,42 +109,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# issue_tree_spec_query_section NAME: starts the section NAME, which the closing line counts.
-issue_tree_spec_query_section() {
-  sections=$((sections + 1))
-  printf -- '--- section %s\n' "$1"
-}
-
-# issue_tree_spec_query_expect FILE SECTION WHAT WANT JQ-ARGS…: lib.sh's expect over the answer
-# kept in FILE rather than over the last one, which it puts back as $work/body first.
-issue_tree_spec_query_expect() {
-  local file="$1"
-  shift
-  cp "$file" "$work/body"
-  expect "$@"
-}
-
-# issue_tree_spec_query_empty_database: drops and creates again the database DATABASE_URL names,
-# so the base release's own Store.Migrate writes its schema and this driver's issue is all it
-# holds. It drops only a loopback database whose name begins infra_1253_, connecting to the
-# `postgres` database of the same server, as seed-decisions.sh's seed_reset_database drops its own.
-issue_tree_spec_query_empty_database() {
-  local url="$database_url" scheme authority name query
-  [[ "$url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] || {
-    printf '%s: DATABASE_URL is no postgres:// URL naming a database\n' "$driver" >&2
-    exit 2
-  }
-  scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  [[ "$name" =~ ^infra_1253_[a-z0-9_]+$ ]] || {
-    printf '%s: DATABASE_URL names the database %s: this driver drops and creates only one whose name begins infra_1253_\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" >"$work/reset" 2>&1 ||
-    fail setup "drop and create the database $name" "psql: $(<"$work/reset")"
-  pass setup "dropped and created the database $name empty"
-}
-
 # issue_tree_spec_query_record SECTION ISSUE SLUG: the typed blocks of the document SLUG of ISSUE
 # as the earlier release's blocks read answers them (GET .../artifacts/{slug}/text?blocks=true):
 # each requirement, check and plan node's id, type, text - its markdown, the byte range the read
@@ -203,8 +167,8 @@ issue_tree_spec_query_tree_checks() {
 
 # --- setup -------------------------------------------------------------------------------------
 
-issue_tree_spec_query_section setup
-issue_tree_spec_query_empty_database
+tree_section setup
+tree_reset_database "$database_url" 'infra_1253_?*' setup
 query setup "read whether the database's own collation orders 'a' before 'B'" "select 'a' < 'B'"
 [[ "$answer" == t ]] ||
   fail setup "the database's collation tells byte order from its own" \
@@ -224,7 +188,7 @@ tree_create_project setup "$project" "The issue tree's spec query"
 
 # --- the earlier release writes the issue ----------------------------------------------------------
 
-issue_tree_spec_query_section earlier
+tree_section earlier
 printf '[]\n' >"$work/written.json"
 cat >"$work/spec.md" <<'SPEC'
 The summary paragraph of the issue whose tree this check reads.
@@ -239,7 +203,7 @@ The tree orders siblings by rank.
 SPEC
 corpus_issue earlier "The tree of one issue, read as one" "$work/spec.md"
 key="$corpus_key"
-[[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail earlier "create the issue" "the key $key is no issue key"
+tree_key earlier "create the issue" "$key"
 readonly key
 cat >"$work/verification.md" <<VERIFICATION
 How the tree read is proved.
@@ -270,11 +234,11 @@ pass earlier "the earlier release wrote $key: its spec, $verification_slug ($ver
 issue_tree_spec_query_record earlier "$key" spec
 issue_tree_spec_query_record earlier "$key" "$verification_slug"
 issue_tree_spec_query_record earlier "$key" "$plan_slug"
-issue_tree_spec_query_expect "$work/written.json" earlier \
+tree_kept_expect "$work/written.json" earlier \
   "the earlier release's blocks read answers the two requirements, the two checks and the plan node" \
   '[["c-alpha","check"],["c-zulu","check"],["r-alpha","requirement"],["r-zulu","requirement"],["t-only","plan_task"]]' \
   '[.[] | [.block_id, .type]] | sort'
-issue_tree_spec_query_expect "$work/written.json" earlier "the earlier release wrote the serves the fixture names" \
+tree_kept_expect "$work/written.json" earlier "the earlier release wrote the serves the fixture names" \
   '{"c-alpha":["r-alpha"],"c-zulu":["r-zulu"],"t-only":["r-zulu"]}' \
   '[.[] | select(.type != "requirement") | {key: .block_id, value: .serves}] | from_entries'
 baseline_stop_server
@@ -282,7 +246,7 @@ pass earlier "the earlier release's server stopped; its database stays"
 
 # --- this head converts the issue -----------------------------------------------------------------
 
-issue_tree_spec_query_section upgrade
+tree_section upgrade
 tree_boot_head head
 base="$tree_head_url"
 tree_wait_backfill upgrade
@@ -292,11 +256,11 @@ printf '%s\n' "$(tail -n 20 "$work/out")"
 
 # --- the tree read ---------------------------------------------------------------------------------
 
-issue_tree_spec_query_section tree
+tree_section tree
 tree_read agent "$key"
 tree_want 200 tree "read the tree of $key"
 cp "$work/body" "$work/tree.json"
-issue_tree_spec_query_expect "$work/tree.json" tree "$key reads converted true on one page" '[true,null]' '[.converted, .cursor]'
+tree_kept_expect "$work/tree.json" tree "$key reads converted true on one page" '[true,null]' '[.converted, .cursor]'
 # Each typed block the earlier release wrote, answered once by its block id, with its id, its
 # supertag (its type), its parent and its rank.
 missing="$(jq -r --slurpfile written "$work/written.json" '
@@ -321,7 +285,7 @@ issue_tree_spec_query_tree_checks tree "$work/tree.json" \
 
 # --- the serves tuples -----------------------------------------------------------------------------
 
-issue_tree_spec_query_section serves
+tree_section serves
 walked="$(jq -c '
   ([.nodes[] | {key: "\(.kind):\(.id)", value: (.block_id // "")}] | from_entries) as $block
   | .tuples as $tuples
@@ -342,7 +306,7 @@ pass serves "the walk of the serves tuples from each requirement reaches the set
 
 # --- a second read ---------------------------------------------------------------------------------
 
-issue_tree_spec_query_section again
+tree_section again
 tree_read agent "$key"
 tree_want 200 again "read the tree of $key a second time"
 first="$(jq -c '[.nodes[] | "\(.kind):\(.id)"]' "$work/tree.json")"
@@ -353,15 +317,15 @@ pass again "a second read answers the same $(jq 'length' <<<"$first") nodes in t
 
 # --- the spec view ---------------------------------------------------------------------------------
 
-issue_tree_spec_query_section spec
+tree_section spec
 tree_read agent "$key" spec
 tree_want 200 spec "read ?view=spec of $key"
 cp "$work/body" "$work/spec-view.json"
 order="$(jq -c '[.nodes[] | select(.supertag == "requirement") | .block_id]' "$work/tree.json")"
-issue_tree_spec_query_expect "$work/spec-view.json" spec \
+tree_kept_expect "$work/spec-view.json" spec \
   "?view=spec answers the two requirements, each the query's, in the order the first read gave them" \
   "$(jq -c '[.[] | [., "query"]]' <<<"$order")" '[.nodes[] | select(.supertag == "requirement") | [.block_id, .role]]'
-issue_tree_spec_query_expect "$work/spec-view.json" spec \
+tree_kept_expect "$work/spec-view.json" spec \
   "each requirement of ?view=spec carries its parent's id, supertag and first line" '[]' \
   '[.nodes[] | select(.supertag == "requirement")
     | select(.parent == null or (.parent.id // "") == "" or (.parent.supertag // "") == "" or (.parent.first_line // "") == "")
@@ -369,7 +333,7 @@ issue_tree_spec_query_expect "$work/spec-view.json" spec \
 
 # --- the spec query node ---------------------------------------------------------------------------
 
-issue_tree_spec_query_section query
+tree_section query
 tree_send GET "/api/v1/issues/$key"
 tree_want 200 query "read the issue $key"
 cp "$work/body" "$work/issue.json"
@@ -379,14 +343,14 @@ jq -e '([.queries[]? | select(.query == "spec")] + [.artifacts[]? | select(.prim
 jq -c '([.queries[]? | select(.query == "spec")] + [.artifacts[]? | select(.primary == true)]) | first' \
   "$work/issue.json" >"$work/spec-query.json"
 printf 'the spec query node as the issue read answers it: %s\n' "$(head -c 600 "$work/spec-query.json")"
-issue_tree_spec_query_expect "$work/spec-query.json" query \
+tree_kept_expect "$work/spec-query.json" query \
   "the spec query node states the types R14 gives the spec query and the subtree they come from, the issue's tree node" \
   "$(jq -cn --argjson t "$spec_query_takes" --arg s "issue:$key" '{subtree: $s, takes: $t}')" \
   '{takes: (.takes | if type == "string" then split(" ") else . end), subtree}'
 
 # --- a write of the issue's room ---------------------------------------------------------------
 
-issue_tree_spec_query_section words
+tree_section words
 corpus_edit words "change one word of the check c-zulu" "$verification" \
   "$(jq -cn --arg f "$check_before" --arg w "$check_after" '[{op: "replace", find: $f, with: $w}]')"
 corpus_edit words "change one word of the plan node t-only" "$plan" \

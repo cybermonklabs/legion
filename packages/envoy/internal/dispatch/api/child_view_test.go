@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -30,9 +29,9 @@ import (
 // itself a view. TestARequirementPastedIntoAViewIsAGapOfItsOwnKind, in coverage_tuples_test.go,
 // holds a requirement a client brings into a view through the room to the gap it reads as.
 
-// requirementMarkdown is a requirement block of id holding words.
+// requirementMarkdown is a requirement block of id holding words (queryBlockMarkdown).
 func requirementMarkdown(id, words string) string {
-	return ":::requirement{#" + id + "}\n" + words + "\n:::\n"
+	return queryBlockMarkdown("requirement", id, words)
 }
 
 // pasteRequirement writes a requirement block of id holding words at the end of the spec of issue
@@ -41,16 +40,9 @@ func requirementMarkdown(id, words string) string {
 // the spec and runs its block index (SettleIssueDocuments).
 func pasteRequirement(t *testing.T, handler http.Handler, documents *docs.Service, issue model.Issue, id, words string) {
 	t.Helper()
-	pasted, err := pmdoc.Parse(requirementMarkdown(id, words))
-	if err != nil {
-		t.Fatalf("parse the requirement %s: %v", id, err)
-	}
 	peer := connectBrowserPeer(t, handler, documents, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
-	peer.edit(t, func(tree *pmdoc.Node) error {
-		tree.Children = append(tree.Children, pasted.Children...)
-		return nil
-	})
+	peer.appendParagraph(t, requirementMarkdown(id, words))
 	peer.barrier(t)
 	settleIssue(t, documents, issue.Key)
 }
@@ -280,14 +272,7 @@ func TestEachAPIWriteSetsTheOwnSpecMark(t *testing.T) {
 			verification := uploadDocument(t, handler, "/api/v1/issues/"+child.Key, "verification.md", "The checks to come.\n").Artifact
 			peer := connectBrowserPeer(t, handler, documents, verification.ID)
 			t.Cleanup(peer.close)
-			peer.edit(t, func(tree *pmdoc.Node) error {
-				typed, err := pmdoc.Parse("A browser's words no settlement has versioned.\n")
-				if err != nil {
-					return err
-				}
-				tree.Children = append(tree.Children, typed.Children...)
-				return nil
-			})
+			peer.appendParagraph(t, "A browser's words no settlement has versioned.\n")
 			peer.barrier(t)
 			succeeded(t, "write the requirement "+id+" into the spec of "+child.Key, insertRequirement(t, handler, child.PrimaryArtifactID, id, "The child's own work."))
 			return child.PrimaryArtifactID

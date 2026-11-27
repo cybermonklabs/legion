@@ -258,21 +258,24 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 // the agent edited it, and the request stands at version 2; the agent's next edit undoes the
 // first, in the route's own transaction, so its version holds the text he approved, carries his
 // approval (docs.carryApproval) and answers the request. The request is answered, not moved onto
-// the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.)
+// the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.) The
+// document is one no query covers (uncoveredDocument): on the issue's spec R14's record carry
+// carries the approval across the first edit's prose, and no request would be open to answer.
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")
-	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 1)
-	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
-	request := requestApproval(t, handler, issue.PrimaryArtifactID)
+	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "A spec")
+	notes := uncoveredDocument(t, handler, issue.Key, "Context\n")
+	approveVersion(t, handler, notes, "alice", 1)
+	reviseDocument(t, handler, notes, "Context", "Context, revised", 2)
+	request := requestApproval(t, handler, notes)
 
-	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/edits", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"ops":   []map[string]string{{"op": "replace", "find": "Context, revised", "with": "Context"}},
 	})
 	advice := adviceFromResponse(t, edited.Code, edited.Body.String())
-	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
+	requireReviewCarriedWith(t, handler, notes, 3, 1, restoreSentence(1), &request.ID)
 	if answered := readBlockAsk(t, handler, request.ID); answered.State != "answered" {
 		t.Fatalf("request after the carry = %q, want answered", answered.State)
 	}

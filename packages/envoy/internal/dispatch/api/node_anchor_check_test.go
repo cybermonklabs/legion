@@ -114,12 +114,7 @@ func requirePair(t *testing.T, database *store.Store, name, id, kind, node strin
 		if err != nil {
 			t.Fatalf("read the %s of %s %s: %v", relation, name, id, err)
 		}
-		found := false
-		for _, tuple := range stated {
-			if tuple.ToKind == kind && tuple.ToID == node {
-				found = true
-			}
-		}
+		found := slices.ContainsFunc(stated, func(tuple graphstore.Tuple) bool { return tuple.ToKind == kind && tuple.ToID == node })
 		if found != held {
 			t.Errorf("%s %s states %s %+v, want it to the node %s:%s %t", name, id, relation, stated, kind, node, held)
 		}
@@ -243,7 +238,7 @@ func (page activityCommentPage) first(id string) (map[string]json.RawMessage, bo
 	return nil, false
 }
 
-// TestACommentOnANodesTextHangsUnderThatNode is c-node-anchor (this issue's spec R31, Verification
+// TestACommentOnANodesTextHangsUnderThatNode is c-node-anchor (R31 of the issue-tree spec, Verification
 // v220). On a test server a person writes an issue whose spec holds the requirement r1 and whose
 // Verification document holds the check k1 with one result. She invokes a pre-mortem lens on the
 // requirement with one finding and one risk, an author-only lens of her own beside it, and a
@@ -271,7 +266,7 @@ func (page activityCommentPage) first(id string) (map[string]json.RawMessage, bo
 // and the tree read changed nothing stored. The store census reads comment_anchor_block at zero
 // differences. The comments reads answer each of the five with anchor null and no node_anchor,
 // written to NODE_ANCHOR_WIRE for main's CommentSchema with each comment.created payload; with
-// node_anchor=true they answer each one's node_anchor, written there for this branch's
+// node_anchor=true they answer each one's node_anchor, written there for
 // CommentWithNodeAnchorSchema. Each refusal is 400 INVALID_ANCHOR naming its field and writes no
 // comment, a quote of the risk's early warning, which is no part of its text, among them.
 //
@@ -405,9 +400,9 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 	}
 	crossedComment := decodeBody[model.Comment](t, across).ID
 
-	var tree string
-	if err := database.Pool.QueryRow(ctx, `select id::text from artifacts where issue_key = $1 and kind = 'tree'`, key).Scan(&tree); err != nil {
-		t.Fatalf("read the tree artifact of %s: %v", key, err)
+	tree, err := issueTreeOf(ctx, database.Pool, key)
+	if err != nil || tree == "" {
+		t.Fatalf("issue %s holds the tree %q (%v), want the tree it was born with", key, tree, err)
 	}
 	const prose = "A prose note on the bound of a write."
 	edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+tree+"/edits", map[string]any{
@@ -602,7 +597,7 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 		requirePlain("GET /api/v1/comments/"+comment.id, comment, members(body["comment"]))
 		keep("CommentSchema", "GET /api/v1/comments/"+comment.id+": "+comment.name, body["comment"])
 
-		// With the parameter, each read answers the node_anchor, which this branch's
+		// With the parameter, each read answers the node_anchor, which
 		// CommentWithNodeAnchorSchema parses (NODE_ANCHOR_WIRE).
 		for _, answer := range []struct {
 			what    string
@@ -643,9 +638,9 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 		t.Errorf("the events hold %d comment.created payloads of the five comments on nodes, want %d", payloads, len(onNodes))
 	}
 
-	// The comment page of order=activity answers the node anchor where this branch's base holds
-	// that page (R31's merge-order rule). A base without the page ignores order and answers the
-	// comment list, a JSON list, and the child that adds the page then carries its node anchor.
+	// The comment page of order=activity answers the node anchor where the build holds that page
+	// (R31's merge-order rule). A build without the page ignores order and answers the comment
+	// list, a JSON list, and the child that adds the page then carries its node anchor.
 	activity := func(query, etag string) *httptest.ResponseRecorder {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/issues/"+key+"/comments?order=activity"+query, nil)
@@ -898,14 +893,7 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 	// A version of the spec query is written while the three anchors stand, so a read at it carries
 	// each comment on the text it quotes.
 	editSpec(t, handler, key, []map[string]any{{"op": "insert", "after": "end", "markdown": ":::requirement{#r4}\nA reader names the key it reads.\n:::\n"}})
-	specQuery := treeReadViewsSpecQuery(t, database, key)
-	var pinned int
-	if err := database.Pool.QueryRow(ctx, `select coalesce(max(number), 0) from artifact_versions where artifact_id = $1::uuid`, specQuery).Scan(&pinned); err != nil {
-		t.Fatalf("read the newest version of the spec query of %s: %v", key, err)
-	}
-	if treeReadViewsRecorded(t, database, specQuery, pinned) != 1 {
-		t.Fatalf("version %d of the spec query of %s holds no record of the store revision it read: this case proves nothing", pinned, key)
-	}
+	specQuery, pinned := pinnedSpecQueryVersion(t, database, key)
 	var pinnedAt *time.Time
 	var replayMade time.Time
 	if err := database.Pool.QueryRow(ctx, `

@@ -192,12 +192,7 @@ func queuedChanges(t *testing.T, database *store.Store) int {
 // whose item belongs to project (searchTermQueueProjectSQL).
 func queuedChangesOf(t *testing.T, database *store.Store, project string) int {
 	t.Helper()
-	var queued int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from search_term_queue q where `+searchTermQueueProjectSQL+` = $1`, project).Scan(&queued); err != nil {
-		t.Fatalf("count the queued changes of %s: %v", project, err)
-	}
-	return queued
+	return int(countRows(t, database, `select count(*) from search_term_queue q where `+searchTermQueueProjectSQL+` = $1`, project))
 }
 
 // A1. The counts a pass applies from the queue are the counts a full rebuild writes, after an

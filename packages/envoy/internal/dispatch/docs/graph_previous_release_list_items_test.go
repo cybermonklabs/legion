@@ -105,7 +105,6 @@ func TestAListDocumentThePreviousReleaseIndexesGetsItsListItemsBackAtTheNextTick
 		t.Errorf("the tick left the document's blocks standing at %v, want the previous release's version %d", stands, version)
 	}
 	types := blockRowTypes(t, database, document)
-	t.Logf("after this build's tick the document holds block rows of %v by type", types)
 	if !maps.Equal(types, indexed) {
 		t.Errorf("after this build's tick the document holds block rows of %v by type, want %v: each list item's row back", types, indexed)
 	}

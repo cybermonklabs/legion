@@ -107,31 +107,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# issue_tree_redirects_empty_database: drops and creates the database database_url names, so the
-# earlier release's Store.Migrate writes its schema and the corpus is its only content. It takes
-# only infra_1253_upgrade on this machine, the database of this issue's upgrade drivers, and
-# refuses every other with status 2.
-issue_tree_redirects_empty_database() {
-  local scheme="" authority="" name="" query=""
-  # The URL's parts are taken before loopback_database_url runs, whose own match replaces
-  # BASH_REMATCH.
-  if [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]]; then
-    scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  fi
-  if [[ -z "$name" ]] || ! loopback_database_url "$database_url"; then
-    printf '%s: DATABASE_URL names no database on this machine; the run drops and creates infra_1253_upgrade alone\n' "$driver" >&2
-    exit 2
-  fi
-  [[ "$name" == infra_1253_upgrade ]] || {
-    printf '%s: DATABASE_URL names the database %s; the run drops and creates infra_1253_upgrade alone\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" \
-    >"$work/empty-database" 2>&1 || fail setup "drop and create the database $name" "psql: $(<"$work/empty-database")"
-  printf '%s: the database %s was dropped and created empty\n' "$driver" "$name"
-}
-
 # issue_tree_redirects_resolve SECTION FILE NODE: what each resolver answers for the citation of
 # c-target, written to FILE as one JSON object: `reference` and `pinned`, the node GET
 # /api/v1/references?to= answers for the address and for the address pinned to version
@@ -226,7 +201,7 @@ issue_tree_redirects_tuple() {
 
 # --- setup and the corpus, through the earlier release ----------------------------------------------
 
-issue_tree_redirects_empty_database
+tree_reset_database "$database_url" infra_1253_upgrade setup
 baseline_start
 token="$baseline_token"
 unset DISPATCH_TOKEN DISPATCH_TOKEN_FILE
@@ -240,7 +215,7 @@ printf 'The main issue, whose Verification document moves.\n\n:::requirement{#r-
   >"$work/main-spec.md"
 corpus_issue "$section" "The issue whose Verification document moves into its tree" "$work/main-spec.md"
 readonly main="$corpus_key"
-[[ "$main" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$section" "create the main issue" "the key $main is no issue key"
+tree_key "$section" "create the main issue" "$main"
 {
   printf 'How the main issue is proved.\n\n'
   printf ':::check{#c-target serves="dispatch://%s/spec#b-r-main" surface="cli" run="bash e2e/acceptance/issue-tree-redirects.sh" negative_control="Leave a moved_to tuple out and the citation dangles."}\n%s\n:::\n\n' \

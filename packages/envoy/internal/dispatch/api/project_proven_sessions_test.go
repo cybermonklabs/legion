@@ -102,10 +102,11 @@ func latestProjectUpdate(t *testing.T, database *store.Store, project string) pr
 // proven_sessions false on its create and on GET /api/v1/projects. The shared token's PUT turns the
 // setting on and appends project.updated naming the session that wrote it; a second PUT changes
 // nothing and appends nothing. A personal token with the person scope turns it off, and its event
-// names the person. A broker token scoped to another project is refused by the project-scope
-// layer, 403 PROJECT_SCOPE, and one scoped to the project turns the setting on. The shared token's
-// DELETE and the project-scoped broker token's DELETE are 403 OAUTH_SCOPE_REQUIRED and leave it
-// on; the personal token's DELETE turns it off again, and its event names the person.
+// names the person. A broker token scoped to another project turns the setting on, as the shared
+// token does, and its event names the session the token proved; one scoped to the project then
+// finds it on, changes nothing and appends nothing. The shared token's DELETE and the
+// project-scoped broker token's DELETE are 403 OAUTH_SCOPE_REQUIRED and leave it on; the personal
+// token's DELETE turns it off again, and its event names the person.
 func TestSpecWriteProvenSessionsSettingStartsOffAndOnlyAPersonTurnsItOff(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	const project, writer = "PROVEN", "ses-turns-proven-sessions-on"
@@ -173,16 +174,15 @@ func TestSpecWriteProvenSessionsSettingStartsOffAndOnlyAPersonTurnsItOff(t *test
 		says.Projects = []string{scoped}
 		rig.broker.Says(token, says)
 	}
-	refused := rig.serve(caller.presenting(t, http.MethodPut, path, other, nil))
-	if code, _ := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != codeProjectScope {
-		t.Errorf("the PUT of a broker token scoped to OTHER: status=%d body=%s, want 403 %s", refused.Code, refused.Body.String(), codeProjectScope)
+	if !answeredProvenSessions(t, "the PUT of a broker token scoped to OTHER", http.StatusOK, rig.serve(caller.presenting(t, http.MethodPut, path, other, nil))) {
+		t.Errorf("the PUT of a broker token scoped to OTHER answers proven_sessions false, want true")
 	}
-	requireSetting(t, "after the PUT of a broker token scoped to OTHER", false, 2)
+	requireSetting(t, "after the PUT of a broker token scoped to OTHER", true, 3)
+	requireWriter(t, "the PUT of a broker token scoped to OTHER", model.Actor{Kind: "session", ID: brokerTestSession, Proven: true}, true)
 	if !answeredProvenSessions(t, "the PUT of a broker token scoped to "+project, http.StatusOK, rig.serve(caller.presenting(t, http.MethodPut, path, own, nil))) {
 		t.Errorf("the PUT of a broker token scoped to %s answers proven_sessions false, want true", project)
 	}
 	requireSetting(t, "after the PUT of a broker token scoped to "+project, true, 3)
-	requireWriter(t, "the PUT of a broker token scoped to "+project, model.Actor{Kind: "session", ID: brokerTestSession, Proven: true}, true)
 
 	for _, refusal := range []struct {
 		what string

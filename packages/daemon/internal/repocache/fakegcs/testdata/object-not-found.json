@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": 404,
+    "message": "No such object: example-legion-packs/acme/widgets/objects/pack/pack-absent.pack",
+    "errors": [
+      {
+        "message": "No such object: example-legion-packs/acme/widgets/objects/pack/pack-absent.pack",
+        "domain": "global",
+        "reason": "notFound"
+      }
+    ]
+  }
+}

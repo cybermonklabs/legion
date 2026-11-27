@@ -180,25 +180,25 @@ type IssueTree struct {
 // children. A node's children are the nodes whose part_of names it at the cut and, for the issue's
 // own node, each ask, comment and message of the issue that the conversation test passes at the
 // cut (refs.ConversationNodes) whose loader names no parent that passes it too. An item whose loader
-// names such a parent hangs under it, under what it answers (this issue's spec R8): a comment under
-// coalesce(answers, reply_to, ask_id), so a reply to a reply under the comment it answers, a reply
-// to the head under the head, and a reply that names a block of a comment or a part of an ask under
-// that comment or that ask; a message under coalesce(in_reply_to, replies_to_block), so a reply that
-// names a block of a message under that message. A comment that answers nothing hangs under the
-// node its anchor's part_of names at the cut (this issue's spec R31): the block it quotes, an
-// untyped block among them, or the lens, finding, risk, constraint or result it quotes; where that
-// node is no node of the walk, under the node the moved_to tuples carry its address to (the node in
-// a converted issue's room). A comment enters the walk through the conversation alone, never as a
-// part_of child (takeLevels). Every other item hangs under the issue. Under a conversation item,
-// its own blocks come first, in their position order. Then, under every node, its children in the
-// tree's order of siblings (this issue's spec R8, refs.CompareSiblings): the conversation nodes -
-// an ask, a comment, a message, a lens, a risk - by when each was made, an item whose row has no
-// node yet by its row's created_at; then the ranked children by increasing rank; then the rest - a
-// block that holds no rank yet, new in a deferred version, or a result - by when each was made;
-// each tie by the lower address (R14 at spec v247). Under the issue's node the memo stands first,
-// before the conversation (memoFirst). A rank and an address compare byte for byte. The walk does
-// not enter an issue under the issue, nor a node of another issue, so a parent's record holds no
-// node of a child.
+// names such a parent hangs under it, under what it answers (R8 of the issue-tree spec): a comment
+// under coalesce(answers, reply_to, ask_id), so a reply to a reply under the comment it answers, a
+// reply to the head under the head, and a reply that names a block of a comment or a part of an ask
+// under that comment or that ask; a message under coalesce(in_reply_to, replies_to_block), so a
+// reply that names a block of a message under that message. A comment that answers nothing hangs
+// under the node its anchor's part_of names at the cut (R31 of the issue-tree spec): the block it
+// quotes, an untyped block among them, or the lens, finding, risk, constraint or result it quotes;
+// where that node is no node of the walk, under the node the moved_to tuples carry its address to
+// (the node in a converted issue's room). A comment enters the walk through the conversation
+// alone, never as a part_of child (takeLevels). Every other item hangs under the issue. Under a
+// conversation item, its own blocks come first, in their position order. Then, under every node,
+// its children in the tree's order of siblings (R8 of the issue-tree spec, refs.CompareSiblings):
+// the conversation nodes - an ask, a comment, a message, a lens, a risk - by when each was made, an
+// item whose row has no node yet by its row's created_at; then the ranked children by increasing
+// rank; then the rest - a block that holds no rank yet, new in a deferred version, or a result - by
+// when each was made; each tie by the lower address (R14 at spec v247). Under the issue's node the
+// memo stands first, before the conversation (memoFirst). A rank and an address compare byte for
+// byte. The walk does not enter an issue under the issue, nor a node of another issue, so a
+// parent's record holds no node of a child.
 //
 // The second part takes each node of the issue whose parent is a node of an issue above
 // (refs.IssueAncestors, refs.TreePlacedAbove), by the parent's address, then rank, then its own
@@ -307,7 +307,7 @@ func walkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	tree.ViewOf = viewOfIssue(chain)
 	walk.nodes[walk.issue] = TreeNode{Kind: walk.issue.Kind, ID: walk.issue.ID, Type: graphstore.SupertagIssue}
 	walk.take(&tree, walk.issue)
-	if first := walk.ordered(walk.issue); len(first) > 0 && walk.nodes[first[0]].Type == memoType {
+	if len(tree.Nodes) > 1 && tree.Nodes[1].Type == memoType {
 		tree.Memo = 1
 	}
 	for _, root := range slices.Concat(lifted, roots) {
@@ -553,7 +553,7 @@ func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 	}
 	for item, row := range rows {
 		node := w.nodes[item]
-		node.Type, node.MadeAt = refs.TreeNodeType(item.Kind, row.Supertag, ""), row.MadeAt
+		node.Type, node.MadeAt = refs.TreeNodeType(item.Kind, item.ID, row.Supertag, ""), row.MadeAt
 		w.nodes[item] = node
 	}
 	return nil
@@ -814,8 +814,7 @@ func (w *treeWalk) hang(item, parent refs.Target) {
 // address. Under the issue's node the memo stands first (memoFirst).
 func (w *treeWalk) ordered(parent refs.Target) []refs.Target {
 	blocks := w.blocks[parent]
-	children := make([]refs.Target, 0, len(blocks)+len(w.children[parent])+len(w.hanging[parent]))
-	children = append(append(append(children, blocks...), w.children[parent]...), w.hanging[parent]...)
+	children := slices.Concat(blocks, w.children[parent], w.hanging[parent])
 	siblings := children[len(blocks):]
 	slices.SortFunc(siblings, func(a, b refs.Target) int { return refs.CompareSiblings(w.sibling(a), w.sibling(b)) })
 	if parent == w.issue {
@@ -833,8 +832,8 @@ func (w *treeWalk) sibling(node refs.Target) refs.TreeChild {
 // memoFirst moves the memo to the front of siblings, the issue's children in the tree's order of
 // siblings: the first of them that is no conversation node, where that child is a callout. The
 // read answers the memo first, before any conversation node, because the owner put the memo at
-// the top of the spec (this issue's spec R8), so the memo stays the issue's first child, which the
-// spec query takes as its memo (R14).
+// the top of the spec (R8 of the issue-tree spec), so the memo stays the issue's first child,
+// which the spec query takes as its memo (R14).
 func (w *treeWalk) memoFirst(siblings []refs.Target) {
 	at := slices.IndexFunc(siblings, func(child refs.Target) bool { return !refs.OrderedAsConversation(child.Kind) })
 	if at <= 0 || w.nodes[siblings[at]].Type != memoType {
@@ -920,23 +919,26 @@ var recordLeftOut = []string{refs.AttributeRank, graphstore.AttributeText}
 // its kind and then its far end, the kind and the far end's address, each a field. The values and
 // the relations are read at the walk's cut, as the server sees the store.
 func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) (QueryRecord, error) {
-	takes, defined := queryDefinitions[query]
+	indices, defined := tree.Takes(query)
 	if !defined {
 		return QueryRecord{}, fmt.Errorf("the query %q has no record", query)
 	}
 	var taken []TreeNode
 	var targets []refs.Target
-	for index, node := range tree.Nodes {
-		if takes(tree, index) {
-			taken = append(taken, node)
-			targets = append(targets, node.target())
-		}
+	if len(indices) > 0 {
+		taken = make([]TreeNode, 0, len(indices))
+		targets = make([]refs.Target, 0, len(indices))
+	}
+	for _, index := range indices {
+		taken = append(taken, tree.Nodes[index])
+		targets = append(targets, tree.Nodes[index].target())
 	}
 	facts, err := refs.TreeFactsOf(ctx, q, targets, tree.Cut)
 	if err != nil {
 		return QueryRecord{}, fmt.Errorf("read the %s record of %s: %w", query, tree.Issue, err)
 	}
 	var record, scratch bytes.Buffer
+	var names []string
 	for _, node := range taken {
 		held := facts[node.target()]
 		writeRecordField(&record, node.Address())
@@ -944,7 +946,7 @@ func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) 
 		writeRecordField(&record, node.Parent.Kind+":"+node.Parent.ID)
 		writeRecordField(&record, node.Rank)
 		scratch.Reset()
-		names := make([]string, 0, len(held.Values))
+		names = names[:0]
 		for name := range held.Values {
 			if !slices.Contains(recordLeftOut, name) {
 				names = append(names, name)
@@ -960,7 +962,7 @@ func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) 
 		scratch.Reset()
 		relations := slices.Clone(held.Relations)
 		slices.SortFunc(relations, func(a, b refs.TreeRelation) int {
-			return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.To.Kind+":"+a.To.ID, b.To.Kind+":"+b.To.ID))
+			return cmp.Or(strings.Compare(a.Kind, b.Kind), refs.CompareAddresses(a.To, b.To))
 		})
 		for _, relation := range relations {
 			writeRecordField(&scratch, relation.Kind)

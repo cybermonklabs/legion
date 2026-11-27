@@ -47,7 +47,7 @@ func requirementOf(t *testing.T, coverage model.IssueCoverage, blockID string) m
 			return requirement
 		}
 	}
-	t.Fatalf("the coverage read holds no requirement %s: %+v", blockID, coverage.Requirements)
+	t.Fatalf("the coverage read of %s holds no requirement %s: %+v", coverage.Issue, blockID, coverage.Requirements)
 	return model.RequirementCoverage{}
 }
 
@@ -239,17 +239,29 @@ func TestApprovalRequestSaysWhenTheSpecMarksNoRequirements(t *testing.T) {
 	}
 }
 
-// coverageReadFault ends the coverage read's tree walk (issueCoverageOverTuplesAndOwedGaps, whose
-// first statement is refs.TurnJITOff) while armed, as a statement timeout or a reset pooled
-// connection ends it: that one statement is sent with a context already ended, and every other
-// statement of the approval request runs.
+// coverageReadFirstStatement is words of the coverage read's first statement alone: the read of
+// the issue's spec and of whether it has a plan, which opens the batch issueCoverageOverTuplesAndOwedGaps
+// sends first.
+const coverageReadFirstStatement = "from artifacts a where a.issue_key = $1 and a.is_primary), '')"
+
+// coverageReadFault ends the coverage read's first statement, the batch that opens with
+// coverageReadFirstStatement, while armed, as a statement timeout or a reset pooled connection
+// ends it: that one batch is sent with a context already ended, and every other statement of the
+// approval request runs.
 type coverageReadFault struct {
 	armed  atomic.Bool
 	failed atomic.Int64
 }
 
-func (f *coverageReadFault) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if !f.armed.Load() || !strings.Contains(data.SQL, "set local jit = off") {
+func (*coverageReadFault) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (*coverageReadFault) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (f *coverageReadFault) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if !f.armed.Load() || data.Batch == nil || len(data.Batch.QueuedQueries) == 0 ||
+		!strings.Contains(data.Batch.QueuedQueries[0].SQL, coverageReadFirstStatement) {
 		return ctx
 	}
 	f.failed.Add(1)
@@ -258,7 +270,9 @@ func (f *coverageReadFault) TraceQueryStart(ctx context.Context, _ *pgx.Conn, da
 	return ended
 }
 
-func (*coverageReadFault) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (*coverageReadFault) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (*coverageReadFault) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // A coverage read that fails refuses nothing: the request is recorded as it always was — it never
 // read the issue's coverage before the answer carried coverage — and the answer says the coverage

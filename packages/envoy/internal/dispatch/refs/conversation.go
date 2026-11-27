@@ -1,13 +1,14 @@
 package refs
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -80,7 +81,7 @@ func conversationKind(kind, id string) (item ItemKind, itemID, blockNode string,
 	default:
 		return "", "", "", false
 	}
-	if canonical, held := canonicalUUID(itemID); !held || canonical != itemID {
+	if !isCanonicalUUID(itemID) {
 		return "", "", "", false
 	}
 	return item, itemID, blockNode, true
@@ -174,25 +175,13 @@ func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 	if err != nil {
 		return nil, fmt.Errorf("list the items of %s: %w", issueKey, err)
 	}
-	var written []edgeRow
-	ids := map[ItemKind][]string{}
-	askKinds := map[string]string{}
-	for rows.Next() {
-		var item edgeRow
-		var askKind string
-		if err := rows.Scan(&item.otherKind, &item.otherID, &askKind); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan an item of %s: %w", issueKey, err)
-		}
-		written = append(written, item)
-		ids[ItemKind(item.otherKind)] = append(ids[ItemKind(item.otherKind)], item.otherID)
-		if ItemKind(item.otherKind) == ItemAsk {
-			askKinds[item.otherID] = askKind
-		}
+	written, askKinds, err := scanConversationItems(rows, issueKey)
+	if err != nil {
+		return nil, err
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list the items of %s: %w", issueKey, err)
+	ids := map[ItemKind][]string{}
+	for _, item := range written {
+		ids[ItemKind(item.otherKind)] = append(ids[ItemKind(item.otherKind)], item.otherID)
 	}
 
 	passing := map[ItemKind]map[string]bool{}
@@ -224,7 +213,39 @@ func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 	if err != nil {
 		return nil, err
 	}
-	nodes := make([]ExcerptedNode, 0, len(loading))
+	return conversationAnswer(kept, blocks, resolved, askKinds, serverURL), nil
+}
+
+// scanConversationItems reads the rows of an items statement of the issue issueKey
+// (conversationItemsStatement) and closes them: the items in their order, and the kind of each
+// ask by its id, as askKindOf reads it.
+func scanConversationItems(rows pgx.Rows, issueKey string) ([]edgeRow, map[string]string, error) {
+	defer rows.Close()
+	var items []edgeRow
+	askKinds := map[string]string{}
+	for rows.Next() {
+		var item edgeRow
+		var askKind string
+		if err := rows.Scan(&item.otherKind, &item.otherID, &askKind); err != nil {
+			return nil, nil, fmt.Errorf("scan an item of %s: %w", issueKey, err)
+		}
+		items = append(items, item)
+		if ItemKind(item.otherKind) == ItemAsk {
+			askKinds[item.otherID] = askKind
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("list the items of %s: %w", issueKey, err)
+	}
+	return items, askKinds, nil
+}
+
+// conversationAnswer is the conversation's nodes: each item of kept that resolved holds, in
+// kept's order, followed by each of its blocks resolved holds, in their order, each with the
+// excerpt an edge at it shows, cut around the dashboard URLs of the deployment at serverURL
+// (excerptOf), and an ask with its kind (askKindOf).
+func conversationAnswer(kept []edgeRow, blocks map[[2]string][]edgeRow, resolved map[[2]string]resolvedNode, askKinds map[string]string, serverURL string) []ExcerptedNode {
+	nodes := make([]ExcerptedNode, 0, len(resolved))
 	for _, item := range kept {
 		node, found := resolved[[2]string{item.otherKind, item.otherID}]
 		if !found {
@@ -237,7 +258,7 @@ func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 			}
 		}
 	}
-	return nodes, nil
+	return nodes
 }
 
 // askKindOf is the kind of the ask item is, as the items read answered its row (askKinds, by the
@@ -299,7 +320,7 @@ func conversationItemIDs(ctx context.Context, q Queryer, kind ItemKind, ids []st
 	passing := make(map[string]bool, len(ids))
 	subjects := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if canonical, held := canonicalUUID(id); held && canonical == id {
+		if isCanonicalUUID(id) {
 			subjects = append(subjects, id)
 		}
 	}
@@ -457,7 +478,7 @@ func ParseCommentPosition(written string) (CommentPosition, bool) {
 	if err != nil {
 		return CommentPosition{}, false
 	}
-	if canonical, held := canonicalUUID(id); !held || canonical != id {
+	if !isCanonicalUUID(id) {
 		return CommentPosition{}, false
 	}
 	return CommentPosition{MadeAt: at, ID: id}, true
@@ -505,9 +526,6 @@ func ReadCommentPage(ctx context.Context, q Queryer, issueKey string, at time.Ti
 	if before != nil && len(comments) == 0 {
 		return CommentPage{}, ErrCommentPositionPastEnd
 	}
-	slices.SortFunc(comments, func(left, right CommentPosition) int {
-		return cmp.Or(right.MadeAt.Compare(left.MadeAt), strings.Compare(right.ID, left.ID))
-	})
 	page := CommentPage{IDs: make([]string, 0, min(size, len(comments)))}
 	for index, comment := range comments {
 		if index == size {
@@ -526,9 +544,13 @@ func ReadCommentPage(ctx context.Context, q Queryer, issueKey string, at time.Ti
 // in it.
 func CommentsOffPage(ctx context.Context, q Queryer, issueKey string, at time.Time, page CommentPage, ids []string) (map[string]bool, error) {
 	off := map[string]bool{}
+	onPage := make(map[string]struct{}, len(page.IDs))
+	for _, id := range page.IDs {
+		onPage[id] = struct{}{}
+	}
 	subjects := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if canonical, held := canonicalUUID(id); held && canonical == id && !slices.Contains(page.IDs, id) {
+		if _, on := onPage[id]; !on && isCanonicalUUID(id) {
 			subjects = append(subjects, id)
 		}
 	}
@@ -634,7 +656,7 @@ type DaemonThreadParent struct {
 	// Issue is the issue the block is re-placed under: the one its own document belongs to,
 	// which is Holder but for a block of a document of an issue below it, whose parent pointer
 	// named a message of an issue above; and Holder for a block whose document no issue holds.
-	// A block with no parent to hang under hangs from its own issue (this issue's spec R3), and
+	// A block with no parent to hang under hangs from its own issue (R3 of the issue-tree spec), and
 	// the walk of an issue's tree takes a block placed above it only under a block or a
 	// conversation node of an issue above (TreePlacedAbove), never under that issue's own node.
 	Issue string
@@ -662,7 +684,7 @@ var daemonThreadParentsStatement = `
 	placed as (
 		select held.node, standing.to_kind, standing.to_id, standing.seq,
 		       ` + store.CastableUUID(`(case when standing.to_kind = '`+string(ItemMessage)+`' then standing.to_id
-		            else split_part(split_part(standing.to_id, '#', 1), '/', 2) end)`) + ` as message
+		            else `+graphstore.ItemOfBlockNodeSQL(`standing.to_id`)+` end)`) + ` as message
 		from held
 		cross join lateral (` + BlockPlacementSQL(`held.node`) + `) standing
 		where standing.to_kind in ('` + string(ItemMessage) + `', '` + ItemMessage.BlockKind() + `')
@@ -729,7 +751,7 @@ func conversationTargets(ctx context.Context, q Queryer, targets []text.Ref, at 
 		case target.Kind == "block":
 			blocks = append(blocks, text.TargetID(target))
 		default:
-			if canonical, held := canonicalUUID(target.ID); held && canonical == target.ID {
+			if isCanonicalUUID(target.ID) {
 				whole[ItemKind(kind)] = append(whole[ItemKind(kind)], target.ID)
 			}
 		}

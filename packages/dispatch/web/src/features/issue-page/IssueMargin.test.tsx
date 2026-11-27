@@ -114,7 +114,7 @@ import { Publisher, publishedNames } from "./projection-fixture";
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { DetailsSlot } from "./slots/details";
-import { commentNode, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
+import { commentNode, postMarks, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   outlineQuery,
@@ -7750,10 +7750,7 @@ function holdComments(client: QueryClient, comments: readonly CommentWithTrees[]
       ...comments.map((one) => ({
         ...commentNode(one),
         ...(one.body_tree === undefined ? {} : { text_tree: one.body_tree }),
-        ...(one.edited_at === null ? {} : { edited_at: one.edited_at }),
-        ...(one.deleted_at === null
-          ? {}
-          : { deleted_at: one.deleted_at, deleted_by: one.deleted_by }),
+        ...postMarks(one),
       })),
     ])
   );

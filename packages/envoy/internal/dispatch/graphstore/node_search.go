@@ -3,8 +3,6 @@ package graphstore
 import (
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -23,7 +21,7 @@ import (
 //     version's number as text_seq and that version's search vector (artifact_versions.search,
 //     built by artifact_versions_search() over the document's own fragment's markdown). The
 //     related-item check and the near-copy gate rank documents from these rows, reading one vector
-//     per document as document_search let them on main.
+//     per document as document_search let them in the releases before.
 //
 // QueueHeads keeps both projections in the writer's transaction, before writing the head rows.
 // Block owners name the documents of a block pass; artifact and version nodes also name their
@@ -38,14 +36,7 @@ func QueueNodeSearch(b *store.WriteBatch, ids []string, written *int64) {
 	if len(ids) == 0 {
 		return
 	}
-	queued := b.Queue("write the search rows of the blocks written", nodeSearchWriteStatement, ids)
-	if written == nil {
-		return
-	}
-	queued.Exec(func(tag pgconn.CommandTag) error {
-		*written += tag.RowsAffected()
-		return nil
-	})
+	counted(b.Queue("write the search rows of the blocks written", nodeSearchWriteStatement, ids), written)
 }
 
 // QueueDocumentSearch queues on b the write of the node_search document rows of the artifacts
@@ -62,14 +53,7 @@ func queueDocumentSearch(b *store.WriteBatch, refKeys, blockOwners []string, bac
 	if len(refKeys) == 0 && len(blockOwners) == 0 {
 		return
 	}
-	queued := b.Queue("write the search rows of the documents written", documentSearchWriteStatement, refKeys, blockOwners, backfill)
-	if written == nil {
-		return
-	}
-	queued.Exec(func(tag pgconn.CommandTag) error {
-		*written += tag.RowsAffected()
-		return nil
-	})
+	counted(b.Queue("write the search rows of the documents written", documentSearchWriteStatement, refKeys, blockOwners, backfill), written)
 }
 
 // queueNodeSearch queues the block rows and names their owners to the document-row write. It
@@ -81,7 +65,7 @@ func queueNodeSearch(b *store.WriteBatch, nodes []NodeKey) {
 		switch storedKindOf(node.Kind) {
 		case blockKind:
 			blocks = append(blocks, node.ID)
-			if owner, _, ok := strings.Cut(node.ID, "#"); ok && !strings.HasPrefix(owner, "lens/") {
+			if owner, _, ok := strings.Cut(node.ID, "#"); ok && !strings.HasPrefix(owner, KindLens+"/") {
 				if owners == nil {
 					owners = make(map[string]struct{})
 				}
@@ -271,24 +255,13 @@ func currentBlockTextParentSQL(id string) string {
 		limit 1`
 }
 
-// currentBlockAskTextSQL answers one row, opens_ask, for the block id: whether its newest text
-// tuple asserts and opens an ask block (askTextSQL), and no row for a block with no text tuple.
-func currentBlockAskTextSQL(id string) string {
-	return `select newest.asserted and ` + askTextSQL("newest.text") + ` as opens_ask
-		from (
-			select t.asserted, t.to_id as text from graph_tuples t
-			where t.from_kind = '` + blockKind + `' and t.from_id = ` + id + `
-			  and t.kind = '` + AttributeText + `' and t.to_kind = '` + KindValue + `'
-			order by t.seq desc
-			limit 1
-		) newest`
-}
-
 // NodeSearchAskNodesSQL is a CTE of a WITH RECURSIVE, ask_nodes (id, depth), holding every block
 // node that is an ask block or stands in one, of the owners the relation owners names (a CTE or
-// table with a column ref_key, the owner part of a node's address, refs.NodeSearchOwnerSQL): the
-// set InsideAskBlockSQL is true of, read once for a statement rather than once for each node a
-// word matched. A reader leaves out of what it matches each node whose address the set holds.
+// table with a column ref_key, the owner part of a node's address, refs.NodeSearchOwnerSQL): each
+// node whose own text opens an ask block (askTextSQL), or above which a block, climbed to through
+// current block parents (currentBlockTextParentSQL) to askBlockDepth, has a newest text tuple that
+// asserts and opens one; read once for a statement rather than once for each node a word matched.
+// A reader leaves out of what it matches each node whose address the set holds.
 //
 // The set is walked down from the ask blocks rather than up from the matches, because the ask
 // blocks are few and a common word matches tens of thousands of nodes. Its first rows are the
@@ -297,14 +270,14 @@ func currentBlockAskTextSQL(id string) string {
 // parent (currentBlockTextParentSQL) is a row already found, read off the tuples into that row
 // (graph_tuples_as_of_in) and kept only where the newest such parent is the row, to askBlockDepth.
 //
-// It is InsideAskBlockSQL's set, node for node:
+// The walk down holds the set the climb up defines, node for node:
 //
-//   - InsideAskBlockSQL climbs from a node through its current block parent, a function: each node
-//     has at most one. So a node x is above an ask block f at distance d (d at most askBlockDepth)
-//     on that climb exactly where f is d steps up the same function from x, which is where the
-//     walk down from f reaches x at depth d. A cycle of text_parent tuples is cut at the same depth
+//   - The climb goes from a node through its current block parent, a function: each node has at
+//     most one. So a node x is above an ask block f at distance d (d at most askBlockDepth) on
+//     that climb exactly where f is d steps up the same function from x, which is where the walk
+//     down from f reaches x at depth d. A cycle of text_parent tuples is cut at the same depth
 //     both ways, and `union` drops a node found again at a depth it already holds.
-//   - InsideAskBlockSQL tests a node's newest text tuple; the walk starts from node_search's text.
+//   - The climb tests a node's newest text tuple; the walk starts from node_search's text.
 //     node_search holds the row of each block node present whose newest text tuple asserts, with
 //     that tuple's value, written in the transaction that writes the tuple (QueueNodeSearch), and
 //     the census kind node_search holds the table to the tuples both ways. So the two differ only
@@ -346,28 +319,4 @@ func NodeSearchAskNodesSQL(owners string) string {
 		where ask_nodes.depth < ` + askBlockDepth + `
 		  and (` + currentBlockTextParentSQL("child.from_id") + `) = ask_nodes.id
 	)`
-}
-
-// InsideAskBlockSQL is a boolean SQL expression, true where the block node of the node_search row
-// whose address and text the SQL expressions id and text name is an ask block or stands in one
-// (NodeSearchAskNodesSQL's set): its own text opens an ask block, or a block above it by its
-// current block parents (currentBlockTextParentSQL), to askBlockDepth, has a newest text tuple
-// that asserts and opens one. It is the form for a reader that needs one node of a few and stops
-// at the first, the related-item check's probe of a lexeme, where the set read whole would cost
-// more than the climbs it saves. id and text are spelled by the caller and never a value a
-// request carried.
-func InsideAskBlockSQL(id, text string) string {
-	return `(` + askTextSQL(text) + ` or exists (
-		with recursive text_up(id, depth) as (
-			select parent.to_id, 1 from (` + currentBlockTextParentSQL(id) + `) parent
-			union all
-			select parent.to_id, text_up.depth + 1
-			from text_up
-			cross join lateral (` + currentBlockTextParentSQL("text_up.id") + `) parent
-			where text_up.depth < ` + askBlockDepth + `
-		)
-		select 1 from text_up
-		cross join lateral (` + currentBlockAskTextSQL("text_up.id") + `) newest
-		where newest.opens_ask
-	))`
 }

@@ -454,9 +454,13 @@ func (s *server) createStoredMessage(
 			return model.Message{}, nil, err
 		}
 		logins = events.ThreadLoginsOf(root)
-		advice = s.writeAdvice(
+		// An advice savepoint that could not be rolled back left tx aborted: the write answers
+		// that failure, rather than sending its insert on tx (adviceTxError).
+		if advice, err = s.writeAdvice(
 			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, adviceAsks{}, status, eventType, false,
-		)
+		); err != nil {
+			return model.Message{}, nil, err
+		}
 	}
 	message, err := insertedMessage(messageID, issueKey, author, input, createdAt)
 	if err != nil {

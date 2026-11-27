@@ -1251,20 +1251,21 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 	}
 }
 
-// ProvisionBound is the three provisioning phases' bounds together, workspace.FetchBudget (190m:
+// ProvisionBound is the three provisioning phases' bounds together, workspace.FetchBudget (205m:
 // the wait for the repository cache, which covers the cache's own first clone, then one bound for
-// the verification of what the cache streamed, then one of its own for the delta from GitHub) for
+// the attempt on the cache's bucket, then one for the verification of what the cache's /tar
+// streamed when that attempt failed, then one of its own for the delta from GitHub) for
 // workspace-fetch, workspace.CloneTimeout (30m) for workspace-init's shared clone, and
 // workspace.CheckoutTimeout (60m) for the issue's own checkout of that clone, and nothing more:
 // provisioning from the feed onto the pod's own disk waits on no other pod, so no lock wait is
 // added to it. The cache's stream holds the low-speed bound and no clock, so a stream that keeps
 // receiving runs on into the slack this bound holds over what its fetch actually waited and
-// checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
+// checked. Pinned to a literal, 295 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
-	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
-		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the shared clone's, and the checkout's", got, want)
+	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+workspace.BucketFetchTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 295*time.Minute || got != want {
+		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the bucket attempt's bound, the verification's, the delta's own, the shared clone's, and the checkout's", got, want)
 	}
 }
 
@@ -2015,11 +2016,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
 			}
 			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
-			// the fake clock's moment, plus the termination grace. It moves only once the runtime has
-			// finished writing the Start (written): an end of the deadline inside the write closes the
-			// connection, as a write the context cuts does, and the Stop that follows would find no
-			// launcher.
-			delayed.written()
+			// the fake clock's moment, plus the termination grace.
 			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
 			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
 				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
@@ -2091,16 +2088,18 @@ type scriptedStartLauncher struct {
 	stops   chan shimwire.LauncherStop
 }
 
-// written returns once the runtime has finished writing the frame the scripted launcher last read
-// and stopped watching that write's context: requestSession holds the session's lock through both,
-// and the launcher reads the frame only while the write holds it.
-func (d *scriptedStartLauncher) written() {
-	d.session.mu.Lock()
-	defer d.session.mu.Unlock()
-}
-
 func (g *rig) scriptedStartLauncher(
 	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult,
+) *scriptedStartLauncher {
+	g.t.Helper()
+	return g.scriptedStartLauncherOver(token, running, answer, nil)
+}
+
+// scriptedStartLauncherOver is scriptedStartLauncher with the daemon's end of the connection
+// handed to the runtime through wrap, when wrap is not nil: the connection the runtime writes its
+// requests to and reads the launcher's frames from.
+func (g *rig) scriptedStartLauncherOver(
+	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult, wrap func(net.Conn) net.Conn,
 ) *scriptedStartLauncher {
 	g.t.Helper()
 	g.r.launchers.mu.Lock()
@@ -2110,6 +2109,9 @@ func (g *rig) scriptedStartLauncher(
 		old.close()
 	}
 	server, client := net.Pipe()
+	if wrap != nil {
+		server = wrap(server)
+	}
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,

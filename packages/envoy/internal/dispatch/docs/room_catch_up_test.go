@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room this process holds for a document another process writes follows that write: the write
@@ -94,8 +95,8 @@ func waitNote(t *testing.T, notes chan string, artifactID, what string) {
 	}
 }
 
-// countNotes is how many notes for artifactID arrive within quiet of each other.
-func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
+// countNotes is how many notes for artifactID notes holds now; it takes them all.
+func countNotes(notes chan string, artifactID string) int {
 	count := 0
 	for {
 		select {
@@ -103,9 +104,32 @@ func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
 			if room == artifactID {
 				count++
 			}
-		case <-time.After(quiet):
+		default:
 			return count
 		}
+	}
+}
+
+// awaitCatchUpLane returns once service's catch-up lane has run everything queued on it now, and
+// everything the work it was running then queued in turn. The lane runs its work in the order it
+// was queued (roomSyncLane), and a notification's decision queues the catch-up it asks for before
+// it notes the decision (roomCatchUps.request), so once a marker queued after the decisions a test
+// heard has run, every catch-up they asked for has read. But a catch-up the test heard read may
+// still be running when that marker is queued, and a catch-up it queues itself (closeReplaced's
+// c.request) lands behind the marker. So a second marker follows the first: once the first has
+// run, that catch-up has returned, and what it queued stands ahead of the second.
+func awaitCatchUpLane(t *testing.T, service *Service) {
+	t.Helper()
+	service.catchUps.mu.Lock()
+	lane := service.catchUps.lane
+	service.catchUps.mu.Unlock()
+	for _, what := range []string{
+		"the catch-up lane to run a marker queued after the decisions",
+		"the catch-up lane to run a marker queued after what the running catch-up queued",
+	} {
+		reached := make(chan struct{})
+		lane.push(func(context.Context) { close(reached) })
+		testwait.Receive(t, what, reached)
 	}
 }
 
@@ -134,7 +158,7 @@ func replaceStoredHistory(t *testing.T, database *store.Store, artifactID, markd
 		t.Fatalf("lock the document: %v", err)
 	}
 	persist := NewPgVersioned(database)
-	head, err := persist.head(ctx, tx, artifactID)
+	head, err := roomHead(ctx, tx, artifactID)
 	if err != nil {
 		t.Fatalf("read the head the rebuild replaces: %v", err)
 	}
@@ -205,7 +229,8 @@ func TestAHeadAnnouncementFromThisProcessReadsNothing(t *testing.T) {
 		waitNote(t, notes.decided, pair.artifactID, fmt.Sprintf("keystroke %d's head announcement", keystroke))
 		waitNote(t, notes.decided, pair.artifactID, fmt.Sprintf("keystroke %d's bare announcement", keystroke))
 	}
-	if reads := countNotes(notes.reads, pair.artifactID, 100*time.Millisecond); reads != 0 {
+	awaitCatchUpLane(t, pair.taskA)
+	if reads := countNotes(notes.reads, pair.artifactID); reads != 0 {
 		t.Fatalf("task A's own appends cost %d catch-up reads, want none", reads)
 	}
 
@@ -632,7 +657,7 @@ func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
 	if pair.taskA.srv.GetDoc(elsewhere) != nil {
 		t.Fatal("the catch-up loaded a room for a document nobody here had open")
 	}
-	if reads := countNotes(notes.reads, elsewhere, 0); reads != 0 {
+	if reads := countNotes(notes.reads, elsewhere); reads != 0 {
 		t.Fatalf("the catch-up read %d time(s) for a document with no room here", reads)
 	}
 }
@@ -701,7 +726,11 @@ func waitForCatchUpsIdle(t *testing.T, service *Service, artifactID string) {
 // An old build's write during a roll announces only the bare artifact id. A burst of those for one
 // room that arrives before its catch-up runs costs that one catch-up: a request for a room whose
 // catch-up is queued adds nothing. The lane is held while the burst arrives, so every
-// announcement is queued before the first is decided.
+// announcement is queued before the first is decided. The burst is sent only once the lane runs
+// the task that holds it, and the lane takes that task off its queue as it runs it
+// (roomSyncLane.pop), so the queue the wait below counts holds the burst's announcements alone:
+// counted while the task still waited on the queue, four announcements and the task read as the
+// whole burst, and the fifth came after the lane was let go, asking for a catch-up of its own.
 func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 	t.Parallel()
 	pair := newProcessPair(t)
@@ -717,7 +746,12 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 	held := make(chan struct{})
 	release := sync.OnceFunc(func() { close(held) })
 	testcleanup.Add(t, release)
-	lane.push(func(context.Context) { <-held })
+	holding := make(chan struct{})
+	lane.push(func(context.Context) {
+		close(holding)
+		<-held
+	})
+	testwait.Receive(t, "the lane to run the task that holds it", holding)
 
 	const burst = 5
 	update := paragraphUpdate()
@@ -742,7 +776,8 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 		waitNote(t, notes.decided, pair.artifactID, "the burst's announcements")
 	}
 	waitNote(t, notes.reads, pair.artifactID, "the burst's catch-up")
-	if reads := countNotes(notes.reads, pair.artifactID, 300*time.Millisecond); reads != 0 {
+	awaitCatchUpLane(t, pair.taskA)
+	if reads := countNotes(notes.reads, pair.artifactID); reads != 0 {
 		t.Fatalf("a burst of %d bare announcements cost %d catch-up reads, want one", burst, reads+1)
 	}
 	if roomBehind(t, pair.taskA, pair.artifactID) {

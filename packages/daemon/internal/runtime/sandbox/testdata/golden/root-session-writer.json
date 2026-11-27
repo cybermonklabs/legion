@@ -400,9 +400,6 @@
             "workingDir": "/legion"
           }
         ],
-        "nodeSelector": {
-          "legion.dev/pool": "legion"
-        },
         "priorityClassName": "legion",
         "restartPolicy": "Always",
         "runtimeClassName": "gvisor",
@@ -414,14 +411,6 @@
           "runAsUser": 1000
         },
         "terminationGracePeriodSeconds": 30,
-        "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          }
-        ],
         "volumes": [
           {
             "ephemeral": {

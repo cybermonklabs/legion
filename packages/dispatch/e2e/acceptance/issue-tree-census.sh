@@ -109,57 +109,9 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# issue_tree_census_empty_database: drops and creates the database database_url names, so the
-# earlier release's Store.Migrate writes its schema and the corpus is its only content. It takes
-# only infra_1253_upgrade on this machine, the database of this issue's upgrade drivers, and
-# refuses every other with status 2.
-issue_tree_census_empty_database() {
-  local scheme="" authority="" name="" query=""
-  # The URL's parts are taken before loopback_database_url runs, whose own match replaces
-  # BASH_REMATCH.
-  if [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]]; then
-    scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  fi
-  if [[ -z "$name" ]] || ! loopback_database_url "$database_url"; then
-    printf '%s: DATABASE_URL names no database on this machine; the run drops and creates infra_1253_upgrade alone\n' "$driver" >&2
-    exit 2
-  fi
-  [[ "$name" == infra_1253_upgrade ]] || {
-    printf '%s: DATABASE_URL names the database %s; the run drops and creates infra_1253_upgrade alone\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" \
-    >"$work/empty-database" 2>&1 || fail setup "drop and create the database $name" "psql: $(<"$work/empty-database")"
-  printf '%s: the database %s was dropped and created empty\n' "$driver" "$name"
-}
-
-# issue_tree_census_tree SECTION FILE ISSUE: the agent's tree read of ISSUE with no view (lib-tree.sh's
-# tree_read), every page of it followed through its cursor, as one answer in FILE: the first page's
-# members and every page's nodes and tuples.
-issue_tree_census_tree() {
-  local section="$1" file="$2" issue="$3" cursor="" pages=0
-  : >"$work/pages"
-  while true; do
-    tree_read agent "$issue" "" "" "$cursor"
-    tree_want 200 "$section" "read the tree of $issue"
-    cat "$work/body" >>"$work/pages"
-    pages=$((pages + 1))
-    cursor="$(jq -r '.cursor // ""' "$work/body")"
-    [[ -n "$cursor" ]] || break
-    ((pages < 500)) || fail "$section" "read the tree of $issue" "its cursor did not end after $pages pages"
-  done
-  jq -s '.[0] + {nodes: [.[].nodes[]?], tuples: [.[].tuples[]?]}' "$work/pages" >"$file" ||
-    fail "$section" "read the tree of $issue" "the pages do not join: $(head -c 600 "$work/pages")"
-  printf 'read the tree of %s: %s pages, %s nodes\n' "$issue" "$pages" "$(jq '.nodes | length' "$file")"
-}
-
-# issue_tree_census_count NAME VALUE AT: prints one count with the database time it was taken at.
-issue_tree_census_count() { printf 'count %s=%s at %s\n' "$1" "$2" "$3"; }
-
 # --- setup and the corpus, through the earlier release ----------------------------------------------
 
-issue_tree_census_empty_database
+tree_reset_database "$database_url" infra_1253_upgrade setup
 baseline_start
 token="$baseline_token"
 unset DISPATCH_TOKEN DISPATCH_TOKEN_FILE
@@ -182,7 +134,7 @@ issue_tree_census_issue() {
   } >"$work/$prefix-spec.md"
   corpus_issue "$section" "$title" "$work/$prefix-spec.md"
   key="$corpus_key"
-  [[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$section" "create the issue \"$title\"" "the key $key is no issue key"
+  tree_key "$section" "create the issue \"$title\"" "$key"
   {
     printf 'How the %s issue is proved.\n\n:::check{#%s serves="dispatch://%s/spec#b-r-%s" surface="cli" run="bash e2e/acceptance/issue-tree-census.sh" negative_control="Take the fresh id out and two nodes share one id."}\nThe %s issue is proved.\n:::\n\n' \
       "$prefix" "$check" "$key" "$prefix" "$prefix"
@@ -229,14 +181,14 @@ summary="$(sed -n '/^census: block_ids /p' "$work/out")"
 issues="${BASH_REMATCH[1]}" stored_count="${BASH_REMATCH[2]}"
 query "$section" "read the time of the published census" "select clock_timestamp()"
 at="$answer"
-issue_tree_census_count census_issues "$issues" "$at"
+corpus_count census_issues "$issues" "$at"
 ((issues > 0)) || fail "$section" "the census reads at least one issue" "it read $issues issues: a count taken over no issue is refused"
 sed -n 's/^census: shared_block_id //p' "$work/out" |
   jq -cs 'sort_by(.issue, .block)' >"$work/shared.stored" ||
   fail "$section" "the command prints the shared block records as JSON" "$(<"$work/out")"
 [[ "$(jq length "$work/shared.stored")" == "$stored_count" ]] ||
   fail "$section" "the published count matches the number of records" "$(<"$work/out")"
-issue_tree_census_count shared_block_ids_stored "$stored_count" "$at"
+corpus_count shared_block_ids_stored "$stored_count" "$at"
 sed -n '/^census: shared_block_id /p' "$work/out"
 jq -e --arg issue "$collision" 'any(.[]; .issue == $issue and .block == "r1")' "$work/shared.stored" >/dev/null ||
   fail "$section" "the published count holds $collision and b-r1" "$(<"$work/shared.stored")"
@@ -287,7 +239,7 @@ jq -cs 'group_by([.issue, .block]) |
   map(select(.documents | length >= 2))' "$work/blocks.read" >"$work/shared.read" ||
   fail "$section" "count the shared block IDs from the blocks read" "the API block records did not parse"
 query "$section" "read the time of the count from the blocks read" "select clock_timestamp()"
-issue_tree_census_count shared_block_ids_read_back "$(jq length "$work/shared.read")" "$answer"
+corpus_count shared_block_ids_read_back "$(jq length "$work/shared.read")" "$answer"
 printf 'the blocks read of %s documents\n' "$documents"
 differs="$(diff "$work/shared.stored" "$work/shared.read")" || true
 [[ -z "$differs" ]] ||
@@ -297,7 +249,7 @@ pass "$section" "the count from the stored rows and the count from the blocks th
 query "$section" "run the census of 20261117045607_issue_tree_rooms" "$(<"$census_sql")"
 census_answer="$answer"
 query "$section" "read the time of the migration census" "select clock_timestamp()"
-issue_tree_census_count block_ids_twice_under_a_tree "$census_answer" "$answer"
+corpus_count block_ids_twice_under_a_tree "$census_answer" "$answer"
 [[ "$census_answer" == 0 ]] ||
   fail "$section" "the migration census reads zero block ids twice under one tree artifact" "it reads $census_answer"
 pass "$section" "the migration census reads zero block ids twice under one tree artifact"
@@ -320,7 +272,8 @@ sed 's/^/  /' "$work/out"
 # --- ids: every block id of the issue's tree once ---------------------------------------------------
 
 section=ids
-issue_tree_census_tree "$section" "$work/collision.json" "$collision"
+tree_read_all "$section" "$work/collision.json" "$collision"
+printf 'read the tree of %s: %s pages, %s nodes\n' "$collision" "$tree_pages" "$(jq '.nodes | length' "$work/collision.json")"
 cp "$work/collision.json" "$work/body"
 expect "$section" "$collision reads converted: true" true '.converted'
 twice="$(jq -r --arg k "$collision" '[.nodes[] | select(.kind == "block" and ((.issue // $k) == $k))]

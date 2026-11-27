@@ -132,30 +132,6 @@ trap 'exit 143' TERM
 
 # --- the vocabulary of this driver ------------------------------------------------------------------
 
-# tt_database_parts: database_url split into the server it names (database_server, its URL with
-# the `postgres` database in place of its own) and its database's name (database_name). It refuses
-# a URL whose database is not on this machine or whose name does not end `_upgrade`, the database
-# the Verification preamble gives the upgrade drivers.
-tt_database_parts() {
-  loopback_database_url "$database_url" ||
-    tree_refuse "DATABASE_URL names no single loopback postgres database: this driver drops and creates it"
-  [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
-    tree_refuse "DATABASE_URL is no postgres:// URL naming a database"
-  database_server="${BASH_REMATCH[1]}${BASH_REMATCH[3]}/postgres${BASH_REMATCH[5]}"
-  database_name="${BASH_REMATCH[4]}"
-  [[ "$database_name" =~ ^[a-z0-9_]+_upgrade$ ]] ||
-    tree_refuse "DATABASE_URL names the database $database_name: this driver drops and creates only a database whose name ends _upgrade"
-}
-
-# tt_empty_database: drops the database database_url names and creates it empty, so the earlier
-# release's own Store.Migrate writes its schema and this run's rows are its only content.
-tt_empty_database() {
-  baseline_psql "$database_server" -q \
-    -c "drop database if exists \"$database_name\" with (force)" -c "create database \"$database_name\"" >"$work/reset" 2>&1 ||
-    fail setup "empty the database $database_name" "psql: $(<"$work/reset")"
-  pass setup "dropped the database $database_name and created it empty"
-}
-
 # tt_rooms SECTION WHEN: the issue holds no document_rooms row, read at WHEN.
 tt_rooms() {
   with_vars "$1" "read the document_rooms rows of $key" \
@@ -179,73 +155,10 @@ tt_quiet() {
   done
 }
 
-# tt_patch AS KEY NODE TAG BODY: PATCH /api/v1/issues/KEY/nodes/NODE as AS (agent or person), NODE
-# percent-encoded as one segment, with the JSON BODY and `If-Match: "TAG"`. The answer is in
-# $work/body and `status`, as tree_request leaves them.
-tt_patch() {
-  local as="$1" key="$2" node="$3" tag="$4" body="$5"
-  local -a auth
-  case "$as" in
-    agent) auth=(-H "@$work/auth") ;;
-    person) auth=(-b "$work/jar" -H "Origin: $(tree_origin)") ;;
-    *) tree_refuse "tt_patch sends as agent or person, not '$as'" ;;
-  esac
-  tree_last_request="PATCH /api/v1/issues/$key/nodes/$node If-Match \"$tag\" $body"
-  status="$(curl -sS -X PATCH -o "$work/body" -w '%{http_code}' "${auth[@]}" -H "If-Match: \"$tag\"" \
-    -H 'Content-Type: application/json' --data-binary "$body" \
-    "$base/api/v1/issues/$(q "$key")/nodes/$(q "$node")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-
-# tt_store ADDRESS: the store's kind and id of the node at ADDRESS, in tt_kind and tt_id: a block's
-# address holds a `#` and is the block node's id; every other address is `<kind>/<id>`.
-tt_store() {
-  if [[ "$1" == *"#"* ]]; then
-    tt_kind=block tt_id="$1"
-  else
-    tt_kind="${1%%/*}" tt_id="${1#*/}"
-  fi
-}
-
-# tt_far SECTION ADDRESS TUPLE: the far ends of the current TUPLE tuples out of the node at ADDRESS -
-# a block's id, every other node `<kind>/<id>` - joined by commas, in answer.
-tt_far() {
-  tt_store "$2"
-  with_vars "$1" "read the $3 of $2" \
-    "select coalesce(string_agg(case when h.to_kind = 'block' then h.to_id else h.to_kind || '/' || h.to_id end, ',' order by h.to_kind, h.to_id), '')
-     from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
-           where from_kind = :'kind' and from_id = :'id' and kind = :'tuple' and to_kind <> 'value'
-           order by to_kind, to_id, seq desc) h where h.asserted" \
-    kind="$tt_kind" id="$tt_id" tuple="$3"
-}
-
-# tt_value SECTION ADDRESS ATTRIBUTE: the current value of ATTRIBUTE of the node at ADDRESS, empty
-# where it holds none, in answer.
-tt_value() {
-  tt_store "$2"
-  with_vars "$1" "read the $3 of $2" \
-    "select coalesce((select case when asserted then to_id end from graph_tuples
-       where from_kind = :'kind' and from_id = :'id' and kind = :'attribute' and to_kind = 'value'
-       order by seq desc limit 1), '')" \
-    kind="$tt_kind" id="$tt_id" attribute="$3"
-}
-
-# tt_tag SECTION ADDRESS: the placement_seq of the node at ADDRESS, the seq of its current part_of, as
-# the tree read answers it, in tt_placed.
-tt_tag() {
-  tt_store "$2"
-  with_vars "$1" "read the placement_seq of $2" \
-    "select coalesce((select h.seq from (select distinct on (to_kind, to_id) seq, asserted from graph_tuples
-       where from_kind = :'kind' and from_id = :'id' and kind = 'part_of' and to_kind <> 'value'
-       order by to_kind, to_id, seq desc) h where h.asserted order by h.seq desc limit 1)::text, '')" \
-    kind="$tt_kind" id="$tt_id"
-  [[ -n "$answer" ]] || fail "$1" "read the placement_seq of $2" "it holds no part_of"
-  tt_placed="$answer"
-}
-
-# tt_body SECTION AS PARENT [AFTER]: the body of a move under PARENT, after AFTER where it is given,
-# with the agent's actor where AS is agent, in answer.
+# tt_body AS PARENT [AFTER]: the body of a move under PARENT, after AFTER where it is given, with the
+# agent's actor where AS is agent, in answer.
 tt_body() {
-  answer="$(jq -cn --arg p "$3" --arg a "${4:-}" --argjson actor "$(tree_actor)" --arg as "$2" \
+  answer="$(jq -cn --arg p "$2" --arg a "${3:-}" --argjson actor "$(tree_actor)" --arg as "$1" \
     '{parent: $p} + (if $a == "" then {} else {after: $a} end) + (if $as == "agent" then {actor: $actor} else {} end)')"
 }
 
@@ -257,10 +170,11 @@ declare -a stored_nodes=() stored_parents=()
 # is given) with the If-Match of its placement_seq, and wants 200 naming the parent and a
 # placement_seq; the move joins the blocks the stored section reads.
 tt_move() {
-  local section="$1" as="$2" key="$3" address="$4" parent="$5" after="${6:-}" code
-  tt_tag "$section" "$address"
-  tt_body "$section" "$as" "$parent" "$after"
-  tt_patch "$as" "$key" "$address" "$tt_placed" "$answer"
+  local section="$1" as="$2" key="$3" address="$4" parent="$5" after="${6:-}" code tag
+  tree_node_tag "$section" "$address"
+  tag="$answer"
+  tt_body "$as" "$parent" "$after"
+  tree_node_send PATCH "$as" "$key" "$address" "$tag" "$answer" ""
   if [[ "$status" != 200 ]]; then
     code="$(jq -r '.code // ""' "$work/body" 2>/dev/null)" || code=""
     fail "$section" "the move of $address under $parent" "the move of $address under $parent answered $status${code:+ $code}, want 200: $(body)"
@@ -274,11 +188,9 @@ tt_move() {
 }
 
 # tt_write SECTION WHAT DOC MARKDOWN: the person appends MARKDOWN to the document DOC through the edit
-# route; it must change it.
+# route (lib-tree.sh's tree_person_edit); it must change it.
 tt_write() {
-  tree_person_send POST "/api/v1/artifacts/$3/edits" "$(jq -cn --arg m "$4" '{ops: [{op: "insert", after: "end", markdown: $m}]}')"
-  tree_want 200 "$1" "$2"
-  jq -e '.changed == true' "$work/body" >/dev/null || fail "$1" "$2" "the edit changed nothing: $(body)"
+  tree_person_edit "$1" "$2" "$3" "$(jq -cn --arg m "$4" '[{op: "insert", after: "end", markdown: $m}]')"
   pass "$1" "$2"
 }
 
@@ -412,7 +324,7 @@ tt_tree_parent() {
 # tt_stored_prose SECTION VIEW NODE PARENT: NODE stands under PARENT in the store, but the tree
 # read omits it because it is prose of a role document (R2, R8).
 tt_stored_prose() {
-  tt_far "$1" "$3" part_of
+  tree_node_far "$1" "$3" part_of
   [[ "$answer" == "$4" ]] ||
     fail "$1" "the moved paragraph's placement" "$3 holds a stored part_of naming $answer, want $4"
   tree_read person "$key" "$2"
@@ -578,8 +490,7 @@ MD
 # --- setup: the release before over an emptied database, and this head beside it -------------------
 
 section=setup
-tt_database_parts
-tt_empty_database
+tree_reset_database "$database_url" '?*_upgrade' "$section"
 baseline_start
 token="$baseline_token"
 unset DISPATCH_TOKEN DISPATCH_TOKEN_FILE
@@ -601,7 +512,7 @@ tree_person_send POST /api/v1/issues "$(jq -cn --arg p "$project" --arg t "The t
 tree_want 201 "$section" "create the issue of the text cases through this head"
 tree_field "$section" "the key of the issue of the text cases" .key
 key="$tree_value"
-[[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$section" "create the issue of the text cases" "the key $key is no issue key"
+tree_key "$section" "create the issue of the text cases" "$key"
 # Not readonly: the move helpers take a local `key`, which a readonly name refuses.
 tree_field "$section" "the spec of $key" .primary_artifact_id
 readonly spec_doc="$tree_value"
@@ -648,7 +559,7 @@ cases=$((cases + 1))
 # --- rewritten: the parent= of a requirement names its new parent ------------------------------------
 
 section=rewritten
-tt_far "$section" "$tr1" text_parent
+tree_node_far "$section" "$tr1" text_parent
 text_before="$answer"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$tr1" "$tk2"
@@ -658,9 +569,9 @@ for file in "$work/new.md" "$work/head.md"; do
   [[ "$line" != *"#b-tk1\""* ]] || fail "$section" "the text of $tr1 names its new parent" "the new spec version of $key still names the old parent $tk1: $line"
   [[ "$line" == *"#b-tk2\""* ]] || fail "$section" "the text of $tr1 names its new parent" "the new spec version of $key holds no parent= naming $tk2: $line"
 done
-tt_far "$section" "$tr1" text_parent
+tree_node_far "$section" "$tr1" text_parent
 [[ "$answer" == "$text_before" ]] || fail "$section" "the text of $tr1 stays where it stood" "its text_parent moved from $text_before to $answer"
-tt_value "$section" "$tr1" text_rank
+tree_node_value "$section" "$tr1" text_rank
 [[ -n "$answer" ]] || fail "$section" "$tr1 holds a text_rank" "it holds none after its version's pass"
 pass "$section" "the text of $tr1 names $tk2, and its text_parent and text_rank stand"
 cases=$((cases + 1))
@@ -680,7 +591,7 @@ for file in "$work/new.md" "$work/head.md"; do
 done
 tt_version "$section" "$spec_doc"
 [[ "$tt_number" == "$spec_version" ]] || fail "$section" "the spec takes no version" "the move of $tc1 wrote version $tt_number of the spec, $spec_version before"
-tt_value "$section" "$tc1" text_rank
+tree_node_value "$section" "$tc1" text_rank
 [[ -n "$answer" ]] || fail "$section" "$tc1 holds a text_rank" "it holds none after its version's pass"
 pass "$section" "the Verification document's new version names $tr1 in the parent= of $tc1, and the spec stands at version $spec_version"
 cases=$((cases + 1))
@@ -692,7 +603,7 @@ tree_person_send POST "/api/v1/issues/$key/lenses" "$(jq -cn --arg on "dispatch:
 tree_want 201 "$section" "invoke a trade-off on $tk2"
 tree_field "$section" "the lens on $tk2" .id
 readonly lens="lens/$tree_value"
-tt_far "$section" "$tr2" text_parent
+tree_node_far "$section" "$tr2" text_parent
 text_before="$answer"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$tr2" "$lens"
@@ -704,7 +615,7 @@ for file in "$work/new.md" "$work/head.md"; do
 done
 tt_tree_parent "$section" "" "$tr2"
 [[ "$answer" == "${lens#lens/}" || "$answer" == "$lens" ]] || fail "$section" "the tree read answers $tr2 under the lens" "$tr2 stands under '$answer' in the tree read, want $lens"
-tt_far "$section" "$tr2" text_parent
+tree_node_far "$section" "$tr2" text_parent
 [[ "$answer" == "$text_before" ]] || fail "$section" "the text of $tr2 stays flat where it stood" "its text_parent moved from $text_before to $answer"
 pass "$section" "the text of $tr2 names no parent and is flat, and the tree read answers it under $lens"
 cases=$((cases + 1))
@@ -725,7 +636,7 @@ tt_depth() {
 tt_head "$section" "$spec_doc"
 tt_depth "$work/head.md"
 depth_before="$answer"
-tt_far "$section" "$second_item" text_parent
+tree_node_far "$section" "$second_item" text_parent
 text_before="$answer"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$second_item" "$first_item"
@@ -735,7 +646,7 @@ for file in "$work/new.md" "$work/head.md"; do
   [[ "$answer" == "$((depth_before + 1))" ]] ||
     fail "$section" "the text of $second_item stands one level deeper" "list item $second_item at depth $answer, want $((depth_before + 1))"
 done
-tt_far "$section" "$second_item" text_parent
+tree_node_far "$section" "$second_item" text_parent
 [[ "$answer" != "$text_before" ]] || fail "$section" "the text_parent of $second_item follows its text" "it still names $text_before"
 pass "$section" "the text of $second_item stands at depth $((depth_before + 1)), under $first_item, and its text_parent is $answer"
 cases=$((cases + 1))
@@ -756,9 +667,9 @@ for file in "$work/new.md" "$work/head.md"; do
   [[ "$text" == *"The second paragraph of the order case"*"The first paragraph of the order case"* ]] ||
     fail "$section" "the text holds $first_paragraph after $second_paragraph" "the new version of $key holds $first_paragraph before $second_paragraph"
 done
-tt_value "$section" "$first_paragraph" text_rank
+tree_node_value "$section" "$first_paragraph" text_rank
 moved_rank="$answer"
-tt_value "$section" "$second_paragraph" text_rank
+tree_node_value "$section" "$second_paragraph" text_rank
 second_rank="$answer"
 # Ranks compare byte for byte, as every rank does (R1), so the store compares them, not the shell's
 # locale.
@@ -786,7 +697,7 @@ for file in "$work/new.md" "$work/head.md"; do
     fail "$section" "the text nests $callout_paragraph in $callout" "the new version of $key holds $callout_paragraph outside $callout, want inside it"
 done
 tt_stored_prose "$section" spec "$callout_paragraph" "$callout"
-tt_far "$section" "$callout_paragraph" text_parent
+tree_node_far "$section" "$callout_paragraph" text_parent
 [[ "$answer" == "$callout" ]] || fail "$section" "the text_parent of $callout_paragraph is $callout" "it names '$answer'"
 pass "$section" "the text holds $callout_paragraph as the last block of $callout; both part_of and text_parent name $callout"
 cases=$((cases + 1))
@@ -845,7 +756,7 @@ for file in "$work/new.md" "$work/head.md"; do
     fail "$section" "the text nests $list_paragraph in $list_item" "the new version of $key holds $list_paragraph outside $list_item, want inside it after its first paragraph"
 done
 tt_stored_prose "$section" spec "$list_paragraph" "$list_item"
-tt_far "$section" "$list_paragraph" text_parent
+tree_node_far "$section" "$list_paragraph" text_parent
 [[ "$answer" == "$list_item" ]] || fail "$section" "the text_parent of $list_paragraph is $list_item" "it names '$answer'"
 pass "$section" "the text holds $list_paragraph in $list_item after its first paragraph; both part_of and text_parent name $list_item"
 cases=$((cases + 1))
@@ -927,13 +838,14 @@ tt_counts() {
 }
 for out in "$of_y|$callout_y|ty|callout" "$of_y2|$callout_y2|ty2|callout" "$of_m|$item_m|$item_m_id|list item"; do
   IFS='|' read -r paragraph container id kind <<<"$out"
-  tt_far "$section" "$paragraph" part_of
+  tree_node_far "$section" "$paragraph" part_of
   [[ "$answer" == "$container" ]] || fail "$section" "$paragraph stands under $container" "it stands under '$answer' before its move"
   tt_counts "$section"
   counts_before="$answer"
-  tt_tag "$section" "$paragraph"
-  tt_body "$section" person "issue/$key" "$before_containers"
-  tt_patch person "$key" "$paragraph" "$tt_placed" "$answer"
+  tree_node_tag "$section" "$paragraph"
+  tag="$answer"
+  tt_body person "issue/$key" "$before_containers"
+  tree_node_send PATCH person "$key" "$paragraph" "$tag" "$answer" ""
   code="$(jq -r '.code // ""' "$work/body" 2>/dev/null)" || code=""
   [[ "$status" == 409 && "$code" == CONTAINER_WOULD_EMPTY ]] ||
     fail "$section" "the move of $paragraph out of $container is refused" "the move of $paragraph out of $container answered $status${code:+ $code}, want 409 CONTAINER_WOULD_EMPTY: $(body)"
@@ -942,7 +854,7 @@ for out in "$of_y|$callout_y|ty|callout" "$of_y2|$callout_y2|ty2|callout" "$of_m
   tt_counts "$section"
   [[ "$answer" == "$counts_before" ]] ||
     fail "$section" "the refused move stores nothing" "the move of $paragraph out of $container changed the spec's versions, the store's tuples and the room's updates from $counts_before to $answer, want no change"
-  tt_far "$section" "$paragraph" part_of
+  tree_node_far "$section" "$paragraph" part_of
   [[ "$answer" == "$container" ]] ||
     fail "$section" "the refused move keeps $paragraph under $container" "the move of $paragraph out of $container changed its part_of to $answer, want no change"
   pass "$section" "the move of $paragraph out of the $kind $container answers 409 CONTAINER_WOULD_EMPTY naming it, and stores nothing"
@@ -959,9 +871,9 @@ tt_quiet "$section"
 for index in "${!stored_nodes[@]}"; do
   node="${stored_nodes[$index]}"
   want="${stored_parents[$index]}"
-  tt_far "$section" "$node" part_of
+  tree_node_far "$section" "$node" part_of
   part_of="$answer"
-  tt_value "$section" "$node" placement
+  tree_node_value "$section" "$node" placement
   [[ "$answer" == stored && "$part_of" == "$want" ]] ||
     fail "$section" "the next index pass keeps $node where its move put it" "$node holds the placement '$answer' and part_of $part_of after the next index pass, want stored under $want"
 done

@@ -213,30 +213,6 @@ def reads(*entries):
     return [Read(glob, why) for glob, why in entries]
 
 
-def envoy_go_files_but_infra():
-    """The .go files internal/testnats/nats_test.go's dockerDriverFiles opens: every one under
-    packages/envoy but infra's, node_modules' and testdata's, test files included, as one
-    `<dir>/**/*.go` per top-level directory that holds one and packages/envoy/*.go if the root
-    does. A glob for a directory holding no .go file would name no file, which rule 9 refuses, and
-    out - where packages/dispatch/e2e/run-broker.sh builds the broker binaries the browser suite
-    starts - holds binaries alone. Only a file of repo_files() counts, so a directory a local run
-    filled with files git ignores names no glob either."""
-    known = set(repository_files())
-
-    def holds_go(directory: Path) -> bool:
-        for current, subdirs, names in os.walk(directory):
-            subdirs[:] = [s for s in subdirs if s not in {"node_modules", "testdata"}]
-            if any(n.endswith(".go") and f"{current}/{n}" in known for n in names):
-                return True
-        return False
-
-    globs = [f"{ENVOY}/*.go"] if any(p.as_posix() in known for p in Path(ENVOY).glob("*.go")) else []
-    for entry in sorted(Path(ENVOY).iterdir()):
-        if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
-            globs.append(f"{ENVOY}/{entry.name}/**/*.go")
-    return globs
-
-
 def credential_check_reads():
     """The files packages/daemon/internal/textcheck/credential_argument_test.go reads: every one
     git tracks but those under docs/plans and docs/superpowers. A glob cannot leave a tree out, so
@@ -748,9 +724,12 @@ AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # Go's cleanup detector: at each collection the runtime reports a cleanup or a finalizer whose
 # closure or argument reaches the object it is attached to. internal/dispatch/docs is the only
 # package of the repository that registers a cleanup (runtime.AddCleanup in roomcursor.go and
-# tree.go), so every run of its tests runs under it: envoy-go-race-docs' race run below, and the
-# plain run of what the race build cannot run (race_impossible_script), and no job runs the
-# package a third time for the detector alone.
+# tree.go), so every run of its untagged tests runs under it: envoy-go-race-docs' race run below,
+# and the plain run of what the race build cannot run (race_impossible_script), and no job runs
+# those a third time for the detector alone. The memory step's run of the package's `memory`
+# tests (MEMORY_SCRIPT) runs without it: the one test that tag adds there,
+# TestThePassLockTimeGrowsLinearlyWithTheRoom, holds a pass's lock time to a ratio between two
+# room sizes, and the detector adds its own work to each collection inside the times it compares.
 CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
 CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
@@ -1400,6 +1379,26 @@ RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 def race_pkgs(job):
     """The package arguments of a race job's step, in the order it names them."""
     return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages]
+
+
+# The job of ci-caches.yaml whose race build fills go-envoy-race, the cache every leg of the lane
+# restores: it compiles every job's packages of the lane, in the lane's order.
+ENVOY_RACE_FILL_JOB = "envoy-race"
+
+# ci-caches.yaml's race builds that name a lane's packages inline, each (fill job, the name of the
+# constant naming it, the package words its race build must name, the name of the list they come
+# from, the step that restores the cache, the jobs that restore it, and the clause saying which
+# steps follow that list): ci_workflow_rules.py's check_race_fill_packages holds each fill job's race build to its
+# words, so the fill and the lane cannot name other packages with nothing failing.
+RACE_FILLS = [
+    (DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in DAEMON_RACE_PACKAGES], "DAEMON_RACE_PACKAGES",
+     f"{CI}'s race step", CI, f"{CI}'s two race steps follow it already"),
+    (ENVOY_RACE_FILL_JOB, "ENVOY_RACE_FILL_JOB", [word for job in ENVOY_RACE_LANE for word in race_pkgs(job)],
+     "ENVOY_RACE_LANE", "the envoy race lane's steps", "the envoy race lane",
+     "envoy-go-race's and envoy-go-race-api's steps follow it already (race_step, RACE_API_SCRIPT), and "
+     "envoy-go-race-docs' line is RACE_DOCS_SCRIPT's, written by hand, so a change to the lane's docs "
+     "entry changes that line too"),
+]
 
 
 def race_step(job):
@@ -2087,6 +2086,9 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The step of envoy-go-checks that runs the scan tests of approve-check's session, which spawn
+# scripts/approve/scan.ts.
+SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
 # and is the verdict on them; envoy-go-checks and the test job each end with one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"

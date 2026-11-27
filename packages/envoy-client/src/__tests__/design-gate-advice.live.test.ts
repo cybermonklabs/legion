@@ -51,6 +51,18 @@ function gateClause(gates: readonly { readonly issue: string; readonly step: str
   return `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`;
 }
 
+// Each write below adds a block its document's query takes - a requirement to a spec, a check to a
+// Verification document, a plan task to a plan - because R14's record carry carries an approval
+// across a write of prose alone, which no query takes, and such a write supersedes no approval.
+/** One typed block of `type` holding `words`, with its block id, as an agent's insert writes it. */
+function typedBlock(
+  type: "requirement" | "check" | "plan_task",
+  id: string,
+  words: string
+): string {
+  return `:::${type}{#${id}}\n${words}\n:::`;
+}
+
 /** What one design-gate step records, as a daemon older than `holds` publishes it: the test
  * leaves `holds` out, so Dispatch reads each row by the deployment's gated steps. */
 interface PublishedGate {
@@ -114,7 +126,11 @@ describe.skipIf(!dispatchStackEnabled)(
       const document = await upload(issue.key, "verification.md", "# Verification\n\nOne check.\n");
       const approved = await approve(document.artifact.id);
 
-      const printed = await docEdit(issue.key, document.artifact.id, "One more check.");
+      const printed = await docEdit(
+        issue.key,
+        document.artifact.id,
+        typedBlock("check", "k-more", "One more check.")
+      );
 
       expect(printed).toEndWith(`${storedSentence(approved + 1, PERSON)} ${NEXT_STEP}`);
       expect(printed).not.toContain("design gate");
@@ -130,7 +146,11 @@ describe.skipIf(!dispatchStackEnabled)(
         version: plan.version.number,
       });
 
-      const printed = await docEdit(issue.key, plan.artifact.id, "One more task.");
+      const printed = await docEdit(
+        issue.key,
+        plan.artifact.id,
+        typedBlock("plan_task", "t-more", "One more task.")
+      );
 
       const stored = plan.version.number + 1;
       expect(printed).toEndWith(
@@ -149,7 +169,11 @@ describe.skipIf(!dispatchStackEnabled)(
       const plan = await upload(issue.key, "plan.md", "# Plan\n\nOne task.\n");
       const approved = await approve(plan.artifact.id);
 
-      const printed = await docEdit(issue.key, plan.artifact.id, "One more task.");
+      const printed = await docEdit(
+        issue.key,
+        plan.artifact.id,
+        typedBlock("plan_task", "t-more", "One more task.")
+      );
 
       const stored = approved + 1;
       expect(printed).toEndWith(
@@ -173,7 +197,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const printed = await docEdit(
         child.key,
         child.primary_artifact_id,
-        "A sentence the child gained."
+        typedBlock("requirement", "r-gained", "A requirement the child gained.")
       );
 
       expect(printed).toEndWith(`${storedSentence(approved + 1, PERSON)} ${NEXT_STEP}`);
@@ -188,7 +212,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const printed = await docEdit(
         issue.key,
         issue.primary_artifact_id,
-        "A sentence the gate had not seen."
+        typedBlock("requirement", "r-unseen", "A requirement the gate had not seen.")
       );
 
       expect(printed).toEndWith(
@@ -206,7 +230,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const printed = await docEdit(
         owner.key,
         owner.primary_artifact_id,
-        "A sentence neither gate had seen."
+        typedBlock("requirement", "r-unseen", "A requirement neither gate had seen.")
       );
 
       expect(printed).toEndWith(
@@ -227,7 +251,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const printed = await docEdit(
         live.key,
         live.primary_artifact_id,
-        "A sentence no open gate waits on."
+        typedBlock("requirement", "r-unwaited", "A requirement no open gate waits on.")
       );
 
       expect(printed).toEndWith(`${storedSentence(approved + 1, PERSON)} ${NEXT_STEP}`);

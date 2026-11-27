@@ -408,14 +408,20 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   anchor: MOVED_BY_NO_WRITE,
   checks: MOVED_BY_NO_WRITE,
   title: MOVED_BY_NO_WRITE,
+  // A post's marks, its edit and its delete, which a comment's or a message's own events move and
+  // no issue's node carries.
+  deleted_at: MOVED_BY_NO_WRITE,
+  deleted_by: MOVED_BY_NO_WRITE,
+  edited_at: MOVED_BY_NO_WRITE,
 };
 
 /** The relations an issue states out of its own node that are edges of the reference graph,
  *  each named by the field an issue write names in `changed` when it moves one: its parent
  *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
  *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
- *  and its components (`affects`). `changesReferenceGraph` holds the same fields, with the title,
- *  in a list of its own, so an edit to one list finds the other. */
+ *  and its components (`affects`). `changesReferenceGraph` reads the same fields as
+ *  `ISSUE_RELATION_FIELDS`, with the components and the title, so an edit to one list finds the
+ *  other. */
 const ISSUE_EDGE_FIELDS: readonly string[] = [
   "parent",
   "needs",
@@ -1406,10 +1412,9 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        // `ISSUE_EDGE_FIELDS`, with the title: an edit to either list finds the other.
-        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
-          (field) => changes.has(field)
-        )
+        ISSUE_RELATION_FIELDS.some((field) => changes.has(field)) ||
+        changes.has("components") ||
+        changes.has("title")
       );
     }
     default:
@@ -1530,13 +1535,7 @@ function issueWriteTargets(
   // ones are the panels that still list an edge from this issue. A Dispatch of the release before
   // writes `blocked_by` alone, which is read where the payload holds no `needs`, and names the
   // edge blocked_by.
-  if (
-    moved("parent") ||
-    moved("needs") ||
-    moved("blocked_by") ||
-    moved("duplicate_of") ||
-    moved("filed_from")
-  ) {
+  if (ISSUE_RELATION_FIELDS.some((field) => moved(field))) {
     const parent = payloadString(event, "parent");
     const waits = payloadStrings(event, "needs") ?? payloadStrings(event, "blocked_by") ?? [];
     const duplicate = payloadString(event, "duplicate_of");
@@ -1558,6 +1557,16 @@ function issueWriteTargets(
   }
   return targets;
 }
+
+/** The fields of an issue's write that move an edge its node states (ISSUE_RELATION_KINDS): its
+ *  parent, its waits under both spellings, the issue it repeats and the item it was filed out of. */
+const ISSUE_RELATION_FIELDS = [
+  "parent",
+  "needs",
+  "blocked_by",
+  "duplicate_of",
+  "filed_from",
+] as const;
 
 /** The kinds of edge an issue states out of its own node: its parent, its waits under both the
  *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the
