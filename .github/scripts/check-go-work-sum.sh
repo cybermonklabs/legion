@@ -11,12 +11,12 @@
 # to the database at all. With every hash committed, a build reads the proxy alone, and a database
 # that fails cannot fail a build that never asks it.
 #
-# How: `go mod download -json all` reports, for each module of the workspace graph, the hash of its
-# content (`Sum`, the `h1:` line) and of its go.mod (`GoModSum`). This check compares each against
-# the committed files and names every module whose hash is in none of them. It asks the checksum
-# database for nothing and downloads nothing it does not already hold, so it cannot be confused by
-# a toolchain switch, an unreachable database or a module cache that is cold - the four ways the
-# first version of this check failed for reasons that were not a missing hash.
+# How: `go mod download -json all` reports, for each module of the workspace graph, two hashes:
+# `Sum`, of its content (the `h1:` line), and `GoModSum`, of its go.mod. This check compares each
+# against the committed files and names every module whose hash is in none of them. It asks the
+# checksum database for nothing and downloads nothing it does not already hold, so it cannot be
+# confused by a toolchain switch, an unreachable database or a module cache that is cold - the four
+# ways the first version of this check failed for reasons that were not a missing hash.
 #
 # It needs the Go this repository pins, because the graph is the one that Go resolves: CI's
 # setup-go installs it, and a box whose `go` reaches it through a toolchain module serves too,
