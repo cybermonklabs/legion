@@ -95,14 +95,79 @@ test("with the display menu open and its radio focused, the page's keys fire not
   }
 });
 
-/** The highest z-index `@legion/proof-editor`'s own stylesheet gives anything it draws over a
- *  document: its selection bar with Comment and Suggest, its mark popovers, its link card. */
-function editorTopLayer(): number {
-  const css = readFileSync(
+/** An element `selector` matches, drawn from it: a tag, classes, and attributes with or without
+ *  a value, as `.mark-popover.mark-popover-sheet` and `span[data-dispatch="ask"]` name one. Null
+ *  for a selector with a combinator, a pseudo-class or a pseudo-element, which names no one
+ *  element. */
+function drawnFor(selector: string): HTMLElement | null {
+  if (/[\s>+~:()*]/.test(selector)) return null;
+  const element = document.createElement(/^[a-z][\w-]*/i.exec(selector)?.[0] ?? "div");
+  for (const [, name] of selector.matchAll(/\.([\w-]+)/g)) element.classList.add(name);
+  for (const [, name, value] of selector.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)) {
+    element.setAttribute(name, value ?? "");
+  }
+  return element.matches(selector) ? element : null;
+}
+
+/** Every style rule of `rules`, and of each rule that groups rules of its own (`@media`). */
+function styleRules(rules: CSSRuleList): CSSStyleRule[] {
+  return [...rules].flatMap((rule) =>
+    rule instanceof CSSStyleRule
+      ? [rule]
+      : "cssRules" in rule
+        ? styleRules((rule as CSSGroupingRule).cssRules)
+        : []
+  );
+}
+
+/** The layer `element` stands in, as the page computes it (`getComputedStyle`): NaN for an
+ *  element it puts in no layer of its own (`auto`). */
+function layerOf(element: Element): number {
+  return Number.parseInt(getComputedStyle(element).zIndex, 10);
+}
+
+/**
+ * The layers `@legion/proof-editor`'s own stylesheet gives what it draws over a document - its
+ * selection bar with Comment and Suggest, its mark popovers, its link card - each read as the page
+ * computes it, however the stylesheet writes it: with the stylesheet in the document, an element
+ * is drawn for each selector of each of its rules (`drawnFor`) inside the editor's root, and that
+ * element's layer is read (`layerOf`). Answers the highest, and each rule that sets a z-index no
+ * element drawn for it computes - a selector this draws no element for - so no layer goes unread.
+ */
+function editorLayers(): { top: number; unread: string[] } {
+  const sheet = document.createElement("style");
+  sheet.textContent = readFileSync(
     Bun.resolveSync("@legion/proof-editor/style.css", import.meta.dir),
     "utf8"
   );
-  return Math.max(...[...css.matchAll(/z-index:\s*(\d+)/g)].map((layer) => Number(layer[1])));
+  document.head.append(sheet);
+  const root = document.createElement("div");
+  root.className = "proof-editor";
+  document.body.append(root);
+  try {
+    const rules = sheet.sheet?.cssRules;
+    if (rules === undefined) throw new Error("the editor's stylesheet was not read");
+    let top = Number.NEGATIVE_INFINITY;
+    const unread: string[] = [];
+    for (const rule of styleRules(rules)) {
+      let read = false;
+      for (const selector of rule.selectorText.split(",")) {
+        const element = drawnFor(selector.trim());
+        if (element === null) continue;
+        root.append(element);
+        const layer = layerOf(element);
+        element.remove();
+        if (Number.isNaN(layer)) continue;
+        read = true;
+        top = Math.max(top, layer);
+      }
+      if (!read && rule.style.zIndex !== "") unread.push(rule.selectorText);
+    }
+    return { top, unread };
+  } finally {
+    root.remove();
+    sheet.remove();
+  }
 }
 
 /** A single pick a page draws, open or shut as the reader leaves it. */
@@ -135,15 +200,17 @@ test("an open list or menu stands above every layer a document's own floating ba
     </KeymapProvider>
   );
   try {
-    const top = editorTopLayer();
-    expect(top, "the editor's stylesheet names no layer").toBeGreaterThanOrEqual(190);
+    const editor = editorLayers();
+    expect(editor.unread, "the editor's layers no element drawn here computes").toEqual([]);
+    expect(editor.top, "the editor's stylesheet names no layer").toBeGreaterThanOrEqual(190);
     await user.click(screen.getByRole("button", { name: "View" }));
     const menu = screen.getByRole("dialog", { name: "View" });
-    expect(Number(menu.style.zIndex), "the display menu's layer").toBeGreaterThan(top);
+    expect(layerOf(menu), "the display menu's layer").toBeGreaterThan(editor.top);
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Version" }));
     const list = screen.getByRole("listbox", { name: "Version options" }).parentElement;
-    expect(Number(list?.style.zIndex), "the Version list's layer").toBeGreaterThan(top);
+    if (list === null) throw new Error("the Version list is drawn outside its panel");
+    expect(layerOf(list), "the Version list's layer").toBeGreaterThan(editor.top);
   } finally {
     view.unmount();
   }
@@ -589,4 +656,213 @@ test("a control the focus reaches in a panel opened from inside a panel stands w
   } finally {
     view.unmount();
   }
+});
+
+/** A panel cut to the window as the shared list's is: a text box stuck to its top, twelve rows
+ *  and a foot stuck to its bottom, or with `parts` false the twelve rows alone. It opens with the
+ *  focus left where it is: nothing here reads where the focus goes. */
+function FlooredPanel({ parts }: { parts: boolean }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} ref={anchor} type="button">
+        Labels
+      </button>
+      {open ? (
+        <AnchoredPanel
+          anchorRef={anchor}
+          className=""
+          focusOnOpen={false}
+          label="Labels"
+          onDismiss={() => setOpen(false)}
+          role="dialog"
+        >
+          {parts ? (
+            <div data-testid="head" style={{ position: "sticky", top: 0 }}>
+              <input aria-label="Search labels" />
+            </div>
+          ) : null}
+          {buttons(Array.from({ length: 12 }, (_, at) => `lab-${at + 1}`))}
+          {parts ? (
+            <div data-testid="foot" style={{ bottom: 0, position: "sticky" }}>
+              {buttons(["Clear labels"])}
+            </div>
+          ) : null}
+        </AnchoredPanel>
+      ) : null}
+    </>
+  );
+}
+
+/** The window `FlooredPanel` opens in, and where its trigger stands in it. */
+interface WindowLayout {
+  /** The window's height. */
+  readonly height: number;
+  /** How far the page has scrolled at first, 0 where this is not given. */
+  readonly pageAt?: number;
+  /** How far the page scrolls at most. */
+  readonly pageEnd: number;
+  /** The trigger's top, in the window, as the page stands at first. */
+  readonly top: number;
+}
+
+/**
+ * Lays out what happy-dom does not for `FlooredPanel`, whose trigger is `trigger`: the window and
+ * the page it shows, whose scroll stops at both ends as a browser's does; the trigger, 44 px tall,
+ * moved up by the page's scroll; and the panel, whose text box and foot are each 61 px tall and
+ * each row 44 px, inside a 1 px border: it holds 2 + 61 + 12 × 44 + 61 = 652 px with its text box
+ * and foot, 530 without them, and shows as much as it is cut to. What is measured of the panel's
+ * parts is their heights. Answers how far the page has scrolled, and what puts the layout back.
+ */
+function layOutWindow(
+  trigger: HTMLElement,
+  layout: WindowLayout,
+  parts: boolean
+): { page: () => number; restore: () => void } {
+  const start = layout.pageAt ?? 0;
+  let scrolled = start;
+  const holds = 12 * 44 + (parts ? 2 * 61 : 0);
+  const root = document.documentElement;
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: layout.height });
+  Object.defineProperties(root, {
+    clientHeight: { configurable: true, get: () => layout.height },
+    scrollHeight: { configurable: true, get: () => layout.height + layout.pageEnd },
+    scrollTop: {
+      configurable: true,
+      get: () => scrolled,
+      set: (value: number) => {
+        scrolled = Math.min(Math.max(value, 0), layout.pageEnd);
+      },
+    },
+  });
+  // What the panel's box shows, with its border: all it holds, or as much as it is cut to.
+  const shows = (panel: HTMLElement) => {
+    const cut = Number.parseFloat(panel.style.maxHeight);
+    return Number.isNaN(cut) ? holds + 2 : cut;
+  };
+  const sizes: Record<string, (panel: HTMLElement) => number> = {
+    clientHeight: (panel) => shows(panel) - 2,
+    offsetHeight: shows,
+    scrollHeight: () => holds,
+  };
+  const own = Object.keys(sizes).map(
+    (name) => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)] as const
+  );
+  for (const [name, size] of Object.entries(sizes)) {
+    Object.defineProperty(HTMLElement.prototype, name, {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.getAttribute("role") === "dialog" ? size(this) : 0;
+      },
+    });
+  }
+  const measure = Element.prototype.getBoundingClientRect;
+  const spy = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === trigger) return new DOMRect(10, layout.top + start - scrolled, 90, 44);
+    const part = this.getAttribute("data-testid");
+    if (part === "head" || part === "foot") return new DOMRect(1, 0, 254, 61);
+    if (this.parentElement?.getAttribute("role") === "dialog") return new DOMRect(1, 0, 254, 44);
+    return measure.call(this);
+  });
+  return {
+    page: () => scrolled,
+    restore: () => {
+      spy.mockRestore();
+      for (const [name, descriptor] of own) {
+        if (descriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, name);
+        else Object.defineProperty(HTMLElement.prototype, name, descriptor);
+      }
+      for (const name of ["clientHeight", "scrollHeight", "scrollTop"]) {
+        Reflect.deleteProperty(root, name);
+      }
+      if (innerHeight === undefined) Reflect.deleteProperty(window, "innerHeight");
+      else Object.defineProperty(window, "innerHeight", innerHeight);
+    },
+  };
+}
+
+/** Opens `FlooredPanel` in the window `layout` lays out, and answers where its panel stands: its
+ *  top, the height it is cut to ("none" where it is not cut), and how far the page scrolled. */
+async function openFloored(layout: WindowLayout, parts = true): Promise<[string, string, number]> {
+  const user = userEvent.setup();
+  const view = render(<FlooredPanel parts={parts} />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const laid = layOutWindow(trigger, layout, parts);
+  try {
+    await user.click(trigger);
+    const panel = screen.getByRole("dialog", { name: "Labels" });
+    return [panel.style.top, panel.style.maxHeight || "none", laid.page()];
+  } finally {
+    laid.restore();
+    view.unmount();
+  }
+}
+
+// At 390x360 the issue header's Labels list, its trigger mid-window, was cut to 146 px, and at
+// 390x300 to 116: its text box and its Clear foot left 22 px, and then none, for its 44 px rows,
+// so it showed no row whole. A cut panel is never cut below its sticky parts and one row. Where
+// the roomier side has less room than that, the panel takes that side at that height, and the
+// page scrolls the least that shows it within the window.
+test("a panel whose roomier side holds less than its text box, one row and its foot takes that side at that height, and the page scrolls the least that shows it", async () => {
+  const placed = [
+    // Mid-window at 360 px: 146 px under the trigger and 146 over it.
+    await openFloored({ height: 360, pageEnd: 400, top: 158 }),
+    // Mid-window at 300 px, the page scrolled 100 px: 104 px under the trigger and 128 over it.
+    await openFloored({ height: 300, pageAt: 100, pageEnd: 400, top: 140 }),
+    // A panel with no text box and no foot is never cut below its border and its first row,
+    // 2 + 44 px: here 26 px under its trigger and 26 over it.
+    await openFloored({ height: 120, pageEnd: 400, top: 38 }, false),
+  ];
+  expect(placed).toEqual([
+    // 2 + 61 + 44 + 61 = 168 px under the trigger, which the page's scroll by 22 px took up to
+    // 136-180: down to the window's 8 px margin.
+    ["184px", "168px", 22],
+    // 168 px over it, which the page's scroll back by 40 px took down to 180-224.
+    ["8px", "168px", 60],
+    // 46 px under it, which the page's scroll by 20 px took up to 18-62.
+    ["66px", "46px", 20],
+  ]);
+});
+
+// The least height never draws a panel past the window's edge: where the page cannot scroll so
+// far, the panel is cut to the room it has then.
+test("a panel the page cannot scroll far enough to show at its least height is cut to the room it then has, never past the window's edge", async () => {
+  const placed = [
+    // Mid-window at 360 px, the page at its end: 146 px under the trigger and 146 over it.
+    await openFloored({ height: 360, pageEnd: 0, top: 158 }),
+    // The same, the page 10 px from its end.
+    await openFloored({ height: 360, pageEnd: 10, top: 158 }),
+  ];
+  expect(placed).toEqual([
+    ["206px", "146px", 0],
+    // The page scrolls its last 10 px, which leave 156 px under the trigger, at 148-192.
+    ["196px", "156px", 10],
+  ]);
+});
+
+// Where the side it takes has room for its least height, a panel is placed and cut as it always
+// was, and nothing scrolls.
+test("a panel with room for its text box, one row and its foot is placed and cut as before, and the page does not scroll", async () => {
+  const placed = [
+    // 744 px under the trigger: room for all 652 px.
+    await openFloored({ height: 900, pageEnd: 400, top: 100 }),
+    // 44 px under it and 788 over it: room over it for all 652 px.
+    await openFloored({ height: 900, pageEnd: 400, top: 800 }),
+    // 444 px under it and 88 over it.
+    await openFloored({ height: 600, pageEnd: 400, top: 100 }),
+    // 144 px under it and 388 over it.
+    await openFloored({ height: 600, pageEnd: 400, top: 400 }),
+  ];
+  expect(placed).toEqual([
+    ["148px", "none", 0],
+    ["144px", "none", 0],
+    // Cut to the room under it.
+    ["148px", "444px", 0],
+    // Cut to the room over it, from the window's 8 px margin.
+    ["8px", "388px", 0],
+  ]);
 });
