@@ -7,17 +7,23 @@
  *  a worker that ran a hundred rows took minutes, and the runner printed "worker-<n> process did
  *  not exit within 300000ms after stop, force-killed it" for a worker that had exited in under a
  *  second. The patch sends 'exit' when the process exits, removes the directory afterwards in the
- *  background, and stops applying the deadline once the process has exited.
+ *  background, waits for that removal before the run ends (Dispatcher.stop), and stops applying
+ *  the deadline once the process has exited.
  *
  *  Each row runs `fixtures/worker-exit.config.ts`, one worker and one row with no browser. The
  *  first holds the runner's removal of the artifacts directory until the runner has sent that
- *  worker's 'exit' (`fixtures/hold-artifacts-removal.cjs`), and leaves the deadline at
- *  Playwright's own five minutes, past any run of the row: without the patch the runner sends
- *  'exit' only after the removal, so neither ever comes and the run fails at the test's bound.
- *  The order of the two events is what it reads, and no time stands for either. With the deadline
- *  at 2 s, as the row once set it, a worker that had passed its row and was exiting, slowed by a
- *  loaded machine, sent no heartbeat for 2 s and was killed, and the row read "did not exit
- *  within" from a correct runner (dispatch://INFRA-3904). The second sets the deadline at 2 s
+ *  worker's 'exit', and then until the run waits for the removals
+ *  (`fixtures/hold-artifacts-removal.cjs`), and leaves the deadline at Playwright's own five
+ *  minutes, past any run of the row. Without the patch's 'exit' at the process's exit, neither
+ *  the removal nor the 'exit' ever comes and the run fails at the test's bound; without its wait
+ *  for the removal, the run ends with the directory still there. It reads the order of these
+ *  events, and no time stands for any of them. The patch's third change, no deadline for a
+ *  process that has exited, is not one it can see, nor could the row before it: that branch runs
+ *  only while 'exit' trails the process's exit, which the patched removal no longer makes it do.
+ *  With the deadline at 2 s, as the row
+ *  once set it, a worker that had passed its row and was exiting, slowed by a loaded machine, sent
+ *  no heartbeat for 2 s and was killed, and the row read "did not exit within" from a correct
+ *  runner (dispatch://INFRA-3904). The second sets the deadline at 2 s
  *  (`PWTEST_CHILD_PROCESS_TIMEOUT`, Playwright's own setting for it) and holds the worker's own
  *  main thread 8 s after its stop: a worker that really has not exited, which the runner must
  *  still kill and report, patch or no patch. */
