@@ -43,7 +43,10 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T)
 			timeout := testwait.Remaining(t)
 			dir := t.TempDir()
 			mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-			client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit "+strconv.Itoa(exit))
+			client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\nif [ -r /work/plant/standin-slow ]; then sleep \"$(cat /work/plant/standin-slow)\"; fi\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit "+strconv.Itoa(exit))
+			if b, err := os.ReadFile("/work/plant/standin-slow"); err == nil {
+				t.Logf("PLANT standin-slow fired: the client sleeps %s s in its own run", strings.TrimSpace(string(b)))
+			}
 			r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 
 			called := testexec.SinceBoot(t)
@@ -99,7 +102,10 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho $$ >"+shellprefix.Literal(leader)+"\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit 3")
+		if _, err := os.Stat("/work/plant/client-slow-once"); err == nil {
+			t.Logf("PLANT client-slow-once fired: run %d's client sleeps 2 s in its own run, past its %s timeout", runs, timeout)
+		}
+		client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho $$ >"+shellprefix.Literal(leader)+"\nif [ -e /work/plant/client-slow-once ]; then rm -f /work/plant/client-slow-once; sleep 2; fi\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit 3")
 		r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 		reaped := make(chan time.Time, 1)
 		go func() {

@@ -38,11 +38,23 @@ import (
 // git's reap for the child to close the pipe, and main's budget, which ended at that reap, never
 // counted it either. A runner that spends main's 5 s before it starts the git, or after the git
 // has exited, fails here.
+// CONTROL (never for merge): a stand-in sleeps the seconds /work/plant/standin-slow names in its
+// own run, between its start mark and its exit mark, as a loaded machine can hold it.
+const ctlStandInSlow = "if [ -r /work/plant/standin-slow ]; then sleep \"$(cat /work/plant/standin-slow)\"; fi\n"
+
+// ctlLogStandInSlow says in the row's log when the control is armed.
+func ctlLogStandInSlow(t *testing.T) {
+	if b, err := os.ReadFile("/work/plant/standin-slow"); err == nil {
+		t.Logf("PLANT standin-slow fired: the stand-in sleeps %s s in its own run", strings.TrimSpace(string(b)))
+	}
+}
+
 func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputOpen(t *testing.T) {
 	const runBound = 5 * time.Second
 	dir := t.TempDir()
 	fakeGit, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho done\n" + heldChild(t, false) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 0\n"
+	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\n" + ctlStandInSlow + "echo done\n" + heldChild(t, false) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 0\n"
+	ctlLogStandInSlow(t)
 	if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
@@ -213,7 +225,8 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 			defer cancel()
 			dir := t.TempDir()
 			mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-			script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + heldChild(t, false) + "\n" + testexec.MarkNow(`"$2"`) + "\nexit " + strconv.Itoa(testCase.exit)
+			script := testexec.MarkStart(`"$1"`) + "\n" + ctlStandInSlow + "echo answered; echo refused >&2\n" + heldChild(t, false) + "\n" + testexec.MarkNow(`"$2"`) + "\nexit " + strconv.Itoa(testCase.exit)
+			ctlLogStandInSlow(t)
 
 			called := testexec.SinceBoot(t)
 			started := time.Now()

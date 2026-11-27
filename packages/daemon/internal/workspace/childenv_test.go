@@ -30,7 +30,8 @@ func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
 	t.Setenv("NATS_DAEMON_NKEY_SEED", daemonSeed)
 	dir := t.TempDir()
 	git, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\nenv\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\n"
+	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\n" + ctlStandInSlow + "env\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\n"
+	ctlLogStandInSlow(t)
 	if err := testexec.WriteFile(git, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
