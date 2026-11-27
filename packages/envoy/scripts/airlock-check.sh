@@ -97,6 +97,10 @@ names of the operator's gcloud and Google Workspace logins) and AIRLOCK_GWS_TIER
 key in gws/accounts.json whose read tier it reports) in its environment, and refuses to start
 without them.
 
+--keep-stack does not work with k6: k6 starts a second stack (its --no-kind control) after the
+first, and with the first kept up the second cannot bind (listen tcp 127.0.0.2:443: bind: address
+already in use). Use --keep-stack with the other checks.
+
 It exits 0 only when every property passed, 1 when one did not, 2 on a usage error, and 3 when
 every property it judged passed and one it could not judge here (an UNKNOWN: or DEFERRED: line),
 which is no pass. k9 takes about twenty-five minutes and k47 about ten; every other check takes a
@@ -1182,13 +1186,19 @@ EOF
 		"S answered ${K4[s_status]} and presented a leaf the stand never wrote ($s_leaf against the stand's own $s_own), issued by $s_issuer; its served chain verifies against the proxy test root and not against the stands' authority ($s_chain_verify)"
 	judge "$([ "$t_leaf" = "$t_own" ] && contains "the-bytes-the-command-sent" "$(printf '%s' "$t_recs" | jq -r '[.[] | .body] | join(" ")')" && echo 0 || echo 1)" \
 		"T presents its own certificate and gets the bytes the command sent" \
-		"T's leaf is its own certificate file, and its record holds the bytes the command POSTed"
+		"T's leaf as the command saw it was $t_leaf and T's own certificate is $t_own; T's recorded body held: '$(printf '%s' "$t_recs" | jq -r '[.[] | .body] | join(" ")')'"
+	# 1186 reads the Go probe's error as "did not reach the proxy" only when it names the direct
+	# dial (dial tcp 10.11.12.13:443). That text appears only where a direct dial to 10/8 is refused
+	# quickly - a no-route namespace, as a Legion pod gives itself with a NET_ADMIN sidecar that adds
+	# `unreachable 10.0.0.0/8` (Go then prints "no route to host" in a few ms). On a host that
+	# blackholes 10/8 instead, Go times out ("context deadline exceeded"), never writes "dial tcp",
+	# and this judge fails though nothing regressed: run k4 where a dial to 10/8 is refused, not dropped.
 	judge "$(! contains "CONNECT tunnel failed" "${K4[svc]}" && contains "the .svc stand-in answered" "${K4[svc]}" && contains "curl:" "${K4[tsnet]}" && ! contains "CONNECT tunnel failed" "${K4[tsnet]}" && contains "curl:" "${K4[curl10]}" && ! contains "CONNECT tunnel failed" "${K4[curl10]}" && contains "dial tcp 10.11.12.13:443" "${K4[go10]}" && echo 0 || echo 1)" \
 		"the .svc and .ts.net calls and the 10.x calls of curl and of a Go program do not reach the proxy port" \
-		".svc reached this run's own stand-in directly; .ts.net and curl's 10.x failed with a curl error and no proxy CONNECT, and Go's 10.x failed dialling 10.11.12.13:443 itself (dial tcp 10.11.12.13:443) - the error a bypassed proxy gives, not the proxy's own refusal a reached call would show"
+		".svc reached its own stand-in directly (${K4[svc]}); .ts.net and curl's 10.x each failed with a curl error and no proxy CONNECT; Go's 10.x said '${K4[go10]}' - read as not reaching the proxy only when it names its own direct dial (dial tcp 10.11.12.13:443), which a proxy-reached refusal (the proxy's status) does not carry"
 	judge "$(contains "Proxy response (403)" "${K4[node10]}" && contains "private" "${K4[private]}" && echo 0 || echo 1)" \
 		"Node's 10.x call reaches the proxy and is refused with an error that names the private address" \
-		"undici reported '${K4[node10]}', so the proxy answered its CONNECT 403; undici does not show a proxy's body, and the same address asked of the proxy with curl is refused '${K4[private]}'"
+		"undici reported '${K4[node10]}' - read as the proxy's CONNECT 403 only when it holds 'Proxy response (403)', where a 'status 200' is the proxy letting it through; and the same address asked of the proxy with curl answered '${K4[private]}', read as a refusal only when it names 'private'"
 	judge "$(contains "link-local" "${K4[metadata]}" && contains "loopback" "${K4[broker_port]}" && echo 0 || echo 1)" \
 		"the connections to 169.254.169.254 and the broker's own loopback port are refused with an error that names the rule" \
 		"169.254.169.254: ${K4[metadata]}; the broker's port: ${K4[broker_port]}"
@@ -1233,7 +1243,7 @@ EOF
 	control "a second broker on the same database and profiles, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered /healthz: $control_answer"
 	judge "$(contains "http_status=200" "$control_answer" && echo 0 || echo 1)" \
 		"negative control: with the refusal turned off the connection to the broker's loopback port is tunnelled and its /healthz answers 200" \
-		"the same request through that broker answered '$control_answer' — the broker's own /healthz, proof the tunnel reached it — where the stack's own brokers refuse it with '${K4[broker_port]}'"
+		"the same request through that broker answered '$control_answer' - read as the tunnel reaching /healthz only when it holds http_status=200, where a 403 is a refusal and 000 a failed CONNECT - and the stack's own brokers refuse it with '${K4[broker_port]}'"
 
 	stop_stack
 }
@@ -1701,7 +1711,7 @@ check_k6() {
 
 	judge "$([ "$K6_AZ_EXCHANGES" -gt 0 ] && [ -n "$federated" ] && contains "$federated" "$K6_AZ_ASSERTION" && echo 0 || echo 1)" \
 		"the stand-in token endpoint gets the real federated token" \
-		"its client_assertion is the stack's own federated token by SHA-256 and length ($(shape "$K6_AZ_ASSERTION")), over $K6_AZ_EXCHANGES exchanges"
+		"the token endpoint saw $K6_AZ_EXCHANGES exchange(s); its client_assertion was $(shape "$K6_AZ_ASSERTION") against the stack's own federated token $(shape "$federated"), compared by SHA-256 and length - an empty federated token is no match"
 
 	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && [ "$K6_AZ_ACCESS_PLACEHOLDERS" = 5 ] && echo 0 || echo 1)" \
 		"az gets a placeholder access token" \
