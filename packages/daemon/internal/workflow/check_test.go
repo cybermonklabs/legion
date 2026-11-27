@@ -470,7 +470,7 @@ func TestADoneChildSetDoneAgainKeepsItsChecks(t *testing.T) {
 }
 
 // The check's bound starts its last look, told that it is the last and the check's own bound,
-// counted from the issue's close; a pending report of the last look closes the check as not run,
+// counted from the check's opening; a pending report of the last look closes the check as not run,
 // and so does its silence. A look open at the bound defers the bound by the look bound, and a bound
 // row that comes due before the check's bound — an earlier check's of the same issue — is deferred
 // to it.

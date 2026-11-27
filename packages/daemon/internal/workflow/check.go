@@ -783,11 +783,13 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 // reopened inside its linger — closes the check as not run, since no look can run while its
 // implementer works the new run, and the run's own merge opens its own. Otherwise the last look
 // starts, told that it is the last and the check's own bound (BoundAt less OpenedAt, which a later
-// change of the project's bound leaves alone) counted from the issue's close, which opened the
-// check (openCheck) and comes after the merge for a merge that waited on the issues beneath it
-// (closeMerged), and nothing of why the looks before it were pending, which the daemon does not
-// know: production not carrying the merge yet, or a merge it carries with a requirement only the
-// deploy can show still unobserved.
+// change of the project's bound leaves alone) counted from the check's own opening (openCheck):
+// the fresh read in verifying that leaves nothing in the way of the close (openCheckAtRead), or
+// the merged issue's leave of the workflow (leave, openCheckIfMerged). Both come after the merge,
+// and later still where the merge waited on the issues beneath it. The look is told nothing of
+// why the looks before it were pending, which the daemon does not know: production not carrying
+// the merge yet, or a merge it carries with a requirement only the deploy can show still
+// unobserved.
 func (e *Engine) checkBound(ctx context.Context, tx pgx.Tx, fact intake.CheckBound) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil || check == nil || !check.Open() || check.Last {
