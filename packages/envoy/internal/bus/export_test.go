@@ -1,6 +1,10 @@
 package bus
 
-import "time"
+import (
+	"time"
+
+	"github.com/nats-io/nats.go"
+)
 
 // WithReconnectWaitTick runs tick at each pass of the client's wait for a reconnect
 // (ensureConnWithContext), before the pass blocks, and reads a connection event tick causes before
@@ -42,10 +46,12 @@ func WithAfterCoreSendFlush(after func()) ConnectOption {
 // returns beside it, when not nil, runs once the Request has settled a flush that returned before
 // its timeout fired, on the Request's own goroutine: a test that fires the timeout from it has the
 // Request settle the flush first, every time. A Request whose timeout fires while its flush has
-// not returned waits for the flush, which its deadline still bounds, so a test that fires the
-// timeout at once and gives the Request a long deadline has the flush's verdict in the answer
-// however late the scheduler runs the flush. It is compiled into the package's tests only; no
-// production connect can set it.
+// not returned waits for the flush. Its deadline bounds what follows the flush's take of nats.go's
+// connection lock, from the moment nats.go lets the flush take it (confirmFlushed): a flush that
+// waited X for the lock waits for the server's answer until X after the deadline. So a test that
+// fires the timeout at once and gives the Request a long deadline has the flush's verdict in the
+// answer however late the scheduler runs the flush. It is compiled into the package's tests only;
+// no production connect can set it.
 func WithRequestExpiry(expiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.requestExpiry = expiry })
 }
@@ -64,4 +70,12 @@ func WithClosedHook(hook func()) ConnectOption {
 // package's tests only; no production connect can set it.
 func WithCloseSettleBound(bound time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.closeSettleBound = bound })
+}
+
+// WithBeforeBackgroundInstall runs hook in a background start (WithConnectInBackground) between the
+// dial and the install of the connection it returned, so a test can have a reconnect attempt hold
+// nats.go's connection lock while the install runs. It is compiled into the package's tests only;
+// no production connect can set it.
+func WithBeforeBackgroundInstall(hook func(*nats.Conn)) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.beforeBackgroundInstall = hook })
 }

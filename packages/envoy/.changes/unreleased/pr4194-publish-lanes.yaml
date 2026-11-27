@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  The listener's `POST /v1/messages/publish` refuses a topic under `notifications.dispatch.` or
+  `notifications.github.`. The caller gets `400` with `expected: ["topic"]` and an error that
+  names the lane and what to do instead, for example `cannot publish to notifications.dispatch.
+  topics; Dispatch alone publishes that lane: publish it straight to NATS with the lane's own
+  user`, and the listener publishes nothing. An edge listener (`ENVOY_EDGE_PROJECTS`) refuses
+  every topic but its projects' role subjects before this rule, with `403` `topic_not_published`,
+  so a session at the edge gets that answer for these lanes. The Legion daemon trusts an event on Dispatch's lane
+  as Dispatch's, and it applies a merge and a deciding review from an event on GitHub's lane. The
+  NATS grants refuse a direct publish there, but no grant can refuse a caller of the route on the
+  listener beside envoy-dispatch, whose user holds Dispatch's lane, or on the webhook listener,
+  whose user holds GitHub's lane. Dispatch and the webhook listener publish their lanes straight
+  to NATS. A caller that published either lane through the route publishes elsewhere:
+  envoy-measure's probe moves off those lanes in the deployment repository's change, which merges
+  before the listener moves, and a rig that fakes a Dispatch or GitHub event publishes it straight to its own NATS with the lane's
+  own user.
+time: 2026-11-20T13:00:00Z
+custom:
+    Issue: pr4194

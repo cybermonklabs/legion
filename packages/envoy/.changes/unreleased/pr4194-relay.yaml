@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A registration made after the relay paused on a frame the session left unanswered, a heartbeat
+  while the relay's probe waits for its receipt included, now ends the pause at once, so the session
+  has its messages within a receipt wait of registering rather than after a pause backoff of up to
+  30 seconds.
+time: 2026-11-16T18:39:49Z
+custom:
+    Issue: pr4194

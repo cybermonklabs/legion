@@ -118,17 +118,19 @@ func encodedBytes(item contracts.Envelope) (int64, bool) {
 }
 
 // refused names nats.go's refusal of msg for its size as the ErrTooLarge it is, in the words of
-// every size refusal (MessageTooLargeError), and returns any other error as it is. It takes the
+// every size refusal (MessageTooLargeError), and its refusal of a send while it reconnects the
+// connection as the ErrReconnecting it is (Reconnecting): a send can still meet that refusal after
+// its wait for the connection, when the connection drops again before the send. It takes the
 // message rather than a size so that no caller can measure it by another rule than checkSend's
-// (MessageBytes). A send reaches it only when its own check let the message through because the
-// client's max payload was not the one of the server the message went to: a reconnect to a server
-// that takes less, in the moment before onReconnect reads it. checkSubject has already refused
-// every subject nats.go would.
+// (MessageBytes). A send meets the size refusal only when its own check let the message through
+// because the client's max payload was not the one of the server the message went to: a reconnect
+// to a server that takes less, in the moment before onReconnect reads it. checkSubject has already
+// refused every subject nats.go would.
 func (c *Client) refused(err error, msg *nats.Msg) error {
 	if errors.Is(err, nats.ErrMaxPayload) {
 		return pastMaxPayload(int64(MessageBytes(msg)), c.Connection().MaxPayload())
 	}
-	return err
+	return Reconnecting(err)
 }
 
 // payloadTooLarge is the ErrTooLarge of a message of size bytes, headers included, past

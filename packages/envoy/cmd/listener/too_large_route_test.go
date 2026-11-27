@@ -27,31 +27,49 @@ import (
 // publish of a message, a probe of its target, a read of its target's session record and a wake
 // report for it each land on a subject a row names, and nothing the listener's connection sends
 // for its own sake (its caches' reads of their buckets) does. through marks the end of what a
-// route sent: the server hands one connection's messages on in the order it took them, so once a
-// control message the listener's connection published after the route answered has arrived,
-// everything that connection published before it has arrived too.
+// route sent with a control message the listener's connection publishes after the route answered.
+//
+// The watch takes every subject of the test's account through one subscription and picks out the
+// watched ones and the control itself here. nats.go runs each subscription's handler on a
+// goroutine of its own (nats.go v1.55.0 waitForMsgs), so a subscription per subject ordered
+// nothing: the control's handler could record it before an earlier session read or wake was
+// recorded, and a row then missed what its route sent, which the next row was charged with. One
+// subscription has one queue and one goroutine, in the order the server delivered, and the server
+// hands one connection's messages on in the order it took them, so the control comes after
+// everything that connection published before it. The subscription keeps every message it is
+// handed (no pending limit), and through fails, naming the count, if nats.go dropped any: a watch
+// that lost a message cannot say nothing reached its subjects.
 type subjectWatch struct {
-	control string
-	mu      sync.Mutex
-	seen    []string
+	control  string
+	patterns []string
+	sub      *natsgo.Subscription
+	mu       sync.Mutex
+	seen     []string
 }
 
-// watchSubjects starts a subjectWatch of subjects over a connection of its own to url, ready: its
-// subscriptions are flushed, so everything published on them from now on is the watch's to see.
+// watchSubjects starts a subjectWatch of subjects, NATS subject patterns the package's own matcher
+// reads (subjectMatches), over a connection of its own to url, ready: its subscription is flushed,
+// so everything published from now on is the watch's to see.
 func watchSubjects(t *testing.T, url string, subjects ...string) *subjectWatch {
 	t.Helper()
-	w := &subjectWatch{control: "test.too-large.control." + id.New()}
+	w := &subjectWatch{control: "test.too-large.control." + id.New(), patterns: subjects}
 	watcher := testnats.Connect(t, url)
 	t.Cleanup(watcher.Close)
-	for _, subject := range append(subjects, w.control) {
-		if _, err := watcher.Subscribe(subject, func(msg *natsgo.Msg) {
-			w.mu.Lock()
-			w.seen = append(w.seen, msg.Subject)
-			w.mu.Unlock()
-		}); err != nil {
-			t.Fatalf("watch %s: %v", subject, err)
+	sub, err := watcher.Subscribe(">", func(msg *natsgo.Msg) {
+		if msg.Subject != w.control && !slices.ContainsFunc(w.patterns, func(pattern string) bool { return subjectMatches(pattern, msg.Subject) }) {
+			return
 		}
+		w.mu.Lock()
+		w.seen = append(w.seen, msg.Subject)
+		w.mu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("watch the test's account: %v", err)
 	}
+	if err := sub.SetPendingLimits(-1, -1); err != nil {
+		t.Fatalf("lift the watch's pending limits: %v", err)
+	}
+	w.sub = sub
 	if err := watcher.Flush(); err != nil {
 		t.Fatalf("flush the subject watch: %v", err)
 	}
@@ -59,7 +77,7 @@ func watchSubjects(t *testing.T, url string, subjects ...string) *subjectWatch {
 }
 
 // through publishes a control message on conn and waits for the watch to see it, and returns every
-// subject the watch saw before it since the last call, which it forgets.
+// watched subject the watch saw before it since the last call, which it forgets.
 func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 	t.Helper()
 	if err := conn.Publish(w.control, nil); err != nil {
@@ -80,6 +98,9 @@ func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 		w.seen = slices.Clone(w.seen[index+1:])
 		return true
 	})
+	if dropped, err := w.sub.Dropped(); err != nil || dropped != 0 {
+		t.Fatalf("UNKNOWN: the watch's subscription dropped %d messages (%v), so it cannot say what reached its subjects", dropped, err)
+	}
 	return before
 }
 
@@ -131,12 +152,18 @@ func bandText(t *testing.T, size func(text string) int, want int) string {
 // the reads of its target's session record) while the route runs, and no wake report may be
 // raised: none in flight once the route answers, and none published. The controls are the first
 // three with a message within the bound and a live deadline, each published, which the same watch
-// sees, so a watch that could not see a send cannot pass the refusals; and a small publish from the
-// limited sender after the refusal, which is the 429, so the limited row's count was empty when its
-// 413 came. A message within the bound by itself and past it only with its Nats-Msg-Id header has
-// no row here: the publish's own count of that header refuses it before anything is sent too, so
-// no route answer can tell the route's count from the publish's, and that count is held at the
-// check itself (internal/bus's TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt).
+// sees, so a watch that could not see a send cannot pass the refusals; and a small publish from
+// the limited sender after the refusals, which is the 429, so the limited rows' count was empty
+// when their 413s came.
+//
+// The header band is a publish whose envelope is within the bound and whose Nats-Msg-Id header
+// takes it past, sent by that limited sender under each deadline. Only the route's early check,
+// counting the header, answers it 413: a check that left the header out would let it through to
+// the sender limit, whose 429 comes before the publish could refuse it, so the row tells the
+// early refusal from the publish's own by its status. Its dedupe key is a minted one whose session
+// part is long enough that the header is the larger of the two reserves the route's check counts
+// (storedSize): under a key of the usual length the relay's frame headers are the larger, and the
+// frame's room, not the header, would refuse the message, with or without the header counted.
 //
 // The band the route's check leaves is a message within the bound until the route adds its sender
 // stamp (senderStamp). A publish of one is 413 whatever is left of its deadline, refused by the
@@ -219,6 +246,23 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	oversized := strings.Repeat("m", 2<<20)
+	// The header band: an envelope within the bound by itself and one byte past it with the
+	// Nats-Msg-Id header its publish carries, from the limited sender under the dedupe key the
+	// request sends. The key is minted (contracts.MintedDedupeKeyPattern), so its publish earns the
+	// header, and its session part is long enough that the header is the larger reserve, so the
+	// envelope with the relay's frame headers alone is within the max payload.
+	headerKey := contracts.AgentSendDedupeKey(strings.Repeat("s", 256), id.New())
+	headerEnvelope := func(text string) contracts.Envelope {
+		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", SourceSession: limited, Message: text}, contracts.ExpectsReplyUnset), topic, headerKey)
+	}
+	msgIDReserve := bus.MessageBytes(&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(headerKey, topic)}}})
+	if frameReserve := bus.RelayFrameHeaderBytes(topic); msgIDReserve <= frameReserve {
+		t.Fatalf("UNKNOWN: the header band's Nats-Msg-Id header takes %d bytes, not more than the relay's %d, so the frame's room and not the header would refuse it", msgIDReserve, frameReserve)
+	}
+	band := bandText(t, func(text string) int { return storedSize(t, headerEnvelope(text)) }, maxPayload+1)
+	if encoded, err := json.Marshal(headerEnvelope(band)); err != nil || len(encoded)+msgIDReserve != maxPayload+1 {
+		t.Fatalf("UNKNOWN: the header band's envelope takes %d bytes by itself (%v), want %d, which its %d-byte header takes one byte past the max payload of %d", len(encoded), err, maxPayload+1-msgIDReserve, msgIDReserve, maxPayload)
+	}
 	for _, deadline := range []struct {
 		name string
 		ctx  context.Context
@@ -243,6 +287,14 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	}
 	watch.through(t, conn)
 	refused("a publish from a sender at its limit", request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": oversized, "source_session": limited}))
+	for _, deadline := range []struct {
+		name string
+		ctx  context.Context
+	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
+		refused("a publish within the bound but for its header, from a sender at its limit, "+deadline.name, request(deadline.ctx, "/v1/messages/publish", map[string]string{
+			"topic": topic, "message": band, "source_session": limited, "dedupe_key": headerKey,
+		}))
+	}
 	if after := request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": "within the bound", "source_session": limited}); after.Code != http.StatusTooManyRequests {
 		t.Errorf("control: the limited sender's small publish after the refusal: status = %d, want 429, so its count was empty; body = %.300s", after.Code, after.Body.String())
 	}

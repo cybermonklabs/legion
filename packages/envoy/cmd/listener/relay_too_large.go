@@ -18,10 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// relayTooLargeLine is the line the relay writes each time it sends a session a notice in place of
-// a frame too large to publish (sessionRelays.publishTooLargeNotice).
-const relayTooLargeLine = "session relay sent a notice in place of a frame too large to publish"
-
 // relayTooLargeReason is the reason a too-large notice's payload names (relayTooLargePayload).
 const relayTooLargeReason = "too_large"
 
@@ -92,7 +88,7 @@ func (m *sessionRelays) publishTooLargeNotice(ctx context.Context, sessionID str
 	if err := m.delivery.consumers.Publish(ctx, frame); err != nil {
 		return errors.Join(refusal, fmt.Errorf("publish its notice: %w", err))
 	}
-	m.logger.Warn(relayTooLargeLine,
+	m.logger.Warn("session relay sent a notice in place of a message too large to relay; the session's answer to the notice settles the message",
 		slog.String("session_id", sessionID),
 		slog.Uint64("stream_seq", msg.StreamSeq),
 		slog.String("event_id", payload.EventID),

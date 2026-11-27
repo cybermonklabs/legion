@@ -13,12 +13,17 @@ body: |-
   `413` at any count, not a `429`; a send of one to an unknown session is a `413`, not a `404`; and a
   send of one to a stopped session reports no wake for it. A message that is over the bound only once
   the listener adds its sender stamp, or only as a role forward under its own key and header, is
-  answered after the route's reads: `413` from the publish or the forward itself, except a role
-  message with no live holder, which is answered `404` (`unclaimed` or `holder_lapsed`), as every
-  keep that stored nothing is, because the keep for the role's next holder is refused for its size.
+  answered after the route's reads: `413` from the publish or the forward itself. A role message with
+  no live holder is not forwarded but kept for the role's next holder, under the keep's own message
+  id, so its answer is the keep's: `202` kept for one that fits the keep, even where a forward of it
+  would be too large, and `404` (`unclaimed` or `holder_lapsed`), as every keep that stored nothing
+  is, for one that does not.
   Every send of the bus - a stored or core publish, a role forward, a publish window's send and a
   relay frame - now checks the size, headers included, before it waits on a reconnect or reads its
-  context, so a webhook whose envelope is past the max payload is answered `422` and logged
-  `<source> publish refused`, never a `503` its sender redelivers. A publish window reads its own
-  deadline first, so a send past that deadline is the `ErrWindowDeadline` on which its caller stops
-  and counts nothing, rather than a refusal it counts.
+  context, once the client knows the server's bound. So a webhook whose envelope is past the max
+  payload is answered `422` and logged `<source> publish refused`, rather than a `503` its sender
+  redelivers, when its publish reaches that check with the bound known: a topic the deployed stream
+  does not capture is refused before the size is counted, and a listener that has not yet connected
+  to the bus knows no bound and refuses nothing for its size. A publish window reads its own deadline
+  first, so a send past that deadline is the `ErrWindowDeadline` on which its caller stops and counts
+  nothing, rather than a refusal it counts.
