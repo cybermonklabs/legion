@@ -460,7 +460,7 @@ func (d *ciDaemon) upAndIdle(token claim.Token) {
 	session := "ses-" + string(token)
 	status, body := d.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + string(token) + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		d.t.Fatalf("register %s = %d %s, want 200", token, status, body)

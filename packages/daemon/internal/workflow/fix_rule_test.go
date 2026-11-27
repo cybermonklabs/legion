@@ -34,8 +34,10 @@ func failureOf(check, wentTo string, fix int) string {
 	return fmt.Sprintf("%s@%s %s %d", check, fixHead, wentTo, fix)
 }
 
-// settledBody is the role message of the listener's settlement settledAt(fixHead, 1, "unit").
-var settledBody = toldBody("CI settled at " + fixHead + ": \"build\" succeeded, \"unit\" failed")
+// settledFields are the fields the role message of the listener's settlement settledAt(fixHead, 1,
+// "unit") carries, which is what a test reads of it: no test reads a word of its body
+// (assertToldRows, checks_red_test.go).
+var settledFields = settledHead(fixHead, "build=succeeded", "unit=failed")
 
 // fixChecks is the set of checks of LEGION-208 at every head of these tests: k-unit, which no CI
 // job runs, and k-ci and k-ci2, which a CI job runs.
@@ -438,13 +440,15 @@ func TestATaskOfTheReleaseBeforeStartsNoFix(t *testing.T) {
 	applyRefusingNothing(t, r.pool, r.engine, settledAt(fixHead, 1, "unit"))
 	assertStrings(t, "the fixes", r.fixes(), nil)
 	assertStrings(t, "the failures", r.failures(), nil)
-	settled := settledBody
-	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleReviewer} {
-		assertStrings(t, "the "+string(role)+"'s messages", r.told(role), []string{settled})
-	}
-	ciFailed := "Pull request #42: check k-ci fails at " + fixHead + ", where its CI job ended failure; its state there is no (fail). " +
-		"Nothing moved on it: read the job's log and decide whose failure it is."
-	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), []string{ciFailed, settled})
+	// The settlement tells the architect, the reviewer and the implementer, each by the fields its
+	// role message carries; the implementer also hears of the failed CI job, by its own fields
+	// (ciFailureMessage). No test reads a word of either body (assertToldRows).
+	settled := settledFields.to
+	ciFailed := record.RoleMessage{Role: roleToken(t, claim.RoleImplementer), PullRequest: 42, Head: fixHead, Check: "k-ci", CICase: "failure"}
+	assertToldRows(t, r.pool, "LEGION-208", []record.RoleMessage{
+		settled(roleToken(t, claim.RoleArchitect)), settled(roleToken(t, claim.RoleReviewer)), ciFailed,
+		settled(roleToken(t, claim.RoleImplementer)),
+	})
 }
 
 // The fix rule runs at the tail of every fact of an issue, a review among them, which names the
