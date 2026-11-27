@@ -1,10 +1,12 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,9 +18,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // deploymentImplementer is the implementer of the rig's issue, LEGION-208.
@@ -180,6 +184,117 @@ func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
 	}
 	if got, want := launcher.commands(), fmt.Sprintf("stop %d", loc.Sandbox.Generation); got != want {
 		t.Errorf("dropped role's launcher received %q, want %q", got, want)
+	}
+}
+
+// generationTokens is the daemon's lease source (appauth.Tokens) with a lease generation: each
+// token names its App, the generation lease holds when it is minted, and its owner, so a slot the
+// refresh re-minted holds the newer generation and a slot it passed over keeps the older.
+type generationTokens struct{ lease *atomic.Pointer[string] }
+
+func (t generationTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "ghs_" + string(role) + "_" + *t.lease.Load() + "_" + strings.ToLower(owner), ExpiresAt: staticCredentialExpiry}, nil
+}
+
+func (t generationTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "ghs_" + string(role) + "_" + *t.lease.Load() + "_read_" + strings.ToLower(owner), ExpiresAt: staticCredentialExpiry}, nil
+}
+
+// A slot in which a stored claim runs is refreshed only where the role the refresh would mint it
+// for names an App (appauth.AppRoleFor), and no slot's name tells which. The daemon restarts with
+// the checker taken out of its settings while a stored claim of the checker still runs in the
+// issue's pod, beside a stored claim of the implementer in the slot of `implementer-2`, an agent
+// of the plan whose name is no role. The tick asks no App for the checker, logs no refused
+// refresh, and leaves the checker's slot holding the lease its build wrote, which expires without
+// another mint, as a dropped role's slot in which no claim runs does. In the same tick the slot of
+// implementer-2 is re-minted with the implement App's newer lease, as the slot `implementer` is.
+// The two faults: a refresh of every slot a stored claim runs in asks the credential for the
+// checker at every tick, which refuses it and logs a failure each time, for the pod's life; a
+// refresh of the configured roles' slots alone leaves implementer-2 on the lease its build wrote,
+// which expires within the hour while its claim works.
+func TestTheRefreshPassesOverADroppedRolesClaimAndRefreshesAPlanAgentsClaim(t *testing.T) {
+	const checker claim.Role = "checker"
+	first, second := "first", "second"
+	tokens := generationTokens{lease: new(atomic.Pointer[string])}
+	tokens.lease.Store(&first)
+	g := newRig(t, nil,
+		withOptions(func(o *Options) {
+			o.DeploymentApps = appauth.DeploymentApps{checker: appauth.Implement, "critic": appauth.Review}
+		}),
+		withProjectTokens(tokens),
+		withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}))
+	checkerToken, err := claim.NewToken(testProject, testTree, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := g.spawn(testSpec(t, checkerToken, checker, testTree))
+	name := loc.Sandbox.Name
+	if planned := SandboxName(secondImplementer); planned != name {
+		t.Fatalf("implementer-2's claim names the Sandbox %s, want the checker's %s: the case's premise", planned, name)
+	}
+	g.store.mu.Lock()
+	g.store.claims = append(g.store.claims,
+		supervise.Claim{Token: checkerToken, Issue: testTree, Role: checker, Generation: 1},
+		supervise.Claim{Token: secondImplementer, Issue: testTree, Role: claim.RoleImplementer, Generation: 1})
+	g.store.mu.Unlock()
+
+	holds := func(slot claim.Role) string {
+		t.Helper()
+		secret := g.secret(roleSecretName(name, slot))
+		if secret == nil {
+			t.Fatalf("the Sandbox has no Secret for the slot %s", slot)
+		}
+		token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(string(secret.Data[GitHubDefaultKey]))])
+		if err != nil {
+			t.Fatalf("the %s slot's default hosts.yml: %v", slot, err)
+		}
+		return token
+	}
+	implement := func(lease string) string { return "ghs_" + string(appauth.Implement) + "_" + lease + "_sjawhar" }
+	for _, slot := range []claim.Role{checker, "implementer-2", claim.RoleImplementer} {
+		if got := holds(slot); got != implement(first) {
+			t.Fatalf("the build wrote %q into the %s slot, want the implement App's %q: the case's premise", got, slot, implement(first))
+		}
+	}
+
+	logs := &lockedLog{}
+	var mu sync.Mutex
+	var asked []claim.Role
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+		o.Log = slog.New(slog.NewTextHandler(logs, nil))
+		withProjectTokens(tokens)(g, o)
+		credential := o.GitHubCredential
+		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			mu.Lock()
+			asked = append(asked, role)
+			mu.Unlock()
+			return credential(ctx, role, repo)
+		}
+	})()
+	if slices.Contains(restarted.issueRoles, checker) {
+		t.Fatal("the checker is still configured after the restart: the case's premise")
+	}
+
+	tokens.lease.Store(&second)
+	restarted.refreshGitHubCredentials(g.ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if slices.Contains(asked, checker) {
+		t.Errorf("the tick asked the credential for the roles %v, want no ask for the checker, which the deployment no longer defines", asked)
+	}
+	if failed := linesHolding(logs.String(), "github credential refresh failed"); len(failed) > 0 {
+		t.Errorf("the tick logged %q, want no refresh refused", failed)
+	}
+	if got := holds(checker); got != implement(first) {
+		t.Errorf("the tick left %q in the checker's slot, want the lease its build wrote, %q", got, implement(first))
+	}
+	for _, slot := range []claim.Role{"implementer-2", claim.RoleImplementer} {
+		if got := holds(slot); got != implement(second) {
+			t.Errorf("the tick left %q in the %s slot, want the implement App's re-minted %q", got, slot, implement(second))
+		}
 	}
 }
 
