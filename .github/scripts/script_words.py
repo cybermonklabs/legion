@@ -299,12 +299,12 @@ def overlapping_script(texts, scripts):
     `buil{0}.sh` may build build.sh, and a matrix value `[build, .sh]` may too; `go-daemon-{0}-`
     builds no script. None when no text could."""
     for text in texts:
-        pieces = [re.escape(p) for p in NOT_PATH.split(str(text).replace(WILD, " "))]
+        pieces = NOT_PATH.split(str(text).replace(WILD, " "))
         if not "".join(pieces):
             continue
-        pattern = re.compile(".*".join(pieces))
+        tokens = literal_tokens(pieces)
         for script in sorted(scripts):
-            if pattern.fullmatch(script.rsplit("/", 1)[-1]) or re.fullmatch("(?:.*/)?" + pattern.pattern, script):
+            if glob_match(tokens, script.rsplit("/", 1)[-1]) or glob_match_tail(tokens, script):
                 return script
     return None
 
@@ -338,27 +338,96 @@ def bracket_regex(text: str) -> str:
     return regex if body else re.escape(text)
 
 
-def pattern_regex(pattern: str) -> str:
-    """A form of a word as a regular expression: WILD any characters; `*`, `?` and a bracket
-    expression a shell glob's, within one directory (bracket_regex)."""
-    out, i = [], 0
+# A form of a word as a pattern: a list of tokens, each (a test of one character, whether it
+# repeats), matched by glob_match without backtracking. The text a pattern is built from is the
+# pull request's own workflow text, so its cost must not grow with what that text holds. A
+# backtracking regular expression's does: each WILD was `.*`, and `p` + 8 WILD + `Z` took 0.82 s
+# for one match and about 100 s for one step, past the changes job's bounds at 10 and 12 (review
+# 6092517593). glob_match costs at most len(text) x len(tokens) steps, whatever the tokens are,
+# and adjacent repeating tokens are one (a run of WILDs, a `*` beside a WILD).
+def ANY(_: str) -> bool:
+    return True
+
+
+def IN_DIR(c: str) -> bool:
+    return c != "/"
+
+
+def add_token(tokens: list, test, repeats: bool) -> None:
+    """Appends a token, folding a repeating one into a repeating one before it: `.*` beside `.*`
+    or `[^/]*` is `.*`, and `[^/]*` beside `[^/]*` is `[^/]*`, as sets of texts."""
+    if repeats and tokens and tokens[-1][1] and tokens[-1][0] in (ANY, IN_DIR) and test in (ANY, IN_DIR):
+        if test is ANY:
+            tokens[-1] = (ANY, True)
+        return
+    tokens.append((test, repeats))
+
+
+def literal_tokens(pieces) -> list:
+    """Pieces of literal text, any text between each two."""
+    tokens: list = []
+    for at, piece in enumerate(pieces):
+        if at:
+            add_token(tokens, ANY, True)
+        for c in piece:
+            tokens.append(((lambda ch, c=c: ch == c), False))
+    return tokens
+
+
+def pattern_tokens(pattern: str) -> list:
+    """A form of a word as tokens: WILD any characters; `*`, `?` and a bracket expression a shell
+    glob's, within one directory (bracket_regex); any other character itself."""
+    tokens: list = []
+    i = 0
     while i < len(pattern):
         c = pattern[i]
         bracket = BRACKET_RE.match(pattern, i) if c == "[" else None
         if c == WILD:
-            out.append(".*")
+            add_token(tokens, ANY, True)
         elif c == "*":
-            out.append("[^/]*")
+            add_token(tokens, IN_DIR, True)
         elif c == "?":
-            out.append("[^/]")
+            tokens.append((IN_DIR, False))
         elif bracket:
-            out.append(bracket_regex(bracket.group()))
+            regex = bracket_regex(bracket.group())
+            if regex == re.escape(bracket.group()):
+                # No set the shell would read: its literal text, as the shell leaves it.
+                tokens += [((lambda ch, c=ch_: ch == c), False) for ch_ in bracket.group()]
+            else:
+                one = re.compile(regex)
+                tokens.append(((lambda ch, one=one: one.fullmatch(ch) is not None), False))
             i = bracket.end()
             continue
         else:
-            out.append(re.escape(c))
+            tokens.append(((lambda ch, c=c: ch == c), False))
         i += 1
-    return "".join(out)
+    return tokens
+
+
+def glob_match(tokens: list, text: str) -> bool:
+    """Whether `text` is one of the texts `tokens` stand for: the positions the tokens may be at,
+    carried across the text one character at a time, so no position is tried twice."""
+    def close(at: set) -> set:
+        reached, stack = set(), list(at)
+        while stack:
+            s = stack.pop()
+            if s not in reached:
+                reached.add(s)
+                if s < len(tokens) and tokens[s][1]:
+                    stack.append(s + 1)
+        return reached
+
+    states = close({0})
+    for ch in text:
+        states = close({s if tokens[s][1] else s + 1 for s in states if s < len(tokens) and tokens[s][0](ch)})
+        if not states:
+            return False
+    return len(tokens) in states
+
+
+def glob_match_tail(tokens: list, text: str) -> bool:
+    """Whether `text`, or what follows one of its `/`s, is one of the texts `tokens` stand for."""
+    return glob_match(tokens, text) or any(glob_match(tokens, text[i + 1:]) for i, c in enumerate(text) if c == "/")
 
 
 def has_stem(name: str) -> bool:
@@ -381,9 +450,10 @@ def tail_names(path: str, scripts) -> set:
         return {s for s in scripts if s == tail or s.endswith("/" + tail) or tail.endswith("/" + s)}
     parts = tail.split("/")
     named = {s for s in scripts if len(parts) > s.count("/")
-             and re.fullmatch(pattern_regex("/".join(parts[-(s.count("/") + 1):])), s)}
+             and glob_match(pattern_tokens("/".join(parts[-(s.count("/") + 1):])), s)}
     if has_stem(parts[-1]):
-        named |= {s for s in scripts if re.fullmatch("(?:.*/)?" + pattern_regex(tail), s)}
+        tokens = pattern_tokens(tail)
+        named |= {s for s in scripts if glob_match_tail(tokens, s)}
     return named
 
 
@@ -409,12 +479,13 @@ def piece_names(piece: str, workdir, scripts, uncertain: bool) -> tuple:
         if not piece.startswith(WILD):
             # The root is a known start, which a cd does not move.
             path = piece if WILD in piece else os.path.normpath(piece)
-            return {s for s in scripts if re.fullmatch(pattern_regex(path), s)}, None
+            tokens = pattern_tokens(path)
+            return {s for s in scripts if glob_match(tokens, s)}, None
     # A piece that starts with a value this check cannot know has no known start, so it is read
     # from no directory, only by its end.
     anchors = [] if piece.startswith(WILD) else [piece] + ([os.path.join(workdir, piece)] if workdir is not None else [])
-    named = {s for s in scripts for a in anchors
-             if re.fullmatch(pattern_regex(a if WILD in a else os.path.normpath(a).lstrip("/")), s)}
+    anchored = [pattern_tokens(a if WILD in a else os.path.normpath(a).lstrip("/")) for a in anchors]
+    named = {s for s in scripts for tokens in anchored if glob_match(tokens, s)}
     if WILD not in piece:
         named |= tail_names(piece, scripts)
     else:
@@ -432,7 +503,8 @@ def open_names(name: str, scripts) -> tuple:
     and a declared script whose file name it matches though it cannot be read, or None."""
     if not GLOB_CHARS.search(name) or not name.replace(WILD, ""):
         return set(), None
-    matching = sorted(s for s in scripts if re.fullmatch(pattern_regex(name), s.rsplit("/", 1)[-1]))
+    tokens = pattern_tokens(name)
+    matching = sorted(s for s in scripts if glob_match(tokens, s.rsplit("/", 1)[-1]))
     if has_stem(name):
         return set(matching), None
     return set(), matching[0] if matching else None

@@ -4349,6 +4349,27 @@ for end in build.sh "\${{ format('buil{0}.sh', 'd') }}"; do
   check "refuses the chain" "$(has "$out" "$(refused_start "$ci" "$again" 'a chain of more than 8 values, through')")"
 done
 
+# A word of many values this check cannot know, side by side or with a character between each,
+# names no script and is read in moments: the matcher carries the positions a pattern may be at
+# across the path once (script_words.py's glob_match), where a backtracking regular expression
+# made of one `.*` per value took 18 s at 6 values and more than 150 s at 7 against this
+# repository's files. The bound is the case's timeout, about a thousand times what the read takes,
+# so the case fails on a reader that backtracks and on nothing else.
+for sep in "" a /; do
+  echo "case: a word of 40 values no file gives, ${sep:-side by side}${sep:+ with $sep between each}"
+  root=$(fixture "script-step-many-wild-${sep:-none}")
+  script_job "$root" build.sh "Build the app"
+  word="p"
+  for n in $(seq 1 40); do word+="\${{ steps.a$n.outputs.v }}${sep}"; done
+  replace "$root/$ci" "$report_step" "$build_step$(again_form "sh ${word}Z -v")"$'\n'"$report_step"
+  set +e
+  out=$(timeout 120 "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+  status=$?
+  set -e
+  check "finishes inside its bound" "$(is "$([ "$status" -eq 124 ] && echo stalled || echo finished)" finished)"
+  check "and names no script, so passes" "$(is "$status" 0)"
+done
+
 # This check reads one env: for a step, not the layer each name comes from, so a step's env: value
 # that reads its own name reads itself without end: refused, though GitHub reads the job's value.
 echo "case: a step's env: value reads the name it sets, over the job's"
