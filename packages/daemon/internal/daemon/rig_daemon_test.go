@@ -239,7 +239,7 @@ func (r *rigDaemon) start(o overrides, handed createdIssue) {
 	if log == nil {
 		log = r.log()
 	}
-	r.d = startDaemonWithin(t, r.cfg, o, log, stepRecordsWait)
+	r.d = startDaemonLogging(t, r.cfg, o, log)
 	r.calls = newRigCalls(t, r.d.base)
 	r.d.base = r.calls.url
 	r.worker(claim.RoleArchitect)
