@@ -1628,10 +1628,16 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
   // growth below would scroll back to it: the focus lands, then leaves the tree.
   await expectOpeningLanded(page);
   await focusThePage(page);
-  await page.evaluate(() => {
+  // Where the window is short, the opening scrolls the page to bring that question on screen,
+  // and the band reads the page's place from its scroll event, a frame after `scrollTo`: so the
+  // page is handed back two frames on, once the band draws the top it was scrolled to.
+  await page.evaluate(async () => {
     const page = document.querySelector("[data-issue-page]");
     if (page instanceof HTMLElement) page.style.minHeight = "2000px";
     window.scrollTo(0, 0);
+    const frames = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+    await frames.promise;
   });
 }
 

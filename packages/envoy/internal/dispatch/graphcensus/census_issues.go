@@ -63,6 +63,13 @@ type issueLinkRow struct {
 	createdAt     time.Time
 }
 
+// scanIssueLinkRow reads one issueLinkRow off a row of (issue_key, target_key, created_at).
+func scanIssueLinkRow(row pgx.CollectableRow) (issueLinkRow, error) {
+	var link issueLinkRow
+	err := row.Scan(&link.issue, &link.target, &link.createdAt)
+	return link, err
+}
+
 // backfillIssueLinks states, for every issue_links row naming no node, the needs tuple it is the
 // projection of, dated at the row's own created_at and at the sentinel, as graph_edges' old arm
 // dates the edge, and names the issue's node on the row in the transaction that states the tuple,
@@ -76,11 +83,7 @@ func backfillIssueLinks(ctx context.Context, database *store.Store) (KindBackfil
 		if err != nil {
 			return done, fmt.Errorf("read the issue links naming no node: %w", err)
 		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueLinkRow, error) {
-			var link issueLinkRow
-			err := row.Scan(&link.issue, &link.target, &link.createdAt)
-			return link, err
-		})
+		batch, err := pgx.CollectRows(rows, scanIssueLinkRow)
 		if err != nil {
 			return done, fmt.Errorf("read the issue links naming no node: %w", err)
 		}
@@ -151,11 +154,7 @@ func writeIssueLinkBatch(ctx context.Context, database *store.Store, batch []iss
 		if err != nil {
 			return fmt.Errorf("read a batch of issue links again under their issues: %w", err)
 		}
-		held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueLinkRow, error) {
-			var link issueLinkRow
-			err := row.Scan(&link.issue, &link.target, &link.createdAt)
-			return link, err
-		})
+		held, err := pgx.CollectRows(rows, scanIssueLinkRow)
 		if err != nil {
 			return fmt.Errorf("read a batch of issue links again under their issues: %w", err)
 		}

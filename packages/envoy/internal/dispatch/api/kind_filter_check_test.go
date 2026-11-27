@@ -1,12 +1,10 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
@@ -18,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // kindFilterConversation is the kinds of the conversation c-kind-filter reads the tree with.
@@ -36,6 +35,18 @@ func kindFilterQuery(kinds ...string) string {
 
 // kindFilterAddress is a node's `<kind>:<id>`.
 func kindFilterAddress(kind, id string) string { return kind + ":" + id }
+
+// pinnedSpecQueryVersion is the spec query of the issue key and its newest version, failing unless
+// that version records the store revision it read (treeReadViewsRecorded), as a read at it needs.
+func pinnedSpecQueryVersion(t *testing.T, database *store.Store, key string) (string, int) {
+	t.Helper()
+	query := queryArtifactOf(t, database, key, graphstore.QuerySpec)
+	pinned := renderAtVersionNewest(t, database, query)
+	if treeReadViewsRecorded(t, database, query, pinned) != 1 {
+		t.Fatalf("version %d of the spec query of %s holds no record of the store revision it read: this case proves nothing", pinned, key)
+	}
+	return query, pinned
+}
 
 // kindFilterPages is the tree read of key with query as alice, and each read from the
 // comments_before the page before answered beside the same query, until one answers none.
@@ -82,12 +93,7 @@ func kindFilterUnion(pages []treeAnswer) (map[string]model.IssueTreeNode, map[st
 
 // kindFilterTupleHeld reports whether a page of pages holds the tuple of kind from from to to.
 func kindFilterTupleHeld(pages []treeAnswer, kind string, from, to model.IssueTreeEnd) bool {
-	for _, page := range pages {
-		if page.holdsTuple(kind, from, to) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(pages, func(page treeAnswer) bool { return page.holdsTuple(kind, from, to) })
 }
 
 // kindFilterKindOf is the kind `kind` takes a node of an answer by, as the test reads it off the
@@ -253,14 +259,7 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 		if node.PlacementSeq == nil {
 			t.Fatalf("the tree read of %s answers %s with no placement_seq, which a move names", key, what)
 		}
-		move, _ := json.Marshal(map[string]any{"parent": parent})
-		moving := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+key+"/nodes/"+url.PathEscape(id), bytes.NewReader(move))
-		moving.Header.Set("Content-Type", "application/json")
-		moving.Header.Set("X-Dispatch-User", "alice")
-		moving.Header.Set("If-Match", strconv.Quote(strconv.FormatInt(*node.PlacementSeq, 10)))
-		moved := httptest.NewRecorder()
-		handler.ServeHTTP(moved, moving)
-		if moved.Code != http.StatusOK {
+		if moved := patchNode(t, handler, key, id, strconv.Quote(strconv.FormatInt(*node.PlacementSeq, 10)), map[string]any{"parent": parent}, "alice"); moved.Code != http.StatusOK {
 			t.Fatalf("alice places %s under %s through PATCH: status=%d body=%s", what, parent, moved.Code, moved.Body.String())
 		}
 	}
@@ -306,23 +305,10 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record alice's run: %v", err)
 	}
-	seed, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the seed of the interaction: %v", err)
-	}
-	defer seed.Rollback(ctx)
-	if err := graphstore.Write(ctx, seed, nil, []graphstore.Tuple{{
+	seedTupleWithHead(t, database, graphstore.Tuple{
 		FromKind: refs.BlockNodeKind, FromID: r1, Kind: graphstore.TupleChangedByRun, ToKind: graphstore.KindInteraction, ToID: run.ID,
 		At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, Asserted: true,
-	}}); err != nil {
-		t.Fatalf("seed the changed_by_run from r1: %v", err)
-	}
-	if err := graphstore.WriteHeads(ctx, seed, []graphstore.NodeKey{{Kind: refs.BlockNodeKind, ID: r1}}); err != nil {
-		t.Fatalf("write the head row of r1: %v", err)
-	}
-	if err := seed.Commit(ctx); err != nil {
-		t.Fatalf("commit the seed of the interaction: %v", err)
-	}
+	})
 
 	// The read with no view, page by page, and the read with the conversation's kinds.
 	whole := kindFilterPages(t, handler, key, "")
@@ -612,14 +598,7 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 	// r3, written with no check, answers 0; a version of the spec query written while h1 and h2
 	// serve r1 answers r1's checks 2, and the head 1 once h2 serves r2 alone.
 	editSpec(t, handler, key, []map[string]any{{"op": "insert", "after": "end", "markdown": ":::requirement{#r3}\nThe board names its reader.\n:::\n"}})
-	query := treeReadViewsSpecQuery(t, database, key)
-	var pinned int
-	if err := database.Pool.QueryRow(ctx, `select coalesce(max(number), 0) from artifact_versions where artifact_id = $1::uuid`, query).Scan(&pinned); err != nil {
-		t.Fatalf("read the newest version of the spec query of %s: %v", key, err)
-	}
-	if treeReadViewsRecorded(t, database, query, pinned) != 1 {
-		t.Fatalf("version %d of the spec query of %s holds no record of the store revision it read: this case proves nothing", pinned, key)
-	}
+	_, pinned := pinnedSpecQueryVersion(t, database, key)
 	head := treeRead(t, handler, key, "?view=spec", "alice", false)
 	if node := head.nodesNamed(refs.BlockNodeKind, spec.address("r3")); len(node) != 1 || node[0].Checks == nil || *node[0].Checks != 0 {
 		t.Errorf("?view=spec of %s answers r3, which no check serves, as %+v, want checks 0", key, node)

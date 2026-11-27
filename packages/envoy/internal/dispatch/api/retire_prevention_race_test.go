@@ -23,6 +23,17 @@ import (
 func TestAPreventedByAppendedWhileItsChecksDocumentIsRetiredIsNotLeftStanding(t *testing.T) {
 	t.Parallel()
 	rig := newPremortemRig(t)
+	requirePreventedByLosesToRetirement(t, rig, rig.otherIssueCheck,
+		"The test retires the document that holds the check.", "a check of a retired document")
+}
+
+// requirePreventedByLosesToRetirement writes a risk under a pre-mortem of rig's spec, retires
+// rig's other issue's document that holds the check in a transaction held open, with reason,
+// appends a prevented_by from the risk to the check, named by to, through the pointer route
+// meanwhile, and then commits the retirement. It fails unless the risk holds no prevented_by to the
+// check once both are done, naming the check as check says.
+func requirePreventedByLosesToRetirement(t *testing.T, rig premortemRig, to, reason, check string) {
+	t.Helper()
 	ctx := context.Background()
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", nil)
 	written := rig.post("/risks", map[string]any{
@@ -39,15 +50,14 @@ func TestAPreventedByAppendedWhileItsChecksDocumentIsRetiredIsNotLeftStanding(t 
 		t.Fatalf("begin the retirement: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := docs.RetireDocument(ctx, tx, document, model.Actor{Kind: "user", ID: "alice"},
-		"The test retires the document that holds the check."); err != nil {
+	if _, err := docs.RetireDocument(ctx, tx, document, model.Actor{Kind: "user", ID: "alice"}, reason); err != nil {
 		t.Fatalf("retire %s: %v", document, err)
 	}
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		answered <- rig.post(nodePath(risk.Address, "pointers"), map[string]any{
-			"kind": graphstore.TuplePreventedBy, "action": "append", "to": rig.otherIssueCheck,
+			"kind": graphstore.TuplePreventedBy, "action": "append", "to": to,
 		}, "alice")
 	}()
 	var appended *httptest.ResponseRecorder
@@ -62,15 +72,15 @@ func TestAPreventedByAppendedWhileItsChecksDocumentIsRetiredIsNotLeftStanding(t 
 		select {
 		case appended = <-answered:
 		case <-time.After(30 * time.Second):
-			t.Fatalf("the append to %s did not answer within 30 s of the retirement's commit", rig.otherIssueCheck)
+			t.Fatalf("the append to %s did not answer within 30 s of the retirement's commit", to)
 		}
 	}
-	t.Logf("the append to %s while its document was being retired: status=%d body=%s",
-		rig.otherIssueCheck, appended.Code, appended.Body.String())
+	t.Logf("the append to %s while the document holding it was being retired: status=%d body=%s",
+		to, appended.Code, appended.Body.String())
 
 	if held := rig.current(graphstore.KindRisk, risk.ID, graphstore.TuplePreventedBy); len(held) != 0 {
-		t.Errorf("after the retirement of %s committed, the risk %s is prevented by %v, a check of a retired document "+
-			"(the append answered %d)", document, risk.Address, held, appended.Code)
+		t.Errorf("after the retirement of %s committed, the risk %s is prevented by %v, %s (the append answered %d)",
+			document, risk.Address, held, check, appended.Code)
 	}
 }
 
@@ -87,58 +97,12 @@ func TestAPreventedByAppendedWhileItsChecksDocumentIsRetiredIsNotLeftStanding(t 
 func TestAPreventedByAppendedAtAChecksRoomAddressWhileItsDocumentIsRetiredIsNotLeftStanding(t *testing.T) {
 	t.Parallel()
 	rig := newPremortemRig(t)
-	ctx := context.Background()
-	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", nil)
-	written := rig.post("/risks", map[string]any{
-		"lens": premortem.Address, "heading": "A job runs twice.", "early_warning": "Two drainers.", "prevention": "One drainer.",
-	}, "alice")
-	if written.Code != http.StatusCreated {
-		t.Fatalf("write the risk: status=%d body=%s", written.Code, written.Body.String())
-	}
-	risk := decodeBody[riskWritten](t, written)
-	document, room := rig.otherIssueDocumentID, rig.otherIssueCheckNode
+	room := rig.otherIssueCheckNode
 	// Else the address names the document the test retires, and the case is the test above.
 	var named string
-	if err := rig.database.Pool.QueryRow(ctx, `select kind from artifacts where ref_key = split_part($1, '#', 1)`, room).Scan(&named); err != nil || named != "tree" {
+	if err := rig.database.Pool.QueryRow(context.Background(), `select kind from artifacts where ref_key = split_part($1, '#', 1)`, room).Scan(&named); err != nil || named != "tree" {
 		t.Fatalf("the check's room address %s names an artifact of kind %q before its '#' (%v), want the issue's tree", room, named, err)
 	}
-
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := docs.RetireDocument(ctx, tx, document, model.Actor{Kind: "user", ID: "alice"},
-		"The test retires the document whose fragment holds the check."); err != nil {
-		t.Fatalf("retire %s: %v", document, err)
-	}
-
-	answered := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		answered <- rig.post(nodePath(risk.Address, "pointers"), map[string]any{
-			"kind": graphstore.TuplePreventedBy, "action": "append", "to": room,
-		}, "alice")
-	}()
-	var appended *httptest.ResponseRecorder
-	select {
-	case appended = <-answered:
-	case <-time.After(3 * time.Second):
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement: %v", err)
-	}
-	if appended == nil {
-		select {
-		case appended = <-answered:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the append to %s did not answer within 30 s of the retirement's commit", room)
-		}
-	}
-	t.Logf("the append to %s while the document holding it was being retired: status=%d body=%s",
-		room, appended.Code, appended.Body.String())
-
-	if held := rig.current(graphstore.KindRisk, risk.ID, graphstore.TuplePreventedBy); len(held) != 0 {
-		t.Errorf("after the retirement of %s committed, the risk %s is prevented by %v, a check of a retired document "+
-			"named by its room address (the append answered %d)", document, risk.Address, held, appended.Code)
-	}
+	requirePreventedByLosesToRetirement(t, rig, room,
+		"The test retires the document whose fragment holds the check.", "a check of a retired document named by its room address")
 }

@@ -15,6 +15,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { BlockReferences } from "../refs/ReferencedBy";
+import { OWED_COVERAGE_LINE } from "./owed-coverage-line";
 
 function Requirement({ requirement }: { requirement: RequirementCoverage }): ReactNode {
   // What the server says this requirement lacks, in the server's own words. The server decides
@@ -45,15 +46,6 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
     </li>
   );
 }
-
-/**
- * The line the coverage read writes for a document of the issue that owes its block index, in
- * place of every missing check and plan task while it does (the server's `owedGap`): `<file
- * name> version <n> is still being indexed; its coverage shows once that ends.`. It names a file,
- * so it is drawn in the server's own words.
- */
-const OWED_COVERAGE_LINE =
-  /^\S.* version \d+ is still being indexed; its coverage shows once that ends\.$/u;
 
 /**
  * The requirements of the issue's spec, each flagged with what it lacks

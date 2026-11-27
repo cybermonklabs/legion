@@ -7,6 +7,7 @@ import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { isDecisionEntry } from "../issue/decision-entries";
+import { buildDispatchReference } from "../refs/routes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
 /** What a stale block says when the reader rests on it. */
@@ -38,7 +39,7 @@ export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
 /** The address of issue `issueKey`'s spec as the server names a document (`dispatch://<KEY>/spec`),
  *  which a `shaped` link's `to.document` holds for a block of the spec. */
 export function issueSpecAddress(issueKey: string): string {
-  return `dispatch://${issueKey}/spec`;
+  return buildDispatchReference({ key: issueKey, kind: "spec" });
 }
 
 /** Every spec block a stale link of any decision names, each once, in the order the read names

@@ -83,7 +83,10 @@ func requireNoAskServerAttributes(t *testing.T, document, markdown string) {
 // the text routes take them off all the same (TextWithAsks): read through the room that holds the
 // document and through the cache once no room does, with its blocks and without, the markdown an
 // agent reads holds none of them, the blocks' byte ranges index that markdown, the token is the
-// document's own, and the answer reads in the asks member.
+// document's own, and the answer reads in the asks member. The kept form a reader of a release
+// before reads (KeptText) takes off only the answer's words and selection, keeps the state, the
+// answerer and the time as the live document holds them, and answers the same token, blocks that
+// index its own markdown, and the same asks.
 func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttributeWhileAnotherBuildServes(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -96,26 +99,41 @@ func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttributeWhileAnotherBuildServe
 	}
 	answeredAt := strings.Split(strings.Split(repaired, `answered_at="`)[1], `"`)[0]
 	const served = ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n\nContext.\n"
+	kept := strings.Replace(repaired, ` selected="[]"`, "", 1)
+	if kept == repaired {
+		t.Fatalf("the live document holds no selection, so its kept form proves nothing:\n%s", repaired)
+	}
 	wantAsks := `#ask-block state="answered" answered_by="alice" answered_at="` + answeredAt + `" selected=[]` + "\n"
+	forms := []struct {
+		name   string
+		read   func(context.Context, string, bool) (AskedText, error)
+		served string
+	}{
+		{"the text a reader of asks reads", service.TextWithAsks, served},
+		{"the kept form", service.KeptText, kept},
+	}
 	read := func(what string) {
 		t.Helper()
-		for _, withBlocks := range []bool{false, true} {
-			text, err := service.TextWithAsks(ctx, artifactID, withBlocks)
-			if err != nil {
-				t.Fatalf("%s, blocks %t: %v", what, withBlocks, err)
-			}
-			if text.Markdown != served || text.Token != token {
-				t.Fatalf("%s, blocks %t: the text reads %q with token %q, want %q with the document's own token %q", what, withBlocks, text.Markdown, text.Token, served, token)
-			}
-			if got := askLines(text.Asks); got != wantAsks {
-				t.Fatalf("%s, blocks %t: the asks read %q, want %q", what, withBlocks, got, wantAsks)
-			}
-			if withBlocks != (len(text.Blocks) > 0) {
-				t.Fatalf("%s, blocks %t: %d blocks", what, withBlocks, len(text.Blocks))
-			}
-			for _, block := range text.Blocks {
-				if block.ID == "ask-block" && text.Markdown[block.From:block.To] != ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n:::" {
-					t.Fatalf("%s: the ask block's range [%d, %d) reads %q in the text served, want the block as it serves it", what, block.From, block.To, text.Markdown[block.From:block.To])
+		for _, form := range forms {
+			block := form.served[:strings.Index(form.served, "\n\nContext.")]
+			for _, withBlocks := range []bool{false, true} {
+				text, err := form.read(ctx, artifactID, withBlocks)
+				if err != nil {
+					t.Fatalf("%s, %s, blocks %t: %v", what, form.name, withBlocks, err)
+				}
+				if text.Markdown != form.served || text.Token != token {
+					t.Fatalf("%s, %s, blocks %t: the text reads %q with token %q, want %q with the document's own token %q", what, form.name, withBlocks, text.Markdown, text.Token, form.served, token)
+				}
+				if got := askLines(text.Asks); got != wantAsks {
+					t.Fatalf("%s, %s, blocks %t: the asks read %q, want %q", what, form.name, withBlocks, got, wantAsks)
+				}
+				if withBlocks != (len(text.Blocks) > 0) {
+					t.Fatalf("%s, %s, blocks %t: %d blocks", what, form.name, withBlocks, len(text.Blocks))
+				}
+				for _, listed := range text.Blocks {
+					if listed.ID == "ask-block" && text.Markdown[listed.From:listed.To] != block {
+						t.Fatalf("%s, %s: the ask block's range [%d, %d) reads %q in the text served, want the block as it serves it, %q", what, form.name, listed.From, listed.To, text.Markdown[listed.From:listed.To], block)
+					}
 				}
 			}
 		}

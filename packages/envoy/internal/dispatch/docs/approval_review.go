@@ -150,7 +150,7 @@ func scanReview(row pgx.Row, withCarry bool, extra ...any) (model.ArtifactReview
 		return model.ArtifactReview{}, fmt.Errorf("decode review actor: %w", err)
 	}
 	if withCarry && review.CarriedFromVersion == nil && review.Reason != nil {
-		if version, carried := CarriedFromVersion(*review.Reason); carried {
+		if version, carried := model.CarriedFromVersion(*review.Reason); carried {
 			review.CarriedFromVersion = &version
 		}
 	}

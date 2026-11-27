@@ -50,17 +50,25 @@ func viewAnswers(t *testing.T, database *store.Store, edge rollbackEdge) (int, t
 	return rows, *at
 }
 
-// graphEdgesArm is the one arm of graph_edges, as the catalogue prints the view back, whose text
-// holds every one of marks: a statement of its own, which an edge is read through to tell which arm
-// answers it. The pretty form puts each top-level UNION ALL on a line of its own, and no arm holds
-// a union of its own, so splitting on that line splits the arms.
-func graphEdgesArm(t *testing.T, database *store.Store, what string, marks ...string) string {
+// graphEdgesDefinition is the definition of graph_edges as the catalogue prints the view back, in
+// its pretty form.
+func graphEdgesDefinition(t testing.TB, database *store.Store) string {
 	t.Helper()
 	var definition string
 	if err := database.Pool.QueryRow(context.Background(),
 		`select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&definition); err != nil {
 		t.Fatalf("read the graph_edges definition: %v", err)
 	}
+	return definition
+}
+
+// graphEdgesArm is the one arm of graph_edges, as the catalogue prints the view back, whose text
+// holds every one of marks: a statement of its own, which an edge is read through to tell which arm
+// answers it. The pretty form puts each top-level UNION ALL on a line of its own, and no arm holds
+// a union of its own, so splitting on that line splits the arms.
+func graphEdgesArm(t *testing.T, database *store.Store, what string, marks ...string) string {
+	t.Helper()
+	definition := graphEdgesDefinition(t, database)
 	var found []string
 	for _, arm := range strings.Split(strings.TrimSuffix(strings.TrimRight(definition, "\n"), ";"), "\nUNION ALL\n") {
 		if !slices.ContainsFunc(marks, func(mark string) bool { return !strings.Contains(arm, mark) }) {
@@ -342,10 +350,12 @@ func issueReadSeqScans(t *testing.T, database *store.Store) []string {
 }
 
 // The commits the step that deletes the four arms is run and announced under: the boot's own, the
-// commit of an earlier build and the commit of a later one, none the same.
+// commit of an earlier build and the commit of a later one, none the same. The boot's and the
+// earlier build's are the ones blockTypeSupertagBoot stamps and blockTypeSupertagAnnounce names,
+// since the subtests that boot a process boot it through those.
 const (
-	rollbackBootCommit   = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
-	rollbackEarlierBuild = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	rollbackBootCommit   = blockTypeSupertagCommit
+	rollbackEarlierBuild = blockTypeSupertagEarlier
 	rollbackLaterBuild   = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
 )
 
@@ -367,12 +377,7 @@ func rollbackFourKinds() []string {
 // rollbackArmsStanding is which of the four arms and their joins graph_edges still holds, sorted.
 func rollbackArmsStanding(t testing.TB, database *store.Store) []string {
 	t.Helper()
-	var definition string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&definition); err != nil {
-		t.Fatalf("read the graph_edges definition: %v", err)
-	}
-	standing := graphcensus.ViewArmsStanding(definition)
+	standing := graphcensus.ViewArmsStanding(graphEdgesDefinition(t, database))
 	slices.Sort(standing)
 	return standing
 }
@@ -404,15 +409,11 @@ func rollbackRunStep(t testing.TB, database *store.Store, fresh bool) (gone bool
 // rollbackEdgeRows is every row of graph_edges, each column of it as text, sorted.
 func rollbackEdgeRows(t testing.TB, database *store.Store) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `
+	read, err := readStrings(context.Background(), database.Pool, `
 		select concat_ws('|', from_kind, from_id, kind, to_kind, to_id, created_at::text, coalesce(source_seq::text, '-'))
 		from graph_edges order by 1`)
 	if err != nil {
 		t.Fatalf("read graph_edges: %v", err)
-	}
-	read, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("scan graph_edges: %v", err)
 	}
 	return read
 }
@@ -464,13 +465,9 @@ func rollbackCountSubjects(t testing.TB, database *store.Store) map[string][]str
 		"artifact": `select ref_key from artifacts where ref_key is not null order by 1`,
 		"block":    `select distinct to_id from graph_edges where to_kind = 'block' order by 1`,
 	} {
-		rows, err := database.Pool.Query(context.Background(), statement)
+		ids, err := readStrings(context.Background(), database.Pool, statement)
 		if err != nil {
 			t.Fatalf("read the %s nodes to count: %v", kind, err)
-		}
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			t.Fatalf("scan the %s nodes to count: %v", kind, err)
 		}
 		subjects[kind] = ids
 	}

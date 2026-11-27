@@ -134,17 +134,7 @@ func TestALiveWriteIntoARetiredDocumentOfAnIssueRoomIsRefusedAndTheRoomsOthersLa
 		t.Fatalf("write the Verification document before its retirement: %v", err)
 	}
 	before := latestVersionNumber(t, service, room.verification)
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
-		t.Fatalf("retire the Verification document: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement: %v", err)
-	}
+	retireVerification(t, database, room)
 
 	refused := func(write string, err error) {
 		t.Helper()
@@ -154,7 +144,7 @@ func TestALiveWriteIntoARetiredDocumentOfAnIssueRoomIsRefusedAndTheRoomsOthersLa
 				write, room.verification, room.tree, err)
 		}
 	}
-	_, err = joinedReplaceText(service, room.verification, "The check the retirement keeps.\n\nWritten after the retirement.\n", alice)
+	_, err := joinedReplaceText(service, room.verification, "The check the retirement keeps.\n\nWritten after the retirement.\n", alice)
 	refused("a replacement", err)
 	comment := func(id string) MarkSpec { return MarkSpec{Kind: MarkComment, ID: id, By: alice} }
 	_, err = joinedMarkQuote(service, room.verification, comment("comment-retired"), "check", nil)
@@ -234,20 +224,10 @@ func TestAMarginRecordOnARetiredDocumentOfAnIssueRoomIsSkippedInsideTheRoomsWrit
 	if _, err := joinedReplaceText(service, room.verification, kept, alice); err != nil {
 		t.Fatalf("write the Verification document before its retirement: %v", err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
-		t.Fatalf("retire the Verification document: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement: %v", err)
-	}
+	retireVerification(t, database, room)
 
 	const markID, beside = "thread-on-the-retired-document", "Written beside the thread's record.\n"
-	err = joinedWrite(service, func(ctx context.Context) error {
+	err := joinedWrite(service, func(ctx context.Context) error {
 		if _, err := service.ReplaceText(ctx, room.spec, beside, alice, nil); err != nil {
 			t.Fatalf("write the spec, which joins the issue room's write: %v", err)
 		}

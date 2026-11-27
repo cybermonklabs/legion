@@ -16,7 +16,7 @@ import (
 
 // seedAskWithoutBlockTuple writes an ask whose row and node the earlier release already marked, in
 // the order its writer writes them: the node first, then the row that names it, which the
-// foreign key asks_node (migration 20261116094058) holds to a node the store holds.
+// foreign key asks_node (migration 20261125163550) holds to a node the store holds.
 func seedAskWithoutBlockTuple(t *testing.T, database *store.Store, project, issue, document, refKey string) (id string, createdAt time.Time) {
 	t.Helper()
 	ctx := t.Context()
@@ -44,19 +44,7 @@ func seedAskWithoutBlockTuple(t *testing.T, database *store.Store, project, issu
 func TestTheAskedOnBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
-	seedLockProject(t, database)
-	if _, err := database.Pool.Exec(ctx, `
-		insert into issues (key, project_key, number, title, created_by, rank)
-		values ('LOCK-1', 'LOCK', 1, 'Asked on a block', '{"kind":"user","id":"alice"}', 'U')`); err != nil {
-		t.Fatal(err)
-	}
-	var document, refKey string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('LOCK-1', 'LOCK', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key`).Scan(&document, &refKey); err != nil {
-		t.Fatal(err)
-	}
+	document, refKey, _ := seedLockSpec(t, database)
 	id, createdAt := seedAskWithoutBlockTuple(t, database, "LOCK", "LOCK-1", document, refKey)
 	check := func(rows, tuples, missing, extra int64) {
 		t.Helper()

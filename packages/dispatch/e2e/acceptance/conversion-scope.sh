@@ -123,62 +123,13 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# conversion_scope_empty_database: drops and creates the database database_url names, so the
-# earlier release's Store.Migrate writes its schema and the four issues are its only content. It
-# takes only infra_1253_upgrade on this machine, the database of this issue's upgrade drivers, and
-# refuses every other with status 2.
-conversion_scope_empty_database() {
-  local scheme="" authority="" name="" query=""
-  # The URL's parts are taken before loopback_database_url runs, whose own match replaces
-  # BASH_REMATCH.
-  if [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]]; then
-    scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  fi
-  if [[ -z "$name" ]] || ! loopback_database_url "$database_url"; then
-    printf '%s: DATABASE_URL names no database on this machine; the run drops and creates infra_1253_upgrade alone\n' "$driver" >&2
-    exit 2
-  fi
-  [[ "$name" == infra_1253_upgrade ]] || {
-    printf '%s: DATABASE_URL names the database %s; the run drops and creates infra_1253_upgrade alone\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" \
-    >"$work/empty-database" 2>&1 || fail setup "drop and create the database $name" "psql: $(<"$work/empty-database")"
-  printf '%s: the database %s was dropped and created empty\n' "$driver" "$name"
-}
-
-# conversion_scope_key SECTION WHAT KEY: KEY is an issue key, which the SQL below names inline.
-conversion_scope_key() {
-  [[ "$3" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "$2" "'$3' is no issue key"
-}
-
-# conversion_scope_tree SECTION FILE ISSUE [VIEW]: the agent's tree read of ISSUE (lib-tree.sh's
-# tree_read), every page of it followed through its cursor, as one answer in FILE: the first
-# page's members and every page's nodes and tuples.
-conversion_scope_tree() {
-  local section="$1" file="$2" issue="$3" view="${4:-}" cursor="" pages=0
-  : >"$work/pages"
-  while true; do
-    tree_read agent "$issue" "$view" "" "$cursor"
-    tree_want 200 "$section" "read the tree of $issue${view:+ (?view=$view)}"
-    cat "$work/body" >>"$work/pages"
-    pages=$((pages + 1))
-    cursor="$(jq -r '.cursor // ""' "$work/body")"
-    [[ -n "$cursor" ]] || break
-    ((pages < 500)) || fail "$section" "read the tree of $issue" "its cursor did not end after $pages pages"
-  done
-  jq -s '.[0] + {nodes: [.[].nodes[]?], tuples: [.[].tuples[]?]}' "$work/pages" >"$file" ||
-    fail "$section" "read the tree of $issue" "the pages do not join: $(head -c 600 "$work/pages")"
-}
-
 # conversion_scope_digests FILE KEY…: one line per version of every document of each issue KEY,
 # `<key> <slug> <artifact id> v<number> <sha256 of its stored markdown>`, read from the rows.
 conversion_scope_digests() {
   local file="$1" key list=""
   shift
   for key in "$@"; do
-    conversion_scope_key digests "read the digests" "$key"
+    tree_key digests "read the digests" "$key"
     list+="${list:+, }'$key'"
   done
   query digests "read the digest of every version of every document of $*" "
@@ -236,7 +187,7 @@ conversion_scope_seed() {
     >"$work/done-spec.md"
   corpus_issue "$section" "A done issue the conversion leaves alone" "$work/done-spec.md"
   done_key="$corpus_key" done_spec="$corpus_spec"
-  conversion_scope_key "$section" "create the done issue" "$done_key"
+  tree_key "$section" "create the done issue" "$done_key"
   printf 'How the done issue is proved.\n\n:::check{#c-done serves="dispatch://%s/spec#b-r-done" surface="cli" run="bash e2e/acceptance/conversion-scope.sh" negative_control="Rewrite the done issue and the digests differ."}\nThe done issue keeps its rows.\n:::\n' \
     "$done_key" >"$work/done-verification.md"
   corpus_upload "$section" "$done_key" verification.md "$work/done-verification.md"
@@ -258,7 +209,7 @@ conversion_scope_seed() {
   printf 'The in-flight parent, which the conversion redraws.\n' >"$work/parent-spec.md"
   corpus_issue "$section" "An in-flight parent the conversion redraws" "$work/parent-spec.md"
   parent_key="$corpus_key" parent_spec="$corpus_spec"
-  conversion_scope_key "$section" "create the parent" "$parent_key"
+  tree_key "$section" "create the parent" "$parent_key"
   corpus_comment person "$section" "$parent_key" "Which shapes must the parent hold?"$'\n\n'"Its second block asks who approves the spec."
   parent_comment="$corpus_item"
   corpus_comment agent "$section" "$parent_key" "The agent answers the second block: a person approves it." "$parent_comment" b2
@@ -297,7 +248,7 @@ conversion_scope_seed() {
   printf 'The first child reads its parent'"'"'s requirements and holds none of its own.\n' >"$work/child-one-spec.md"
   corpus_issue "$section" "A child of the parent with no requirement of its own" "$work/child-one-spec.md" "$parent_key"
   child_one="$corpus_key"
-  conversion_scope_key "$section" "create the first child" "$child_one"
+  tree_key "$section" "create the first child" "$child_one"
   printf 'How the first child is proved.\n\n:::check{#c-child-one serves="dispatch://%s/spec#b-r-from-ask" surface="cli" run="bash e2e/acceptance/conversion-scope.sh" negative_control="Move the check and its parent reads a gap."}\nThe first child proves its parent'"'"'s store.\n:::\n' \
     "$parent_key" >"$work/child-one-verification.md"
   corpus_upload "$section" "$child_one" verification.md "$work/child-one-verification.md"
@@ -309,7 +260,7 @@ conversion_scope_seed() {
     >"$work/child-two-spec.md"
   corpus_issue "$section" "A child of the parent with a requirement of its own" "$work/child-two-spec.md" "$parent_key"
   child_two="$corpus_key" child_two_spec="$corpus_spec"
-  conversion_scope_key "$section" "create the second child" "$child_two"
+  tree_key "$section" "create the second child" "$child_two"
   pass "$section" "wrote the second child $child_two, whose spec holds r-child-own"
 
   tree_send PATCH "/api/v1/issues/$done_key" "$(jq -cn --argjson a "$(tree_actor)" '{status: "done", actor: $a}')"
@@ -320,8 +271,8 @@ conversion_scope_seed() {
 
 # --- the first pass: the conversion by hand -------------------------------------------------------
 
-conversion_scope_empty_database
-# Read before lib.sh's read_bearer could unset it: both servers accept the run's DISPATCH_TOKEN.
+tree_reset_database "$database_url" infra_1253_upgrade setup
+# baseline_start reads the run's DISPATCH_TOKEN, the bearer both servers accept, before it is unset.
 baseline_start
 # A copy of the earlier release's build, so the second pass boots it again without building it.
 cp "$baseline_binary" "$work/baseline-dispatch"
@@ -361,7 +312,7 @@ readonly room_count_sql="select (select count(*) from document_rooms r join arti
 query "$section" "read the room count of $done_key" "$room_count_sql"
 readonly done_rooms_before="$answer"
 pass "$section" "$done_key holds $done_rooms_before before the conversion"
-conversion_scope_tree "$section" "$work/parent.before.json" "$parent_key"
+tree_read_all "$section" "$work/parent.before.json" "$parent_key"
 jq -cS --arg k "$parent_key" '[.nodes[] | select((.supertag == "requirement" or .supertag == "check") and ((.issue // $k) == $k))
   | {id: .block_id, supertag, author, text}] | sort_by(.id)' "$work/parent.before.json" >"$work/parent-nodes.before"
 requirements_before="$(jq '[.[] | select(.supertag == "requirement")] | length' "$work/parent-nodes.before")"
@@ -392,7 +343,7 @@ query "$section" "read the room count of $done_key" "$room_count_sql"
 [[ "$answer" == "$done_rooms_before" ]] ||
   fail "$section" "the room count of $done_key is unchanged" "it reads $answer, and read $done_rooms_before before the conversion"
 pass "$section" "the room count of $done_key is unchanged: $answer"
-conversion_scope_tree "$section" "$work/done.json" "$done_key"
+tree_read_all "$section" "$work/done.json" "$done_key"
 cp "$work/done.json" "$work/body"
 expect "$section" "$done_key reads converted: false" false '.converted'
 expect "$section" "the tree read of $done_key answers its three document ids" \
@@ -401,7 +352,7 @@ for node in "ask $done_ask" "comment $done_thread" "comment $done_reply"; do
   expect "$section" "the tree read of $done_key answers the ${node%% *} ${node#* }" true \
     --arg kind "${node%% *}" --arg id "${node#* }" '[.nodes[] | select(.kind == $kind and (.id | endswith($id)))] | length == 1'
 done
-conversion_scope_tree "$section" "$work/done-decisions.json" "$done_key" decisions
+tree_read_all "$section" "$work/done-decisions.json" "$done_key" decisions
 cp "$work/done-decisions.json" "$work/body"
 expect "$section" "the ?view=decisions of $done_key answers its decision nodes and their review state" \
   "$(<"$work/done-decisions.before")" \
@@ -412,7 +363,7 @@ expect "$section" "the ?view=decisions of $done_key answers the readings of its 
 # --- redraw: the in-flight parent ------------------------------------------------------------------
 
 section=redraw
-conversion_scope_tree "$section" "$work/parent.after.json" "$parent_key"
+tree_read_all "$section" "$work/parent.after.json" "$parent_key"
 cp "$work/parent.after.json" "$work/body"
 expect "$section" "$parent_key reads converted: true" true '.converted'
 for node in "comment $parent_comment" "ask $parent_ask"; do
@@ -466,7 +417,7 @@ differs="$(jq -rn --slurpfile b "$work/parent-nodes.before" --slurpfile a "$work
 pass "$section" "each requirement and check of $parent_key keeps its author and its words"
 expect "$section" "$parent_key holds no criterion node" '[]' --arg k "$parent_key" \
   '[.nodes[] | select(.supertag == "criterion" and ((.issue // $k) == $k)) | .id]'
-conversion_scope_tree "$section" "$work/parent-spec.json" "$parent_key" spec
+tree_read_all "$section" "$work/parent-spec.json" "$parent_key" spec
 cp "$work/parent-spec.json" "$work/body"
 expect "$section" "the ?view=spec of $parent_key answers its four requirements as the query's" \
   '["r-from-ask","r-from-both","r-from-comment","r-from-other"]' --arg k "$parent_key" \
@@ -483,7 +434,7 @@ expect "$section" "the spec of $parent_key still reads approved, by $person_logi
 # --- children: a child of an approved parent ------------------------------------------------------
 
 section=children
-conversion_scope_tree "$section" "$work/child-one.json" "$child_one"
+tree_read_all "$section" "$work/child-one.json" "$child_one"
 cp "$work/child-one.json" "$work/body"
 expect "$section" "$child_one reads converted: true" true '.converted'
 readonly conversation_nodes='[.nodes[] | select((.kind == "comment" or .kind == "comment_block" or .kind == "message" or .kind == "ask")
@@ -495,12 +446,12 @@ pass "$section" "the conversation view of $child_one answers nothing: no comment
 tree_send GET "/api/v1/issues/$child_one/asks"
 tree_want 200 "$section" "read the asks of $child_one"
 expect "$section" "$child_one carries no approval request of its own" '[]' '[.[] | select(.kind == "approval") | .id]'
-conversion_scope_tree "$section" "$work/child-two.json" "$child_two"
+tree_read_all "$section" "$work/child-two.json" "$child_two"
 cp "$work/child-two.json" "$work/body"
 expect "$section" "$child_two reads converted: true and is no view" '[true,null]' '[.converted, .view_of]'
 expect "$section" "$child_two keeps its own requirement r-child-own" true --arg k "$child_two" \
   '[.nodes[] | select(.supertag == "requirement" and .block_id == "r-child-own" and ((.issue // $k) == $k))] | length == 1'
-conversion_scope_tree "$section" "$work/child-two-spec.json" "$child_two" spec
+tree_read_all "$section" "$work/child-two-spec.json" "$child_two" spec
 cp "$work/child-two-spec.json" "$work/body"
 expect "$section" "the ?view=spec of $child_two answers r-child-own as the query's" true --arg k "$child_two" \
   '[.nodes[] | select(.role == "query" and .supertag == "requirement" and .block_id == "r-child-own" and ((.issue // $k) == $k))] | length == 1'
@@ -513,7 +464,7 @@ planted_ask="$corpus_item"
 tree_send POST "/api/v1/artifacts/$child_two_spec/approval-requests" \
   "$(jq -cn --argjson a "$(tree_actor)" '{summary: "The second child asks for its own approval.", actor: $a}')"
 tree_want 201 "$section" "open an approval request on the spec of $child_two"
-conversion_scope_tree "$section" "$work/child-two-planted.json" "$child_two"
+tree_read_all "$section" "$work/child-two-planted.json" "$child_two"
 found="$(jq -c --arg k "$child_two" "$conversation_nodes" "$work/child-two-planted.json")"
 jq -e --arg id "$planted_ask" --arg k "$child_two" \
   '[.nodes[] | select(.kind == "ask" and (.id | endswith($id)) and ((.issue // $k) == $k))] | length == 1' \
@@ -530,7 +481,7 @@ expect "$section" "the asks read finds the approval request planted on $child_tw
 section=automatic
 tree_stop_head
 baseline_stop
-conversion_scope_empty_database
+tree_reset_database "$database_url" infra_1253_upgrade "$section"
 BASELINE_BINARY="$work/baseline-dispatch"
 # The bearer of the first pass, which baseline_start reads again and both servers accept.
 DISPATCH_TOKEN="$token"

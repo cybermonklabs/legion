@@ -295,7 +295,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
 	case retired:
-		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+		http.Error(w, documentRetiredRefusal, http.StatusConflict)
 		return
 	case query:
 		http.Error(w, "DECISIONS_QUERY: the issue's decisions query renders the issue's decisions and takes no text; write a decision as a `decision` block of the issue's spec", http.StatusConflict)
@@ -393,6 +393,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.srv.ServeHTTP(served, routed)
 }
 
+// documentRetiredRefusal is the 409 a socket asking for a retired document is refused with, by the
+// admission's first read (refusedDocument) and by its read once the room is held (refuseRetired).
+const documentRetiredRefusal = "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable"
+
 // refuseRetired refuses a socket that asked for document 409 DOCUMENT_RETIRED while that document
 // is retired (RetireDocument, documentRetired), before the upgrade, and answers whether it refused
 // it. A read that fails refuses it 404, as a document the admission cannot read is.
@@ -403,7 +407,7 @@ func (s *Service) refuseRetired(w http.ResponseWriter, r *http.Request, document
 		return true
 	}
 	if retired {
-		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+		http.Error(w, documentRetiredRefusal, http.StatusConflict)
 	}
 	return retired
 }

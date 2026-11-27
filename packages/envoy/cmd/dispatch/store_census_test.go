@@ -80,10 +80,12 @@ const censusSigningKey = "store-census-signing-key"
 // documents and versions it makes nodes of (graphcensus' versionProjections), which the older
 // build's issues, specs and project documents populate and the backfill gives their nodes, and
 // the references a document's citations make (artifact_reference, graphcensus' refProjections),
-// which the seeded spec's citations populate. Each must carry a population in this run: a census
-// that checked no row of a kind proves nothing about it, so a kind that checks zero rows fails
-// this test with that kind reported. The list is the test's own, so a kind the census stops
-// checking is read by a person before this test agrees with it.
+// which the seeded spec's citations populate, and the search rows of each block node that holds
+// text and of each live document (node_search and document_search_node, graphcensus'
+// searchProjections), which the seeded documents populate. Each must carry a population in this
+// run: a census that checked no row of a kind proves nothing about it, so a kind that checks zero
+// rows fails this test with that kind reported. The list is the test's own, so a kind the census
+// stops checking is read by a person before this test agrees with it.
 var censusKinds = []string{
 	"comment", "block", "block_ref", "block_rank", "block_text", "block_size", "room_block", "block_author",
 	"person", "session", "role", "page", "artifact", "version", "artifact_reference", "node_search",
@@ -96,8 +98,9 @@ var censusKinds = []string{
 // issue's parent and its waits (issueProjections), a component's parent, its dependencies and an
 // issue's components (componentProjections), a check's result and its retraction
 // (resultProjections), a comment's anchor block (anchorProjections), the Keeps the backfill's Keep
-// pass owes a write (graphcensus' CensusOfKeepSums), and the visibility and state of each
-// interaction, lens, finding, risk, constraint and lens kind (visibilityStateProjections), of
+// pass owes a write (graphcensus' CensusOfKeepSums), the version each carried review was carried
+// from (review_carried_from, graphcensus' censusOfReviewCarries), and the visibility and state of
+// each interaction, lens, finding, risk, constraint and lens kind (visibilityStateProjections), of
 // which the lens catalogue this build's migrations write holds the constraints and the lens kinds.
 // The census must check each and read no difference in it, and no row of one is no refusal. The
 // list is the test's own, as censusKinds is, so a kind the census starts or stops checking fails

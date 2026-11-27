@@ -151,6 +151,11 @@ func matchedTouches(code string) []touch {
 	var out []touch
 	for _, form := range touchedTablePatterns {
 		for _, match := range matchedNames(code, form.pattern) {
+			// A trigger's event list names truncate as an event, not a statement: `before truncate
+			// on people`, `insert or truncate on t`. What follows it there is a keyword, never a table.
+			if form.writes == truncatesRows && (match.name == "on" || match.name == "or") {
+				continue
+			}
 			out = append(out, touch{name: match.name, writes: form.writes, offset: match.offset})
 		}
 	}
@@ -178,11 +183,19 @@ func indexMatches(code string) []matchedName {
 	return out
 }
 
+// matchedNames names the tables pattern's first group names in code. An unquoted `on` is no
+// table: ON is a reserved word, so a table so named would be quoted, and the truncate pattern
+// meets it in a trigger's event list (`after truncate on route_roster`), whose table the trigger
+// pattern reads.
 func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
 	var names []matchedName
 	for _, match := range pattern.FindAllStringSubmatchIndex(code, -1) {
 		for _, raw := range strings.Split(code[match[2]:match[3]], ",") {
-			name := strings.ToLower(strings.Trim(strings.TrimSpace(raw), `"`))
+			trimmed := strings.TrimSpace(raw)
+			if strings.EqualFold(trimmed, "on") {
+				continue
+			}
+			name := strings.ToLower(strings.Trim(trimmed, `"`))
 			name = strings.TrimPrefix(name, "public.")
 			if name != "" {
 				names = append(names, matchedName{name: name, offset: match[0]})

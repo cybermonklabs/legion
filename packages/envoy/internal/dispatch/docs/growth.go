@@ -381,7 +381,7 @@ func refuseUndecodableSeed(ctx context.Context, tx pgx.Tx, room string, seed []b
 	if err := lockDocumentRoom(ctx, tx, room); err != nil {
 		return err
 	}
-	head, err := NewPgVersioned(nil).head(ctx, tx, room)
+	head, err := roomHead(ctx, tx, room)
 	if err != nil {
 		return err
 	}

@@ -236,7 +236,7 @@ func migrateInOrder(t *testing.T, url string, binaries ...string) {
 	for _, binary := range binaries {
 		p := startDispatchProcessWith(t, url, dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: binary, WebDist: page})
 		p.waitHealthy(t)
-		stop(t, p)
+		stopProcess(t, p)
 	}
 }
 
@@ -330,13 +330,6 @@ func shortCommit(commit string) string {
 		return commit[:12]
 	}
 	return commit
-}
-
-// stop stops p as a deploy does, SIGTERM and its graceful shutdown, and waits for it to exit.
-func stop(t *testing.T, p *dispatchProcess) {
-	t.Helper()
-	p.Terminate(t)
-	p.WaitExit(t, "SIGTERM")
 }
 
 // getJSON reads path from p as the test's login and decodes it into into.

@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -538,10 +537,10 @@ func (f *acceptedFixture) documentNamed(t *testing.T, name string) string {
 // index (docs' indexDocumentInRoom): another fragment reads otherwise than its document's latest
 // version. A document no browser is open on yet takes one.
 func (f *acceptedFixture) holdOwedBy(t *testing.T, artifactID, written string) {
+	t.Helper()
 	if written == "" {
 		written = "A browser's words no settlement has versioned.\n"
 	}
-	t.Helper()
 	peer, open := f.peers[artifactID]
 	if !open {
 		if f.peers == nil {
@@ -551,14 +550,7 @@ func (f *acceptedFixture) holdOwedBy(t *testing.T, artifactID, written string) {
 		t.Cleanup(peer.close)
 		f.peers[artifactID] = peer
 	}
-	peer.edit(t, func(tree *pmdoc.Node) error {
-		typed, err := pmdoc.Parse(written)
-		if err != nil {
-			return err
-		}
-		tree.Children = append(tree.Children, typed.Children...)
-		return nil
-	})
+	peer.appendParagraph(t, written)
 	peer.barrier(t)
 }
 

@@ -4,15 +4,17 @@ import (
 	"context"
 	"net/http"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A plan task's needs names an issue under its issue from schema version 7 (this change's spec,
-// R11), an item kind a build of version 6 reads as a value outside the schema rather than as newer
-// content. So a write introduces one only while every process serving the database reads version 7
+// A plan task's needs names an issue under its issue from schema version 8 (R11 of the issue-tree
+// spec), an item kind a build of version 7 reads as a value outside the schema rather than as newer
+// content. So a write introduces one only while every process serving the database reads version 8
 // - the fleet's creatable number, which a page is admitted writable under - and is refused, in the
-// words of a write of an element its build may not create yet, while a process of version 6 lives.
+// words of a write of an element its build may not create yet, while a process of version 7 lives.
 // A write that keeps a needs the document already holds, or adds a needs at a plan task, is taken
-// all the while, and once no process of version 6 lives the issue needs is taken.
+// all the while, and once no process of version 7 lives the issue needs is taken.
 func TestAnIssueUnderNeedsIsWrittenOnlyWhileTheFleetCreatesIt(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -28,33 +30,35 @@ func TestAnIssueUnderNeedsIsWrittenOnlyWhileTheFleetCreatesIt(t *testing.T) {
 		return uploadChecks(t, handler, parent.Key, ":::plan_task{#t1}\nThe first task.\n:::\n\n"+content).Code
 	}
 
-	// Every process reads version 7: the issue needs is taken.
+	// Every process reads version 8: the issue needs is taken.
 	withFirst := task("t2", "dispatch://"+first.Key)
 	if code := upload(withFirst); code != http.StatusCreated {
-		t.Fatalf("an issue needs while every process reads version 7: status %d, want 201", code)
+		t.Fatalf("an issue needs while every process reads version 8: status %d, want 201", code)
 	}
 
-	// A process of version 6 joins the fleet.
+	// A process of version 7 joins the fleet. It registers this build's owner lock protocol, as the
+	// release before does, so the owner locks stay in this build's mode.
 	ctx := context.Background()
 	var instance string
 	if err := database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', 6, 6, now()) returning instance::text`).Scan(&instance); err != nil {
-		t.Fatalf("add a live server process of schema version 6: %v", err)
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', 7, 7, now(), $1) returning instance::text`, store.OwnerLockProtocol).Scan(&instance); err != nil {
+		t.Fatalf("add a live server process of schema version 7: %v", err)
 	}
+	requireNoLegacyOwnerLockMark(t, database)
 	if code := upload(withFirst + task("t3", checks+"#b-t1")); code != http.StatusCreated {
-		t.Fatalf("a write keeping the issue needs and adding a plan task's needs while a process of version 6 lives: status %d, want 201", code)
+		t.Fatalf("a write keeping the issue needs and adding a plan task's needs while a process of version 7 lives: status %d, want 201", code)
 	}
 	withSecond := withFirst + task("t3", checks+"#b-t1") + task("t4", "dispatch://"+second.Key)
-	expectRefusal(t, "an issue needs while a process of version 6 lives", uploadChecks(t, handler, parent.Key, ":::plan_task{#t1}\nThe first task.\n:::\n\n"+withSecond),
+	expectRefusal(t, "an issue needs while a process of version 7 lives", uploadChecks(t, handler, parent.Key, ":::plan_task{#t1}\nThe first task.\n:::\n\n"+withSecond),
 		http.StatusBadRequest, "INVALID_MARKDOWN", `"needs"`, "dispatch://"+second.Key,
 		`this Dispatch build reads item "issue" of attribute "needs" of typed block "plan_task" but cannot write it yet`)
 
-	// The process of version 6 is gone: the issue needs is taken.
+	// The process of version 7 is gone: the issue needs is taken.
 	if _, err := database.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
-		t.Fatalf("remove the process of version 6: %v", err)
+		t.Fatalf("remove the process of version 7: %v", err)
 	}
 	if code := upload(withSecond); code != http.StatusCreated {
-		t.Fatalf("an issue needs once every process reads version 7: status %d, want 201", code)
+		t.Fatalf("an issue needs once every process reads version 8: status %d, want 201", code)
 	}
 }

@@ -224,11 +224,16 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
 	// a question, so it hears about the asks of this issue a person declined to answer, and the
 	// same question is not put to them again.
+	// An advice savepoint that could not be rolled back left tx aborted: the route answers that
+	// failure, rather than sending its write phase on tx (adviceTxError).
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
 	if err != nil {
@@ -326,6 +331,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
+	// A question of a converted issue is a node the decisions query takes, so its create moves that
+	// query's record and owes it a version (R14): the write phase marks the issue's queries owed last,
+	// after the ask's facts, and Commit drains the mark, writing that version before this route
+	// publishes (docs.Ledger.MarkAskQueries).
+	ledger.MarkAskQueries(ask)
 	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
 	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
 	// statements follow the row's insert, queued above, which the rows of a part reference. The
@@ -380,7 +390,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// failed carries nothing to hang it on; both report no review.
 	var standing standingSpecRead
 	if advice != nil && owner.IssueKey != nil {
-		standing = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey)
+		if standing, err = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
@@ -648,6 +661,14 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The decisions query's rendering prints each question it takes, so an edit of a question's
+	// words owes that query a version (R14, R15), drained once Commit has run the write phase
+	// (docs.Ledger.MarkAskQueries); an edit of its urgency or of multiple alone changes no words and
+	// no fact of its node, and an approval request, which no query takes, was refused above.
+	wordsChanged := askWordsChanged(previous, ask)
+	if wordsChanged {
+		ledger.MarkAskQueries(ask)
+	}
 	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
 	// request naming its run) names the ask as changed by that run where it changed them
 	// (spec requirement r-interaction): its question, or the words of an option
@@ -662,7 +683,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
 	// (writeIssue).
 	var askNode graphstore.Uncaused
-	if askWordsChanged(previous, ask) {
+	if wordsChanged {
 		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
 			project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
 			if err != nil {

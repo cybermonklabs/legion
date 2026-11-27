@@ -274,6 +274,153 @@ func TestTheTreeReadAnswersARunThatChangedANodeOnceAsItsAuthorsContext(t *testin
 	}
 }
 
+// TestTheTreeReadAnswersARunsWholeQuestion: alice asks the command bar a question of 296
+// characters, longer than the 240 runes an edge's excerpt of a run holds (refs' excerptRunes), and
+// writes a comment under that run. Her tree read answers the run's interaction node with the
+// question whole as its text, as a read of the run's own address answers it (spec requirement
+// r-interaction: an edge's excerpt alone cuts a run's words), while the comment's changed_by_run
+// edge in GET /api/v1/references still shows the head of the question, cut. Else it prints
+// `alice's tree read answers the run's text <text>, want its whole question <words>`.
+func TestTheTreeReadAnswersARunsWholeQuestion(t *testing.T) {
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	issue := createTestIssue(t, handler, "TRUNW", "The issue a long question comments on")
+	const words = "Which plan holds the rollback step, and which of its checks proves that the rollback leaves every document of the issue " +
+		"as its last approved version stood, with each requirement's checks counted again, each result recorded against the words its " +
+		"check held then, and no comment of the thread lost?"
+	run, err := directServer(deps).recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "", words)
+	if err != nil {
+		t.Fatalf("record alice's run: %v", err)
+	}
+	runWindowAhead(t, database, run.ID)
+	written := requestForRun(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		map[string]any{"body": "The rollback step is in the plan."}, "alice", run.ID)
+	if written.Code != http.StatusCreated {
+		t.Fatalf("write the comment under the run: status=%d body=%s", written.Code, written.Body.String())
+	}
+	comment := decodeBody[writtenRecord](t, written).ID
+
+	// The edge at the run, which every read of references shows, cuts the question: this case
+	// proves nothing where it does not.
+	references := dispatchRequest(t, handler, http.MethodGet,
+		"/api/v1/references?from="+url.QueryEscape("dispatch://"+issue+"/comment/"+comment), nil, "alice")
+	if references.Code != http.StatusOK {
+		t.Fatalf("read the comment's references: status=%d body=%s", references.Code, references.Body.String())
+	}
+	var excerpt string
+	for _, edge := range decodeBody[model.GraphReferences](t, references).Edges {
+		if edge.Kind == graphstore.TupleChangedByRun && edge.Node.Kind == graphstore.KindInteraction && edge.Excerpt != nil {
+			excerpt = edge.Excerpt.Text
+		}
+	}
+	if excerpt == "" || excerpt == words || !strings.HasPrefix(words, excerpt) {
+		t.Fatalf("the comment's changed_by_run edge shows the run's excerpt %q, want the head of its question, cut short of its %d characters: this case proves nothing",
+			excerpt, len(words))
+	}
+
+	alice := treeRead(t, handler, issue, "", "alice", false)
+	interaction, _ := alice.node(t, graphstore.KindInteraction, run.ID)
+	if interaction.Role != treeRoleContext || interaction.Text != words {
+		t.Errorf("alice's tree read answers the run's text %q as %q, want its whole question %q as context", interaction.Text, interaction.Role, words)
+	}
+}
+
+// TestTheTreeReadAnswersAPostsEditAndDeleteMarks: on an issue born converted, whose read answers
+// from its head rows, and on one that has not converted, alice writes three comments; she edits
+// the first and deletes the second. The tree read with no view answers the edited comment with
+// edited_at, the time the edit answered, and no delete mark; the deleted one with deleted_at and
+// deleted_by as the delete answered them, and no text; and the third with none of the three, as
+// the read of the post carries them (model.GraphNode, R2: the read answers each node with its
+// values). Else it prints `<case>: the tree read answers the <comment> comment's marks
+// edited_at <a>, deleted_at <b>, deleted_by <c>, want <...>`.
+func TestTheTreeReadAnswersAPostsEditAndDeleteMarks(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "MARK")
+	for _, unconverted := range []bool{false, true} {
+		what := fmt.Sprintf("an issue converted %t", !unconverted)
+		issue := createDigestIssue(t, handler, database, "MARK", "Marks of "+what, ":::requirement{#r1}\nThe list shows urgent asks first.\n:::\n", unconverted)
+		edited, _ := personComment(t, handler, database, issue.Key, "The first words.")
+		patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+edited, map[string]any{"body": "The corrected words."}, "alice")
+		if patched.Code != http.StatusOK {
+			t.Fatalf("%s: edit the comment %s: status=%d body=%s", what, edited, patched.Code, patched.Body.String())
+		}
+		editedAt := decodeBody[model.Comment](t, patched).EditedAt
+		if editedAt == nil {
+			t.Fatalf("%s: the edit of %s answers no edited_at: this case proves nothing", what, edited)
+		}
+		wantEdited, err := time.Parse(time.RFC3339Nano, *editedAt)
+		if err != nil {
+			t.Fatalf("%s: read the edit's edited_at %q: %v", what, *editedAt, err)
+		}
+		deleted, _ := personComment(t, handler, database, issue.Key, "Words to take back.")
+		gone := deleteThreadComment(t, handler, deleted, "alice")
+		if gone.DeletedAt == nil || gone.DeletedBy == nil {
+			t.Fatalf("%s: the delete of %s answers deleted_at %v and deleted_by %v: this case proves nothing", what, deleted, gone.DeletedAt, gone.DeletedBy)
+		}
+		standing, _ := personComment(t, handler, database, issue.Key, "Words that stand.")
+
+		read := treeRead(t, handler, issue.Key, "", "alice", false)
+		for _, want := range []struct {
+			name, id  string
+			editedAt  *time.Time
+			deletedAt *time.Time
+			deletedBy *model.Actor
+		}{
+			{"edited", edited, &wantEdited, nil, nil},
+			{"deleted", deleted, nil, gone.DeletedAt, gone.DeletedBy},
+			{"standing", standing, nil, nil, nil},
+		} {
+			node, _ := read.node(t, graphstore.KindComment, want.id)
+			sameTime := func(got, want *time.Time) bool {
+				return got == nil && want == nil || got != nil && want != nil && got.Equal(*want)
+			}
+			sameActor := func(got, want *model.Actor) bool {
+				return got == nil && want == nil || got != nil && want != nil && got.Kind == want.Kind && got.ID == want.ID
+			}
+			if !sameTime(node.EditedAt, want.editedAt) || !sameTime(node.DeletedAt, want.deletedAt) || !sameActor(node.DeletedBy, want.deletedBy) {
+				t.Errorf("%s: the tree read answers the %s comment's marks edited_at %v, deleted_at %v, deleted_by %v, want %v, %v, %v",
+					what, want.name, node.EditedAt, node.DeletedAt, node.DeletedBy, want.editedAt, want.deletedAt, want.deletedBy)
+			}
+			if want.name == "deleted" && node.Text != "" {
+				t.Errorf("%s: the tree read answers the deleted comment's text %q, want none", what, node.Text)
+			}
+		}
+	}
+}
+
+// TestTheKindReadAnswersAChangeOnADecisionTheSkeletonDoesNotOpen: an issue born converted holds
+// notes.md, a document the skeleton does not open (R8), and its decision d1; alice comments on the
+// decision's words, a Change. The read with no view answers the Change, as a node of the tree
+// under the issue, and no node of d1. The read with kind=comment, and with kind=comment and
+// kind=decision, take the Change out of that skeleton (R30): no node either answers can bring a
+// comment on d1's text in, since neither holds d1. Else it prints `<query> of <key> answers no
+// Change <id>, which the read with no view answers`.
+func TestTheKindReadAnswersAChangeOnADecisionTheSkeletonDoesNotOpen(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "CHNG")
+	issue := createDigestIssue(t, handler, database, "CHNG", "A decision in notes", ":::requirement{#r1}\nThe list shows urgent asks first.\n:::\n", false)
+	notes := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md", "The notes.\n\n:::decision{#d1}\nWe ship the urgent list first.\n:::\n").Artifact.ID
+	change := createBlockAnchoredComment(t, handler, issue.Key, map[string]any{"artifact": notes, "quote": "urgent list", "block_id": "d1"}).ID
+	decision := blockKeyOf(t, database, notes) + "#d1"
+
+	whole := treeRead(t, handler, issue.Key, "", "alice", false)
+	if held := whole.nodesNamed(graphstore.KindComment, change); len(held) != 1 || len(whole.nodesNamed(refs.BlockNodeKind, decision)) != 0 {
+		t.Fatalf("the read with no view of %s answers the Change %s %d times and the decision %s %d times, want the Change once and no node of the decision: this case proves nothing",
+			issue.Key, change, len(held), decision, len(whole.nodesNamed(refs.BlockNodeKind, decision)))
+	}
+	for _, query := range []string{"?kind=comment", "?kind=comment&kind=decision"} {
+		read := treeRead(t, handler, issue.Key, query, "alice", false)
+		held := read.nodesNamed(graphstore.KindComment, change)
+		if len(held) != 1 {
+			t.Errorf("%s of %s answers no Change %s, which the read with no view answers: it answers %v", query, issue.Key, change, read.addresses())
+			continue
+		}
+		if held[0].Role != treeRoleTree {
+			t.Errorf("%s of %s answers the Change %s as %q, want a node of the tree, as a kind it names", query, issue.Key, change, held[0].Role)
+		}
+	}
+}
+
 // TestTheTreeReadAnswersTheCatalogueNodesItsTuplesNameAsContext: a pre-mortem lens on a requirement
 // and the requirement's constrained_by to a constraint of the catalogue. The tree read with no view
 // answers the lens as a node of the tree and, as context, the pre-mortem lens_kind and that
@@ -515,12 +662,12 @@ func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.
 }
 
 // resultsFixture is an issue whose spec holds r1 and whose Verification document holds c1 serving
-// it, and the path of that document's upload.
+// it, and the slug of that document.
 func resultsFixture(t *testing.T, handler http.Handler, project string) (issue string, checks string) {
 	t.Helper()
 	created := createInteractionIssue(t, handler, project, "Results", ":::requirement{#r1}\nThe list comes first.\n:::\n")
-	uploadDocument(t, handler, "/api/v1/issues/"+created.Key, "verification.md", checkServing("c1", "dispatch://"+created.Key+"/spec#b-r1"))
-	return created.Key, "verification-md"
+	uploaded := uploadDocument(t, handler, "/api/v1/issues/"+created.Key, "verification.md", checkServing("c1", "dispatch://"+created.Key+"/spec#b-r1"))
+	return created.Key, uploaded.Artifact.Slug
 }
 
 // TestTheTreeReadAnswersAResultsObservedTextAsItsReading: a result whose observed text holds a link

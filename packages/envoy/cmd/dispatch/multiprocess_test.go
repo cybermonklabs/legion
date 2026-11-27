@@ -2752,8 +2752,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	default:
 	}
 
-	waiting.Terminate(t)
-	waiting.WaitExit(t, "SIGTERM")
+	stopProcess(t, waiting)
 	stopped := time.Now()
 	if code := waiting.Cmd.ProcessState.ExitCode(); code != 0 {
 		t.Fatalf("a process stopped while waiting for admission exited %d, want 0:\n%s", code, waiting.Output.String())
@@ -3786,7 +3785,7 @@ func TestADocumentWriteOnOneProcessReachesTheOpenEditorOnTheOther(t *testing.T) 
 // storedHead is the version of the document's latest durable update.
 func storedHead(t *testing.T, pair *dispatchPair, artifactID string) int64 {
 	t.Helper()
-	room, _ := storedRoomOf(t, pair, artifactID)
+	room := documentRoom(t, pair.database, artifactID)
 	var head int64
 	if err := pair.database.Pool.QueryRow(context.Background(),
 		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, room).Scan(&head); err != nil {
@@ -3867,7 +3866,7 @@ func (p *dispatchPair) openMarkedEditor(t *testing.T, process *dispatchProcess, 
 	if err != nil {
 		t.Fatalf("send %s's sync marker: %v", login, err)
 	}
-	room, _ := storedRoomOf(t, p, artifactID)
+	room := documentRoom(t, p.database, artifactID)
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var stored bool
 		if err := p.database.Pool.QueryRow(context.Background(),
@@ -4064,13 +4063,40 @@ func waitForPassBehind(
 	}
 }
 
-// The first statement of each pass this test waits for, as pg_stat_activity shows it: the
-// reference-excerpt pass's write (refs.MarkStaleExcerpts) and the block-index pass's read of the
-// documents owed an index (docs' owedDocuments), which reads each of its two partial indexes in a
-// branch of its own and holds this text in both.
+// databaseSessions is every other session of the test's database as pg_stat_activity shows it
+// now, one line each: its pid, its application, its state, what it waits on, the sessions it
+// waits behind (pg_blocking_pids) and the first 400 bytes of its statement. A wait for a pass
+// that never reached its gate fails with it, since the processes' output names no statement: it
+// says where the pass that holds the lease stands instead.
+func databaseSessions(database *store.Store) string {
+	rows, err := database.Pool.Query(context.Background(), `
+		select format('pid=%s app=%s state=%s wait=%s/%s blocked_by=%s query=%s',
+		              pid, application_name, state, wait_event_type, wait_event,
+		              pg_blocking_pids(pid), left(regexp_replace(query, '\s+', ' ', 'g'), 400))
+		from pg_stat_activity
+		where datname = current_database() and pid <> pg_backend_pid()
+		order by pid`)
+	if err != nil {
+		return fmt.Sprintf("(the sessions could not be read: %v)", err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Sprintf("(the sessions could not be read: %v)", err)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// The statement of each pass this test waits for, as pg_stat_activity shows it: the
+// reference-excerpt pass's write (refs.MarkStaleExcerpts), its first statement, and the block-index
+// pass's read of the documents owed an index (docs' owedDocuments), its first read of a table the
+// block gate holds. Each is named by text from its opening: pg_stat_activity keeps only the first
+// track_activity_query_size bytes of a statement (1024 by default), and owedDocuments reads
+// document_block_versions from byte 1155 on, past its select list's reads of an issue room's
+// revision and of the Decisions query (R15), so a session reading it there shows no text of that
+// read and a wait named by it finds no pass.
 const (
 	referenceExcerptPassStatement = "update refs r set excerpt_version = null"
-	blockIndexPassStatement       = "select artifact_id from document_block_versions"
+	blockIndexPassStatement       = "select b.artifact_id::text, coalesce(room.id::text, '')"
 )
 
 // Every leased maintenance loop takes a named lease for the length of its pass, so the second
@@ -4141,8 +4167,8 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	pair.start(t, githubAppEnv(t, fake.URL()))
 
 	if !waitForPassBehind(t, pair.database, gate, referenceExcerptPassStatement, 60*time.Second) {
-		t.Fatalf("no reference-excerpt pass reached the refs lock, so neither process took the lease:\nA:\n%s\nB:\n%s",
-			pair.a.Output.String(), pair.b.Output.String())
+		t.Fatalf("no reference-excerpt pass reached the refs lock, so neither process took the lease:\nsessions:\n%s\nA:\n%s\nB:\n%s",
+			databaseSessions(pair.database), pair.a.Output.String(), pair.b.Output.String())
 	}
 	waitForLease(t, pair, leaseSkipped, "reference-excerpts", 60*time.Second)
 	if ran := countLease(pair.a, leaseRan, "reference-excerpts") + countLease(pair.b, leaseRan, "reference-excerpts"); ran != 0 {
@@ -4154,8 +4180,8 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	}
 
 	if !waitForPassBehind(t, pair.database, blockGate, blockIndexPassStatement, 60*time.Second) {
-		t.Fatalf("no block-index pass reached the document_block_versions lock, so neither process took the lease:\nA:\n%s\nB:\n%s",
-			pair.a.Output.String(), pair.b.Output.String())
+		t.Fatalf("no block-index pass reached the document_block_versions lock, so neither process took the lease:\nsessions:\n%s\nA:\n%s\nB:\n%s",
+			databaseSessions(pair.database), pair.a.Output.String(), pair.b.Output.String())
 	}
 	waitForLease(t, pair, leaseSkipped, "block-index", 60*time.Second)
 	if ran := countLease(pair.a, leaseRan, "block-index") + countLease(pair.b, leaseRan, "block-index"); ran != 0 {
@@ -5092,9 +5118,7 @@ func (p *dispatchProcess) textAndToken(t *testing.T, artifactID string) (string,
 // issue, the document itself otherwise. The rooms test hook lists rooms by their names.
 func (p *dispatchProcess) holdsRoom(t *testing.T, artifactID string) bool {
 	t.Helper()
-	var artifact struct {
-		Room string `json:"room"`
-	}
+	var artifact model.Artifact
 	if answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID, "", http.StatusOK); json.Unmarshal(answer, &artifact) != nil || artifact.Room == "" {
 		t.Fatalf("the artifact read of %s names no room: %s", artifactID, answer)
 	}
@@ -6578,13 +6602,13 @@ func TestAReadOnTheOtherProcessIsNeverOlderThanTheStore(t *testing.T) {
 	})
 }
 
-// corruptHistory makes the stored history of the room the document is edited in (storedRoomOf)
+// corruptHistory makes the stored history of the room the document is edited in (documentRoom)
 // one update ygo cannot decode, at the head it stood at, so a rebuild has something to rebuild and
 // no room's cursor moves.
 func corruptHistory(t *testing.T, pair *dispatchPair, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
-	room, _ := storedRoomOf(t, pair, artifactID)
+	room := documentRoom(t, pair.database, artifactID)
 	tx, err := pair.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the corruption: %v", err)
@@ -8632,8 +8656,7 @@ func TestDashboardRestartOnTheSameBuildWritesNoAssetBytes(t *testing.T) {
 		return at
 	}
 	rowsBefore, startedBefore := assetRows(), lastStarted()
-	first.Terminate(t)
-	first.WaitExit(t, "SIGTERM")
+	stopProcess(t, first)
 
 	restarted := startOnBuild(t, database, build)
 
@@ -8690,8 +8713,7 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 		}
 	}
 
-	b.Terminate(t)
-	b.WaitExit(t, "SIGTERM")
+	stopProcess(t, b)
 	if serving, live := dashboardBuildsOf(t, a); serving != entryA || !slices.Equal(live, []string{entryA}) {
 		t.Fatalf("after B shut down: serving %q, live %q; want %q alone", serving, live, entryA)
 	}

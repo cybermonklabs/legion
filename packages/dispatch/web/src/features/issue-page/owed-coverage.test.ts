@@ -18,7 +18,6 @@ test("an owed document line draws its own words and no check gap", () => {
   const drawn = coverageLineWords(OWED_LINE);
   const failure = `the page drew ${drawn ?? "nothing"} for the owed line ${OWED_LINE}`;
   expect(drawn, failure).toBe(OWED_LINE);
-  expect(drawn, failure).not.toBe(GAP_LINES.no_check);
   expect(coverageLineWords("r-owed has no check")).toBe(GAP_LINES.no_check);
 
   const coverage: IssueCoverage = {

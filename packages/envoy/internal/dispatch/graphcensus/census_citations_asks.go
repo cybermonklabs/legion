@@ -37,7 +37,7 @@ var askBlockProjection = projection{
 }
 
 var heldAskedOn = graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
-	`t.from_kind = k.node_kind and t.from_id = k.node_address and t.kind = `+askedOn+` and t.to_kind <> 'value'`)
+	`t.from_kind = k.node_kind and t.from_id = k.node_address and t.kind = `+askedOn+` and t.to_kind <> '`+graphstore.KindValue+`'`)
 
 // askBlockMoves is the difference for a single marked row: a missing assertion and any stale
 // assertions to retract. A target past the address bound is no target.
@@ -61,24 +61,16 @@ var owedAskBlocksStatement = `select k.id::text, '', coalesce(k.issue_key, ''), 
 // by the earlier release, without rewriting their rows.
 func backfillAskedOn(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.TupleAskedOn}
-	for after := zeroUUID; ; {
-		batch, err := readAskBatch(ctx, database, owedAskBlocksStatement, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read asks that owe a block pointer: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].askID
+	if err := walkBatches(ctx, database, owedAskBlocksStatement, "asks that owe a block pointer", zeroUUID, scanAskBatchRow, askBatchKey, func(batch []askBatchRow) error {
 		rows, tuples, err := writeAskedOnBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += rows
 		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*)`+askBlocksOwed).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count asks that owe a block pointer: %w", err)

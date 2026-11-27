@@ -320,13 +320,13 @@ var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteracti
 // whether the outbox's record states it (outbox.deliveredGraph) or the attempt's own settle does
 // (graphstore.QueueReached), and a fallback copy the outbox published to a session's own topic
 // (outbox.fallbackDelivered); an ask a session opened, every session that follows an ask now, and
-// every session an
-// ask.follower_added event ever named (asks.Follow), so a follower added and removed before the
-// store existed is held to a node as well. A node is history and never goes, so a session that
-// once followed still owes it. The same holds of a session that asked: every session an
-// ask.opened event named as the ask's author is read too, so a session that asked still owes its
-// node whatever becomes of the ask's row, and the log keeps addressing it. And every session that
-// wrote a decision, a reading or an ask the store names an author of (storedAuthors).
+// every session an ask.follower_added event ever named (asks.Follow), so a follower added and
+// removed before the store existed is held to a node as well. A node is history and never goes,
+// so a session that once followed still owes it. The same holds of a session that asked: every
+// session an ask.opened event named as the ask's author is read too, so a session that asked
+// still owes its node whatever becomes of the ask's row, and the log keeps addressing it. And
+// every session that wrote a decision, a reading or an ask the store names an author of
+// (storedAuthors).
 //
 // A comment mention's attempt is read twice for the same reason: as its row, and as the
 // comment.delivery receipt its settle appends in the transaction that records the session

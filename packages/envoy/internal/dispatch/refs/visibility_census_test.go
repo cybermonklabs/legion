@@ -738,13 +738,7 @@ func seedPlanOrder(t *testing.T, ctx context.Context, database *store.Store) str
 	at := writeAuthoredVersion(t, tx, artifact, 1, markdown, privateAuthor)
 	pointers := []Pointer{{Block: "t1", BlockType: planTaskType, Kind: "needs",
 		Target: text.Ref{Kind: graphstore.KindIssue, IssueKey: "PLAN-2", ID: "PLAN-2"}, Targets: []string{planTaskType}}}
-	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, at), markdown, blocks, nil, pointers, "", TypedFacts{})
-	if err != nil {
-		t.Fatalf("index the plan of %s: %v", root, err)
-	}
-	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-		t.Fatalf("append what the plan of %s stated: %v", root, err)
-	}
+	indexAndCause(t, tx, artifact, OneVersion(artifact, 1, at), markdown, blocks, pointers...)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the plan order seed: %v", err)
 	}

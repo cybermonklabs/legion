@@ -204,7 +204,7 @@ func requireTheCensusAfterTheBackfill(t *testing.T, database *store.Store, kinds
 	t.Helper()
 	census := storeCensusOf(t, database)
 	for _, kind := range census.Kinds {
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+		for _, difference := range differencesOf(kind) {
 			t.Errorf("the census after the backfill reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
 		}
 	}

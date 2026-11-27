@@ -242,7 +242,9 @@ for table in "${shaped[@]}"; do
         "$driver" "$body_file" "$reading_bytes" "$table" >&2
       exit 2
     }
-    migration_census_body_limit "$(git -C "$checkout" show "$BASELINE_SHA:$census_go" 2>/dev/null)"
+    base_source="$(git -C "$checkout" show "$BASELINE_SHA:$census_go" 2>&1)" ||
+      fail "$section" "read pgmigrate.CensusTableLimit at BASELINE_SHA $BASELINE_SHA" "git show: $base_source"
+    migration_census_body_limit "$base_source"
     base_limit="$census_limit"
     printf 'pgmigrate.CensusTableLimit at BASELINE_SHA %s: %d bytes\n' "$BASELINE_SHA" "$base_limit"
   fi

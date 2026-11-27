@@ -64,6 +64,7 @@ advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
 admission_cap: 4
+admission_p0_bound: 4
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
@@ -325,6 +326,13 @@ func populatedState(t *testing.T) State {
 		Admission: Admission{
 			Cap:    5,
 			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
+			// LEGION-212 is the one P0 issue among them, by its own priority, and holds its slot
+			// outside the cap (the P0 start's entry); the P0 bound stands at 3, set live over legion.yaml's
+			// 4 by the controller, so every key of the bound's view is in the record.
+			P0Holders: new(1),
+			P0Bound: &P0BoundView{Bound: new(3), Configured: new(4), Live: &P0BoundLiveView{Bound: new(3),
+				SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"}, SetAt: time.Date(2026, 9, 22, 9, 10, 0, 0, time.UTC),
+				Reason: "the P0 issues outran the gateway"}},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -417,7 +425,7 @@ func populatedState(t *testing.T) State {
 							// asks each role, and the daemon replaces the pod once every asked role has
 							// answered, no turn runs and no claim's activity report holds it
 							// (internal/daemon's roundEnd.holding), or at the round's bound
-							// (pod_update_grace_minutes) whatever the roles answered, an operator's
+							// (pod_update_grace_minutes) whatever the roles answered, a holding
 							// suspension excepted. This one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod
 							// carries the same text: what the worker answering is told to act on.
@@ -466,8 +474,9 @@ func populatedState(t *testing.T) State {
 							ServingGeneration: 3,
 							// Two turns of this claim ended in a provider error in a row, and the
 							// task went out again behind the daemon's own sentence. It bounds
-							// nothing: the controller is told once at six, and nothing fails a
-							// claim for it.
+							// nothing: the provider-errors notice goes once at six
+							// (internal/daemon's providerErrorRunReached says to whom), and nothing
+							// fails a claim for it.
 							ProviderErrorRun: 2,
 							// The task this worker holds, as every agent surface reads it: that one
 							// is held, the phase it was queued for and when, and nothing of its
@@ -1204,6 +1213,22 @@ func populatedState(t *testing.T) State {
 		issue.Priority = &noPriority
 		state.Issues[key] = issue
 	}
+	// The priority Dispatch resolves each issue to (the P0 start's entry): LEGION-211's is its own
+	// P1; LEGION-207, which has no priority of its own, takes P2 from OTHER-5, an ancestor in
+	// another project, which `priorityFrom` names; and LEGION-214 has none of its own and none
+	// above it, which Dispatch sends as a null, a known none. Every other issue stands as a
+	// Dispatch release before dispatch://INFRA-5793 left it, with no resolved priority at all, so
+	// the fixture holds every reading of the field: a number of the issue's own, an inherited
+	// number, a known none, and none sent.
+	resolvedP1, resolvedP2, resolvedNone := PriorityView(record.P1), PriorityView(record.P2), PriorityView(record.NoPriority)
+	for key, resolved := range map[string]struct {
+		priority *PriorityView
+		from     string
+	}{"LEGION-211": {&resolvedP1, ""}, "LEGION-207": {&resolvedP2, "OTHER-5"}, "LEGION-214": {&resolvedNone, ""}} {
+		issue := state.Issues[key]
+		issue.ResolvedPriority, issue.PriorityFrom = resolved.priority, resolved.from
+		state.Issues[key] = issue
+	}
 	for key, issue := range state.Issues {
 		if issue.WaitingLine == nil {
 			continue
@@ -1425,8 +1450,9 @@ func TestHealthGolden(t *testing.T) {
 // to a session-facing body refuses the whole of it at every plugin whose answer side predates
 // INFRA-1048, and is dropped at every plugin after it, which loses the field rather than the
 // state. `suspendedBy` is the key this change was tempted to add, and it belongs to the
-// operator claim routes alone; the guard beside `legion-api.test.ts`'s schema tests holds the
-// same property on the schema side.
+// operator claim routes and to four of the six agent actions alone
+// (AgentActionResponse), which no plugin below the contract that added them calls; the guard
+// beside `legion-api.test.ts`'s schema tests holds the same property on the schema side.
 func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	// The body where the key does live, so a guard over nothing cannot pass for a clean one.
 	operator, err := json.Marshal(OperatorClaims{Claims: []OperatorClaim{
@@ -2039,8 +2065,19 @@ func TestTask310RouteGoldens(t *testing.T) {
 	})
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
+	golden(t, "issue-pod-update.json", PodUpdateResponse{
+		Round:   "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22",
+		Reasons: "the project's controller asked for the replacement of this pod",
+		Opened:  true,
+	})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
-	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
+	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
+	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
+	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
+	golden(t, "agent-suspend.json", AgentActionResponse{
+		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
+	})
+	golden(t, "agent-resume.json", AgentActionResponse{State: string(supervise.StateLaunching)})
 	golden(t, "gate-register.json", GateRegisterResponse{})
 	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})

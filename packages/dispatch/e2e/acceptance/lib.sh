@@ -249,6 +249,14 @@ seeded_kinds='["best-practice","boring-solution","botec","conway","first-princip
 # revokes.
 declare -A minted=()
 
+# base_origin: the scheme and host of $base, which a write a person's cookie authenticates must
+# name in Origin (enforceCookieOrigin). It is read at each call, since an upgrade driver moves
+# $base from one server to the next.
+base_origin() {
+  local host="${base#*://}"
+  printf '%s://%s' "${base%%://*}" "${host%%/*}"
+}
+
 # request AS METHOD PATH [JSON [RUN]]: sends METHOD PATH as AS: `agent`, the bearer in $work/auth;
 # `cookie:<login>`, the session cookie sign_in left in $work/jar.<login>, with the server's origin,
 # which the server requires of every write a cookie authenticates (enforceCookieOrigin); or
@@ -258,12 +266,9 @@ declare -A minted=()
 # shellcheck disable=SC2034 # $content_type is this function's answer, read by its caller
 request() {
   local -a auth data=() run=()
-  local host answer
+  local answer
   case "$1" in
-    cookie:*)
-      host="${base#*://}"
-      auth=(-b "$work/jar.${1#cookie:}" -H "Origin: ${base%%://*}://${host%%/*}")
-      ;;
+    cookie:*) auth=(-b "$work/jar.${1#cookie:}" -H "Origin: $(base_origin)") ;;
     token:*) auth=(-H "@$work/auth.${1#token:}") ;;
     *) auth=(-H "@$work/auth") ;;
   esac

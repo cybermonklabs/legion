@@ -573,8 +573,7 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey, serverUR
 		case node.Kind == graphstore.KindArtifact:
 			members = append(members, Member{Kind: graphstore.KindArtifact, Address: node.Ref, RefKey: node.refKey, Depth: 1, Via: row.via})
 		case node.Kind == graphstore.KindLens && row.movedFrom != nil:
-			members = append(members, Member{Kind: graphstore.KindLens, Address: StoreRef(graphstore.KindLens, node.ID),
-				RefKey: *row.movedFrom, Depth: 1, Via: row.via})
+			members = append(members, Member{Kind: graphstore.KindLens, Address: node.Ref, RefKey: *row.movedFrom, Depth: 1, Via: row.via})
 		}
 	}
 	slices.SortFunc(members, func(left, right Member) int {

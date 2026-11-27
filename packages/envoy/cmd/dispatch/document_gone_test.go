@@ -126,13 +126,20 @@ func healthzMembers(t *testing.T, p *dispatchProcess) map[string]any {
 }
 
 // headingSection is the heading block of the section of document that opens with heading, and the
-// section's markdown from that heading to its last block, as the live document renders it.
+// section's markdown from that heading to its last block, as the live document renders it for a
+// reader of this build, under `Dispatch-Asks: 1` (asReaderOfAsks), whose markdown the blocks
+// route's byte ranges index.
 func headingSection(t *testing.T, p *dispatchProcess, document, heading, last string) (string, string) {
 	t.Helper()
 	var read struct {
 		Markdown string `json:"markdown"`
 	}
-	if err := json.Unmarshal(p.call(t, http.MethodGet, "/api/v1/artifacts/"+document+"/text", "", http.StatusOK), &read); err != nil {
+	path := "/api/v1/artifacts/" + document + "/text"
+	answer := p.send(t, http.MethodGet, path, "", asReaderOfAsks(dispatchTestLogin))
+	if answer.status != http.StatusOK {
+		t.Fatalf("GET %s: status %d, want %d: %s", path, answer.status, http.StatusOK, answer.body)
+	}
+	if err := json.Unmarshal(answer.body, &read); err != nil {
 		t.Fatalf("decode the text of %s: %v", document, err)
 	}
 	var blocks []struct {

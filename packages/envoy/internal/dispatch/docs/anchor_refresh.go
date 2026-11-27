@@ -522,20 +522,27 @@ func readNodeAnchors(ctx context.Context, q Queryer, nodes []graphstore.NodeKey)
 // orphansOf is what orphaning each of anchored writes (NodeAnchorOrphans), dated at at and signed
 // by who: a comment the store holds no node of retracts nothing.
 func orphansOf(anchored []nodeAnchored, who model.Actor, at time.Time) NodeAnchorOrphans {
-	var orphans NodeAnchorOrphans
+	orphans := NodeAnchorOrphans{issues: anchorIssues(anchored)}
 	for _, comment := range anchored {
 		orphans.ids = append(orphans.ids, comment.id)
-		if comment.issue != "" {
-			orphans.issues = append(orphans.issues, comment.issue)
-		}
 		if comment.stored {
 			orphans.tuples = graphstore.AnchorTuples(orphans.tuples, comment.id, comment.kind, comment.node,
 				comment.answersNothing, false, who, at, graphstore.NoEvent)
 		}
 	}
-	slices.Sort(orphans.issues)
-	orphans.issues = slices.Compact(orphans.issues)
 	return orphans
+}
+
+// anchorIssues is the issue of each of anchored that has one, each once, in ascending key.
+func anchorIssues(anchored []nodeAnchored) []string {
+	var issues []string
+	for _, comment := range anchored {
+		if comment.issue != "" {
+			issues = append(issues, comment.issue)
+		}
+	}
+	slices.Sort(issues)
+	return slices.Compact(issues)
 }
 
 // NodeAnchorIssues is the issue of each comment whose node anchor names one of nodes and is not
@@ -547,7 +554,7 @@ func NodeAnchorIssues(ctx context.Context, q Queryer, nodes []graphstore.NodeKey
 	if err != nil {
 		return nil, err
 	}
-	return orphansOf(anchored, model.Actor{}, time.Time{}).Issues(), nil
+	return anchorIssues(anchored), nil
 }
 
 // ReadGoneNodeAnchors is what the write that takes nodes gone - the node DELETE of this issue's
@@ -567,7 +574,7 @@ func ReadGoneNodeAnchors(ctx context.Context, q Queryer, nodes []graphstore.Node
 // appends text, a new text value, to node orphans of the node anchors on that node, in the write's
 // own transaction, as the refresh of document marks orphans a document anchor (refreshAnchors).
 // Each comment whose node anchor names node and is not orphaned, read through q in the write's read
-// phase, is orphaned where text no longer holds its quote at its occurrence (NodeTextHolds), dated
+// phase, is orphaned where text no longer holds its quote at its occurrence (nodeTextHolds), dated
 // at at and signed by who. No read orphans a node anchor: every read answers the stored mark. A
 // lens, a finding, a risk and a constraint take their text once, from the route that creates them,
 // and a result never changes (R12), so at this head no route calls it; each later write that
@@ -578,22 +585,29 @@ func RefreshNodeAnchors(ctx context.Context, q Queryer, node graphstore.NodeKey,
 	if err != nil {
 		return NodeAnchorOrphans{}, err
 	}
+	if len(anchored) == 0 {
+		return NodeAnchorOrphans{}, nil
+	}
+	// The text is read once for every comment, as FindNodeQuote reads it for one: a text that does
+	// not parse holds no quote.
+	doc, parseErr := pmdoc.Parse(text)
+	finder := pmdoc.NewQuoteFinder(doc)
 	dropped := anchored[:0]
 	for _, comment := range anchored {
-		if !NodeTextHolds(text, comment.quote, comment.occurrence) {
+		if parseErr != nil || !nodeTextHolds(finder, comment.quote, comment.occurrence) {
 			dropped = append(dropped, comment)
 		}
 	}
 	return orphansOf(dropped, who, at), nil
 }
 
-// NodeTextHolds is whether text, a node's text, holds quote at the zero-based occurrence
-// (FindNodeQuote).
-func NodeTextHolds(text, quote string, occurrence int) bool {
+// nodeTextHolds is whether finder, over a node's text read as markdown, holds quote at the
+// zero-based occurrence (FindNodeQuote).
+func nodeTextHolds(finder *pmdoc.QuoteFinder, quote string, occurrence int) bool {
 	if quote == "" || occurrence < 0 {
 		return false
 	}
-	_, err := FindNodeQuote(text, quote, &occurrence)
+	_, err := finder.Find(quote, &occurrence, nil)
 	return err == nil
 }
 

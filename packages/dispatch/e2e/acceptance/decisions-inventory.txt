@@ -9,6 +9,9 @@
 # decisions document, or anywhere else). The sweep reads meaning, not strings: a prompt can carry
 # that instruction without spelling the document's name.
 #
+# Research records under docs/research/ have their lines here too, under the same two forms: the
+# first sweep leaves them out as research evidence it does not sweep, and this one reads them.
+#
 # A path that names an issue key of the private tracker (many docs/solutions/ file names on main
 # end in one) is written as `sha256:` and the SHA-256, in hex, of the path's bytes with no newline,
 # then the tab and the answer as before: this repository is public, and a new line may not name
@@ -53,6 +56,102 @@ docs/research/agent-orchestration/2026-02-06-oh-my-opencode-research.md	no
 docs/research/agent-orchestration/2026-02-06-reddit-ai-coding-workflows.md	no
 docs/research/agent-prompt-engineering/2026-02-09-agent-prompt-tools-research.md	no
 docs/research/inbox-storage-spike-2026-05-22.md	no
+docs/research/internet-of-cognition/README.md	no
+docs/research/internet-of-cognition/check.sh	no
+docs/research/internet-of-cognition/check.test.sh	no
+docs/research/internet-of-cognition/citations.py	no
+docs/research/internet-of-cognition/claims.jsonl	no
+docs/research/internet-of-cognition/coordination/count.md	no
+docs/research/internet-of-cognition/coordination/count.py	no
+docs/research/internet-of-cognition/coordination/handoff_quotes.py	no
+docs/research/internet-of-cognition/coordination/window.json	no
+docs/research/internet-of-cognition/env.sh	no
+docs/research/internet-of-cognition/evidence/accord-skills-run.sh	no
+docs/research/internet-of-cognition/evidence/build-constraints.txt	no
+docs/research/internet-of-cognition/evidence/concord-build-run.sh	no
+docs/research/internet-of-cognition/evidence/concord-drive.py	no
+docs/research/internet-of-cognition/evidence/concord-input.json	no
+docs/research/internet-of-cognition/evidence/concord-prs.txt	no
+docs/research/internet-of-cognition/evidence/concord-run.txt	no
+docs/research/internet-of-cognition/evidence/count.json	no
+docs/research/internet-of-cognition/evidence/dispatch-issue.ttl	no
+docs/research/internet-of-cognition/evidence/ioc-venv.in	no
+docs/research/internet-of-cognition/evidence/ioc-venv.lock	no
+docs/research/internet-of-cognition/evidence/ioc-venv/pyproject.toml	no
+docs/research/internet-of-cognition/evidence/legion-workflow-kind.yaml	no
+docs/research/internet-of-cognition/evidence/legion-workflow.yaml	no
+docs/research/internet-of-cognition/evidence/maslab-load.txt	no
+docs/research/internet-of-cognition/evidence/node-model-checks.txt	no
+docs/research/internet-of-cognition/evidence/scope-pyshacl-broken.txt	no
+docs/research/internet-of-cognition/evidence/scope-pyshacl.txt	no
+docs/research/internet-of-cognition/evidence/session-reader.txt	no
+docs/research/internet-of-cognition/evidence/similarity.txt	no
+docs/research/internet-of-cognition/evidence/tm-constraints.txt	no
+docs/research/internet-of-cognition/evidence/tm-count_test.go	no
+docs/research/internet-of-cognition/evidence/tm-load.py	no
+docs/research/internet-of-cognition/evidence/tm-load.sh	no
+docs/research/internet-of-cognition/evidence/tm-overlay.json	no
+docs/research/internet-of-cognition/evidence/tm-pypi-mas-lab.json	no
+docs/research/internet-of-cognition/interview/claims.md	no
+docs/research/internet-of-cognition/interview/transcript.md	no
+docs/research/internet-of-cognition/mas-lab/ctl.md	no
+docs/research/internet-of-cognition/mas-lab/library-eval.md	no
+docs/research/internet-of-cognition/mas-lab/library-kg.md	no
+docs/research/internet-of-cognition/mas-lab/library-standard.md	no
+docs/research/internet-of-cognition/mas-lab/library-telemetry.md	no
+docs/research/internet-of-cognition/mas-lab/runtime.md	no
+docs/research/internet-of-cognition/node-model.md	no
+docs/research/internet-of-cognition/published/blog-impact-vs-challenges.svg	no
+docs/research/internet-of-cognition/published/cognitive-challenges-in-multi-agent-systems.html	no
+docs/research/internet-of-cognition/published/github-api/commits-cognition-protocols.headers	no
+docs/research/internet-of-cognition/published/github-api/commits-dot-github.json	no
+docs/research/internet-of-cognition/published/github-api/commits-ioc-project.github.io.headers	no
+docs/research/internet-of-cognition/published/github-api/commits-mas-lab.headers	no
+docs/research/internet-of-cognition/published/github-api/commits-scope.headers	no
+docs/research/internet-of-cognition/published/github-api/releases-cognition-protocols.json	no
+docs/research/internet-of-cognition/published/github-api/releases-dot-github.json	no
+docs/research/internet-of-cognition/published/github-api/releases-ioc-project.github.io.json	no
+docs/research/internet-of-cognition/published/github-api/releases-mas-lab.json	no
+docs/research/internet-of-cognition/published/github-api/releases-scope.json	no
+docs/research/internet-of-cognition/published/github-api/repo-cognition-engines.json	no
+docs/research/internet-of-cognition/published/github-api/repo-cognition-protocols.json	no
+docs/research/internet-of-cognition/published/github-api/repo-dot-github.json	no
+docs/research/internet-of-cognition/published/github-api/repo-ioc-project.github.io.json	no
+docs/research/internet-of-cognition/published/github-api/repo-mas-lab.json	no
+docs/research/internet-of-cognition/published/github-api/repo-scope.json	no
+docs/research/internet-of-cognition/published/github-api/tags-cognition-protocols.json	no
+docs/research/internet-of-cognition/published/github-api/tags-dot-github.json	no
+docs/research/internet-of-cognition/published/github-api/tags-ioc-project.github.io.json	no
+docs/research/internet-of-cognition/published/github-api/tags-mas-lab.json	no
+docs/research/internet-of-cognition/published/github-api/tags-scope.json	no
+docs/research/internet-of-cognition/published/github-api/tree-dot-github.json	no
+docs/research/internet-of-cognition/published/github-api/tree-ioc-project.github.io.json	no
+docs/research/internet-of-cognition/published/interview.html	no
+docs/research/internet-of-cognition/published/ioc-site-LICENSE.txt	no
+docs/research/internet-of-cognition/published/ioc-site-cognition-protocols-concord-accord.pdf	no
+docs/research/internet-of-cognition/published/ioc-site-docs-how-to-index.md	no
+docs/research/internet-of-cognition/published/ioc-site-docs-index.md	no
+docs/research/internet-of-cognition/published/ioc-site-docs-overview-architecture.md	no
+docs/research/internet-of-cognition/published/ioc-site-docs-overview-motivation.md	no
+docs/research/internet-of-cognition/published/ioc-site-docs-publications-index.md	no
+docs/research/internet-of-cognition/published/otel-gen-ai-registry.html	no
+docs/research/internet-of-cognition/published/pypi-mas-lab.json	no
+docs/research/internet-of-cognition/published/the-internet-of-cognition-is-here.html	no
+docs/research/internet-of-cognition/questions.md	no
+docs/research/internet-of-cognition/rejected.md	no
+docs/research/internet-of-cognition/similarity/similarity.py	no
+docs/research/internet-of-cognition/similarity/table.md	no
+docs/research/internet-of-cognition/sources.json	no
+docs/research/internet-of-cognition/tests/concord.md	no
+docs/research/internet-of-cognition/tests/mas-lab.md	no
+docs/research/internet-of-cognition/tests/omp-stub/models.yml	no
+docs/research/internet-of-cognition/tests/omp-stub/omp	no
+docs/research/internet-of-cognition/tests/scope.md	no
+docs/research/internet-of-cognition/triage/cognition-protocols.md	no
+docs/research/internet-of-cognition/triage/dot-github.md	no
+docs/research/internet-of-cognition/triage/ioc-project.github.io.md	no
+docs/research/internet-of-cognition/triage/mas-lab.md	no
+docs/research/internet-of-cognition/triage/scope.md	no
 docs/research/knowledge-graph-tools/comparison-matrix.md	no
 docs/research/knowledge-graph-tools/elimination-log.md	no
 docs/research/knowledge-graph-tools/open-questions.md	no
