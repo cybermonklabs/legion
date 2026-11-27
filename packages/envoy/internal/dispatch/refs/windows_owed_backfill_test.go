@@ -184,6 +184,7 @@ var documentWindowBackfillStates = []documentWindowState{{
 // those statements carried before this change, the marked set below is missing exactly that
 // item for each of the three kinds.
 func TestTheWindowMarkerBackfillsMarkEveryItemTheArmWouldTake(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedWindowFixture(t, windowBackfillStates)
 	clearWindowMarkers(t, fixture.database)
 	for _, name := range windowMarkerBackfills {
@@ -212,6 +213,7 @@ func TestTheWindowMarkerBackfillsMarkEveryItemTheArmWouldTake(t *testing.T) {
 // The same for the documents' backfill, whose arm reads the version where the items' reads the
 // sum.
 func TestTheWindowMarkerBackfillsMarkEveryDocumentTheArmWouldTake(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedDocumentFixture(t, documentWindowBackfillStates)
 	clearWindowMarkers(t, fixture.database)
 	for _, name := range windowMarkerBackfills {
@@ -236,6 +238,7 @@ func TestTheWindowMarkerBackfillsMarkEveryDocumentTheArmWouldTake(t *testing.T) 
 // `windows_owed_at is null` guard the items' backfill answered UPDATE 7 over rows it had just
 // marked itself (INFRA-988).
 func TestTheWindowMarkerBackfillsRewriteNothingTheyHaveAlreadyMarked(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedWindowFixture(t, windowBackfillStates)
 	clearWindowMarkers(t, fixture.database)
 	for _, name := range windowMarkerBackfills {

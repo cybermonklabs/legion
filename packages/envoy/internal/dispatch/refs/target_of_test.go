@@ -13,6 +13,7 @@ const targetOfServer = "https://dispatch.test"
 // TargetOf is the one place that is decided, so a write stores no edge to a party (refTargets)
 // and a read addresses none (api.parseReferencesQuery).
 func TestTargetOfStoresRecordsAndNeitherURLsNorParties(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		reference string
 		kind      string
