@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+    `legion.yaml` takes `projects.<KEY>.watched_workflows`: the workflows whose completed runs on
+    their repository's default branch reach the project's controller. Each entry is
+    `<owner>/<repo>/<file>`, the file one of the repository's `.github/workflows/`, and can end with
+    `@` and the trigger events whose runs count, comma-separated; an entry with no `@` watches
+    `schedule` runs alone. Write the owner and the repository as GitHub spells them: a topic is
+    case-sensitive, so an entry spelled otherwise hears nothing. The key needs no `controller`
+    setting, runtime or secrets broker. The loader refuses an entry of another shape, an `@` with
+    no event, a name that is not one of GitHub's trigger events, an event named twice in one entry
+    and one workflow in two entries, naming the key, the entry's place in the list and the entry.
+    `legion config check` prints each entry of a project that names the key, with its events, and
+    prints nothing new for a project that names none. A daemon before this release refuses a file
+    that sets the key.
+time: 2026-11-27T19:05:38Z
+custom:
+    Issue: INFRA-4122
