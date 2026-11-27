@@ -32,7 +32,7 @@ func TestTheRenamePassLeavesEachStateToBePublishedUnderTheNewName(t *testing.T) 
 	for _, published := range []struct{ repo, head string }{
 		{oldRepo, eachHeadH1}, {oldRepo, eachHeadH2}, {ciJobRepository, eachHeadH3},
 	} {
-		if _, held := publishedRow(t, rig.database, rig.issue, published.repo, published.head, ""); !held {
+		if _, held := publishedSet(t, rig.database, rig.issue, published.repo, published.head); !held {
 			t.Fatalf("before the rename is known %s published nothing at %s of %s: this test holds no state to move", rig.issue, published.head, published.repo)
 		}
 	}
@@ -55,10 +55,10 @@ func TestTheRenamePassLeavesEachStateToBePublishedUnderTheNewName(t *testing.T) 
 	events := settleOwed(t, rig)
 
 	for _, head := range []string{eachHeadH1, eachHeadH2, eachHeadH3} {
-		if _, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, head, ""); !held {
+		if _, held := publishedSet(t, rig.database, rig.issue, ciJobRepository, head); !held {
 			t.Errorf("after the pass and its settle %s publishes nothing at %s under %s, the name its pull request has now", rig.issue, head, ciJobRepository)
 		}
-		if _, held := publishedRow(t, rig.database, rig.issue, oldRepo, head, ""); held {
+		if _, held := publishedSet(t, rig.database, rig.issue, oldRepo, head); held {
 			t.Errorf("after the pass and its settle %s still publishes a state at %s under %s, the name its repository was renamed away from", rig.issue, head, oldRepo)
 		}
 	}

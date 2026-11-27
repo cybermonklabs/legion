@@ -66,7 +66,7 @@ func TestAnEditOfThePullRequestBodyChangesNoState(t *testing.T) {
 		t.Fatalf("an edit of #70's body with no push published %v, want no check.state_changed event", eventLines(events))
 	}
 	wantPublishedIsComputed(t, "k1 at H1 after the edit of #70's body", rig, "k1", eachHeadH1)
-	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil || *row.state != "yes" {
+	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state != "yes" {
 		t.Fatalf("after the edit of #70's body the published state of k1 at H1 is %+v (held %v), want yes", row, held)
 	}
 	eachHeadWants(t, "k1 at H1 after the edit of #70's body",

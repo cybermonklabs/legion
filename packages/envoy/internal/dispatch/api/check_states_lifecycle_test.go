@@ -22,10 +22,10 @@ const eachHeadH5 = "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
 func stateAt(t *testing.T, rig *checkStatesRig, issue, head, check string) string {
 	t.Helper()
 	row, held := publishedRow(t, rig.database, issue, ciJobRepository, head, check)
-	if !held || row.state == nil {
+	if !held {
 		return ""
 	}
-	return *row.state
+	return row.state
 }
 
 // TestAReopenBringsBackNoHeadOfTheLifecycleItsCloseEnded: #70 visits H1, where the tester records

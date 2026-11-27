@@ -45,8 +45,8 @@ func TestAHealthyFormerHeadIsReadWithinItsTurns(t *testing.T) {
 		upsertHead(t, rig, 70, sha, rig.issue, "A change")
 		settleOwed(t, rig)
 	}
-	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, "k3"); !held || row.state == nil ||
-		*row.state != model.PassStandsNo || row.ciCase != ciCaseNotCompleted {
+	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, "k3"); !held ||
+		row.state != model.PassStandsNo || row.ciCase != ciCaseNotCompleted {
 		t.Fatalf("k3 at the first head while its run goes on is published as %+v, want no with ci_case %s", row, ciCaseNotCompleted)
 	}
 
@@ -76,10 +76,10 @@ func TestAHealthyFormerHeadIsReadWithinItsTurns(t *testing.T) {
 		bounds.expire(t)
 		ciAwait(t, fmt.Sprintf("settle %d to end", settle), done)
 		row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, "k3")
-		if !held || row.state == nil {
+		if !held {
 			t.Fatalf("settle %d left no state of k3 at the first head", settle)
 		}
-		if *row.state == model.PassStandsYes {
+		if row.state == model.PassStandsYes {
 			t.Logf("the first head was read in settle %d of at most %d", settle, turns)
 			return
 		}
@@ -87,7 +87,7 @@ func TestAHealthyFormerHeadIsReadWithinItsTurns(t *testing.T) {
 			t.Fatalf("settle %d published k3 at the first head as unknown for read_failed, though GitHub answers for it: a read that never started is no failed read", settle)
 		}
 		if settle == turns {
-			t.Fatalf("k3 at the first head still reads %s/%s (ci_case %q) after %d settles: its healthy read never started", *row.state, row.reason, row.ciCase, settle)
+			t.Fatalf("k3 at the first head still reads %s/%s (ci_case %q) after %d settles: its healthy read never started", row.state, row.reason, row.ciCase, settle)
 		}
 		owe(`update check_states_owed set due_at = now() where issue_key = $1`)
 	}
@@ -132,8 +132,8 @@ func TestAnUnreadHeadsOldPassNeverCrossesATestHandoff(t *testing.T) {
 				settleOwed(t, rig)
 			}
 			for _, check := range []string{"k1", "k2", "k3"} {
-				if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, check); !held || row.state == nil ||
-					*row.state != model.PassStandsYes {
+				if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, check); !held ||
+					row.state != model.PassStandsYes {
 					t.Fatalf("%s at the first head is published as %+v before k3's run there fails, want yes", check, row)
 				}
 			}
@@ -173,7 +173,7 @@ func TestAnUnreadHeadsOldPassNeverCrossesATestHandoff(t *testing.T) {
 				response := postHandoff(t, rig.handler, rig.issue, "test", testHandoff)
 				switch code, _ := refusalOf(t, response); {
 				case response.Code == http.StatusCreated:
-					if row.state == nil || *row.state == model.PassStandsYes {
+					if row.state != model.PassStandsYes {
 						t.Fatalf("the test handoff answers 201 with check_states_serial %s while k3 at the first head, whose run failed and whose read never started, is published as %s: the old pass crosses the handoff",
 							readHandoffJSON(t, rig, decodeBody[model.HandoffSummary](t, response).ID)["check_states_serial"], publishedLine(row))
 					}
@@ -185,7 +185,7 @@ func TestAnUnreadHeadsOldPassNeverCrossesATestHandoff(t *testing.T) {
 			}
 
 			row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, first, "k3")
-			if !held || row.state == nil || *row.state != model.PassStandsNo || row.reason != model.PassSubjectReasonFail {
+			if !held || row.state != model.PassStandsNo || row.reason != model.PassSubjectReasonFail {
 				t.Fatalf("k3 at the first head after its failed run was read is published as %s, want no for fail", publishedLine(row))
 			}
 			var published int64 = -1
@@ -389,7 +389,7 @@ func TestAFailedReadKeepsItsRetryWhenALaterTurnLeavesItUnread(t *testing.T) {
 	gated.release()
 	ciAwait(t, "the second turn to end", done)
 	for _, sha := range unread {
-		if row := k3At(sha); row.state == nil || *row.state != model.PassStandsYes {
+		if row := k3At(sha); row.state != model.PassStandsYes {
 			t.Fatalf("after the second turn k3 at %s, whose read answered, reads %s, want yes", sha[34:], publishedLine(row))
 		}
 	}
@@ -416,7 +416,7 @@ func TestAFailedReadKeepsItsRetryWhenALaterTurnLeavesItUnread(t *testing.T) {
 	exec(`update check_states_owed set due_at = now() where issue_key = $1`)
 	settle("the retry to end")
 	for _, sha := range visited {
-		if row := k3At(sha); row.state == nil || *row.state != model.PassStandsYes {
+		if row := k3At(sha); row.state != model.PassStandsYes {
 			t.Fatalf("after the retry k3 at %s reads %s, want yes", sha[34:], publishedLine(row))
 		}
 	}
@@ -427,8 +427,5 @@ func TestAFailedReadKeepsItsRetryWhenALaterTurnLeavesItUnread(t *testing.T) {
 
 // publishedLine is a published row's state and reason as one line a failure prints.
 func publishedLine(row publishedState) string {
-	if row.state == nil {
-		return "no state"
-	}
-	return *row.state + "/" + row.reason
+	return row.state + "/" + row.reason
 }

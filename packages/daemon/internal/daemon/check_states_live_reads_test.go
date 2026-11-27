@@ -117,8 +117,15 @@ func (r *statesProof) movesWithin(issue *statesIssue, want phase.Phase, assertio
 	}
 	r.note("read back: GET /legion/v1/state shows %s in %s (read %s after %s); the daemon recorded the move %s after %s (bound %s)",
 		issue.key, got, seen, trigger, took.Round(time.Millisecond), trigger, statesWithin)
-	for _, state := range r.publishedStates(issue) {
+	states, sets := r.publishedStates(issue), r.publishedSets(issue)
+	if len(states) == 0 && len(sets) == 0 {
+		r.fail("published-states", "UNKNOWN: Dispatch's check_states and check_state_sets hold no state of %s, whose move the states decided", issue.key)
+	}
+	for _, state := range states {
 		r.note("  Dispatch's published state: %s", state)
+	}
+	for _, set := range sets {
+		r.note("  Dispatch's published set: %s", set)
 	}
 }
 
@@ -298,9 +305,10 @@ func (r *statesProof) noBeforeMergeCheck(issue *statesIssue) string {
 // and not of an issue with no document.
 func (r *statesProof) emptySet(issue *statesIssue, document string) {
 	r.t.Helper()
-	published := r.publishedStates(issue)
-	if len(published) != 1 || published[0].check != "" || published[0].head != issue.head || len(published[0].checks) != 0 || published[0].document != document {
-		r.fail("empty-set", "Dispatch's check_states and check_state_sets hold %v of %s, want only the set at %s with no check, from the Verification document %s", published, issue.key, issue.head, document)
+	states, sets := r.publishedStates(issue), r.publishedSets(issue)
+	if len(states) != 0 || len(sets) != 1 || sets[0].head != issue.head || len(sets[0].checks) != 0 || sets[0].document != document {
+		r.fail("empty-set", "Dispatch's check_states hold %v of %s and its check_state_sets %v, want no state and only the set at %s with no check, from the Verification document %s",
+			states, issue.key, sets, issue.head, document)
 	}
 	r.note("read back: Dispatch's check_states and check_state_sets hold of %s only the set at %s, with no check, computed from the Verification document %s", issue.key, issue.head, document)
 }

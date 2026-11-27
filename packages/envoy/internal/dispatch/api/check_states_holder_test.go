@@ -50,14 +50,14 @@ func TestAppliedHistoryOwesTheIssueThatHoldsThePullRequestWhenItIsApplied(t *tes
 	}
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH3, "open", other)
 	settleOwed(t, rig)
-	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH2, ""); held {
+	if _, held := publishedSet(t, rig.database, other, ciJobRepository, eachHeadH2); held {
 		t.Fatalf("%s published states at H2 before the delete that makes it a former head committed: this test holds nothing", other)
 	}
 	if err := reKey.Commit(t.Context()); err != nil {
 		t.Fatalf("commit the re-key's delete: %v", err)
 	}
 	settleOwed(t, rig)
-	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH2, ""); !held {
+	if _, held := publishedSet(t, rig.database, other, ciJobRepository, eachHeadH2); !held {
 		t.Fatalf("once the re-key's delete committed and was applied, %s, which holds #70, published no state at H2, the old row's head: the application owed it nothing", other)
 	}
 }
@@ -80,13 +80,13 @@ func TestAJoinOfTwoNamesOwesEachIssueThatHoldsThePullRequest(t *testing.T) {
 	writeHead(t, rig.database, oldRepo, 70, eachHeadH2, "open", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH3, "open", other)
 	settleOwed(t, rig)
-	if _, held := publishedRow(t, rig.database, rig.issue, oldRepo, eachHeadH1, ""); !held {
+	if _, held := publishedSet(t, rig.database, rig.issue, oldRepo, eachHeadH1); !held {
 		t.Fatalf("%s published nothing at H1 before the rename is known, want its former head published: this test holds no history to join", rig.issue)
 	}
-	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH3, ""); !held {
+	if _, held := publishedSet(t, rig.database, other, ciJobRepository, eachHeadH3); !held {
 		t.Fatalf("%s published nothing at H3, its open head: this test cannot see what it publishes", other)
 	}
-	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH1, ""); held {
+	if _, held := publishedSet(t, rig.database, other, ciJobRepository, eachHeadH1); held {
 		t.Fatalf("%s published states at H1 before the rename is known, want none: this test holds nothing to join", other)
 	}
 
@@ -119,7 +119,7 @@ func TestAJoinOfTwoNamesOwesEachIssueThatHoldsThePullRequest(t *testing.T) {
 		t.Fatalf("the join gave %s, which holds #70 under its canonical name, the former head H1, and owed it nothing", other)
 	}
 	settleOwed(t, rig)
-	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH1, ""); !held {
+	if _, held := publishedSet(t, rig.database, other, ciJobRepository, eachHeadH1); !held {
 		t.Fatalf("once the two names are joined %s, which holds #70, published no state at H1, its former head", other)
 	}
 }

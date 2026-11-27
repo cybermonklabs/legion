@@ -95,11 +95,11 @@ func TestAFormerHeadTheInstallSeededIsPublishedOnceItsPullRequestListsIt(t *test
 	seedInstallCandidates(t, rig, eachHeadH1, eachHeadH3)
 
 	settleOwed(t, rig)
-	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil ||
-		*row.state != model.PassStandsYes {
+	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held ||
+		row.state != model.PassStandsYes {
 		t.Fatalf("k1 at H1, a head #70 left before the install and its commits list, is published as %s, want yes", publishedLine(row))
 	}
-	if _, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH3, ""); held {
+	if _, held := publishedSet(t, rig.database, rig.issue, ciJobRepository, eachHeadH3); held {
 		t.Fatal("H3, a commit #70's commits do not list, holds published states")
 	}
 	if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
@@ -110,7 +110,7 @@ func TestAFormerHeadTheInstallSeededIsPublishedOnceItsPullRequestListsIt(t *test
 	}
 	eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "fail", eachHeadH1)
 	settleOwed(t, rig)
-	if row, _ := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k2"); row.state == nil || *row.state != model.PassStandsNo {
+	if row, _ := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k2"); row.state != model.PassStandsNo {
 		t.Fatalf("k2 at H1 after the tester's fail is published as %s, want no", publishedLine(row))
 	}
 	if reads := rig.github.pullCommitReadsOf(70); reads != 1 {
@@ -154,8 +154,8 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 		t.Fatalf("bring %s's mark due: %v", rig.issue, err)
 	}
 	settleOwed(t, rig)
-	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil ||
-		*row.state != model.PassStandsYes {
+	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held ||
+		row.state != model.PassStandsYes {
 		t.Fatalf("k1 at H1 once #70's commits are read is published as %s, want yes", publishedLine(row))
 	}
 
@@ -210,8 +210,8 @@ func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T
 	if got, want := candidatesOf(t, rig), map[string]bool{h1: true, unanswered: false}; !maps.Equal(got, want) {
 		t.Fatalf("#70 holds the former heads %v after the settle, want %v: H1, the 501st of its 502 commits, kept though the five pages of the comparison leave it out; the commits of the base branch, apart from the head and absent from the repository dropped; the one GitHub did not answer for still a candidate", got, want)
 	}
-	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, h1, "k1"); !held || row.state == nil ||
-		*row.state != model.PassStandsYes {
+	if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, h1, "k1"); !held ||
+		row.state != model.PassStandsYes {
 		t.Fatalf("k1 at H1, a head #70 left past the pages of the comparison, is published as %s, want yes", publishedLine(row))
 	}
 	pages, pulls := rig.github.pullCommitReadsOf(70), rig.github.pullReadsOf(70)
@@ -270,8 +270,8 @@ func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestL
 				t.Fatalf("after a result at H1, a head #70 left before the install, #70 holds the former heads %v, want H1, unverified", got)
 			}
 			settleOwed(t, rig)
-			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil ||
-				*row.state != model.PassStandsYes {
+			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held ||
+				row.state != model.PassStandsYes {
 				t.Fatalf("k1 at H1 once #70's commits list it is published as %s, want yes", publishedLine(row))
 			}
 			if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
@@ -321,7 +321,7 @@ func TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue(t *testing.
 	if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
 		t.Fatalf("#70 holds the former heads %v once the read answered, want H1, verified", got)
 	}
-	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH1, ""); !held {
+	if _, held := publishedSet(t, rig.database, other, ciJobRepository, eachHeadH1); !held {
 		t.Fatalf("%s published nothing at H1 once the read of #70's commits confirmed it", other)
 	}
 	if reads := rig.github.pullCommitReadsOf(70); reads != 1 {
@@ -369,8 +369,8 @@ func TestAResultBeforeItsPullRequestStartsAtTheIssueIsACandidate(t *testing.T) {
 			if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
 				t.Fatalf("#70 holds the former heads %v after the settle, want H1, verified", got)
 			}
-			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil ||
-				*row.state != model.PassStandsYes {
+			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held ||
+				row.state != model.PassStandsYes {
 				t.Fatalf("k1 at H1, which #70 left before its row was the issue's, is published as %s, want yes", publishedLine(row))
 			}
 			if reads := rig.github.pullCommitReadsOf(70); reads != 1 {

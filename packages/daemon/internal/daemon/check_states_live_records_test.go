@@ -69,32 +69,35 @@ func (r *statesProof) storedResults(table, where string, args ...any) []statesSt
 }
 
 // statesPublished is one row of Dispatch's check_states, the newest state Dispatch published of a
-// check at a head, or, where check is empty, the head's row of check_state_sets, its set of
-// checks. document is the Verification document the row was computed from, empty where the issue
-// had none.
+// check at a head. document is the Verification document the row was computed from, empty where
+// the issue had none.
 type statesPublished struct {
 	check, head, state, reason, document string
-	checks                               []string
 }
 
 func (p statesPublished) String() string {
-	if p.check == "" {
-		return fmt.Sprintf("the set at %s: [%s] (document %q)", p.head, strings.Join(p.checks, ","), p.document)
-	}
 	return fmt.Sprintf("%s at %s: %s (%s)", p.check, p.head, p.state, p.reason)
 }
 
+// statesSetPublished is one row of Dispatch's check_state_sets: the set of checks Dispatch
+// published at a head, with the Verification document it read them from, empty where the issue
+// had none.
+type statesSetPublished struct {
+	head, document string
+	checks         []string
+}
+
+func (p statesSetPublished) String() string {
+	return fmt.Sprintf("the set at %s: [%s] (document %q)", p.head, strings.Join(p.checks, ","), p.document)
+}
+
 // publishedStates is each state Dispatch has published of issue's checks, as its check_states
-// table holds the newest, and the set of checks of each head, as its check_state_sets holds it.
+// table holds the newest, head by head and check by check.
 func (r *statesProof) publishedStates(issue *statesIssue) []statesPublished {
 	r.t.Helper()
 	rows, err := r.dispatchDB.Query(context.Background(), `
-		select check_block_id, head_sha, state, reason, check_artifact_id::text, '{}'::text[]
-		from check_states where issue_key = $1
-		union all
-		select '', head_sha, '', '', coalesce(check_artifact_id::text, ''), checks
-		from check_state_sets where issue_key = $1
-		order by 2, 1`, issue.key)
+		select check_block_id, head_sha, state, reason, check_artifact_id::text
+		from check_states where issue_key = $1 order by head_sha, check_block_id`, issue.key)
 	if err != nil {
 		r.fail("published-states", "read Dispatch's check_states of %s: %v", issue.key, err)
 	}
@@ -102,7 +105,7 @@ func (r *statesProof) publishedStates(issue *statesIssue) []statesPublished {
 	var states []statesPublished
 	for rows.Next() {
 		var state statesPublished
-		if err := rows.Scan(&state.check, &state.head, &state.state, &state.reason, &state.document, &state.checks); err != nil {
+		if err := rows.Scan(&state.check, &state.head, &state.state, &state.reason, &state.document); err != nil {
 			r.fail("published-states", "read a state of %s: %v", issue.key, err)
 		}
 		states = append(states, state)
@@ -110,10 +113,32 @@ func (r *statesProof) publishedStates(issue *statesIssue) []statesPublished {
 	if err := rows.Err(); err != nil {
 		r.fail("published-states", "read Dispatch's check_states of %s: %v", issue.key, err)
 	}
-	if len(states) == 0 {
-		r.fail("published-states", "UNKNOWN: Dispatch's check_states holds no state of %s, whose move the states decided", issue.key)
-	}
 	return states
+}
+
+// publishedSets is the set of checks Dispatch has published at each head of issue, as its
+// check_state_sets table holds it.
+func (r *statesProof) publishedSets(issue *statesIssue) []statesSetPublished {
+	r.t.Helper()
+	rows, err := r.dispatchDB.Query(context.Background(), `
+		select head_sha, coalesce(check_artifact_id::text, ''), checks
+		from check_state_sets where issue_key = $1 order by head_sha`, issue.key)
+	if err != nil {
+		r.fail("published-states", "read Dispatch's check_state_sets of %s: %v", issue.key, err)
+	}
+	defer rows.Close()
+	var sets []statesSetPublished
+	for rows.Next() {
+		var set statesSetPublished
+		if err := rows.Scan(&set.head, &set.document, &set.checks); err != nil {
+			r.fail("published-states", "read a set of checks of %s: %v", issue.key, err)
+		}
+		sets = append(sets, set)
+	}
+	if err := rows.Err(); err != nil {
+		r.fail("published-states", "read Dispatch's check_state_sets of %s: %v", issue.key, err)
+	}
+	return sets
 }
 
 // resultWrites is each request Dispatch's access log holds (accesslog.Message) that records or

@@ -65,8 +65,8 @@ func TestAFormerHeadTheInstallSeededOutlastsAReadGitHubDidNotAnswer(t *testing.T
 				t.Fatalf("mark %s owed: %v", rig.issue, err)
 			}
 			settleOwed(t, rig)
-			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil ||
-				*row.state != model.PassStandsYes {
+			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held ||
+				row.state != model.PassStandsYes {
 				t.Fatalf("k1 at H1 once GitHub lists #70's commits again is published as %s, want yes (%s)", publishedLine(row), failure)
 			}
 		})

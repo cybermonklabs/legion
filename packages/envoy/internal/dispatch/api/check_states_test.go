@@ -308,35 +308,29 @@ func eventsOfCheck(events []checkStatesEvent, check, head string) []checkStatesE
 	return of
 }
 
-// publishedState is one row of check_states, or, for the set row, of check_state_sets.
+// publishedState is one row of check_states: the state the settler published for one check at one
+// head. The column is `state text not null` (migration 20261126005334), so a row that is held
+// holds a state.
 type publishedState struct {
-	state           *string
+	state           string
 	reason          string
 	roles           []string
 	ciCase          string
-	checks          []string
 	checkArtifactID *string
 	checkVersion    *int
 	eventSeq        int64
 }
 
 // publishedRow is the row of check_states the settler holds for check at head of repo on issue,
-// or, for check "", the head's set row, its row of check_state_sets, and false where it holds none.
+// and false where it holds none.
 func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check string) (publishedState, bool) {
 	t.Helper()
 	var row publishedState
-	query, args := `
-		select state, reason, roles, ci_case, '{}'::text[], check_artifact_id::text, check_version, event_seq
+	err := database.Pool.QueryRow(context.Background(), `
+		select state, reason, roles, ci_case, check_artifact_id::text, check_version, event_seq
 		from check_states where issue_key = $1 and repo = $2 and head_sha = $3 and check_block_id = $4`,
-		[]any{issue, repo, head, check}
-	if check == "" {
-		query, args = `
-			select null::text, '', '{}'::text[], '', checks, check_artifact_id::text, null::integer, event_seq
-			from check_state_sets where issue_key = $1 and repo = $2 and head_sha = $3`,
-			[]any{issue, repo, head}
-	}
-	err := database.Pool.QueryRow(context.Background(), query, args...).Scan(&row.state, &row.reason, &row.roles,
-		&row.ciCase, &row.checks, &row.checkArtifactID, &row.checkVersion, &row.eventSeq)
+		issue, repo, head, check).Scan(&row.state, &row.reason, &row.roles,
+		&row.ciCase, &row.checkArtifactID, &row.checkVersion, &row.eventSeq)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return publishedState{}, false
@@ -344,6 +338,32 @@ func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check 
 		t.Fatalf("read the published state of %s at %s: %v", check, head, err)
 	}
 	return row, true
+}
+
+// publishedChecks is one row of check_state_sets: the set of checks the settler published at one
+// head, with the Verification document it read them from.
+type publishedChecks struct {
+	checks          []string
+	checkArtifactID *string
+	eventSeq        int64
+}
+
+// publishedSet is the row of check_state_sets the settler holds at head of repo on issue, the set
+// of its checks there, and false where it holds none.
+func publishedSet(t *testing.T, database *store.Store, issue, repo, head string) (publishedChecks, bool) {
+	t.Helper()
+	var set publishedChecks
+	err := database.Pool.QueryRow(context.Background(), `
+		select checks, check_artifact_id::text, event_seq
+		from check_state_sets where issue_key = $1 and repo = $2 and head_sha = $3`,
+		issue, repo, head).Scan(&set.checks, &set.checkArtifactID, &set.eventSeq)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return publishedChecks{}, false
+		}
+		t.Fatalf("read the published set of checks at %s: %v", head, err)
+	}
+	return set, true
 }
 
 // computedSubject is the state a fresh computation of the settler's gives check at head of the
@@ -392,14 +412,10 @@ func wantPublishedIsComputed(t *testing.T, what string, rig *checkStatesRig, che
 	if computed.CI != nil {
 		ciCase = computed.CI.Case
 	}
-	if row.state == nil || *row.state != computed.Answer || row.reason != computed.Reason || row.ciCase != ciCase ||
+	if row.state != computed.Answer || row.reason != computed.Reason || row.ciCase != ciCase ||
 		!slices.Equal(slices.Sorted(slices.Values(row.roles)), slices.Sorted(slices.Values(computed.Roles))) {
-		state := "null"
-		if row.state != nil {
-			state = *row.state
-		}
 		t.Fatalf("%s: the published state of %s at %s is %s/%s roles %v, and Dispatch computes %s/%s roles %v",
-			what, check, head, state, row.reason, row.roles, computed.Answer, computed.Reason, computed.Roles)
+			what, check, head, row.state, row.reason, row.roles, computed.Answer, computed.Reason, computed.Roles)
 	}
 	if left := marksOf(t, rig.database, rig.issue); left != 0 {
 		t.Fatalf("%s: %d marks of %s are left", what, left, rig.issue)

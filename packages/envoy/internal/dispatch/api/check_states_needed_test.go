@@ -44,9 +44,9 @@ func TestACandidateNoBeforeMergeCheckNeedsHoldsNoHandoff(t *testing.T) {
 			if marks := fenceMarksOf(t, rig, rig.issue); len(marks) != 0 {
 				t.Fatalf("%s keeps the marks %v a test handoff waits for, want none: no before_merge check needs a state at H1", rig.issue, marks)
 			}
-			row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH2, "")
-			if !held || !sameStringSet(row.checks, story.set) {
-				t.Fatalf("the set of checks published at H2 is %v (held %v), want %v", row.checks, held, story.set)
+			set, held := publishedSet(t, rig.database, rig.issue, ciJobRepository, eachHeadH2)
+			if !held || !sameStringSet(set.checks, story.set) {
+				t.Fatalf("the set of checks published at H2 is %v (held %v), want %v", set.checks, held, story.set)
 			}
 			rig.served.checkStatesSchedule.fenceWait = time.Second
 			wantHandoff(t, rig, "while the only candidate is one no before_merge check needs", rig.issue, http.StatusCreated)

@@ -72,12 +72,12 @@ func wantOpenHeadsAsRouted(t *testing.T, what string, rig *checkStatesRig, heads
 			t.Fatalf("%s: the route answers no subject of c1 at %s of %s: %+v", what, head.head[:6], head.repo, subjects)
 		}
 		row, held := publishedRow(t, rig.database, rig.issue, head.repo, head.head, "c1")
-		if !held || row.state == nil {
+		if !held {
 			t.Fatalf("%s: no state of c1 at %s of %s is published, and the route answers %s/%s", what, head.head[:6], head.repo, routed.Answer, routed.Reason)
 		}
-		if *row.state != routed.Answer || row.reason != routed.Reason || row.ciCase != routed.CI.Case {
+		if row.state != routed.Answer || row.reason != routed.Reason || row.ciCase != routed.CI.Case {
 			t.Fatalf("%s: the settler published c1 at %s of %s as %s/%s (CI case %q), and the route answers %s/%s (CI case %q)",
-				what, head.head[:6], head.repo, *row.state, row.reason, row.ciCase, routed.Answer, routed.Reason, routed.CI.Case)
+				what, head.head[:6], head.repo, row.state, row.reason, row.ciCase, routed.Answer, routed.Reason, routed.CI.Case)
 		}
 	}
 }
@@ -116,7 +116,7 @@ func TestAFormerHeadsRunNeverChangesTheStateOfAnOpenHead(t *testing.T) {
 	settleOwed(t, rig)
 	wantOpenHeadsAsRouted(t, "#70's run at H1 passed after the move", rig, routedHead{widgets, eachHeadH2}, routedHead{infra, eachHeadH1})
 	former, held := publishedRow(t, database, issue.Key, widgets, eachHeadH1, "c1")
-	if !held || former.state == nil || *former.state != model.PassStandsUnknown || former.reason != model.PassStandsReasonPassAndFail {
+	if !held || former.state != model.PassStandsUnknown || former.reason != model.PassStandsReasonPassAndFail {
 		t.Fatalf("c1 at H1, a former head of #70 whose own run passed beside #71's fail, is published as %+v, want unknown/pass_and_fail", former)
 	}
 }
@@ -127,8 +127,8 @@ func wantPublishedAt(t *testing.T, what string, rig *checkStatesRig, head, check
 	t.Helper()
 	row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, head, check)
 	published := "no state"
-	if held && row.state != nil {
-		published = *row.state
+	if held {
+		published = row.state
 	}
 	if published != state || row.reason != reason || row.ciCase != ciCase {
 		t.Fatalf("%s: %s at %s is published as %s/%s with the CI case %q (row held %t), want %s/%s with the CI case %q",

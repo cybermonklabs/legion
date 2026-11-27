@@ -32,7 +32,7 @@ const (
 type testingJudgement struct {
 	// Waiting is each check whose state is not conclusive: one with no state, or, reading every
 	// check, one a CI job runs whose job has not ended at the head, or whose end Dispatch could not
-	// read (ciJobNotEnded), while its state names no result (no_result, read_failed).
+	// read (cicase.NotEnded), while its state names no result (no_result, read_failed).
 	Waiting []string
 	// Failing is each check with a conclusive state that is not yes, with that state and its
 	// reason: k2 no for fail, k3 unknown for pass_and_fail, k4 unknown for read_failed.
@@ -54,11 +54,16 @@ type testingJudgement struct {
 // Config.TestingLeavesCI, which the daemon wires false until the change that builds that hold at
 // the end of a task turns it on, since a task whose steps after testing hold no review and no
 // acceptance would otherwise end with no gate on its CI checks. Reading every check, one a CI job
-// runs whose job has not ended at the head, or whose end Dispatch could not read (ciJobNotEnded,
-// the one predicate tellCIFailure reads too), waits as well while its state names no result:
+// runs whose job has not ended at the head, or whose end Dispatch could not read
+// (cicase.NotEnded: its run has not concluded, no run of its name is on the head, Dispatch holds
+// no head to read at, GitHub did not answer, a result of the job named no repository Dispatch
+// could resolve, or the read had not started when its batch's bound ended), waits as well while
+// its state names no result:
 // no_result, or read_failed where Dispatch could not read the job. That is no state the check ends
 // at, so the move sends such a check back only once its job ended there without a pass. A fail or
-// a pass and a fail is a fail whatever its CI run says.
+// a pass and a fail is a fail whatever its CI run says. The move reads cicase.NotEnded and the
+// implementer's message of a failed job reads cicase.Ended (ciJobFailed), the two halves of the
+// contract's list of cases.
 //
 // Every other state of a check judged is conclusive, and one that is not yes fails: a fail, a pass
 // and a fail, and a state Dispatch published because a read it needed failed (read_failed) of a
@@ -78,7 +83,7 @@ func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) 
 			continue
 		case state.State == stateYes:
 			continue
-		case ciJobNotEnded(state.CICase) && (state.Reason == reasonNoResult || state.Reason == reasonReadFailed):
+		case cicase.NotEnded(state.CICase) && (state.Reason == reasonNoResult || state.Reason == reasonReadFailed):
 			judgement.Waiting = append(judgement.Waiting, check)
 		default:
 			judgement.Failing = append(judgement.Failing, record.FailingCheck{Check: check, State: state.State, Reason: state.Reason})
@@ -361,18 +366,6 @@ func (e *Engine) checkState(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, false)
-}
-
-// ciJobNotEnded says whether ciCase is a CI case Dispatch names for a check a CI job runs whose
-// job has not ended at the head, or whose end Dispatch could not read: its run has not concluded,
-// no run of its name is on the head, Dispatch holds no head to read at, GitHub did not answer, a
-// result of the job named no repository Dispatch could resolve, or the read had not started when
-// its batch's bound ended. The list is contracts', which Dispatch writes the case from
-// (cicase.NotEnded). Every other case names an end: a conclusion as GitHub wrote it, or a result
-// the job recorded of its own. It is the one predicate the testing move (judgeStates) and the
-// implementer's message of a failed job (ciJobFailed) read.
-func ciJobNotEnded(ciCase string) bool {
-	return cicase.NotEnded(ciCase)
 }
 
 // ciJobFailed says whether a state of a check is one of a check a CI job runs whose job ended at

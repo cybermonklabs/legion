@@ -316,9 +316,9 @@ func TestAHeadWithNoCheckGetsTheSetForm(t *testing.T) {
 	if !strings.Contains(string(events[0].Raw), `"checks": []`) && !strings.Contains(string(events[0].Raw), `"checks":[]`) {
 		t.Fatalf("the stored set form %s does not write checks as an empty list", events[0].Raw)
 	}
-	row, held := publishedRow(t, rig.database, second, ciJobRepository, checkStatesH5, "")
-	if !held || row.checkArtifactID != nil || row.state != nil {
-		t.Fatalf("the stored set row of %s at %s is %+v (held %v), want one with no document and no state", second, checkStatesH5, row, held)
+	stored, held := publishedSet(t, rig.database, second, ciJobRepository, checkStatesH5)
+	if !held || stored.checkArtifactID != nil || len(stored.checks) != 0 {
+		t.Fatalf("the stored set row of %s at %s is %+v (held %v), want one with no document and no check", second, checkStatesH5, stored, held)
 	}
 
 	upsertHead(t, rig, 80, checkStatesH5, second, "A new title")

@@ -120,7 +120,7 @@ func TestALateCloseAndAResultAfterItEndAsInTheOrderOfTheirPlaces(t *testing.T) {
 				if got := stateAt(t, rig, rig.issue, eachHeadH1, "k1"); got != model.PassStandsYes {
 					t.Fatalf("k1 at H1 is published %q, want yes: a result after the close counts in the lifecycle that follows, whatever order the close is applied in", got)
 				}
-				if _, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH5, ""); held {
+				if _, held := publishedSet(t, rig.database, rig.issue, ciJobRepository, eachHeadH5); held {
 					t.Fatalf("H5 holds published states once the close is applied, want none: its result is before the close")
 				}
 			})
@@ -183,7 +183,7 @@ func TestAJoinOfTwoNamesAppliedApartEndsAsInTheOrderOfTheirPlaces(t *testing.T) 
 	if got := stateAt(t, rig, rig.issue, eachHeadH1, "k1"); got != model.PassStandsYes {
 		t.Fatalf("k1 at H1 is published %q, want yes: a result after the close counts in the lifecycle that follows, whenever the rename is learned", got)
 	}
-	if _, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH5, ""); held {
+	if _, held := publishedSet(t, rig.database, rig.issue, ciJobRepository, eachHeadH5); held {
 		t.Fatalf("H5 holds published states once the names are joined, want none: its result is before the close")
 	}
 }
