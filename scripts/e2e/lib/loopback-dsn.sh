@@ -172,10 +172,17 @@ run_database_url_env() {
 psql_env() {
   local -
   set +x
-  local psql_env_dir
+  local psql_env_dir pg_url_lib
   psql_env_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+  # The path goes through a variable on purpose. sourcedLibraries (scripts/e2e/lib/
+  # script-functions.ts) reads every line `. "…/lib/NAME.sh"` as a source of scripts/e2e/lib/NAME.sh,
+  # and pg-url.sh is packages/envoy's, not a library there: written inline, this line makes every
+  # test that scans a script sourcing this file fail with ENOENT on scripts/e2e/lib/pg-url.sh.
+  # psql_env sources it when it runs; loopback-dsn.test.ts's psql_env row and rig.test.ts's
+  # psql_env row fail if it does not.
+  pg_url_lib=$psql_env_dir/../../../packages/envoy/scripts/lib/pg-url.sh
   # shellcheck source-path=SCRIPTDIR/../../../packages/envoy/scripts/lib source=../../../packages/envoy/scripts/lib/pg-url.sh
-  . "$psql_env_dir/../../../packages/envoy/scripts/lib/pg-url.sh"
+  . "$pg_url_lib"
   pg_url_run "${!1}" psql "${@:2}"
 }
 

@@ -406,14 +406,14 @@ printf '%s\\n' "\${answer-}"
 const scratch = temporaryDirectories("loopback-dsn-test");
 
 /** Runs call under `set -x` (tracedRig), where python3 prints 127.0.0.1 and psql prints the
- *  connection string it was given and succeeds, with dsn in `variable`: its exit status, the trace
- *  (its stderr) and its stdout, which is what psql printed where the call leaves psql's stdout
- *  alone, then what the call assigned `answer`. */
+ *  connection string it was given, then the PGPASSWORD it found, and succeeds, with dsn in
+ *  `variable`: its exit status, the trace (its stderr) and its stdout, which is what psql printed
+ *  where the call leaves psql's stdout alone, then what the call assigned `answer`. */
 function traced(call: string, dsn: string): { code: number; trace: string; answer: string } {
   const bin = scratch();
   const standIns: [string, string][] = [
     ["python3", "echo 127.0.0.1"],
-    ["psql", `printf '%s\\n' "$1"`],
+    ["psql", `printf '%s\\n' "$1" "\${PGPASSWORD-}"`],
   ];
   for (const [name, body] of standIns) {
     writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
@@ -458,8 +458,11 @@ describe("lib/loopback-dsn.sh's helpers trace no DSN of their own", () => {
     expect(run.trace).toContain(`+ psql_env ${variable} -X -q -c 'select 1'`);
     expect(run.trace).not.toContain(password);
     expect(run.code).toBe(0);
-    // The stand-in psql printed the connection string it was given, which is the DSN itself.
-    expect(run.answer).toBe(dsn);
+    // The stand-in psql printed the connection string it was given, the DSN without its password,
+    // and the password, which psql_env gives it in PGPASSWORD alone.
+    expect(run.answer).toBe(
+      `postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable\n${password}`
+    );
   });
 
   const callers: [string, string][] = [
