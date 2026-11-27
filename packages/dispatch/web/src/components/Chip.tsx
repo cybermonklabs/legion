@@ -11,7 +11,7 @@ import {
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import { CONTROL, type ControlSize, controlPadding, toolbarHeight } from "./control-names";
+import { CONTROL, type ControlSize, controlPadding } from "./control-names";
 import { TruncatedText } from "./TruncatedText";
 
 /** The fill a chip takes while selected: the neutral strong surface, or an ask urgency's badge
@@ -37,17 +37,15 @@ const selectedChip: Record<ChipTone, string> = {
  * host names the action in `aria-label` (`Remove Label: docs filter`). The chip is never wider
  * than its row: text that does not fit ends in an ellipsis, and a host whose text can be that
  * long passes the whole of it as `title`. `size` buys room back in a crowded row, and gives the
- * target up only where a mouse is the pointer. `inToolbar` stands the chip at a table toolbar's
- * one height from 1280 px up (`toolbarHeight`), for a toolbar that draws its own chips
- * (`IssueFlagChips`). A chip that opens a panel - the control row's `+N more` - says so
- * (`aria-expanded`, `aria-haspopup`) and hands the panel its button as the anchor (`ref`).
+ * target up only where a mouse is the pointer. A chip that opens a panel - the control row's
+ * `+N more` - says so (`aria-expanded`, `aria-haspopup`) and hands the panel its button as the
+ * anchor (`ref`).
  */
 export function Chip({
   "aria-expanded": ariaExpanded,
   "aria-haspopup": ariaHasPopup,
   "aria-label": ariaLabel,
   children,
-  inToolbar = false,
   onClick,
   ref,
   removable = false,
@@ -60,7 +58,6 @@ export function Chip({
   "aria-haspopup"?: "dialog";
   "aria-label"?: string;
   children: ReactNode;
-  inToolbar?: boolean;
   onClick: () => void;
   ref?: Ref<HTMLButtonElement>;
   removable?: boolean;
@@ -75,7 +72,7 @@ export function Chip({
       aria-haspopup={ariaHasPopup}
       aria-label={ariaLabel}
       aria-pressed={selected}
-      className={`inline-flex max-w-full shrink-0 items-center gap-1 rounded-full border text-xs font-medium whitespace-nowrap ${controlPadding[size]} ${inToolbar ? `${toolbarHeight} ` : ""}${controlHoverBorder} ${
+      className={`inline-flex max-w-full shrink-0 items-center gap-1 rounded-full border text-xs font-medium whitespace-nowrap ${controlPadding[size]} ${controlHoverBorder} ${
         selected === true ? selectedChip[tone] : restingChip
       }`}
       data-control={CONTROL.chip}

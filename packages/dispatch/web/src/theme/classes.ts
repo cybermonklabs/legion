@@ -698,13 +698,6 @@ export function inputClasses(recessed: boolean): string {
  *  Sends strip share: a 44 px tap target through phone widths, 28 px from `sm`. */
 export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
 
-/** The one height of every control a table's toolbar draws - its search box, its selects, its
- *  buttons and its flag chips - from 1280 px up: the search box's own, a `text-sm` line inside
- *  its padding and border (34 px). Below 1280 px `styles.css` gives each control a 44 px floor,
- *  so a phone keeps its targets; `xl:min-h-0` lifts a host's own 44 px minimum, as a chip's,
- *  where that floor no longer stands. */
-export const toolbarControlHeight = "xl:h-8.5 xl:min-h-0";
-
 // ---------------------------------------------------------------------------------------------
 // The navigation rail: a deliberately constant-dark surface (unlike everything else in this
 // file, it does not vary with `prefers-color-scheme` — it is a fixed brand rail, the same
