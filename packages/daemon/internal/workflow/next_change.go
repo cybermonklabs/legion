@@ -626,6 +626,40 @@ func withCarried(reason string, carried []record.Defect) string {
 	return sentence(reason) + " " + named
 }
 
+// carriedByChange is each open reason the next change of issue carries (Defect.CarriedBy is the
+// change's generation), of every kind, where trigger is the gate's opening of that change: its first
+// start task names them (withChangeReasons). Every other move names none, so it reads nothing.
+func (e *Engine) carriedByChange(ctx context.Context, tx pgx.Tx, trigger TriggerKind, issue record.Issue) ([]record.Defect, error) {
+	if trigger != TriggerGateOpened || !record.OnNextChange(issue) {
+		return nil, nil
+	}
+	open, err := e.store.OpenDefects(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	var carried []record.Defect
+	for _, reason := range open {
+		if reason.CarriedBy == issue.Generation {
+			carried = append(carried, reason)
+		}
+	}
+	return carried, nil
+}
+
+// withChangeReasons is reason, the move's own words for the start task, followed by what the first
+// start task of a next change says of the reasons the change carries (carriedByChange): each by id,
+// kind and what it says, and a check's by its block id, which the change's work takes (D7).
+func withChangeReasons(reason string, carried []record.Defect) string {
+	if len(carried) == 0 {
+		return reason
+	}
+	named := "This next change carries these reasons, which its work takes:" + bulleted(reasonLines(carried))
+	if reason == "" {
+		return named
+	}
+	return sentence(reason) + " " + named
+}
+
 // firstStartAt is where the working copy of issue's first start of a next change starts
 // (record.StartAt): the issue's branch, legion/<KEY>, and the base its last pull request merged
 // into, or its recorded default branch where the snapshot names none. Only the gate's opening of a

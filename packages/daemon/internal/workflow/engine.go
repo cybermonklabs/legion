@@ -3098,6 +3098,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// started for it and the merge is taken the moment the issue reaches merging (closeMerged): the
 	// issue waits in verifying, or closes where its close waits for nothing.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
+	// The gate's opening of a next change starts its first phase, whose task names each reason the
+	// change carries, whatever its kind (carriedByChange, D7).
+	changing, err := e.carriedByChange(ctx, tx, trigger, issue)
+	if err != nil {
+		return err
+	}
 	// A merge GitHub has already made is one of two moves that start a step no phase worker's
 	// start begins: no merger runs it, so it starts here under the agent its step names
 	// (startStandingStep), and its close ends it. Every other move starts what a move into its
@@ -3108,7 +3114,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	} else if err := e.startFrom(ctx, tx, issue, w, starting, func(at Standing) string {
-		return task(issue, at, handoff, pr, withCarried(reason, carried))
+		return task(issue, at, handoff, pr, withChangeReasons(withCarried(reason, carried), changing))
 	}, from, movedBack, firstStartAt(trigger, issue)); err != nil {
 		return err
 	}
