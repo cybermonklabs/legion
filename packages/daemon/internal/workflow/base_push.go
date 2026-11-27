@@ -78,7 +78,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		if own == nil {
 			continue
 		}
-		if err := e.store.SetPullRequestBaseMoved(ctx, tx, own.Issue, own.Branch, fact.After); err != nil {
+		if err := e.store.SetPullRequestBaseMoved(ctx, tx, own.Repo, own.Number, fact.After); err != nil {
 			return intake.Result{}, err
 		}
 		// A base that moved is what takes a head from clean to behind, which holds an approved

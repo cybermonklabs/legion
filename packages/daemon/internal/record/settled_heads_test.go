@@ -32,12 +32,13 @@ func fencedPullRequest(key string) PullRequest {
 			Settled: []Settlement{settledEntry("h1", 1), settledEntry("h2", 2)}}}
 }
 
-// settledHeadRows is each row pull_request_settled_heads holds for issue, as its kind, position,
-// head and fence text, by kind and position.
+// settledHeadRows is each row pull_request_settled_heads holds for issue's pull requests, as its
+// kind, position, head and fence text, by kind and position.
 func settledHeadRows(t *testing.T, tx pgx.Tx, issue string) []string {
 	t.Helper()
-	rows, err := tx.Query(context.Background(), `select kind || ' ' || position || ' ' || head || ' ' || fence::text
-		from pull_request_settled_heads where issue = $1 order by kind, position`, issue)
+	rows, err := tx.Query(context.Background(), `select h.kind || ' ' || h.position || ' ' || h.head || ' ' || h.fence::text
+		from pull_request_settled_heads h join pull_requests pr on pr.repo = h.repo and pr.number = h.number
+		where pr.issue = $1 order by h.kind, h.position`, issue)
 	must(t, err)
 	defer rows.Close()
 	var held []string
@@ -102,7 +103,13 @@ func TestBothKindsOfSettledHeadReadBackAsTheyWerePut(t *testing.T) {
 			{"PullRequestOfTask", func() (*PullRequest, error) { return records.PullRequestOfTask(ctx, tx, issue.Key, "") }},
 			{"MergePullRequest", func() (*PullRequest, error) { return records.MergePullRequest(ctx, tx, issue.Key) }},
 			{"PullRequestByNumber", func() (*PullRequest, error) { return records.PullRequestByNumber(ctx, tx, pr.Repo, pr.Number) }},
-			{"PullRequestByBranch", func() (*PullRequest, error) { return records.PullRequestByBranch(ctx, tx, pr.Repo, pr.Branch) }},
+			{"OpenPullRequestsOnBranch", func() (*PullRequest, error) {
+				prs, err := records.OpenPullRequestsOnBranch(ctx, tx, pr.Repo, pr.Branch)
+				if len(prs) != 1 {
+					return nil, err
+				}
+				return &prs[0], err
+			}},
 		} {
 			got, err := read.read()
 			must(t, err)
@@ -130,7 +137,8 @@ func TestAStoredFenceNamesNotTheHeadOfItsRow(t *testing.T) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		must(t, records.PutPullRequest(ctx, tx, mixedPullRequest(issue.Key)))
 	})
-	rows, err := st.Pool().Query(ctx, `select kind, fence::text from pull_request_settled_heads where issue = $1 and head = $2 order by kind`,
+	rows, err := st.Pool().Query(ctx, `select h.kind, h.fence::text from pull_request_settled_heads h
+		join pull_requests pr on pr.repo = h.repo and pr.number = h.number where pr.issue = $1 and h.head = $2 order by h.kind`,
 		issue.Key, rowHead)
 	must(t, err)
 	defer rows.Close()
@@ -166,10 +174,11 @@ func TestAStoredFenceNamesNotTheHeadOfItsRow(t *testing.T) {
 }
 
 // Only the whole reads of one pull request load what it remembers of its settled heads
-// (PullRequestByNumber, PullRequestByBranch, and TaskPullRequests with the reads made of it); a
-// list read, and a read of the row alone by its number or its branch, loads none of it. So a record
-// such a read made is refused by PutPullRequest, with an error that names the read, and the memory
-// the store holds is left as it was: written, it would have deleted every remembered head.
+// (PullRequestByNumber, OpenPullRequestsOnBranch, and TaskPullRequests with the reads made of it);
+// a list read, and a read of the rows alone by their number or their branch, loads none of it. So
+// a record such a read made is refused by PutPullRequest, with an error that names the read, and
+// the memory the store holds is left as it was: written, it would have deleted every remembered
+// head.
 func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -201,9 +210,8 @@ func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 			row, err := records.PullRequestRowByNumber(ctx, tx, strings.ToUpper(pr.Repo), pr.Number)
 			return rowOf(row), err
 		}},
-		{"PullRequestRowByBranch", func(tx pgx.Tx) ([]PullRequest, error) {
-			row, err := records.PullRequestRowByBranch(ctx, tx, strings.ToUpper(pr.Repo), pr.Branch)
-			return rowOf(row), err
+		{"OpenPullRequestRowsOnBranch", func(tx pgx.Tx) ([]PullRequest, error) {
+			return records.OpenPullRequestRowsOnBranch(ctx, tx, strings.ToUpper(pr.Repo), pr.Branch)
 		}},
 	} {
 		inTx(t, st, func(tx pgx.Tx) {
@@ -274,8 +282,9 @@ func TestAWriteDeletesTheSettledHeadsTheRecordNoLongerHolds(t *testing.T) {
 	})
 	versions := func() string {
 		var xmins string
-		must(t, st.Pool().QueryRow(ctx, `select string_agg(head || ':' || xmin::text, ' ' order by kind, position)
-			from pull_request_settled_heads where issue = $1`, issue.Key).Scan(&xmins))
+		must(t, st.Pool().QueryRow(ctx, `select string_agg(h.head || ':' || h.xmin::text, ' ' order by h.kind, h.position)
+			from pull_request_settled_heads h join pull_requests pr on pr.repo = h.repo and pr.number = h.number
+			where pr.issue = $1`, issue.Key).Scan(&xmins))
 		return xmins
 	}
 	written := versions()
@@ -285,8 +294,8 @@ func TestAWriteDeletesTheSettledHeadsTheRecordNoLongerHolds(t *testing.T) {
 	}
 }
 
-// Each pull request of an issue keeps its own memory of its settled heads, keyed by its issue and
-// its branch (migration 20261122122826): the pull requests of two tasks of one issue, on two
+// Each pull request of an issue keeps its own memory of its settled heads, keyed by its repository
+// and its number (migration 20261127031536): the pull requests of two tasks of one issue, on two
 // branches, each read back their own, and a write of one that drops a head leaves the other's
 // whole. Keyed by the issue alone, the second write would delete the first's memory.
 func TestEachPullRequestOfAnIssueKeepsItsOwnSettledHeads(t *testing.T) {
@@ -305,7 +314,7 @@ func TestEachPullRequestOfAnIssueKeepsItsOwnSettledHeads(t *testing.T) {
 	})
 	read := func(tx pgx.Tx, pr PullRequest) *PullRequest {
 		t.Helper()
-		got, err := records.PullRequestByBranch(ctx, tx, pr.Repo, pr.Branch)
+		got, err := records.PullRequestByNumber(ctx, tx, pr.Repo, pr.Number)
 		must(t, err)
 		if got == nil {
 			t.Fatalf("the store holds no pull request of %s on %s", pr.Issue, pr.Branch)

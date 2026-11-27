@@ -9,9 +9,10 @@ import (
 )
 
 // The two kinds of row pull_request_settled_heads holds (migration 20261120144241), each keyed by
-// its pull request's issue and branch (migration 20261122122826), so each task's pull request keeps
-// its own: the pull request's own memory of its settled heads (PullRequest.SettledHeads), and the
-// memory its open head run was anchored with (HeadRun.Settled).
+// its pull request's repository and number (migration 20261127031536), so each pull request of an
+// issue keeps its own, however many stand on one branch: the pull request's own memory of its
+// settled heads (PullRequest.SettledHeads), and the memory its open head run was anchored with
+// (HeadRun.Settled).
 const (
 	settledOfPullRequest = "pull_request"
 	settledOfHeadRun     = "head_run"
@@ -108,13 +109,15 @@ func entryOfFence(head string, fence []byte) (Settlement, error) {
 	return entry, nil
 }
 
-// loadSettledHeads reads what pr remembers of its settled heads, the rows of its issue and its
-// branch, both kinds in one query and each in its order: the pull request's own into SettledHeads,
-// and its open run's into Run.Settled. A row of a run where pr has no run open is one a write left
-// before the run closed, which the next write deletes, and is passed over. No row is a nil list.
+// loadSettledHeads reads what pr remembers of its settled heads, the rows of its repository, in
+// the spelling its row holds (the foreign key on pull_requests (repo, number) keeps the two alike),
+// and its number, both kinds in one query and each in its order: the pull request's own into
+// SettledHeads, and its open run's into Run.Settled. A row of a run where pr has no run open is one
+// a write left before the run closed, which the next write deletes, and is passed over. No row is a
+// nil list.
 func loadSettledHeads(ctx context.Context, tx pgx.Tx, pr *PullRequest) error {
-	rows, err := tx.Query(ctx, `select kind, head, fence from pull_request_settled_heads where issue = $1 and branch = $2 order by kind, position`,
-		pr.Issue, pr.Branch)
+	rows, err := tx.Query(ctx, `select kind, head, fence from pull_request_settled_heads where repo = $1 and number = $2 order by kind, position`,
+		pr.Repo, pr.Number)
 	if err != nil {
 		return fmt.Errorf("read the settled heads: %w", err)
 	}
@@ -156,9 +159,10 @@ type settledRow struct {
 }
 
 // putSettledHeads writes what pr remembers of its settled heads, both kinds, in one statement,
-// after pr's own row: it deletes each row of pr's issue and branch whose kind and head pr no longer
-// holds, the rows of a run when pr has none open among them, and writes each entry at its place in
-// its list. An entry whose place and fence are as stored writes no new version of its row.
+// after pr's own row, whose repository it writes in the spelling pr carries: it deletes each row of
+// pr's repository and number whose kind and head pr no longer holds, the rows of a run when pr has
+// none open among them, and writes each entry at its place in its list. An entry whose place and
+// fence are as stored writes no new version of its row.
 func putSettledHeads(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
 	size := len(pr.SettledHeads)
 	if pr.Run != nil {
@@ -181,13 +185,13 @@ func putSettledHeads(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
 			select kind, position, head, fence
 			from jsonb_to_recordset($3::jsonb) as entry(kind text, position smallint, head text, fence jsonb)),
 		gone as (
-			delete from pull_request_settled_heads stored where stored.issue = $1 and stored.branch = $2
+			delete from pull_request_settled_heads stored where stored.repo = $1 and stored.number = $2
 				and not exists (select 1 from held where held.kind = stored.kind and held.head = stored.head))
-		insert into pull_request_settled_heads (issue, branch, kind, position, head, fence)
+		insert into pull_request_settled_heads (repo, number, kind, position, head, fence)
 		select $1, $2, kind, position, head, fence from held
-		on conflict (issue, branch, kind, head) do update set position = excluded.position, fence = excluded.fence
+		on conflict (repo, number, kind, head) do update set position = excluded.position, fence = excluded.fence
 		where (pull_request_settled_heads.position, pull_request_settled_heads.fence)
-			is distinct from (excluded.position, excluded.fence)`, pr.Issue, pr.Branch, encoded); err != nil {
+			is distinct from (excluded.position, excluded.fence)`, pr.Repo, pr.Number, encoded); err != nil {
 		return fmt.Errorf("write the settled heads: %w", err)
 	}
 	return nil

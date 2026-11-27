@@ -90,9 +90,7 @@ func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 	before := rowsAsText(t, store, `select issue || ' ' || number || ' ' || branch || ' ' || head_sha || ' ' || snapshot || ' ' || mergeability
 		from pull_requests order by issue`)
 
-	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate through the pull requests by task: %v", err)
-	}
+	migrateThrough(t, store, pullRequestsByTaskVersion)
 	if after := rowsAsText(t, store, `select issue || ' ' || number || ' ' || branch || ' ' || head_sha || ' ' || snapshot || ' ' || mergeability
 		from pull_requests order by issue`); strings.Join(after, "\n") != strings.Join(before, "\n") {
 		t.Fatalf("the pull requests after the migration = %q, want each row whole: %q", after, before)
@@ -110,20 +108,6 @@ func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 		return pr
 	}
 	records := record.NewStore()
-	for _, want := range []struct{ issue, task string }{{"LEGION-208", "x"}, {"LEGION-209", ""}, {"LEGION-210", ""}} {
-		merge := read("the merge pull request of "+want.issue, func(tx pgx.Tx) (*record.PullRequest, error) {
-			return records.MergePullRequest(ctx, tx, want.issue)
-		})
-		if merge == nil || merge.Issue != want.issue || merge.Task != want.task || merge.HeadSHA != "head-"+want.issue {
-			t.Fatalf("the merge pull request of %s after the migration = %+v, want its one row, of task %q", want.issue, merge, want.task)
-		}
-		own := read("the pull request of task "+want.task+" of "+want.issue, func(tx pgx.Tx) (*record.PullRequest, error) {
-			return records.PullRequestOfTask(ctx, tx, want.issue, want.task)
-		})
-		if own == nil || own.Number != merge.Number {
-			t.Fatalf("the pull request of task %q of %s after the migration = %+v, want #%d", want.task, want.issue, own, merge.Number)
-		}
-	}
 
 	if err := exec(`update pull_requests set task = 'x'`); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("update pull_requests set task after the migration = %v, want the column unknown: the table stores no task", err)
@@ -170,13 +154,29 @@ func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 	if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261122122826`); got[0] != "0" {
 		t.Fatalf("schema_version rows of %d after the way back = %s, want none", pullRequestsByTaskVersion, got[0])
 	}
+	// The roll-forward applies the migrations above this one that this test never applied while it
+	// stood here, main's 20261122154643 among them, whose kind list leaves out the task kinds: the
+	// rows this test queued are deleted first, as the header of 20261126144204 says an operator
+	// does on a database that holds such rows.
+	if err := exec(`delete from outbox`); err != nil {
+		t.Fatalf("delete the rows this test queued: %v", err)
+	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)
 	}
-	if merge := read("the merge pull request of LEGION-208 after the roll-forward", func(tx pgx.Tx) (*record.PullRequest, error) {
-		return records.MergePullRequest(ctx, tx, "LEGION-208")
-	}); merge == nil || merge.Task != "x" {
-		t.Fatalf("the merge pull request of LEGION-208 after the roll-forward = %+v, want its row of task x again", merge)
+	for _, want := range []struct{ issue, task string }{{"LEGION-208", "x"}, {"LEGION-209", ""}, {"LEGION-210", ""}} {
+		merge := read("the merge pull request of "+want.issue, func(tx pgx.Tx) (*record.PullRequest, error) {
+			return records.MergePullRequest(ctx, tx, want.issue)
+		})
+		if merge == nil || merge.Issue != want.issue || merge.Task != want.task || merge.HeadSHA != "head-"+want.issue {
+			t.Fatalf("the merge pull request of %s after the migration = %+v, want its one row, of task %q", want.issue, merge, want.task)
+		}
+		own := read("the pull request of task "+want.task+" of "+want.issue, func(tx pgx.Tx) (*record.PullRequest, error) {
+			return records.PullRequestOfTask(ctx, tx, want.issue, want.task)
+		})
+		if own == nil || own.Number != merge.Number {
+			t.Fatalf("the pull request of task %q of %s after the migration = %+v, want #%d", want.task, want.issue, own, merge.Number)
+		}
 	}
 }
 
@@ -232,9 +232,7 @@ func TestMigrationPullRequestsByTaskKeysEachSettledHeadByItsBranch(t *testing.T)
 	}
 	const branches = `select distinct issue || ' ' || branch from pull_request_settled_heads order by 1`
 
-	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate through the pull requests by task: %v", err)
-	}
+	migrateThrough(t, store, pullRequestsByTaskVersion)
 	if got := rowsAsText(t, store, memory); strings.Join(got, "\n") != strings.Join(before, "\n") {
 		t.Fatalf("the settled heads after the migration = %q, want each row whole: %q", got, before)
 	}
@@ -280,7 +278,10 @@ func TestMigrationPullRequestsByTaskKeysEachSettledHeadByItsBranch(t *testing.T)
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)
 	}
-	if got, want := rowsAsText(t, store, branches), []string{"LEGION-208 legion/LEGION-208"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("the branches of the settled heads after the roll-forward = %q, want %q", got, want)
+	// The roll-forward applies every migration above this one too, 20261127031536's rekey among them:
+	// the memory of the pull request is keyed by its repository and number from then on.
+	if got, want := rowsAsText(t, store, `select distinct repo || ' ' || number from pull_request_settled_heads order by 1`),
+		[]string{"acme/widgets 1208"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the pull requests of the settled heads after the roll-forward = %q, want %q", got, want)
 	}
 }

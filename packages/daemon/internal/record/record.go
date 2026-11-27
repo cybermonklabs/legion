@@ -443,6 +443,14 @@ const HoldTaskStopped HoldReason = "task-stopped"
 // From is phase.Retro, which holds no slot: the retro starts once none of them holds it.
 const HoldForChildren HoldReason = "children"
 
+// HoldForPullRequests is a hold that stands in place of an issue's close while a pull request of
+// its set holds that close, where no merge is in hand: the last step of a task that merges
+// nothing, or a version of the plan that leaves only finished tasks, with a linked pull request
+// still open, its read still owed, or its repository unserved or unreadable (dispatch://INFRA-5910
+// decision 9). From is phase.Merging, over tasks that are all done, and the hold ends where no
+// pull request of the set holds the close any longer, which closes the issue.
+const HoldForPullRequests HoldReason = "pull-requests"
+
 // TaskStanding is where an issue stands for one task alone, whose place's phase is at and whose
 // state is state: at itself, and for a held task held from at for its hold's reason (reason,
 // PlanTask.HoldReason), or for a stopped task held from at for its stop (HoldTaskStopped). It is
@@ -1227,16 +1235,26 @@ func (o ReviewOrder) After(other ReviewOrder) bool {
 	return o.ID > other.ID
 }
 
-// PullRequest is the daemon's latest GitHub observation for the pull request on one branch of an
-// issue: the table holds one row for each branch of an issue (store migration
-// 20261122122826_pull_requests_by_task), keyed by Issue and Branch.
+// PullRequest is the daemon's latest GitHub observation for one pull request of an issue: the table
+// holds one row for each pull request, keyed by its repository and its number, GitHub's own name of
+// it (store migration 20261127031536_pull_requests_by_repository_and_number), the repository
+// compared without case, and Issue is a column of the row, since a pull request belongs to one
+// issue. One branch can hold several of them, of one issue or in several repositories, and each
+// keeps its own row.
 type PullRequest struct {
 	Issue string
 	// Task is the task of Issue's plan at the issue's generation whose branch the pull request is on
-	// (StoredPlan.TaskOfBranch), "" where it is no one task's, which every pull request of an issue
-	// with no plan rows is. It is read, never stored: every read derives it from the plan's rows,
-	// and PutPullRequest writes nothing of it, so no row holds a task the branch contradicts.
-	Task   string
+	// in Issue's repository (StoredPlan.TaskOfBranch), "" where it is no one task's, which every pull
+	// request of an issue with no plan rows and every pull request of another repository is. It is
+	// read, never stored: every read derives it from the plan's rows, and PutPullRequest writes
+	// nothing of it, so no row holds a task the branch contradicts. Several pull requests can be of
+	// one task; the task's own is the one the reads of a task's pull request choose
+	// (Store.PullRequestOfTask), and each other is another pull request of the task.
+	Task string
+	// Linked is whether Issue links the pull request in Dispatch, a link the daemon took
+	// (pull_request_links, PullRequestLink.Refused empty). It is read at each read, as Task is, and
+	// stored on no pull_requests row, so a link removed is no longer read as one.
+	Linked bool
 	Repo   string
 	Number int
 	Branch string
@@ -1310,18 +1328,18 @@ type PullRequest struct {
 	// (HeadRun.Settled), and a reopen and a new generation keep it, as the pull request's row is.
 	//
 	// The store keeps it in a table of its own, pull_request_settled_heads, one row for each head
-	// (migration 20261120144241 says why), keyed by the pull request's issue and branch (migration
-	// 20261122122826), which only the whole reads of one pull request load: PullRequestByNumber,
-	// PullRequestByBranch and TaskPullRequests, with the reads made of it (PullRequestOfTask,
-	// MergePullRequest, MergePullRequests). A list read and a row read (PullRequestRowByNumber,
-	// PullRequestRowByBranch) load none of it and mark their records (readBy), which PutPullRequest
-	// refuses.
+	// (migration 20261120144241 says why), keyed by the pull request's repository and number
+	// (migration 20261127031536), which only the whole reads of one pull request load:
+	// PullRequestByNumber, OpenPullRequestsOnBranch and TaskPullRequests, with the reads made of it
+	// (PullRequestOfTask, MergePullRequest, MergePullRequests). A list read and a row read load none
+	// of it and mark their records (readBy), which PutPullRequest refuses.
 	SettledHeads []Settlement
 	// readBy names the read that made the record with none of what it remembers - the list reads
-	// OpenPullRequests, OpenPullRequestsOnBase and PullRequestsOf, and the row reads
-	// PullRequestRowByNumber and PullRequestRowByBranch - and is "" for a record one of the whole
-	// reads of one pull request made, or that no read made. Such a read
-	// loads neither SettledHeads nor HeadRun.Settled, so a write of its record would delete every
+	// OpenPullRequests, OpenPullRequestsOnBase, OpenPullRequestRowsOnBranch, PullRequestsOf,
+	// PullRequestSetsOf, TaskPullRequestRows and TaskPullRequestRowsOf, and the row reads
+	// PullRequestRowByNumber, PullRequestRowOfTask and MergePullRequestRow - and is "" for a record
+	// one of the whole reads of one pull request made, or that no read made. Such a read loads
+	// neither SettledHeads nor HeadRun.Settled, so a write of its record would delete every
 	// remembered head: PutPullRequest refuses it, naming the read.
 	readBy string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
@@ -1349,7 +1367,14 @@ type PullRequest struct {
 	// as the pull request's record: across rounds, a reopen, and a new generation while the pull
 	// request is open; a new generation deletes one that is not.
 	ReviewSeen ReviewOrder
-	State      PullRequestState
+	// ReviewDecision is the newest deciding review of the review round for this pull request, at
+	// its head, in the shape of the reviewer's decision (PhaseRow.Decision), nil while none decided
+	// (dispatch://INFRA-5910 decision 7): a round over several open pull requests judges each of
+	// them by its own. The store keeps it as the jsonb of pull_requests.review_decision (migration
+	// 20261127031536), and a new generation clears it (Store.ClearGeneration), as it clears the
+	// reviewer's decision.
+	ReviewDecision *ReviewDecision
+	State          PullRequestState
 	// Mergeability is GitHub's lazily computed verdict for whether this head can be merged into
 	// its base branch without a conflict, as the daemon's own read of
 	// GitHub's /pulls/{number} last found it (daemon.readIssuePullRequest), decoding GitHub's
@@ -1804,23 +1829,13 @@ const (
 
 // implementationMoveStates are the pull request states that let an issue's implementation move on:
 // one open, whose work is still on its way, and one merged, whose work landed. Every place that
-// asks the question reads it from here — LetsImplementationMove for the workflow's
+// asks the question reads it from here, through LetsImplementationMove: the workflow's
 // TriggerImplementationReady snapshot (workflow's transition), the notice that tells an architect
 // no pull request is there (workflow's pullRequestMissing), the implementer's completion of
-// implementing (api's implementationPullRequest) — and the one place that cannot call Go,
-// HandedOffWithoutOpenOrMergedPullRequest's SQL, reads the same list as the parameter of its
-// `state = any(...)` (implementationMoveSQLStates), so the query and the predicate cannot drift.
+// implementing (api's implementationPullRequest), and the store's list of the issues whose
+// completion waits for a pull request record (HandedOffWithoutOpenOrMergedPullRequest), which
+// reads each issue's task pull requests and asks it of each, so no query keeps a list of its own.
 var implementationMoveStates = []PullRequestState{PullRequestOpen, PullRequestMerged}
-
-// implementationMoveSQLStates is implementationMoveStates as the text array
-// HandedOffWithoutOpenOrMergedPullRequest passes its query, built once from that same list.
-var implementationMoveSQLStates = func() []string {
-	states := make([]string, len(implementationMoveStates))
-	for i, state := range implementationMoveStates {
-		states[i] = string(state)
-	}
-	return states
-}()
 
 // LetsImplementationMove reports whether pr lets an issue's implementation move on
 // (implementationMoveStates). It is nil-safe: no pull request recorded lets nothing move.
@@ -1898,6 +1913,46 @@ const (
 	HeadChecksUnread    HeadChecks = ""
 	HeadChecksRunning   HeadChecks = "running"
 	HeadChecksConcluded HeadChecks = "concluded"
+)
+
+// PullRequestLink is one link of an issue to a pull request, the daemon's copy of a link Dispatch
+// holds on the issue (its external_links) whose URL names a pull request,
+// https://github.com/<owner>/<name>/pull/<number> (dispatch://INFRA-5910 decision 4). Dispatch is
+// the source: each event of the issue that carries its links, and the boot's read, replace the
+// issue's links whole (Store.ReplacePullRequestLinks). The store keeps the links in
+// pull_request_links (migration 20261127031536), keyed by Repo and Number, the repository
+// compared without case, since Dispatch lets one URL link one issue alone, so a pull request is
+// linked by one issue at most. A link and the record of its pull request are two rows: a link
+// whose pull request the record holds no row of yet is a link whose read is still owed, and a pull
+// request reads whether its issue links it at each read (PullRequest.Linked).
+//
+// Refused is why the daemon took the link into no set of pull requests, "" for a link it took
+// (LinkRefusal). ToldAt is when a notice to the issue's architect named the link, nil while none
+// did, so each link is told once (dispatch://INFRA-5910 decision 10). A link that stays across a
+// replacement keeps both; a new generation of the issue clears ToldAt and keeps the link
+// (Store.ClearGeneration), since the links are Dispatch's and outlive a run.
+type PullRequestLink struct {
+	Issue   string
+	Repo    string
+	Number  int
+	Refused LinkRefusal
+	ToldAt  *time.Time
+}
+
+// LinkRefusal is why the daemon took a link of an issue to a pull request into no set
+// (PullRequestLink.Refused), "" for a link it took. The column's check names the same values.
+type LinkRefusal string
+
+// The refusals of a link (dispatch://INFRA-5910 decision 8): the pull request's head is in a fork,
+// which is in no set (D2); the record holds the pull request for another issue, whose row stays
+// with its issue; its repository fails the checks the daemon makes of a recorded repository; and
+// GitHub answered 404 for it. A link refused as unserved or unreadable is read again at each boot
+// and at each change of the issue's links.
+const (
+	LinkRefusedFork       LinkRefusal = "fork"
+	LinkRefusedOtherIssue LinkRefusal = "other-issue"
+	LinkRefusedUnserved   LinkRefusal = "unserved"
+	LinkRefusedUnreadable LinkRefusal = "unreadable"
 )
 
 // ProductionCheck is the production check of a merge of an issue: the work after the close in
@@ -2492,11 +2547,12 @@ type Store interface {
 	NameIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, githubRepo string) error
 	// HandedOffWithoutOpenOrMergedPullRequest is every record of the Dispatch project key project in
 	// implementing, named on its repository as GitHub spells it, whose implementer has recorded its
-	// handoff and which has no open or merged pull request recorded, by key, each with its
-	// implementer's handoff commit: an issue whose completion waits for an open pull request record,
-	// which the daemon's start reads GitHub for and tells the architect of when GitHub lists none
-	// on its branch. A merged record waits for none: a completion moves on it, and its merge told
-	// the architect.
+	// handoff and which has no open or merged pull request of a task recorded (TaskPullRequestRows,
+	// so neither a linked pull request that is no task's own nor one of another repository counts),
+	// by key, each with its implementer's handoff commit: an issue whose completion waits for an
+	// open pull request record, which the daemon's start reads GitHub for and tells the architect of
+	// when GitHub lists none on its branch. A merged record waits for none: a completion moves on
+	// it, and its merge told the architect.
 	HandedOffWithoutOpenOrMergedPullRequest(ctx context.Context, tx pgx.Tx, project string) ([]HandedOff, error)
 	// RepoNote is what the daemon last said on issue about its repository, nil for nothing;
 	// PutRepoNote records a note it posts.
@@ -2575,34 +2631,43 @@ type Store interface {
 	// than the architect's, which a new generation keeps. A run's first step asks it.
 	EarlierRunOf(ctx context.Context, tx pgx.Tx, issue Issue) (bool, error)
 	// PullRequestOfTask, MergePullRequest, MergePullRequests and TaskPullRequests, as
-	// PullRequestByBranch and PullRequestByNumber, read each pull request whole, what it remembers
-	// of its settled heads with it, for a fact's handling that may write the record back or weighs
-	// a settlement against that memory.
+	// OpenPullRequestsOnBranch and PullRequestByNumber, read each pull request whole, what it
+	// remembers of its settled heads with it, for a fact's handling that may write the record back
+	// or weighs a settlement against that memory.
 	//
-	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
-	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
+	// PullRequestOfTask is the pull request of task of issue, its own: of the pull requests on the
+	// branch task holds in the issue's repository (PullRequest.Task), linked or not, the one
+	// dispatch://INFRA-5910 decision 5 chooses (ownPullRequest), nil for none ("" is the task of an
+	// issue with no plan rows, whose branch is the issue's own). A linked pull request that is no
+	// task's own is no task's pull request.
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
 	// MergePullRequest is the pull request of the merge of issue: for an issue with plan rows at its
-	// generation, the row of the first task that has a merge, done or to come
-	// (StoredPlan.TasksThatMerge), that is not done, in task id order, else of the last of them; the
-	// row of the task "" where the issue has no plan rows there. nil where that task has none, and
-	// where no task of the plan has a merge.
+	// generation, the own pull request of the first task that has a merge, done or to come
+	// (StoredPlan.TasksThatMerge), that is not done, in task id order, else of the last of them; that
+	// of the task "" where the issue has no plan rows there. nil where that task has none, and where
+	// no task of the plan has a merge.
 	MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
-	// MergePullRequests is the pull request of each task of issue that has a merge, done or to come
-	// (StoredPlan.TasksThatMerge), in task id order; the one row of the task "" where the issue has
-	// no plan rows at its generation. A task with no pull request has none here.
+	// MergePullRequests is the own pull request of each task of issue that has a merge, done or to
+	// come (StoredPlan.TasksThatMerge), in task id order; that of the task "" where the issue has no
+	// plan rows at its generation. A task with no pull request has none here.
 	MergePullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
-	// TaskPullRequests is each pull request of issue, by task (PullRequest.Task), those of one task
-	// by branch.
+	// TaskPullRequests is each pull request of issue that is a task's, own or other, and each in
+	// the issue's repository that no task holds and the issue does not link, as a pull request of
+	// an earlier run is, by task (PullRequest.Task), the task's own first among those of one task,
+	// then by branch and number. A pull request of another repository is none of them, nor is a
+	// linked pull request that is no task's own.
 	TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
-	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
-	// PullRequestRowByBranch and PullRequestRowByNumber read what PullRequestByBranch and
-	// PullRequestByNumber read, by the same query, as the pull request's row alone: none of what it
-	// remembers of its settled heads, and a record PutPullRequest refuses, naming the read, for
-	// every reader that never writes the record back.
-	PullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
+	// OpenPullRequestsOnBranch is each open pull request of repo on branch, whatever its issue, in
+	// number order, repo compared without case: a read that has only a branch, a push's, answers
+	// each open pull request on it (dispatch://INFRA-5910 decision 20), and none for no such row.
+	OpenPullRequestsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch string) ([]PullRequest, error)
+	// PullRequestRowByNumber and OpenPullRequestRowsOnBranch read what PullRequestByNumber and
+	// OpenPullRequestsOnBranch read, by the same query, as rows alone: none of what each remembers
+	// of its settled heads, and a record PutPullRequest refuses, naming the read, for every reader
+	// that never writes the record back.
 	PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
+	OpenPullRequestRowsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch string) ([]PullRequest, error)
 	// TaskPullRequestRows, PullRequestRowOfTask and MergePullRequestRow read what TaskPullRequests,
 	// PullRequestOfTask and MergePullRequest read, by the same query, as rows alone, for every
 	// reader that never writes a record back: one statement for an issue's rows whatever its count
@@ -2614,8 +2679,8 @@ type Store interface {
 	// TaskPullRequestRowsOf is TaskPullRequestRows for each of issues, by issue key, in one
 	// statement whatever the number of issues, for a caller that reads every task's pull request
 	// of many issues and may make no read per issue (the daemon's fillRepositories). An issue the
-	// record holds no pull request for has no entry, and no issues reads nothing. PutPullRequest
-	// refuses its records, naming the read.
+	// record holds no such pull request for has no entry, and no issues reads nothing.
+	// PutPullRequest refuses its records, naming the read.
 	TaskPullRequestRowsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error)
 	// ClearedPullRequestClock is the clock (updated_at) of the newest lifecycle event pull request
 	// number of repo had applied when a new generation's clear deleted its row (ClearGeneration),
@@ -2625,29 +2690,57 @@ type Store interface {
 	// OpenPullRequests is every open pull request of the Dispatch project key project's issues.
 	OpenPullRequests(ctx context.Context, tx pgx.Tx, project string) ([]PullRequest, error)
 	// OpenPullRequestsOnBase is every open pull request of repo recorded on the base branch base,
-	// by issue: the pull requests one push onto that branch may have taken behind or dirty.
+	// repo compared without case, by issue: the pull requests one push onto that branch may have
+	// taken behind or dirty.
 	OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, base string) ([]PullRequest, error)
 	// PullRequestsOf is the pull request of each of issues' merge (MergePullRequest), by issue key;
 	// an issue the record holds no such pull request for has no entry, and no issues reads nothing.
-	// It is two reads whatever the number of issues, for a caller that must name the pull request
-	// of every issue of a tree and may make no read per issue (admit's tellStalledTrees). It
-	// answers a merged and a closed pull request as well as an open one, which OpenPullRequests
-	// cannot: a tree that has stopped with its work merged is exactly the tree such a caller
-	// reports. It loads no settled heads, and PutPullRequest refuses its records.
+	// It is two reads whatever the number of issues, for a caller that must name the merge of
+	// every issue of a tree and may make no read per issue (workflow's mergedChildren). It answers a
+	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot. It
+	// loads no settled heads, and PutPullRequest refuses its records.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
-	// PutPullRequest writes pr whole, what it remembers of its settled heads with it, as the pull
-	// request of its issue's branch pr.Branch, in place of the row the record holds for that
-	// branch; pr.Task is read and never written (PullRequest.Task). It refuses a record that a list
-	// read or a row read made, which loads none of that memory (PullRequest.SettledHeads says why).
+	// PullRequestSetsOf is the set of pull requests of each of issues, by issue key: each pull
+	// request of a task of the issue, its own and each other on its branch, and each pull request
+	// the issue links, in any repository (dispatch://INFRA-5910 D2), in the order of their
+	// repositories, compared without case, and numbers. A pull request on no task's branch that the
+	// issue does not link is none of it. An issue whose set the record holds no row of has no
+	// entry, and no issues reads nothing. It is one statement whatever the number of issues, for a
+	// caller that names the set of every issue of a project or a tree and may make no read per
+	// issue, and answers every state the record holds. It loads no settled heads, and
+	// PutPullRequest refuses its records.
+	PullRequestSetsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error)
+	// PutPullRequest writes pr whole, what it remembers of its settled heads with it, as the row of
+	// its repository and number, in place of the row the record holds for them in any spelling of
+	// the repository, whose issue it keeps; pr.Task and pr.Linked are read and never written
+	// (PullRequest.Task, PullRequest.Linked). It refuses a record that a list read or a row read
+	// made, which loads none of that memory (PullRequest.SettledHeads says why).
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
-	// SetPullRequestBaseMoved writes the BaseMoved of issue's pull request on branch, after, and no
+	// SetPullRequestBaseMoved writes the BaseMoved of the pull request number of repo, after, and no
 	// other field: the one write a list read's record calls for (workflow's basePush), which
 	// PutPullRequest refuses.
-	SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, issue, branch, after string) error
-	// DeletePullRequest deletes the row of issue's pull request on branch, the table's key, and what
-	// it remembers of its settled heads with it; a branch the record holds no row for deletes
-	// nothing.
-	DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error
+	SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, repo string, number int, after string) error
+	// DeletePullRequest deletes the row of the pull request number of repo, the table's key, and
+	// what it remembers of its settled heads with it; a pull request the record holds no row of
+	// deletes nothing.
+	DeletePullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) error
+	// ReplacePullRequestLinks writes links as the whole of issue's links to pull requests
+	// (PullRequestLink): a link of issue that links does not name goes, and each of links stays or
+	// is written, its Issue, Refused and ToldAt ignored. A link that stays keeps its refusal and its
+	// mark; a new one is written taken and untold. A link another issue holds moves to issue, taken
+	// and untold again, since Dispatch lets one URL link one issue alone and its newest event says
+	// which.
+	ReplacePullRequestLinks(ctx context.Context, tx pgx.Tx, issue string, links []PullRequestLink) error
+	// PullRequestLinksOf is each link of issue, and PullRequestLinks each link the record holds of
+	// any issue (the intake's index of linked pull requests, the repositories the daemon hears), in
+	// the order of their repositories, compared without case, and numbers.
+	PullRequestLinksOf(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequestLink, error)
+	PullRequestLinks(ctx context.Context, tx pgx.Tx) ([]PullRequestLink, error)
+	// SetPullRequestLinkTold writes the told mark of the link of the pull request number of repo, at,
+	// nil clearing it, and SetPullRequestLinkRefused its refusal, "" taking it; a link the record
+	// does not hold writes nothing.
+	SetPullRequestLinkTold(ctx context.Context, tx pgx.Tx, repo string, number int, at *time.Time) error
+	SetPullRequestLinkRefused(ctx context.Context, tx pgx.Tx, repo string, number int, refused LinkRefusal) error
 	// ProductionCheckOf reads one check of issue by the moment it opened, and the newest for the
 	// zero time, the read of a row or a fact that names no check, nil where no check of issue
 	// opened then; ProductionChecksOf is each check of issue, newest first. PutProductionCheck
@@ -2819,13 +2912,14 @@ type Store interface {
 	// registers; the claim the outbox makes holds none until then.
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
-	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gate with what its holders took of it
-	// (DesignTold), and each role's handoff, review rounds, verdict and summary. Each role keeps
-	// its claim and its last handoff, so a
-	// commit an earlier generation reported is never new again. An issue whose gate rows it
-	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
-	// Dispatch holds for that issue is the one those rows recorded.
+	// request, the last generation's reading of a still-open one, its review decision among them
+	// (the next generation runs on the same branch and pull request), the told marks of its links,
+	// whose rows stay since they are Dispatch's (PullRequestLink.ToldAt), its design gate with what
+	// its holders took of it (DesignTold), and each role's handoff, review rounds, verdict and
+	// summary. Each role keeps its claim and its last handoff, so a commit an earlier generation
+	// reported is never new again. An issue whose gate rows it deletes has the empty set of
+	// design-gate documents queued for it, due at now, since the set Dispatch holds for that issue
+	// is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
@@ -3243,6 +3337,8 @@ type Store interface {
 	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
 	// QueuedPullRequestCloses is the number of each pull request a queued row closing pull requests
 	// of issue at generation (TaskPullRequestsClose) names, in number order; none for no such row.
+	// Such a row closes pull requests of the issue's own repository alone, so a number names one of
+	// the issue's task pull requests (TaskPullRequestRows).
 	QueuedPullRequestCloses(ctx context.Context, tx pgx.Tx, issue string, generation uint64) ([]int, error)
 	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
 	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a

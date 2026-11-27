@@ -4041,8 +4041,8 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 	if err != nil {
 		return nil, err
 	}
-	holds := stored.HoldsBranch(issue.Key, branch)
-	if holds && stored.HoldsBranchBeforeItsStart(issue.Key, branch) {
+	holds := stored.HoldsBranch(*issue, issue.GitHubRepo, branch)
+	if holds && stored.HoldsBranchBeforeItsStart(*issue, issue.GitHubRepo, branch) {
 		given, err := e.store.BranchGiven(ctx, tx, issue.Key, issue.Generation, branch)
 		if err != nil {
 			return nil, err
@@ -4072,20 +4072,31 @@ func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number
 	})
 }
 
-// pullRequestByBranch is the recorded pull request of repo on branch, when its issue is recorded
+// pullRequestByBranch is a recorded pull request of repo on branch, when its issue is recorded
 // on repo. It reads under the same names as pullRequest, in the same order and for the same
 // reason.
+//
+// A branch can hold several open pull requests (dispatch://INFRA-5910 decision 20), and this takes
+// one: the first, the lowest number, which is the task's own pull request wherever the branch has
+// one open on the task's base alone. It reads no merged or closed row, as the read it replaces did:
+// no fact it serves acts on one (pullRequestSynchronized and push return on a merged pull request).
+// The facts that name a branch alone apply to each open pull request on it (decision 20, b2); until
+// a later step does that, they apply to this one.
 func (e *Engine) pullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
 	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
-		return e.store.PullRequestByBranch(ctx, tx, name, branch)
+		prs, err := e.store.OpenPullRequestsOnBranch(ctx, tx, name, branch)
+		if err != nil || len(prs) == 0 {
+			return nil, err
+		}
+		return &prs[0], nil
 	})
 }
 
 // pullRequestRow and pullRequestRowByBranch are what pullRequest and pullRequestByBranch answer,
 // read under the same names and owned by the same rule, as the pull request's row alone
-// (record.Store.PullRequestRowByNumber, PullRequestRowByBranch): with none of what it remembers of
-// its settled heads, for a fact's handling that never writes the record back and reads neither
-// its SettledHeads nor its head run's Settled.
+// (record.Store.PullRequestRowByNumber, OpenPullRequestRowsOnBranch): with none of what it
+// remembers of its settled heads, for a fact's handling that never writes the record back and reads
+// neither its SettledHeads nor its head run's Settled.
 func (e *Engine) pullRequestRow(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
 	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestRowByNumber(ctx, tx, name, number)
@@ -4094,7 +4105,11 @@ func (e *Engine) pullRequestRow(ctx context.Context, tx pgx.Tx, repo string, num
 
 func (e *Engine) pullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
 	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
-		return e.store.PullRequestRowByBranch(ctx, tx, name, branch)
+		prs, err := e.store.OpenPullRequestRowsOnBranch(ctx, tx, name, branch)
+		if err != nil || len(prs) == 0 {
+			return nil, err
+		}
+		return &prs[0], nil
 	})
 }
 

@@ -192,7 +192,7 @@ func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue 
 		if err := e.store.RecordBranchGiven(ctx, tx, issue.Key, issue.Generation, pr.Branch); err != nil {
 			return err
 		}
-		if err := e.store.DeletePullRequest(ctx, tx, issue.Key, pr.Branch); err != nil {
+		if err := e.store.DeletePullRequest(ctx, tx, pr.Repo, pr.Number); err != nil {
 			return err
 		}
 		closed = append(closed, pr.Number)

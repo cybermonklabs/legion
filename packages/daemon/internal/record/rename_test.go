@@ -9,16 +9,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// renameFixture records issue key of project on repo, with a pull request on prRepo and branch,
-// a production check on repo and a repository note resolved to repo: one row in each table whose
-// columns hold a repository name.
-func renameFixture(t *testing.T, ctx context.Context, tx pgx.Tx, key, project, repo, prRepo, branch string) {
+// renameFixture records issue key of project on repo, with pull request number on prRepo and
+// branch, a production check on repo and a repository note resolved to repo: one row in each table
+// whose columns hold a repository name. The record keys a pull request by its repository and its
+// number, so two issues' fixtures name one pull request where they name one number on one
+// repository in any spelling.
+func renameFixture(t *testing.T, ctx context.Context, tx pgx.Tx, key, project, repo, prRepo, branch string, number int) {
 	t.Helper()
 	records := NewStore()
 	issue := issueFixture(key)
 	issue.Project, issue.Tree, issue.Parent, issue.Repo, issue.GitHubRepo = project, key, nil, repo, repo
 	must(t, records.PutIssue(ctx, tx, issue))
-	must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: key, Repo: prRepo, Number: 7, Branch: branch, HeadSHA: "head",
+	must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: key, Repo: prRepo, Number: number, Branch: branch, HeadSHA: "head",
 		State: PullRequestMerged}))
 	opened := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	must(t, records.PutProductionCheck(ctx, tx, ProductionCheck{Issue: key, Project: project, Tree: key, Repo: repo, Number: 7,
@@ -83,9 +85,9 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 	st := migratedStore(t)
 	const from, to = "sjawhar/legion", "cybermonklabs/legion"
 	inTx(t, st, func(tx pgx.Tx) {
-		renameFixture(t, ctx, tx, "LEGION-1", "LEGION", "SJAWHAR/Legion", "Sjawhar/legion", "legion/LEGION-1")
-		renameFixture(t, ctx, tx, "LEGION-2", "LEGION", "acme/widgets", "acme/widgets", "legion/LEGION-2")
-		renameFixture(t, ctx, tx, "OTHER-1", "OTHER", from, from, "legion/OTHER-1")
+		renameFixture(t, ctx, tx, "LEGION-1", "LEGION", "SJAWHAR/Legion", "Sjawhar/legion", "legion/LEGION-1", 7)
+		renameFixture(t, ctx, tx, "LEGION-2", "LEGION", "acme/widgets", "acme/widgets", "legion/LEGION-2", 7)
+		renameFixture(t, ctx, tx, "OTHER-1", "OTHER", from, from, "legion/OTHER-1", 8)
 		must(t, NewStore().PutRepoNote(ctx, tx, RepoNote{Issue: "LEGION-9", ResolvedRepo: from, Note: "not admitted", PostedAt: time.Now()}))
 		must(t, NewStore().PutRepoNote(ctx, tx, RepoNote{Issue: "OTHER-9", ResolvedRepo: from, Note: "not admitted", PostedAt: time.Now()}))
 		for _, cleared := range []struct{ issue, repo string }{{"LEGION-1", "Sjawhar/legion"}, {"LEGION-2", "acme/widgets"}, {"OTHER-1", from}} {
@@ -112,7 +114,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		}
 		left := renameLeft(t, ctx, tx, "LEGION", from)
 		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableClearedPullRequests: 1, RenameTableProductionChecks: 1,
-			RenameTableRepoNotes: 2}; !reflect.DeepEqual(left, want) {
+			RenameTableRepoNotes: 2, RenameTablePullRequestLinks: 0, RenameTableOutbox: 0}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s before the write = %v, want %v", from, left, want)
 		}
 	})
@@ -145,7 +147,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 			t.Fatalf("OTHER-9's note = %v, want another project's note left on %s", got, from)
 		}
 		none := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableClearedPullRequests: 0, RenameTableProductionChecks: 0,
-			RenameTableRepoNotes: 0}
+			RenameTableRepoNotes: 0, RenameTablePullRequestLinks: 0, RenameTableOutbox: 0}
 		if left := renameLeft(t, ctx, tx, "LEGION", from); !reflect.DeepEqual(left, none) {
 			t.Fatalf("rows on %s after the write = %v, want none", from, left)
 		}
@@ -157,18 +159,19 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 	})
 }
 
-// Where the new name would give pull_requests_repo_branch one repository and branch twice — another
-// issue's pull request already holds the branch under the new name, in any spelling — the issue's
-// row under the old name is deleted and the other's stays, and the deletion names both issues; the
-// issue's other rows are written as ever. Control: with the collision read removed, the update of
-// the row fails on the unique index and the issue's whole write with it.
+// Where the new name would give one pull request two rows — another issue's row already holds the
+// same number under the new name, in any spelling, and pull_requests is unique on the lowered
+// repository and the number — the issue's row under the old name is deleted and the other's stays,
+// and the deletion names both issues; the issue's other rows are written as ever. Control: with the
+// collision delete removed, the update of the row fails on the unique index and the issue's whole
+// write with it.
 func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	const from, to = "sjawhar/legion", "cybermonklabs/legion"
 	inTx(t, st, func(tx pgx.Tx) {
-		renameFixture(t, ctx, tx, "LEGION-1", "LEGION", from, from, "release/shared")
-		renameFixture(t, ctx, tx, "LEGION-2", "LEGION", to, to, "release/shared")
+		renameFixture(t, ctx, tx, "LEGION-1", "LEGION", from, from, "release/shared", 7)
+		renameFixture(t, ctx, tx, "LEGION-2", "LEGION", to, to, "release/shared", 7)
 	})
 	var written RenameWrite
 	inTx(t, st, func(tx pgx.Tx) {
@@ -176,7 +179,7 @@ func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *tes
 		written, err = RenameIssueRepository(ctx, tx, "LEGION-1", from, to)
 		must(t, err)
 	})
-	want := &RenameCollision{Issue: "LEGION-1", Holder: "LEGION-2", Repo: from, To: to, Branch: "release/shared", Number: 7}
+	want := []RenameCollision{{Issue: "LEGION-1", Holder: "LEGION-2", Repo: from, To: to, Branch: "release/shared", Number: 7}}
 	if !reflect.DeepEqual(written.Deleted, want) {
 		t.Fatalf("deleted = %+v, want %+v", written.Deleted, want)
 	}
@@ -286,4 +289,75 @@ func TestRenameIssueRepositoryMergesAClearedPullRequestIntoTheRowTheNewNameHolds
 			t.Fatalf("cleared pull requests after a second write = %+v, want the one row %+v", got, merged)
 		}
 	})
+}
+
+// A rename merges only the colliding pull request, by its repository and number: LEGION-1 holds
+// #7 and #8 under the old name, and LEGION-2 holds #7 under the new one in another spelling, so
+// #7 of LEGION-1 is deleted with what it remembers, and #8 takes the new name and keeps its
+// settled head, which follows its row (on update cascade). LEGION-1's link to acme/gadgets#3 is
+// not on the old name and stays; its link under the old name takes the new one; and the outbox rows
+// that name the old name in their `repo` take the new one, where a row of the release before,
+// which names none, stays as it is.
+func TestRenameIssueRepositoryMergesOnlyTheCollidingPullRequestAndFollowsTheLinksAndPayloads(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	const from, to = "sjawhar/legion", "cybermonklabs/legion"
+	records := NewStore()
+	inTx(t, st, func(tx pgx.Tx) {
+		renameFixture(t, ctx, tx, "LEGION-1", "LEGION", from, from, "legion/LEGION-1", 7)
+		renameFixture(t, ctx, tx, "LEGION-2", "LEGION", to, "CYBERMONKLABS/legion", "legion/LEGION-2", 7)
+		other := settledPullRequest("LEGION-1", from, 8, "legion/LEGION-1.b")
+		must(t, records.PutPullRequest(ctx, tx, other))
+		must(t, records.ReplacePullRequestLinks(ctx, tx, "LEGION-1", []PullRequestLink{{Repo: from, Number: 9}, {Repo: "acme/gadgets", Number: 3}}))
+		for _, payload := range []OutboxPayload{MergeQueueRead{Repo: "Sjawhar/Legion", Number: 8, Head: "c0de"},
+			MergeQueueRead{Number: 8, Head: "c0de"}, MergeQueueRead{Repo: "acme/gadgets", Number: 3, Head: "c0de"}} {
+			row, err := NewOutboxRow("LEGION-1", payload, time.Now())
+			must(t, err)
+			must(t, records.Enqueue(ctx, tx, row))
+		}
+	})
+	var written RenameWrite
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		written, err = RenameIssueRepository(ctx, tx, "LEGION-1", from, to)
+		must(t, err)
+	})
+	if len(written.Deleted) != 1 || written.Deleted[0].Number != 7 || written.Deleted[0].Holder != "LEGION-2" {
+		t.Fatalf("deleted = %+v, want LEGION-1's #7 alone, held by LEGION-2", written.Deleted)
+	}
+	if rows := written.Rows; rows[RenameTablePullRequests] != 1 || rows[RenameTablePullRequestLinks] != 1 || rows[RenameTableOutbox] != 1 {
+		t.Fatalf("rows written = %v, want #8, the link of the old name and the one outbox row that names it", rows)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := records.PullRequestByNumber(ctx, tx, to, 8)
+		must(t, err)
+		if got == nil || got.Issue != "LEGION-1" || got.Repo != to || len(got.SettledHeads) != 1 {
+			t.Fatalf("#8 after the rename = %+v, want LEGION-1's, on %s, with its settled head", got, to)
+		}
+		held, err := records.PullRequestByNumber(ctx, tx, to, 7)
+		must(t, err)
+		if held == nil || held.Issue != "LEGION-2" {
+			t.Fatalf("#7 after the rename = %+v, want LEGION-2's row kept", held)
+		}
+		links, err := records.PullRequestLinksOf(ctx, tx, "LEGION-1")
+		must(t, err)
+		if len(links) != 2 || links[0].Repo != "acme/gadgets" || links[1].Repo != to || links[1].Number != 9 {
+			t.Fatalf("the links of LEGION-1 = %+v, want acme/gadgets#3 as it was and #9 on %s", links, to)
+		}
+		var repos []string
+		rows, err := tx.Query(ctx, `select coalesce(payload->>'repo', '') from outbox where issue = 'LEGION-1' order by id`)
+		must(t, err)
+		repos, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		must(t, err)
+		if !reflect.DeepEqual(repos, []string{to, "", "acme/gadgets"}) {
+			t.Fatalf("the repo of each outbox row after the rename = %q, want the old name written over, the row with none left and the other repository's kept", repos)
+		}
+	})
+}
+
+// settledPullRequest is key's open pull request number of repo on branch, remembering one settled
+// head.
+func settledPullRequest(key, repo string, number int, branch string) PullRequest {
+	return PullRequest{Issue: key, Repo: repo, Number: number, Branch: branch, HeadSHA: "h1", Failing: []string{}, State: PullRequestOpen,
+		SettledHeads: []Settlement{settledEntry("h1", 1)}}
 }

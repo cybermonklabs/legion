@@ -418,25 +418,35 @@ func (s *Postgres) HandedOffWithoutOpenOrMergedPullRequest(ctx context.Context, 
 		" join (select issue, handoff_commit from phases where role = '"+string(claim.RoleImplementer)+"' and handoff_commit <> '')"+
 		" implementer (implementer_issue, handoff_commit) on implementer.implementer_issue = issues.key"+
 		" where project = $1 and github_repo <> '' and phase = '"+string(phase.Implementing)+"'"+
-		" and key not in (select issue from pull_requests where state = any($2))"+
-		" order by key", project, implementationMoveSQLStates)
+		" order by key", project)
 	if err != nil {
 		return nil, fmt.Errorf("list the issues of %s %s: %w", project, what, err)
 	}
-	defer rows.Close()
 	var handedOff []HandedOff
 	for rows.Next() {
 		var commit string
 		issue, err := scanIssue(scanThen{row: rows, after: []any{&commit}})
 		if err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("list the issues of %s %s: %w", project, what, err)
 		}
 		handedOff = append(handedOff, HandedOff{Issue: *issue, Commit: commit})
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the issues of %s %s: %w", project, what, err)
 	}
-	return handedOff, nil
+	keys := make([]string, len(handedOff))
+	for at, off := range handedOff {
+		keys[at] = off.Issue.Key
+	}
+	pulls, err := s.TaskPullRequestRowsOf(ctx, tx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("list the issues of %s %s: %w", project, what, err)
+	}
+	return slices.DeleteFunc(handedOff, func(off HandedOff) bool {
+		return slices.ContainsFunc(pulls[off.Issue.Key], func(pr PullRequest) bool { return LetsImplementationMove(&pr) })
+	}), nil
 }
 
 // scanThen is row with after scanned from the columns that follow the ones a Scan names.
@@ -881,34 +891,255 @@ func scanPhase(row scanner) (PhaseRow, error) {
 }
 
 // pullRequestColumns are the columns of a pull request row, with, in place of a task the table
-// does not store, each task of the plan of the row's issue at the issue's generation with the
-// branch its row holds and its state (pullRequestPlan): scanPullRequest derives the row's task from
-// them and the row's branch (PullRequest.Task), so a row's task is always the task whose branch it
-// is on now, whatever task held that branch when the row was written.
-const pullRequestColumns = `issue, ` + pullRequestPlan + `, repo, number, branch, base, base_moved, head_sha, head_updated_at,
-	failing, cancelled, check_runs,
+// does not store, the repository of the row's issue and each task of the plan of the row's issue
+// at the issue's generation with the branch its row holds and its state (pullRequestPlan), and
+// whether the row's issue links it (pullRequestLinked): scanPullRequest derives the row's task
+// from them, its branch and its repository (PullRequest.Task), so a row's task is always the task
+// whose branch it is on now, whatever task held that branch when the row was written, and a row's
+// link is the link the issue holds now.
+const pullRequestColumns = `issue, ` + pullRequestPlan + `, ` + pullRequestLinked + `, repo, number, branch, base, base_moved, head_sha,
+	head_updated_at, failing, cancelled, check_runs,
 	generation, snapshot, statuses, pushes, head_moves, head_run, review_seen, review_seen_at, state,
 	checked_head, mergeability, merge_state, reviews_requested, head_checks, null_mergeable_reads, null_mergeable_since,
 	evidence_read_at, state_read_at,
-	conflicting_head, merge_sha, conflict_read, merge_forward`
+	conflicting_head, merge_sha, conflict_read, merge_forward, review_decision`
 
-// pullRequestPlan is the tasks of the plan of a pull_requests row's issue at the issue's
-// generation, each as its id, its branch, its state and its place, in task id order, as one JSON
-// array: the facts StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows
-// there reads [].
-const pullRequestPlan = `(select coalesce(json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state,
-	'place', json_build_object('kind', t.running_kind, 'position', t.position)) order by t.task), '[]')
-	from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pull_requests.issue)`
+// pullRequestPlan is the issue of a pull_requests row as one JSON object: its repository, as
+// GitHub spells it and as the record keeps it, and the tasks of its plan at its generation, each
+// as its id, its branch, its state and its place, in task id order: the facts
+// StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows there reads no tasks.
+const pullRequestPlan = `(select json_build_object('githubRepo', i.github_repo, 'repo', i.repo, 'tasks',
+	coalesce((select json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state,
+	'place', json_build_object('kind', t.running_kind, 'position', t.position)) order by t.task)
+	from plan_tasks t where t.issue = i.key and t.generation = i.generation), '[]'))
+	from issues i where i.key = pull_requests.issue)`
+
+// pullRequestLinked is whether a pull_requests row's issue links it, a link the daemon took
+// (PullRequest.Linked): one lookup of pull_request_links_lower_repo_number.
+const pullRequestLinked = `exists (select 1 from pull_request_links l where lower(l.repo) = lower(pull_requests.repo)
+	and l.number = pull_requests.number and l.issue = pull_requests.issue and l.refused = '')`
+
+// pullRequestRow is one row of pullRequestColumns as scanPullRequest reads it: the record, and
+// beside it what the reads of an issue's pull requests choose by, which the record does not carry:
+// whether a task of its issue's plan holds its branch in its issue's repository (held,
+// StoredPlan.HoldsBranch: the pull request is a task's, its own or another of it), whether it is of
+// its issue's repository (ownRepo), whether its issue has no plan rows at its generation (noPlan:
+// every pull request of the issue's own repository that the issue does not link is then the
+// issue's, the task "", on whatever branch, as every pull request of such an issue was before
+// tasks had branches), and its task's
+// base (taskBase, StoredPlan.BaseOf), which withTaskBases reads where ownPullRequest weighs the row
+// against another, and "" otherwise.
+type pullRequestRow struct {
+	PullRequest
+	held, ownRepo, noPlan bool
+	taskBase              string
+}
+
+// ofTask says whether the reads of an issue's task pull requests answer row (TaskPullRequests): a
+// task's pull request, its own or another of it, and a pull request of the issue's repository that
+// no task holds and the issue does not link, such as one of an earlier run. A pull request of
+// another repository is no task's, and neither is a linked pull request that no task holds, which
+// is worked as the issue's link (dispatch://INFRA-5910 decision 5).
+func (row pullRequestRow) ofTask() bool {
+	return row.held || row.ownRepo && !row.Linked
+}
+
+// ofSet says whether row is in its issue's set of pull requests (PullRequestSetsOf): a task's pull
+// request, its own or another of it, or one the issue links (dispatch://INFRA-5910 D2).
+func (row pullRequestRow) ofSet() bool {
+	return row.held || row.Linked
+}
+
+// ownPullRequest is the place among rows of task's own pull request, -1 for none: of the rows on
+// the branch task holds in the issue's repository (held, Task), linked or not, or of an issue with
+// no plan rows its unlinked rows of its repository (noPlan), the one
+// dispatch://INFRA-5910 decision 5 chooses. Those rows are of one repository, so their numbers
+// order them as GitHub opened them. Of the rows that are not closed unmerged it is the first whose
+// base is the task's base (StoredPlan.BaseOf: the base its latest start fixed, which the retarget
+// of its merge moves, or the base its plan gives), and where none has it, or the issue has no plan
+// rows and so no task's base, the first of them on any base; where every row closed unmerged, the
+// one with the highest number. So a merged pull request stays the task's own after its merge, and
+// no later or other open row takes its place.
+func ownPullRequest(rows []pullRequestRow, task string) int {
+	own, open, onBase := -1, -1, -1
+	for at, row := range rows {
+		if row.Task != task || !(row.held || row.noPlan && row.ownRepo && !row.Linked) {
+			continue
+		}
+		if row.State == PullRequestClosed {
+			if own < 0 || row.Number > rows[own].Number {
+				own = at
+			}
+			continue
+		}
+		if open < 0 || row.Number < rows[open].Number {
+			open = at
+		}
+		if row.taskBase != "" && row.Base == row.taskBase && (onBase < 0 || row.Number < rows[onBase].Number) {
+			onBase = at
+		}
+	}
+	switch {
+	case onBase >= 0:
+		return onBase
+	case open >= 0:
+		return open
+	}
+	return own
+}
+
+// issuePullRequestRows is every row of issues, by issue key, each in branch and number order, read
+// by one statement whatever the number of issues and marked with readBy (PullRequest.readBy), with
+// the task's base of each row that ownPullRequest weighs against another (withTaskBases): the read
+// every read of the pull requests of an issue makes, which then keeps the rows its rule answers.
+// describe names the read in any failure.
+func issuePullRequestRows(ctx context.Context, tx pgx.Tx, issues []string, describe, readBy string) (map[string][]pullRequestRow, error) {
+	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = any($1) order by issue, branch, number", issues)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	scanned, err := collectPullRequestRows(rows, describe, readBy)
+	if err != nil {
+		return nil, err
+	}
+	byIssue := make(map[string][]pullRequestRow, len(issues))
+	for _, row := range scanned {
+		byIssue[row.Issue] = append(byIssue[row.Issue], row)
+	}
+	if err := withTaskBases(ctx, tx, byIssue); err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return byIssue, nil
+}
+
+// withTaskBases writes the task's base (StoredPlan.BaseOf) on each row of byIssue's issues of which
+// ownPullRequest weighs two or more, rows of one task held on its branch that did not close
+// unmerged, reading the plan of each such issue whole (plansOf) and nothing for any other: a task
+// whose branch holds one pull request, the common case, costs no read of its plan. A task BaseOf
+// answers an error for, one its plan does not hold, keeps no base, which ownPullRequest reads as a
+// base no row has.
+func withTaskBases(ctx context.Context, tx pgx.Tx, byIssue map[string][]pullRequestRow) error {
+	var weighed []string
+	for issue, rows := range byIssue {
+		open := map[string]int{}
+		for _, row := range rows {
+			if row.held && row.State != PullRequestClosed {
+				open[row.Task]++
+			}
+		}
+		for _, count := range open {
+			if count > 1 {
+				weighed = append(weighed, issue)
+				break
+			}
+		}
+	}
+	if len(weighed) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `select key, generation, default_branch from issues where key = any($1)`, weighed)
+	if err != nil {
+		return fmt.Errorf("read the issues whose tasks' bases choose their pull requests: %w", err)
+	}
+	issues, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Issue, error) {
+		var issue Issue
+		var generation int64
+		err := row.Scan(&issue.Key, &generation, &issue.DefaultBranch)
+		issue.Generation = uint64(generation)
+		return issue, err
+	})
+	if err != nil {
+		return fmt.Errorf("read the issues whose tasks' bases choose their pull requests: %w", err)
+	}
+	keys, generations := make([]string, len(issues)), make([]int64, len(issues))
+	for at, issue := range issues {
+		keys[at], generations[at] = issue.Key, int64(issue.Generation)
+	}
+	plans, err := plansOf(ctx, tx, keys, generations)
+	if err != nil {
+		return fmt.Errorf("read the plans whose tasks' bases choose their pull requests: %w", err)
+	}
+	for _, issue := range issues {
+		plan := plans[issue.Key]
+		if plan == nil {
+			continue
+		}
+		rows := byIssue[issue.Key]
+		for at := range rows {
+			if !rows[at].held || rows[at].Task == "" {
+				continue
+			}
+			if base, _, err := plan.BaseOf(issue, rows[at].Task); err == nil {
+				rows[at].taskBase = base
+			}
+		}
+	}
+	return nil
+}
+
+// taskPullRequestsOf is the rows of one issue that TaskPullRequests answers (ofTask), in task order,
+// each task's own pull request first among its rows (ownPullRequest), the others in branch and
+// number order, as the issue's rows came.
+func taskPullRequestsOf(rows []pullRequestRow) []pullRequestRow {
+	kept := slices.DeleteFunc(slices.Clone(rows), func(row pullRequestRow) bool { return !row.ofTask() })
+	slices.SortStableFunc(kept, func(a, b pullRequestRow) int { return strings.Compare(a.Task, b.Task) })
+	for start := 0; start < len(kept); {
+		end := start + 1
+		for end < len(kept) && kept[end].Task == kept[start].Task {
+			end++
+		}
+		if own := ownPullRequest(kept[start:end], kept[start].Task); own > 0 {
+			first := kept[start+own]
+			copy(kept[start+1:start+own+1], kept[start:start+own])
+			kept[start] = first
+		}
+		start = end
+	}
+	return kept
+}
+
+// rowRecords is the record of each of rows, in order.
+func rowRecords(rows []pullRequestRow) []PullRequest {
+	prs := make([]PullRequest, len(rows))
+	for at, row := range rows {
+		prs[at] = row.PullRequest
+	}
+	return prs
+}
+
+// taskPullRequestRows is issue's rows that TaskPullRequests answers, in its order, marked readBy.
+func taskPullRequestRows(ctx context.Context, tx pgx.Tx, issue, describe, readBy string) ([]pullRequestRow, error) {
+	byIssue, err := issuePullRequestRows(ctx, tx, []string{issue}, describe, readBy)
+	if err != nil {
+		return nil, err
+	}
+	return taskPullRequestsOf(byIssue[issue]), nil
+}
+
+// ownOfTask is task's own pull request among issue's rows (ownPullRequest), read as readBy, nil
+// for none, with what it remembers of its settled heads where readBy is "", the mark of a whole
+// read.
+func ownOfTask(ctx context.Context, tx pgx.Tx, issue, task, readBy string) (*PullRequest, error) {
+	describe := fmt.Sprintf("read the pull request of task %q of %s", task, issue)
+	rows, err := taskPullRequestRows(ctx, tx, issue, describe, readBy)
+	if err != nil {
+		return nil, err
+	}
+	at := ownPullRequest(rows, task)
+	if at < 0 {
+		return nil, nil
+	}
+	pr := rows[at].PullRequest
+	if readBy == "" {
+		if err := loadSettledHeads(ctx, tx, &pr); err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	return &pr, nil
+}
 
 func (s *Postgres) PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error) {
-	prs, err := s.TaskPullRequests(ctx, tx, issue)
-	if err != nil {
-		return nil, fmt.Errorf("read the pull request of task %q of %s: %w", task, issue, err)
-	}
-	if at := slices.IndexFunc(prs, func(pr PullRequest) bool { return pr.Task == task }); at >= 0 {
-		return &prs[at], nil
-	}
-	return nil, nil
+	return ownOfTask(ctx, tx, issue, task, "")
 }
 
 func (s *Postgres) MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
@@ -923,54 +1154,56 @@ func (s *Postgres) MergePullRequest(ctx context.Context, tx pgx.Tx, issue string
 	return s.PullRequestOfTask(ctx, tx, issue, task)
 }
 
-// MergePullRequests is the pull request of each task of issue that has a merge, done or to come
-// (StoredPlan.TasksThatMerge of its plan at its generation), in task id order, the first of each
-// task's rows by branch as PullRequestOfTask reads it; a task with no pull request has none here.
-// An issue with no plan rows at its generation has its one row, of the task "".
+// MergePullRequests is the own pull request of each task of issue that has a merge, done or to
+// come (StoredPlan.TasksThatMerge of its plan at its generation), in task id order, as
+// PullRequestOfTask reads it; a task with no pull request has none here. An issue with no plan rows
+// at its generation has the own pull request of the task "", on the issue's own branch.
 func (s *Postgres) MergePullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error) {
+	describe := fmt.Sprintf("read the merge pull requests of %s", issue)
 	plans, err := mergePlans(ctx, tx, []string{issue})
 	if err != nil {
-		return nil, fmt.Errorf("read the merge pull requests of %s: %w", issue, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	tasks := []string{""}
 	if stored := plans[issue]; stored != nil {
 		tasks = stored.TasksThatMerge()
 	}
-	prs, err := s.TaskPullRequests(ctx, tx, issue)
+	rows, err := taskPullRequestRows(ctx, tx, issue, describe, "")
 	if err != nil {
-		return nil, fmt.Errorf("read the merge pull requests of %s: %w", issue, err)
+		return nil, err
 	}
 	var merges []PullRequest
 	for _, task := range tasks {
-		if at := slices.IndexFunc(prs, func(pr PullRequest) bool { return pr.Task == task }); at >= 0 {
-			merges = append(merges, prs[at])
+		if at := ownPullRequest(rows, task); at >= 0 {
+			pr := rows[at].PullRequest
+			if err := loadSettledHeads(ctx, tx, &pr); err != nil {
+				return nil, fmt.Errorf("%s: %w", describe, err)
+			}
+			merges = append(merges, pr)
 		}
 	}
 	return merges, nil
 }
 
-// TaskPullRequests reads every row of issue by its branch, each whole with what it remembers of
-// its settled heads (loadSettledHeads), so each record it answers is one a write may keep
-// (PutPullRequest), and so is each that PullRequestOfTask, MergePullRequest and MergePullRequests
-// answer from it. It answers them in task order, the rows of one task (a task "", which is no
-// task's or the task of an issue with no plan rows) in branch order, so the issue's own branch
-// comes first among them.
+// TaskPullRequests reads every row of issue that is a task's, its own or another of it, and every
+// row of the issue's repository that no task holds and the issue does not link (ofTask), each whole
+// with what it remembers of its settled heads (loadSettledHeads), so each record it answers is one
+// a write may keep (PutPullRequest). It answers them in task order, the rows of one task (a task
+// "", which is no task's or the task of an issue with no plan rows) with the task's own first
+// (ownPullRequest) and the others in branch and number order, so the first row of a task is its
+// own pull request wherever the task has one.
 func (s *Postgres) TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error) {
 	describe := fmt.Sprintf("read the pull requests of %s", issue)
-	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1 order by branch", issue)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
-	}
-	prs, err := collectPullRequests(rows, describe, "")
+	rows, err := taskPullRequestRows(ctx, tx, issue, describe, "")
 	if err != nil {
 		return nil, err
 	}
+	prs := rowRecords(rows)
 	for at := range prs {
 		if err := loadSettledHeads(ctx, tx, &prs[at]); err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
 	}
-	slices.SortStableFunc(prs, func(a, b PullRequest) int { return strings.Compare(a.Task, b.Task) })
 	return prs, nil
 }
 
@@ -982,29 +1215,15 @@ func (s *Postgres) TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string
 // statement whatever the issue's count of tasks, where the whole read adds one read of settled
 // heads, and the decode of each fence, for each task's row.
 func (s *Postgres) TaskPullRequestRows(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error) {
-	describe := fmt.Sprintf("read the pull request rows of %s", issue)
-	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1 order by branch", issue)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
-	}
-	prs, err := collectPullRequests(rows, describe, "TaskPullRequestRows")
+	rows, err := taskPullRequestRows(ctx, tx, issue, fmt.Sprintf("read the pull request rows of %s", issue), "TaskPullRequestRows")
 	if err != nil {
 		return nil, err
 	}
-	slices.SortStableFunc(prs, func(a, b PullRequest) int { return strings.Compare(a.Task, b.Task) })
-	return prs, nil
+	return rowRecords(rows), nil
 }
 
 func (s *Postgres) PullRequestRowOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error) {
-	prs, err := s.TaskPullRequestRows(ctx, tx, issue)
-	if err != nil {
-		return nil, fmt.Errorf("read the pull request row of task %q of %s: %w", task, issue, err)
-	}
-	if at := slices.IndexFunc(prs, func(pr PullRequest) bool { return pr.Task == task }); at >= 0 {
-		prs[at].readBy = "PullRequestRowOfTask"
-		return &prs[at], nil
-	}
-	return nil, nil
+	return ownOfTask(ctx, tx, issue, task, "PullRequestRowOfTask")
 }
 
 func (s *Postgres) MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
@@ -1016,11 +1235,7 @@ func (s *Postgres) MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue str
 	if !ok {
 		return nil, nil
 	}
-	pr, err := s.PullRequestRowOfTask(ctx, tx, issue, task)
-	if pr != nil {
-		pr.readBy = "MergePullRequestRow"
-	}
-	return pr, err
+	return ownOfTask(ctx, tx, issue, task, "MergePullRequestRow")
 }
 
 // issueMergeTask is the task whose pull request is the merge of an issue whose plan at its
@@ -1071,100 +1286,99 @@ func mergePlans(ctx context.Context, tx pgx.Tx, issues []string) (map[string]*St
 	return plans, nil
 }
 
-// onePullRequest is the row query selects with what it remembers of its settled heads, nil for no
-// row: the read of PullRequestByBranch and PullRequestByNumber, each of which reads one pull
-// request whole (loadSettledHeads), so each record they answer is one a write may keep
-// (PutPullRequest).
-func onePullRequest(ctx context.Context, tx pgx.Tx, query string, args ...any) (*PullRequest, error) {
-	pr, err := queryPullRequestRow(ctx, tx, "", query, args...)
-	if err != nil || pr == nil {
-		return nil, err
-	}
-	if err := loadSettledHeads(ctx, tx, pr); err != nil {
-		return nil, err
-	}
-	return pr, nil
-}
-
-// queryPullRequestRow is the row query selects alone, with none of what it remembers of its
-// settled heads, nil for no row, marked with readBy, the read that made it (PullRequest.readBy):
-// "" for onePullRequest, which loads that memory next.
-func queryPullRequestRow(ctx context.Context, tx pgx.Tx, readBy, query string, args ...any) (*PullRequest, error) {
-	pr, err := scanPullRequest(tx.QueryRow(ctx, query, args...))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	pr.readBy = readBy
-	return pr, nil
-}
-
-// The three reads below key the pull_requests table on its repository — PullRequestByBranch,
-// PullRequestByNumber and PullRequestRecorded — and each compares that name without case, as
-// every other comparison of two repository names in the daemon does (PutIssue's strings.EqualFold
-// above, ghrepo.Renames.Same): GitHub spells a repository as its owner does, the row carries the
-// spelling of the fact that opened the pull request, and a fact that names the same repository in
-// another spelling names the same row. The exact match was the outlier, and it lost exactly the
-// row a configured rename exists to find — a pull request recorded under GitHub's spelling of the
-// name the repository moved from, read under the pair's spelling of it — leaving a recorded pull
-// request read as one the daemon does not record. PullRequestRowByBranch and
-// PullRequestRowByNumber run the first two's queries (pullRequestByBranch, pullRequestByNumber).
+// The reads below key the pull_requests table on its repository — PullRequestByNumber,
+// OpenPullRequestsOnBranch and PullRequestRecorded, with the rows alone of the first two — and each
+// compares that name without case, as every other comparison of two repository names in the daemon
+// does (PutIssue's strings.EqualFold above, ghrepo.Renames.Same): GitHub spells a repository as its
+// owner does, the row carries the spelling of the fact that wrote it last, and a fact that names
+// the same repository in another spelling names the same row. The exact match was the outlier, and
+// it lost exactly the row a configured rename exists to find — a pull request recorded under
+// GitHub's spelling of the name the repository moved from, read under the pair's spelling of it —
+// leaving a recorded pull request read as one the daemon does not record.
 //
 // Each read is bounded by an index on the expression it writes: PullRequestByNumber and
-// PullRequestRecorded by pull_requests_lower_repo_number, PullRequestByBranch by
-// pull_requests_lower_repo_branch, both from migration 20261102095707, which replaced 0062's
-// pull_requests_repo_number. An index on (repo, number) or (repo, branch) bounds none of these
-// reads, because lower(repo) is not the indexed expression: the planner walks the whole index and
-// filters every row it reads, a cost that grows with the records of finished issues, which are
-// never deleted. 0004's unique pull_requests_repo_branch stays the table's uniqueness rule. The
-// one other read of the table that keys on the repository is this release's one-time rename pass
-// (rename.go: RenameCandidates, RenameIssueRepository), which compares the name
-// without case in the same way.
+// PullRequestRecorded by pull_requests_lower_repo_number, which is unique since migration
+// 20261127031536 (one row for each pull request, whatever the spelling of its repository),
+// OpenPullRequestsOnBranch by pull_requests_lower_repo_branch, both from migration 20261102095707.
+// An index on (repo, number) or (repo, branch) bounds none of these reads, because lower(repo) is
+// not the indexed expression: the planner walks the whole index and filters every row it reads, a
+// cost that grows with the records of finished issues, which are never deleted. The one other read
+// of the table that keys on the repository is the one-time rename pass (rename.go:
+// RenameCandidates, RenameIssueRepository), which compares the name without case in the same way.
 const (
-	pullRequestByBranch = "select " + pullRequestColumns + " from pull_requests where lower(repo) = lower($1) and branch = $2"
+	pullRequestsOnBranch = "select " + pullRequestColumns + ` from pull_requests where lower(repo) = lower($1) and branch = $2
+		and state = 'open' order by number`
 	pullRequestByNumber = "select " + pullRequestColumns + " from pull_requests where lower(repo) = lower($1) and number = $2"
 )
-
-func (s *Postgres) PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error) {
-	pr, err := onePullRequest(ctx, tx, pullRequestByBranch, repo, branch)
-	if err != nil {
-		return nil, fmt.Errorf("read pull request for %s %s: %w", repo, branch, err)
-	}
-	return pr, nil
-}
 
 // PullRequestByNumber reads the pull request a GitHub event names. The engine reached it by
 // listing every issue and reading each one's pull request — a read per issue for every check,
 // review and push event — and the row is one query away.
 func (s *Postgres) PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error) {
-	pr, err := onePullRequest(ctx, tx, pullRequestByNumber, repo, number)
+	pr, err := queryPullRequestRow(ctx, tx, "", pullRequestByNumber, repo, number)
+	if err == nil && pr != nil {
+		err = loadSettledHeads(ctx, tx, pr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read pull request %s#%d: %w", repo, number, err)
 	}
 	return pr, nil
 }
 
-// PullRequestRowByBranch and PullRequestRowByNumber read the pull request PullRequestByBranch and
-// PullRequestByNumber read, by the same query, as its row alone: with none of what it remembers of
-// its settled heads, and marked with the read that made it (PullRequest.readBy), so PutPullRequest
-// refuses it. They are a reader's that never writes the record back and reads neither its
-// SettledHeads nor its head run's Settled, which the whole read would load for nothing.
-func (s *Postgres) PullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error) {
-	pr, err := queryPullRequestRow(ctx, tx, "PullRequestRowByBranch", pullRequestByBranch, repo, branch)
+func (s *Postgres) OpenPullRequestsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch string) ([]PullRequest, error) {
+	describe := fmt.Sprintf("read the open pull requests of %s on %s", repo, branch)
+	prs, err := s.openPullRequestsOnBranch(ctx, tx, repo, branch, describe, "")
 	if err != nil {
-		return nil, fmt.Errorf("read the row of the pull request for %s %s: %w", repo, branch, err)
+		return nil, err
 	}
-	return pr, nil
+	for at := range prs {
+		if err := loadSettledHeads(ctx, tx, &prs[at]); err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	return prs, nil
 }
 
+// PullRequestRowByNumber and OpenPullRequestRowsOnBranch read the pull requests PullRequestByNumber
+// and OpenPullRequestsOnBranch read, by the same query, as rows alone: with none of what each
+// remembers of its settled heads, and marked with the read that made it (PullRequest.readBy), so
+// PutPullRequest refuses it. They are a reader's that never writes the record back and reads
+// neither its SettledHeads nor its head run's Settled, which the whole read would load for nothing.
 func (s *Postgres) PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error) {
 	pr, err := queryPullRequestRow(ctx, tx, "PullRequestRowByNumber", pullRequestByNumber, repo, number)
 	if err != nil {
 		return nil, fmt.Errorf("read the row of pull request %s#%d: %w", repo, number, err)
 	}
 	return pr, nil
+}
+
+func (s *Postgres) OpenPullRequestRowsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch string) ([]PullRequest, error) {
+	return s.openPullRequestsOnBranch(ctx, tx, repo, branch, fmt.Sprintf("read the open pull request rows of %s on %s", repo, branch),
+		"OpenPullRequestRowsOnBranch")
+}
+
+// openPullRequestsOnBranch is the rows of the query of OpenPullRequestsOnBranch, marked readBy.
+func (s *Postgres) openPullRequestsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch, describe, readBy string) ([]PullRequest, error) {
+	rows, err := tx.Query(ctx, pullRequestsOnBranch, repo, branch)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return collectPullRequests(rows, describe, readBy)
+}
+
+// queryPullRequestRow is the row query selects alone, with none of what it remembers of its
+// settled heads, nil for no row, marked with readBy, the read that made it (PullRequest.readBy):
+// "" for PullRequestByNumber, which loads that memory next.
+func queryPullRequestRow(ctx context.Context, tx pgx.Tx, readBy, query string, args ...any) (*PullRequest, error) {
+	row, err := scanPullRequest(tx.QueryRow(ctx, query, args...))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	row.readBy = readBy
+	return &row.PullRequest, nil
 }
 
 func (s *Postgres) ClearedPullRequestClock(ctx context.Context, tx pgx.Tx, repo string, number int) (time.Time, error) {
@@ -1193,19 +1407,20 @@ func PullRequestRecorded(ctx context.Context, tx pgx.Tx, repo string, number int
 // none of what each remembers of its settled heads (PullRequest.SettledHeads).
 func (s *Postgres) OpenPullRequests(ctx context.Context, tx pgx.Tx, project string) ([]PullRequest, error) {
 	describe := fmt.Sprintf("list the open pull requests of %s", project)
-	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where state = $1 and issue in (select key from issues where project = $2) order by issue, branch",
-		PullRequestOpen, project)
+	rows, err := tx.Query(ctx, "select "+pullRequestColumns+` from pull_requests where state = $1 and issue in (select key from issues where project = $2)
+		order by issue, branch, number`, PullRequestOpen, project)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return collectPullRequests(rows, describe, "OpenPullRequests")
 }
 
-// OpenPullRequestsOnBase is every open pull request of repo whose recorded base branch is base, by
-// issue key. It is one indexed lookup (pull_requests_open_on_base, a partial index of the open rows
-// by repository and base), so a push onto a branch no open pull request sits on - the common case
-// for a repository other automation pushes to many times a minute - reads one index and no row. A
-// base recorded as "" is every pull request written before the daemon kept the base at all, so it
+// OpenPullRequestsOnBase is every open pull request of repo whose recorded base branch is base,
+// repo compared without case, by issue key. It is one indexed lookup (pull_requests_open_on_base,
+// a partial index of the open rows by the lowered repository and the base, migration
+// 20261127031536), so a push onto a branch no open pull request sits on - the common case for a
+// repository other automation pushes to many times a minute - reads one index and no row. A base
+// recorded as "" is every pull request written before the daemon kept the base at all, so it
 // matches none: the caller never asks for one, and the next GitHub read fills those rows. It reads
 // none of what each pull request remembers of its settled heads (PullRequest.SettledHeads).
 func (s *Postgres) OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, base string) ([]PullRequest, error) {
@@ -1213,8 +1428,8 @@ func (s *Postgres) OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, 
 		return nil, nil
 	}
 	describe := fmt.Sprintf("list the open pull requests of %s on %s", repo, base)
-	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where repo = $1 and base = $2 and state = $3 order by issue, branch",
-		repo, base, PullRequestOpen)
+	rows, err := tx.Query(ctx, "select "+pullRequestColumns+` from pull_requests where lower(repo) = lower($1) and base = $2 and state = $3
+		order by issue, branch, number`, repo, base, PullRequestOpen)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
@@ -1224,39 +1439,47 @@ func (s *Postgres) OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, 
 // collectPullRequests reads every row of a pull request listing, naming the listing in any failure
 // as describe, and marks each record with readBy, the read that made it (PullRequest.readBy).
 func collectPullRequests(rows pgx.Rows, describe, readBy string) ([]PullRequest, error) {
+	scanned, err := collectPullRequestRows(rows, describe, readBy)
+	if err != nil {
+		return nil, err
+	}
+	return rowRecords(scanned), nil
+}
+
+// collectPullRequestRows is collectPullRequests with what each row's reads choose by beside its
+// record (pullRequestRow).
+func collectPullRequestRows(rows pgx.Rows, describe, readBy string) ([]pullRequestRow, error) {
 	defer rows.Close()
-	open := []PullRequest{}
+	collected := []pullRequestRow{}
 	for rows.Next() {
-		pr, err := scanPullRequest(rows)
+		row, err := scanPullRequest(rows)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
-		pr.readBy = readBy
-		open = append(open, *pr)
+		row.readBy = readBy
+		collected = append(collected, *row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	return open, nil
+	return collected, nil
 }
 
 // PullRequestsOf is the pull request of each of issues' merge, by issue key, in two reads whatever
-// the number of issues: a caller that must name the pull request of every issue of a tree makes no
-// read per issue (admit's tellStalledTrees), and the state's build reads every issue's in them
-// (projection's Project). The pull request of an issue's merge is its row of the task
-// issueMergeTask names, the rule MergePullRequest reads by, the first of that task's rows by
-// branch as MergePullRequest reads it, so an issue whose tasks each hold a pull request is named
-// by the one of its merge. An issue the record holds no such pull request for has no entry, nor
-// does one whose plan holds no task that has a merge, and no issues at all reads nothing — the
-// queries are not made.
+// the number of issues: a caller that must name the merge of every issue of a tree makes no read
+// per issue. The pull request of an issue's merge is the own pull request (ownPullRequest) of the
+// task issueMergeTask names, the rule MergePullRequest reads by, so an issue whose tasks each hold
+// a pull request is named by the one of its merge, and a pull request the issue links that is no
+// task's own is never its merge (dispatch://INFRA-5910 decision 13). An issue the record holds no
+// such pull request for has no entry, nor does one whose plan holds no task that has a merge, and
+// no issues at all reads nothing — the queries are not made.
 //
 // It reads the state the record holds, whichever it is. OpenPullRequests, the other read of
-// several of this table, answers the open ones alone and could not serve this caller: a tree
-// that has stopped with its work already merged is exactly the tree that caller reports, and a
-// merged pull request is the fact its controller most needs to read. It reads none of what each
-// pull request remembers of its settled heads (PullRequest.SettledHeads). An error names how many
-// issues the read was of and the first of them, not every key: the state's read asks for each
-// issue of the project.
+// several of this table, answers the open ones alone and could not serve such a caller: a tree
+// that has stopped with its work already merged is exactly the tree that caller reports. It reads
+// none of what each pull request remembers of its settled heads (PullRequest.SettledHeads). An
+// error names how many issues the read was of and the first of them, not every key: the state's
+// read asks for each issue of the project.
 func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error) {
 	if len(issues) == 0 {
 		return nil, nil
@@ -1269,85 +1492,121 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = any($1) order by issue, branch", issues)
+	byIssue, err := issuePullRequestRows(ctx, tx, issues, describe, "PullRequestsOf")
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, err
 	}
-	defer rows.Close()
 	requests := make(map[string]PullRequest, len(issues))
-	for rows.Next() {
-		pr, err := scanPullRequest(rows)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", describe, err)
-		}
-		if _, named := requests[pr.Issue]; named {
+	for issue, rows := range byIssue {
+		task, ok := issueMergeTask(plans[issue])
+		if !ok {
 			continue
 		}
-		if task, ok := issueMergeTask(plans[pr.Issue]); ok && pr.Task == task {
-			pr.readBy = "PullRequestsOf"
-			requests[pr.Issue] = *pr
+		if at := ownPullRequest(rows, task); at >= 0 {
+			requests[issue] = rows[at].PullRequest
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return requests, nil
 }
 
+// PullRequestSetsOf reads every row of issues in one statement and keeps, of each issue, each
+// pull request of its set (pullRequestRow.ofSet), in the order of their repositories, lowered,
+// and numbers.
+func (s *Postgres) PullRequestSetsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	describe := "read the set of pull requests of " + issues[0]
+	if len(issues) > 1 {
+		describe = fmt.Sprintf("read the sets of pull requests of %d issues from %s", len(issues), issues[0])
+	}
+	byIssue, err := issuePullRequestRows(ctx, tx, issues, describe, "PullRequestSetsOf")
+	if err != nil {
+		return nil, err
+	}
+	sets := make(map[string][]PullRequest, len(byIssue))
+	for issue, rows := range byIssue {
+		var set []PullRequest
+		for _, row := range rows {
+			if row.ofSet() {
+				set = append(set, row.PullRequest)
+			}
+		}
+		if len(set) == 0 {
+			continue
+		}
+		slices.SortFunc(set, func(a, b PullRequest) int {
+			return cmp.Or(strings.Compare(strings.ToLower(a.Repo), strings.ToLower(b.Repo)), cmp.Compare(a.Number, b.Number))
+		})
+		sets[issue] = set
+	}
+	return sets, nil
+}
+
 func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
 	if pr.readBy != "" {
-		return fmt.Errorf("put pull request for %s: the record was read by %s, which loads none of what the pull request remembers of its settled heads; "+
-			"only PullRequestByNumber, PullRequestByBranch and TaskPullRequests, with the reads made of it, load the fence memory a write keeps", pr.Issue, pr.readBy)
+		return fmt.Errorf("put pull request %s#%d of %s: the record was read by %s, which loads none of what the pull request remembers of its settled heads; "+
+			"only PullRequestByNumber, OpenPullRequestsOnBranch and TaskPullRequests, with the reads made of it, load the fence memory a write keeps",
+			pr.Repo, pr.Number, pr.Issue, pr.readBy)
 	}
+	describe := fmt.Sprintf("put pull request %s#%d of %s", pr.Repo, pr.Number, pr.Issue)
 	failing, err := json.Marshal(pr.Failing)
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode failing checks: %w", pr.Issue, err)
+		return fmt.Errorf("%s: encode failing checks: %w", describe, err)
 	}
 	cancelled, err := json.Marshal(append([]string{}, pr.Cancelled...))
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode cancelled checks: %w", pr.Issue, err)
+		return fmt.Errorf("%s: encode cancelled checks: %w", describe, err)
 	}
 	checkRuns, err := json.Marshal(pr.CheckRuns)
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode check runs: %w", pr.Issue, err)
+		return fmt.Errorf("%s: encode check runs: %w", describe, err)
 	}
-	noteIssueWrite(ctx, pr.Issue)
 	statuses, err := json.Marshal(append([]CommitStatus{}, pr.Statuses...))
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode commit statuses: %w", pr.Issue, err)
+		return fmt.Errorf("%s: encode commit statuses: %w", describe, err)
 	}
 	pushes, err := json.Marshal(append([]ClassifiedPush{}, pr.Pushes...))
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode pushes: %w", pr.Issue, err)
+		return fmt.Errorf("%s: encode pushes: %w", describe, err)
 	}
 	moves, err := json.Marshal(append([]Move{}, pr.Moves...))
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode moves: %w", pr.Issue, err)
+		return fmt.Errorf("%s: encode moves: %w", describe, err)
 	}
 	// No head run is null.
 	var run []byte
 	if pr.Run != nil {
 		if run, err = json.Marshal(pr.Run); err != nil {
-			return fmt.Errorf("put pull request for %s: encode the head run: %w", pr.Issue, err)
+			return fmt.Errorf("%s: encode the head run: %w", describe, err)
 		}
 	}
-	// No first conflicting read and no ask to merge forward are null, as no head run is.
-	var conflictRead, mergeForward []byte
+	// No first conflicting read, no ask to merge forward and no review decision are null, as no
+	// head run is.
+	var conflictRead, mergeForward, reviewDecision []byte
 	if pr.ConflictRead != nil {
 		if conflictRead, err = json.Marshal(pr.ConflictRead); err != nil {
-			return fmt.Errorf("put pull request for %s: encode the first conflicting read: %w", pr.Issue, err)
+			return fmt.Errorf("%s: encode the first conflicting read: %w", describe, err)
 		}
 	}
 	if pr.MergeForward != nil {
 		if mergeForward, err = json.Marshal(pr.MergeForward); err != nil {
-			return fmt.Errorf("put pull request for %s: encode the ask to merge forward: %w", pr.Issue, err)
+			return fmt.Errorf("%s: encode the ask to merge forward: %w", describe, err)
 		}
 	}
-	// The row is the pull request of its branch (the key is the issue and the branch, and 0004's
-	// pull_requests_repo_branch holds one row for each branch), so a write replaces the row of its
-	// branch, as a write of an issue's one row always replaced it. No task is written: a row's task is
-	// the task whose branch it is on, read at each read (PullRequest.Task), so the record holds no
-	// task that a branch given to a task after the write contradicts.
+	if pr.ReviewDecision != nil {
+		if reviewDecision, err = json.Marshal(pr.ReviewDecision); err != nil {
+			return fmt.Errorf("%s: encode the review decision: %w", describe, err)
+		}
+	}
+	// The row is the pull request of its repository and number (the key, and the unique index on
+	// the lowered repository and the number, migration 20261127031536), so a write replaces the row
+	// of that pull request in any spelling of its repository, and writes the spelling it carries,
+	// which what the pull request remembers of its settled heads follows (on update cascade). The
+	// row keeps the issue it was written for: a pull request belongs to one issue, and no write
+	// moves it to another (dispatch://INFRA-5910 decision 8). No task and no link is written: a
+	// row's task is the task whose branch it is on and its link the link its issue holds, each read
+	// at each read (PullRequest.Task, PullRequest.Linked).
 	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
 	// attempt since dispatch://INFRA-956 R4, and nothing reads them at all since a CI result
 	// stopped moving an issue (dispatch://INFRA-714/spec R1), so they are kept rather than
@@ -1355,14 +1614,15 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	// default (migration 0004), so a new row is given its zero here and no write ever touches it
 	// again; planned_red, required, required_workflows and required_workflows_head are stopped too
 	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
-	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
+	var issue string
+	err = tx.QueryRow(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, statuses, pushes, head_moves,
 		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, reviews_requested, head_checks,
 		null_mergeable_reads, null_mergeable_since, evidence_read_at, state_read_at, conflicting_head, merge_sha, conflict_read,
-		merge_forward, fix_attempts, blocked_attempts, head_counted)
+		merge_forward, review_decision, fix_attempts, blocked_attempts, head_counted)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, 0, 0, '')
-		on conflict (issue, branch) do update set repo = excluded.repo, number = excluded.number,
+		$27, $28, $29, $30, $31, $32, $33, $34, 0, 0, '')
+		on conflict ((lower(repo)), number) do update set repo = excluded.repo, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
 		failing = excluded.failing, cancelled = excluded.cancelled, check_runs = excluded.check_runs,
@@ -1375,49 +1635,55 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		null_mergeable_since = excluded.null_mergeable_since, evidence_read_at = excluded.evidence_read_at,
 		state_read_at = excluded.state_read_at,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha,
-		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward`,
+		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward, review_decision = excluded.review_decision
+		returning issue`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, statuses, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
 		pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.HeadChecks, pr.NullMergeableReads, pr.NullMergeableSince, pr.EvidenceReadAt,
 		pr.StateReadAt,
-		pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward,
-	)
+		pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward, reviewDecision,
+	).Scan(&issue)
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
+		return fmt.Errorf("%s: %w", describe, err)
 	}
+	noteIssueWrite(ctx, issue)
 	if err := putSettledHeads(ctx, tx, pr); err != nil {
-		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
+		return fmt.Errorf("%s: %w", describe, err)
 	}
 	return nil
 }
 
-// SetPullRequestBaseMoved records that the base of issue's pull request on branch moved to after.
-// It names the issue among the writes of ctx only where a row matched (fact_writes.go): a branch
-// the record holds no pull request on writes nothing, and keeps no mark.
-func (s *Postgres) SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, issue, branch, after string) error {
-	tag, err := tx.Exec(ctx, `update pull_requests set base_moved = $3 where issue = $1 and branch = $2`, issue, branch, after)
-	if err != nil {
-		return fmt.Errorf("record that the base of %s's pull request on %s moved to %s: %w", issue, branch, after, err)
-	}
-	if tag.RowsAffected() > 0 {
-		noteIssueWrite(ctx, issue)
-	}
-	return nil
+// SetPullRequestBaseMoved records that the base of the pull request number of repo moved to after,
+// repo compared without case. It names the pull request's issue among the writes of ctx only where
+// a row matched (fact_writes.go): a pull request the record holds no row of writes nothing, and
+// keeps no mark.
+func (s *Postgres) SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, repo string, number int, after string) error {
+	return writePullRequestOf(ctx, tx, fmt.Sprintf("record that the base of pull request %s#%d moved to %s", repo, number, after),
+		`update pull_requests set base_moved = $3 where lower(repo) = lower($1) and number = $2 returning issue`, repo, number, after)
 }
 
-// DeletePullRequest deletes issue's pull request on branch. It names the issue among the writes
-// of ctx only where it deleted a row (fact_writes.go): a branch the record holds no pull request
-// on deletes nothing, and keeps no mark.
-func (s *Postgres) DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error {
-	tag, err := tx.Exec(ctx, `delete from pull_requests where issue = $1 and branch = $2`, issue, branch)
-	if err != nil {
-		return fmt.Errorf("delete the pull request of %s on %s: %w", issue, branch, err)
+// DeletePullRequest deletes the pull request number of repo, repo compared without case. It names
+// the pull request's issue among the writes of ctx only where it deleted a row (fact_writes.go): a
+// pull request the record holds no row of deletes nothing, and keeps no mark.
+func (s *Postgres) DeletePullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) error {
+	return writePullRequestOf(ctx, tx, fmt.Sprintf("delete pull request %s#%d", repo, number),
+		`delete from pull_requests where lower(repo) = lower($1) and number = $2 returning issue`, repo, number)
+}
+
+// writePullRequestOf runs statement, a write of one pull request's row that returns its issue,
+// and names that issue among the writes of ctx where it matched a row (noteIssueWrite).
+func writePullRequestOf(ctx context.Context, tx pgx.Tx, describe, statement string, args ...any) error {
+	var issue string
+	err := tx.QueryRow(ctx, statement, args...).Scan(&issue)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("%s: %w", describe, err)
 	}
-	if tag.RowsAffected() > 0 {
-		noteIssueWrite(ctx, issue)
-	}
+	noteIssueWrite(ctx, issue)
 	return nil
 }
 
@@ -1989,7 +2255,9 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// An open pull request is kept across a new generation, but the last one's reading of it is
 		// not: its checks settlement is of a head nobody has judged since, and the
 		// review round's decision goes with the phases below, and so does its head run, whose
-		// replay would put the old generation's judgement back. Its pushes stay, each a fact about
+		// replay would put the old generation's judgement back. The review decision of the pull
+		// request goes too (PullRequest.ReviewDecision), with the round's own: it is the decision of
+		// a round of the old run. Its pushes stay, each a fact about
 		// two commits, and so does its newest review, which orders every review it will have, and
 		// the checks its base branch requires, which belong to the base, not the generation. So
 		// does conflicting_head, the head the daemon last judged conflicting with its base: like
@@ -2007,7 +2275,12 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// reads none of them (loadSettledHeads).
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
-			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
+			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null, review_decision = null where " + where,
+		// The issue's links stay: they are Dispatch's, and outlive a run. What the old run told of
+		// them goes (PullRequestLink.ToldAt), so the new run tells its architect of each link that
+		// holds its close once again (dispatch://INFRA-5910 decision 23). Each link keeps its
+		// refusal, which is a fact of the pull request and not of the run.
+		"update pull_request_links set told_at = null where told_at is not null and " + where,
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the first run of the re-admitted tree — its promotion, or
@@ -2093,25 +2366,40 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 	return nil
 }
 
-// scanPullRequest reads one row of pullRequestColumns, its task derived from the plan of its issue
-// and its branch (StoredPlan.TaskOfBranch).
-func scanPullRequest(row scanner) (*PullRequest, error) {
-	var pr PullRequest
-	var tasks, failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward []byte
-	if err := row.Scan(&pr.Issue, &tasks, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
-		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
+// scanPullRequest reads one row of pullRequestColumns, its task derived from the plan of its
+// issue, its branch and its repository (StoredPlan.TaskOfBranch), and beside the record whether a
+// task of the plan holds its branch in its issue's repository and whether it is of that repository
+// (pullRequestRow).
+func scanPullRequest(row scanner) (*pullRequestRow, error) {
+	var scanned pullRequestRow
+	pr := &scanned.PullRequest
+	var plan, failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward, reviewDecision []byte
+	if err := row.Scan(&pr.Issue, &plan, &pr.Linked, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA,
+		&pr.HeadUpdatedAt, &failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
 		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.ReviewsRequested, &pr.HeadChecks, &pr.NullMergeableReads,
 		&pr.NullMergeableSince, &pr.EvidenceReadAt,
 		&pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
-		&conflictRead, &mergeForward); err != nil {
+		&conflictRead, &mergeForward, &reviewDecision); err != nil {
 		return nil, err
 	}
-	var stored StoredPlan
-	if err := json.Unmarshal(tasks, &stored.Tasks); err != nil {
-		return nil, fmt.Errorf("decode the tasks of the plan of %s: %w", pr.Issue, err)
+	var of struct {
+		GitHubRepo string     `json:"githubRepo"`
+		Repo       string     `json:"repo"`
+		Tasks      []PlanTask `json:"tasks"`
 	}
-	pr.Task, _ = stored.TaskOfBranch(pr.Issue, pr.Branch)
+	if err := json.Unmarshal(plan, &of); err != nil {
+		return nil, fmt.Errorf("decode the plan of %s: %w", pr.Issue, err)
+	}
+	issue := Issue{Key: pr.Issue, Repo: of.Repo, GitHubRepo: of.GitHubRepo}
+	var stored *StoredPlan
+	if len(of.Tasks) > 0 {
+		stored = &StoredPlan{Tasks: of.Tasks}
+		pr.Task, _ = stored.TaskOfBranch(issue, pr.Repo, pr.Branch)
+	}
+	scanned.held = stored.HoldsBranch(issue, pr.Repo, pr.Branch)
+	scanned.ownRepo = inIssueRepository(issue, pr.Repo)
+	scanned.noPlan = stored == nil
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
 		return nil, fmt.Errorf("decode failing checks: %w", err)
 	}
@@ -2145,7 +2433,12 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 			return nil, fmt.Errorf("decode the ask to merge forward: %w", err)
 		}
 	}
-	return &pr, nil
+	if reviewDecision != nil {
+		if err := json.Unmarshal(reviewDecision, &pr.ReviewDecision); err != nil {
+			return nil, fmt.Errorf("decode the review decision: %w", err)
+		}
+	}
+	return &scanned, nil
 }
 
 const productionCheckColumns = `issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at, role, looks, look_open,

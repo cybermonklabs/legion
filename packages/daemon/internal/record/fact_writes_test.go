@@ -312,18 +312,18 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "a pull request deleted", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPullRequest(ctx, tx, pr))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.DeletePullRequest(ctx, tx, key, pr.Branch))
+			must(t, store.DeletePullRequest(ctx, tx, pr.Repo, pr.Number))
 		}, marks: true, issue: true},
 		{name: "control: a pull request deleted that the record does not hold", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.DeletePullRequest(ctx, tx, key, pr.Branch))
+			must(t, store.DeletePullRequest(ctx, tx, pr.Repo, pr.Number))
 		}},
 		{name: "a pull request's base moved", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPullRequest(ctx, tx, pr))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.SetPullRequestBaseMoved(ctx, tx, key, pr.Branch, "main"))
+			must(t, store.SetPullRequestBaseMoved(ctx, tx, pr.Repo, pr.Number, "main"))
 		}, marks: true, issue: true},
-		{name: "control: the base moved of a branch the record holds no pull request on", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.SetPullRequestBaseMoved(ctx, tx, key, pr.Branch, "main"))
+		{name: "control: the base moved of a pull request the record does not hold", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetPullRequestBaseMoved(ctx, tx, pr.Repo, pr.Number, "main"))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -352,7 +352,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		{SHA: "c2d3e4", Before: "b1c2d3"},
 	}
 	pr := PullRequest{
-		Issue: issue.Key, Repo: "sjawhar/legion", Number: 1243, Branch: "legion/LEGION-208",
+		Issue: issue.Key, Repo: issue.GitHubRepo, Number: 1243, Branch: "legion/LEGION-208",
 		HeadSHA: "b1c2d3", HeadUpdatedAt: updatedAt,
 		Failing: []string{"unit"}, Cancelled: []string{"e2e"}, CheckedHead: "b1c2d3",
 		CheckRuns: []AttemptRun{{Name: "unit", ID: 91}, {Name: "lint", ID: 92}}, Generation: 4,
@@ -387,6 +387,10 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		ConflictRead: &ConflictRead{Head: "b1c2d3", Base: "main", At: updatedAt.Add(2 * time.Minute)},
 		MergeForward: &MergeForward{Head: "a0b1c2", Base: "main", Phase: phase.Accepting, Why: ConflictCheckNotGreen,
 			AskedAt: updatedAt.Add(-time.Hour), Landed: "b1c2d3", ReviewAsked: true, Earlier: []LandedMergeForward{{Head: "8e7d6c", Landed: "9f8e7d"}}},
+		// The review decision of the pull request is a jsonb column too (migration 20261127031536),
+		// read back with the stuck marks it carries.
+		ReviewDecision: &ReviewDecision{State: "approved", Body: "ship it", Head: "b1c2d3", ToldStuckHead: "b1c2d3",
+			ToldStuck: []StuckTold{{State: MergeStateBlocked}}},
 		// The moment of the last read that answered is read back as it was written, so the column
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
@@ -457,10 +461,12 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		if !samePullRequest(*gotPR, pr) {
 			t.Fatalf("pull request = %#v, want %#v", gotPR, pr)
 		}
-		byBranch, err := records.PullRequestByBranch(ctx, tx, pr.Repo, pr.Branch)
+		// The pull request has merged, so it is no open pull request of its branch, the one read that
+		// has only a branch answers (decision 20 of dispatch://INFRA-5910).
+		byBranch, err := records.OpenPullRequestsOnBranch(ctx, tx, pr.Repo, pr.Branch)
 		must(t, err)
-		if !samePullRequest(*byBranch, pr) {
-			t.Fatalf("pull request by branch = %#v, want %#v", byBranch, pr)
+		if len(byBranch) != 0 {
+			t.Fatalf("open pull requests on %s = %#v, want none: %s#%d merged", pr.Branch, byBranch, pr.Repo, pr.Number)
 		}
 		byNumber, err := records.PullRequestByNumber(ctx, tx, pr.Repo, pr.Number)
 		must(t, err)
@@ -516,7 +522,7 @@ func TestARowFromBeforeRepeatsReadsAsMovesNotPushed(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
 	issue := issueFixture("LEGION-208")
-	pr := PullRequest{Issue: issue.Key, Repo: "sjawhar/legion", Number: 1243, Branch: "legion/LEGION-208", HeadSHA: "b1", State: PullRequestOpen,
+	pr := PullRequest{Issue: issue.Key, Repo: issue.GitHubRepo, Number: 1243, Branch: "legion/LEGION-208", HeadSHA: "b1", State: PullRequestOpen,
 		Failing: []string{}, Cancelled: []string{}, Run: &HeadRun{Anchor: Judgement{HeadSHA: "a0"}, Steps: []RunStep{{Head: "b1"}}}}
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
@@ -549,7 +555,7 @@ func TestAPullRequestKeepsASkippedRunAndItsWordThroughTheStore(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
 	issue := issueFixture("LEGION-208")
-	pr := PullRequest{Issue: issue.Key, Repo: "sjawhar/legion", Number: 1243, Branch: "legion/LEGION-208", HeadSHA: "b1", CheckedHead: "b1",
+	pr := PullRequest{Issue: issue.Key, Repo: issue.GitHubRepo, Number: 1243, Branch: "legion/LEGION-208", HeadSHA: "b1", CheckedHead: "b1",
 		State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}, Generation: 2, Snapshot: "snapshot-2",
 		Statuses: []CommitStatus{}, Pushes: []ClassifiedPush{}, Moves: []Move{},
 		CheckRuns: []AttemptRun{
@@ -892,7 +898,7 @@ func samePullRequest(got, want PullRequest) bool {
 		got.ConflictingHead == want.ConflictingHead &&
 		got.StateReadAt.Equal(want.StateReadAt) &&
 		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward) &&
-		reflect.DeepEqual(got.SettledHeads, want.SettledHeads)
+		reflect.DeepEqual(got.ReviewDecision, want.ReviewDecision) && reflect.DeepEqual(got.SettledHeads, want.SettledHeads)
 }
 
 // A production check reads back every field as written — the role that works it and the wake it
@@ -1063,7 +1069,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	records := NewStore()
 	issue := issueFixture("LEGION-285")
 	pr := PullRequest{
-		Issue: issue.Key, Repo: "sjawhar/legion", Number: 1359, Branch: "legion/LEGION-285",
+		Issue: issue.Key, Repo: issue.GitHubRepo, Number: 1359, Branch: "legion/LEGION-285",
 		HeadSHA: "red-tests", HeadUpdatedAt: time.Date(2026, 9, 25, 21, 0, 0, 0, time.UTC),
 		CheckedHead: "red-tests", Failing: []string{"test"}, CheckRuns: []AttemptRun{},
 		Statuses:     []CommitStatus{{Context: "ci", State: CommitStatusFailure, CreatedAt: time.Date(2026, 9, 25, 20, 59, 0, 0, time.UTC), Head: "red-tests"}},
@@ -1072,10 +1078,16 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		ConflictRead: &ConflictRead{Head: "red-tests", Base: "main", At: time.Date(2026, 9, 25, 21, 1, 0, 0, time.UTC)},
 		MergeForward: &MergeForward{Head: "fix", Base: "main", Phase: phase.Reviewing, Why: ConflictRequiresCurrent,
 			AskedAt: time.Date(2026, 9, 25, 20, 58, 0, 0, time.UTC), Landed: "red-tests"},
+		// The review decision of the old run goes with the run, and the link the issue holds to
+		// another pull request stays with its told mark cleared (dispatch://INFRA-5910 decision 23).
+		ReviewDecision: &ReviewDecision{State: "approved", Head: "red-tests"},
 	}
+	told := time.Date(2026, 9, 25, 21, 2, 0, 0, time.UTC)
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		must(t, records.PutPullRequest(ctx, tx, pr))
+		must(t, records.ReplacePullRequestLinks(ctx, tx, issue.Key, []PullRequestLink{{Repo: "acme/gadgets", Number: 7}}))
+		must(t, records.SetPullRequestLinkTold(ctx, tx, "acme/gadgets", 7, &told))
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
@@ -1083,6 +1095,14 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		must(t, err)
 		if got == nil {
 			t.Fatal("the open pull request is gone, want it kept")
+		}
+		if got.ReviewDecision != nil {
+			t.Fatalf("after ClearGeneration: the review decision = %+v, want none: it was the old run's", *got.ReviewDecision)
+		}
+		links, err := records.PullRequestLinksOf(ctx, tx, issue.Key)
+		must(t, err)
+		if len(links) != 1 || links[0].Repo != "acme/gadgets" || links[0].Number != 7 || links[0].ToldAt != nil {
+			t.Fatalf("after ClearGeneration: the links = %+v, want the one link kept with its told mark cleared", links)
 		}
 		if got.CheckedHead != "" || len(got.Failing) != 0 || len(got.Statuses) != 0 || got.Run != nil {
 			t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v statuses=%v run=%+v, want \"\", none, none and nil",
@@ -2448,7 +2468,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
 			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward", "review_decision"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "added", "earlier_givers"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "branch", "join_conflicts", "hold_reason", "step_wait", "step_wait_since", "start_reason", "start_from", "join_unmerged", "base", "parts_conflicts"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key", "agent"},
@@ -2466,7 +2486,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
 			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},
 		"cleared_pull_requests":      {"repo", "number", "issue", "head_updated_at", "cleared_at"},
-		"pull_request_settled_heads": {"issue", "kind", "position", "head", "fence", "branch"},
+		"pull_request_settled_heads": {"repo", "number", "kind", "position", "head", "fence"},
+		"pull_request_links":         {"issue", "repo", "number", "refused", "told_at"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {
@@ -2921,10 +2942,10 @@ func TestThePullRequestReadsFindTheRowInAnySpelling(t *testing.T) {
 			if byNumber == nil || byNumber.Issue != pr.Issue {
 				t.Fatalf("PullRequestByNumber(%q, %d) = %#v, want the row of %s", name, pr.Number, byNumber, pr.Issue)
 			}
-			byBranch, err := records.PullRequestByBranch(ctx, tx, name, pr.Branch)
+			byBranch, err := records.OpenPullRequestsOnBranch(ctx, tx, name, pr.Branch)
 			must(t, err)
-			if byBranch == nil || byBranch.Issue != pr.Issue {
-				t.Fatalf("PullRequestByBranch(%q, %q) = %#v, want the row of %s", name, pr.Branch, byBranch, pr.Issue)
+			if len(byBranch) != 1 || byBranch[0].Issue != pr.Issue {
+				t.Fatalf("OpenPullRequestsOnBranch(%q, %q) = %#v, want the row of %s", name, pr.Branch, byBranch, pr.Issue)
 			}
 			recorded, err := PullRequestRecorded(ctx, tx, name, pr.Number)
 			must(t, err)
@@ -2937,11 +2958,11 @@ func TestThePullRequestReadsFindTheRowInAnySpelling(t *testing.T) {
 		other := "cybermonklabs/legion"
 		byNumber, err := records.PullRequestByNumber(ctx, tx, other, pr.Number)
 		must(t, err)
-		byBranch, err := records.PullRequestByBranch(ctx, tx, other, pr.Branch)
+		byBranch, err := records.OpenPullRequestsOnBranch(ctx, tx, other, pr.Branch)
 		must(t, err)
 		recorded, err := PullRequestRecorded(ctx, tx, other, pr.Number)
 		must(t, err)
-		if byNumber != nil || byBranch != nil || recorded {
+		if byNumber != nil || len(byBranch) != 0 || recorded {
 			t.Fatalf("the reads of %s = %#v, %#v, %v; want nothing: it is another repository", other, byNumber, byBranch, recorded)
 		}
 	})

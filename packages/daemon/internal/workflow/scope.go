@@ -305,10 +305,10 @@ func (e *Engine) scopeOfPullRequest(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil || stored == nil {
 		return noPlanScope(issue), err == nil, err
 	}
-	task, ok := stored.TaskOfBranch(issue.Key, pr.Branch)
+	task, ok := stored.TaskOfBranch(issue, pr.Repo, pr.Branch)
 	if !ok {
 		e.logOnCommit(ctx, "workflow: a fact of a pull request on a branch that no one task of its issue holds moves no task",
-			"issue", issue.Key, "pullRequest", pr.Number, "branch", pr.Branch, "tasks", stored.TasksOfBranch(issue.Key, pr.Branch))
+			"issue", issue.Key, "pullRequest", pr.Number, "branch", pr.Branch, "tasks", stored.TasksOfBranch(issue, pr.Repo, pr.Branch))
 		return TaskScope{}, false, nil
 	}
 	s, ok := scopeOn(issue, stored, task)
@@ -341,7 +341,7 @@ func (e *Engine) openStepsOfPullRequest(ctx context.Context, tx pgx.Tx, issue re
 	if err != nil || stored == nil {
 		return open, err
 	}
-	tasks := stored.TasksOfBranch(issue.Key, pr.Branch)
+	tasks := stored.TasksOfBranch(issue, pr.Repo, pr.Branch)
 	return slices.DeleteFunc(open, func(step record.RunningStep) bool { return !slices.Contains(tasks, step.Task) }), nil
 }
 

@@ -135,6 +135,15 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		// Each payload that names a pull request by its number names its repository too, in
+		// another repository than the issue's as much as in the issue's own (dispatch://INFRA-5910
+		// decision 16), and the release before's row, with none, round-trips above.
+		MergeQueueRead{Repo: "acme/gadgets", Number: 42, Head: "c0de"},
+		MergeQueueRemoval{Repo: "acme/gadgets", Number: 42, Head: "c0de"},
+		ConflictConfirm{Repo: "acme/gadgets", Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
+		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing,
+			Repo: "acme/gadgets", PullRequest: 42, Why: ConflictCheckNotGreen},
+		TaskPullRequestsClose{Generation: 2, Repo: "acme/widgets", Numbers: []int{43, 44}, Comment: "Merged in #45."},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -622,6 +631,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an update ask with no round", payload: UpdateAsk{Role: claim.RoleImplementer, Pod: "9d3f0c7a", Text: "Push your work."}, reason: "names the round it asks for"},
 		{name: "an update ask with no text", payload: UpdateAsk{Role: claim.RoleImplementer, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a"}, reason: "carries the text the sweep built"},
 		{name: "a merge-queue read of no pull request", payload: MergeQueueRead{Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
+		{name: "a linked pull request's read of no repository", payload: PullRequestLinkRead{Number: 7}, reason: "a linked pull request's read names the repository and the number"},
+		{name: "a linked pull request's read of no number", payload: PullRequestLinkRead{Repo: "acme/gadgets"}, reason: "a linked pull request's read names the repository and the number"},
 		{name: "a merge-queue read of a negative pull request", payload: MergeQueueRead{Number: -42, Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
@@ -934,6 +945,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "an update ask with an unknown field", row: OutboxRow{ID: 59, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work.","reasons":"image a, now b"}`)}, reason: "unknown field"},
 		{name: "a merge-queue read with no head", row: OutboxRow{ID: 58, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":42}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
+		{name: "a linked pull request's read of no repository", row: OutboxRow{ID: 60, Kind: OutboxKindPullRequestLinkRead, Payload: json.RawMessage(`{"number":7}`)}, reason: "a linked pull request's read names the repository and the number"},
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
 		{name: "a merge-holds change of no project", row: OutboxRow{ID: 62, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{}`)}, reason: "a merge-holds change names the project"},
@@ -1478,6 +1490,12 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "task d of LEGION-208 waits for the join of its needs: GitHub has no branch legion/LEGION-208.c of its need c. Push that branch again, or stop the task with stop_task."},
 		{Kind: "pull-request-close-refused", Role: claim.RoleArchitect,
 			Reason: `GitHub refused Legion's close of pull request #43 of LEGION-208, as it would refuse it again, so it stays open and Legion will not try again. Close it with gh pr close where its work should not land. The comment Legion was writing: "Merged in #45." GitHub answered: 403 to PATCH /pulls/43: {"message":"Resource not accessible by integration"}`},
+		{Kind: "pr-closed-others-open", Role: claim.RoleArchitect,
+			Reason: "acme/widgets#41 of LEGION-208 was closed without a merge. These pull requests of LEGION-208 are still open: acme/gadgets#7."},
+		{Kind: "pr-holds-close", Role: claim.RoleArchitect,
+			Reason: "acme/gadgets#7 holds the close of LEGION-208: it is open, and LEGION-208 links it. Remove its link, or have it merged."},
+		{Kind: "pr-link-refused", Role: claim.RoleArchitect,
+			Reason: "LEGION-208 links acme/gadgets#7, whose head is in a fork, so it is no pull request of LEGION-208."},
 		{Kind: WorkspaceKeptNotice, Role: claim.RoleArchitect,
 			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
 		{Kind: WorkspaceTakenNotice, Role: claim.RoleArchitect,

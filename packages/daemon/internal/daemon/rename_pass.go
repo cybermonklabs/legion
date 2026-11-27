@@ -314,7 +314,7 @@ func (p renamePass) write(ctx context.Context, issue, from, to string) (record.R
 		if written, err = record.RenameIssueRepository(ctx, tx, issue, from, to); err != nil {
 			return err
 		}
-		wrote := written.Deleted != nil
+		wrote := len(written.Deleted) > 0
 		for _, rows := range written.Rows {
 			wrote = wrote || rows > 0
 		}
@@ -323,9 +323,9 @@ func (p renamePass) write(ctx context.Context, issue, from, to string) (record.R
 		}
 		deleted := written.Deleted
 		store.OnCommit(ctx, func() {
-			if deleted != nil {
-				p.log.Warn(renameDeletedLine, "issue", deleted.Issue, "kept", deleted.Holder, "repo", deleted.Repo, "to", deleted.To,
-					"branch", deleted.Branch, "number", deleted.Number)
+			for _, one := range deleted {
+				p.log.Warn(renameDeletedLine, "issue", one.Issue, "kept", one.Holder, "repo", one.Repo, "to", one.To,
+					"branch", one.Branch, "number", one.Number)
 			}
 			p.written()
 		})

@@ -99,8 +99,10 @@ func TestTwoTasksOfOneIssueKeepTwoPullRequests(t *testing.T) {
 // start gives it legion/LEGION-208 (AssignTaskBranch), and #41 is a's from then on, read by task,
 // by number and among the issue's; b's merge still has none, since b holds no branch. #42,
 // recorded on legion/LEGION-208.b while b waits with no branch, is no task's, and b's once b's
-// start gives it that branch, and it is then the merge's. A pull request opened again on
-// legion/LEGION-208 takes #41's row, one row for each branch.
+// start gives it that branch, and it is then the merge's. A second pull request opened on
+// legion/LEGION-208, #44, keeps a row of its own beside #41 (the record is keyed by the repository
+// and the number, migration 20261127031536), and #41 stays a's own: neither is on a's base, so the
+// first opened is (dispatch://INFRA-5910 decision 5), and #44 is another pull request of a.
 //
 // The fault it catches is a task the row stored when it was written (its control: the reads on
 // the task the write named, so #41 reads "" after a takes its branch).
@@ -192,6 +194,6 @@ func TestThePullRequestOfABranchIsTheTaskThatHoldsIt(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutPullRequest(ctx, tx, again))
 	})
-	read("a pull request opened again on a's branch", "a", &again)
-	every("a pull request opened again on a's branch", []string{"a#LEGION-208", "b#LEGION-208.b"})
+	read("a second pull request opened on a's branch", "a", &first)
+	every("a second pull request opened on a's branch", []string{"a#LEGION-208", "a#LEGION-208", "b#LEGION-208.b"})
 }

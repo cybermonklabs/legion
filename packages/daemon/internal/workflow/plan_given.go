@@ -455,7 +455,7 @@ func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact i
 				return err
 			}
 		}
-		if err := e.store.DeletePullRequest(ctx, tx, fact.Issue, pr.Branch); err != nil {
+		if err := e.store.DeletePullRequest(ctx, tx, pr.Repo, pr.Number); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: the pull request of a task the plan removed is deleted from the record, and closed where it was open",

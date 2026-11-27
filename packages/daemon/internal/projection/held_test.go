@@ -136,6 +136,10 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	childAtWork := treeMember("LEGION-196", "LEGION-195", "LEGION-195", "in_progress", phase.Implementing)
 	stoppedTask := treeRoot("LEGION-197", "needs_review", phase.Held)
 	stoppedTask.Hold = &record.Hold{From: phase.Merging, Reason: record.HoldTaskStopped}
+	// A root whose close waits for a pull request of its set, held from its merge for it with no
+	// merge in hand (dispatch://INFRA-5910 decision 9); merging keeps no row either.
+	heldForPullRequests := treeRoot("LEGION-198", "needs_review", phase.Held)
+	heldForPullRequests.Hold = &record.Hold{From: phase.Merging, Reason: record.HoldForPullRequests}
 	// A running tree under an open gate whose sub-parent held a phase start because a child of it
 	// is still open: it stands in awaiting_children, holding no slot, and its held-by is that open
 	// child, LEGION-187, which Dispatch shows at todo under it (record.LineFacts.StartedParentWaits).
@@ -145,7 +149,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	store := projectionStore{
 		issues: []record.Issue{closedRoot, closedMember, parkedRoot, parkedMember, unlabelled, queuedRoot, underQueued,
 			askingRoot, askingMember, gatedRoot, gatedMember, openRoot, blockedChild, merging, beneathMerging, unplaced,
-			slotHolder, linkedRoot, parentOfOpen, answeredRoot, heldParent, childAtWork, stoppedTask, waitingRoot, waitingParent},
+			slotHolder, linkedRoot, parentOfOpen, answeredRoot, heldParent, childAtWork, stoppedTask, heldForPullRequests, waitingRoot, waitingParent},
 		slots: []record.Slot{
 			{Issue: "LEGION-150", Index: 0, AdmittedAt: projectedAt},
 			{Issue: "LEGION-160", Index: 1, AdmittedAt: projectedAt},
@@ -153,7 +157,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: projectedAt},
 			{Issue: "LEGION-196", Index: 6, AdmittedAt: projectedAt},
 		},
-		lifecycles: []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-185", "LEGION-190", "LEGION-195", "LEGION-197"},
+		lifecycles: []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-185", "LEGION-190", "LEGION-195", "LEGION-197", "LEGION-198"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-150": openGate("LEGION-150", opened),
 			"LEGION-160": shutGate("LEGION-160"),
@@ -162,6 +166,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 			"LEGION-185": openGate("LEGION-185", opened),
 			"LEGION-195": openGate("LEGION-195", opened),
 			"LEGION-197": openGate("LEGION-197", opened),
+			"LEGION-198": openGate("LEGION-198", opened),
 		},
 		// The mirror names a Dispatch parent only where this fixture means the children-first
 		// rule or a started parent's wait to read one: the child a link holds, which is the open
@@ -200,6 +205,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		{Issue: "LEGION-186", Reason: record.HeldAwaitingChildren, HeldBy: []string{"LEGION-187"}},
 		{Issue: "LEGION-195", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-196"}},
 		{Issue: "LEGION-197", Reason: record.HeldTaskStopped},
+		{Issue: "LEGION-198", Reason: record.HeldPullRequests},
 	}
 	if !reflect.DeepEqual(got.Admission.Held, wantHeld) {
 		t.Fatalf("admission.held = %#v, want %#v", got.Admission.Held, wantHeld)

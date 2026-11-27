@@ -548,7 +548,7 @@ func (e *Engine) closeHeldPullRequests(ctx context.Context, tx pgx.Tx, s TaskSco
 	}
 	var open []int
 	for _, pr := range prs {
-		if pr.State == record.PullRequestOpen && stored.HoldsBranch(s.issue.Key, pr.Branch) && (last || slices.Contains(held, pr.Task)) {
+		if pr.State == record.PullRequestOpen && stored.HoldsBranch(s.issue, pr.Repo, pr.Branch) && (last || slices.Contains(held, pr.Task)) {
 			open = append(open, pr.Number)
 		}
 	}

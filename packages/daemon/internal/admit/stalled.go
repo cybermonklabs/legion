@@ -539,6 +539,7 @@ var silencedTree = map[record.HeldReason]bool{
 	record.HeldAcceptedAncestor:    false,
 	record.HeldChildrenBeforeRetro: false,
 	record.HeldTaskStopped:         false,
+	record.HeldPullRequests:        false,
 	record.HeldAtWork:              false,
 	record.HeldUnclassified:        false,
 }

@@ -639,7 +639,7 @@ func (e *Engine) checksSteps(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err != nil || stored == nil {
 		return held, err
 	}
-	tasks := stored.TasksOfBranch(issue.Key, pr.Branch)
+	tasks := stored.TasksOfBranch(issue, pr.Repo, pr.Branch)
 	return slices.DeleteFunc(held, func(step record.RunningStep) bool { return !slices.Contains(tasks, step.Task) }), nil
 }
 

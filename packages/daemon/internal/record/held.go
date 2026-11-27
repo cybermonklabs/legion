@@ -76,6 +76,15 @@ const (
 	// a gap and reads unclassified. It stands beside children_before_retro, for the same reasons;
 	// the two are never true of one issue, since an issue holds one hold reason.
 	HeldTaskStopped HeldReason = "task_stopped"
+	// HeldPullRequests is an issue held for pull-requests (HoldForPullRequests) that keeps no slot
+	// where it stands: its close waits for a pull request of its set, a linked one still open, one
+	// whose read is still owed, or one whose repository the daemon does not serve or cannot read,
+	// and no merge is in hand to wait with (dispatch://INFRA-5910 decision 9). No issue holds it,
+	// so heldBy is empty: the pull requests that hold the close are the architect's notice's to
+	// name (`pr-holds-close`). A merge that lands or a link that goes ends the hold, and the issue
+	// closes. It stands beside task_stopped, for the same reasons, and the two are never true of one
+	// issue, since an issue holds one hold reason.
+	HeldPullRequests HeldReason = "pull_requests"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
@@ -118,6 +127,7 @@ var HeldReasons = []HeldReason{
 	HeldAcceptedAncestor,
 	HeldChildrenBeforeRetro,
 	HeldTaskStopped,
+	HeldPullRequests,
 	HeldAtWork,
 	HeldUnclassified,
 }
@@ -385,6 +395,8 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts.Facts)
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
+	case HeldFor(issue, HoldForPullRequests) && !KeepsSlot(issue):
+		return HeldPullRequests, nil
 	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from accepting, retro or
 	// merging keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held

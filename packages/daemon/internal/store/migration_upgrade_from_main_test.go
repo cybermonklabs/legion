@@ -127,6 +127,14 @@ func queueRowOfKind(store *Store, kind string) error {
 // 20261108000545 except the two this branch adds below it, which is what main has recorded and
 // what it leaves unrecorded. The negative control is the fix's own absence: with `claim_release`
 // out of either list, the Migrate below fails on the pending release row.
+//
+// The database also holds acme/widgets#42 twice, under two spellings of the repository, as rows of
+// two issues: main's key, one row for each issue, lets them stand. From 20261127031536 the record
+// keys a pull request by its repository and its number, the repository compared without case, so
+// the upgrade keeps the row in the spelling of its issue's repository, LEGION-208's, and deletes
+// the other. The control is that migration without its merge of the rows that collide without
+// case: its unique index on (lower(repo), number) refuses the second row (SQLSTATE 23505), and
+// Migrate fails.
 func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -170,6 +178,25 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 			t.Fatalf("queue the %s row main's daemon writes: %v", kind, err)
 		}
 	}
+	for _, spelled := range []struct{ issue, githubRepo, repo string }{
+		{"LEGION-208", "Acme/Widgets", "Acme/Widgets"},
+		{"LEGION-209", "acme/widgets", "ACME/WIDGETS"},
+	} {
+		for _, seed := range []struct {
+			sql  string
+			args []any
+		}{
+			{`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, github_repo)
+				values ($1, $1, 'LEGION', 'the issue', 'reviewing', 1, 'needs_review', 'A', 1, $2, $2)`, []any{spelled.issue, spelled.githubRepo}},
+			{`insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, fix_attempts,
+				blocked_attempts, check_runs, generation, snapshot, head_counted)
+				values ($1, $2, 42, 'legion/' || $1, 'h-' || $1, now(), '[]', 0, 0, '[]', 0, '', '')`, []any{spelled.issue, spelled.repo}},
+		} {
+			if _, err := store.pool.Exec(ctx, seed.sql, seed.args...); err != nil {
+				t.Fatalf("record %s's pull request as main's daemon did: %v", spelled.issue, err)
+			}
+		}
+	}
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("upgrade the database main migrated: %v", err)
@@ -203,6 +230,10 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 	if ended != 0 {
 		t.Fatalf("phase_ended rows after the upgrade = %d, want 20261119003157 to have deleted the one main's daemon queued", ended)
+	}
+	if got := rowsAsText(t, store, `select issue || ' ' || repo || '#' || number from pull_requests order by 1`); !slices.Equal(got,
+		[]string{"LEGION-208 Acme/Widgets#42"}) {
+		t.Fatalf("the pull requests after the upgrade = %q, want LEGION-208's row alone, in the spelling of its issue's repository", got)
 	}
 }
 
@@ -637,7 +668,7 @@ var stacksMigrations = []int{
 	20261117213545, 20261117223524, 20261117224125, 20261121165047, 20261121183336,
 	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431,
 	20261123154051, 20261123200630, 20261123221142, 20261124023617, 20261126144204,
-	20261126234607,
+	20261126234607, 20261127031536,
 }
 
 // stacksMigrationsUpTo is stacksMigrations numbered at or below newest.
