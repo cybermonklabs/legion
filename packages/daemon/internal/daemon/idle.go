@@ -328,11 +328,12 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	if !marked {
 		w.log.Debug("unowned release: the pod is kept", "issue", issue, "hold", decision.Hold.String())
-		// An operator's suspension keeps a pod a role's start waits for, a wait nothing ends
-		// until the operator acts: the controller is told once for each streak of the hold, at
-		// the pass that opens it (HeldFor names no streak of it yet), before it is recorded.
-		if decision.Hold == workflow.IdleHoldUnownedOperatorSuspended && quiet && len(waiting) > 0 &&
-			heldFor != workflow.IdleHoldUnownedOperatorSuspended.String() {
+		// A suspension the operator or the controller holds keeps a pod a role's start waits for,
+		// a wait nothing ends until one of them acts: the controller is told once for each streak
+		// of the hold, at the pass that opens it (HeldFor names no streak of it yet), before it is
+		// recorded.
+		if decision.Hold == workflow.IdleHoldUnownedSuspensionHolds && quiet && len(waiting) > 0 &&
+			heldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
 			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: waiting[0],
 				Reason: podWaitHeldWords(issue, waiting, suspended, w.idlePeriod)}
 			if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
