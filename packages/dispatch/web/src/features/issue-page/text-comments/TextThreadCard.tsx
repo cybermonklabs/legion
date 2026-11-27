@@ -187,6 +187,7 @@ export function TextThreadCard({
 }): ReactNode {
   const card = thread.thread;
   const root = card.root.comment.id;
+  const kind = card.kind ?? "comment";
   const replyKey = marginReplySendKey(card.key);
   // The card's reply composer stands open from the load (R4), so it is handed no agents, and reads
   // no list of them for its mention picker, until the reader uses it: the focus in a composer of
@@ -221,14 +222,16 @@ export function TextThreadCard({
         onToggle={keepOpen}
         owner={host.owner}
         pendingAction={host.pendingActionIds.has(root)}
-        rootActions={!thread.replyRoot && thread.kind !== "message"}
+        // A thread rooted in a message, or in a reply that quotes an item's block, draws no
+        // Resolve or Reopen (R4).
+        rootActions={thread.words.block === null && kind !== "message"}
         pulseOrphanBlock={false}
-        quoteLine={quoteLine(thread.quote)}
+        quoteLine={quoteLine(thread.words.quote)}
         // Under each comment of the thread, its lenses (R7): the card's one place under each
         // comment's own body, which the margin fills with deliveries where an owner has them.
         renderDeliveries={(comment: ThreadComment) => (
           <>
-            <ThreadActs comment={comment} kind={thread.kind} />
+            <ThreadActs comment={comment} kind={kind} />
             <ThreadLenses lenses={thread.lenses.get(comment.id)} />
           </>
         )}
@@ -255,7 +258,7 @@ function ThreadActs({
   kind,
 }: {
   readonly comment: ThreadComment;
-  readonly kind: TextThread["kind"];
+  readonly kind: "comment" | "message";
 }): ReactNode {
   const act = useContext(LensActContext);
   if (act === undefined) return null;

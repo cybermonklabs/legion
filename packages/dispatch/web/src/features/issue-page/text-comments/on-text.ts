@@ -150,6 +150,45 @@ export function onTextReads(
 }
 
 /**
+ * A copy of `answer` and `reads` in which the items `ids` names carry none of what this rule reads
+ * to put an item on text: the tree read's `anchor` of each one's node (with its
+ * `container_node_id`), the comments read's `anchor` and `node_anchor`, and the `reply_block` of
+ * the comments and the messages reads. Part T's `draftTurn` drafts each such item as a row, as it
+ * drafts an item on no text. A new input of the rule is taken off here, beside the rule.
+ */
+export function withoutTextFacts(
+  answer: TreeAnswer,
+  reads: IssueTreeReads,
+  ids: ReadonlySet<string>
+): { readonly answer: TreeAnswer; readonly reads: IssueTreeReads } {
+  const message = (read: ReadMessage): ReadMessage =>
+    ids.has(read.id) ? { ...read, reply_block: null } : read;
+  return {
+    answer: {
+      ...answer,
+      nodes: (answer.nodes ?? []).map((node) => {
+        if (!ids.has(node.id)) return node;
+        const { anchor: _anchor, ...rest } = node;
+        return rest;
+      }),
+    },
+    reads: {
+      ...reads,
+      comments: reads.comments?.map((comment) => {
+        if (!ids.has(comment.id)) return comment;
+        const { node_anchor: _nodeAnchor, ...rest }: ReadComment & NodeAnchored = comment;
+        return { ...rest, anchor: null, reply_block: null };
+      }),
+      messages: reads.messages?.map((thread) => ({
+        ...thread,
+        message: message(thread.message),
+        replies: thread.replies?.map(message) ?? null,
+      })),
+    },
+  };
+}
+
+/**
  * Whether `item` is on text, and how: the root of a thread with the place of its words, a reply
  * in a root's thread, or null for every other item - a post on the issue, a reply that names a
  * block with no quote, and a reply whose quoted item was deleted, which reads with no quote

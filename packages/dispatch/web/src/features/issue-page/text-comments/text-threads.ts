@@ -1,11 +1,9 @@
 import type { Anchor } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
-import { wordsOf } from "../../refs/tree-fragment";
 import { assemble, type IssueTreeReads, type TreeNode, treeWordsOf } from "../issue-tree";
-import { storedReading } from "../stored-reading";
 import type { Draft } from "../tree-drafts";
-import { readingOf, treeDraftsFrom, treeIdOf } from "../tree-read/tree-nodes";
+import { treeDraftsFrom, treeIdOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { GATES } from "./gates";
 import {
@@ -19,8 +17,10 @@ import {
   type ReadComment,
   type ReadMessage,
   type TextPlace,
+  withoutTextFacts,
 } from "./on-text";
-import { matchAt } from "./selection-quote";
+import { type QuotedNode, quotedNodeOf, quoteStart } from "./selection-quote";
+import type { QuotedWords } from "./text-comment-write";
 
 /**
  * Each drawn node's threads on text (R2's place, R4's entries, R7's lenses, R9), from the reads
@@ -42,28 +42,23 @@ export interface TextThread {
   /** Whether its words stand at its node's first line: they left the node's text (`orphaned`), or
    *  the node's words hold no such match, so the row draws its first line instead. */
   readonly firstLine: boolean;
-  /** Whether its root is a comment or a message: `thread.kind`, which the card reads, spelled out
-   *  for the readers that name every entry by its kind (`contents-entries.ts`), from the one rule
-   *  of `placedThread`. */
-  readonly kind: "comment" | "message";
   /** The lenses on each comment of the thread, by the comment's id, each a row of W's with its
    *  findings and risks under it, in the read's order (R7). A comment with none has no entry. */
   readonly lenses: ReadonlyMap<string, readonly TreeNode[]>;
-  /** Which match of `quote` in the node's words the thread is on, zero-based: the first for a
-   *  document anchor until G3b (decision 7), the stored one for a node anchor and a reply. */
-  readonly occurrence: number;
   /** Whether the words left the node's text: an orphaned anchor, or a reply's `removed` block. */
   readonly orphaned: boolean;
-  /** The quoted words whole, as the read holds them, which the column finds in the row and the
-   *  card cuts to one line at its top (`quoteLine`, R4). */
-  readonly quote: string;
-  /** Whether the root is a reply with a quote, whose card draws no Resolve or Reopen (R4). */
-  readonly replyRoot: boolean;
   /** The thread as the margin's card draws it (`ThreadCard`): its root's anchor and its own hold
    *  the quoted words whole, which a suggestion's diff strikes through as Accept replaces them,
    *  and a thread rooted in a message is of the kind `"message"`, whose card draws no Resolve or
    *  Reopen and whose reply writes a message (R4). */
   readonly thread: Thread;
+  /** What the column finds the thread's words by in its node's row (`rangeOf`): the quoted words
+   *  whole, as the read holds them, which the card cuts to one line at its top (`quoteLine`, R4);
+   *  which match of them in the node's words the thread is on, zero-based - the first for a
+   *  document anchor until G3b (decision 7), the stored one for a node anchor and a reply; and, for
+   *  a reply with a quote, whose card draws no Resolve or Reopen (R4), the item's block it quotes,
+   *  null for every other root. */
+  readonly words: QuotedWords;
 }
 
 /**
@@ -138,20 +133,18 @@ export function textThreadsOf(
   }
   const items = new Set([...roots.keys(), ...[...replies.values()].flat().map(({ id }) => id)]);
   const lenses = lensesOf(answer, reads, onText, new Set(roots.keys()), items);
-  const words = new Map<TreeAnswerNode, string>();
+  const quoted = new Map<TreeAnswerNode, QuotedNode>();
   const placed = new Map<string, { node: TreeAnswerNode; rows: Placed[] }>();
   for (const [id, { node, place }] of roots) {
     const at = placedAt(node, place, onText, idOf, drawn, key);
     const record = at === undefined ? undefined : recordOf(node, onText, key);
     if (at === undefined || record === undefined) continue;
-    let held = words.get(at);
+    // The node's words as the server's plain text reads them, which the stored occurrence is
+    // counted in, and an item's blocks, read once for each node that holds threads.
+    let held = quoted.get(at);
     if (held === undefined) {
-      // The node's words on one line: its reading's, else its stored text's, one space between
-      // words, each address as its author wrote it, as the server's quote holds it.
-      held = wordsOf(readingOf(at) ?? storedReading(at.text))
-        .replace(/\s+/gu, " ")
-        .trim();
-      words.set(at, held);
+      held = quotedNodeOf(answer, at);
+      quoted.set(at, held);
     }
     const entries = (replies.get(id) ?? []).sort(
       (left, right) =>
@@ -189,9 +182,10 @@ interface Placed {
 
 /**
  * The thread of `root`, whose words are at `place`, as the card draws it (`record`, with
- * `entries` its replies in time order), with where its words start in `words`, its node's words:
- * the match its occurrence names, counted from the start of the quoted block for a reply, and the
- * node's first line for words that left the text or that the node's words do not hold.
+ * `entries` its replies in time order), with where its words start in `node`'s words as the
+ * server's plain text reads them (`quoteStart`): the match its occurrence names, counted in the
+ * quoted block for a reply, and the node's first line for words that left the text or that the
+ * node's words do not hold.
  */
 function placedThread(
   root: TreeAnswerNode,
@@ -199,7 +193,7 @@ function placedThread(
   record: ThreadComment,
   entries: ThreadComment[],
   lenses: ReadonlyMap<string, readonly TreeNode[]>,
-  words: string
+  node: QuotedNode
 ): Placed {
   const quote = place.kind === "block" ? place.anchor.quote : place.quote;
   const occurrence =
@@ -214,17 +208,9 @@ function placedThread(
       : place.kind === "node"
         ? place.orphaned
         : place.block.removed;
-  // A reply's words are counted from its quoted block, read onto one line as the node's words are.
-  const from =
-    place.kind === "item"
-      ? Math.max(
-          0,
-          words.indexOf(wordsOf(storedReading(place.block.text)).replace(/\s+/gu, " ").trim())
-        )
-      : 0;
-  const at = orphaned ? undefined : quotedAt(words, quote, occurrence, from);
+  const block = place.kind === "item" ? place.block : null;
+  const at = orphaned ? -1 : quoteStart(node, quote, occurrence, block);
   const anchor = cardAnchorOf(place);
-  const kind = root.supertag === "message" ? "message" : "comment";
   const own = new Map(
     [record.id, ...entries.map((entry) => entry.id)].flatMap(
       (item): [string, readonly TreeNode[]][] => {
@@ -234,26 +220,23 @@ function placedThread(
     )
   );
   return {
-    at: at ?? -1,
+    at,
     made: record.created_at,
     thread: {
-      firstLine: at === undefined,
-      kind,
+      firstLine: at === -1,
       lenses: own,
-      occurrence,
       orphaned,
-      quote,
-      replyRoot: place.kind === "item",
       thread: {
         anchor,
         key: record.id,
-        ...(kind === "message" ? { kind } : {}),
+        ...(root.supertag === "message" ? { kind: "message" as const } : {}),
         lastReplyAt: entries.at(-1)?.created_at,
         replies: entries,
         resolved:
           record.resolved || (record.suggestion !== null && record.suggestion.accepted !== null),
         root: { comment: { ...record, anchor }, kind: "comment" },
       },
+      words: { block: block?.block_id ?? null, occurrence, quote },
     },
   };
 }
@@ -433,20 +416,6 @@ function cardAnchorOf(place: TextPlace): Anchor {
   }
 }
 
-/** Where match `occurrence` of `quote` starts in `words`, counting from `from` and overlapping
- *  matches included, as `quoteAnchor` counts, with the quote's white space read as a node's words
- *  are read onto one line; undefined where there is no such match or the quote holds no words. */
-function quotedAt(
-  words: string,
-  quote: string,
-  occurrence: number,
-  from: number
-): number | undefined {
-  const wanted = quote.replace(/\s+/gu, " ").trim();
-  if (wanted === "") return undefined;
-  return matchAt(words, wanted, occurrence, from, words.length);
-}
-
 /** How two times stand, by the instants they name, and by their text where either is no
  *  timestamp. */
 function compareTimes(left: string, right: string): number {
@@ -477,35 +446,10 @@ function lensesOf(
 ): ReadonlyMap<string, readonly TreeNode[]> {
   if (!hasThreadLens(onText, items)) return NO_LENSES;
   const words = treeWordsOf(reads);
-  const messageAsRow = (message: ReadMessage): ReadMessage =>
-    roots.has(message.id) ? { ...message, reply_block: null } : message;
-  const rows = treeDraftsFrom(
-    {
-      ...answer,
-      nodes: (answer.nodes ?? []).map((node) => {
-        if (!roots.has(node.id)) return node;
-        const { anchor: _anchor, ...rest } = node;
-        return rest;
-      }),
-    },
-    {
-      ...reads,
-      // A root of the comments read with nothing that puts it on text: no anchor, no node anchor
-      // (G2) and no block it quotes (G4).
-      comments: reads.comments?.map((comment) => {
-        if (!roots.has(comment.id)) return comment;
-        const { node_anchor: _nodeAnchor, ...rest }: ReadComment & { node_anchor?: unknown } =
-          comment;
-        return { ...rest, anchor: null, reply_block: null };
-      }),
-      messages: reads.messages?.map((thread) => ({
-        ...thread,
-        message: messageAsRow(thread.message),
-        replies: thread.replies?.map(messageAsRow) ?? null,
-      })),
-    },
-    words
-  );
+  // Each thread's root with nothing that puts it on text, so it, and so each item of its thread,
+  // is a drafted row.
+  const asRows = withoutTextFacts(answer, reads, roots);
+  const rows = treeDraftsFrom(asRows.answer, asRows.reads, words);
   const under = new Map<string, Draft[]>();
   for (const draft of rows.values()) {
     for (const parent of new Set(draft.parents)) {

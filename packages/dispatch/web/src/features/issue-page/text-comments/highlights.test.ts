@@ -11,6 +11,7 @@ import {
   answerSeededReads,
   columnOf,
   drawPage,
+  located,
   newClient,
   ON_CHECK,
   ON_STATEMENT,
@@ -120,6 +121,48 @@ test("each thread's words are in the margin highlight and the focused thread's i
     client.clear();
   }
   expect([...registry.keys()], "the marks stay after the column goes").toEqual([]);
+});
+
+// R2: a row in its editor draws the marks of its comments itself, so the column marks none of its
+// threads' words; the read-only caret of R6 (`read-only-caret.ts`) makes a row's words editable
+// too, marked `aria-readonly`, and draws no marks, so the row's words keep the column's while it
+// stands. The column measures again at each change of the stage's rows, as a read that lands or
+// a composer that opens makes, which the case makes by moving the statement's row in place.
+test("a row in its editor takes no marks, and a row with the read-only caret keeps its threads' marks", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_CHECK] });
+  const client = newClient();
+  const view = drawPage(client, "conversation");
+  try {
+    expect(await columnOf(view, "Comments on text"), "no column is drawn").not.toBeNull();
+    const both = [ON_STATEMENT.quote, ON_CHECK.quote].sort();
+    await waitFor(() =>
+      expect(wordsIn(TEXT_COMMENT_HIGHLIGHT), "the words each thread quotes").toEqual(both)
+    );
+    const { row, words } = located(view, ON_STATEMENT.node);
+    const measuredAgain = () => row.parentElement?.insertBefore(row, row.nextSibling);
+
+    // An editor in the statement's row: its words take input, and it draws their marks itself.
+    words.setAttribute("contenteditable", "true");
+    measuredAgain();
+    await waitFor(() =>
+      expect(wordsIn(TEXT_COMMENT_HIGHLIGHT), "the column marks words its editor draws").toEqual([
+        ON_CHECK.quote,
+      ])
+    );
+
+    // The read-only caret in the same row, with the attributes `read-only-caret.ts` sets.
+    words.setAttribute("inputmode", "none");
+    words.setAttribute("aria-readonly", "true");
+    measuredAgain();
+    await waitFor(() =>
+      expect(wordsIn(TEXT_COMMENT_HIGHLIGHT), "the read-only caret took the row's marks").toEqual(
+        both
+      )
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
 });
 
 test("where the browser has no highlights, nothing is marked and nothing fails", () => {

@@ -25,8 +25,9 @@ import { HeaderSlot } from "./slots/header";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
+import { ChildrenAboveRow } from "./text-comments/ChildrenAboveRow";
 import { SelectionComment } from "./text-comments/SelectionComment";
-import { ChildrenAboveRow, TextMargin } from "./text-comments/TextMargin";
+import { TextMargin } from "./text-comments/TextMargin";
 
 /** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
  *  it draws, a refused address included, is inside the element that carries `data-issue-page`,

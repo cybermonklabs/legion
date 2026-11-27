@@ -9,7 +9,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { useReportAdmission } from "./document-admission";
 import { DocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
-import { useMarkComposePlace } from "./text-comments/TextMargin";
+import { useMarkComposePlace } from "./text-comments/composer-store";
 
 /**
  * One document's editor, on that document's own stage (`document-stage.tsx`).

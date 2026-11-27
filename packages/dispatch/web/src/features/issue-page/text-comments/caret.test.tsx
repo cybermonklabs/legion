@@ -9,6 +9,7 @@ import { node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { KEY_REPORTS } from "../page-structure";
 import type { NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
+import { TEXT_COMPOSER_ATTRIBUTE } from "./composer-store";
 import { GATES } from "./gates";
 import {
   answerSeededReads,
@@ -24,7 +25,6 @@ import {
   selectWords,
   TEXT_THREADS,
 } from "./margin-fixtures";
-import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();

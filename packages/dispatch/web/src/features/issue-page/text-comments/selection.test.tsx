@@ -9,6 +9,7 @@ import { SPEC_DOCUMENT, specRef } from "../decisions-filter/decisions-fixtures";
 import { readComment } from "../outline-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
+import { TEXT_COMPOSER_ATTRIBUTE } from "./composer-store";
 import { GATES } from "./gates";
 import {
   answerSeededReads,
@@ -35,7 +36,6 @@ import {
   setSelection,
 } from "./margin-fixtures";
 import { CONTROL_ATTRIBUTE, SelectionComment } from "./SelectionComment";
-import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 
 /**
  * R5: a selection in the words of one row, its control, and the composer it opens. Each case is a

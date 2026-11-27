@@ -35,7 +35,7 @@ import {
   setSelection,
 } from "./margin-fixtures";
 import { textRuns } from "./row-text-runs";
-import { itemBlocksOf, type QuotedNode, quoteOf, rangeOf } from "./selection-quote";
+import { itemBlocksOf, type QuotedNode, quoteOf, quoteStart, rangeOf } from "./selection-quote";
 
 /**
  * R5: what a selection in a row quotes. Each case draws the real row (`drawTree`, `drawPage`,
@@ -786,6 +786,54 @@ describe("rangeOf", () => {
     } finally {
       view.unmount();
     }
+  });
+});
+
+// R2: a thread stands in its node's row at its words, in the order of their words, found in the
+// text the server counted the quote's occurrence in (`sourceOf`), as `rangeOf` finds the words
+// it marks.
+describe("quoteStart", () => {
+  test("quoteStart answers where a stored quote's match starts in the node's text", () => {
+    const held: QuotedNode = { text: "Pick the blue line or the blue square." };
+    expect(quoteStart(held, "blue", 0)).toBe(9);
+    expect(quoteStart(held, "blue", 1)).toBe(26);
+    expect(quoteStart(held, "blue", 2), "a third match the text does not hold").toBe(-1);
+    expect(quoteStart(held, "green", 0), "words that are gone").toBe(-1);
+    expect(quoteStart(held, "", 0), "a quote of no words").toBe(-1);
+  });
+
+  test("a quote is read in the text as the server reads it: its white space as written, a NUL as U+FFFD", () => {
+    const held: QuotedNode = { text: "keep  two, then keep  two again." };
+    expect(quoteStart(held, "keep  two", 0)).toBe(0);
+    expect(quoteStart(held, "keep  two", 1)).toBe(16);
+    expect(quoteStart(held, "keep two", 0), "white space the text does not hold").toBe(-1);
+    expect(quoteStart({ text: "a\u0000b" }, "a\uFFFDb", 0)).toBe(0);
+  });
+
+  test("a reply's quote is found in the item's block it quotes, though each block holds the words", () => {
+    const { blocks, quoted } = recordedItem("threadsS1[0]");
+    expect(blocks.map((block) => block.block_id)).toEqual(["b1", "b2", "b3"]);
+    const words = "Keep these lines";
+    for (const [index, block] of blocks.entries()) {
+      // Each block holds the words once, so the first match in block `index` is the match
+      // `index` of the item's whole text.
+      expect(quoteStart(quoted, words, 0, block), `block ${index}`).toBe(
+        quoteStart(quoted, words, index)
+      );
+    }
+    const third = blocks[2];
+    if (third === undefined) throw new Error("the item holds no third block");
+    // The block as a reply's `reply_block` names it: by its id, with its own text.
+    const named = { block_id: "b3", text: third.text };
+    expect(quoteStart(quoted, words, 0, named), "the reply's block by its id").toBe(
+      quoteStart(quoted, words, 2)
+    );
+    expect(quoteStart(quoted, words, 1, named), "a second match in the quoted block").toBe(-1);
+    expect(
+      quoteStart(quoted, "On thread", 0, blocks[1]),
+      "words another block holds are no match in the quoted block"
+    ).toBe(-1);
+    expect(quoteStart(quoted, words, 0), "the words are in the whole text").toBeGreaterThan(-1);
   });
 });
 

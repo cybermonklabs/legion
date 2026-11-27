@@ -39,7 +39,7 @@ import {
   threadOn,
 } from "./margin-fixtures";
 import type { QuotedReplyBlock } from "./on-text";
-import { cardIn as cardOf } from "./TextMargin";
+import { cardIn as cardOf } from "./reveal";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import { type TextThread, textThreadsOf } from "./text-threads";
 
@@ -145,8 +145,8 @@ function quotedBlock(post: Comment, quote: string, removed = false): QuotedReply
 }
 
 /** A thread on text rooted at `root`, whose words are the reply's quote of a post's block, as
- *  `textThreadsOf` builds one (`replyRoot`, and the card's anchor from the block): a message's
- *  where `kind` says so. */
+ *  `textThreadsOf` builds one (its words in the block, and the card's anchor from the block): a
+ *  message's where `kind` says so. */
 function quotingThread(
   root: ThreadComment & { readonly reply_block: QuotedReplyBlock },
   kind: "comment" | "message",
@@ -163,12 +163,8 @@ function quotingThread(
   };
   return {
     firstLine: block.removed,
-    kind,
     lenses: new Map(),
-    occurrence: block.occurrence ?? 0,
     orphaned: block.removed,
-    quote: block.quote ?? "",
-    replyRoot: true,
     thread: {
       anchor,
       key: root.id,
@@ -179,6 +175,7 @@ function quotingThread(
       root: { comment: { ...root, anchor }, kind: "comment" },
       ...thread,
     },
+    words: { block: block.block_id, occurrence: block.occurrence ?? 0, quote: block.quote ?? "" },
   };
 }
 

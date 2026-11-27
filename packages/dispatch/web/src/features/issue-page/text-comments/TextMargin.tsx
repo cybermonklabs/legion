@@ -1,4 +1,3 @@
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
   type FocusEvent,
   type KeyboardEvent,
@@ -10,19 +9,15 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import type { ComposerAnchor } from "../../conversation/composer-model";
 import { CardStackFocus, regionOrigin, useCardStack } from "../../margin/card-stack";
-import type { MarkComposePlace } from "../../margin/margin-context";
-import { parseIssuePath } from "../../refs/routes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { outlineItemRoute } from "../address-target";
-import { ChildrenSection } from "../children-section";
-import { CONTENTS_PANE_QUERY, PAGE_INSET } from "../contents-frame";
+import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { useFocusedNode } from "../focused-node";
 import { type IssueAddress, issueAddress } from "../issue-address";
 import { LensActContext, useLensAct } from "../lenses/LensMenu";
@@ -35,17 +30,20 @@ import type { SlotProps } from "../slot-props";
 import { useFollowing } from "../slots/following";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
-import { highlightThreadWords, type ThreadWords } from "./highlights";
-import { ITEM_KINDS } from "./on-text";
-import { revealAfterPlacement } from "./reveal";
-import { rowTextOf } from "./row-text-runs";
 import {
-  type SelectedWords,
-  SelectionComposer,
-  type TextComposerOutcome,
-  wordsKeyOf,
-} from "./SelectionComposer";
-import { itemBlocksOf, type QuotedNode, rangeOf } from "./selection-quote";
+  TEXT_COMPOSER_ATTRIBUTE,
+  type TextComposer,
+  useCloseDetails,
+  useComposerGoesWithPage,
+  useComposerPlace,
+  useOfferMarkComposePlace,
+  useTextComposer,
+} from "./composer-store";
+import { highlightThreadWords, type ThreadWords } from "./highlights";
+import { cardIn, takeFocus } from "./reveal";
+import { rowTextOf } from "./row-text-runs";
+import { SelectionComposer, wordsKeyOf } from "./SelectionComposer";
+import { quotedNodeOf, rangeOf } from "./selection-quote";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import type { QuotedWords } from "./text-comment-write";
 import { type NodeThreads, type TextThread, threadHolds } from "./text-threads";
@@ -59,207 +57,9 @@ import { useTextThreads, type ViewThreads } from "./useTextThreads";
  */
 export const TEXT_MARGIN_ATTRIBUTE = "data-text-margin";
 
-/** The attribute of the box that holds a composer of this part, in the column or in a node's
- *  sheet. */
-export const TEXT_COMPOSER_ATTRIBUTE = "data-text-composer";
-
 /** The attribute of the box each thread, and the composer, stands in in the column: the tree id of
  *  its node. */
 export const THREAD_NODE_ATTRIBUTE = "data-text-thread-node";
-
-/** The words a person selected, as the control hands them to the column to open its composer on
- *  (R5): the node they are in, by its tree id (`TreeNode.id`), and what the server needs to find
- *  them again. */
-export type TextComposerRequest = SelectedWords;
-
-/** The composer of this part: the request it is open on, or undefined while none is open, and
- *  what its last send left the page to do. */
-export interface TextComposer {
-  /** Closes the composer, keeping its draft as `MentionComposer` keeps one. */
-  readonly close: () => void;
-  /** Closes the composer on its send's 201 and holds what the page does next (R5): the new
-   *  thread's root takes the focus once the re-read draws it, or one sentence says a reply's
-   *  quote was not kept. */
-  readonly land: (outcome: TextComposerOutcome) => void;
-  /** What the last send left the page to do, until the page has done it (`settle`) or a
-   *  composer opens again. */
-  readonly landed: TextComposerOutcome | undefined;
-  /** Opens the composer in the column beside the request's node, or in that node's sheet below
-   *  1024 px; the column is drawn for it. Details closes first where it is open (R2). */
-  readonly open: (request: TextComposerRequest) => void;
-  readonly request: TextComposerRequest | undefined;
-  /** Says the page has done what the last send left it to do. */
-  readonly settle: () => void;
-}
-
-/** The composer's one state for one app: the issue it is open on and the request, and what its
- *  last send left for that issue's page, which the column and the control share wherever each is
- *  drawn on the page; and the column's place for a block's editor's composes while a column is
- *  mounted (`useMarkComposePlace`). */
-interface ComposerStore {
-  held: { readonly key: string; readonly request: TextComposerRequest } | undefined;
-  landed: { readonly key: string; readonly outcome: TextComposerOutcome } | undefined;
-  readonly listeners: Set<() => void>;
-  place: MarkComposePlace | undefined;
-  /** How many sheets stand under the row of each node (`useSheet`), and the nodes that have one,
-   *  a set replaced at each change so that a reader of it (`useComposerPlace`) sees a new value. */
-  readonly sheetCounts: Map<string, number>;
-  sheets: ReadonlySet<string>;
-  readonly subscribe: (listener: () => void) => () => void;
-}
-
-/** Each app's composer state, by its query client: one store per app, as there is one client,
- *  so it is reached from anywhere under the client's provider with no provider of its own. */
-const composerStores = new WeakMap<QueryClient, ComposerStore>();
-
-/** The composer state of `client`'s app, made on first use. */
-function composerStoreOf(client: QueryClient): ComposerStore {
-  let store = composerStores.get(client);
-  if (store === undefined) {
-    const listeners = new Set<() => void>();
-    store = {
-      held: undefined,
-      landed: undefined,
-      listeners,
-      place: undefined,
-      sheetCounts: new Map(),
-      sheets: new Set(),
-      subscribe: (listener) => {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-    };
-    composerStores.set(client, store);
-  }
-  return store;
-}
-
-/**
- * Records that a sheet stands under the row of `nodeId` while the caller is mounted, which a row
- * site mounts at its part's gate (G6). From 1024 px the column takes a composer beside any node;
- * below it only a node's sheet does (R5), so where no row draws one there is no place for it
- * (`useComposerPlace`). With no node, records nothing.
- */
-export function useSheet(nodeId: string | undefined): void {
-  const store = composerStoreOf(useQueryClient());
-  useEffect(() => {
-    if (nodeId === undefined) return;
-    const change = (by: 1 | -1) => {
-      const count = (store.sheetCounts.get(nodeId) ?? 0) + by;
-      if (count > 0) store.sheetCounts.set(nodeId, count);
-      else store.sheetCounts.delete(nodeId);
-      store.sheets = new Set(store.sheetCounts.keys());
-      tell(store);
-    };
-    change(1);
-    return () => change(-1);
-  }, [store, nodeId]);
-}
-
-/**
- * Whether a composer opened on a node has a place at the window's width: the column from 1024 px
- * (`CONTENTS_PANE_QUERY`), below it the node's sheet (`useSheet`). A control that would open a
- * composer with no place stands nowhere, since it would promise a write the page cannot open.
- */
-export function useComposerPlace(): (nodeId: string) => boolean {
-  const store = composerStoreOf(useQueryClient());
-  const wide = useMediaQuery(CONTENTS_PANE_QUERY);
-  const sheets = useSyncExternalStore(store.subscribe, () => store.sheets);
-  return useCallback((nodeId) => wide || sheets.has(nodeId), [wide, sheets]);
-}
-
-/** Tells each reader of `store` that what it holds changed. */
-function tell(store: ComposerStore): void {
-  for (const listener of [...store.listeners]) listener();
-}
-
-/** Sets what `store` holds - the composer open, and what its last send left - and tells each
- *  reader. A compose of a block's editor that the composer leaves with no send out - closed,
- *  replaced by another, or gone with its page - rejects the editor's promise, so the editor takes
- *  its mark back out of the document; one whose send went out was resolved then, which this does
- *  not undo. */
-function holdComposer(
-  store: ComposerStore,
-  held: ComposerStore["held"],
-  landed: ComposerStore["landed"]
-): void {
-  const left = store.held?.request.mark;
-  store.held = held;
-  store.landed = landed;
-  if (left !== undefined && held?.request.mark !== left) {
-    left.reject(new Error("the composer closed with no send out"));
-  }
-  tell(store);
-}
-
-/**
- * Closes the shell's Details drawer where it is open, as its own collapse does: what an address of
- * R8, or a composer of R5, calls before it opens a thread on text, which the column draws only
- * while Details is closed (R2).
- */
-function useCloseDetails(): () => void {
-  const drawer = useMarginDrawer();
-  return useCallback(() => {
-    if (drawer?.open === true) drawer.setOpen(false);
-  }, [drawer]);
-}
-
-/**
- * The composer's one state for the issue the router is at, which the column draws and the control
- * opens (`SelectionComment`): reachable from anywhere inside the page's providers, since it is
- * the query client's (`composerStoreOf`). A request held for another issue is no composer here.
- */
-export function useTextComposer(): TextComposer {
-  const store = composerStoreOf(useQueryClient());
-  const { pathname, search } = useLocation();
-  const key = parseIssuePath(pathname, search)?.key;
-  const held = useSyncExternalStore(store.subscribe, () => store.held);
-  const landedHeld = useSyncExternalStore(store.subscribe, () => store.landed);
-  const closeDetails = useCloseDetails();
-  const request = held !== undefined && held.key === key ? held.request : undefined;
-  const landed =
-    landedHeld !== undefined && landedHeld.key === key ? landedHeld.outcome : undefined;
-  return useMemo(
-    () => ({
-      close: () => {
-        if (store.held !== undefined && store.held.key === key) {
-          holdComposer(store, undefined, store.landed);
-        }
-      },
-      land: (outcome: TextComposerOutcome) => {
-        if (key === undefined) return;
-        const open = store.held !== undefined && store.held.key === key;
-        holdComposer(store, open ? undefined : store.held, { key, outcome });
-      },
-      landed,
-      open: (next: TextComposerRequest) => {
-        if (key === undefined) return;
-        closeDetails();
-        holdComposer(store, { key, request: next }, undefined);
-      },
-      request,
-      settle: () => {
-        if (store.landed !== undefined && store.landed.key === key) {
-          holdComposer(store, store.held, undefined);
-        }
-      },
-    }),
-    [closeDetails, key, landed, request, store]
-  );
-}
-
-/**
- * The column's place for a compose a block's editor asks for (`MarkComposePlace`), which the
- * page hands the editor (`StagedDocument.tsx`): its selection bar and its chord open the
- * composer of R5 in the column, beside the block's node, or in the node's sheet below 1024 px,
- * and never in Details (R6). Undefined while no column of comments on text is mounted, as on
- * every page but the new issue page; with none, the editor's composer opens in the margin as it
- * always has, and Details hosts the editor's cards (`slots/details.tsx`).
- */
-export function useMarkComposePlace(): MarkComposePlace | undefined {
-  const store = composerStoreOf(useQueryClient());
-  return useSyncExternalStore(store.subscribe, () => store.place);
-}
 
 /**
  * The node of `view` a compose of a block's editor stands beside: the node of the block of the
@@ -307,58 +107,30 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
     (focusedNode === undefined ? undefined : view.threads.get(focusedNode)?.threads[0]?.thread.key);
   // A composer open on the issue goes with its page, so it is not open again on a later visit,
   // and so does what its last send left the page to do.
-  const store = composerStoreOf(useQueryClient());
-  const key = issue.key;
-  useEffect(
-    () => () => {
-      const { held, landed } = store;
-      if (held?.key !== key && landed?.key !== key) return;
-      holdComposer(
-        store,
-        held?.key === key ? undefined : held,
-        landed?.key === key ? undefined : landed
-      );
-    },
-    [key, store]
-  );
+  useComposerGoesWithPage(issue.key);
   // The column's place for a block's editor's composes (`useMarkComposePlace`), offered while the
-  // column is mounted at every width, since the node's sheet draws the same composer below
-  // 1024 px; below it, while no row draws a sheet, there is no place and the editor's composer
-  // opens in the margin as it always has. It reads the view and the composer as they stand when
-  // the editor asks, and opens the composer on the editor's words as the control does: Details
-  // closes first.
+  // column is mounted at every width a composer has a place at. It reads the view and the
+  // composer as they stand when the editor asks, and opens the composer on the editor's words as
+  // the control does: Details closes first.
   const placed = useComposerPlace();
-  const offered = useSyncExternalStore(store.subscribe, () => wide || store.sheets.size > 0);
-  const now = useRef({ composer, placed, view });
-  now.current = { composer, placed, view };
-  useEffect(() => {
-    if (!offered) return;
-    const place: MarkComposePlace = (compose) => {
-      const nodeId = composeNodeOf(now.current.view, compose.anchor);
-      if (nodeId === undefined) {
-        return Promise.reject(new Error("no node of the page holds the editor's words"));
-      }
-      if (!now.current.placed(nodeId)) {
-        return Promise.reject(new Error("no sheet under the row of the editor's node"));
-      }
-      const { promise, reject, resolve } = Promise.withResolvers<void>();
-      now.current.composer.open({
-        block: null,
-        mark: { ...compose, reject, resolve },
-        nodeId,
-        occurrence: compose.anchor.occurrence ?? 0,
-        quote: compose.anchor.quote,
-      });
-      return promise;
-    };
-    store.place = place;
-    tell(store);
-    return () => {
-      if (store.place !== place) return;
-      store.place = undefined;
-      tell(store);
-    };
-  }, [offered, store]);
+  useOfferMarkComposePlace(wide, (compose) => {
+    const nodeId = composeNodeOf(view, compose.anchor);
+    if (nodeId === undefined) {
+      return Promise.reject(new Error("no node of the page holds the editor's words"));
+    }
+    if (!placed(nodeId)) {
+      return Promise.reject(new Error("no sheet under the row of the editor's node"));
+    }
+    const { promise, reject, resolve } = Promise.withResolvers<void>();
+    composer.open({
+      block: null,
+      mark: { ...compose, reject, resolve },
+      nodeId,
+      occurrence: compose.anchor.occurrence ?? 0,
+      quote: compose.anchor.quote,
+    });
+    return promise;
+  });
   if (!wide || (view.threads.size === 0 && composer.request === undefined)) return null;
   return (
     <CardStackFocus.Provider value={stackFocus}>
@@ -373,46 +145,6 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
       />
     </CardStackFocus.Provider>
   );
-}
-
-/**
- * The issue's children (`children-section.tsx`) where the page's root draws them from 1024 px
- * (`CONTENTS_PANE_QUERY`): above the row of the main column and the column of comments on text,
- * beside the Contents pane and as wide as it leaves the page, inside the page's insets (R2). So
- * the column narrows the stage and never the section, and the column's top stands under the
- * section's foot. The section stands 10 px under the view row, as the main column's first row
- * does where the issue has no children; the main column's own 10 px over its first row then
- * stands inside the section's 16 px foot margin (`-mb-2.5`), so that row stands 16 px under the
- * section, as when the stage drew the section above it. Where the section draws nothing, this
- * draws no box (`empty:hidden`). Below 1024 px it draws nothing: no column stands there, and the
- * stage draws the section under the issue's three sentences (`ChildrenInStage`).
- */
-export function ChildrenAboveRow(props: SlotProps): ReactNode {
-  const wide = useMediaQuery(CONTENTS_PANE_QUERY);
-  if (!wide) return null;
-  return (
-    <div className={`-mb-2.5 pt-2.5 empty:hidden ${PAGE_INSET}`}>
-      <ChildrenSection {...props} />
-    </div>
-  );
-}
-
-/**
- * The issue's children where the stage draws them, above its slot's first row (R14): at every
- * width where the page's root draws none above its row (`above` false, as for a stage drawn
- * alone), and else below 1024 px alone, under the issue's three sentences, where the root's
- * `ChildrenAboveRow` draws nothing.
- */
-export function ChildrenInStage({
-  above,
-  ...props
-}: SlotProps & {
-  /** Whether the page's root draws the children above its row from 1024 px (`ChildrenAboveRow`). */
-  readonly above: boolean;
-}): ReactNode {
-  const wide = useMediaQuery(CONTENTS_PANE_QUERY);
-  if (above && wide) return null;
-  return <ChildrenSection {...props} />;
 }
 
 /** One thread the column draws, with the node it stands by and that node's stored parent. */
@@ -520,44 +252,17 @@ function stageOf(column: RefObject<HTMLElement | null>): Element | null {
   return column.current?.previousElementSibling ?? null;
 }
 
-/** The card of the thread `key` names in `container` - the column's list or a node's sheet - or
- *  null where it draws none. */
-export function cardIn(container: Element | null, key: string): HTMLElement | null {
-  return container?.querySelector<HTMLElement>(`[data-margin-item="${CSS.escape(key)}"]`) ?? null;
-}
-
-/** Gives `target` the focus, as a script gives it to an element out of the tab order: one with
- *  no `tabindex` takes `tabIndex = -1` first. The focus takes no scroll of the browser's own,
- *  which goes to where the card stood before the stack placed it, and the card is brought into
- *  the window once it is placed (`revealAfterPlacement`): the nearest edge, or `center` for an
- *  address. */
-export function takeFocus(target: HTMLElement, reveal: ScrollLogicalPosition = "nearest"): void {
-  if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
-  target.focus({ preventScroll: true });
-  revealAfterPlacement(target, reveal);
-}
-
 /** What the column finds a box's words by in its node's row: the quote, which match of it, the
  *  item's block it is in, and whether the words left the node's text, which places the box at
  *  the row's first line. */
 type Words = QuotedWords & { readonly firstLine: boolean };
 
-/** The node `nodeId` as `rangeOf` and `quoteOf` read its words: its text, and an item's blocks in
- *  order. */
-export function quotedNodeOf(view: ViewThreads, nodeId: string): QuotedNode | undefined {
-  const node = view.nodes.get(nodeId);
-  if (node === undefined) return undefined;
-  const item = ITEM_KINDS[node.supertag] === true;
-  return item && view.answer !== undefined
-    ? { blocks: itemBlocksOf(view.answer, node.id), text: node.text, text_tree: node.text_tree }
-    : node;
-}
-
 /** The range of `words` in `row`, the row of the node `nodeId` of `view`, or null where the row
  *  draws none of them. */
 function wordsRange(row: Element, words: Words, view: ViewThreads, nodeId: string): Range | null {
   if (words.firstLine) return null;
-  const node = quotedNodeOf(view, nodeId);
+  const held = view.nodes.get(nodeId);
+  const node = held === undefined ? undefined : quotedNodeOf(view.answer, held);
   const block =
     words.block === null ? undefined : node?.blocks?.find((one) => one.block_id === words.block);
   const range = rangeOf(row, words.quote, words.occurrence, {
@@ -623,12 +328,7 @@ function Column({
       new Map(
         placed.map(({ thread }): [string, Words] => [
           thread.thread.key,
-          {
-            block: thread.replyRoot ? (thread.thread.anchor?.block_id ?? null) : null,
-            firstLine: thread.firstLine,
-            occurrence: thread.occurrence,
-            quote: thread.quote,
-          },
+          { ...thread.words, firstLine: thread.firstLine },
         ])
       ),
     [placed]
@@ -745,8 +445,11 @@ function Column({
       const range = boxWords === undefined ? null : wordsRange(row, boxWords, view, nodeId);
       const rect = range?.getClientRects()[0] ?? row.getBoundingClientRect();
       tops.set(key, Math.max(0, rect.top - origin));
-      // A row in its editor draws the marks of its comments itself.
-      const editing = row.querySelector('[contenteditable="true"]') !== null;
+      // A row in its editor draws the marks of its comments itself. The read-only caret
+      // (`read-only-caret.ts`) makes the row's words editable too, marked `aria-readonly`, and
+      // draws no marks: the row's words keep theirs while it stands.
+      const editing =
+        row.querySelector('[contenteditable="true"]:not([aria-readonly="true"])') !== null;
       if (range !== null && !composing && !editing) ranges.push({ key, range });
     }
     setWanted((current) => {
@@ -842,15 +545,19 @@ function Column({
   });
 
   // The root of the thread a send of this part wrote takes the focus once the re-read draws its
-  // card, as the item an address names does (R5).
+  // card, as the item an address names does (R5). Until the stage draws its node's row - folded or
+  // paged away while the send was out - its box is hidden (`measure`), and a hidden element takes
+  // no focus, so the landing waits for the row, as an address's does, and is done once the root
+  // holds the focus.
   const sent = composer.landed;
   useEffect(() => {
     if (sent === undefined || !("root" in sent) || detailsOpen) return;
     const thread = placed.find(({ thread: one }) => one.thread.root.comment.id === sent.root);
     const card = thread === undefined ? null : cardIn(region.current, thread.thread.thread.key);
     if (card === null) return;
+    if (card.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)?.hidden !== false) return;
     takeFocus(card);
-    composer.settle();
+    if (card.contains(document.activeElement)) composer.settle();
   });
 
   // Escape in a thread, outside its composer, gives the focus to the row of the thread's node

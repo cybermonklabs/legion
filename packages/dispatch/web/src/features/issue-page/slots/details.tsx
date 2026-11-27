@@ -15,7 +15,7 @@ import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
-import { useMarkComposePlace } from "../text-comments/TextMargin";
+import { useMarkComposePlace } from "../text-comments/composer-store";
 import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 

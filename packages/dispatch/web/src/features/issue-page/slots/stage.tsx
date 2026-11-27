@@ -9,7 +9,7 @@ import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
-import { ChildrenInStage } from "../text-comments/TextMargin";
+import { ChildrenInStage } from "../text-comments/ChildrenAboveRow";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { ViewReadProvider } from "../tree-read/view-read";
 import { BodySlot, ReaderActsWatch } from "./body";

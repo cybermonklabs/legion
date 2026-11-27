@@ -123,6 +123,7 @@ import { presetPath } from "../issue-address";
 import { MARGIN_WORDS } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
+import { TEXT_COMPOSER_ATTRIBUTE, useTextComposer } from "./composer-store";
 import {
   answerSeededReads,
   type DrawnPage,
@@ -137,7 +138,6 @@ import {
 } from "./margin-fixtures";
 import { NodeThreads } from "./NodeThreads";
 import { type SelectedWords, wordsKeyOf } from "./SelectionComposer";
-import { TEXT_COMPOSER_ATTRIBUTE, useTextComposer } from "./TextMargin";
 
 /** Where the sheet stands, below 1024 px. */
 const BELOW_PANE = 1000;

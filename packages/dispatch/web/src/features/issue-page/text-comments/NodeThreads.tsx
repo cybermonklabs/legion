@@ -10,16 +10,15 @@ import { authorText } from "../page-structure";
 import { MARGIN_WORDS, type Preset } from "../page-words";
 import { moveToRow } from "../useTreeKeymap";
 import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
-import { SelectionComposer, wordsKeyOf } from "./SelectionComposer";
 import {
-  cardIn,
   TEXT_COMPOSER_ATTRIBUTE,
   type TextComposer,
   type TextComposerRequest,
-  takeFocus,
   useSheet,
   useTextComposer,
-} from "./TextMargin";
+} from "./composer-store";
+import { cardIn, takeFocus } from "./reveal";
+import { SelectionComposer, wordsKeyOf } from "./SelectionComposer";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import type { TextThread } from "./text-threads";
 import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThreads";

@@ -19,3 +19,20 @@ export function revealAfterPlacement(
   });
   return () => cancelAnimationFrame(frame);
 }
+
+/** The card of the thread `key` names in `container` - the column's list or a node's sheet - or
+ *  null where it draws none. */
+export function cardIn(container: Element | null, key: string): HTMLElement | null {
+  return container?.querySelector<HTMLElement>(`[data-margin-item="${CSS.escape(key)}"]`) ?? null;
+}
+
+/** Gives `target` the focus, as a script gives it to an element out of the tab order: one with
+ *  no `tabindex` takes `tabIndex = -1` first. The focus takes no scroll of the browser's own,
+ *  which goes to where the card stood before the stack placed it, and the card is brought into
+ *  the window once it is placed (`revealAfterPlacement`): the nearest edge, or `center` for an
+ *  address. */
+export function takeFocus(target: HTMLElement, reveal: ScrollLogicalPosition = "nearest"): void {
+  if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+  revealAfterPlacement(target, reveal);
+}

@@ -133,10 +133,8 @@ test.skipIf(!GATES.REPLY_QUOTE)("a reply thread stands by the item it quotes", (
   const threads = threadsOver(tree, [post, quoted]);
 
   expect(
-    threads
-      .get("post")
-      ?.threads.map(({ quote, replyRoot, thread }) => [thread.key, replyRoot, quote])
-  ).toEqual([["quoted", true, "words"]]);
+    threads.get("post")?.threads.map(({ thread, words }) => [thread.key, words.block, words.quote])
+  ).toEqual([["quoted", "b1", "words"]]);
 });
 
 // R2: an orphaned anchor that names a block a node stands for places its thread beside that
@@ -362,7 +360,7 @@ test("a thread takes its body from the comments read and its place from the tree
   expect(
     threads
       .get(ON_STATEMENT.node)
-      ?.threads.map(({ quote, thread }) => [quote, thread.root.comment.body, thread.resolved])
+      ?.threads.map(({ thread, words }) => [words.quote, thread.root.comment.body, thread.resolved])
   ).toEqual([[ON_STATEMENT.quote, "The comments read's words.", true]]);
 });
 
@@ -390,7 +388,7 @@ test.skipIf(!GATES.OTHER_ISSUE_COMMENTS)(
     expect(
       threads
         .get("x1")
-        ?.threads.map(({ quote, thread }) => [thread.key, quote, thread.root.comment.body])
+        ?.threads.map(({ thread, words }) => [thread.key, words.quote, thread.root.comment.body])
     ).toEqual([["c-x", "other issue", "A remark on the other issue's words."]]);
   }
 );
@@ -486,7 +484,7 @@ test("a node-anchored thread stands beside its lens, finding, risk, constraint o
     ["lens-1", "f1", "risk-1", "constraint-1", "result-1"].map((id) =>
       threads
         .get(id)
-        ?.threads.map(({ occurrence, quote, thread }) => [thread.key, quote, occurrence])
+        ?.threads.map(({ thread, words }) => [thread.key, words.quote, words.occurrence])
     ),
     "each node-anchored thread stands beside its node at its stored occurrence"
   ).toEqual([
@@ -511,7 +509,7 @@ test("a Change stands in the margin beside its decision", () => {
   expect(
     threadsOver(tree, [change], rows)
       .get(blockNodeId(SPEC_DOCUMENT.slug, DECISION))
-      ?.threads.map(({ quote, thread }) => [thread.key, quote]),
+      ?.threads.map(({ thread, words }) => [thread.key, words.quote]),
     "the Change stands in the margin beside its decision"
   ).toEqual([["c-change", "decision d1"]]);
 });

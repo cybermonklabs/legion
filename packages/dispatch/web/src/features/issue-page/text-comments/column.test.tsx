@@ -11,6 +11,7 @@ import { presetPath } from "../issue-address";
 import { treeOf } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { readOlderComments, type TreeAnswer } from "../tree-read/tree-read";
+import { TEXT_COMPOSER_ATTRIBUTE, useTextComposer } from "./composer-store";
 import { GATES } from "./gates";
 import {
   answerSeededReads,
@@ -36,7 +37,6 @@ import {
   type TextThreadSeed,
   widthAt,
 } from "./margin-fixtures";
-import { TEXT_COMPOSER_ATTRIBUTE, useTextComposer } from "./TextMargin";
 
 /**
  * R2: when the column of comments on text is drawn, and how wide the main column is then. Each
@@ -415,6 +415,76 @@ test("an address of R8 names a thread whose node's row the stage has not drawn y
         card?.contains(document.activeElement),
         "the item does not take the focus once the stage draws its node's row"
       ).toBe(true)
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+/** What the composer's last send left the page to do, as the page holds it, and a control that
+ *  lands a send that wrote the thread rooted at `root`, as the composer's 201 does
+ *  (`TextComposer.land`). */
+function SendLander({ root }: { readonly root: string }): ReactNode {
+  const composer = useTextComposer();
+  return (
+    <>
+      <output data-testid="landed">{composer.landed === undefined ? "settled" : "landed"}</output>
+      <button onClick={() => composer.land({ root })} type="button">
+        land a send
+      </button>
+    </>
+  );
+}
+
+// R5: the root of the thread a send wrote takes the focus once the re-read draws its card. Where
+// the stage draws no row of the thread's node - folded or paged away while the send was out - the
+// column hides the thread's box, and a hidden element takes no focus: the landing waits for the
+// row, holds what the send left until then, and lands once the stage draws it.
+test("a send lands while its node's row is not drawn: the hidden card takes no focus and the landing waits, then the root takes the focus once the row is drawn", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT] });
+  const client = newClient();
+  const view = drawFrame(client, "conversation", <SendLander root={ON_STATEMENT.comment.id} />);
+  try {
+    await waitFor(() => expect(rowOf(view, STATEMENT_NODE)).not.toBeNull());
+    const column = await columnDrawn(view, "no column is drawn");
+    const card = await waitFor(() => {
+      const held = column.querySelector<HTMLElement>(
+        `[data-margin-item="${CSS.escape(ON_STATEMENT.comment.id)}"]`
+      );
+      expect(held, "the column draws no card of the thread").not.toBeNull();
+      return held as HTMLElement;
+    });
+    const row = rowOf(view, STATEMENT_NODE);
+    if (row === null) throw new Error("the stage draws no row of the statement");
+    // The column finds a node's row by its `data-node-id`, so while the row carries none the
+    // stage draws no row of the statement for it.
+    await act(async () => {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement) focused.blur();
+      row.removeAttribute("data-node-id");
+    });
+    await userEvent.setup().click(view.getByRole("button", { name: "land a send" }));
+    expect(
+      card.closest<HTMLElement>("[data-text-thread-node]")?.hidden,
+      "the thread's box stands while the stage draws no row of its node"
+    ).toBe(true);
+    expect(column.contains(document.activeElement), "the hidden card took the focus").toBe(false);
+    expect(
+      view.getByTestId("landed").textContent,
+      "the landing was settled while the card stood hidden"
+    ).toBe("landed");
+    // The stage draws the row: a change of its children, as a read or a page that lands makes.
+    row.setAttribute("data-node-id", STATEMENT_NODE);
+    row.parentElement?.insertBefore(row, row.nextSibling);
+    await waitFor(() =>
+      expect(
+        card.contains(document.activeElement),
+        "the root does not take the focus once the stage draws its node's row"
+      ).toBe(true)
+    );
+    await waitFor(() =>
+      expect(view.getByTestId("landed").textContent, "the landing is not settled").toBe("settled")
     );
   } finally {
     view.finish();

@@ -12,6 +12,7 @@ import { readComment } from "../outline-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
+import { TEXT_COMPOSER_ATTRIBUTE } from "./composer-store";
 import {
   answerSeededReads,
   clearSelection,
@@ -28,7 +29,6 @@ import {
 } from "./margin-fixtures";
 import { NodeThreads } from "./NodeThreads";
 import { SelectionComment } from "./SelectionComment";
-import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 
 /**
  * R3: below 1024 px each thread on text stands in a sheet inside its node's row, after the row's

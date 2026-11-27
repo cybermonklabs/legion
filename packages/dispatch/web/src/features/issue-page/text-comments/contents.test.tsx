@@ -112,12 +112,8 @@ test("a press on that entry opens its thread", async () => {
 function threadOf(comment: Comment): TextThread {
   return {
     firstLine: false,
-    kind: "comment",
     lenses: new Map(),
-    occurrence: 0,
     orphaned: false,
-    quote: "words",
-    replyRoot: false,
     thread: {
       anchor: null,
       key: comment.id,
@@ -126,6 +122,7 @@ function threadOf(comment: Comment): TextThread {
       resolved: false,
       root: { comment, kind: "comment" },
     },
+    words: { block: null, occurrence: 0, quote: "words" },
   };
 }
 

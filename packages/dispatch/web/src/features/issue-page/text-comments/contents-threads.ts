@@ -110,9 +110,10 @@ export function withThreadEntries(
   for (const [nodeId, { parent, threads: held }] of threads) {
     const host = present.has(nodeId) ? nodeId : parent;
     if (!present.has(host)) continue;
-    for (const { kind, thread } of held) {
+    for (const { thread } of held) {
       const comment = thread.root.comment;
       if (!isViewer(comment.author, viewer)) continue;
+      const kind = thread.kind ?? "comment";
       kinds.set(comment.id, kind);
       const own = entries.get(host);
       const entry = threadCommentNode(comment, kind, key);

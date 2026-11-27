@@ -72,6 +72,15 @@ export function itemBlocksOf(answer: TreeAnswer, item: string): TreeAnswerNode[]
   });
 }
 
+/** `node`, a node of `answer`, as `quoteOf`, `rangeOf` and `quoteStart` read its words: its text
+ *  and its reading, and, for an ask, a comment or a message, its blocks in the item's order
+ *  (`itemBlocksOf`). A node of any other kind, or one of no answer, is read as it is. */
+export function quotedNodeOf(answer: TreeAnswer | undefined, node: TreeAnswerNode): QuotedNode {
+  return answer !== undefined && ITEM_KINDS[node.supertag] === true
+    ? { blocks: itemBlocksOf(answer, node.id), text: node.text, text_tree: node.text_tree }
+    : node;
+}
+
 /**
  * The quote the selection makes in `row`, whose node is `node`: null where the selection is not
  * one range inside the row's own words (`rowTextOf`), holds no character of the node's text,
@@ -149,15 +158,7 @@ export function rangeOf(
   if (words === null || quote === "") return null;
   const runs = textRuns(words);
   const source = node === undefined ? runs.text : sourceOf(node);
-  let within = { end: source.length, start: 0 };
-  if (block !== undefined) {
-    const blocks =
-      node?.blocks?.some((one) => sameBlock(one, block)) === true ? node.blocks : [block];
-    const span = blockSpans(source, blocks)?.find((one) => sameBlock(one.block, block));
-    if (span === undefined) return null;
-    within = span;
-  }
-  const from = matchAt(source, quote, occurrence, within.start, within.end);
+  const from = startIn(source, quote, occurrence, block, node?.blocks);
   if (from === undefined) return null;
   const alignment = aligned(runs.text, source);
   let start: number | undefined;
@@ -177,6 +178,41 @@ export function rangeOf(
   }
   const range = words.ownerDocument.createRange();
   return startAt(range, runs, start) && endAt(range, runs, end) ? range : null;
+}
+
+/**
+ * Where match `occurrence` of a stored `quote` starts in `node`'s text, read as the server's plain
+ * text reads it (`sourceOf`), counted as `quoteOf` counts it and found as `rangeOf` finds it: in
+ * the whole text, or in `block`, the item's block that holds the quote. -1 where the text holds no
+ * such match, or where `block` is not in it.
+ */
+export function quoteStart(
+  node: QuotedNode,
+  quote: string,
+  occurrence: number,
+  block?: ItemBlock | null
+): number {
+  if (quote === "") return -1;
+  return startIn(sourceOf(node), quote, occurrence, block ?? undefined, node.blocks) ?? -1;
+}
+
+/**
+ * Where match `occurrence` of `quote` starts in `source`, a node's text: counted from the start of
+ * `block`'s span where a block is given (`blockSpans`, among `blocks`, the item's blocks, where it
+ * is one of them, else alone), else from the start of the text; undefined where there is no such
+ * match, or where the block's text is not in `source`.
+ */
+function startIn(
+  source: string,
+  quote: string,
+  occurrence: number,
+  block: ItemBlock | undefined,
+  blocks: readonly ItemBlock[] | undefined
+): number | undefined {
+  if (block === undefined) return matchAt(source, quote, occurrence, 0, source.length);
+  const held = blocks?.some((one) => sameBlock(one, block)) === true ? blocks : [block];
+  const span = blockSpans(source, held)?.find((one) => sameBlock(one.block, block));
+  return span === undefined ? undefined : matchAt(source, quote, occurrence, span.start, span.end);
 }
 
 /** The node's text as the server's plain text reads it: its reading's text runs joined as

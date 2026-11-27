@@ -24,6 +24,7 @@ import { KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { DETAILS_ATTRIBUTE } from "../margin-slot";
 import { StagedDocument } from "../StagedDocument";
 import { blockNodeId } from "../tree-drafts";
+import { TEXT_COMPOSER_ATTRIBUTE } from "./composer-store";
 import {
   answerSeededReads,
   columnOf,
@@ -35,7 +36,7 @@ import {
   STATEMENT,
   STATEMENT_WORDS,
 } from "./margin-fixtures";
-import { TEXT_COMPOSER_ATTRIBUTE, THREAD_NODE_ATTRIBUTE } from "./TextMargin";
+import { THREAD_NODE_ATTRIBUTE } from "./TextMargin";
 
 /**
  * R5 and R6: in a block's editor, the editor's own selection bar - Comment, Suggest and Ask - and

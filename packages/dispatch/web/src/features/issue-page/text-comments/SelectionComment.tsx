@@ -3,10 +3,10 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import type { IssueDetails } from "../../../api/types";
 import { borderDefault, surfaceBg, textPrimaryOnSurface } from "../../../theme/classes";
 import { MARGIN_WORDS, type Preset } from "../page-words";
+import { useComposerPlace, useTextComposer } from "./composer-store";
 import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
 import { type SelectedWords, sendTargetOf } from "./SelectionComposer";
-import { quoteOf } from "./selection-quote";
-import { quotedNodeOf, useComposerPlace, useTextComposer } from "./TextMargin";
+import { quotedNodeOf, quoteOf } from "./selection-quote";
 import { subjectOf, writeFor } from "./text-comment-write";
 import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThreads";
 
@@ -123,9 +123,9 @@ function selectedIn(
   const node = nodeId === undefined ? undefined : view.nodes.get(nodeId);
   if (row === null || row === undefined || nodeId === undefined || node === undefined) return null;
   if (!placed(nodeId) || writeFor(subjectOf(node, issue.key)) === null) return null;
-  const quoted = quotedNodeOf(view, nodeId);
+  const quoted = quotedNodeOf(view.answer, node);
   const words = rowTextOf(row);
-  if (quoted === undefined || words === null) return null;
+  if (words === null) return null;
   // The row's words are read once, for the quote and for its text blocks.
   const runs = textRuns(words);
   const quote = quoteOf(selection, row, quoted, runs);
