@@ -1093,16 +1093,17 @@ func (s *server) answerMessageDelivery(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	// The message's target and the session its attempt names are read before the transaction,
-	// so a reply from a session the attempt does not name, to a message sent for a route to a
-	// role, asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
-	// answers that message or attempt as it always has. A read that fails is the route's 500. An
-	// attempt past message_deliveries.attempt's range names no delivery, so no read is made with
-	// it: the bound below (fitsIntegerColumn) answers it, where it always has.
+	// so a reply from a session the attempt does not name asks the listener, with nothing held,
+	// whether that session holds the role now, for a message sent for a route to a role, or
+	// replaced the attempt's session, for one sent to a session (lookUpRoleHolderReply). A read
+	// that finds nothing asks nothing: the transaction below answers that message or attempt as it
+	// always has. A read that fails is the route's 500. An attempt past
+	// message_deliveries.attempt's range names no delivery, so no read is made with it: the bound
+	// below (fitsIntegerColumn) answers it, where it always has.
 	var roleReply roleHolderReply
 	var err error
 	if fitsIntegerColumn(input.Attempt) {
-		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		roleReply, err = s.roleHolderReplyOf(r, actor, r.PathValue("id"), `
 		select coalesce(m.target, ''), d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
 		where m.id = $1
@@ -1182,10 +1183,11 @@ func (s *server) answerMessageDelivery(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the role the
-	// message went to now, while it is live: a different session that took the role from the one
-	// the attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	// message went to now, while it is live, and a session that replaced the one the attempt
+	// names: a different session that took the role, or that replaced the session, is handed what
+	// that session had not read (lookUpRoleHolderReply).
 	if attempt.SessionID != actor.ID && !roleReply.allows(messageTarget(message.Target)) {
-		writeError(w, r, apicode.ReplyForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
+		writeError(w, r, apicode.ReplyForbidden, replyForbiddenSession)
 		return
 	}
 	// Each outcome is a response, its status, and the event it appended, if any; they share one

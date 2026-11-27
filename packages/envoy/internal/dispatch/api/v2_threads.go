@@ -258,8 +258,10 @@ func (s *server) v2ThreadRows() []routeRow {
 				"attempt, of the mention target names (required where the comment has several mentions, 400 " +
 				"MENTION_INPUT), must be that session's own; a cookie caller, an attempt that is not that session's own and " +
 				"a body naming neither or both of body and error are 403 REPLY_FORBIDDEN. For a mention of a role " +
-				"(role:<name>), the role's live holder, as the Envoy listener names it, may answer the attempt too; a " +
-				"listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a " +
+				"(role:<name>), the role's live holder, as the Envoy listener names it, may answer the attempt too; for a " +
+				"mention of a session (session:<id>), so may a session the listener names as having replaced the " +
+				"attempt's session, which it handed that session's unread messages. A listener that does not answer is " +
+				"503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a " +
 				"refusal. A body is stored as a reply in " +
 				"the comment's thread, its reply_to_block naming one block of the comment it answers, and marks the attempt " +
 				"sent; answers 201 the reply with ask_waiting_on, and appends comment.answered. An attempt already answered " +
@@ -522,8 +524,10 @@ func (s *server) v2ThreadRows() []routeRow {
 				"in_reply_to_block?}, under a bearer credential: the session names itself in actor, and the attempt must be " +
 				"its own; a cookie caller, an attempt that is not its own and a body naming neither or both of body and " +
 				"error are 403 REPLY_FORBIDDEN. For an attempt sent for a route to a role (role:<name>), the role's live " +
-				"holder, as the Envoy listener names it, may answer it too; a listener that does not answer is 503 " +
-				"ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. A body is posted as the " +
+				"holder, as the Envoy listener names it, may answer it too; for one sent to a session (session:<id>), so " +
+				"may a session the listener names as having replaced the attempt's session, which it handed that " +
+				"session's unread messages. A listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read " +
+				"of the attempt is 500, never a refusal. A body is posted as the " +
 				"session's reply in the message's " +
 				"conversation, its in_reply_to_block naming one block of the message it answers, and marks the attempt sent; " +
 				"answers 201 the reply and appends message.answered. Once the attempt is answered, follow_up=true posts other " +

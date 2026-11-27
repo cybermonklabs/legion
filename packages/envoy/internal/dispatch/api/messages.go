@@ -82,7 +82,7 @@ func (s *server) postIssueMessage(w http.ResponseWriter, r *http.Request, actor 
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), "", &issueKey, input, delivery, false, actor)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -141,7 +141,7 @@ func (s *server) sendAgentMessage(w http.ResponseWriter, r *http.Request, actor 
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
+	message, _, err := s.createStoredMessage(r.Context(), "", nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -373,9 +373,12 @@ func planMessageNode(
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
-// (createAgentMessageInput.ConnectedOnly).
+// (createAgentMessageInput.ConnectedOnly). chosenID is the id the message is stored under: empty
+// for every request, whose message takes a fresh id, and the id a caller inside this process
+// chose for a post it may make again (postSystemMessage).
 func (s *server) createStoredMessage(
 	ctx context.Context,
+	chosenID string,
 	issueKey *string,
 	input createMessageInput,
 	delivery string,
@@ -455,7 +458,7 @@ func (s *server) createStoredMessage(
 	// (writeAdvice).
 	var messageID string
 	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&messageID, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `select coalesce(nullif($1, ''), gen_random_uuid()::text), now()`, chosenID).Scan(&messageID, &createdAt); err != nil {
 		return model.Message{}, nil, err
 	}
 	eventType := "message.created"
