@@ -29,10 +29,16 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryTimelineWithMeasures,
   Issue,
+  IssueDetails,
   IssueSummary,
 } from "../api/types";
 import { AgentsPage } from "../features/agents/AgentsPage";
 import { DeliveryPage } from "../features/delivery/DeliveryPage";
+import { idlePriorityWrite, mockHeaderReads } from "../features/issue/header-fixture";
+import { IssueHeader } from "../features/issue/IssueHeader";
+import { stateForIssue } from "../features/issue/pins";
+import { claimIssue } from "../features/issue-page/issue-fixtures";
+import { MarginProvider } from "../features/margin/margin-context";
 import { IssuesTable } from "../features/project/IssuesTable";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { Chip } from "./Chip";
@@ -658,6 +664,49 @@ test("DeliveryPage: a pick in the header's Window list arms the header's hand-of
   } finally {
     unmount();
   }
+});
+
+/** An issue claimed by a person, as the issue page reads it, so today's issue header draws the
+ *  claim with Release beside it (`IssueHeader.test.tsx`'s claimed issue). */
+const CLAIMED: IssueDetails = {
+  ...claimIssue,
+  artifacts: [],
+  children: [],
+  claim: { actor: { id: "alice", kind: "user" }, at: "2026-09-24T06:00:00Z" },
+  design_gates: [],
+  holder_state: null,
+  last_seen: null,
+  open_asks: [],
+  progress: { tasks: null, children: null },
+  referenced_by_count: 0,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+  takeable_at: null,
+};
+
+test("IssueHeader: Release arms the Attention group's hand-off", async () => {
+  restores.push(mockHeaderReads());
+  answering(
+    spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
+    // The release stays out: the case reads the arm, not what the release's answer does.
+    spyOn(api, "releaseIssueClaim").mockReturnValue(new Promise(() => undefined))
+  );
+  drawPage(
+    <MarginProvider>
+      <IssueHeader
+        documentArtifact={undefined}
+        isClosed={false}
+        issue={CLAIMED}
+        priorityWrite={idlePriorityWrite}
+        state={stateForIssue(undefined, CLAIMED.key)}
+      />
+    </MarginProvider>,
+    `/issues/${CLAIMED.key}`
+  );
+  expectArms(await screen.findByRole("button", { name: `Release the claim on ${CLAIMED.key}` }));
+  // The release the press sent draws its pending state as it goes out, inside `act`.
+  await act(() => settle());
 });
 
 /** An issue as the project List's listing answers it (`IssuesTable.test.tsx`'s). */

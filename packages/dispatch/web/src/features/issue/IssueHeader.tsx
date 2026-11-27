@@ -1,6 +1,6 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 
 import {
   AGENT_LIST_REFILLING,
@@ -22,7 +22,7 @@ import type {
   UserState,
 } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
-import { focusOnMount } from "../../components/focus-place";
+import { ARM_ON_PRESS, focusOnMount, useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
@@ -202,6 +202,16 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // The Attention group, whose own hand-off (`useFocusPlace`) answers a focus a press of the
+  // reader's took away with a control of the group: Release, once its release has landed and the
+  // claim has gone with it. No Claim control takes its place, so the focus goes to the control
+  // now at Release's place, else to the nearest one before it that the reader can see, walking
+  // back over the page's main content where the group holds none, rather than to the page's body.
+  const attention = useRef<HTMLDivElement>(null);
+  const noteAttentionFocus = useFocusPlace(
+    () => attention.current,
+    () => null
+  );
   // Every status write of the header - the Status pick, Close, Reopen and the palette's rows - goes
   // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
   // parent or an open child, then the write below, or the question where Dispatch's rule would
@@ -745,7 +755,14 @@ export function IssueHeader({
               <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
             )}
           </div>
-          <div className={`${headerGroup} empty:hidden`} data-testid="issue-attention">
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the group took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the group (`armOnPress`), so the group needs no role of its own. */}
+          <div
+            className={`${headerGroup} empty:hidden`}
+            data-testid="issue-attention"
+            {...ARM_ON_PRESS}
+            onFocus={noteAttentionFocus}
+            ref={attention}
+          >
             {whoseTurn === null ? null : (
               <span
                 className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
@@ -779,8 +796,11 @@ export function IssueHeader({
                 <button
                   aria-label={`Release the claim on ${issue.key}`}
                   className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                  disabled={releaseClaim.isPending}
-                  onClick={() => releaseClaim.mutate()}
+                  // Held, not disabled, while its release is out: the pressed Release keeps the
+                  // keyboard focus, and a second press sends nothing. Once the release lands, the
+                  // claim goes and Release with it, and the header draws no Claim control in their
+                  // place, so the group's hand-off (`noteAttentionFocus`) sends the focus on.
+                  {...heldPress(releaseClaim.isPending, () => releaseClaim.mutate())}
                   title="Release this claim so another agent can take the issue"
                   type="button"
                 >
