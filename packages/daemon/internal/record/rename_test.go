@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,7 +113,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		}
 		left := renameLeft(t, ctx, tx, "LEGION", from)
 		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableClearedPullRequests: 1, RenameTableProductionChecks: 1,
-			RenameTableRepoNotes: 2}; !reflect.DeepEqual(left, want) {
+			RenameTableRepoNotes: 2, RenameTableMergeSnapshot: 0}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s before the write = %v, want %v", from, left, want)
 		}
 	})
@@ -145,7 +146,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 			t.Fatalf("OTHER-9's note = %v, want another project's note left on %s", got, from)
 		}
 		none := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableClearedPullRequests: 0, RenameTableProductionChecks: 0,
-			RenameTableRepoNotes: 0}
+			RenameTableRepoNotes: 0, RenameTableMergeSnapshot: 0}
 		if left := renameLeft(t, ctx, tx, "LEGION", from); !reflect.DeepEqual(left, none) {
 			t.Fatalf("rows on %s after the write = %v, want none", from, left)
 		}
@@ -160,7 +161,9 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 // Where the new name would give pull_requests_repo_branch one repository and branch twice — another
 // issue's pull request already holds the branch under the new name, in any spelling — the issue's
 // row under the old name is deleted and the other's stays, and the deletion names both issues; the
-// issue's other rows are written as ever. Control: with the collision read removed, the update of
+// issue's other rows are written as ever. The deletion is a clear's (clearPullRequests), so the
+// deleted row's clock stands under the new name, beside the merge it saved
+// (TestARenameKeepsTheDeletedIssuesMerge). Control: with the collision read removed, the update of
 // the row fails on the unique index and the issue's whole write with it.
 func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *testing.T) {
 	ctx := context.Background()
@@ -180,18 +183,126 @@ func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *tes
 	if !reflect.DeepEqual(written.Deleted, want) {
 		t.Fatalf("deleted = %+v, want %+v", written.Deleted, want)
 	}
-	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 || rows[RenameTableRepoNotes] != 1 {
-		t.Fatalf("rows written = %v, want the record, the check and the note, and no pull request", rows)
+	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 ||
+		rows[RenameTableRepoNotes] != 1 || rows[RenameTableClearedPullRequests] != 1 || rows[RenameTableMergeSnapshot] != 1 {
+		t.Fatalf("rows written = %v, want the record, the check, the note, the kept clock and the saved merge, and no pull request", rows)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		if got, want := storedNames(t, ctx, tx, "LEGION-1"), map[string]string{"issues.repo": to, "issues.github_repo": to,
-			"production_checks.repo": to, "repo_notes.resolved_repo": to}; !reflect.DeepEqual(got, want) {
+			"production_checks.repo": to, "repo_notes.resolved_repo": to, "cleared_pull_requests.repo": to}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-1's names = %v, want %v and no pull request", got, want)
 		}
 		if got := storedNames(t, ctx, tx, "LEGION-2")["pull_requests.repo"]; got != to {
 			t.Fatalf("LEGION-2's pull request = %q, want it kept on %s", got, to)
 		}
 	})
+}
+
+// The rename's deletion of a row the new name would hold twice keeps what the row shows of the
+// merge (clearPullRequests). LEGION-1's merged row collides with LEGION-2's row on the new name and
+// the same branch: the rename saves its merge as LEGION-1's snapshot, under the new name, and
+// LEGION-1 derives ANSWERED. LEGION-3's closed row collides with LEGION-4's: the rename keeps its
+// clock, moved to the new name with LEGION-3's other clocks, and LEGION-3 derives PARTIAL. Neither
+// issue holds any other row that bears on the merge. A write of each record, and each clear of a
+// generation, keep both. A second rename changes nothing.
+func TestARenameKeepsTheDeletedIssuesMerge(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	const from, to = "sjawhar/legion", "cybermonklabs/legion"
+	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	head, sha := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	recorded := func(key, repo string) Issue {
+		issue := issueFixture(key)
+		issue.Tree, issue.Parent, issue.Repo, issue.GitHubRepo = key, nil, repo, repo
+		return issue
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, seed := range []struct {
+			key, repo, branch string
+			number            int
+			state             PullRequestState
+		}{
+			{"LEGION-1", from, "release/shared", 7, PullRequestMerged},
+			{"LEGION-2", to, "release/shared", 8, PullRequestOpen},
+			{"LEGION-3", from, "release/other", 9, PullRequestClosed},
+			{"LEGION-4", to, "release/other", 10, PullRequestOpen},
+		} {
+			must(t, records.PutIssue(ctx, tx, recorded(seed.key, seed.repo)))
+			pr := PullRequest{Issue: seed.key, Repo: seed.repo, Number: seed.number, Branch: seed.branch, Base: "main", HeadSHA: head,
+				HeadUpdatedAt: at, State: seed.state}
+			if seed.state == PullRequestMerged {
+				pr.MergeSHA = sha
+			}
+			must(t, records.PutPullRequest(ctx, tx, pr))
+		}
+	})
+	rename := func(t *testing.T) map[string]RenameWrite {
+		t.Helper()
+		written := map[string]RenameWrite{}
+		inTx(t, st, func(tx pgx.Tx) {
+			for _, key := range []string{"LEGION-1", "LEGION-3"} {
+				write, err := RenameIssueRepository(ctx, tx, key, from, to)
+				must(t, err)
+				written[key] = write
+			}
+		})
+		return written
+	}
+	first := rename(t)
+	if first["LEGION-1"].Deleted == nil || first["LEGION-3"].Deleted == nil {
+		t.Fatalf("the renames = %+v, want each issue's colliding row deleted", first)
+	}
+	held := func(t *testing.T, after string) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) {
+			merged, err := records.Issue(ctx, tx, "LEGION-1")
+			must(t, err)
+			if want := (Merge{Number: 7, Head: head, SHA: sha, Base: "main", Repo: to}); merged.Merge != want {
+				t.Fatalf("LEGION-1's snapshot after %s = %+v, want its deleted row's merge under the new name, %+v", after, merged.Merge, want)
+			}
+			if got := rowsText(t, tx, `select repo || ' ' || number from cleared_pull_requests where issue = 'LEGION-3'`); !reflect.DeepEqual(got, []string{to + " 9"}) {
+				t.Fatalf("LEGION-3's clocks after %s = %v, want its deleted row's clock under the new name", after, got)
+			}
+			for key, want := range map[string]MergeHistoryClass{"LEGION-1": MergeHistoryAnswered, "LEGION-3": MergeHistoryPartial} {
+				history, err := records.MergeHistoryOf(ctx, tx, key)
+				must(t, err)
+				if history.Class != want {
+					t.Fatalf("%s after %s derives %s, want %s", key, after, history.Class, want)
+				}
+			}
+		})
+	}
+	held(t, "the rename")
+	for _, write := range []struct {
+		name  string
+		write func(tx pgx.Tx, key string) error
+	}{
+		{"PutIssue", func(tx pgx.Tx, key string) error { return records.PutIssue(ctx, tx, recorded(key, to)) }},
+		{"ClearGeneration", func(tx pgx.Tx, key string) error { return records.ClearGeneration(ctx, tx, key, at.Add(time.Hour)) }},
+		{"ClearTreeGeneration", func(tx pgx.Tx, key string) error { return records.ClearTreeGeneration(ctx, tx, key, at.Add(time.Hour)) }},
+		{"ClearChangeGeneration", func(tx pgx.Tx, key string) error {
+			return records.ClearChangeGeneration(ctx, tx, key, at.Add(time.Hour))
+		}},
+	} {
+		inTx(t, st, func(tx pgx.Tx) {
+			for _, key := range []string{"LEGION-1", "LEGION-3"} {
+				must(t, write.write(tx, key))
+			}
+		})
+		held(t, write.name)
+	}
+	for key, again := range rename(t) {
+		for table, rows := range again.Rows {
+			if rows != 0 {
+				t.Errorf("a second rename of %s wrote %d rows of %s, want none", key, rows, table)
+			}
+		}
+		if again.Deleted != nil {
+			t.Errorf("a second rename of %s deleted %+v, want nothing", key, again.Deleted)
+		}
+	}
+	held(t, "a second rename")
 }
 
 // A new generation's clear keeps the issue whose pull request row it deleted beside its clock

@@ -15,8 +15,8 @@ import (
 )
 
 // DefectKind is what a reason of a next change is: a check of the issue's Verification document
-// that Dispatch computes as a fail, a production check's fail, or a defect of the change a role
-// reported.
+// that Dispatch computes as a fail, a production check's fail, a defect of the change a role
+// reported, or a request for new work on an issue whose work merged.
 type DefectKind string
 
 const (
@@ -29,7 +29,19 @@ const (
 	// DefectKindDefect is a defect of the change a role reported (report_defect). It holds the
 	// close until a merged change carries it or a withdrawal ends it.
 	DefectKindDefect DefectKind = "defect"
+	// DefectKindRequest is a request for new work on an issue whose work merged: the reason of the
+	// one next change the request starts. Its Role says who asked (RequesterPerson,
+	// claim.RoleController or claim.RoleArchitect). It holds the close until a merged change carries
+	// it, or until the asker's word ends it. The close lists it apart from the defects
+	// (CloseWait.Requests).
+	DefectKindRequest DefectKind = "request"
 )
+
+// RequesterPerson is who asked for a request a person made: a Dispatch user's event, an operator's
+// `legion issue status`, the daemon's todo of a person's approval, and a request that names no
+// actor. A request of the controller names claim.RoleController, and one of an architect
+// claim.RoleArchitect.
+const RequesterPerson claim.Role = "person"
 
 // DefectClosedByPerson is the withdrawal reason of each defect still open when a person's done
 // closed its issue (CloseDefectsByPerson): the person's word ended it, and no change carried it.

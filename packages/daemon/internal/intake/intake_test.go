@@ -391,19 +391,19 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "Dispatch issue created",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.created",
 			file:    "dispatch/issue-created.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}, PersonActor: "smoke"},
 		},
 		{
 			name:    "Dispatch issue updated",
 			subject: "notifications.dispatch.issue.CAPTURE-3.issue.updated",
 			file:    "dispatch/issue-updated.json",
-			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, PersonActor: "smoke"},
 		},
 		{
 			name:    "Dispatch issue closed",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.closed",
 			file:    "dispatch/issue-closed.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, PersonActor: "smoke"},
 		},
 		{
 			name:    "Dispatch artifact version",
@@ -503,7 +503,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/issue-updated-resolved-only.json",
 			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "UUUk",
 				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
-				Blockers: []string{}, ClaimKnown: true},
+				Blockers: []string{}, ClaimKnown: true, PersonActor: "human"},
 		},
 		{
 			name:    "pull request opened",
@@ -786,7 +786,7 @@ func TestADispatchIssueEventWithoutResolvedRepoDecodesWithItsRepositoryMissing(t
 	if err != nil {
 		t.Fatalf("decode of an event without resolved_repo = %v, want it decoded", err)
 	}
-	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{}}
+	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{}, PersonActor: "smoke"}
 	if !reflect.DeepEqual(decoded.Fact, want) {
 		t.Fatalf("fact = %#v, want %#v", decoded.Fact, want)
 	}

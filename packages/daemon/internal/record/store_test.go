@@ -2500,7 +2500,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
 			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from",
 			"merge_number", "merge_head", "merge_sha", "merge_base", "merge_repo", "merged_at", "close_wait_since",
-			"close_wait", "closed_on_checks_at", "next_change", "next_changes", "merger_completion_owed", "standing_told_at", "tree_generation"},
+			"close_wait", "closed_on_checks_at", "next_change", "next_changes", "merger_completion_owed", "standing_told_at", "tree_generation",
+			"never_merged_confirmed"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "earlier_givers"},
@@ -3278,4 +3279,168 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 	if got := read(); got.Merge != later {
 		t.Fatalf("the issue after a later merge holds %+v, want %+v", got.Merge, later)
 	}
+}
+
+// A path that deletes or replaces a merged pull request row saves the row's merge first, so the
+// issue's evidence of its merge outlives the row. A closed issue holds a retained merged row and no
+// snapshot, as an issue a release before the snapshot merged does. Each clear of a generation, on
+// its own copy of that seed, and a write of a later pull request from the same branch, which
+// replaces the row, leave the snapshot holding the row's number, repository, merge commit, base and
+// final head, with no merged_at, which the row never held, and the issue derives ANSWERED. A
+// cleared row that never merged saves no snapshot, and its kept clock derives PARTIAL.
+func TestAClearKeepsTheMergeOfARowItDeletes(t *testing.T) {
+	ctx := context.Background()
+	records := NewStore()
+	head, sha := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	at := time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)
+	seed := func(t *testing.T, state PullRequestState) *store.Store {
+		t.Helper()
+		st := migratedStore(t)
+		inTx(t, st, func(tx pgx.Tx) {
+			issue := issueFixture("ACME-1")
+			issue.Project, issue.Tree, issue.Parent, issue.Phase, issue.Status, issue.Repo = "ACME", "ACME-1", nil, phase.Done, "done", "acme/widgets"
+			must(t, records.PutIssue(ctx, tx, issue))
+			must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-1", Repo: "acme/widgets", Number: 41, Branch: "legion/ACME-1", Base: "main",
+				HeadSHA: head, HeadUpdatedAt: at, MergeSHA: sha, State: state}))
+		})
+		return st
+	}
+	read := func(t *testing.T, st *store.Store) (Merge, MergeHistoryClass) {
+		t.Helper()
+		var (
+			merge Merge
+			class MergeHistoryClass
+		)
+		inTx(t, st, func(tx pgx.Tx) {
+			issue, err := records.Issue(ctx, tx, "ACME-1")
+			must(t, err)
+			history, err := records.MergeHistoryOf(ctx, tx, "ACME-1")
+			must(t, err)
+			merge, class = issue.Merge, history.Class
+		})
+		return merge, class
+	}
+	merged := Merge{Number: 41, Head: head, SHA: sha, Base: "main", Repo: "acme/widgets"}
+	for _, tc := range []struct {
+		name  string
+		write func(tx pgx.Tx) error
+	}{
+		{"ClearGeneration", func(tx pgx.Tx) error { return records.ClearGeneration(ctx, tx, "ACME-1", at) }},
+		{"ClearTreeGeneration", func(tx pgx.Tx) error { return records.ClearTreeGeneration(ctx, tx, "ACME-1", at) }},
+		{"ClearChangeGeneration", func(tx pgx.Tx) error { return records.ClearChangeGeneration(ctx, tx, "ACME-1", at) }},
+		{"a PutPullRequest of a later pull request from the branch", func(tx pgx.Tx) error {
+			return records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-1", Repo: "acme/widgets", Number: 42, Branch: "legion/ACME-1", Base: "main",
+				HeadSHA: strings.Repeat("c", 40), HeadUpdatedAt: at.Add(time.Hour), State: PullRequestOpen})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := seed(t, PullRequestMerged)
+			inTx(t, st, func(tx pgx.Tx) { must(t, tc.write(tx)) })
+			merge, class := read(t, st)
+			if merge != merged {
+				t.Fatalf("the snapshot after %s = %+v, want the merge of the row it deleted, %+v", tc.name, merge, merged)
+			}
+			if class != MergeHistoryAnswered {
+				t.Fatalf("the class after %s = %s, want %s", tc.name, class, MergeHistoryAnswered)
+			}
+		})
+	}
+	t.Run("a cleared row that did not merge", func(t *testing.T) {
+		st := seed(t, PullRequestClosed)
+		inTx(t, st, func(tx pgx.Tx) { must(t, records.ClearGeneration(ctx, tx, "ACME-1", at)) })
+		merge, class := read(t, st)
+		if merge.Merged() {
+			t.Fatalf("the snapshot after the clear of a closed row = %+v, want none", merge)
+		}
+		if class != MergeHistoryPartial {
+			t.Fatalf("the class after the clear of a closed row = %s, want %s: its kept clock", class, MergeHistoryPartial)
+		}
+	})
+}
+
+// A person's confirmation that an issue's work never merged allows one rerun: the first consume
+// takes it, and a second answers false. A write of the issue's whole record keeps it. Positive
+// merge evidence takes it, a snapshot that stands and an older merge refused beside one alike, and
+// so does each clear of a generation. After each of those a new confirmation is taken again, so a
+// case that answered false read a flag the write took, not a flag that was never set. A
+// confirmation of an issue the record holds no row of is refused.
+func TestTheConfirmationIsUsedOnce(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)
+	merge := Merge{Number: 41, Head: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), Base: "main", Repo: "acme/widgets", MergedAt: at}
+	consume := func(t *testing.T, key string) bool {
+		t.Helper()
+		var taken bool
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			taken, err = records.ConsumeNeverMergedConfirmation(ctx, tx, key)
+			must(t, err)
+		})
+		return taken
+	}
+	confirm := func(t *testing.T, key string) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) { must(t, records.ConfirmNeverMerged(ctx, tx, key)) })
+	}
+	for i, tc := range []struct {
+		name string
+		// seed runs before the confirmation, write after it.
+		seed, write func(tx pgx.Tx, issue Issue) error
+		kept        bool
+	}{
+		{name: "no write between", kept: true},
+		{name: "a PutIssue of its whole record", kept: true, write: func(tx pgx.Tx, issue Issue) error {
+			issue.Rank = "00099U"
+			return records.PutIssue(ctx, tx, issue)
+		}},
+		{name: "a PutMergeSnapshot", write: func(tx pgx.Tx, issue Issue) error {
+			_, err := records.PutMergeSnapshot(ctx, tx, issue.Key, merge)
+			return err
+		}},
+		{name: "a PutMergeSnapshot of an older merge beside a snapshot that stands", seed: func(tx pgx.Tx, issue Issue) error {
+			_, err := records.PutMergeSnapshot(ctx, tx, issue.Key, merge)
+			return err
+		}, write: func(tx pgx.Tx, issue Issue) error {
+			older := merge
+			older.Number, older.MergedAt = 40, at.Add(-time.Hour)
+			_, err := records.PutMergeSnapshot(ctx, tx, issue.Key, older)
+			return err
+		}},
+		{name: "ClearGeneration", write: func(tx pgx.Tx, issue Issue) error { return records.ClearGeneration(ctx, tx, issue.Key, at) }},
+		{name: "ClearTreeGeneration", write: func(tx pgx.Tx, issue Issue) error { return records.ClearTreeGeneration(ctx, tx, issue.Tree, at) }},
+		{name: "ClearChangeGeneration", write: func(tx pgx.Tx, issue Issue) error { return records.ClearChangeGeneration(ctx, tx, issue.Key, at) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := issueFixture(fmt.Sprintf("ACME-%d", i+1))
+			issue.Project, issue.Tree, issue.Parent, issue.Phase, issue.Status = "ACME", issue.Key, nil, phase.Done, "done"
+			inTx(t, st, func(tx pgx.Tx) {
+				must(t, records.PutIssue(ctx, tx, issue))
+				if tc.seed != nil {
+					must(t, tc.seed(tx, issue))
+				}
+			})
+			confirm(t, issue.Key)
+			if tc.write != nil {
+				inTx(t, st, func(tx pgx.Tx) { must(t, tc.write(tx, issue)) })
+			}
+			if got := consume(t, issue.Key); got != tc.kept {
+				t.Fatalf("the first consume after %s = %t, want %t", tc.name, got, tc.kept)
+			}
+			if consume(t, issue.Key) {
+				t.Fatalf("a second consume after %s took a confirmation, want none: one confirmation allows one rerun", tc.name)
+			}
+			confirm(t, issue.Key)
+			if !consume(t, issue.Key) {
+				t.Fatalf("a confirmation after %s was not taken, so the flag is never set", tc.name)
+			}
+		})
+	}
+	t.Run("an issue with no record", func(t *testing.T) {
+		err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.ConfirmNeverMerged(ctx, tx, "ACME-999") })
+		if err == nil {
+			t.Fatal("the confirmation of an issue with no record = nil, want it refused")
+		}
+	})
 }

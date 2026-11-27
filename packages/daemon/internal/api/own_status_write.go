@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // setDispatchStatus writes an issue's status in Dispatch as the daemon, answering a refused or
@@ -56,12 +59,28 @@ func (s *server) setDispatchStatus(w http.ResponseWriter, r *http.Request, issue
 // Once the write has landed, a failure here leaves the record to the event, and the caller is
 // answered so (recordOwnStatusWrite says which failure). A route that writes the status again on
 // its retry gets the issue back at the sequence of that write's own event, and applies it then.
-func (s *server) applyOwnStatusWrite(w http.ResponseWriter, r *http.Request, written dispatch.Issue) bool {
-	if failure := s.recordOwnStatusWrite(r.Context(), written); failure != nil {
+// requester and person are who asked the route for the write (ownWriteAsker).
+func (s *server) applyOwnStatusWrite(w http.ResponseWriter, r *http.Request, written dispatch.Issue, requester claim.Role, person string) bool {
+	if failure := s.recordOwnStatusWrite(r.Context(), written, requester, person); failure != nil {
 		s.writeFailure(w, r, failure.status, failure.code, failure.message)
 		return false
 	}
 	return true
+}
+
+// operatorPerson is the person a write through the operator's grant names (PersonActor): the
+// operator's bearer names no one, so the write names the operator.
+const operatorPerson = "operator"
+
+// ownWriteAsker is who asked set_status for its write, by the grant it redeemed: a person
+// (record.RequesterPerson), named operatorPerson, for the operator's grant (`legion issue status`,
+// credential.Grant.Operator), and the controller for a controller session's. A person's request
+// ends with no pull request only on that person's word.
+func ownWriteAsker(grant credential.Grant) (claim.Role, string) {
+	if grant.Operator {
+		return record.RequesterPerson, operatorPerson
+	}
+	return claim.RoleController, ""
 }
 
 // ownWriteFailure is why the record did not take the daemon's own status write in the request that
@@ -74,12 +93,13 @@ type ownWriteFailure struct {
 // recordOwnStatusWrite is applyOwnStatusWrite's work, answering nothing, for a route that does not
 // fail its call when the record does not take a write that landed: release_children, whose write's
 // event records the child when the consumer delivers it. It reports why the record did not take the
-// write, or nil when it did or when there was nothing to apply.
-func (s *server) recordOwnStatusWrite(ctx context.Context, written dispatch.Issue) *ownWriteFailure {
+// write, or nil when it did or when there was nothing to apply. The write's event says who asked
+// (intake.OwnStatusWrite): requester, and person where a person asked through the operator's grant.
+func (s *server) recordOwnStatusWrite(ctx context.Context, written dispatch.Issue, requester claim.Role, person string) *ownWriteFailure {
 	if written.LastSeq <= 0 || !s.ownDispatchIssue(written.Key) {
 		return nil
 	}
-	event := intake.OwnStatusWrite(written)
+	event := intake.OwnStatusWrite(written, requester, person)
 	fact := intake.ObservedIssue(written)
 	fact.Delivered = &event
 	if s.prepare != nil {
