@@ -18,6 +18,7 @@ import {
   pinnedEventIds,
 } from "../issue/pins";
 import { fetchPinnedEvents } from "../margin/useMarginItems";
+import { historyLogKey } from "./history-log";
 import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
@@ -86,7 +87,7 @@ export function IssuePins({
   // its pages with no extra read.
   const log = useQuery<InfiniteData<DispatchEvent[]>>({
     enabled: false,
-    queryKey: ["events", issueKey, "history"],
+    queryKey: historyLogKey(issueKey),
   });
   const logEvents = eventPins.length === 0 ? [] : (log.data?.pages.flat() ?? []);
   // Any pinned event not in the history's pages - a post-write event pinned on the Activity tab,
@@ -100,8 +101,8 @@ export function IssuePins({
   const fetchedEventPins = useQuery({
     ...EVENT_FRESH,
     enabled: missingEventPins.length > 0,
-    queryFn: () => fetchPinnedEvents(api.getIssueEvents.bind(api), issueKey, missingEventPins),
-    queryKey: ["events", issueKey, "margin-pinned", missingEventPins],
+    queryFn: () => fetchPinnedEvents(api.getIssueEvents.bind(api), issueKey, eventPins),
+    queryKey: ["events", issueKey, "margin-pinned", eventPins],
   });
   const events =
     fetchedEventPins.data === undefined ? logEvents : [...logEvents, ...fetchedEventPins.data];

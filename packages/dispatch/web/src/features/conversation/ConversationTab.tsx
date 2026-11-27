@@ -41,6 +41,7 @@ import {
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
 import { writePin } from "../issue/pin-write";
+import { issueUnreadBoundaryQuery } from "../issue-page/history-log";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { ThreadCard } from "../margin/ThreadCard";
 import { type CommentActionFailure, useCommentActionQueue } from "../margin/useCommentActionQueue";
@@ -1035,10 +1036,7 @@ export function ConversationTab({
   const lastReadSeq = issueState.last_read_seq;
   // The watermark as a moment: the first event the reader has not read. One row - the list is
   // ordered by activity, not by sequence, so the log is read for this and for the head alone.
-  const unreadBoundary = useQuery({
-    queryKey: ["events", issueKey, "unread-boundary", lastReadSeq],
-    queryFn: () => api.getIssueEvents(issueKey, { after: lastReadSeq, limit: 1 }),
-  });
+  const unreadBoundary = useQuery(issueUnreadBoundaryQuery(issueKey, lastReadSeq));
   // The issue's head: what a dwell on the newest conversation marks read.
   const head = useQuery({
     queryKey: ["events", issueKey, "head"],

@@ -289,11 +289,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   // Each upload's event and file, oldest first, gathered into runs once every event is read.
   const uploads: { event: DispatchEvent; file: UploadedFile }[] = [];
   const ordered = [...input.events].sort((left, right) => left.seq - right.seq);
-  const seqOf = new Map<string, number>();
   for (const event of ordered) {
-    if (event.type === "comment.created" || event.type === "message.created") {
-      seqOf.set(event.payload.id, event.seq);
-    }
     const status =
       event.type === "issue.created" ||
       event.type === "issue.updated" ||
@@ -324,7 +320,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     });
     if (status !== undefined) previousStatus = status;
   }
-  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly, seqOf));
+  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly));
 
   // Newest first, by when each happened; one instant by the log's own order, then by id.
   entries.sort((one, other) => comparePlaces(other, one));
@@ -338,7 +334,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   };
   const read = entries.some((entry) => isNew(entry) === false);
   const unread = entries.some((entry) => isNew(entry) === true);
-  let marked = !(read && unread);
+  let marked = !(read && unread) || entries.some((entry) => isNew(entry) === undefined);
   const days: { date: string; entries: HistoryEntry[] }[] = [];
   for (const entry of entries) {
     // The line that says what is new stands after the oldest unread entry, in that entry's own
@@ -516,11 +512,7 @@ function uploadRuns(
  *  names the ask (`ask_id`), where the server's climb to a thread's head stops, so the thread of
  *  an approval request is every comment naming it (`agents-only.ts`), whatever its `reply_to`
  *  says: one entry per ask, at its earliest comment, the rest its replies. */
-function threadsOf(
-  input: HistoryInput,
-  ids: ReadonlySet<string>,
-  seqOf: ReadonlyMap<string, number>
-): Dated[] {
+function threadsOf(input: HistoryInput, ids: ReadonlySet<string>): Dated[] {
   const threads: Dated[] = [];
   const comments = (input.comments ?? []).filter((comment) => ids.has(comment.id));
   const byAsk = new Map<string, typeof comments>();
@@ -535,7 +527,7 @@ function threadsOf(
       compareTimestamps(one.created_at, other.created_at)
     );
     if (root === undefined) continue;
-    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));
+    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn)));
   }
   const unasked = comments.filter((comment) => comment.ask_id === null);
   const repliesTo = new Map<string, typeof comments>();
@@ -550,12 +542,12 @@ function threadsOf(
     const replies = (repliesTo.get(root.id) ?? []).sort((one, other) =>
       compareTimestamps(one.created_at, other.created_at)
     );
-    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));
+    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn)));
   }
   for (const thread of input.messages ?? []) {
     if (!ids.has(thread.message.id)) continue;
     threads.push(
-      threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn), seqOf)
+      threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn))
     );
   }
   // A thread stands at its first turn's time (`threadEntry`), so one whose first turn is older
@@ -571,8 +563,7 @@ function threadsOf(
 
 function threadEntry(
   root: HistoryTurn,
-  replies: readonly HistoryTurn[],
-  seqOf: ReadonlyMap<string, number>
+  replies: readonly HistoryTurn[]
 ): Extract<Dated, { kind: "thread" }> {
   return {
     at: root.at,
@@ -581,7 +572,7 @@ function threadEntry(
     kind: "thread",
     replies,
     root,
-    seq: seqOf.get(root.id) ?? 0,
+    seq: 0,
   };
 }
 

@@ -526,8 +526,10 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * above the view. So as the focus lands, a focused element no taller than the view and not wholly
  * in it is brought into it first, by the least scroll that shows it whole (`nearest`). An element
  * taller than the view, as the history `t v` focuses, is left where it is: its heading's own
- * landing places it (below). That scroll is the hold's own, and the hold claims the box before
- * its event is raised, so neither the hold nor the history's anchor takes it for the reader's.
+ * landing places it (below). Where that landing already fired before the focus arrived and a row
+ * above the history changed height in between, the hold brings the heading back to the top of
+ * Details' box. That scroll is the hold's own, and the hold claims the box before its event is
+ * raised, so neither the hold nor the history's anchor takes it for the reader's.
  *
  * The top kept is where the reader last saw the element: where the focus found it, once brought
  * into the view, and again where each scroll of the box the hold did not make itself left it -
@@ -575,7 +577,6 @@ function holdLandedPlace(target: string, frames: number): () => void {
   let headingLandedBeforeFocus = false;
   const noteHeadingLanded = (event: Event) => {
     if (
-      target === HISTORY_IN_DETAILS &&
       event.target instanceof Element &&
       document.querySelector(HISTORY_IN_DETAILS)?.contains(event.target) === true
     ) {
@@ -651,7 +652,7 @@ function holdLandedPlace(target: string, frames: number): () => void {
     // it in by its top from above the view and by its foot from below it.
     const landing = control.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
-    if (target === HISTORY_IN_DETAILS && headingLandedBeforeFocus) {
+    if (headingLandedBeforeFocus) {
       const heading = control.querySelector("h2");
       if (heading !== null) {
         const drift = heading.getBoundingClientRect().top - view.top;

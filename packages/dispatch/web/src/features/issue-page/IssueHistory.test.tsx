@@ -28,6 +28,8 @@ import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { measureNearWords } from "./clamp-fixtures";
 import { HistoryHandoff } from "./HistoryHandoff";
+import { historyLogKey } from "./history-log";
+import { arriveInHistoryLog } from "./history-log-fixture";
 import { HISTORY_EXCLUDED_TYPES } from "./history-model";
 import { type AddressedTurn, IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -140,21 +142,7 @@ function installRowLayout(): { restore: () => void } {
   };
 }
 
-/** The history's own log, which it reads filtered (`IssueHistory.tsx`). */
-const HISTORY_LOG = ["events", KEY, "history"];
-
-/** An event arriving in the history's log, as the read that the feed's refresh starts answers it
- *  (`eventRefreshTargets` invalidates `["events", <key>]`, a prefix of the history's key): page 0
- *  with the event at its head, as `prependEventToLog` writes it into Activity's log. */
-function arriveInHistoryLog(queryClient: QueryClient, event: DispatchEvent): void {
-  queryClient.setQueryData<EventPages>(HISTORY_LOG, (current) => {
-    if (current === undefined) return current;
-    return {
-      ...current,
-      pages: [[event, ...(current.pages[0] ?? [])], ...current.pages.slice(1)],
-    };
-  });
-}
+const HISTORY_LOG = historyLogKey(KEY);
 
 // The history reads `["events", <key>, "history"]` and draws it newest first: each arrival
 // pushes a reader who is down in the history one entry further down unless something holds
@@ -194,7 +182,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
     const before = reading?.getBoundingClientRect().top;
 
     act(() => {
-      arriveInHistoryLog(queryClient, claim(13));
+      arriveInHistoryLog(queryClient, KEY, claim(13));
     });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(13));
 
@@ -257,7 +245,7 @@ test("an event arriving just after midnight leaves the entry the reader reads wh
     // Midnight passes; the first event of the new day arrives.
     setSystemTime(new Date(2026, 10, 20, 0, 0, 30, 0));
     act(() => {
-      arriveInHistoryLog(queryClient, claim(13));
+      arriveInHistoryLog(queryClient, KEY, claim(13));
     });
     await waitFor(() =>
       expect(
@@ -305,9 +293,9 @@ function agentMessage(id: string, ago: number): MessageRead {
   };
 }
 
-// A thread whose first turn's event is on a page of the log not read yet carries seq 0, as every
-// other such thread does, so two of them share one `data-event-seq`: the anchor follows each
-// entry's own id instead, or it holds the first of them while the reader is on the second.
+// A thread whose created event the filtered log leaves out carries seq 0, as every other such
+// thread does, so two of them share one `data-event-seq`: the anchor follows each entry's own id
+// instead, or it holds the first of them while the reader is on the second.
 test("a reader on one of two threads whose events are unread keeps their entry when an event arrives", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const restoreReads = stubHistoryReads(
@@ -349,7 +337,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
     const before = reading?.getBoundingClientRect().top;
 
     act(() => {
-      arriveInHistoryLog(queryClient, claim(7));
+      arriveInHistoryLog(queryClient, KEY, claim(7));
     });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(9));
 
@@ -571,7 +559,7 @@ function drawHistory(
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   queryClient.setQueryData(["agents"], []);
-  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  const issue = { artifacts: [], key: KEY, last_seq: 100000 } as unknown as IssueDetails;
   const history = (
     <IssueHistory
       activityFollowing={undefined}
@@ -812,7 +800,7 @@ test("a newer upload that joins a run drawn keeps the run's Pin and the focus on
     expect(document.activeElement).toBe(pin);
 
     act(() => {
-      arriveInHistoryLog(drawn.queryClient, upload(4, 5, "c.png"));
+      arriveInHistoryLog(drawn.queryClient, KEY, upload(4, 5, "c.png"));
     });
     await waitFor(() =>
       expect(document.querySelector('[data-history-uploads="3"]')).not.toBeNull()

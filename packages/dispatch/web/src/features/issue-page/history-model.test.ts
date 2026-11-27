@@ -707,7 +707,17 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
     ...["09:00:10", "09:00:20", "09:00:30"].map((time, index) => shot(time, `run-${index}`)),
   ];
   // Read through the claim of 11:50, so the line that says what is new stands among the first 20.
-  const days = daysOf(events, 32, [thread, ...replies]);
+  const days = buildHistory({
+    artifacts: [],
+    asks: [],
+    blocks: new Map(),
+    comments: [thread, ...replies],
+    events,
+    lastReadSeq: 32,
+    messages: [],
+    today: "2026-11-15",
+    unreadFrom: "2026-11-15T11:50:00Z",
+  });
   expect(entriesIn(days), "the history holds 41 claims, a thread and a run").toBe(43);
 
   const first = historyDownTo(days, placeUnder(days, undefined, PAGE_SIZE));
@@ -1115,26 +1125,36 @@ test("while the blocks are not known, a repaired block's line names a block, nev
   );
 });
 
-// When post-write events are left out of the log, a thread carries sequence 0; entries of one
-// instant are ordered by id so a thread stands at the same place among the paged events as when
-// its created event is in the log.
-test("a thread stands at the same place among paged events when created events are left out of the log", () => {
+// When post-write events are left out of the log, every thread carries sequence 0; entries of one
+// instant are ordered by id, so two threads at that instant are two places, and `placeUnder` and
+// `historyDownTo` count them separately.
+test("two threads at one instant are two places when created events are left out of the log", () => {
   seq = 0;
   const instant = "2026-11-15T10:00:00Z";
   const first = comment("c-1", instant, AGENT);
   const second = comment("c-2", instant, AGENT);
-  const claim = event("issue.claimed", "2026-11-15T09:59:00Z", {});
-  const firstCreated = event("comment.created", instant, { id: first.id }, AGENT);
-  const secondCreated = event("comment.created", instant, { id: second.id }, AGENT);
-  const handoff = event("handoff.recorded", "2026-11-15T10:01:00Z", {});
+  const days = daysOf([], 0, [first, second]);
+  const places = days.flatMap((day) => day.entries).map((entry) => entry.id);
+  expect(places, "two threads at one instant are not ordered by id").toEqual([
+    "thread:c-2",
+    "thread:c-1",
+  ]);
 
-  const order = (log: readonly DispatchEvent[]) =>
-    flat(daysOf(log, 0, [first, second])).map((entry) => entry.id);
-
+  const firstPlace = placeUnder(days, undefined, 1);
+  const drawn = historyDownTo(days, firstPlace);
   expect(
-    order([claim, handoff]),
-    "leaving created events out of the log changed the order of threads among the paged events"
-  ).toEqual(order([claim, firstCreated, secondCreated, handoff]));
+    drawn.days.flatMap((day) => day.entries).map((entry) => entry.id),
+    "the first thread drawn is not the first by id"
+  ).toEqual(["thread:c-2"]);
+  expect(drawn.left, "one thread is left under the first").toBe(1);
+
+  const secondPlace = placeUnder(days, firstPlace, 1);
+  const both = historyDownTo(days, secondPlace);
+  expect(
+    both.days.flatMap((day) => day.entries).map((entry) => entry.id),
+    "the second thread drawn is not the second by id"
+  ).toEqual(["thread:c-2", "thread:c-1"]);
+  expect(both.left, "no thread is left under both").toBe(0);
 });
 
 // A thread whose created event the log read does not hold carries sequence 0, and is new where
@@ -1170,5 +1190,5 @@ test("a thread whose created event is left out of the log is new where it began 
   expect(
     draw(undefined),
     "threads were told apart as read and unread while the first unread event is not known"
-  ).toEqual(["event:2", "thread:after", "thread:before", "unread", "event:1"]);
+  ).toEqual(["event:2", "thread:after", "thread:before", "event:1"]);
 });

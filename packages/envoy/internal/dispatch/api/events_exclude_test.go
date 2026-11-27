@@ -140,20 +140,7 @@ func TestTheEventFeedLeavesOutEachExcludedTypeAndKeepsTheRestInOrder(t *testing.
 func TestTheEventFeedExcludesTypesBeforeItCountsThePage(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "EXCLP", "name": "Excluded paging",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": "EXCLP", "title": "Excluded paging",
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
-	}
-	key := decodeBody[struct {
-		Key string `json:"key"`
-	}](t, created).Key
+	key := createPlainIssue(t, handler, "EXCLP")
 	feed := "/api/v1/issues/" + key + "/events"
 	opened := readFeed(t, handler, feed)
 	if len(opened) != 1 || opened[0].Type != "issue.created" {

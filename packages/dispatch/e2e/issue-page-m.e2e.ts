@@ -4525,8 +4525,8 @@ async function readDownByShowMore(page: Page, key: string, events: number): Prom
 const MANY_AGENTS = 16;
 
 /** How many notes the history of each of the two rows below holds: more than it draws at once,
- *  and more than the log's first page of 200, so reading down takes many presses of Show more. */
-const LONG_HISTORY_NOTES = 205;
+ *  so reading down takes three presses of Show more. */
+const LONG_HISTORY_NOTES = 61;
 
 /** An issue whose history holds `LONG_HISTORY_NOTES` notes of the daemon's, which the history
  *  reads from the issue's messages, and which `MANY_AGENTS` Legion agents worked, so the

@@ -22,6 +22,7 @@ import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
 import { DetailsErrorLine, retryRead } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import { Entry, runKeys } from "./history-entries";
+import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {
   buildHistory,
   comparePlaces,
@@ -118,7 +119,7 @@ export function IssueHistory({
   // cache. `eventRefreshTargets` invalidates `["events", issueKey]`, which covers this key too.
   const log = useInfiniteQuery({
     initialPageParam: null as number | null,
-    queryKey: ["events", issueKey, "history"],
+    queryKey: historyLogKey(issueKey),
     queryFn: ({ pageParam }) =>
       api.getIssueEvents(
         issueKey,
@@ -126,8 +127,8 @@ export function IssueHistory({
           ? { exclude_types: HISTORY_EXCLUDED_TYPES, limit: PAGE, order: "desc" }
           : { before: pageParam, exclude_types: HISTORY_EXCLUDED_TYPES, limit: PAGE }
       ),
-    // A page can hold more than the server's 200 once streamed events sit above a full response
-    // (mergeEventPages, prependEventToLog); it is still a full page with older events beneath it.
+    // A page can hold more than the server's 200 once a read of this key's own log sits above a
+    // full response (mergeEventPages); it is still a full page with older events beneath it.
     getNextPageParam: (page) => (page.length >= PAGE ? page.at(-1)?.seq : undefined),
     // A refetch whose read predates an event held in page 0 must not take that event back.
     structuralSharing: (current, incoming) =>
@@ -140,9 +141,8 @@ export function IssueHistory({
   // tab under its key: a thread whose created event the filtered log left out carries `seq` 0,
   // so its `created_at` against this moment tells whether the thread is new (`history-model.ts`).
   const unreadBoundary = useQuery({
-    enabled: visitMark > 0,
-    queryKey: ["events", issueKey, "unread-boundary", visitMark],
-    queryFn: () => api.getIssueEvents(issueKey, { after: visitMark, limit: 1 }),
+    ...issueUnreadBoundaryQuery(issueKey, visitMark),
+    enabled: visitMark > 0 && issue.last_seq > visitMark,
   });
   const unreadFrom = unreadBoundary.data?.[0]?.created_at;
   // The outline's own reads, under its keys, so the threads cost no request of their own: never
@@ -403,9 +403,9 @@ export function IssueHistory({
   // The history is newest first, so every event the feed prepends lands above a reader who is
   // down in it: the anchor holds the entry they are on where it was, in the box it scrolls in -
   // Details' own, or the document outside the shell. It follows each entry's own id
-  // (`data-history-entry`), not its `data-event-seq`: a thread whose first turn's event is on a
-  // page of the log not yet read carries seq 0 until that page lands, beside every other such
-  // thread, so its seq names neither one entry nor the same entry before and after that page.
+  // (`data-history-entry`), not its `data-event-seq`: a thread whose created event the filtered
+  // log leaves out carries seq 0, beside every other such thread, so its seq names neither one
+  // entry nor the same entry before and after that page.
   // That box is found once the list is drawn; moving the panel to another host remounts it.
   const anchorRoot = useRef<HTMLElement | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
