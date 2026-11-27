@@ -1,3 +1,9 @@
 [
-{"old_path": "skills/legion-controller/scripts/carry-out.sh", "new_path": "skills/legion-controller/scripts/carry-out.sh", "status": "modified", "binary": false, "hunks": []}
+  {
+    "old_path": "skills/legion-controller/scripts/carry-out.sh",
+    "new_path": "skills/legion-controller/scripts/carry-out.sh",
+    "status": "modified",
+    "binary": false,
+    "hunks": []
+  }
 ]

@@ -27,7 +27,7 @@ The reading of `<dir>` that the code-survival run's live test shares with them, 
 | --- | --- |
 | `TestReferenceLegionPerCommit` | every commit's added lines and every (adder, remover) pair's lines, with `lg/r_git_*.tsv` of step 4 and of the archive |
 | `TestReferenceLegionGroups` | every commit's group under the reference's groups, with the archive's `lg/commits.tsv` |
-| `TestReferenceIssuesAreAttributionsSourcesThreeAndFour` | `delivery.Attributor.IssueOf` over each merged pull request's head branch, title and body, with `lg/pr_issue.tsv` |
+| `TestReferenceIssuesAreAttributionsSourcesThreeAndFour` | `delivery.Attributor.IssueOf` over the head branch, title and body of each pull request that merged as a commit of `lg/commits.txt`, the chain's 1,962 changes, with `lg/pr_issue.tsv`'s lines of those commits; `lg/pulls.json` grows each day, and the pull requests off the chain are left out |
 | `TestReferenceLegionSurvival` | the replay's changes, read with `16_window.py`'s selection, with the published survival figures |
 | `TestReferenceLegionReworkPairs` | the replay's pairs within Legion, with `rework30.py`'s, and its negative control: the last day dropped from the replay alone fails the comparison |
 | `TestReferenceBatchedRunsEqualOnePass` | the window measured in runs of 28 and of 7 days, with the single pass |

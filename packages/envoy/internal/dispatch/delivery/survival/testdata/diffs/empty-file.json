@@ -1,3 +1,9 @@
 [
-{"old_path": null, "new_path": "packages/envoy/.rebuild", "status": "added", "binary": false, "hunks": []}
+  {
+    "old_path": null,
+    "new_path": "packages/envoy/.rebuild",
+    "status": "added",
+    "binary": false,
+    "hunks": []
+  }
 ]

@@ -14,7 +14,7 @@ The script is that of dispatch://INFRA-3117/artifact/survival-scripts-tar-gz ver
 
 A golden is a list of files, each `{old_path, new_path, status, binary, hunks}` with `null` for a missing path and each hunk `[old_start, removed, new_start, added]`.
 
-They were written with this command, run in this directory with the archive's `scripts-feasibility` directory at `$S`; it writes each golden again byte for byte:
+They were written with this command, run in this directory with the archive's `scripts-feasibility` directory at `$S`:
 
 ```sh
 python3 - "$S" $(ls *.diff | sed 's/\.diff$//') <<'PY'
@@ -29,6 +29,13 @@ for name in sys.argv[2:]:
     with open(name + ".json", "w", encoding="utf-8") as out:
         out.write("[\n" + ",\n".join(json.dumps(f, ensure_ascii=False) for f in files) + "\n]\n")
 PY
+```
+
+Biome then formats them, since the lint job checks every JSON file of the tree with it (`.github/scripts/check-biome-tree.sh`), and the tests read them through `json.Unmarshal`, so the format changes nothing they read.
+The command and then this one, run from the repository's root with the Biome that `bun.lock` pins, write each golden again byte for byte:
+
+```sh
+node_modules/.bin/biome format --write packages/envoy/internal/dispatch/delivery/survival/testdata/diffs/*.json
 ```
 
 `ParseDiff` reads every golden as the reference does but one path: `quoted-path.json` holds `b/packages/envoy/internal/dispatch/delivery/survival/testdata/shapes/naïve "name".txt"`, with the prefix and a closing quote, because `patchlib.py` strips the prefix before it unquotes and its unquote drops the TAB git writes after a path holding a space in place of the closing quote.
@@ -63,7 +70,7 @@ For each shape the search took a recent commit of at most 4 files and 80 changed
 
 `merge-compare.diff` was captured with `gh api repos/cybermonklabs/legion/compare/ec3862972a80940126bc43622a2f3cd313eafb92...604ff0971f8b7afd4368134ab35cd1c1648775c4 -H 'Accept: application/vnd.github.diff' > merge-compare.diff`; both routes answered the same 14,635 bytes.
 
-`files-page.json` was captured with `gh api 'repos/cybermonklabs/legion/commits/1ffc8dec7e789c9cb2374f10a8d69069edff73ed?per_page=100&page=1' > files-page.json`.
+`files-page.json` was captured with `gh api 'repos/cybermonklabs/legion/commits/1ffc8dec7e789c9cb2374f10a8d69069edff73ed?per_page=100&page=1' > files-page.json`, and Biome formatted it with the goldens.
 
 The quoted path is a scratch commit made for this capture on 2026-11-26 with the git data API and no clone, on the ref `scratch/INFRA-3206-quoted-path`: one tree on `main`'s adding `packages/envoy/internal/dispatch/delivery/survival/testdata/shapes/naïve "name".txt` with two lines, and one commit of that tree whose parent is `main`'s tip then, `22843f79a9d7b72394e6c1f0eca3f8f5c45713ea`.
 

@@ -1,4 +1,16 @@
 [
-{"old_path": "packages/contracts/package.json", "new_path": "packages/contracts/package.json", "status": "modified", "binary": false, "hunks": [[5, 0, 5, 7], [22, 1, 29, 1]]},
-{"old_path": "packages/envoy-client/package.json", "new_path": "packages/envoy-client/package.json", "status": "modified", "binary": false, "hunks": [[8, 0, 8, 1], [12, 0, 13, 1], [16, 0, 18, 1], [20, 0, 23, 1], [38, 1, 42, 1]]}
+  {
+    "old_path": "packages/contracts/package.json",
+    "new_path": "packages/contracts/package.json",
+    "status": "modified",
+    "binary": false,
+    "hunks": [[5, 0, 5, 7], [22, 1, 29, 1]]
+  },
+  {
+    "old_path": "packages/envoy-client/package.json",
+    "new_path": "packages/envoy-client/package.json",
+    "status": "modified",
+    "binary": false,
+    "hunks": [[8, 0, 8, 1], [12, 0, 13, 1], [16, 0, 18, 1], [20, 0, 23, 1], [38, 1, 42, 1]]
+  }
 ]

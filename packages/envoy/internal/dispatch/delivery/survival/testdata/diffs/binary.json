@@ -1,13 +1,79 @@
 [
-{"old_path": ".gitignore", "new_path": ".gitignore", "status": "modified", "binary": false, "hunks": [[274, 0, 274, 3]]},
-{"old_path": "pr-screenshots/agents-after-1280.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/agents-after-390.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/agents-before-1280.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/agents-before-390.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/composer-reply-after-1280.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/composer-reply-after-390.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/conversation-after-1280.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/conversation-after-390.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/conversation-before-1280.png", "new_path": null, "status": "removed", "binary": true, "hunks": []},
-{"old_path": "pr-screenshots/conversation-before-390.png", "new_path": null, "status": "removed", "binary": true, "hunks": []}
+  {
+    "old_path": ".gitignore",
+    "new_path": ".gitignore",
+    "status": "modified",
+    "binary": false,
+    "hunks": [[274, 0, 274, 3]]
+  },
+  {
+    "old_path": "pr-screenshots/agents-after-1280.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/agents-after-390.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/agents-before-1280.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/agents-before-390.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/composer-reply-after-1280.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/composer-reply-after-390.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/conversation-after-1280.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/conversation-after-390.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/conversation-before-1280.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  },
+  {
+    "old_path": "pr-screenshots/conversation-before-390.png",
+    "new_path": null,
+    "status": "removed",
+    "binary": true,
+    "hunks": []
+  }
 ]

@@ -1,6 +1,30 @@
 [
-{"old_path": "packages/envoy/.changes/unreleased/pr2829-Changed-20261105-222443.yaml", "new_path": null, "status": "removed", "binary": false, "hunks": [[1, 5, 1, 0]]},
-{"old_path": "packages/envoy/CHANGELOG.md", "new_path": "packages/envoy/CHANGELOG.md", "status": "modified", "binary": false, "hunks": [[3, 0, 3, 6]]},
-{"old_path": "packages/pi-legion/.changes/unreleased/pr2829-Changed-20261105-222429.yaml", "new_path": null, "status": "removed", "binary": false, "hunks": [[1, 5, 1, 0]]},
-{"old_path": "packages/pi-legion/CHANGELOG.md", "new_path": "packages/pi-legion/CHANGELOG.md", "status": "modified", "binary": false, "hunks": [[6, 0, 6, 6]]}
+  {
+    "old_path": "packages/envoy/.changes/unreleased/pr2829-Changed-20261105-222443.yaml",
+    "new_path": null,
+    "status": "removed",
+    "binary": false,
+    "hunks": [[1, 5, 1, 0]]
+  },
+  {
+    "old_path": "packages/envoy/CHANGELOG.md",
+    "new_path": "packages/envoy/CHANGELOG.md",
+    "status": "modified",
+    "binary": false,
+    "hunks": [[3, 0, 3, 6]]
+  },
+  {
+    "old_path": "packages/pi-legion/.changes/unreleased/pr2829-Changed-20261105-222429.yaml",
+    "new_path": null,
+    "status": "removed",
+    "binary": false,
+    "hunks": [[1, 5, 1, 0]]
+  },
+  {
+    "old_path": "packages/pi-legion/CHANGELOG.md",
+    "new_path": "packages/pi-legion/CHANGELOG.md",
+    "status": "modified",
+    "binary": false,
+    "hunks": [[6, 0, 6, 6]]
+  }
 ]

@@ -117,11 +117,15 @@ func TestReferenceLegionGroups(t *testing.T) {
 }
 
 // Attribution's own code, over each merged pull request's head branch, title and body alone,
-// gives the issue lg/pr_issue.tsv holds for it: step 3's issues and their projects are loaded into
-// the test's database with no link, so sources 1 and 2 hold nothing, and the GitHub the
-// attribution reads refuses every request, so a pull request its sources 3 and 4 attribute sends
-// none (no commit message was read) and one they leave unattributed is the one refused read of
-// its commit messages, which IssueOf answers as no issue.
+// gives the issue lg/pr_issue.tsv holds for it, for each pull request that merged as a commit of
+// the reference chain: step 3 lists every closed pull request updated since 2026-08-01, a list
+// that grows each day, so the test keeps those whose merge commit is one of lg/commits.txt's
+// 3,356, and the lines of lg/pr_issue.tsv of those commits. That set is fixed: the chain's 1,962
+// changes (dispatch://INFRA-3117/artifact/method-md; TestReferenceLegionSurvival's single pass).
+// Step 3's issues and their projects are loaded into the test's database with no link, so sources
+// 1 and 2 hold nothing, and the GitHub the attribution reads refuses every request, so a pull
+// request its sources 3 and 4 attribute sends none (no commit message was read) and one they leave
+// unattributed is the one refused read of its commit messages, which IssueOf answers as no issue.
 func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 	ref := survivaltest.OpenReference(t, os.Getenv(survivaltest.ReferenceDirEnv))
 	if os.Getenv(storetest.DatabaseURLEnv) == "" {
@@ -171,14 +175,24 @@ func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 	// its own lines alone.
 	logtest.SetDefault(t, slog.DiscardHandler)
 
+	onChain := map[string]bool{}
+	for _, commit := range ref.Chain(t) {
+		onChain[commit.SHA] = true
+	}
 	want := map[int]string{}
 	for _, issue := range ref.PullIssues(t) {
-		want[issue.Number] = issue.Issue
+		if onChain[issue.MergeSHA] {
+			want[issue.Number] = issue.Issue
+		}
 	}
 	var differ []string
-	attributed, refused, merged := 0, 0, 0
+	attributed, refused, listed, merged := 0, 0, 0, 0
 	for _, pull := range ref.Pulls(t) {
 		if !pull.Merged() {
+			continue
+		}
+		listed++
+		if !onChain[pull.MergeSHA] {
 			continue
 		}
 		merged++
@@ -206,15 +220,15 @@ func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 			t.Errorf("PR #%d is attributed %s, an issue the test did not load", pull.Number, got)
 		}
 	}
-	if len(differ) > 0 || merged != len(want) || attributed == 0 || merged != 3105 {
-		t.Errorf("%d of %d merged pull requests are attributed otherwise than pr_issue.tsv's %d lines, want 0 of 3105:\n%s",
+	if len(differ) > 0 || merged != len(want) || attributed == 0 || merged != 1962 {
+		t.Errorf("%d of the %d pull requests that merged as a commit of the chain are attributed otherwise than pr_issue.tsv's %d lines of those commits, want 0 of 1962:\n%s",
 			len(differ), merged, len(want), refFirst(differ, 10))
 	}
 	if total := asked.Load(); total != int64(refused) {
 		t.Errorf("GitHub was asked %d times, want once for each of the %d pull requests sources 3 and 4 leave unattributed", total, refused)
 	}
-	t.Logf("%d issues of %d projects loaded (%d projects made, %d held already); %d merged pull requests, %d differ: %d attributed by sources 3 and 4 with no request, %d unattributed after the one refused read of their commit messages",
-		len(keys), len(named), made, len(named)-made, merged, len(differ), attributed, refused)
+	t.Logf("%d issues of %d projects loaded (%d projects made, %d held already); %d merged pull requests listed, %d of them merged as a commit of the chain, %d differ: %d attributed by sources 3 and 4 with no request, %d unattributed after the one refused read of their commit messages",
+		len(keys), len(named), made, len(named)-made, listed, merged, len(differ), attributed, refused)
 }
 
 // The replay's per-change output, read with the reference's own selection (scripts/16_window.py
