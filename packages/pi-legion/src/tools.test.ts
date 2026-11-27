@@ -29,6 +29,7 @@ import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
@@ -227,25 +228,25 @@ const toolFor = (active: LegionToolSession) =>
 
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet
-// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// (record.StatusNotTakenYet), and the description gives an architect the same text. The daemon's
 // golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
-// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
-// side alone fails one test or the other. The first and the last sentence of the rule are written
-// out here, so a fixture that holds only a part of the rule fails here too.
-test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+// `end-child-rule.json`. This case holds the description to the file, so a change on either side
+// alone fails one test or the other. It holds no word of either text.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, as the daemon writes them", () => {
   const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
     readonly rule: string;
     readonly notTakenYet: string;
   };
-  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
-  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  expect(rule).not.toBe("");
+  expect(notTakenYet).not.toBe("");
   const { description } = toolFor(claimSession("architect"));
   expect(description).toContain(rule);
   expect(description).toContain(notTakenYet);
 });
 
-/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
- * property and every `op` value in the order the tool declares them. */
+/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
+ * the words of each property's description: every property and every `op` value in the order the
+ * tool declares them. Which properties carry a description is DESCRIBED_PROPERTIES. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -286,34 +287,13 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     issue: { type: "string" },
     since: { type: "string" },
-    artifactId: {
-      type: "string",
-      description:
-        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
-    },
+    artifactId: { type: "string" },
     version: { type: "number" },
-    step: {
-      type: "string",
-      enum: ["criteria", "spec"],
-      description:
-        "register_gate's design-gate step: criteria for the issue's Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
-    },
-    basis: {
-      type: "string",
-      description:
-        "register_gate's basis: the ancestor's document for the same step, as dispatch://<KEY>/spec, dispatch://<KEY>/artifact/<slug> or its artifact id. basis, basisVersion and reason come together or not at all",
-    },
-    basisVersion: {
-      type: "number",
-      description:
-        "register_gate's basis version: the version of the basis document a person approved, or the version its open approval request asks a person to approve",
-    },
+    step: { type: "string", enum: ["criteria", "spec"] },
+    basis: { type: "string" },
+    basisVersion: { type: "number" },
     issues: { type: "array", items: { type: "string" } },
-    task: {
-      type: "string",
-      description:
-        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps",
-    },
+    task: { type: "string" },
     to: {
       type: "string",
       enum: [
@@ -329,11 +309,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "held",
       ],
     },
-    reason: {
-      type: "string",
-      description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
-    },
+    reason: { type: "string" },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
@@ -351,41 +327,62 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       type: "string",
       enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
     },
-    giveUp: {
-      type: "number",
-      description:
-        "replay_give_up's and discard_give_up's one give-up, a message the daemon's intake gave up on: its record id, as the intake-gave-up notice names it. Name it, or consumer and throughSeq, never both",
-    },
-    consumer: {
-      type: "string",
-      description:
-        "replay_give_up's and discard_give_up's intake consumer, as read_state's summary names it on an intake give-ups line: with throughSeq, every open give-up of that consumer at or below that stream sequence",
-    },
-    throughSeq: {
-      type: "number",
-      description:
-        "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
-    },
-    bound: {
-      type: "number",
-      description:
-        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number from 1 to 2147483647. Name it or unbounded, never both",
-    },
-    unbounded: {
-      type: "boolean",
-      description:
-        "set_p0_bound's no bound: true sets no P0 bound, whatever legion.yaml's admission_p0_bound says. Name it or bound, never both",
-    },
+    giveUp: { type: "number" },
+    consumer: { type: "string" },
+    throughSeq: { type: "number" },
+    bound: { type: "number" },
+    unbounded: { type: "boolean" },
   },
   required: ["op"],
   additionalProperties: false,
 });
 
+/** The properties whose description the tool states, in the order it declares them, each with the
+ * operations, fields, flags and values that description names. */
+const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+  artifactId: ["register_gate", "register_plan", "--artifact"],
+  step: ["register_gate", "criteria", "spec"],
+  basis: ["register_gate", "basisVersion", "reason"],
+  basisVersion: ["register_gate"],
+  task: ["stop_task", "plan_task", "default"],
+  reason: [
+    "close_root",
+    "request_backward_move",
+    "retry_or_escalate",
+    "pause",
+    "set_p0_bound",
+    "clear_p0_bound",
+    "register_gate",
+    "discard_give_up",
+    "replay_give_up",
+    "rerun_child",
+    "issue",
+  ],
+  giveUp: ["replay_give_up", "discard_give_up", "consumer", "throughSeq"],
+  consumer: ["replay_give_up", "discard_give_up", "read_state", "throughSeq"],
+  throughSeq: ["consumer", "replay_give_up", "discard_give_up", "read_state"],
+  bound: ["set_p0_bound", "unbounded"],
+  unbounded: ["set_p0_bound", "true", "legion.yaml", "admission_p0_bound"],
+};
+
 test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
   for (const active of EVERY_SESSION) {
-    expect(JSON.stringify(z.toJSONSchema(toolFor(active).parameters as z.ZodType))).toBe(
-      OMP_LEGION_TOOL_SCHEMA
-    );
+    const schema = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as {
+      readonly properties: Record<string, Record<string, unknown>>;
+    };
+    const described: string[] = [];
+    const properties: Record<string, Record<string, unknown>> = {};
+    for (const [name, { description, ...property }] of Object.entries(schema.properties)) {
+      if (description !== undefined) {
+        expect(typeof description, name).toBe("string");
+        const missing = namesMissing(String(description), DESCRIBED_PROPERTIES[name] ?? []);
+        expect(missing, name).toEqual([]);
+        described.push(name);
+      }
+      properties[name] = property;
+    }
+    expect(described).toEqual(Object.keys(DESCRIBED_PROPERTIES));
+    expect(JSON.stringify({ ...schema, properties })).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
 
@@ -841,23 +838,18 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester alone
-// (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer from its own instructions that
-// it reports one.
-test("the legion tool's description gives a verdict to the tester alone", () => {
-  const tool = createLegionTool({
-    pi,
-    daemon: recordingDaemon({}).daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    dispatch: noDispatch,
-    session: () => claimSession("reviewer"),
-  });
-  expect(tool.description).toContain("`verdict` pass|fail from the tester alone");
-  expect(tool.description).not.toContain("when your role's instructions require one");
+// Every phase worker reads one description of the tool, whatever its role, and the daemon alone
+// decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
+// no phase worker is given a description of its own. That one description names the `verdict`
+// field and its two values, each once in it. The tester, the role the verdict is taken from, is not
+// held: the description names the tester in other sentences too, so a check of it could not fail.
+// The case holds no word of it.
+test("every phase worker is given the same description of the legion tool", () => {
+  const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
+    (role) => toolFor(claimSession(role)).description
+  );
+  expect(new Set(described).size).toBe(1);
+  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail"])).toEqual([]);
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {
@@ -920,12 +912,17 @@ const ownAsk = (
 });
 
 /** The root's one ask block, b-1, as a Dispatch serves it: `asks`, the issue's asks list;
- * `versionOpener`, the block's opening line in the spec's version 4; and `liveAsks`, the `asks`
- * of the spec's live text. */
+ * `versionOpener`, the block's opening line in the spec's version 4; `liveAsks`, the `asks` of
+ * the spec's live text; and `liveOpener`, the block's opening line in that text, one with none of
+ * an ask's attributes where there is no `liveOpener`. A Dispatch of the release before serves no
+ * `asks` and writes them on that line instead: such a block gives no `liveAsks`. `routes` are
+ * further routes the Dispatch answers, such as a copy's source ask and its document. */
 interface AskBlock {
   readonly asks: readonly unknown[];
   readonly versionOpener: string;
-  readonly liveAsks: readonly unknown[];
+  readonly liveAsks?: readonly unknown[];
+  readonly liveOpener?: string;
+  readonly routes?: Readonly<Record<string, unknown>>;
 }
 
 /** The root's ask block with its ask open: in the asks list, in version 4 and live. */
@@ -993,11 +990,12 @@ function treeDispatch(block?: AskBlock) {
               markdown: `## Export\n\n${block.versionOpener}\n${OPEN_QUESTION}\n:::`,
             },
             [`/api/v1/artifacts/${ROOT_SPEC}/text`]: {
-              markdown: `## Export\n\n:::ask{#b-1 urgency="med" multiple="false"}\n${OPEN_QUESTION}\n:::`,
+              markdown: `## Export\n\n${block.liveOpener ?? ':::ask{#b-1 urgency="med" multiple="false"}'}\n${OPEN_QUESTION}\n:::`,
               token: "sha256:live",
               version: 4,
-              asks: block.liveAsks,
+              ...(block.liveAsks === undefined ? {} : { asks: block.liveAsks }),
             },
+            ...block.routes,
           }),
     },
   });
@@ -1359,11 +1357,16 @@ test("register_gate refuses a basis while the root's document holds an open ask 
 // until the saved version itself records each ask block — own ask or copy — settled, with the
 // answer the server holds: who answered and when. A person may change an answer while the ask
 // stays answered, and settlement then writes a version with the new time, so a version that
-// records the earlier one waits too.
+// records the earlier one waits too. Each case holds for a first answer and a changed one, on a
+// Dispatch of this release, whose live text serves `asks`, and on one of the release before, which
+// serves none and writes each answer on the block's opening lines. For a copy, the answer the
+// server holds is its source ask's: the live text's `asks` give it on a Dispatch of this release,
+// and on one of the release before, which writes it onto the copy's lines only at the copy's own
+// settlement, the source ask's own route does.
 test("register_gate on a basis waits for the saved version to record an answered ask or copy settled", async () => {
   const runWith = async (block: AskBlock) => {
     const { calls, daemon } = recordingDaemon({});
-    const { dispatch } = treeDispatch(block);
+    const { dispatch, paths } = treeDispatch(block);
     const result = await gateTool(daemon, dispatch).execute(
       "",
       basisCall,
@@ -1374,6 +1377,7 @@ test("register_gate on a basis waits for the saved version to record an answered
     const [first] = result.content;
     return {
       calls,
+      paths,
       isError: result.isError === true,
       text: first?.type === "text" ? first.text : "",
     };
@@ -1387,8 +1391,11 @@ test("register_gate on a basis waits for the saved version to record an answered
     answered_at: at,
     selected: [],
   });
-  // What a saved version's opening line records of an answer, as the kept form writes it.
-  const recordedAnswer = ` state="answered" answered_by="${answer.user}" answered_at="${answer.at}"`;
+  // What an opening line records of the answer given at `at`, as the kept form writes it on a
+  // saved version, and a Dispatch of the release before on the live text too.
+  const answerAt = (at: string) =>
+    ` state="answered" answered_by="${answer.user}" answered_at="${at}"`;
+  const recordedAnswer = answerAt(answer.at);
   const ownOpener = (recorded = "") => `:::ask{#b-1 urgency="med" multiple="false"${recorded}}`;
   const copySource = {
     copied_from: "ask-source",
@@ -1396,6 +1403,21 @@ test("register_gate on a basis waits for the saved version to record an answered
   };
   const copyOpener = (recorded = "") =>
     `:::ask{#b-1 urgency="med" multiple="false"${recorded} copied_from="${copySource.copied_from}" copied_from_document="${copySource.copied_from_document}"}`;
+  // The copy's source ask as a Dispatch of the release before serves it
+  // (`GET /api/v1/asks/{id}`) once the source holds the answer given at `at`.
+  const sourceAnswered = (at: string) => ({
+    "/api/v1/asks/ask-source": {
+      ask: {
+        id: "ask-source",
+        kind: "question",
+        block_id: "b-src",
+        block_artifact: { id: ANCESTOR_SPEC },
+        state: "answered",
+        question: OPEN_QUESTION,
+        answer: { user: answer.user, at, selected: [], text: null },
+      },
+    },
+  });
 
   // Control: an unanswered own ask is refused before calling the daemon.
   const unansweredOwn = await runWith({
@@ -1441,6 +1463,57 @@ test("register_gate on a basis waits for the saved version to record an answered
   });
   expect(settledOwn.isError).toBe(false);
   expect(registrations(settledOwn.calls)).toHaveLength(1);
+
+  // So it does once the saved version records the changed answer the ask holds.
+  const changedSettledOwn = await runWith({
+    asks: [ownAsk("answered", changed)],
+    versionOpener: ownOpener(answerAt(changed.at)),
+    liveAsks: [answeredLive(changed.at)],
+  });
+  expect(changedSettledOwn.isError).toBe(false);
+  expect(registrations(changedSettledOwn.calls)).toHaveLength(1);
+
+  // A Dispatch of the release before serves no `asks` and writes an own ask's answer onto the
+  // block's live opening line at once, and into a version at settlement; its asks list holds the
+  // answer as this release's does. A saved version that still records the block open is refused,
+  // naming the wait.
+  const unsettledOwnBefore = await runWith({
+    asks: [ownAsk("answered", answer)],
+    versionOpener: ownOpener(' state="open"'),
+    liveOpener: ownOpener(recordedAnswer),
+  });
+  expect(unsettledOwnBefore.isError).toBe(true);
+  expect(unsettledOwnBefore.calls).toEqual([]);
+  expect(unsettledOwnBefore.text).toContain("(block b-1, ask ask-b-1), answered but still open");
+  expect(unsettledOwnBefore.text).toContain("wait for that version");
+
+  // So is one there that records the earlier answer while the ask holds the changed one.
+  const changedOwnBefore = await runWith({
+    asks: [ownAsk("answered", changed)],
+    versionOpener: ownOpener(recordedAnswer),
+    liveOpener: ownOpener(answerAt(changed.at)),
+  });
+  expect(changedOwnBefore.isError).toBe(true);
+  expect(changedOwnBefore.calls).toEqual([]);
+  expect(changedOwnBefore.text).toContain("(block b-1, ask ask-b-1), answered but still open");
+  expect(changedOwnBefore.text).toContain("wait for that version");
+
+  // Once the saved version there records the answer the ask holds, the first or the changed one,
+  // registration proceeds.
+  const settledOwnBefore = await runWith({
+    asks: [ownAsk("answered", answer)],
+    versionOpener: ownOpener(recordedAnswer),
+    liveOpener: ownOpener(recordedAnswer),
+  });
+  expect(settledOwnBefore.isError).toBe(false);
+  expect(registrations(settledOwnBefore.calls)).toHaveLength(1);
+  const changedSettledOwnBefore = await runWith({
+    asks: [ownAsk("answered", changed)],
+    versionOpener: ownOpener(answerAt(changed.at)),
+    liveOpener: ownOpener(answerAt(changed.at)),
+  });
+  expect(changedSettledOwnBefore.isError).toBe(false);
+  expect(registrations(changedSettledOwnBefore.calls)).toHaveLength(1);
 
   // Control: an open copy is refused with its source's ask.
   const openCopy = await runWith({
@@ -1499,6 +1572,122 @@ test("register_gate on a basis waits for the saved version to record an answered
   });
   expect(settledCopy.isError).toBe(false);
   expect(registrations(settledCopy.calls)).toHaveLength(1);
+
+  // So it does once the saved version records the changed answer its source holds, and a Dispatch
+  // of this release is never asked for the source ask itself: the live text's `asks` give it.
+  const changedSettledCopy = await runWith({
+    asks: [],
+    versionOpener: copyOpener(answerAt(changed.at)),
+    liveAsks: [{ ...answeredLive(changed.at), ...copySource }],
+  });
+  expect(changedSettledCopy.isError).toBe(false);
+  expect(registrations(changedSettledCopy.calls)).toHaveLength(1);
+  expect(changedSettledCopy.paths).not.toContain("/api/v1/asks/ask-source");
+
+  // A Dispatch of the release before serves no `asks`. Its source ask's route answers the
+  // source's first answer while the copy's lines, live and in the saved version, still record the
+  // copy open: the copy is judged by the source ask, and the call is refused, naming the wait. The
+  // next test holds the same for a changed answer.
+  const unsettledCopyBefore = await runWith({
+    asks: [],
+    versionOpener: copyOpener(' state="open"'),
+    liveOpener: copyOpener(' state="open"'),
+    routes: sourceAnswered(answer.at),
+  });
+  expect(unsettledCopyBefore.isError).toBe(true);
+  expect(unsettledCopyBefore.calls).toEqual([]);
+  expect(unsettledCopyBefore.text).toContain(
+    "a copy of ask dispatch://LEGION-100/ask/ask-source on LEGION-100 spec, answered but still open in version 4"
+  );
+  expect(unsettledCopyBefore.text).toContain("wait for that version");
+
+  // Once the copy's settlement has written the source's answer into the saved version, the call
+  // registers, and the source ask was read once.
+  const settledCopyBefore = await runWith({
+    asks: [],
+    versionOpener: copyOpener(recordedAnswer),
+    liveOpener: copyOpener(recordedAnswer),
+    routes: sourceAnswered(answer.at),
+  });
+  expect(settledCopyBefore.isError).toBe(false);
+  expect(registrations(settledCopyBefore.calls)).toHaveLength(1);
+  expect(settledCopyBefore.paths.filter((path) => path === "/api/v1/asks/ask-source")).toHaveLength(
+    1
+  );
+});
+
+// A Dispatch of the release before writes a changed answer at once onto the source ask and onto the
+// source block's live opening line. A copy's opening lines, live and in its latest version, keep
+// the earlier answer until the copy's own settlement writes it: INFRA-5570's tester observed this
+// on envoy-dispatch built at main e40deb104a, with the copy's live opener holding the earlier
+// answered_at while GET /api/v1/asks/{id} and the source's live opener held the new one. The
+// copy's latest version does not record the answer the server holds, and the version that copy's
+// settlement writes next ends a basis registered on this one. So register_gate on a basis is
+// refused, before the daemon is asked anything, and goes ahead once the source holds the answer
+// the copy's version records.
+test("register_gate on a basis waits for a copy whose source's answer changed on a Dispatch of the release before", async () => {
+  const earlier = { user: "alice", at: "2026-11-20T10:00:00Z" };
+  const changed = { user: "alice", at: "2026-11-20T10:05:00Z" };
+  const recorded = (at: string) => ` state="answered" answered_by="alice" answered_at="${at}"`;
+  const copyOpener = (at: string) =>
+    `:::ask{#b-1 urgency="med" multiple="false"${recorded(at)} copied_from="ask-source" copied_from_document="dispatch://LEGION-100/spec"}`;
+  // The source ask and its document as a Dispatch of the release before serves them once the
+  // source holds the answer given at `at`.
+  const source = (answer: { readonly user: string; readonly at: string }) => ({
+    "/api/v1/asks/ask-source": {
+      ask: {
+        id: "ask-source",
+        kind: "question",
+        block_id: "b-src",
+        block_artifact: { id: ANCESTOR_SPEC },
+        state: "answered",
+        question: OPEN_QUESTION,
+        answer: { ...answer, selected: [], text: null },
+      },
+    },
+    [`/api/v1/artifacts/${ANCESTOR_SPEC}/text`]: {
+      markdown: `## Source\n\n:::ask{#b-src urgency="med" multiple="false"${recorded(answer.at)}}\n${OPEN_QUESTION}\n:::`,
+      token: "sha256:source",
+      version: 3,
+    },
+  });
+  const runWith = async (block: AskBlock) => {
+    const { calls, daemon } = recordingDaemon({});
+    const { dispatch } = treeDispatch(block);
+    const result = await gateTool(daemon, dispatch).execute(
+      "",
+      basisCall,
+      undefined,
+      undefined,
+      context()
+    );
+    const [first] = result.content;
+    return {
+      calls,
+      isError: result.isError === true,
+      text: first?.type === "text" ? first.text : "",
+    };
+  };
+
+  const lagging = await runWith({
+    asks: [],
+    versionOpener: copyOpener(earlier.at),
+    liveOpener: copyOpener(earlier.at),
+    routes: source(changed),
+  });
+  expect(lagging.calls).toEqual([]);
+  expect(lagging.isError).toBe(true);
+  expect(lagging.text).toContain("a copy of ask dispatch://LEGION-100/ask/ask-source");
+  expect(lagging.text).toContain("wait for that version");
+
+  const settled = await runWith({
+    asks: [],
+    versionOpener: copyOpener(changed.at),
+    liveOpener: copyOpener(changed.at),
+    routes: source(changed),
+  });
+  expect(settled.isError).toBe(false);
+  expect(registrations(settled.calls)).toHaveLength(1);
 });
 
 // The owner's plan (contract 219): register_plan names its document as register_gate does, for any
@@ -2433,7 +2622,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
       firstBootAt: "2026-10-01T00:00:00Z",
       startedAt: "2026-10-30T01:02:03Z",
     },
-    admission: { cap: 8, active: [], waiting: [], blocked: [], free: 0 },
+    admission: { cap: 8, active: [], waiting: [], blocked: [] },
     issues: {},
     pendingStatusWrites: [],
     heldOutboxRows: [],
@@ -2531,7 +2720,6 @@ function stateOf92Issues(running = 46): LegionState {
     issues,
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103", "INFRA-104"] }],
@@ -2585,7 +2773,7 @@ async function summaryLinesOf(daemon: () => LegionDaemonClient): Promise<string[
 
 test("the controller reads the state without a grant and sets an issue's status with its own", async () => {
   const state = legionState({
-    admission: { cap: 2, free: 0, active: ["LEGION-208"], waiting: [], blocked: [] },
+    admission: { cap: 2, active: ["LEGION-208"], waiting: [], blocked: [] },
     issues: {
       "LEGION-208": {
         key: "LEGION-208",
@@ -3551,7 +3739,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 
   expect(summary).toContain("project INFRA boots 9 started 2026-10-30T01:02:03Z");
   expect(summary).toContain(
-    "\nadmission cap 8 free 0\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
+    "\nadmission cap 8\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
   );
   expect(summary).toContain("\ncapability subagents present\n");
   expect(summary).toContain(
@@ -3738,17 +3926,18 @@ test("read_state's summary names the live trees and each held issue with its rea
 
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(admissionLines(golden)).toEqual([
-    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219",
-    "waiting LEGION-212 LEGION-211",
-    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219",
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220",
+    "waiting LEGION-212 LEGION-211 LEGION-216",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
-    "blocked LEGION-211 on LEGION-210",
+    "blocked LEGION-216 on LEGION-210",
     "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
     "held LEGION-214 label_off",
+    "held LEGION-215 ancestry by LEGION-208",
   ]);
 
   const idle = legionState({
-    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [] },
   });
   expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
     "active (none)",
@@ -3767,23 +3956,29 @@ test("read_state's summary names the live trees and each held issue with its rea
 // R6): one line while the project is paused, naming the pause, since when, by whom and why, the
 // roles whose stop it still waits on and how many rows it holds; one line while the project
 // runs after a pause, naming that pause and when and by whom it was ended; and neither before
-// the project's first pause. The two states are the daemon's goldens, read through the client.
+// the project's first pause. The three states are the daemon's goldens, read through the client.
 test("read_state's summary prints the pause's line while the project is paused and the last pause's line while it runs", async () => {
   const pauseLines = (lines: readonly string[]) =>
     lines.filter((line) => line.startsWith("paused: ") || line.startsWith("last pause: "));
 
-  const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  const paused = await summaryLinesOf(
+    goldenDaemon({ "/legion/v1/state": "state-paused.json" }).daemon
+  );
   const pausedLine =
-    "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
-    "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
-    "holds 2 rows";
+    "paused: pause 1 since 2126-09-22T09:18:00Z by the controller (session ses_controller): " +
+    "the model provider is refusing every turn; waits on 8 roles — LEGION-207 implementer, " +
+    "LEGION-208 architect, LEGION-208 implementer, LEGION-218 implementer, LEGION-218 reviewer, " +
+    "LEGION-219 implementer, LEGION-219 reviewer, LEGION-220 implementer; holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
+  expect(
+    pauseLines(await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon))
+  ).toEqual([]);
 
   const running = await summaryLinesOf(
     goldenDaemon({ "/legion/v1/state": "state-last-pause.json" }).daemon
   );
   expect(pauseLines(running)).toEqual([
-    "last pause: pause 7 since 2026-11-15T09:00:00Z by the operator: " +
+    "last pause: pause 1 since 2026-11-15T09:00:00Z by the operator: " +
       "the model provider is refusing every turn; " +
       "ended 2026-11-15T09:41:30Z by the controller (session ses_controller)",
   ]);
@@ -3856,7 +4051,6 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   const wave = legionState({
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103"] }],
@@ -3892,7 +4086,7 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
 
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
-  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
+  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2126-09-22T09:17:56Z"]);
 });
 
 // What the controller reads of the intake's give-ups in `read_state` with no field: one line for

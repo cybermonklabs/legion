@@ -87,15 +87,19 @@ export const OPEN_BLOCK_WAIVED =
  * block that version shows open counts as open even when its ask is already answered or closed,
  * since the answer reaches a version when the document settles, about two seconds later, or with
  * the agent's next edit, whichever is first; a copy is judged by its source, whose state, id and
- * document that Dispatch writes on the copy's opening line (liveTextAsks). An answered block
- * already carries its own record, so no edit is needed for that; a waiver carries none, so the
- * agent's next edit is where the human's decision gets written into the text. A block whose every
- * opening line records the state the server's ask holds, or that records none, is judged without
- * asking which release serves, since both read it alike. Only a real opening line counts
- * (`askOpenerLines`): a line that quotes the opener in fenced or indented code or in front matter
- * is the document's own text, and so is a later line of an inline code span that stands four
- * columns or more past its containers. A quote records no state and neither opens a block nor
- * hides one. The live text is read once, and only for a block that needs it.
+ * document that Dispatch writes on the copy's opening line (liveTextAsks). Under
+ * `decidedBy: "version"` a copy there is judged by its source ask itself instead, read by the
+ * copy's `copied_from` (`GET /asks/{id}`): that Dispatch writes a changed answer onto the source
+ * ask and the source's opening line at once, and onto a copy's lines, live and in its versions,
+ * only at the copy's own settlement. An answered block already carries its own record, so no edit
+ * is needed for that; a waiver carries none, so the agent's next edit is where the human's decision
+ * gets written into the text. A block whose every opening line records the state the server's ask
+ * holds, or that records none, is judged without asking which release serves, since both read it
+ * alike. Only a real opening line counts (`askOpenerLines`): a line that quotes the opener in
+ * fenced or indented code or in front matter is the document's own text, and so is a later line of
+ * an inline code span that stands four columns or more past its containers. A quote records no
+ * state and neither opens a block nor hides one. The live text is read once, and only for a block
+ * that needs it, and so is each copy's source ask.
  *
  * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
  * one whose ask is open in it. A document already approved at its latest version is left to the
@@ -178,6 +182,36 @@ export async function refuseOpenDecisionBlocks(
     if (source === undefined) return `${named}, whose ask Dispatch has not opened yet`;
     return `${named}, a copy of ask ${source.ref}, which is open on ${source.where}: answer it there`;
   };
+  // The source asks of the copies a Dispatch of the release before serves, each read once, the
+  // first time a copy needs it, by the copy's `copied_from`.
+  // kept for one release: release-before-text
+  // kept for one release: stored-ask-state
+  const sources = new Map<string, Promise<AskWithTrees>>();
+  // `copy` with the state and the answer its source ask holds now, which a Dispatch of the release
+  // before writes onto the copy's lines only at the copy's own settlement: the answerer and the
+  // time as an own ask's are read below, and a state that is none of an ask's three as none. A
+  // copy that names no source has none to read, and stays open.
+  // kept for one release: release-before-text
+  // kept for one release: stored-ask-state
+  const withSourceAnswer = async (copy: TextAsk): Promise<TextAsk> => {
+    const id = copy.copied_from;
+    if (id === undefined) return { block_id: copy.block_id };
+    let read = sources.get(id);
+    if (read === undefined) {
+      read = client.getAsk(id).then((source) => source.ask);
+      sources.set(id, read);
+    }
+    const source = await read;
+    const state = source.state;
+    return {
+      block_id: copy.block_id,
+      copied_from: id,
+      copied_from_document: copy.copied_from_document,
+      state: state === "open" || state === "answered" || state === "resolved" ? state : undefined,
+      answered_by: source.answer?.user || undefined,
+      answered_at: source.answer?.at,
+    };
+  };
   /** The refusal's line for `block`, or undefined where the block is not open. */
   const judged = async (block: ArtifactBlock): Promise<string | undefined> => {
     const ask = asks.get(block.id);
@@ -250,19 +284,35 @@ export async function refuseOpenDecisionBlocks(
     // (in code, a fence opened on a footnote's label line included, or in front matter) names no
     // ask Dispatch recorded.
     const text = await liveText();
+    // A Dispatch of the release before is read as it reads itself under `decidedBy: "live"`: a copy
+    // whose every opening line in the latest version records it settled is not open, and one a
+    // line records open is open. Under `decidedBy: "version"` the copy is judged by its source ask
+    // instead (withSourceAnswer): its own lines, live and in the version, take a changed answer of
+    // the source only at the copy's own settlement, and the version that settlement writes ends a
+    // basis registered on this one.
+    // kept for one release: stored-ask-state
+    if (refusal.decidedBy === "live") {
+      // kept for one release: release-before-text
+      if (!text.served && recordsSettled) return undefined;
+      // kept for one release: release-before-text
+      if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
+    }
+    const live = text.asks.filter((copy) => copy.block_id === block.id);
     // kept for one release: release-before-text
-    if (!text.served && recordsSettled) return undefined;
-    // kept for one release: release-before-text
-    if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
-    const copies = text.asks.filter((copy) => copy.block_id === block.id);
+    // kept for one release: stored-ask-state
+    const copies =
+      !text.served && refusal.decidedBy === "version"
+        ? await Promise.all(live.map(withSourceAnswer))
+        : live;
     const settled =
       copies.length > 0 &&
       copies.every((copy) => copy.state !== undefined && copy.state !== "open");
     if (!settled) return openCopy(named, copies);
     // Under `decidedBy: "version"`, a settled copy is not open only when every opening line in the
     // latest saved version records it settled, an answered one with the answer its source holds,
-    // which the live text gives the copy. The line names the copy's source and the state of the
-    // copy the version does not record.
+    // which the live text's `asks` give the copy on a Dispatch of this release, and the source ask
+    // itself on one of the release before (withSourceAnswer). The line names the copy's source and
+    // the state of the copy the version does not record.
     // kept for one release: stored-ask-state
     if (refusal.decidedBy === "version") {
       const unrecorded = copies.find(

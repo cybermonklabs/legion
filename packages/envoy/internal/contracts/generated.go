@@ -298,6 +298,15 @@ const MaxIssueComponents = 50
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
 
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = 100
+const DefaultThreadPageLimit = 20
+
 // PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
 // GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
 // in packages/contracts so the page the server reads and the full page on which the

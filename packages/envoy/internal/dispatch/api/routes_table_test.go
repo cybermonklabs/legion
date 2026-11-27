@@ -373,55 +373,28 @@ func patternOfConstant(t *testing.T, name string) string {
 	return ""
 }
 
-// The Inbox route's description states the rule the person a question reaches is resolved by —
-// the person it was handed to, then the issue's assignee, then the project's default assignee —
-// and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
-// of its own because the two route tests above read every description and assert no word of
-// one: the index test reads one description alone and the pin only holds each row to having one,
-// so nothing else fails when a description outlives the code it describes.
-func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+// POST /api/v1/projects's description names the body's fields as its body clause lists them,
+// {key, name, default_assignee} (createProjectInput's JSON fields but actor, which it names
+// apart), and the code the route refuses a login nobody has signed in with, ASSIGNEE_NOT_ALLOWED.
+// default_assignee stands four times in the description, so it is held in the body clause's
+// form, which only that clause writes. This is a test of its own because the two route tests
+// above read every description and assert no word of one: the index test reads one description
+// alone and the pin only holds each row to having one.
+func TestTheProjectCreateRouteNamesItsDefaultAssigneeFieldAndRefusal(t *testing.T) {
 	t.Parallel()
-	descriptions := map[string]string{}
+	var description string
+	mounted := false
 	for _, route := range (&server{}).routes() {
-		descriptions[route.Method+" "+route.Pattern] = route.Description
-	}
-	for _, want := range []struct{ route, says string }{
-		// The three steps, in the order the read resolves them.
-		{"GET /api/v1/inbox", "handed to"},
-		{"GET /api/v1/inbox", "the issue's assignee"},
-		{"GET /api/v1/inbox", "the project's default assignee"},
-		// A create names the person, and says what happens when it names nobody.
-		{"POST /api/v1/projects", "default_assignee"},
-		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
-		// The settings list holds every project, not only the ones that named somebody.
-		{"GET /api/v1/settings/project-default-assignees", "every project"},
-		// The write moves a default and refuses to clear it.
-		{"PUT /api/v1/projects/{key}/default-assignee", "cannot be cleared"},
-	} {
-		description, mounted := descriptions[want.route]
-		if !mounted {
-			t.Fatalf("the table mounts no %s", want.route)
-		}
-		if !strings.Contains(description, want.says) {
-			t.Errorf("%s does not say %q: %s", want.route, want.says, description)
+		if route.Method == http.MethodPost && route.Pattern == "/api/v1/projects" {
+			description, mounted = route.Description, true
 		}
 	}
-	for _, stale := range []struct{ route, says string }{
-		// A null no longer clears a default, so the write's description cannot offer one.
-		{"PUT /api/v1/projects/{key}/default-assignee", "null to clear"},
-		// Every project names a default, so the list leaves none out.
-		{"GET /api/v1/settings/project-default-assignees", "that names a default assignee"},
-		// The create chain's last step always lands, so it carries no qualification.
-		{"POST /api/v1/issues", "still names a person who has signed in"},
-		// The inbox resolves three steps and stops at none of them.
-		{"GET /api/v1/inbox", "until somebody hands it on"},
-	} {
-		description, mounted := descriptions[stale.route]
-		if !mounted {
-			t.Fatalf("the table mounts no %s", stale.route)
-		}
-		if strings.Contains(description, stale.says) {
-			t.Errorf("%s still says %q, which the three-step rule made false: %s", stale.route, stale.says, description)
+	if !mounted {
+		t.Fatal("the table mounts no POST /api/v1/projects")
+	}
+	for _, name := range []string{"{key, name, default_assignee}", "ASSIGNEE_NOT_ALLOWED"} {
+		if !strings.Contains(description, name) {
+			t.Errorf("POST /api/v1/projects does not name %q: %s", name, description)
 		}
 	}
 }

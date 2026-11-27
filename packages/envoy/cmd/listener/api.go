@@ -3248,9 +3248,11 @@ func (d *listenerDeps) registerSession(
 // What the lock closes is the window from that filter to the row and the entry written under it.
 // A relay restart rebuilds the filter from the stored row (sessionRelays.restart), so one
 // landing between the filter and the row would set the filter back to a row without the topic
-// this registration is answered 200 for, and every message published on that topic until the
-// session's next heartbeat would be skipped: the row write then matches its plan, so the loop
-// above ends content and nothing restores the message. The one consumer delete made on this
+// this registration is answered 200 for, until this pass's own repair after its entry
+// (confirmRegistered, below) reads the newest row and sets the filter that row builds: the row
+// write then matches its plan, so the loop above ends content, and that repair is what puts the
+// topic back. Under the lock the restart waits for the row and rebuilds the filter from it, so
+// the repair has no filter of the restart's to undo. The one consumer delete made on this
 // listener - a reaped record's, a deregistration's or the sweep's - runs under the same lock
 // and re-reads the session's record under it (sessionDelivery.deleteConsumer), so one landing
 // between the consumer call and the entry that says the session is registered would leave a

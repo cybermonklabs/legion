@@ -57,7 +57,7 @@ It carries:
 - `@bopstack/pi-codegraph`, installed at `/opt/omp-plugins` from the committed lockfile at `packages/daemon/docker/omp-plugins` (its `package.json` is the pin;
   the build resolves nothing from npm), the one plugin linked into the OMP profile `legion` (`OMP_PROFILE=legion`;
   plugins resolve to `/home/legion/.omp/profiles/legion/plugins/node_modules`), backed by the CodeGraph CLI (`@colbymchenry/codegraph`, installed at `/opt/codegraph` from the committed lockfile at `packages/daemon/docker/codegraph`) at `/opt/codegraph/bin` (`PATH`)
-  — the `codegraph` tool a tester queries for `affected` tests and a reviewer for `impact`/`callers` blast radius (`packages/daemon/internal/prompts/roles/core/tester.md`, `core/reviewer.md`).
+  — the `codegraph` tool each role's prompt says when to query: the architects before the spec names what a change touches (`packages/daemon/internal/prompts/roles/architect.md`, `architect-root.md`), the planner, the implementer, the tester and the reviewer at their own step (`roles/core/planner.md`, `implementer.md`, `tester.md`, `reviewer.md`), with what a missing tool or an empty, stale or partial answer asks of them in `roles/core/common.md`, and the merger where the base changed code the change uses (`roles/merger.md`).
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
 - OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest):
@@ -2844,6 +2844,41 @@ delete from outbox where kind = 'hook_prompt' and split_part(issue, '-', 1) = '<
 A deleted row is a hook's words that no worker reads for that move.
 The counts of moves back a task's row holds (`plan_tasks.backward_moves`) can keep a pair in another order; the release before reads the map and lists only its own pairs in a hook's words, so such a count stays and harms nothing.
 The outbox and the plan rows are shared by every project's daemon on the database, and each statement above takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), so one project can roll back while another stays on this release.
+
+#### Rolling back the release that holds every worker while a merge forward is owed
+
+This release holds the worker of each phase that starts while another role's merge forward of the head is owed, the planner among them, tells the implementer when the merge forward it was asked for is no longer its work, and asks a role again at the ready of its claim's next launch while the merge it was asked for is still owed to it (cybermonklabs/legion#5312).
+It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON.
+The release before refuses three kinds of `merge_forward` row that this release writes:
+
+- a row whose step is `withdrawn`, which it knows as no step;
+
+- a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
+
+- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+
+Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The rows the release before knows no step or recipient of.
+delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>'
+  and (payload->>'step' = 'withdrawn' or (payload->>'step' in ('hold', 'landed') and payload->>'role' = 'planner'));
+-- An ask sent again at a launch: the key it carries, which the release before knows as no field.
+update outbox set payload = payload - 'sentLaunch'
+ where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>' and payload ? 'sentLaunch';
+```
+
+A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
+An ask sent again loses only the key: it is then a plain ask, which the release before decodes and delivers, so the launch it was queued for is still told.
+The first ask of a merge forward carries no such key, so the statements leave it as it is.
+`pull_requests.merge_forward` can hold the keys `withdrawn` and `sentLaunch`.
+The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), and its next write of the pull request's record drops both.
+Without `withdrawn` it reads a withdrawn ask as one its role still holds.
+Without `sentLaunch` it does what it always did: it asks once for each head, so an ask whose role's claim failed, was stopped or exited is not sent to that role's next launch, and the workers held for it wait for a landing.
+For such an issue, have its architect move it back to `implementing`, which drops the ask.
+A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
+The statements take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
 
 #### Rolling back the release whose owner's plan picks the steps
 
@@ -6451,7 +6486,7 @@ the disk is the pod's own, or a kept volume that one pod mounts at a time, and n
 Each role's shim is started with `--warm-codegraph`:
 once its Oh My Pi has written its first frame
 — its extensions loaded, its RPC loop serving
-— the shim builds the workspace's CodeGraph index in the background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial, as `codegraph status --json` decides).
+— the shim builds the workspace's CodeGraph index in the background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial or one another CLI version built, as `codegraph status --json` decides from `index.state` and from `index.builtWithVersion` against the CLI's own `version`).
 Nothing waits on it: not the launch, not the role's registration, not a prompt.
 Six role shims share one workspace, so the warm-up holds a lease at `.codegraph/legion-warm.lock` for its run
 — an exclusive create whose holder refreshes its mtime every 10 s, taken over once it is 60 s stale, the takeover itself under a second exclusive create beside it so two shims that both read one stale lease never both build
@@ -6465,8 +6500,11 @@ it waits for that release at least 3 s and at most what the pod's `terminationGr
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
-The tester's `affected` and the reviewer's `impact`/`callers` queries answer once `codegraph status --json` reports `index.state: "complete"`;
-before that a role falls back to grep, as its prompt says.
+An index that another CLI version built on a kept volume is rebuilt once, by the first warm-up that finds a version in its `index.builtWithVersion` other than the CLI's own `version`, and by no later one; an index with no version there, which a build that indexed no file leaves, counts as current.
+The roles' CodeGraph queries (`impact`, `callers`, `affected`, `explore`) answer once `codegraph status --json` reports `index.state: "complete"`;
+before that, or when an answer is empty, a role reads the source itself, as its prompt says.
+Before its first query and before each `status`, a role checks the lease with `find <workspace>/.codegraph/legion-warm.lock -mmin -1 2>/dev/null`, and while that prints the path it reads the source and makes no `codegraph` call: a `status` during a whole-repository `init` or `index` made that build fail with `database is locked` (measured on CodeGraph 1.6.4).
+A role runs no `init`, `index`, `sync` or `unlock` itself: only the warm-up builds the index, under its lease, so the lease check sees every build.
 The init container never calls `codegraph`.
 
 Every pod runs:
@@ -10827,7 +10865,7 @@ Such a write writes nothing, and the token gets the answer of a target that does
 Dispatch still refuses such a token a write to a target that resolves to no project or to nothing (`packages/envoy/internal/dispatch/api/project_scope.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
 Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
-It serves a read-only token, one that holds `read`, on the reads of its read class (`readClasses` in `packages/envoy/internal/dispatch/api/read_classes.go`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
+It serves a read-only token, one that holds `read`, on the reads of its read class (each route's `Read`, in its file under `packages/envoy/internal/dispatch/api`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
