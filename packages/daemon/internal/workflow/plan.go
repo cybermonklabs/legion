@@ -45,7 +45,7 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps)), Needs: &needs}}
+	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(record.NamedSteps(w.Steps)), Needs: &needs}}
 	return node
 }
 
@@ -81,9 +81,11 @@ func (e *Engine) groupOf(ctx context.Context, tx pgx.Tx, issue string) (record.A
 	return experiment.GroupOf(rows[issue]), nil
 }
 
-// takesNoPlan says whether group, an issue's row of groupOf, takes no plan from the issue's owner:
-// the arm runs the project's default steps. It is the one answer the three readers of the group
-// read — the first step (planFirstStep), register_plan (planGiven) and stop_task (taskStopped) —
+// takesNoPlan says whether group, an issue's row of groupOf, sets how the issue is done: the arm
+// runs the project's default steps, and the issue takes from its owner no plan but a version that
+// changes nothing but the text of its running task default (versionRefusal). It is the one answer
+// the three readers of the group read — the first step (planFirstStep), register_plan (planGiven)
+// and stop_task (taskStopped) —
 // and it holds only the word this release carries out: the loader refuses `owner-alone`
 // (config's readVariants), so no draw of this release writes it.
 func takesNoPlan(group record.Assignment) bool {
@@ -102,7 +104,7 @@ func takesNoPlan(group record.Assignment) bool {
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
 // telling names (tellPassedOver).
 //
-// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes the default
+// An issue whose group runs the project's default steps (groupOf, takesNoPlan) takes the default
 // steps: the owner's plans are passed over too (passOverOwners), and the one notice that tells
 // what it passed over names the group (tellNotTaken).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
@@ -201,7 +203,7 @@ func planSteps(issue string, generation uint64, task string, steps []plan.Step) 
 	rows := make([]record.PlanStep, len(steps))
 	for i, step := range steps {
 		rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,
-			Type: builtinDeployment.Roles[step.Role].Type, AgentKey: step.Key}
+			Type: record.BuiltinDeployment.Roles[step.Role].Type, AgentKey: step.Key}
 	}
 	return rows
 }
@@ -267,11 +269,15 @@ func namedOnce(versions []record.PlanVersion) string {
 		// last first, as one copy's givers do. tellPassedOver passes part of one read, in its order.
 		// tellNotTaken joins two, the earlier owners' and then its owner's, which need not keep that
 		// order, but its issue's group takes no plan. That group is drawn in the transaction that
-		// records the issue (drawExperiments), and from then on every give is refused PLAN_NOT_TAKEN
-		// (versionRefusal) and every stop_task too (taskStopped). So an owner's plan of such an issue
-		// was given before the record, at generation 0, and nothing carries it: its first step passes
-		// it over before it carries anything (planFirstStep). The joined list holds at most one copy
-		// of one version.
+		// records the issue (drawExperiments). From then on versionRefusal takes only a version it
+		// stores with the source default (one that changes nothing but the text of the running task
+		// default, and that version given again, retakesDefault), refuses every other give
+		// PLAN_NOT_TAKEN, and taskStopped refuses every stop_task. Both lists are read from
+		// PlansInForce, which reads only versions of the source owner (record's inForce), so no
+		// version taken after the record is in them. So an owner's plan of such an issue was given
+		// before the record, at generation 0, and nothing carries it: its first step passes it over
+		// before it carries anything (planFirstStep). The joined list holds at most one copy of one
+		// version.
 		var givers []claim.Token
 		for _, copied := range slices.Backward(versions) {
 			if !sameDocumentVersion(copied, version) {

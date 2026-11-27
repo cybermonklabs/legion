@@ -33,7 +33,7 @@ import (
 func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *testing.T) {
 	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

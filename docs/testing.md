@@ -114,7 +114,11 @@ itself, whose tests import its sources by relative path.
   `temporaryDirectory(prefix)`: call it at the test file's module scope, or in the body of a
   `describe`, never inside a test body. It reserves the path at the call and returns it, and
   registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
-  called. A directory per test is `temporaryDirectories(prefix)`, registered in those same two
+  called; with `{ removeInBackground: true }` the `afterAll` hands the directory to a removal in a
+  process of its own and does not wait for it, so no removal runs under Bun's 5 s default hook
+  limit, which a slow disk's removal of a large tree (a stack's built binaries) can outlast. A
+  directory per test is
+  `temporaryDirectories(prefix)`, registered in those same two
   places, which returns a maker that makes a directory at each call and removes every one of them in
   its `afterEach`. Call that maker from a test body or a `beforeEach`, never from a `beforeAll`: it
   makes its directory at the call, and its `afterEach` removes it after the scope's first row, so

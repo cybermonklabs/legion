@@ -20,7 +20,7 @@ import (
 func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 	t.Parallel()
 	m, enr, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 func TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore(t *testing.T) {
 	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

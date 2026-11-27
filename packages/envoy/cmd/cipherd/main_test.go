@@ -211,11 +211,12 @@ func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the fourteen test-only settings of the broker's local stack: the
-// airlock's ten, the proxy chain's three and the judge's one, each as a Config the refusal below
-// reads and as the environment a real broker is started with, with what else that environment
-// needs for the setting to load at all (with). One row per setting: the refusal has to name
-// whichever one it found, since an operator reads from it which setting to take out.
+// airlockTestSettings is the fifteen test-only settings of the broker's local stack: the
+// airlock's ten, the result grant's one, the proxy chain's three and the judge's one, each as a
+// Config the refusal below reads and as the environment a real broker is started with, with what
+// else that environment needs for the setting to load at all (with). One row per setting: the
+// refusal has to name whichever one it found, since an operator reads from it which setting to
+// take out.
 func airlockTestSettings() []struct {
 	name string
 	cfg  func(*config.Config)
@@ -242,6 +243,7 @@ func airlockTestSettings() []struct {
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true", nil},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true", nil},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", func(c *config.Config) { c.AirlockTestAzureAuthority = "microsoft.airlock.test" }, "microsoft.airlock.test", nil},
+		{"BROKER_RESULT_GRANT_TEST_SECONDS", func(c *config.Config) { c.ResultGrantTestSeconds = 2 }, "2", nil},
 		{"BROKER_PROXY_TEST_CA_URL", func(c *config.Config) { c.ProxyTestCAURL = "http://127.0.0.1:18082" }, "http://127.0.0.1:18082", pool},
 		{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", func(c *config.Config) { c.ProxyTestClockOffsetFile = "/run/stack/clock-offset" }, "/run/stack/clock-offset", nil},
 		{"BROKER_PROXY_TEST_RENEWAL_MARGIN", func(c *config.Config) { c.ProxyTestRenewalMargin = &margin }, "0s", pool},
@@ -249,9 +251,10 @@ func airlockTestSettings() []struct {
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the fourteen points the broker at
-// a stand-in, lets it dial what no production proxy may, moves its clock, or turns a check off,
-// so each on its own refuses a start that is not a local run, naming itself.
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the fifteen points the broker at
+// a stand-in, lets it dial what no production proxy may, shortens a grant below what production
+// gives it, moves its clock, or turns a check off, so each on its own refuses a start that is not
+// a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	t.Parallel()
 	for _, setting := range airlockTestSettings() {
@@ -268,7 +271,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all fourteen at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all fifteen at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -278,7 +281,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all fourteen with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all fifteen with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -286,7 +289,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the fourteen, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the fifteen, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.

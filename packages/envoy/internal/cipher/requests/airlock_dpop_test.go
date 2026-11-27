@@ -83,7 +83,7 @@ func (g *memoryGrants) grant(t *testing.T, digest string, expires time.Time) (st
 		t.Fatal(err)
 	}
 	grant := oauthstore.MintedGrant{
-		ID: uuid.NewString(), PlaceholderSHA256: placeholderHash(held),
+		ID: uuid.NewString(), PlaceholderSHA256: placeholder.Hash(held),
 		Subject: "ada@example.com", Session: "ses_minted_test", Principal: "ada@example.com",
 		Scopes: []string{"test-scope"}, Extra: map[string]any{"person": "ada@example.com"},
 		ExpiresAt: expires.UTC().Truncate(time.Microsecond), EntryDigest: digest,
@@ -159,7 +159,7 @@ func TestAnEndedMintedPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
 		t.Fatal(err)
 	}
 	held, _ := grants.grant(t, testEntryDigest, time.Now().Add(-time.Second))
-	if _, err := m.Store.Pool.Exec(t.Context(), `update airlock_placeholders set placeholder_sha256 = $1 where grant_id = $2`, placeholderHash(held), grantID); err != nil {
+	if _, err := m.Store.Pool.Exec(t.Context(), `update airlock_placeholders set placeholder_sha256 = $1 where grant_id = $2`, placeholder.Hash(held), grantID); err != nil {
 		t.Fatal(err)
 	}
 	if conn, err := m.AirlockConnection(t.Context(), held); !errors.Is(err, ErrGrantNotLive) || conn.GrantID != "" {
@@ -182,7 +182,7 @@ func TestAPlaceholderOfNoMintedKindOpensNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Store.Pool.Exec(t.Context(), `update airlock_placeholders set placeholder_sha256 = $1 where grant_id = $2`, placeholderHash(held), grantID); err != nil {
+	if _, err := m.Store.Pool.Exec(t.Context(), `update airlock_placeholders set placeholder_sha256 = $1 where grant_id = $2`, placeholder.Hash(held), grantID); err != nil {
 		t.Fatal(err)
 	}
 	if conn, err := m.AirlockConnection(t.Context(), held); !errors.Is(err, ErrGrantNotLive) || conn.GrantID != "" {

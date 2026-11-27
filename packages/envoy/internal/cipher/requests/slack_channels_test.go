@@ -196,7 +196,7 @@ func TestAJobPodsSlackTokenIsLimitedByItsList(t *testing.T) {
 func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *testing.T) {
 	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, bound(rule(slackToken, "slack")), publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
