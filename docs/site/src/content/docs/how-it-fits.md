@@ -86,7 +86,8 @@ Two decisions stay with people:
   specific version in Dispatch. A later version of the spec closes the gate again until someone
   approves it. A person's answer to an ask block in the spec writes one version. When the answer
   is that version's whole change, the version changes only the block's `state`, answerer and
-  time, and Dispatch carries the approval across it, so it leaves the gate as it stands. The
+  time, and Dispatch records that version as approved, so the gate stays open, or opens again
+  where the version before it added the ask and closed it. The
   version carries the approval only when the person's answer, resolve or decline is its whole
   change. If text that a person was editing in the browser is settled into the same version, the
   approval does not carry, and the request goes back to its agent. Dispatch carries the approval
