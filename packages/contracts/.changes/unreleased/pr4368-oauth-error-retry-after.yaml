@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `LibraryError.retryAfter` keeps the `Retry-After` of the answer the library refused: digits as the
+  number of seconds they name, a date as the ISO 8601 time it names, and "" for any other value or
+  no answer. It is the one header the error keeps, rebuilt from what it parses as, so device login's
+  poll can wait an outage's `Retry-After` while the error holds no other word of the answer.
+time: 2026-11-26T23:18:24Z
+custom:
+    Issue: pr4368

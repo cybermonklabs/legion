@@ -120,17 +120,23 @@ function exitOf(output: string): number {
   return exit === null ? -1 : Number(exit[1]);
 }
 
-/** `dispatch whoami`'s answer, as its text names it: "Session <s> acts for <owner>: ...", "...
- *  It may write project <key> and no other.", and "Your credential names session <x>, which is
- *  not this host session" when the credential proved another session; and, for a call that did
- *  not exit 0, its first words, such as the refusal of a configuration it cannot use. */
+/** `dispatch whoami`'s answer, as its text names it: "Session <s> acts for <owner>: ...", the
+ *  project its token names, and "Your credential names session <x>, which is not this host
+ *  session" when the credential proved another session; and, for a call that did not exit 0, its
+ *  first words, such as the refusal of a configuration it cannot use. The project is read from
+ *  either sentence the plugin has said it with: "... Its token names project <key>.", as it says
+ *  now that a token naming a project also writes other projects, and "... It may write project
+ *  <key> and no other.", as a release before that says, since the leg may pin such a release. */
 export function whoamiOf(output: string): LogLine {
   const exit = exitOf(output);
+  const named = /may write project (\S+) and no other|Its token names project ([^\s.]+)\./.exec(
+    output
+  );
   return {
     exit,
     session: word(/Session (\S+) /.exec(output)?.[1] ?? ""),
     owner: word(/ acts for ([^\s:]+):/.exec(output)?.[1] ?? ""),
-    project: word(/may write project (\S+) and no other/.exec(output)?.[1] ?? ""),
+    project: word(named?.[1] ?? named?.[2] ?? ""),
     elsewhere: word(/Your credential names session (\S+),/.exec(output)?.[1] ?? ""),
     ...(exit === 0 ? {} : { detail: word(output.replace(/\s+/g, " ").trim()) }),
   };

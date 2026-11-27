@@ -12,6 +12,7 @@ import (
 // other event. A loop that stops early leaves the later events undecoded, so an event the walk
 // cannot decode after the stop is no error.
 func TestWalkIssueEventsGivesEachIssueEventAndPassesOverTheRest(t *testing.T) {
+	t.Parallel()
 	events := servedLog(t,
 		issueLogEvent(1, "issue.created", "user"),
 		logEvent(2, "comment.created", "user", `{"id":"c-1","body":"Looks right."}`),
@@ -52,6 +53,7 @@ func TestWalkIssueEventsGivesEachIssueEventAndPassesOverTheRest(t *testing.T) {
 // it. An event that does not decode as a Dispatch event never reaches the walk: the read refuses it
 // (dispatch.Client.EventsAfter, TestEventsAfterNamesTheEventOfAPageItCannotRead).
 func TestWalkIssueEventsRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		bad  json.RawMessage

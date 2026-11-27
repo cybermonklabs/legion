@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
@@ -134,10 +135,25 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 				"url", asked, "session", session, "error", readErr)
 			return Unknown
 		}
-		// The reason, the state and the holder are the listener's words, so they are compared as
-		// they came and logged as the rule reads them (listenerwire.RoleRefusalAs).
+		// Only a JSON object with a non-empty error (listenerwire.RoleRefusal) says the role has no
+		// live holder: every listener release writes its role refusal that way, the earliest with no
+		// reason at all. A 404 of anything else — a proxy's page, an empty body, JSON of another
+		// shape — says nothing of the role, so it reads as unknown, as a body this probe cannot read
+		// does (dispatch://INFRA-2045 R5). A path under /v1 that the listener does not serve is no
+		// such 404: the listener's catch-all (registerV1Routes, packages/envoy/cmd/listener/api.go)
+		// answers it `{"error":"not found"}`, which this reads as gone. That body is a JSON object
+		// with an error and no reason, which is all the earliest listener's refusal carries, so
+		// nothing in the body tells the two apart, and reading it as unknown would read every
+		// refusal of that listener as unknown too. The error, the reason, the state and the holder
+		// are the listener's words, so they are compared as they came and logged as the rule reads
+		// them (listenerwire.RoleRefusalAs), and a body that is no refusal is quoted as the rule
+		// reads the answer's words (Answer.Words), then cut (redact.Runes).
 		var refusal listenerwire.RoleRefusalAs[oauth2call.RemoteText, oauth2call.RemoteText, oauth2call.RemoteText]
-		_ = read.Decode(&refusal)
+		if err := read.Decode(&refusal); err != nil || refusal.Error.IsEmpty() {
+			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup is not its role refusal; the controller is left as it is",
+				"url", asked, "session", session, "body", redact.Runes(read.Words().String(), excerptRunes))
+			return Unknown
+		}
 		if refusal.HolderState.Equal(string(notify.StateUnresponsive)) {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
 				"url", asked, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
@@ -167,3 +183,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	}
 	return Live
 }
+
+// excerptRunes bounds the part of a 404's body the probe's line quotes, cut and redacted as
+// redact.Runes does it.
+const excerptRunes = 200

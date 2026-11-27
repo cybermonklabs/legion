@@ -28,7 +28,11 @@ type Event struct {
 // DaemonActor says whether the daemon made the event: its actor is the session the daemon writes
 // every Dispatch status and message of the event's issue under (DaemonSession). It is the one
 // statement of that rule, which intake's decoder (DispatchIssue.DaemonActor) and the set-back's
-// check (StatusChange.DaemonActor) both read.
+// check (StatusChange.DaemonActor) both read. Each reads only issues of the daemon's own project:
+// intake's decoder skips another project's events (decodeDispatchIssueEvent), and the outbox sets
+// back only its own project's issues. So the session of the event's issue is the session of the
+// daemon's own project, the one its writes name with dispatch_token_broker off and the one its
+// broker token proves with it on (WritesAs).
 func (e Event) DaemonActor() bool {
 	return e.Actor.Kind == "session" && e.Actor.ID == DaemonSession(e.IssueKey)
 }

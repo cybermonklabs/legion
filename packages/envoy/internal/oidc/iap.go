@@ -9,6 +9,7 @@ import (
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -50,6 +51,9 @@ func (e *IAPExpiredError) Unwrap() error { return ErrExpired }
 // IAPVerifier verifies the assertions IAP signs for one audience, over one key cache.
 type IAPVerifier struct {
 	verifier *Verifier
+	// clock is what Verify reads the present from to judge exp, iat and nbf: nil is the real
+	// clock (clock.Real), which is every process's, and a test sets a fake (NewIAPVerifierOn).
+	clock clock.Clock
 }
 
 // NewIAPVerifier returns the verifier of IAP's assertions to audience, checking each signature
@@ -61,6 +65,13 @@ type IAPVerifier struct {
 // skips the exp check: Verify checks the verified exp and iat itself, so an assertion is called
 // expired only once everything else about it holds. skipExpiry keeps classify to that too.
 func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
+	return NewIAPVerifierOn(audience, keys, nil)
+}
+
+// NewIAPVerifierOn is NewIAPVerifier judging an assertion's times against c's present: nil is the
+// real clock, as NewIAPVerifier's, and a test's clocktest.Fake names the moment an assertion is
+// judged at.
+func NewIAPVerifierOn(audience string, keys *Keys, c clock.Clock) *IAPVerifier {
 	return &IAPVerifier{verifier: &Verifier{
 		verifier: gooidc.NewVerifier(IAPIssuer, keySet{keys: keys}, &gooidc.Config{
 			ClientID:             audience,
@@ -70,7 +81,7 @@ func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
 		issuer:     IAPIssuer,
 		audience:   audience,
 		skipExpiry: true,
-	}}
+	}, clock: c}
 }
 
 // Verify checks raw, an X-Goog-IAP-JWT-Assertion header's value, as Google documents
@@ -124,6 +135,9 @@ func (v *IAPVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 		}
 	}
 	now := time.Now()
+	if v.clock != nil {
+		now = v.clock.Now()
+	}
 	switch {
 	case issued.After(now.Add(IAPClockSkew)):
 		return Claims{}, fmt.Errorf("%w: issued at %s", ErrNotYetValid, issued.UTC().Format(time.RFC3339))

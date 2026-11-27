@@ -469,9 +469,10 @@ readonly clean_users=(
 )
 hub_configmap "$base" "${clean_users[@]}"
 # The auth service's Deployment: its services, a listener's, Dispatch's, a daemon's, the
-# measurement job's and an edge listener's, which a hub behind its callout admits, and a status
-# settled on its spec, every replica of this generation and available, none terminating.
-jq -n --arg services "listener/host-a/*=system:serviceaccount:envoy:host-a dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch daemon/-/-=system:serviceaccount:legion:daemon measure/-/*=google:measure@example-project.iam.gserviceaccount.com edge-listener/edge-a/PRIV=system:serviceaccount:edge:edge-a" \
+# measurement job's, an edge listener's, the operator's and the hold probe's, which a hub behind
+# its callout admits, and a status settled on its spec, every replica of this generation and
+# available, none terminating.
+jq -n --arg services "listener/host-a/*=system:serviceaccount:envoy:host-a dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch daemon/-/-=system:serviceaccount:legion:daemon measure/-/*=google:measure@example-project.iam.gserviceaccount.com edge-listener/edge-a/PRIV=system:serviceaccount:edge:edge-a operator/-/*=system:serviceaccount:envoy-operator:envoy-operator probe/-/*=system:serviceaccount:envoy-operator:envoy-hold-probe" \
   '{metadata: {name: "envoy-broker", generation: 7}, spec: {replicas: 2, template: {spec: {containers: [{name: "envoy-broker",
     env: [{name: "BROKER_NATS_URLS", value: "nats://envoy-nats.envoy.svc.cluster.local:4222"}, {name: "BROKER_NATS_SERVICES", value: $services}]}]}}},
     status: {observedGeneration: 7, replicas: 2, updatedReplicas: 2, readyReplicas: 2, availableReplicas: 2, terminatingReplicas: 0}}' >"$base/broker.json"
@@ -1843,7 +1844,7 @@ done
 # service gives its user: the edge listener's among them, since natsgrant.Edge publishes its
 # projects' agent and role subjects. The edge listener's entry is mapped to envoy-cluster, the
 # stack the deployment names the edge listener's replicas under (the scripts README, (a3)).
-new_case "(a3) behind an auth callout, the auth service's dispatch, edge listener and listener entries are publishers, and its daemon's and measurement job's are not"
+new_case "(a3) behind an auth callout, the auth service's dispatch, edge listener and listener entries are publishers, and its daemon's, measurement job's, operator's and hold probe's are not"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
 first_reading_secs 200 reading
@@ -1863,6 +1864,8 @@ reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: listener/host-a may publish a notification subject, and no --publisher maps it to a listener pin"
 expect_no_line "daemon/system:serviceaccount:legion:daemon may publish"
+expect_no_line "operator/system:serviceaccount:envoy-operator:envoy-operator may publish"
+expect_no_line "probe/system:serviceaccount:envoy-operator:envoy-hold-probe may publish"
 expect_line "UNKNOWN: (a3) the publishers: edge-listener/edge-a may publish a notification subject, and no --publisher maps it to a listener pin"
 done_case
 

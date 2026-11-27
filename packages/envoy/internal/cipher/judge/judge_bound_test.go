@@ -47,7 +47,10 @@ func (b *boundTransport) calls() []bool {
 // policy check (JudgePolicy, which reads what Dispatch holds of a tagged name), the project check
 // (JudgeProject) and both of the issue read's GETs run under requests.JudgeDispatch, the one bound
 // the run's arithmetic gives its Dispatch phase. A run that made none of them, or no GET, is a
-// failure too: a list without them cannot say whether they are bounded.
+// failure too: a list without them cannot say whether they are bounded. It runs on the broker's
+// own phase (New's requests.JudgeDispatch), so it also holds that phase's length: the deadline the
+// phase's first read saw falls dispatchBound after a moment inside the run, as JudgeDispatch gives
+// it, and a judge that cut the phase short before that read fails here.
 func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	opts := testOptions(t, dispatch, model, machine)
@@ -55,7 +58,15 @@ func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 	transport := &boundTransport{inner: client.Transport}
 	client.Transport = transport
 	opts.Dispatch = NewDispatch(dispatch.server.URL, ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), &client)
+	before := time.Now()
 	New(t.Context(), opts).consider(t.Context(), pending())
+	after := time.Now()
+	switch seen := machine.phaseTimes().seen; {
+	case seen.IsZero():
+		t.Error("no read came under the run's Dispatch phase with a deadline on its context")
+	case seen.Before(before.Add(dispatchBound)) || seen.After(after.Add(dispatchBound)):
+		t.Errorf("the phase's first read saw a deadline %s after the run began (the run took %s); want dispatchBound, %s, after a moment inside the run", seen.Sub(before), after.Sub(before), dispatchBound)
+	}
 
 	if applied, _ := machine.rows(); len(applied) != 1 {
 		t.Fatalf("the run applied %d approvals; want 1, so every read was made", len(applied))

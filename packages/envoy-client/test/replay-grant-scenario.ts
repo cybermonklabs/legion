@@ -7,6 +7,16 @@ import { type NatsServer, sessionReplySubject } from "./nats-server";
  * Asks session `sessionID` for its replay over `connection` on the reply subject `reply`, as
  * Dispatch's `agentstream.NATS.Replay` asks, and answers the first answer's text, or undefined
  * when none arrives within `withinMs`.
+ *
+ * A no-responders status is no answer, so it answers undefined too. nats.js asks the server for
+ * that status whenever the server supports headers (`no_responders: true` in its CONNECT,
+ * `lib/nats-base-client/protocol.js:745-747` of nats 2.29.3), and the server then answers a
+ * publish with a reply subject that no one subscribes to with a 503 status message with an empty
+ * body (`isRequestError`, `lib/nats-base-client/msg.js:23-32`). That is the first ask's answer
+ * when the plugin's control subscription is not in place yet, which `runReplayGrantScenario`'s
+ * step 1 allows for. Taken as an answer, it gave that step the empty text, and `JSON.parse`
+ * failed on it (claude-envoy's agent-stream-reply-grant test, run 45530912678, job 138926522927)
+ * where the step should have asked again.
  */
 export async function askReplay(
   connection: NatsConnection,
@@ -23,7 +33,10 @@ export async function askReplay(
   );
   const timer = setTimeout(() => answers.unsubscribe(), withinMs);
   try {
-    for await (const answer of answers) return answer.string();
+    for await (const answer of answers) {
+      if (answer.data.length === 0 && answer.headers?.code === 503) return undefined;
+      return answer.string();
+    }
     return undefined;
   } finally {
     clearTimeout(timer);

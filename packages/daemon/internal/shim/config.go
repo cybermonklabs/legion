@@ -122,7 +122,7 @@ func ReadProviderEnv(dir string, lookup func(string) (string, bool)) ([]string, 
 // naming its flag. set is which flags were given.
 func ReadAgentSecretsFlags(set map[string]bool, keyDir, tokenFile, binary string) (*AgentSecrets, error) {
 	given := 0
-	for _, name := range []string{"agent-secrets-key-dir", "pod-token-file", "agent-secrets-bin"} {
+	for _, name := range []string{"agent-secrets-key-dir", "pod-token-file", shimwire.AgentSecretsBinFlag} {
 		if set[name] {
 			given++
 		}

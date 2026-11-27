@@ -57,7 +57,7 @@ func TestAnAdminURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 			t.Fatal("DatabaseOn took an admin URL url.Parse refuses; want a fatal refusal")
 		}
 		redacttest.RequireNoPiece(t, "testdb.admin-url/no-host", recorder.said, redacttest.User, redacttest.Password, redacttest.Token)
-		if want := "parse the admin URL of the Postgres server"; !strings.Contains(recorder.said, want) {
+		if want := "parse the URL of the test database"; !strings.Contains(recorder.said, want) {
 			t.Errorf("the refusal is %q; want it to say %q", recorder.said, want)
 		}
 	})

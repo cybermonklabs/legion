@@ -468,6 +468,7 @@ func namesTheEvent(t *testing.T, line map[string]any, tc unreadableLog) {
 // The root left out has no record and no outbox row, and its row in the copy of Dispatch's issues
 // is still written.
 func TestBootReconcileLeavesOutATriageRootWhoseEventLogCannotBeRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range unreadableLogs {
 		t.Run(tc.name, func(t *testing.T) {
 			w, logs := leftOutBoard(t, tc.log, tc.readErr)
@@ -513,6 +514,7 @@ var refusedReads = []struct {
 // (readinessAttempt). A refusal of this read says nothing about one issue, so to leave each root
 // out would pass over every labelled triage root and show no failure.
 func TestBootReconcileFailsTheListingOnARefusedEventLogRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range refusedReads {
 		t.Run(tc.name, func(t *testing.T) {
 			w, logs := leftOutBoard(t, labelledBy(leftOutRoot, "user"), tc.readErr)
@@ -535,6 +537,7 @@ func TestBootReconcileFailsTheListingOnARefusedEventLogRead(t *testing.T) {
 // (refusedReads), the pass logs that warning naming the root, queues nothing and keeps the
 // repository to recover, so a later pass reads the listing again.
 func TestARepositoryRecoveryLeavesOutAnUnreadableEventLogAndFailsOnARefusal(t *testing.T) {
+	t.Parallel()
 	const notRecovered = "workflow: the issues of the repositories to recover were not recovered from Dispatch's listing"
 	// pass runs one recovery pass over the board, with leftOutRoot's log served as log or its read
 	// failed with readErr. It returns the daemon, its logs and the pass's warnings that the issues

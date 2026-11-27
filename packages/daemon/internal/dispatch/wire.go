@@ -1,58 +1,114 @@
 package dispatch
 
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+)
+
 // The JSON shapes the client reads of Dispatch's answers and writes in its own requests: each
-// answer decoded through the answer (Answer.Decode) and turned into the package's types, and each
-// write's body, which carries the daemon's actor.
+// answer decoded through the answer (Answer.Decode) and handed to HTTPClient's callers only as the
+// package's own types, and each write's body, which carries the daemon's actor.
 
 type issueSummaryResponse struct {
-	Key          string         `json:"key"`
-	Title        string         `json:"title"`
-	Status       string         `json:"status"`
-	Parent       *string        `json:"parent"`
-	Rank         string         `json:"rank"`
-	Priority     *int           `json:"priority"`
-	Labels       []string       `json:"labels"`
-	LastSeq      int64          `json:"last_seq"`
-	ResolvedRepo *string        `json:"resolved_repo"`
-	BlockedBy    []string       `json:"blocked_by"`
-	Claim        *claimResponse `json:"claim"`
+	Key      string  `json:"key"`
+	Title    string  `json:"title"`
+	Status   string  `json:"status"`
+	Parent   *string `json:"parent"`
+	Rank     string  `json:"rank"`
+	Priority *int    `json:"priority"`
+	// ResolvedPriority holds whether the read carries the member at all, so that an absent field, a
+	// Dispatch release that resolves no priority, reads apart from a present null
+	// (resolvedPriorityMember, resolvedPriority).
+	ResolvedPriority resolvedPriorityMember `json:"resolved_priority"`
+	PriorityFrom     *string                `json:"priority_from"`
+	Labels           []string               `json:"labels"`
+	LastSeq          int64                  `json:"last_seq"`
+	ResolvedRepo     *string                `json:"resolved_repo"`
+	BlockedBy        []string               `json:"blocked_by"`
+	Claim            *claimResponse         `json:"claim"`
 }
 
 type issueResponse struct {
-	Key               string         `json:"key"`
-	Project           string         `json:"project"`
-	Title             string         `json:"title"`
-	Status            string         `json:"status"`
-	Parent            *string        `json:"parent"`
-	Rank              string         `json:"rank"`
-	Priority          *int           `json:"priority"`
-	Labels            []string       `json:"labels"`
-	PrimaryArtifactID string         `json:"primary_artifact_id"`
-	LastSeq           int64          `json:"last_seq"`
-	ResolvedRepo      *string        `json:"resolved_repo"`
-	BlockedBy         []string       `json:"blocked_by"`
-	Claim             *claimResponse `json:"claim"`
+	Key                    string                 `json:"key"`
+	Project                string                 `json:"project"`
+	Title                  string                 `json:"title"`
+	Status                 string                 `json:"status"`
+	Parent                 *string                `json:"parent"`
+	Rank                   string                 `json:"rank"`
+	Priority               *int                   `json:"priority"`
+	ResolvedPriority       resolvedPriorityMember `json:"resolved_priority"`
+	PriorityFrom           *string                `json:"priority_from"`
+	Labels                 []string               `json:"labels"`
+	PrimaryArtifactID      string                 `json:"primary_artifact_id"`
+	VerificationArtifactID string                 `json:"verification_artifact_id"`
+	DecisionsArtifactID    string                 `json:"decisions_artifact_id"`
+	LastSeq                int64                  `json:"last_seq"`
+	ResolvedRepo           *string                `json:"resolved_repo"`
+	BlockedBy              []string               `json:"blocked_by"`
+	Claim                  *claimResponse         `json:"claim"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
 func (r issueResponse) issue() Issue {
 	return Issue{
-		Key:               r.Key,
-		Project:           r.Project,
-		Title:             r.Title,
-		Status:            r.Status,
-		Parent:            r.Parent,
-		Rank:              r.Rank,
-		Priority:          r.Priority,
-		Labels:            r.Labels,
-		HandedOver:        CarriesLegionLabel(r.Labels),
-		PrimaryArtifactID: r.PrimaryArtifactID,
-		LastSeq:           r.LastSeq,
-		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         r.BlockedBy,
-		Claim:             r.Claim.claim(),
-		ClaimUnread:       r.Claim.unread(),
+		Key:                    r.Key,
+		Project:                r.Project,
+		Title:                  r.Title,
+		Status:                 r.Status,
+		Parent:                 r.Parent,
+		Rank:                   r.Rank,
+		Priority:               r.Priority,
+		Resolved:               resolvedPriority(r.ResolvedPriority, r.PriorityFrom),
+		Labels:                 r.Labels,
+		HandedOver:             CarriesLegionLabel(r.Labels),
+		PrimaryArtifactID:      r.PrimaryArtifactID,
+		VerificationArtifactID: r.VerificationArtifactID,
+		DecisionsArtifactID:    r.DecisionsArtifactID,
+		LastSeq:                r.LastSeq,
+		ResolvedRepo:           deref(r.ResolvedRepo),
+		BlockedBy:              r.BlockedBy,
+		Claim:                  r.Claim.claim(),
+		ClaimUnread:            r.Claim.unread(),
 	}
+}
+
+// resolvedPriorityMember is a read's `resolved_priority` as the answer decodes it (Answer.Decode,
+// which refuses a json.RawMessage member, whose text would leave the answer as plain text):
+// whether the read carries the member, a null included, since encoding/json hands UnmarshalJSON
+// each member it meets and none it does not, and its level where it is an integer.
+type resolvedPriorityMember struct {
+	carried bool
+	level   *int
+}
+
+// UnmarshalJSON records the member as carried, and its level where it decodes as an integer: a
+// null, and a value that is no integer at all, leave none, and neither fails the read.
+func (m *resolvedPriorityMember) UnmarshalJSON(data []byte) error {
+	m.carried = true
+	if json.Unmarshal(data, &m.level) != nil {
+		m.level = nil
+	}
+	return nil
+}
+
+// resolvedPriority is a read's `resolved_priority` and `priority_from`: nil where the read carries no
+// `resolved_priority`, and else its level, nil for a present null, and the issue it comes from. A
+// value that is no integer at all reads as a present null (resolvedPriorityMember): Dispatch writes
+// none, and the issue's own fields are still read. A `priority_from` that is no issue key reads as
+// none, as null and empty do: the state serves it as `priorityFrom`, which its readers take for an
+// issue key (the plugin's schema refuses the whole state for one that is not), and these reads
+// have no channel to name it on, as they have none for the level that is no integer.
+func resolvedPriority(member resolvedPriorityMember, from *string) *ResolvedPriority {
+	if !member.carried {
+		return nil
+	}
+	resolved := &ResolvedPriority{Priority: member.level}
+	if key := deref(from); claim.IsIssueKey(key) {
+		resolved.From = key
+	}
+	return resolved
 }
 
 // claimResponse is an issue's claim as Dispatch's issue reads serve it (null for none).
@@ -85,6 +141,29 @@ type artifactResponse struct {
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`
+}
+
+// issueArtifactResponse is one entry of an issue's artifact list as Dispatch answers it, with the
+// number of each version it lists and none of the rest of the version.
+type issueArtifactResponse struct {
+	ID       string `json:"id"`
+	Slug     string `json:"slug"`
+	Kind     string `json:"kind"`
+	Primary  bool   `json:"primary"`
+	Role     string `json:"role"`
+	Versions []struct {
+		Number int `json:"number"`
+	} `json:"versions"`
+}
+
+// reviewResponse is one review of a document's review list as Dispatch answers it, its kind, the
+// request it answered and its content digests left undecoded.
+type reviewResponse struct {
+	Version   int       `json:"version"`
+	State     string    `json:"state"`
+	Actor     actor     `json:"actor"`
+	Reason    *string   `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // versionBlocksResponse is a document version as GET …/versions/{n}?blocks=true answers it: its
@@ -125,6 +204,21 @@ type approvalResponse struct {
 	By *actor `json:"by"`
 }
 
+// askReadResponse is one ask as GET /api/v1/asks/{id} answers it, its thread left undecoded: the
+// ask's state, the login of the person its answer names (no answer for an ask nobody answered),
+// and the actor its resolution names (no resolution for an open or answered ask).
+type askReadResponse struct {
+	Ask struct {
+		State  string `json:"state"`
+		Answer *struct {
+			User string `json:"user"`
+		} `json:"answer"`
+		Resolution *struct {
+			Actor actor `json:"actor"`
+		} `json:"resolution"`
+	} `json:"ask"`
+}
+
 // handoffResponse is a handoff record as Dispatch answers it, its body left undecoded: Handoff's
 // callers hold a completion to who wrote which record, never to what it says.
 type handoffResponse struct {
@@ -144,13 +238,6 @@ func (r handoffResponse) handoff() Handoff {
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
-}
-
-// reviewResponse is one review as GET /api/v1/artifacts/{id}/reviews serves it, read for the
-// version it was given on and its state (`approved` or `changes_requested`) alone.
-type reviewResponse struct {
-	Version int    `json:"version"`
-	State   string `json:"state"`
 }
 
 type actor struct {

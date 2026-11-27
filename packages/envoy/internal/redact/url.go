@@ -406,7 +406,9 @@ type Printable interface {
 // its own fields and whatever error it wraps but a TLS record or certificate failure, and a
 // caller's error type whose Timeout answers true, which prints its whole text. redact cannot tell
 // those from net's own, and net/http's timeout types are unexported, so there is no list to hold
-// them to. No caller builds either.
+// them to. No caller builds the first. One builds the second: the Envoy client's callWindowError
+// (internal/dispatch/envoy), whose text is the error it holds and fixed words, and it holds only
+// Cause's reading of net/http's error, so its text adds no word of a peer's.
 func checked(err error) (string, bool) {
 	if text := err.Error(); clean(text) {
 		return text, true

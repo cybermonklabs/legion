@@ -29,6 +29,7 @@ import (
 // error names the member the echo sat in, so the check reads the decoder's error for the value
 // that held the echo, and still prints none of it.
 func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T) {
+	t.Parallel()
 	// Built from parts, so no line of this file reads as a credential.
 	password := "hunter2pw-" + "decoders-5e1b"
 	echo := `"` + password + `"`

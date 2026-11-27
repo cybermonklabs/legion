@@ -120,7 +120,7 @@ func TestTheDaemonsSessionPrintsInDispatchsRefusalOfItsOwnWrites(t *testing.T) {
 			requireWords(t, err.Error(), []string{"another session"}, nil)
 		})
 	}
-	actor := daemonActor(ownWordsKey)
+	actor := (&HTTPClient{}).actor(ownWordsKey)
 	for _, c := range []struct {
 		name, method, path string
 		body               any
@@ -184,7 +184,7 @@ func TestTheRolesAndStepKindsPrintInDispatchsRefusalOfRoleHolderAndStepWrites(t 
 			requireWords(t, err.Error(), c.prints, c.redacted)
 		})
 	}
-	actor := daemonActor(ownWordsKey)
+	actor := (&HTTPClient{}).actor(ownWordsKey)
 	for _, c := range []struct {
 		name, method, path, said string
 		body                     any

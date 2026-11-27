@@ -8,6 +8,7 @@
 
 import { scrub } from "@legion/contracts/held-secrets";
 import { RemoteText } from "@legion/contracts/remote-text";
+import { outage } from "./oauth-refusal";
 import {
   isKnownBrokerRefusal,
   KNOWN_OAUTH_ERROR_CODES,
@@ -17,10 +18,6 @@ import {
 } from "./refusal-text";
 import { SIGNIN_COMMAND } from "./signins";
 import { POD_SESSION_NOT_REGISTERED } from "./wire";
-
-/** The broker's rate limit: the first of the five refusals a later trade may be answered
- *  differently. */
-const TOO_MANY_REQUESTS = 429;
 
 /** What the broker answers a proof whose `iat` is outside its 60 s skew window. */
 const INVALID_DPOP_PROOF = "invalid_dpop_proof";
@@ -49,8 +46,8 @@ const MACHINE_LOGIN_ENDED = "The machine login the subject token belongs to has 
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
- * The five exceptions are the broker's 429, its two DPoP refusals, a pod session it holds no
- * registration for yet, and a person Dispatch holds (`permanent`).
+ * The five exceptions are an outage (the broker's 429, or a 408), its two DPoP refusals, a pod
+ * session it holds no registration for yet, and a person Dispatch holds (`permanent`).
  */
 export class BrokerRefusedError extends Error {
   /** What the broker said, as a text may print it: its description where that is a known
@@ -125,10 +122,13 @@ export class BrokerRefusedError extends Error {
    * packages/envoy/internal/cipherclient/brokerclient.go), and
    * `packages/envoy/internal/cipherclient/testdata/wire.json` holds the two to that one reading.
    *
-   * The broker's 429: its token endpoint spends a bucket per source address, and a bucket
-   * refills. A client that dropped the token in hand on a 429 would write with no identity
-   * through a burst — its own, or another process's on the same machine — while the token it
-   * already held was still good.
+   * An outage ({@link outage}, Go's `oauthrefusal.Outage`): the broker's 429, and a 408, the
+   * broker or a proxy before it that did not take the request, whatever OAuth error either body
+   * names (`brokerRefusal` makes a refusal only of a 4xx, so no 5xx is one). The broker's token
+   * endpoint spends a bucket per source address, and a bucket refills. A client that dropped the
+   * token in hand on one would write with no identity through a burst — its own, or another
+   * process's on the same machine — or over one request a proxy did not pass on, while the token
+   * it already held was still good.
    *
    * `invalid_dpop_proof`, which is what the broker answers a proof whose `iat` is outside its
    * 60 s skew window. A process started before NTP has corrected the host's clock would
@@ -145,14 +145,15 @@ export class BrokerRefusedError extends Error {
    * succeeds.
    *
    * `membership_held`: Dispatch holds the person this identity names, because Google refused
-   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing,
-   * and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so
-   * the identity this client trades is served again then with no new credential. A client that
-   * dropped it would need a restart after every hold.
+   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours, or, behind
+   * Identity-Aware Proxy, the Workspace Directory no longer confirms their account. A hold revokes
+   * nothing, and the person's next Dispatch sign-in, the next refresh that confirms them, or the
+   * Directory's next active answer ends it, so the identity this client trades is served again then
+   * with no new credential. A client that dropped it would need a restart after every hold.
    */
   get permanent(): boolean {
     return (
-      this.status !== TOO_MANY_REQUESTS &&
+      !outage(this.status) &&
       this.code !== INVALID_DPOP_PROOF &&
       this.code !== USE_DPOP_NONCE &&
       this.code !== MEMBERSHIP_HELD &&
@@ -186,8 +187,8 @@ export class RegistrationPendingError extends Error {
  * client's retry loop trades again: at once to a caller that fails fast, and to one that waits for
  * ready once its own signal ends. A pod session not registered yet is
  * {@link RegistrationPendingError} instead. The failure is no answer within the trade's own time
- * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that
- * could not be made.
+ * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no
+ * OAuth error, or a trade that could not be made.
  * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
  * line for that failure (`Retried.said`), which names nothing a peer wrote.
  */
@@ -215,10 +216,16 @@ export class TradeUnansweredError extends Error {
 }
 
 /**
- * A trade that ended other than in a refusal: the broker gave no answer, a 5xx, or an answer
- * that is not this grant's. Its message names the identity traded, the broker as `urlForText`
- * names it and the failure by its class (`errorClass`), and nothing a peer wrote, so a caller
- * prints it whole; it keeps no cause, since the library's error can hold the answer it read.
+ * A trade, or a step of a device login, that ended other than in a refusal: the broker gave no
+ * answer, a 5xx, an answer that is not this grant's, or one this machine will not use (a field
+ * holding a control character, a device code no poll could reach). Its message names the broker as
+ * `urlForText` names it and what failed: the identity traded or the login, and the failure by its
+ * class (`errorClass`); the field of the answer this machine will not use; or the numbers in it
+ * that were checked finite, printed as digits. It holds nothing else a peer wrote, so a caller
+ * prints it whole, and it keeps no cause, since the library's error can hold the answer it read.
+ * The class says nothing of whether asking again cures it: a trade's loop tries again
+ * (`BrokerTokenClient`), and {@link DEVICE_LOGIN_COMMAND} prints it and stops; a device code no
+ * poll could reach says in its message that asking again meets the same answer.
  */
 export class BrokerTradeFailedError extends Error {
   constructor(message: string) {
@@ -264,12 +271,13 @@ export class SignInEndedError extends Error {
 export const DEVICE_LOGIN_COMMAND = "dispatch login --device";
 
 /**
- * A device login the broker no longer honours: its refresh was answered `invalid_grant`, because
- * its credential was revoked or ran out, or its refresh token was presented again after its
- * rotation's grace, which revokes the login (`oauthstore.Store.RevokeRefreshToken`). Like a
- * sign-in the issuer ended it is final ({@link isFinalRefusal}): only a new
- * {@link DEVICE_LOGIN_COMMAND} cures it. `login` names the login as its source describes it, and
- * it keeps no cause: the library's error holds the broker's answer.
+ * A device login the broker no longer honours: its refresh was answered 400 or 401
+ * `invalid_grant` (`endsGrant`, `oauth-refusal.ts`), because its credential was revoked or ran
+ * out, or its refresh token was presented again after its rotation's grace, which revokes the
+ * login (`oauthstore.Store.RevokeRefreshToken`). Like a sign-in the issuer ended it is final
+ * ({@link isFinalRefusal}): only a new {@link DEVICE_LOGIN_COMMAND} cures it. `login` names the
+ * login as its source describes it, and it keeps no cause: the library's error holds the broker's
+ * answer.
  */
 export class DeviceLoginEndedError extends Error {
   constructor(login: string) {
@@ -302,8 +310,9 @@ export class LockHeldError extends Error {
  * cure (`BrokerRefusedError.permanent`), a sign-in the issuer has ended
  * ({@link SignInEndedError}), or a device login the broker has ended
  * ({@link DeviceLoginEndedError}). A client drops the token in hand on one rather than answer it
- * until it lapses, and a caller that remembers refusals remembers these alone: remembering the
- * broker's 429 or a clock-skewed proof would stop a client a later trade would have answered.
+ * until it lapses, and a caller that remembers refusals remembers these alone: remembering an
+ * outage (the broker's 429, or a 408) or a clock-skewed proof would stop a client a later trade
+ * would have answered.
  */
 export function isFinalRefusal(error: unknown): boolean {
   return (

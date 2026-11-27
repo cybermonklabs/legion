@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/azure_test.go
 //
-// The azure kind, end to end: the exchange the broker makes itself at the stand-in token
+// The exchange way, end to end: the exchange the broker makes itself at the stand-in token
 // endpoint, the placeholder access token the command is answered, the swap of the real token
 // into a later request, and the second pod that holds no token of its own and exchanges for
 // itself. The stand-in plays both parts of the bound host - the token endpoint and the API
@@ -47,30 +47,34 @@ const (
 
 var azureFederatedPlaceholder = placeholder.Prefix + "azureFederatedazureFederated0001"
 
-// azureRules is the rules file of an azure-login secret: one entry of kind azure, bound to the
-// one host, whose access token travels in Authorization as every other token does.
+// azureRules is the airlock's rules of an azure-login secret: the azure kind on the one host,
+// whose one way is exchange and whose access token travels in Authorization as every other token
+// does, and the secret's name bound to it by way of exchange.
 func azureRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name: azureName, Hosts: []string{boundHost}, Headers: []string{"authorization"}, Kind: "azure",
-	}}}
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{Name: "azure", Hosts: []string{boundHost}, Headers: []string{"authorization"}, Ways: []string{proxyrules.WayExchange}}},
+		Names: []proxyrules.Binding{{Name: azureName, Kind: "azure", Way: proxyrules.WayExchange}},
+	}
 }
 
-// newAzureRig is the rig with the azure-login secret as the grant's one name, and the stand-in
-// token endpoint behind the bound host: the stand-in package's Microsoft endpoint, which
-// answers an exchange that carries the real federated token and records each form it was sent.
-// It answers token requests alone, so the same service plays the API these rows then call with
-// the access token: that is the shape of the design, since the proxy reads one of them and
-// streams the other. The bound host is the token authority, unless the row names another, and
-// the rules are azureRules unless the row writes its own.
+// newAzureRig is newAzureRuledRig under azureRules.
 func newAzureRig(t *testing.T, o Options) (*rig, *proxyrulestest.MicrosoftStand) {
 	t.Helper()
-	if o.Rules.Secrets == nil {
-		o.Rules = azureRules()
-	}
+	return newAzureRuledRig(t, azureRules(), o)
+}
+
+// newAzureRuledRig is the rig with the azure-login secret as the grant's one name, under rules,
+// and the stand-in token endpoint behind the bound host: the stand-in package's Microsoft
+// endpoint, which answers an exchange that carries the real federated token and records each form
+// it was sent. It answers token requests alone, so the same service plays the API these rows then
+// call with the access token: that is the shape of the design, since the proxy reads one of them
+// and streams the other. The bound host is the token authority, unless the row names another.
+func newAzureRuledRig(t *testing.T, rules proxyrules.Rules, o Options) (*rig, *proxyrulestest.MicrosoftStand) {
+	t.Helper()
 	if o.AzureAuthority == "" {
 		o.AzureAuthority = boundHost
 	}
-	r := newRig(t, o)
+	r := newRuledRig(t, rules, o)
 	r.grants.connections[azureFederatedPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -236,12 +240,11 @@ func TestASecondPodExchangesTheSlotForItself(t *testing.T) {
 }
 
 // secondPod is another broker pod: a Server of its own, with a cache of its own and no token in
-// it, given the same grants, the same rules and the same way out as the rig's. It answers the
-// address this returns.
+// it, given the same grants - and with them the same rules - and the same way out as the rig's.
+// It answers the address this returns.
 func secondPod(t *testing.T, r *rig) string {
 	t.Helper()
 	second := New(Options{
-		Rules:          azureRules(),
 		Grants:         r.grants,
 		CA:             r.authority,
 		Log:            slog.New(r.logs),

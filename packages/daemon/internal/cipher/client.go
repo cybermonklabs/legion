@@ -23,11 +23,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,18 +49,20 @@ import (
 const launcherService = "legion-daemon"
 
 // loginRetryInitial and loginRetryMax bound the wait after a token login that no wait of seconds
-// changes: one the broker refused (any answer but a 5xx or a 200 with a body of the contract's
-// shape, so every 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake
-// that failed or a TLS alert, or a host name that does not resolve — daemonSideFault), and one
-// that could not be made at all (a token file that could not be read or was empty). The first wait
-// is loginRetryInitial, each one after it doubles, up to loginRetryMax.
+// changes: one the broker refused (any answer but an outage or a 200 with a body of the contract's
+// shape, so every 4xx but a 408 and a 429), one a fault on the daemon's own side ended (a TLS
+// handshake that failed or a TLS alert, or a host name that does not resolve — daemonSideFault),
+// and one that could not be made at all (a token file that could not be read or was empty). The
+// first wait is loginRetryInitial, each one after it doubles, up to loginRetryMax.
 // unavailableRetryInitial and unavailableRetryMax bound the wait after a login the broker was not
-// there to decide: one given no HTTP answer at all, or a 5xx answer from the broker or its front
-// door. They bound it the same way and on the pod renewer's schedule: the broker is down, out of
-// reach or cannot reach its database, nothing it decided needs a slower retry, and every pod
-// enrollment waits on the login, so the daemon logs in again within seconds of the broker serving
-// again. A login that succeeds resets both. No person sees a failed login, so nothing is asked of
-// anyone while it retries.
+// there to decide: one given no HTTP answer at all, or an outage from the broker or its front door
+// (outage: a 5xx, a 408 or a 429). They bound it the same way and on the pod renewer's schedule:
+// the broker is down, out of reach, cannot reach its database or will not take a login yet,
+// nothing it decided needs a slower retry, and every pod enrollment waits on the login, so the
+// daemon logs in again within seconds of the broker serving again. A 429 waits at least the
+// Retry-After it names, the time until the broker's rate limit takes the login again, though never
+// longer than loginRetryMax (loginRetry.failed). A login that succeeds resets both. No person sees
+// a failed login, so nothing is asked of anyone while it retries.
 // Package-level so tests can shrink them.
 var (
 	loginRetryInitial       = 30 * time.Second
@@ -204,14 +208,22 @@ func (e *APIError) HasCode(code string) bool {
 	return e.said.Equal(code)
 }
 
-// Permanent is a refusal a retry cannot change: every 4xx but 429, POD_TOKEN_EXPIRED and
-// POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent —
-// the caller retries once the daemon's next token login wins a credential — and neither is an
-// expired pod token, which the pod's current token replaces under the same key (TokenExpired), nor
-// a registrar the broker does not yet list (RegistrarNotListed). A 404 or a 405 is permanent here;
-// RouteUnserved tells it apart for a caller that reads it otherwise.
+// Permanent is a refusal a retry cannot change: every 4xx but an outage (a 408 or a 429),
+// POD_TOKEN_EXPIRED and POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0)
+// is never permanent — the caller retries once the daemon's next token login wins a credential —
+// and neither is an expired pod token, which the pod's current token replaces under the same key
+// (TokenExpired), nor a registrar the broker does not yet list (RegistrarNotListed). A 404 or a 405
+// is permanent here; RouteUnserved tells it apart for a caller that reads it otherwise.
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.TokenExpired() && !e.RegistrarNotListed()
+	return e.Status >= 400 && e.Status < 500 && !outage(e.Status) && !e.TokenExpired() && !e.RegistrarNotListed()
+}
+
+// outage reports whether status is a broker, or a proxy before it, that could not answer now: any
+// 5xx, a 408 (it did not take the request) and a 429 (it will not take one yet). It is the set the
+// envoy module's oauthrefusal.Outage states, which this module cannot import (it is internal to
+// that module).
+func outage(status int) bool {
+	return status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
 }
 
 // RouteUnserved is the broker answering 404 or 405: it serves no route of that path and method,
@@ -241,8 +253,8 @@ func (e *APIError) RegistrarNotListed() bool {
 // (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError)
 // or at a later generation than sent (*SupersededError), one named with no key
 // (*MissingThumbprintError), or a release past one call's bounds (*ReleaseTooLargeError). A
-// transport failure, a 5xx, a 429, an expired pod token and a daemon with no credential yet are all
-// transient.
+// transport failure, a 5xx, a 408, a 429, an expired pod token and a daemon with no credential yet
+// are all transient.
 func IsPermanent(err error) bool {
 	var permanent interface{ Permanent() bool }
 	return errors.As(err, &permanent) && permanent.Permanent()
@@ -288,10 +300,11 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 }
 
 // tokenLogin is one POST /v1/launcher-credentials/token, answering the credential the broker
-// issued. A POST the broker gave no HTTP answer to, while ctx has not ended, or one answered with a
-// 5xx, fails with a *brokerUnavailableError; the 5xx one wraps the answer's *APIError. A transport
-// failure that is a fault on the daemon's own side is wrapped the same way, and classify reads it
-// out of the wrapper, so the login loop waits the long schedule for that one.
+// issued. A POST the broker gave no HTTP answer to, while ctx has not ended, or one answered with
+// an outage (a 5xx, a 408 or a 429), fails with a *brokerUnavailableError; the outage one wraps
+// the answer's *APIError, and a 429's carries the wait its Retry-After asks (rateLimitWait). A
+// transport failure that is a fault on the daemon's own side is wrapped the same way, and classify
+// reads it out of the wrapper, so the login loop waits the long schedule for that one.
 func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	token, err := c.serviceToken()
 	if err != nil {
@@ -308,15 +321,15 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: sign request object: %w", err)
 	}
-	status, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
+	status, header, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			return nil, &brokerUnavailableError{err: err}
 		}
 		return nil, err
 	}
-	if status >= 500 && status <= 599 {
-		return nil, &brokerUnavailableError{err: refusal(status, answered, cut)}
+	if outage(status) {
+		return nil, &brokerUnavailableError{err: refusal(status, answered, cut), asked: rateLimitWait(status, header, time.Now())}
 	}
 	if status != http.StatusOK {
 		return nil, refusal(status, answered, cut)
@@ -332,6 +345,32 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		return nil, fmt.Errorf("broker answered %d with no credential_id or no expires_at", status)
 	}
 	return &credential{key: key, id: answer.CredentialID, expires: answer.ExpiresAt, renewAt: now.Add(answer.ExpiresAt.Sub(now) / 2)}, nil
+}
+
+// rateLimitWait is the wait a token login's answer of status asks for before the next, read from
+// its Retry-After (RFC 9110 Section 10.2.3) at now: a number of seconds or an HTTP date, the time
+// until which is the wait. Only a 429 is read, the outage that names its own wait, as the envoy
+// module's helper reads only a 429's on its refresh: the broker's token login route answers one
+// with the wait its buckets refill in, by default 30 s per source address or a minute per account.
+// It is zero for any other status, and where the answer names none, names a time already past or
+// names neither form. A wait too long for a time.Duration is the longest one; loginRetry.failed
+// caps it.
+func rateLimitWait(status int, header http.Header, now time.Time) time.Duration {
+	if status != http.StatusTooManyRequests {
+		return 0
+	}
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	// ParseUint takes digits alone, no sign; ErrRange is a number of them past uint64's range.
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		if seconds > uint64(math.MaxInt64/time.Second) {
+			return math.MaxInt64
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		return max(at.Sub(now), 0)
+	}
+	return 0
 }
 
 // serviceToken is the daemon's projected ServiceAccount token as the file holds it now: read at
@@ -391,10 +430,11 @@ func (c *Client) LoginStatus() LoginState {
 // keepLoggedIn is Start's loop, retry counting the logins in a row that have failed so far and
 // retryAt when the next is due after the latest failure: it logs in again when nextDue says, and
 // recomputes that whenever a call wakes it. After a failed login it waits as retry says before the
-// next, so a login the broker keeps refusing, a token file it cannot read and a fault on the
-// daemon's own side are retried at 30 s doubling to 5 min, and one the broker gives no HTTP answer
-// or a 5xx to at 2 s doubling to 10 s, never in a tight loop, whether or not a credential is still
-// held.
+// next, so a login the broker keeps refusing (a 4xx but a 408 and a 429), a token file it cannot
+// read and a fault on the daemon's own side are retried at 30 s doubling to 5 min, and one the
+// broker gives no HTTP answer, or an outage (a 5xx, a 408 or a 429), at 2 s doubling to 10 s, a 429
+// at least as long as its Retry-After asks, at most 5 min, never in a tight loop, whether or not a
+// credential is still held.
 func (c *Client) keepLoggedIn(ctx context.Context, retry loginRetry, retryAt time.Time) {
 	for {
 		timer := time.NewTimer(time.Until(c.nextDue(time.Now(), retryAt)))
@@ -511,12 +551,13 @@ type enrollmentAnswer struct {
 // the caller retries after the next token login. Any other broker answer is an *APIError, a
 // transport failure a plain error.
 //
-// A broker from before the claim refuses the field as unknown, and a 4xx is permanent to the
-// caller, which would drop the pod's identity and enrol it never (supervise.PermanentError). So
-// that one refusal, met by a body that carries a new field, is asked once more without the new
-// fields (withoutNewFields), and what that answers is the enrollment: the pod enrols, and its
-// requests stay its own enrollment's, as every pod's were before the claim. Any other refusal,
-// and the second answer whatever it is, is returned as it came.
+// A broker from before the claim refuses the field as unknown, and a 4xx other than a 408 or a
+// 429 is permanent to the caller (APIError.Permanent), which would drop the pod's identity and
+// enrol it never (supervise.PermanentError). So that one refusal, met by a body that carries a new
+// field, is asked once more without the new fields (withoutNewFields), and what that answers is
+// the enrollment: the pod enrols, and its requests stay its own enrollment's, as every pod's were
+// before the claim. Any other refusal, and the second answer whatever it is, is returned as it
+// came.
 func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error) {
 	body := enrollmentBody{
 		Kind: "pod", RuntimeID: e.PodUID, Slot: e.Slot, Operator: nil,
@@ -672,7 +713,7 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
-	status, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) error {
+	status, _, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 		return nil
 	})
@@ -803,7 +844,7 @@ func (c *Client) ReleasePodSessions(ctx context.Context, names []string) error {
 	if err != nil {
 		return fmt.Errorf("agent-secrets release: %w", err)
 	}
-	status, answered, cut, err := c.send(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", body, answerBytes, func(req *http.Request) error {
+	status, _, answered, cut, err := c.send(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", body, answerBytes, func(req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 		return nil
 	})
@@ -854,7 +895,7 @@ func (c *Client) doProof(ctx context.Context, method, path string, body any, lim
 		c.wake()
 		return 0, oauth2call.Answer{}, false, c.noCredentialError()
 	}
-	status, answered, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) error {
+	status, _, answered, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) error {
 		proof, err := signLauncherProof(cred.key, cred.id, method, proofURL(req.URL), time.Now())
 		if err != nil {
 			return err
@@ -901,9 +942,11 @@ func (b backoff) wait() time.Duration {
 }
 
 // loginRetry is the login loop's wait after failed logins, on two schedules. short counts the run
-// of logins the broker was not there to decide — no HTTP answer, or a 5xx from the broker or its
-// front door — at unavailableRetryInitial doubling to unavailableRetryMax, because the broker
-// serving again is all such a login waits for. long counts the run of every other failed login —
+// of logins the broker was not there to decide — no HTTP answer, or an outage (a 5xx, a 408 or a
+// 429) from the broker or its front door — at unavailableRetryInitial doubling to
+// unavailableRetryMax, because the broker serving again is all such a login waits for; a 429 waits
+// at least the Retry-After it names, though never longer than long's most, since the broker's 429
+// says when its bucket takes the login again. long counts the run of every other failed login —
 // the broker's refusal, a fault on the daemon's own side, and a login that could not be made at
 // all — at loginRetryInitial doubling to loginRetryMax, because no wait of seconds changes one of
 // those. A failure of one kind ends the other kind's run, so when the kind changes, that kind's
@@ -924,7 +967,7 @@ func newLoginRetry() loginRetry {
 type loginClass string
 
 const (
-	// brokerUnavailable: the broker was not there to decide — no HTTP answer, or a 5xx.
+	// brokerUnavailable: the broker was not there to decide — no HTTP answer, or an outage.
 	brokerUnavailable loginClass = "broker-unavailable"
 	// daemonSide: the fault is on the daemon's own side (daemonSideFault).
 	daemonSide loginClass = "daemon-side-fault"
@@ -937,9 +980,9 @@ const (
 
 // classify sorts a failed login into its class. A fault on the daemon's own side is read first:
 // tokenLogin wraps every transport failure that was not ctx ending as a *brokerUnavailableError,
-// and daemonSideFault reads such a fault out of that wrapper, since errors.As walks Unwrap. A 5xx
-// is a *brokerUnavailableError around the answer's *APIError, so the broker's absence is read
-// before its refusal.
+// and daemonSideFault reads such a fault out of that wrapper, since errors.As walks Unwrap. An
+// outage (a 5xx, a 408 or a 429) is a *brokerUnavailableError around the answer's *APIError, so
+// the broker's absence is read before its refusal.
 func classify(err error) loginClass {
 	var unavailable *brokerUnavailableError
 	var refused *APIError
@@ -970,7 +1013,8 @@ func (c loginClass) schedule() string {
 
 // failed records a login that failed with err and answers its class and the wait before the next.
 // The class names which of the two backoffs counts the failure; the other kind's run has ended,
-// and starts fresh when it comes again.
+// and starts fresh when it comes again. A 429's Retry-After (brokerUnavailableError.asked) raises
+// the wait to what it asks, at most long's most.
 func (r *loginRetry) failed(err error) (loginClass, time.Duration) {
 	class := classify(err)
 	taken, ended := &r.long, &r.short
@@ -979,20 +1023,30 @@ func (r *loginRetry) failed(err error) (loginClass, time.Duration) {
 	}
 	ended.failed = 0
 	taken.failed++
-	return class, taken.wait()
+	wait := taken.wait()
+	var unavailable *brokerUnavailableError
+	if errors.As(err, &unavailable) {
+		wait = max(wait, min(unavailable.asked, r.long.most))
+	}
+	return class, wait
 }
 
 // won records a login that won a credential.
 func (r *loginRetry) won() { r.short.failed, r.long.failed = 0, 0 }
 
 // brokerUnavailableError is a token login the broker gave no answer this client could read: the
-// POST failed before a response came back, or while it was read, or it was answered with a 5xx,
-// by the broker or by a front door with no broker behind it. err is the transport's error, which
-// names the route and never the token or the request object, or the 5xx answer's *APIError; its
-// message is err's. A transport failure that is a fault on the daemon's own side comes wrapped in
-// one of these too, and classify reads it out again (daemonSideFault), so it is no sign on its
-// own that waiting a few seconds is what the login needs.
-type brokerUnavailableError struct{ err error }
+// POST failed before a response came back, or while it was read, or it was answered with an
+// outage (a 5xx, a 408 or a 429), by the broker or by a front door with no broker behind it. err
+// is the transport's error, which names the route and never the token or the request object, or
+// the outage answer's *APIError; its message is err's. asked is the wait a 429's Retry-After asks
+// for (rateLimitWait), zero for every other failure. A transport failure that is a fault on the
+// daemon's own side comes wrapped in one of these too, and classify reads it out again
+// (daemonSideFault), so it is no sign on its own that waiting a few seconds is what the login
+// needs.
+type brokerUnavailableError struct {
+	err   error
+	asked time.Duration
+}
 
 func (e *brokerUnavailableError) Error() string { return e.err.Error() }
 
@@ -1020,51 +1074,52 @@ const answerBytes = 1 << 16
 
 // do sends one broker call with body encoded as JSON, nil for none, and reads its answer as send
 // does.
-func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request) error) (int, oauth2call.Answer, bool, error) {
+func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request) error) (int, http.Header, oauth2call.Answer, bool, error) {
 	var encoded []byte
 	if body != nil {
 		var err error
 		if encoded, err = json.Marshal(body); err != nil {
-			return 0, oauth2call.Answer{}, false, err
+			return 0, nil, oauth2call.Answer{}, false, err
 		}
 	}
 	return c.send(ctx, method, path, encoded, limit, mutate)
 }
 
 // send sends one broker call whose JSON body is already encoded, nil for none, and reads its
-// answer through oauth2call.ReadAnswer: its first limit bytes, and whether the bound cut it, which
-// a caller that must tell a whole answer from one cut short reads (Carried), and so does refusal,
-// which quotes a body that is not the contract's shape. The call goes to path joined onto URL's
-// path (urljoin.Join), URL's query kept, where path appended to URL's text would sit inside its
-// query or its fragment and the broker would be asked another path; a URL that does not parse or
-// names no host is refused in fixed words, since url.Parse's error quotes it whole. mutate, where
-// not nil, sets what the call carries beyond its body (a bearer, a proof) on the request before it
-// is sent, and its error ends the call unsent. The answer comes back whole, which its caller
-// decodes as its contract's shape or not (Answer.Decode): the decode's error names the member that
-// did not decode and quotes no value, since the broker's answer, or a stand-in's, can echo the
-// call's token into a field the decoder quotes, a time's among them. A read that fails is an
-// error. A refusal is decided on as it came and prints as the rule reads it, with every credential
-// the call carried redacted, since the broker's words, or a stand-in's, can echo the call's token,
-// and every caller prints a refusal (refusal).
-func (c *Client) send(ctx context.Context, method, path string, body []byte, limit int, mutate func(*http.Request) error) (int, oauth2call.Answer, bool, error) {
+// answer: its status, its headers, and its body through oauth2call.ReadAnswer, its first limit
+// bytes, and whether the bound cut it, which a caller that must tell a whole answer from one cut
+// short reads (Carried), and so does refusal, which quotes a body that is not the contract's
+// shape. Only the token login reads the headers (rateLimitWait). The call goes to path joined onto
+// URL's path (urljoin.Join), URL's query kept, where path appended to URL's text would sit inside
+// its query or its fragment and the broker would be asked another path; a URL that does not parse
+// or names no host is refused in fixed words, since url.Parse's error quotes it whole. mutate,
+// where not nil, sets what the call carries beyond its body (a bearer, a proof) on the request
+// before it is sent, and its error ends the call unsent. The answer comes back whole, which its
+// caller decodes as its contract's shape or not (Answer.Decode): the decode's error names the
+// member that did not decode and quotes no value, since the broker's answer, or a stand-in's, can
+// echo the call's token into a field the decoder quotes, a time's among them. A read that fails is
+// an error. A refusal is decided on as it came and prints as the rule reads it, with every
+// credential the call carried redacted, since the broker's words, or a stand-in's, can echo the
+// call's token, and every caller prints a refusal (refusal).
+func (c *Client) send(ctx context.Context, method, path string, body []byte, limit int, mutate func(*http.Request) error) (int, http.Header, oauth2call.Answer, bool, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
 	}
 	call, err := urljoin.Join(c.URL, path)
 	if err != nil {
-		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: the broker URL is not an absolute URL with a host (it is not printed)", method, path)
+		return 0, nil, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: the broker URL is not an absolute URL with a host (it is not printed)", method, path)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, call.String(), payload)
 	if err != nil {
-		return 0, oauth2call.Answer{}, false, oauth2call.Unanswered(err, nil, "")
+		return 0, nil, oauth2call.Answer{}, false, oauth2call.Unanswered(err, nil, "")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if mutate != nil {
 		if err := mutate(req); err != nil {
-			return 0, oauth2call.Answer{}, false, err
+			return 0, nil, oauth2call.Answer{}, false, err
 		}
 	}
 	client := c.HTTP
@@ -1073,15 +1128,15 @@ func (c *Client) send(ctx context.Context, method, path string, body []byte, lim
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: %w", method, path, oauth2call.Unanswered(err, req, ""))
+		return 0, nil, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: %w", method, path, oauth2call.Unanswered(err, req, ""))
 	}
 	defer resp.Body.Close()
 	answer, err := oauth2call.ReadAnswer(resp, int64(limit))
 	cut := errors.Is(err, oauth2call.ErrAnswerTooLarge)
 	if err != nil && !cut {
-		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
+		return 0, nil, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
 	}
-	return resp.StatusCode, answer, cut, nil
+	return resp.StatusCode, resp.Header, answer, cut, nil
 }
 
 // refusal is the broker's error body, read as answered, as an *APIError: the broker's code as it

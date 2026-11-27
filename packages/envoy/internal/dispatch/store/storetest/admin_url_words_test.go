@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -33,7 +34,7 @@ func TestAnAdminURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 	})
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := openAdmin(c.raw)
+			err := openAdmin(c.raw, time.Time{}, false)
 			if err == nil {
 				t.Fatalf("openAdmin(%q) succeeded; want the value refused", c.raw)
 			}

@@ -1,0 +1,50 @@
+Dispatch's answers to the three reads the daemon takes an issue's priority from, each body as
+Dispatch serves it: the project's listing (GET /api/v1/issues?project=<P>&all=true, which
+HTTPClient.ListIssues reads), the detail read (GET /api/v1/issues/<KEY>, GetIssue) and the issue
+a status write's PATCH answers (PATCH /api/v1/issues/<KEY>, SetStatusAt). They are read by
+TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes (internal/dispatch's
+resolved_test.go), TestEveryDispatchReadDecodesEachPriorityField (internal/intake) and
+TestTheDispatchShapeReachesTheRecordFromBytes (internal/admit).
+
+  listing-acme-1549.json  captured from a real Dispatch on 2026-11-25, a release that sends
+  detail-acme-1549.json   `priority` and no `resolved_priority`: the commands, the filter and
+                          each value replaced are in the header of resolved_test.go.
+  patch-acme-1549.json    no capture: detail-acme-1549.json with the `advice` key Dispatch's
+                          PATCH answer adds after the issue (patchIssue in
+                          packages/envoy/internal/dispatch/api/issue_patch.go writes
+                          withAdvice(written.issue, written.advice), and withAdvice in
+                          write_advice.go appends the key).
+
+  listing-resolved-<v>.json
+  detail-resolved-<v>.json
+  patch-resolved-<v>.json
+                          written by hand, never captured: no Dispatch release serves this
+                          shape yet. Each is ACME-12, a child of ACME-7, as the older capture
+                          is shaped, with `resolved_priority` and `priority_from` beside
+                          `priority`:
+                            <v> 0 to 3  its own priority null, resolved to <v> from OTHER-5,
+                                        an issue above it in another project;
+                            null        its own priority null, resolved to null, from null;
+                            own         its own priority 2, resolved to 2, from null, as for
+                                        an issue whose priority is its own.
+
+The hand-written files follow the two requirements of dispatch://INFRA-5793/spec quoted below,
+dispatch://INFRA-5793/spec#b-j-inherit and dispatch://INFRA-5793/spec#b-j-events, one sentence
+to a line. Each is word for word but for the last sentence of J1, which says where J1 comes from
+and is left out here because it names a person, and this repository names none (AGENTS.md).
+
+> J1. An issue that has no priority of its own takes the priority of the nearest issue above it on its parent chain that has one, in any project, up to the walk's 32 levels: its root's where no issue between them has one.
+> The issue read and list answer it as `resolved_priority` beside `priority`, the issue's own, and name the issue it comes from (`priority_from`, null where the priority is the issue's own or none).
+> Each surface that shows, filters, orders or counts issues by priority uses that priority: the list's `priority` filter, the Inbox, its mark-all-read filter, the replies, the open asks, the Legion board, the delivery views and their live hub, the architecture tree, Legion's metrics, the web app's issue page, board, priority control, project issues table (its column, sort and filter), Inbox (its grouping and its priority tag), reference preview card and the new issue page's margin, and the `dispatch` command.
+> A surface that shows an inherited priority says so and names the issue it comes from.
+> A reader who cannot see the project of that issue gets no inherited priority from it: `resolved_priority` and `priority_from` are null (dispatch://INFRA-3862 R4).
+> The tables of project access are on `main`, and no route reads them yet (cybermonklabs/legion#4674), so whichever of this work and dispatch://INFRA-3862's read rule merges second carries that clause.
+> A change of the priority of an issue above reaches each sub-issue that takes it at its next read and in the live hub.
+
+> J3. When an issue's resolved priority changes because of a write to another issue, in any project (a move or a detach of an issue above it, or a change or a clear of the own priority of an issue above it), Dispatch appends one `issue.updated` event on that issue, in the same transaction as the write, whose `changed` holds `resolved_priority`, whose issue carries `resolved_priority` and `priority_from`, and whose actor is the writer of that write.
+> Every `issue.*` event's issue carries both fields.
+> These events wake no session: no follower of such an issue is told of them.
+> Each reader that keeps resolved priority, the Legion daemon (dispatch://INFRA-3199) and the delivery live hub, still reads every one, and follows an issue's resolved priority from its own events, with no ancestry rule of its own.
+> Such a reader also takes the resolved priority again from each read of the issue, since a write that a process of the build before serves while the release rolls appends no such event and makes no move check.
+> Whichever of this work and dispatch://INFRA-3862's read rule merges second makes the read of such an event give no inherited priority and no `priority_from` from an issue in a project the reader cannot see, as the issue read does.
+> From: dispatch://INFRA-4890/spec R7.

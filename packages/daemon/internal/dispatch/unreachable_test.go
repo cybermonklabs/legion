@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // Unreachable is the predicate daemon.go's boot gate judges every reconcile failure with: a boot
@@ -148,13 +149,8 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 		{
 			name: "a dial the network refuses",
 			client: func(t *testing.T) *HTTPClient {
-				reserved, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatalf("reserve a port: %v", err)
-				}
-				addr := reserved.Addr().String()
-				reserved.Close() // nothing answers here now.
-				return New("http://"+addr, BearerTransport("test-token", nil))
+				// A port the test holds and nothing listens on: nothing answers here.
+				return New("http://"+testport.Refused(t), BearerTransport("test-token", nil))
 			},
 			wantTransient: true,
 		},

@@ -52,7 +52,7 @@ func TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(tc.answer)
 			t.Cleanup(server.Close)
-			err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/LEGION-12", tc.base)
+			err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/LEGION-12", tc.base, nil)
 			if err == nil {
 				t.Fatal("Create answered no error, though the base's read failed")
 			}
@@ -79,7 +79,7 @@ func TestACreateNamesTheBasesCommitOnlyInItsShape(t *testing.T) {
 			g := &github{refs: map[string]string{"main": c.commit}, create: func() (int, string) {
 				return http.StatusForbidden, `{"message":"Resource not accessible by integration","status":"403"}`
 			}}
-			err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/LEGION-12", "main")
+			err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/LEGION-12", "main", nil)
 			if err == nil {
 				t.Fatal("Create answered no error for a create GitHub refused")
 			}

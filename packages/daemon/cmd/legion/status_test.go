@@ -20,6 +20,7 @@ import (
 // usage error naming the flag, and the daemon is never reached — no grant is read from the
 // environment.
 func TestStatusIssueRequiresTheOperatorTokenFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	d := newControllerDaemon(t)
 	t.Setenv("LEGION_DAEMON_URL", d.url)
 	code, out, errb := issueStatus(t, "LEGION-208", "todo")
@@ -49,6 +50,7 @@ func issueStatus(t *testing.T, args ...string) (int, string, string) {
 // route's operator form, and the grant sets the status: two requests, the bearer on the first
 // only.
 func TestStatusWithTheOperatorTokenFileMintsAGrantAndSetsTheStatus(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	d := newControllerDaemon(t)
 	tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
 	t.Setenv("LEGION_DAEMON_URL", "http://127.0.0.1:1")
@@ -86,6 +88,7 @@ func TestStatusWithTheOperatorTokenFileMintsAGrantAndSetsTheStatus(t *testing.T)
 
 // --config finds the daemon the way `legion state --config` does.
 func TestStatusWithTheOperatorTokenFileFindsTheDaemonFromTheConfiguration(t *testing.T) {
+	t.Parallel()
 	d := newControllerDaemon(t)
 	tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
 	code, _, errb := issueStatus(t, "LEGSMOKE-3", "icebox", "--operator-token-file", tokenFile, "--config", legionConfig(t, "demo", d.port))
@@ -100,6 +103,7 @@ func TestStatusWithTheOperatorTokenFileFindsTheDaemonFromTheConfiguration(t *tes
 // The wrong bearer is the daemon's refusal, printed as every operator command prints one; no
 // status request follows.
 func TestStatusWithAWrongOperatorTokenIsRefusedAndSetsNothing(t *testing.T) {
+	t.Parallel()
 	d := newControllerDaemon(t)
 	tokenFile := writeFile(t, "operator-token", "wrong-9f3c27e1b04d\n")
 	code, _, errb := issueStatus(t, "LEGSMOKE-3", "backlog", "--operator-token-file", tokenFile, "--port", strconv.Itoa(d.port))
@@ -117,6 +121,7 @@ func TestStatusWithAWrongOperatorTokenIsRefusedAndSetsNothing(t *testing.T) {
 // A token file it cannot read is refused naming the flag and the path, before the daemon is
 // reached.
 func TestStatusRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
+	t.Parallel()
 	d := newControllerDaemon(t)
 	absent := filepath.Join(t.TempDir(), "absent")
 	code, _, errb := issueStatus(t, "LEGSMOKE-3", "backlog", "--operator-token-file", absent, "--port", strconv.Itoa(d.port))
@@ -131,6 +136,7 @@ func TestStatusRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 // The operator token file is held to `legion controller start`'s rule: one its group or others
 // can read is refused naming the path and the mode, and the daemon is never reached.
 func TestStatusRefusesAGroupReadableOperatorTokenFile(t *testing.T) {
+	t.Parallel()
 	d := newControllerDaemon(t)
 	tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
 	if err := os.Chmod(tokenFile, 0o640); err != nil {
@@ -148,6 +154,7 @@ func TestStatusRefusesAGroupReadableOperatorTokenFile(t *testing.T) {
 // Each usage error is its own, not the missing flag's: a status outside the three, a stray
 // argument, and a flag without its value are refused with exit 2 even with the token file given.
 func TestStatusIssueUsage(t *testing.T) {
+	t.Parallel()
 	tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
 	for _, tc := range []struct {
 		args []string

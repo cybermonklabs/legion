@@ -117,6 +117,11 @@ type Server struct {
 // the handler gives the count back as soon as it has read a request that is not a broker call: no
 // other op holds the stop, whatever it waits on (a register's wait_seconds does not watch ctx). A
 // connection whose request is still being read holds it for at most that read's 5 s deadline.
+//
+// It then waits for the revokes it fired off (awaitRevokes), the one piece of work that outlives
+// the answer it belongs to (retire). A helper whose process exits when Serve returns would
+// otherwise cut a revoke off mid-request, and in a test binary such a revoke runs on into the
+// tests that follow: a goroutine of a test that has ended, reading whatever those tests set.
 func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 	go func() {
 		<-ctx.Done()
@@ -126,6 +131,7 @@ func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 		conn, err := ln.AcceptUnix()
 		if err != nil {
 			s.awaitCalls()
+			s.awaitRevokes()
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -144,6 +150,22 @@ func (s *Server) awaitCalls() {
 		s.Log.Warn("the helper is stopping; it waits for the connections that may still owe a broker call's answer", "connections", n, "bound", s.brokerCallBound())
 	}
 	s.calls.Wait()
+}
+
+// awaitRevokes waits for the revokes the helper fired off (goRevoke) to return. Each runs under
+// Serve's ctx, so on a stop each ends at its next step rather than running its retry schedule
+// out. It reads the count again after every wait, since a session's own goroutine (watchExit)
+// can fire one off while this waits.
+func (s *Server) awaitRevokes() {
+	for {
+		s.revokesMu.Lock()
+		idle, inFlight := s.revokesIdle, s.revokesInFlight
+		s.revokesMu.Unlock()
+		if inFlight == 0 {
+			return
+		}
+		<-idle
+	}
 }
 
 // doneCall gives back the count Serve took for one connection.
@@ -1132,7 +1154,7 @@ func (s *Server) login(ctx context.Context) Response {
 // or it reached its expiry).
 func (s *Server) loginStatus() Response {
 	ls := s.Broker.LoginStatus()
-	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
+	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, LoginReason: ls.Reason, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
 		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 	if !ls.CredentialExpiresAt.IsZero() {
 		resp.CredentialExpiresAt = ls.CredentialExpiresAt.UTC().Format(time.RFC3339)

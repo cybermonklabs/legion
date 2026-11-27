@@ -12,21 +12,27 @@ import (
 )
 
 // Record is ctx carrying a copy of client, the client x/oauth2 and go-oidc send their requests
-// with as its caller resolved it (nil is http.DefaultClient), timeout and redirect rule and all,
-// with its transport wrapped so answered records what became of each request it carries, under a
-// RefusalClient as every client handed to those libraries is (redact.OAuth2). The caller hands
-// the client it already holds rather than putting it on ctx for this to read back, so the
-// request goes through one record layer and one Recorder, and the client the context carries is
-// resolved in one place (cipherclient.clientOf, redact.CallScope.Context). A reader whose library
-// error drops an answer's status, or quotes its body, reads the answer from answered instead.
+// with as its caller resolved it (nil is http.DefaultClient), wrapped as Client wraps it. The
+// caller hands the client it already holds rather than putting it on ctx for this to read back,
+// so the request goes through one record layer and one Recorder, and the client the context
+// carries is resolved in one place (cipherclient.clientOf, redact.CallScope.Context).
 func Record(ctx context.Context, client *http.Client, answered *Recorder) context.Context {
-	wrapped := *cmp.Or(client, http.DefaultClient)
+	return context.WithValue(ctx, oauth2.HTTPClient, Client(client, answered))
+}
+
+// Client is a copy of base (nil is http.DefaultClient), timeout and redirect rule and all, with its
+// transport wrapped so answered records what became of each request it carries, under a
+// RefusalClient as every client handed to those libraries is (redact.OAuth2), for a library that
+// takes its client as an option rather than from ctx. A reader whose library error drops an
+// answer's status, or quotes its body, reads the answer from answered instead.
+func Client(base *http.Client, answered *Recorder) *http.Client {
+	wrapped := *cmp.Or(base, http.DefaultClient)
 	answered.base = wrapped.Transport
 	if answered.base == nil {
 		answered.base = http.DefaultTransport
 	}
 	wrapped.Transport = answered
-	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(&wrapped))
+	return redact.RefusalClient(&wrapped)
 }
 
 // Recorder is a transport that records what became of the last request it carried: the host it

@@ -506,6 +506,13 @@ export class LibraryError extends Error {
    *  error by its `constructor.name`, which a subclass or a bundle that renames the class changes,
    *  and any error can be named so. Every client reads a refusal by this, in one place. */
   readonly answeredOAuthError: boolean;
+  /** The answer's `Retry-After` (RFC 9110 Section 10.2.3), rebuilt from what it parses as: a count
+   *  of seconds as its digits with no leading zero, or a date (any form `Date.parse` reads) as the
+   *  ISO 8601 time it names; "" where it is neither or there was no answer. No other header of the
+   *  answer is kept, and no character of this one beyond the number or the time it names. A
+   *  device login's poll waits it after an outage (cipher-client's `device-login.ts`). Go's
+   *  `redact.OAuth2` keeps the header so (`retryAfter`). */
+  readonly retryAfter: string;
 
   constructor(thrown: unknown) {
     const error = thrown instanceof Error ? thrown : undefined;
@@ -531,6 +538,7 @@ export class LibraryError extends Error {
     const cause = error?.cause;
     this.causeClass = cause instanceof Error ? errorClass(cause) : "";
     this.answeredOAuthError = stringMember(thrown, "code") === "OAUTH_RESPONSE_BODY_ERROR";
+    this.retryAfter = retryAfterOf(refusal);
   }
 }
 
@@ -570,6 +578,16 @@ function statusOfThrown(thrown: unknown): number {
     value = value.cause;
   }
   return 0;
+}
+
+/** `answer`'s `Retry-After` as {@link LibraryError.retryAfter} keeps it: digits as the number of
+ *  seconds they name, a date `Date.parse` reads as the ISO 8601 time it names, and "" for any
+ *  other value or no answer. */
+function retryAfterOf(answer: Response | undefined): string {
+  const value = answer?.headers.get("retry-after")?.trim() ?? "";
+  if (/^\d+$/.test(value)) return BigInt(value).toString();
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? new Date(at).toISOString() : "";
 }
 
 /** `value[name]` where it is a string, and "" otherwise. */

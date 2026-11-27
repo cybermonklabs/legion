@@ -1,5 +1,5 @@
 {
-  "commands": 42,
+  "commands": 43,
   "refusals": 29,
   "runs": [
     {
@@ -77,15 +77,6 @@
       },
       "requests": [
         {
-          "method": "GET",
-          "path": "/api/v1/issues/DSP-1/artifacts",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret"
-          },
-          "body": null
-        },
-        {
           "method": "POST",
           "path": "/api/v1/markdown/round-trip",
           "headers": {
@@ -94,8 +85,18 @@
             "Content-Type": "application/json"
           },
           "body": {
-            "markdown": "# Design\n"
+            "markdown": "# Design\n",
+            "new_document": true
           }
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/artifacts",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
         },
         {
           "method": "POST",
@@ -1146,7 +1147,7 @@
       "outcome": "result",
       "text": [
         "1 issue in PROJ (showing 251-251 of 1)",
-        "DSP-1 [todo] P1 Native workspace ·  open asks"
+        "DSP-1 [todo] P1 Native workspace · labels infra ·  open asks"
       ]
     },
     {
@@ -1408,6 +1409,41 @@
       "outcome": "result",
       "text": [
         "Created project CORE (Core) at 2026-01-02T03:04:05Z: http://dispatch.test/projects/CORE"
+      ]
+    },
+    {
+      "tool": "dispatch_project_update",
+      "call": "valid",
+      "args": {
+        "project": "CORE",
+        "proven_sessions": "on"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/CORE/proven-sessions",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Project CORE (Core): proven sessions on."
       ]
     },
     {

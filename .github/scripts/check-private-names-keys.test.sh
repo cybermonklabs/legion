@@ -8,8 +8,9 @@
 # which is no private name, passing where a key beside it or inside it is refused; a diff GitHub's
 # REST answer does not hold whole read from git, and one neither holds whole refused as UNKNOWN; a
 # key the same diff also removes carried over; a merge's own diff passed over for the pull
-# request's net diff; a key beside a "_"; a list with terms and no `key:` line refused; and a keys
-# run under no list at all saying it checked nothing.
+# request's net diff; a key beside a "_"; a list with terms and no `key:` line refused; a keys
+# run under no list at all saying it checked nothing; and the count line of a `names` run,
+# which reads the `key:` lines but checks none, saying so.
 #
 # The terms and the project key are placeholders this file and check-private-names-test-lib.sh
 # set, never a real one, and every case is named by a neutral label, since this script's own
@@ -846,7 +847,9 @@ root=$(fixture key-tree)
 printf 'From before the rule: %s.\n' "$planted_key" > "$root/docs/notes.md"
 run_check_as pull_request "$key_terms" "$root"
 check "a key in a tree file passes the repository scan" "$(is "$status" 0)"
-check "and the scan names the keys it read" "$(contains "$out" 'PRIVATE_NAME_TERMS: 3 terms and 1 issue key read')"
+check "and its count line says the key is read but not checked" \
+  "$(contains "$out" '^check-private-names: PRIVATE_NAME_TERMS: 3 terms read; 1 issue key not checked: rule 6 runs only with PRIVATE_NAME_RULES=keys$')"
+check "and does not count the key beside the terms it checks" "$(is "$(contains "$out" 'and 1 issue key read')" false)"
 set +e
 out=$(cd "$root" && PRIVATE_NAME_TERMS=$key_terms GITHUB_EVENT_NAME=pull_request PRIVATE_NAME_RULES=keys \
   .github/scripts/check-private-names.sh docs 2>&1)
@@ -854,6 +857,8 @@ status=$?
 set -e
 check "the same file fails a keys run" "$(is "$status" 1)"
 check "names its line" "$(contains "$out" "docs/notes.md:1: $key_refused")"
+check "and the keys run counts the key it checks" \
+  "$(contains "$out" '^check-private-names: PRIVATE_NAME_TERMS: 3 terms and 1 issue key read$')"
 
 # keys_run_in <root> <terms> [path...]: a keys run of the check from <root> on a merge group,
 # under <terms> as the list.

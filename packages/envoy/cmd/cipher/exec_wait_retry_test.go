@@ -119,13 +119,14 @@ func flakyBroker(t *testing.T, polls []pollAnswer) (*httptest.Server, *atomic.In
 }
 
 // TestExecFormWaitOutlivesFailedStatusPolls: a status poll that got no answer about the request
-// (a reset connection, a 503 from the broker, a front door's bare 502) does not end the exec
-// form's wait. The command keeps polling until --wait runs out, says so once per run of such
-// failures, and runs the command when a later poll finds the request granted. A wait that runs
-// out while its polls still fail exits 75, as a wait that ran out on a pending request does,
-// naming the request, the last failure and the command that still collects the grant. A refusal
-// no retry changes (an unknown request's 404) still ends the wait at once.
+// (a reset connection, an outage from the broker or a front door before it: a 5xx, a 408 or a
+// 429) does not end the exec form's wait. The command keeps polling until --wait runs out, says so
+// once per run of such failures, and runs the command when a later poll finds the request granted.
+// A wait that runs out while its polls still fail exits 75, as a wait that ran out on a pending
+// request does, naming the request, the last failure and the command that still collects the
+// grant. A refusal no retry changes (an unknown request's 404) still ends the wait at once.
 func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	reset, pending, granted := resetPoll, statePoll("pending"), statePoll("granted")
@@ -164,6 +165,16 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 			name: "a front door's bare 502, then granted", wait: "1m",
 			polls: []pollAnswer{refusedPoll(http.StatusBadGateway, "text/html", "<html><body><h1>502 Bad Gateway</h1></body></html>"), granted},
 			exit:  0, lines: 1, says: []string{"HTTP 502: ", keepsWaiting},
+		},
+		{
+			name: "a front door's bare 408, then granted", wait: "1m",
+			polls: []pollAnswer{refusedPoll(http.StatusRequestTimeout, "text/html", "<html><body><h1>408 Request Timeout</h1></body></html>"), granted},
+			exit:  0, lines: 1, says: []string{"HTTP 408: ", keepsWaiting},
+		},
+		{
+			name: "the broker's 500, then granted", wait: "1m",
+			polls: []pollAnswer{refusedPoll(http.StatusInternalServerError, "application/json", `{"code":"INTERNAL","error":"the broker could not read its store"}`), granted},
+			exit:  0, lines: 1, says: []string{"the broker could not read its store (INTERNAL); asked ", keepsWaiting},
 		},
 		{
 			name: "every poll reset until the wait runs out", wait: "3s", polls: []pollAnswer{reset},
@@ -218,9 +229,10 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 }
 
 // TestOnlyAFailureARetryCanCureIsRetried pins retryable, the exec form's wait's test of a failed
-// status poll: a transport failure, or a 429, 502, 503 or 504 with the broker's envelope or
-// without it, is polled again; every other refusal, and a call never sent, is not.
+// status poll: a transport failure, or an outage (any 5xx, a 408 or a 429) with the broker's
+// envelope or without it, is polled again; every other refusal, and a call never sent, is not.
 func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
+	t.Parallel()
 	const base = "http://broker.example"
 	reset := unreachable(cipheraddr.New(base), http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
 	refusal := func(status int, code, words string) *apiError {
@@ -244,7 +256,11 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 		{refusal(http.StatusGatewayTimeout, "", "upstream timed out"), true},
 		{refusal(http.StatusNotFound, "NOT_FOUND", "no such request"), false},
 		{refusal(http.StatusUnauthorized, "PROOF_INVALID", "proof invalid"), false},
-		{refusal(http.StatusInternalServerError, "", "internal"), false},
+		{refusal(http.StatusInternalServerError, "", "internal"), true},
+		{refusal(http.StatusNotImplemented, "", "<html>501 Not Implemented</html>"), true},
+		{refusal(http.StatusHTTPVersionNotSupported, "", "<html>505</html>"), true},
+		{refusal(http.StatusRequestTimeout, "", "<html>408 Request Timeout</html>"), true},
+		{refusal(http.StatusConflict, "CONFLICT", "conflict"), false},
 		{&refusedBeforeCall{"a request id must name one path segment"}, false},
 		{errors.New("decode request status: unexpected end of JSON input"), false},
 	} {

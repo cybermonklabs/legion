@@ -557,7 +557,9 @@ run_pr_text
 check "a comparison GitHub cannot make is refused" "$(is "$status" 1)"
 check "names the read and the file that keeps gh's words" \
   "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh; its own words are in ")"
-check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
+# gh-read.sh reads the rate_limit route after a read that fails with no answer it can read, so the
+# row looks for the compare route itself.
+check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api repos/example/repo/compare/')" false)"
 # A total above 1000 goes to the compare route after the first page: the pages GraphQL would serve
 # after it cannot make the list whole.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -860,9 +862,10 @@ check "names the commits it could not read" \
 
 echo "case: a spent GraphQL budget is waited out within the job's limit, and refused by name past it"
 # GraphQL answers a spent budget with HTTP 200 and an error of type RATE_LIMITED; gh fails on it.
-# gh-read.sh's gh_wait_reset, which every read goes through, reads the reset off GET /rate_limit,
-# waits for it when it falls inside the job's limit, and calls once more. Here the budget is back
-# 3 s after the refusal, inside a one-minute job.
+# This stand-in gh writes no GH_DEBUG log, so gh-read.sh's gh_wait_reset, which every read goes
+# through, has no answer of its own to read: it reads GET /rate_limit, finds the graphql budget the
+# read spends at 0, waits for its reset when that falls inside the job's limit, and calls once more.
+# Here the budget is back 3 s after the refusal, inside a one-minute job.
 clean_pr
 echo "1 3" > "$work/graphql-rate-limited"
 run_pr_text_in_job 1
@@ -874,11 +877,12 @@ check "asks the same read again after the wait" \
   "$(is "$(grep -c '^graphql PrText {"full":true,' "$work/calls")" 2)"
 check "after the reset" "$(is "$([ "$seconds" -ge 3 ] && echo true || echo false)" true)"
 
-# GitHub's words for it are "API rate limit already exceeded"; the type alone is read as well.
+# GitHub's words for it are "API rate limit already exceeded"; neither the words nor the error's
+# type decide, since the rate_limit route does.
 clean_pr
 echo "1 3 type" > "$work/graphql-rate-limited"
 run_pr_text_in_job 1
-check "a RATE_LIMITED answer whose words name no rate limit is waited out too: passes" "$(is "$status" 0)"
+check "a RATE_LIMITED answer whose words name no rate limit is waited out the same way: passes" "$(is "$status" 0)"
 check "and says so" "$(contains "$out" '^::warning::the API budget is spent until ')"
 
 # A later round's read: the first page is kept, and the round is asked again from its cursor.

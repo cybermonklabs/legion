@@ -31,8 +31,9 @@ type Client interface {
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
-	// ArtifactSlugs is the slug of every document and file the issue holds.
-	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
+	// Artifacts is every document and file the issue holds, in the order Dispatch lists them:
+	// what each is on the issue and its latest version.
+	Artifacts(ctx context.Context, key string) ([]Artifact, error)
 	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
 	// Dispatch filed it under. It names no token, so it is meant as a first upload, and the outbox
 	// uploads only a name the issue lists no document under (messageArtifact). Since
@@ -47,9 +48,16 @@ type Client interface {
 	// changes, and the read of who set an issue's label.
 	EventsAfter(ctx context.Context, key string, after int64) ([]Event, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
+	// Ask reads one ask by its id (GET /api/v1/asks/{id}): its state and who resolved it (the
+	// type Ask).
+	Ask(ctx context.Context, id string) (Ask, error)
+	// Reviews is every review Dispatch keeps of a document, newest first.
+	Reviews(ctx context.Context, artifactID string) ([]Review, error)
+	// DocumentVersion is the markdown one version of a document holds, as Dispatch stored it.
+	DocumentVersion(ctx context.Context, artifactID string, version int) (string, error)
 	// PlanDocument reads one version of a document with its typed blocks and the issue carrying
-	// it (DocumentVersion): what register_plan reads a plan from at the version its owner gave. A
-	// Dispatch that predates the read with blocks answers ErrNoBlocks.
+	// it (the type DocumentVersion): what register_plan reads a plan from at the version its owner
+	// gave. A Dispatch that predates the read with blocks answers ErrNoBlocks.
 	PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error)
 	// ArtifactChanges is what changed in a document between two of its stored versions, as
 	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404
@@ -217,6 +225,10 @@ type IssueSummary struct {
 	// Priority is the issue's own priority as Dispatch serves it: 0 for P0 to 3 for P3, nil for
 	// none. The workflow record keeps it as record.Priority (intake's ListedIssue).
 	Priority *int
+	// Resolved is the priority Dispatch resolves the issue to and the issue it comes from
+	// (`resolved_priority` and `priority_from`, J1 of dispatch://INFRA-5793), nil where the read
+	// carries no `resolved_priority` at all, as a Dispatch release before INFRA-5793 serves none.
+	Resolved *ResolvedPriority
 	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
 	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
 	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
@@ -240,14 +252,14 @@ type IssueSummary struct {
 
 // Issue is the summary as an Issue, for a reader that has only Dispatch's listing of the issue:
 // every field the listing carries, its labels among them, the claim from its holder
-// (Claim.Holder's `<kind>:<id>`). A summary carries no project and no primary document, so those
-// are empty.
+// (Claim.Holder's `<kind>:<id>`). A summary carries no project and no primary, Verification or
+// decisions document, so those are empty.
 func (s IssueSummary) Issue() Issue {
 	var claim *Claim
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Labels: s.Labels, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Resolved: s.Resolved, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 
@@ -264,9 +276,16 @@ type Issue struct {
 	Labels            []string
 	HandedOver        bool
 	PrimaryArtifactID string
-	LastSeq           int64
+	// VerificationArtifactID and DecisionsArtifactID are the issue's Verification document and its
+	// decisions document (Approval.Role ArtifactRoleVerification and ArtifactRoleDecisions), each
+	// empty when the issue holds none.
+	VerificationArtifactID string
+	DecisionsArtifactID    string
+	LastSeq                int64
 	// Priority is IssueSummary.Priority.
 	Priority *int
+	// Resolved is IssueSummary.Resolved.
+	Resolved *ResolvedPriority
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
 	// BlockedBy is IssueSummary.BlockedBy.
@@ -274,6 +293,14 @@ type Issue struct {
 	// Claim is the issue's claim Dispatch shows, nil for none; ClaimUnread is IssueSummary's.
 	Claim       *Claim
 	ClaimUnread bool
+}
+
+// ResolvedPriority is a resolved priority as a Dispatch read serves it: Priority its level, 0 for P0
+// to 3 for P3 and nil for a present null, which is no priority; From the key of the issue it comes
+// from, empty where it is the issue's own or none.
+type ResolvedPriority struct {
+	Priority *int
+	From     string
 }
 
 // Claim is the actor Dispatch records as an issue's holder: a session or a person.
@@ -388,6 +415,47 @@ func (a Approval) LatestReviewer() Actor {
 	}
 	return a.By
 }
+
+// Ask is one ask as Dispatch reads it by its id (GET /api/v1/asks/{id}). State is the ask's state,
+// `open`, `answered` or `resolved`, the word the type of the ask.* event that closed it ends in
+// (intake's DispatchAskClosed.State). ClosedBy is who closed it, the actor of the ask.* event that
+// closed it (intake's DispatchAskClosed.Actor): for an answered ask the person its answer names,
+// and for a resolved ask the actor its resolution names, the session or the person that resolved
+// it, whoever set its issue done for the withdrawal that close records, or Dispatch's settlement.
+// It is zero for an open ask, and for a close that names no actor.
+type Ask struct {
+	State    string
+	ClosedBy Actor
+}
+
+// Review is one review Dispatch keeps of a document, pinned to the version it was given on. State
+// is `approved` or `changes_requested`. Actor is who Dispatch names as having given it, At its
+// time (Dispatch's `created_at`), and Reason the reason the reviewer gave, empty for none (an
+// approval given with nothing written beside it).
+type Review struct {
+	Version int
+	State   string
+	Actor   Actor
+	At      time.Time
+	Reason  string
+}
+
+// Artifact is one document or file an issue holds, as Dispatch lists it: its id, the slug Dispatch
+// filed it under, its kind (Document), whether it is the issue's primary document, the part it
+// plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, `plan`, or "" for none) and
+// its latest version, 0 for one with none.
+type Artifact struct {
+	ID            string
+	Slug          string
+	Kind          string
+	Primary       bool
+	Role          string
+	LatestVersion int
+}
+
+// Document says whether the artifact is a markdown document (Dispatch's kind `doc`), the one kind
+// whose version Client.DocumentVersion reads: a version of an image or a file is its bytes.
+func (a Artifact) Document() bool { return a.Kind == "doc" }
 
 // DocumentVersion is one version of a document as the daemon reads a plan from it (PlanDocument on
 // HTTPClient): the document, the issue carrying it (empty for a project document), the version
@@ -571,13 +639,14 @@ func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" &&
 
 // Caller is who Dispatch takes a credential for, as GET /api/v1/whoami answers a credential that is
 // not a person's browser session (its whoamiAgent): Session is the session the credential proved,
-// Project the one project it lets its holder write, and Owner the person it acts for. A broker
-// token Dispatch serves every write of the daemon's for names the daemon's session
-// (DaemonSession), its project and a person. Session and Project are Dispatch's words, or the
-// words of whatever answers in its place, held as they came with the read's record
-// (oauth2call.RemoteText): a check compares them as they came, and a refusal prints them only as
-// the rule reads them, since they can echo the token the read presented. Each is empty where
-// Dispatch names none (null). Owner is nil where Dispatch names none, and nothing prints it.
+// Project the project its token names, and Owner the person it acts for. The daemon's own broker
+// token names the session of the daemon's project (DaemonSession), that project and a person, and
+// the boot refuses any other (internal/daemon's checkDaemonCaller). Session and Project are
+// Dispatch's words, or the words of whatever answers in its place, held as they came with the
+// read's record (oauth2call.RemoteText): a check compares them as they came, and a refusal prints
+// them only as the rule reads them, since they can echo the token the read presented. Each is
+// empty where Dispatch names none (null). Owner is nil where Dispatch names none, and nothing
+// prints it.
 type Caller struct {
 	Session oauth2call.RemoteText `json:"session"`
 	Project oauth2call.RemoteText `json:"project"`

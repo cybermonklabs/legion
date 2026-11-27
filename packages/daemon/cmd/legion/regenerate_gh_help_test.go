@@ -12,14 +12,14 @@ import (
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
-// ghHelpStandIn is the stand-in gh TestRegenerateGhHelpPrintsNoWordOfGhs runs the script on: it
-// logs each call to GH_STANDIN_LOG, says GH_STANDIN_SAYS on its stderr where that is set, exits 4
-// on the call GH_STANDIN_FAILS names, answers --version with GH_STANDIN_VERSION and a second line
-// as gh's does, and any other call with a help text. The version's two lines go out in one write
-// (cat), as gh writes them: the script reads them through `| head -1`, and bash's printf writes
-// each line on its own, so a head that had taken the first line and gone left the second write a
-// SIGPIPE, which failed the script's run of gh --version (exit 141) about once in 120 runs.
-const ghHelpStandIn = `#!/usr/bin/env bash
+// regenerateGhHelpStandIn is the stand-in gh TestRegenerateGhHelpPrintsNoWordOfGhs runs the script
+// on: it logs each call to GH_STANDIN_LOG, says GH_STANDIN_SAYS on its stderr where that is set,
+// exits 4 on the call GH_STANDIN_FAILS names, answers --version with GH_STANDIN_VERSION and a
+// second line as gh's does, and any other call with a help text. The version's two lines go out in
+// one write (cat), as gh writes them: the script reads them through `| head -1`, and bash's printf
+// writes each line on its own, so a head that had taken the first line and gone left the second
+// write a SIGPIPE, which failed the script's run of gh --version (exit 141) about once in 120 runs.
+const regenerateGhHelpStandIn = `#!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_STANDIN_LOG"
 [ -z "${GH_STANDIN_SAYS:-}" ] || printf '%s\n' "$GH_STANDIN_SAYS" >&2
 [ "$*" != "${GH_STANDIN_FAILS:-}" ] || exit 4
@@ -62,7 +62,7 @@ func TestRegenerateGhHelpPrintsNoWordOfGhs(t *testing.T) {
 		if err := os.WriteFile(at, script, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(gh, []byte(ghHelpStandIn), 0o755); err != nil {
+		if err := os.WriteFile(gh, []byte(regenerateGhHelpStandIn), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		cmd := exec.Command("bash", at)

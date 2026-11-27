@@ -75,6 +75,7 @@ from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact,
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import go_skips_dir, tag_sets
+import go_legs
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -210,30 +211,6 @@ INFRA_DARWIN_VET = "Vet envoy-infra for darwin, its live-test tags included"
 
 def reads(*entries):
     return [Read(glob, why) for glob, why in entries]
-
-
-def envoy_go_files_but_infra():
-    """The .go files internal/testnats/nats_test.go's dockerDriverFiles opens: every one under
-    packages/envoy but infra's, node_modules' and testdata's, test files included, as one
-    `<dir>/**/*.go` per top-level directory that holds one and packages/envoy/*.go if the root
-    does. A glob for a directory holding no .go file would name no file, which rule 9 refuses, and
-    out - where packages/dispatch/e2e/run-broker.sh builds the broker binaries the browser suite
-    starts - holds binaries alone. Only a file of repo_files() counts, so a directory a local run
-    filled with files git ignores names no glob either."""
-    known = set(repository_files())
-
-    def holds_go(directory: Path) -> bool:
-        for current, subdirs, names in os.walk(directory):
-            subdirs[:] = [s for s in subdirs if s not in {"node_modules", "testdata"}]
-            if any(n.endswith(".go") and f"{current}/{n}" in known for n in names):
-                return True
-        return False
-
-    globs = [f"{ENVOY}/*.go"] if any(p.as_posix() in known for p in Path(ENVOY).glob("*.go")) else []
-    for entry in sorted(Path(ENVOY).iterdir()):
-        if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
-            globs.append(f"{ENVOY}/{entry.name}/**/*.go")
-    return globs
 
 
 def credential_check_reads():
@@ -375,9 +352,9 @@ def biome(where):
     )
 
 
-def install_jj(job):
+def install_jj(job, workflow=""):
     return reads(
-        (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj")),
+        (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj", workflow)),
         (f"{DAEMON}/docker/worker.Dockerfile", "`.github/actions/install-jj/action.yml#jj_tool` reads ARG JJ_TOOL, the tool spec mise installs"),
         (".github/ci-tools.yaml", "`.github/actions/install-jj/action.yml#ci_tools_fetch` and `.github/actions/install-jj/action.yml#ci_tools_verify`: ci_tools_fetch "
                                   "installs the archive of the mise row, or of mise-aarch64 on an arm64 runner, and "
@@ -389,9 +366,9 @@ def install_jj(job):
     )
 
 
-def install_omp(job):
+def install_omp(job, workflow=""):
     return reads(
-        (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp")),
+        (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp", workflow)),
         (".omp-pin", "`.github/actions/install-omp/action.yml#pin=$(<.omp-pin)`"),
         (f"{DAEMON}/docker/worker.Dockerfile", "`.github/actions/install-omp/action.yml#s/^ARG OMP_SHA256=//p` reads ARG OMP_SHA256, the "
                                                "sha256 the release archive is held to"),
@@ -431,10 +408,11 @@ def at_docs(step):
     return at(DOCS_JOB, step, DOCS_SITE)
 
 
-# ci.yaml's dispatch-browser and dispatch-browser-pr jobs and dispatch-browser-nightly.yaml's own
-# job all call dispatch-browser.yaml, which holds the steps. Each of ci.yaml's two keeps a gate,
-# whose filter its if: tests, and every step citation names the job of dispatch-browser.yaml that
-# holds the step.
+# ci.yaml's dispatch-browser, dispatch-browser-pr and dispatch-references jobs and
+# dispatch-browser-nightly.yaml's own job all call dispatch-browser.yaml, which holds the steps.
+# ci.yaml's dispatch-browser and dispatch-browser-pr each keep a gate, whose filter its if: tests
+# (dispatch-references' filter is EXCLUDED, so its steps are read under those two), and every step
+# citation names the job of dispatch-browser.yaml that holds the step.
 BROWSER_JOB = "dispatch-browser"
 BROWSER_PR_JOB = "dispatch-browser-pr"
 BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
@@ -459,6 +437,22 @@ TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 # It leaves out scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint),
 # so the natsfloor build that file starts is no read of this job.
 E2E_LIB_TESTS = "bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
+
+
+def dispatch_api_types(step):
+    """What a typecheck that compiles packages/contracts/src/dispatch-api.generated.ts reads in its
+    place: git ignores that module, and the job's own `bun install` renders it (the root
+    package.json's postinstall runs packages/contracts/scripts/gen-api.ts over the OpenAPI
+    document), so a change to either file changes what `step` compiles, and no change carries the
+    module itself. ci_ts_listing.py's RENDERED lists the same two files in the module's place, so
+    check-ts-filters.sh holds the gate's filter to them."""
+    return reads(
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         f"{step} compiles packages/contracts/src/dispatch-api.generated.ts, which the job's bun install renders "
+         "from this document (package.json postinstall)"),
+        ("packages/contracts/scripts/gen-api.ts",
+         f"the job's bun install runs it (package.json postinstall) to render the module {step} compiles"),
+    )
 
 
 def envoy_client_dep(why):
@@ -741,39 +735,40 @@ CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = (f"{CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
                     "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
-# Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
-# which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
-# what the script runs, so each such gate declares the script, and the go run on the script's line
-# CEILING_GO_RUN, whose closure is internal/dispatch/store/cmd/connections,
+# Every lane whose tests start a Dispatch process checks its Postgres service's max_connections in
+# its CEILING_STEP, which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's
+# run: line, not what the script runs, so each such gate declares the script, and the go run on the
+# script's line CEILING_GO_RUN, whose closure is internal/dispatch/store/cmd/connections,
 # internal/dispatch/testlimits and the store.
 CEILING = ".github/scripts/pg-connection-ceiling.sh"
-CEILING_STEP = "Size the service for this lane's Dispatch processes"
+CEILING_STEP = "Check the service allows this lane's Dispatch processes"
 CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)'
 
 
 def ceiling_run(job, workflow=""):
-    """The go run pg-connection-ceiling.sh starts in `job`'s sizing step, in `workflow` when the
+    """The go run pg-connection-ceiling.sh starts in `job`'s ceiling step, in `workflow` when the
     job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
     return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
 
 def ceiling_reads(job, workflow=""):
-    """pg-connection-ceiling.sh itself, which `job`'s sizing step runs."""
+    """pg-connection-ceiling.sh itself, which `job`'s ceiling step runs."""
     return reads((CEILING, f"{at(job, CEILING_STEP, workflow)} runs it"))
 
 
-# Every job with a Postgres service turns the service's crash safety off in its
-# CRASH_SAFETY_STEP, which runs .github/scripts/pg-crash-safety-off.sh, before its tests
-# (.github/scripts/check-workflow-files.sh refuses a job that does not). The check reads the
-# step's run: line, not what the script runs, so each such gate declares the script.
-CRASH_SAFETY = ".github/scripts/pg-crash-safety-off.sh"
-CRASH_SAFETY_STEP = "Turn crash safety off on the service"
+# Every job with a Postgres service starts it on the command line
+# .github/scripts/postgres-service-settings.sh prints and reads the settings back with that script
+# in its SERVICE_SETTINGS_STEP, before its tests (.github/scripts/check-workflow-files.sh refuses a
+# service or a job that does not). The check reads the step's run: line, not what the script runs,
+# so each such gate declares the script.
+SERVICE_SETTINGS = ".github/scripts/postgres-service-settings.sh"
+SERVICE_SETTINGS_STEP = "Read the service's settings back"
 
 
-def crash_safety_reads(job, workflow="", step=CRASH_SAFETY_STEP):
-    """pg-crash-safety-off.sh itself, which `job`'s crash-safety step runs."""
-    return reads((CRASH_SAFETY, f"{at(job, step, workflow)} runs it"))
+def service_settings_reads(job, workflow="", step=SERVICE_SETTINGS_STEP):
+    """postgres-service-settings.sh itself, which `job`'s read-back step runs."""
+    return reads((SERVICE_SETTINGS, f"{at(job, step, workflow)} runs it"))
 
 
 # The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
@@ -787,10 +782,16 @@ FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
 FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
-# The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
-# to a version with no hooks fails the step), and one on 2.10.29.
-ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
-ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+# The envoy steps, one per key, each with the packages it runs: one on the nats-server the
+# workspace links ("", no -server, so a go.mod that moves to a version with no hooks fails the
+# step), and one on 2.10.29. cmd/listener's forced-order row holds a point v2.10.29 has not
+# (internal/testnats/hooks.go's missing: its purge takes the lock its update holds, so the order
+# cannot happen there), where it would skip, and a package whose every forced-order test skipped
+# fails forced-order.sh, so that package runs on the linked server alone.
+ENVOY_FORCED_ORDER_PKGS = {
+    "": ["./internal/testnats/hooktest/", "./cmd/listener/"],
+    "2.10.29": ["./internal/testnats/hooktest/"],
+}
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
 # The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
@@ -809,16 +810,18 @@ def envoy_forced_order_step(server):
         "Forced-order tests on the hooked nats-server the module links"
 
 
-def forced_order_run(job, step, workdir, pkgs):
-    """The go test forced-order.sh starts in `job`'s `step`, over `pkgs` of the module at `workdir`."""
-    return script_run(FORCED_ORDER, FORCED_ORDER_GO_TEST, f"run by {at(job, step)}", workdir, pkgs,
+def forced_order_run(job, step, workdir, pkgs, workflow=""):
+    """The go test forced-order.sh starts in `job`'s `step`, over `pkgs` of the module at `workdir`,
+    in `workflow` when the job's steps are not in its own called file (daemon-go-legs', in
+    ci-job-daemon-go.yaml)."""
+    return script_run(FORCED_ORDER, FORCED_ORDER_GO_TEST, f"run by {at(job, step, workflow)}", workdir, pkgs,
                       tags="odatrace", race=True)
 
 
-def forced_order_reads(job, step):
+def forced_order_reads(job, step, workflow=""):
     """forced-order.sh itself and the hooks it applies, which `job`'s `step` reads."""
-    return reads((FORCED_ORDER, f"{at(job, step)} runs it"),
-                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"))
+    return reads((FORCED_ORDER, f"{at(job, step, workflow)} runs it"),
+                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step, workflow)}, patches nats-server with them"))
 
 
 def two_builds_go_step():
@@ -841,7 +844,7 @@ def two_builds_same_step():
 def two_builds_go_reads():
     """What the two-build job's Go step reads beyond its closure and the //ci:reads lines of the
     twobuild files: the script its -run comes from, the script that wrote the previous build it
-    runs against, the sizing of the Postgres it runs on, and the Go and the Bun install its CLI
+    runs against, the checks of the Postgres it runs on, and the Go and the Bun install its CLI
     test runs this tree's dispatch command with."""
     return reads(
         (TAGGED_TESTS, f"{at(TWO_BUILDS_JOB, TWO_BUILDS_STEP)} takes its -run from it"),
@@ -851,7 +854,7 @@ def two_builds_go_reads():
          "cmd/dispatch/twobuild_harness_test.go checks, and "
          f"{at(TWO_BUILDS_SAME_JOB, 'Build this tree as the previous build', job_file(TWO_BUILDS_JOB))} "
          "writes the one its own Go step runs against"),
-    ) + ceiling_reads(TWO_BUILDS_JOB) + crash_safety_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
+    ) + ceiling_reads(TWO_BUILDS_JOB) + service_settings_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
 
 
 # ---------------------------------------------------------------- reading a Go file as text
@@ -1015,12 +1018,12 @@ hold_infra_race_unit_script()
 # Writer writes each frame whole under a lock of its own (Writer.mu). Under the detector,
 # TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is taken out, and a run
 # without the detector passes it.
-# One list: both step texts below are built from it, and check-ci-filters.sh fails when either step
-# in ci-job-daemon-go.yaml differs from the text built here, so the two steps cannot name different
+# One list: every daemon-go step text below is built from it, and check-ci-filters.sh fails when a
+# step in ci-job-daemon-go.yaml differs from the text built here, so the steps cannot name different
 # sets. internal/record is not among them: its product code starts no goroutine and uses no sync,
 # so the detector has nothing of the package to find there. Its own tests do start goroutines, and
-# the cover the detector gave those is what this trade gives up. The plain step leaves out one more
-# package than the race step runs, the text checks, which are the text-check job's.
+# the cover the detector gave those is what this trade gives up. The plain steps leave out one more
+# package than the race steps run, the text checks, which are the text-check job's.
 DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher", "internal/intake",
                         "internal/shimwire"]
 # The job of ci-caches.yaml whose race build fills the cache the race step restores, and which
@@ -1028,9 +1031,90 @@ DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/la
 # job of that file fills another family.
 DAEMON_RACE_FILL_JOB = "daemon"
 DAEMON_RACE_STEP = "Test the concurrent packages under the race detector"
-DAEMON_RACE_PKGS = [f"./{p}/" for p in DAEMON_RACE_PACKAGES]
 DAEMON_PLAIN_STEP = "Test the Go daemon"
-DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]) + ")$"
+
+# daemon-go's tests run in legs. .github/go-legs.yaml lists the packages each leg runs, and each
+# leg's go test step pipes them from .github/scripts/go_legs.py, which first holds the file to
+# `go list ./...`: every package of the module in exactly one leg, or in `elsewhere`, the text
+# checks. The legs of a kind are one matrix job of ci-job-daemon-go.yaml, daemon-go-legs for the
+# plain step and daemon-go-race-legs for the race step, every leg with that step's one text, so
+# the mode (-race, -skip, -timeout) is the step's and no leg's own. The jobs daemon-go and
+# daemon-go-race keep the check-run names the steps had before, and pass only when every leg of
+# their kind passed.
+# why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+DAEMON_PLAIN_JOB = "daemon-go"
+DAEMON_RACE_JOB = "daemon-go-race"
+DAEMON_PLAIN_LEGS_JOB = "daemon-go-legs"
+DAEMON_RACE_LEGS_JOB = "daemon-go-race-legs"
+GO_LEGS = go_legs.LEGS
+GO_LEGS_SCRIPT = ".github/scripts/go_legs.py"
+GO_LEGS_GROUPS = go_legs.GROUPS
+DAEMON_LEGS = go_legs.module_entry(DAEMON, Path(GO_LEGS))
+
+
+def hold_daemon_legs(entry: dict) -> None:
+    """Refuse a go-legs.yaml entry for packages/daemon that a leg of ci-job-daemon-go.yaml would not
+    run as written. go_legs.py, in each leg, holds the whole entry to `go list ./...` and the
+    running job's legs to its matrix, but it sees only its own job: a package filed under a job key
+    no matrix job runs (a typo, a job since renamed) is in the file once, passes every leg, and
+    runs in no job. So the entry's keys are exactly the two jobs whose legs run here and
+    `elsewhere`; the race legs run the race packages, each once, the set the gates and
+    ci-caches.yaml's race fill read from DAEMON_RACE_PACKAGES; and the text checks, the
+    text-check job's, are the one package no leg runs. check-ci-filters.sh imports this table in
+    the changes and ci-filters jobs, so a refusal here fails the run that brings the entry.
+
+    A package several legs of one job run a group of the tests of (`- internal/daemon: 1`) is one
+    package here, as go_legs.job_packages counts it: those legs together run it once."""
+    problems = []
+    keys = set(entry)
+    wanted = {DAEMON_PLAIN_JOB, DAEMON_RACE_JOB, go_legs.ELSEWHERE}
+    if keys != wanted:
+        problems.append(f"its keys are {', '.join(sorted(keys))}, and the jobs whose legs ci-job-daemon-go.yaml runs "
+                        f"are {DAEMON_PLAIN_JOB} and {DAEMON_RACE_JOB}, beside {go_legs.ELSEWHERE}: a package under "
+                        f"{', '.join(sorted(keys - wanted)) or 'a missing key'} runs in no job, so file it under one "
+                        f"of those")
+    race = sorted(go_legs.job_packages(entry.get(DAEMON_RACE_JOB) or {}))
+    if race != sorted(DAEMON_RACE_PACKAGES):
+        problems.append(f"its {DAEMON_RACE_JOB} legs run {race}, and DAEMON_RACE_PACKAGES here is "
+                        f"{sorted(DAEMON_RACE_PACKAGES)}: make them one set, each package once")
+    # job_packages counts a package once however many legs name it, which is what the gate wants
+    # of a package split by test; `each package once` is held here on the entries themselves, so a
+    # whole package in two legs fails in the changes job rather than in every leg 90 s in.
+    whole = [package for leg in (entry.get(DAEMON_RACE_JOB) or {}).values() for package, group in
+             (go_legs.item(written) for written in leg or []) if group is None]
+    if len(whole) != len(set(whole)):
+        twice = sorted({package for package in whole if whole.count(package) > 1})
+        problems.append(f"its {DAEMON_RACE_JOB} legs run {', '.join(twice)} whole in more than one leg, so each "
+                        f"would run in every one of them: keep a whole package in one leg, or split it by test")
+    if entry.get(go_legs.ELSEWHERE) != {TEXT_CHECK_PACKAGE: "text-checks"}:
+        problems.append(f"it runs packages elsewhere as {entry.get(go_legs.ELSEWHERE)}, and the one package no leg "
+                        f"runs is {TEXT_CHECK_PACKAGE}, the text-checks job's")
+    if problems:
+        raise ValueError(f"{GO_LEGS}'s entry for {DAEMON}: " + "; ".join(problems))
+
+
+hold_daemon_legs(DAEMON_LEGS)
+DAEMON_PLAIN_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_PLAIN_JOB])
+DAEMON_RACE_LEG_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_RACE_JOB])
+
+
+def daemon_legs_script(job, flags):
+    """The whole run: of a legs job's go test step: its leg's packages, piped from go_legs.py into
+    one go test with the step's flags. go_legs.py takes the leg's number and how many legs the
+    matrix runs, and refuses a file whose legs are not those or a leg with no package. It also
+    takes the step's build flags, under which it lists the tests of a package a leg runs a group
+    of, so the listing is the build the run then reuses and names the tests the run can choose
+    from: -race, and -tags, which decides which files are in the build and so which tests exist at
+    all (a listing without a step's -tags would leave that tag's tests in no group's -run). No step
+    of this module passes -tags today, and one that did would hand it on here. `set -o pipefail` is
+    what fails the step when go_legs.py refuses the file or go list fails, rather than test what
+    xargs got."""
+    words = flags.split()
+    build = "".join(f" {word}" for word in words if word == "-race" or word.startswith("-tags="))
+    build += "".join(f" -tags={words[index + 1]}" for index, word in enumerate(words[:-1]) if word == "-tags")
+    return ("set -o pipefail\n"
+            f"python3 ../../{GO_LEGS_SCRIPT} {DAEMON} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
+            f"| xargs go test {flags}")
 
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
@@ -1068,10 +1152,9 @@ PLUGIN_PACK_SCRIPT = f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} 
 # together here rather than by a reader noticing: a package moved out of the race step while the
 # pack tests stayed in it would run them twice and read the lockfile in both jobs.
 if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
-    raise ValueError(f"the plugin-pack tests are in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
+    raise ValueError(f"the plugin-pack tests are in {PLUGIN_PACK_PACKAGE}, which no race step runs, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step that "
                      f"runs them")
-DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
 PLUGIN_PACK_SOURCE = f"{DAEMON}/{PLUGIN_PACK_PACKAGE}"
@@ -1185,16 +1268,15 @@ SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
 SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
 SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
-# together here rather than by a reader noticing: the plain step runs every package of the module but
-# the race step's five and the text checks, and this package moved into one of those while these
-# tests stayed here would run them in that step too.
-if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
-    raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
+# together here rather than by a reader noticing: the plain legs' step skips them, and this package
+# moved out of the plain legs, into a race leg or the text checks, while these tests stayed here
+# would run them in that step too.
+if SUPERVISE_TABLE_PACKAGE not in DAEMON_PLAIN_PACKAGES:
+    raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which no plain leg of {GO_LEGS} runs, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
-DAEMON_PLAIN_SCRIPT = f"""\
-set -o pipefail
-go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
+DAEMON_PLAIN_SCRIPT = daemon_legs_script(DAEMON_PLAIN_JOB, f"-count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}")
+DAEMON_RACE_SCRIPT = daemon_legs_script(DAEMON_RACE_JOB, f"-count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}")
 
 
 def hold_supervise_table_tests():
@@ -1294,6 +1376,26 @@ def race_pkgs(job):
     return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages]
 
 
+# The job of ci-caches.yaml whose race build fills go-envoy-race, the cache every leg of the lane
+# restores: it compiles every job's packages of the lane, in the lane's order.
+ENVOY_RACE_FILL_JOB = "envoy-race"
+
+# ci-caches.yaml's race builds that name a lane's packages inline, each (fill job, the name of the
+# constant naming it, the package words its race build must name, the name of the list they come
+# from, the step that restores the cache, the jobs that restore it, and the clause saying which
+# steps follow that list): ci_workflow_rules.py's check_race_fill_packages holds each fill job's race build to its
+# words, so the fill and the lane cannot name other packages with nothing failing.
+RACE_FILLS = [
+    (DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in DAEMON_RACE_PACKAGES], "DAEMON_RACE_PACKAGES",
+     f"{CI}'s race step", CI, f"{CI}'s two race steps follow it already"),
+    (ENVOY_RACE_FILL_JOB, "ENVOY_RACE_FILL_JOB", [word for job in ENVOY_RACE_LANE for word in race_pkgs(job)],
+     "ENVOY_RACE_LANE", "the envoy race lane's steps", "the envoy race lane",
+     "envoy-go-race's and envoy-go-race-api's steps follow it already (race_step, RACE_API_SCRIPT), and "
+     "envoy-go-race-docs' line is RACE_DOCS_SCRIPT's, written by hand, so a change to the lane's docs "
+     "entry changes that line too"),
+]
+
+
 def race_step(job):
     """The one go command of a race job's step, pinned to the text this declaration builds."""
     pkgs = race_pkgs(job)
@@ -1326,25 +1428,36 @@ LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 # The packages whose skips envoy-go's unit step counts: it runs the module through
 # packages/envoy/scripts/database-skips.sh with --module-except, one `go test -json`, and the
 # script counts the skips of its default table (DEFAULT_PACKAGES there), the broker's tree,
-# internal/cipher and every package under it, and its command, cmd/cipherd, failing on any skip
-# there as on any failed test in the run. They ran in a step of their own after the unit step
+# internal/cipher and every package under it, its command, cmd/cipherd, and
+# DATABASE_SKIPS_PACKAGES, each the package alone: the writer hold's client, internal/holdrecord,
+# whose journal tests run on the broker's own routes over its Postgres. It fails on any skip there
+# as on any failed test in the run. They ran in a step of their own after the unit step
 # until INFRA-1075: cmd/cipherd alone, 714 s, held that step at 15.3 minutes, in which its four -p
 # slots ran 1,817 s of package time, half what they had, while the unit step, 14.8 minutes, ran
 # before it (merge-group run 45048924209, job 137290624677); in one go test the two share the
-# slots. The script's own DEFAULT_EXCEPT, a
-# `grep -Ev` over that table's import paths, leaves out the race lane's packages under the tree
-# (DATABASE_SKIPS_PATTERN, today the auth service's natscallout), which open no database and which
-# the lane's race job runs: counting them would add them to the run, each one's second in the
-# same CI run. The pattern is built from ENVOY_RACE_LANE, as the unit step's is.
+# slots. The script's own DEFAULT_EXCEPT, a `grep -Ev` over that table's import paths, leaves out
+# DATABASE_SKIPS_RACE_ONLY: race lane packages under the tree that open no database, which the
+# lane's race job runs, where counting them would add them to the run, each one's second in the
+# same CI run, and would count nothing. It names none today. The auth service's natscallout is in
+# the lane, and its hold rows open the broker's Postgres and skip without it, so the count runs it
+# too, its second run in CI, for the count of its skips. DATABASE_SKIPS_PATTERN is built from the
+# lane's declaration of those packages, as the unit step's is.
 # hold_database_skips_packages() below refuses a script whose table is not this list, or whose
 # DEFAULT_EXCEPT is not that pattern.
 DATABASE_SKIPS_TREE = "internal/cipher"
 DATABASE_SKIPS_COMMAND = "cmd/cipherd"
-DATABASE_SKIPS_PKGS = [f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+DATABASE_SKIPS_PACKAGES = ["internal/holdrecord"]
+DATABASE_SKIPS_PKGS = ([f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+                       + [f"./{p}/" for p in DATABASE_SKIPS_PACKAGES])
 DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
+DATABASE_SKIPS_RACE_ONLY: list = []
+_lane_under_tree = {p.name: p for job in ENVOY_RACE_LANE for p in job.packages
+                    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/")}
+if any(name not in _lane_under_tree for name in DATABASE_SKIPS_RACE_ONLY):
+    raise ValueError(f"DATABASE_SKIPS_RACE_ONLY names {DATABASE_SKIPS_RACE_ONLY}, and only race lane packages under "
+                     f"{DATABASE_SKIPS_TREE} ({sorted(_lane_under_tree)}) can be left to the race job")
 DATABASE_SKIPS_PATTERN = "|".join(
-    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
-    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
+    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for p in _lane_under_tree.values() if p.name in DATABASE_SKIPS_RACE_ONLY)
 # The -timeout of envoy-go's unit step, which bounds each package's test binary.
 UNIT_TEST_TIMEOUT = "20m"
 
@@ -1372,19 +1485,21 @@ def names_pattern(names):
 
 
 # The counter's own test, which envoy-go runs before the unit step: its six controls run the
-# counter on these four packages, each narrowed to its planted and expected tests.
+# counter on these five packages, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
 DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
-DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/dispatch/api/", "./internal/fold/"]
+DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/holdrecord/", "./internal/dispatch/api/",
+                            "./internal/fold/"]
 
 
 def hold_database_skips_packages():
     """Refuse a database-skips.sh whose default table is not DATABASE_SKIPS_PKGS, or whose
     DEFAULT_EXCEPT is not DATABASE_SKIPS_PATTERN. The unit step counts that table's skips less
-    the lane's packages, and runs every package of the table it counts, so a package the script
-    added without this list would be counted by nothing here that declares it, one it dropped
-    would run uncounted, and a lane package the script kept would be added to the unit step's run,
-    its second in the CI run, with every check green."""
+    DATABASE_SKIPS_RACE_ONLY, and runs every package of the table it counts, so a package the
+    script added without this list would be counted by nothing here that declares it, one it
+    dropped would run uncounted, and a lane package this list leaves to the race job that the
+    script kept would be added to the unit step's run, its second in the CI run, with every check
+    green."""
     text = Path(DATABASE_SKIPS_SCRIPT).read_text()
     found = re.findall(r"^DEFAULT_PACKAGES=\((.*)\)$", text, re.M)
     if found != [" ".join(DATABASE_SKIPS_PKGS)]:
@@ -1394,42 +1509,50 @@ def hold_database_skips_packages():
     excepted = re.findall(r"^DEFAULT_EXCEPT='(.*)'$", text, re.M)
     if excepted != [DATABASE_SKIPS_PATTERN]:
         raise ValueError(f"{DATABASE_SKIPS_SCRIPT}'s DEFAULT_EXCEPT is {excepted}, and DATABASE_SKIPS_PATTERN here, "
-                         f"the race lane's packages under {DATABASE_SKIPS_TREE}, is '{DATABASE_SKIPS_PATTERN}': make "
-                         f"them one pattern, so the count adds no package the lane's race job runs")
+                         f"the race lane's packages under {DATABASE_SKIPS_TREE} that DATABASE_SKIPS_RACE_ONLY leaves to "
+                         f"the race job, is '{DATABASE_SKIPS_PATTERN}': make them one pattern, so the count adds no "
+                         f"package this list leaves to the lane's race job")
 
 
 hold_database_skips_packages()
 
-# The unit step runs the module less five things: the lane's packages, which the three race jobs
-# run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, and the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs. Its
-# `grep -Ev` is `/integration`, then the text checks, then those packages, each the package
-# alone, then, in the lane's own order, each package in the form go list's import paths need - a
-# tree matching the package and everything under it, any other the package alone. It runs the
-# broker's tree and command too, whose skips it counts (DATABASE_SKIPS_PKGS above).
+# The unit step runs the module less five things: the lane's packages but those under the broker's
+# tree whose skips it counts (DATABASE_SKIPS_RACE_ONLY names none, so the auth service's natscallout
+# runs here), which the three race jobs run under the detector, internal/integration, which
+# envoy-go's integration step runs, the text checks, which the text-check job runs, and the
+# architecture-note and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and
+# internal/wirecheck), which envoy-go-build runs. Its `grep -Ev` is `/integration`, then the text
+# checks, then those packages, each the package alone, then, in the lane's own order, each of the
+# lane's packages it leaves out in the form go list's import paths need - a tree matching the
+# package and everything under it, any other the package alone. It runs the broker's tree, its
+# command and DATABASE_SKIPS_PACKAGES, whose skips it counts (DATABASE_SKIPS_PKGS above):
+# database-skips.sh would add each counted package to the run in any case, and the step's Run must
+# name it (hold_counted_in_unit_run).
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
-    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
+       if p.name not in _lane_under_tree or p.name in DATABASE_SKIPS_RACE_ONLY])
 
 
 def hold_counted_in_unit_run():
     """Refuse a package whose skips the unit step counts and which its `grep -Ev` takes out:
     database-skips.sh adds each such package to the run, and the step's Run, packages_kept over
     UNIT_TEST_PATTERN, would not name it, so a change to its files would not start this job.
-    The counted packages are those of DATABASE_SKIPS_PKGS that DATABASE_SKIPS_PATTERN keeps."""
+    The counted packages are those of DATABASE_SKIPS_PKGS that DATABASE_SKIPS_PATTERN keeps; an
+    empty pattern keeps them all, so it is tried only when it names a package."""
     module = next(line.split()[1] for line in (Path(ENVOY) / "go.mod").read_text().splitlines()
                   if line.startswith("module "))
-    counted = [Path(ENVOY) / DATABASE_SKIPS_COMMAND]
+    counted = [Path(ENVOY) / DATABASE_SKIPS_COMMAND] + [Path(ENVOY) / p for p in DATABASE_SKIPS_PACKAGES]
     for current, subdirs, names in os.walk(Path(ENVOY) / DATABASE_SKIPS_TREE):
         subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(Path(current), s))
         if any(n.endswith(".go") for n in names):
             counted.append(Path(current))
     for directory in counted:
         path = f"{module}/{directory.relative_to(ENVOY).as_posix()}"
-        if not re.search(DATABASE_SKIPS_PATTERN, path) and re.search(UNIT_TEST_PATTERN, path):
+        left_to_race = bool(DATABASE_SKIPS_PATTERN) and re.search(DATABASE_SKIPS_PATTERN, path)
+        if not left_to_race and re.search(UNIT_TEST_PATTERN, path):
             raise ValueError(f"{path} is a package whose skips the unit step counts, and the step's `grep -Ev "
                              f"'{UNIT_TEST_PATTERN}'` takes it out: keep it in the step's run, or take it out of "
                              f"{DATABASE_SKIPS_SCRIPT}'s table")
@@ -1599,13 +1722,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
-# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The ten static checks of internal/dispatch/api, keyed by their path in this repository: the
+# nine source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all seventeen of their tests in the plain step; they are left out of it instead,
+# below would put all twenty-two of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so an
-# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so a
+# twenty-third such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1622,6 +1745,8 @@ TEXT_CHECK_TESTS = {
         "TestOnlyTheBrokerInsertsEvents"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
         "TestOnlyTheIssuePatchWritesTheRoute",
+        "TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent",
+        "TestTheJudgedWriterGuardSeesAPlantedWriter",
         "TestTheRouteWriterGuardSeesAPlantedWriter"},
     f"{ENVOY}/internal/dispatch/api/keyed_write_guard_test.go": {
         "TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks",
@@ -1637,6 +1762,10 @@ TEXT_CHECK_TESTS = {
         "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/spec_writer_route_guard_test.go": {
+        "TestEveryRouteThatWritesADocumentChecksItsWriter",
+        "TestTheSpecWriterExemptionsStillHold",
+        "TestTheSpecWriterGuardSeesAPlantedWriter"},
 }
 
 # The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
@@ -1844,12 +1973,12 @@ DAEMON_STAMPED_GATE_SCRIPT = (
     "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
 
 
-# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
-# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the twenty-two tests of the Dispatch API's
+# ten static checks - its nine source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-two out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -1952,6 +2081,9 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The step of envoy-go-checks that runs the scan tests of approve-check's session, which spawn
+# scripts/approve/scan.ts.
+SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
 # and is the verdict on them; envoy-go-checks and the test job each end with one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
@@ -2066,15 +2198,16 @@ PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
 
 
 def browser_gate(filter, job):
-    """The gate of one of ci.yaml's two callers of dispatch-browser.yaml. Both run the same
-    file, whose jobs carry ids of their own rather than one named for either caller, so each job
-    of it runs under both (ci_filter_coverage.called_job_owners) and each gate reads all of it,
-    the jobs the pull-request lane skips by its `lane` input among them: which jobs run is a
-    literal each caller passes, not a gate."""
+    """The gate of ci.yaml's dispatch-browser or dispatch-browser-pr job, two of ci.yaml's three
+    callers of dispatch-browser.yaml (dispatch-references is the third). Every caller runs the
+    same file, whose jobs carry ids of their own rather than one named for any caller, so each job
+    of it runs under every caller (ci_filter_coverage.called_job_owners) and each gate reads all
+    of it, the jobs a lane skips by its `lane` input among them: which jobs run is a literal each
+    caller passes, not a gate."""
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
     # projects, the two-process job, the visual job and the merge job, all in
-    # dispatch-browser.yaml, which ci.yaml's dispatch-browser and dispatch-browser-pr jobs and
-    # the nightly call (at_browser cites their steps).
+    # dispatch-browser.yaml, which ci.yaml's dispatch-browser, dispatch-browser-pr and
+    # dispatch-references jobs and the nightly call (at_browser cites their steps).
     #
     # ci_filter_coverage.py's check_table reads a gate whose ci.yaml job calls a local workflow
     # over the jobs of that workflow, so dispatch-browser.yaml's go commands, `env:` blocks and
@@ -2160,6 +2293,7 @@ def browser_gate(filter, job):
          f"e2e/visual.e2e.ts and e2e/visual-guard.e2e.ts import: {at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} "
          "resolves each visual row's read to the route the table serves it by"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", "read at `packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` and `packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, for that spec's rows, which are the list's rows in each combination the spec runs"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
                                            f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "

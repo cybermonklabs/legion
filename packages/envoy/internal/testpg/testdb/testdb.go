@@ -13,12 +13,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
@@ -35,8 +39,11 @@ import (
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
 // This function reads no environment variable and starts no container, so its failures can name
 // neither.
+// Every connect to adminURL here, and to the URL it returns, waits until the test binary's deadline
+// less testwait.Margin (WithConnectDeadline), whatever connect_timeout adminURL names.
 func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	t.Helper()
+	adminURL = WithConnectDeadline(t, adminURL)
 	server, err := url.Parse(adminURL)
 	if err != nil {
 		// url.Parse's error quotes the URL it was given, and the error it wraps can quote a part of
@@ -79,19 +86,114 @@ func newDatabaseName(prefix string) (string, error) {
 // dropped.
 func databaseURL(server url.URL, database string) string {
 	server.Path, server.RawPath = "/"+database, ""
+	server.RawQuery = strings.Join(otherPairs(server.RawQuery, "dbname", "database"), "&")
+	return server.String()
+}
+
+// otherPairs is the pairs of rawQuery but those whose key, unescaped, is one of names: every other
+// pair kept byte for byte and in its order, an empty pair dropped (databaseURL says why).
+func otherPairs(rawQuery string, names ...string) []string {
 	var kept []string
-	for _, pair := range strings.Split(server.RawQuery, "&") {
+	for _, pair := range strings.Split(rawQuery, "&") {
 		if pair == "" {
 			continue
 		}
 		key, _, _ := strings.Cut(pair, "=")
-		if name, err := url.PathUnescape(key); err == nil && (name == "dbname" || name == "database") {
+		if name, err := url.PathUnescape(key); err == nil && slices.Contains(names, name) {
 			continue
 		}
 		kept = append(kept, pair)
 	}
-	server.RawQuery = strings.Join(kept, "&")
-	return server.String()
+	return kept
+}
+
+// WithConnectDeadline returns databaseURL with connect_timeout set to the whole seconds left until
+// t's deadline, the test binary's own (go test's -timeout), less testwait.Margin, rounded down and
+// at least 1, in place of any connect_timeout the URL names. pgx bounds the whole of a new
+// connection (the dial, the authentication and the server's startup answer) by connect_timeout,
+// through pgx.Connect and every pool. A URL that names none has no bound through pgx.Connect,
+// which bounds a connect only by the connect_timeout it is given (pgconn's connectPreferred), and
+// two minutes in a pgxpool pool, which sets them where its config has none (pgxpool's
+// constructor; both at pgx v5.13.0). On a loaded machine Postgres can take longer than two
+// minutes to answer a new connection, and a test then failed on its connect, whatever it checked
+// (rows-md:101: TestAMachineExchangeOfAnEndedCredentialIsRefused failed after 182.44 s). With the
+// binary's deadline less the margin as the bound, a slow server only slows a test, and one that
+// never answers fails it on pgx's own error with the margin left for the failure and the test's
+// cleanups, as a testwait wait gives up, before go test's alarm would end the binary with neither.
+// A shorter connect_timeout in the URL would make the test depend on load again, so it is
+// replaced. Where t names no deadline (ConnectEnd says which callers) it is
+// NoDeadlineConnectTimeout, two minutes. Every other pair of the query is kept byte for byte
+// (otherPairs), as databaseURL keeps them, so an options pair still connects. A failure prints
+// url.Parse's failure by its class alone (redact.Class), since the URL carries a credential and
+// the error url.Parse wraps can quote a part of it (a password read as the port of a URL that
+// names no host).
+func WithConnectDeadline(t testing.TB, databaseURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the URL of the test database: %v", redact.Class(err))
+	}
+	parsed.RawQuery = strings.Join(append(otherPairs(parsed.RawQuery, "connect_timeout"), "connect_timeout="+connectTimeout(t)), "&")
+	return parsed.String()
+}
+
+// serverKey is adminURL without its connect_timeout pairs, the server and query a test names apart
+// from the bound WithConnectDeadline gives that test's connects, which differs from test to test
+// of one binary. A URL url.Parse refuses is its own key.
+func serverKey(adminURL string) string {
+	parsed, err := url.Parse(adminURL)
+	if err != nil {
+		return adminURL
+	}
+	parsed.RawQuery = strings.Join(otherPairs(parsed.RawQuery, "connect_timeout"), "&")
+	return parsed.String()
+}
+
+// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds
+// (TimeoutUntil of ConnectEnd), and NoDeadlineConnectTimeout where t names no deadline.
+func connectTimeout(t testing.TB) string {
+	end, bounded := ConnectEnd(t)
+	if !bounded {
+		return strconv.FormatInt(int64(NoDeadlineConnectTimeout/time.Second), 10)
+	}
+	return strconv.FormatInt(int64(TimeoutUntil(end)/time.Second), 10)
+}
+
+// NoDeadlineConnectTimeout is the connect bound of a connect that no test deadline bounds: two
+// minutes, pgxpool's own default (pgxpool/pool.go:291-292 at pgx v5.13.0), which a plain
+// pgx.Connect would otherwise not have. A caller with no deadline (ConnectEnd) gets it; the
+// longest connect_timeout pgx holds, 9,223,372,036 s, would leave it no bound at all.
+const NoDeadlineConnectTimeout = 2 * time.Minute
+
+// ConnectEnd is the moment every connect a test of t's binary makes must end by: the binary's
+// deadline (go test's -timeout, the one t.Deadline names for every test of the binary) less
+// testwait.Margin. It is false where t names no deadline: a *testing.T under -timeout 0, and a
+// testing.TB with no Deadline method, as a benchmark's *testing.B and a fuzz target's *testing.F
+// are at Go 1.27.3. A TB that embeds a *testing.T has its Deadline, as storetest's stopsOnFatal
+// (pool_hold_test.go) does, and is read as that test is. Nothing inside go test ends a benchmark
+// (testing's alarm stops before benchmarks run, and cmd/go sets no kill for -bench), so
+// NoDeadlineConnectTimeout is the only bound a benchmark's connect has. Inside a
+// synctest bubble it panics, as T.Deadline does there (testing.go:2323-2327 at Go 1.27.3); no
+// test that opens a test store runs in one.
+func ConnectEnd(t testing.TB) (time.Time, bool) {
+	named, ok := t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return time.Time{}, false
+	}
+	deadline, bounded := named.Deadline()
+	if !bounded {
+		return time.Time{}, false
+	}
+	return deadline.Add(-testwait.Margin), true
+}
+
+// TimeoutUntil is the connect timeout of a connect that begins now and must end by end: the whole
+// seconds left, rounded down, and a second where less than one is left (pgx reads 0 as no bound
+// at all). A pool that outlives the test that opened it sets it on each new connection as it
+// makes it (pgxpool.Config.BeforeConnect), so a connection made late gets what is left then, not
+// what was left when the pool was opened.
+func TimeoutUntil(end time.Time) time.Duration {
+	return time.Duration(max(1, int64(time.Until(end)/time.Second))) * time.Second
 }
 
 // adminExec runs one statement over a connection of its own to adminURL, failing t: neither

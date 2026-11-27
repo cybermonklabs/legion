@@ -172,6 +172,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
 		},
 		{
+			Name: "admission_p0_bound", Default: "no bound", RequiredBy: "no",
+			Description: "How many P0 issues may hold a slot at once, a whole number from 1 to 2147483647; a P0 issue, one Dispatch resolves to P0 (its own priority, else the nearest issue's above it that has one), starts outside `admission_cap` and counts against this bound alone, and with no bound every P0 issue that waits only for a slot starts. A person sets another bound, or none, while the daemon runs, with `legion project set-p0-bound` or through the controller (`set_p0_bound`) on the person's cited word; it takes effect at the next admission pass with no restart and stands until it is cleared.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionP0Bound = v }),
+		},
+		{
 			Name: "controller", Default: "`operator`", RequiredBy: "no",
 			Description: "Who runs the project's controller: `operator`, a person with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running (a pane of its own window under `runtime: tmux`), which needs `dispatch_url`.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.Controller = v }),
@@ -180,6 +185,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
 			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret. The daemon reads it at boot and again before each launch, so an edit reaches the next launch with no restart, and an edit that leaves it missing or blank keeps the text last read.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
+		},
+		{
+			Name: "private_name_rules_file", Default: "`LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, else no private-name rule runs", RequiredBy: "no",
+			Description: "The deployment's private-name rule file, in gitleaks' rule format, which the daemon reads and compiles at boot and hands to every launch, so that every role's leak guard refuses a name it matches in a write to a public repository; it overrides `LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, and a daemon of an earlier release refuses the key, so a deployment that may roll back sets the variable instead.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.PrivateNameRulesFile = v }),
 		},
 		{
 			Name: "provider_keys", Default: "the agents' Oh My Pi receives no provider credential", RequiredBy: "no",
@@ -247,7 +257,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of a configured project",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of one of the projects it names",
 			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
@@ -378,6 +388,16 @@ var topLevelKeys = func() []keyDescriptor {
 			Positive:    &positiveKey{Value: 3600, Duration: func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
 		},
 		{
+			Name: "controller_turn_bound_minutes", Default: "`90`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many minutes a turn of the project's controller may stay open, whether or not steps still arrive in it, before the daemon ends that launch as its stall backstop ends one and counts the end against the session; the next launch resumes the session, and, once the session has finished a turn, a second such end with no finished turn between starts a fresh session. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readMinutesOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerTurnBound = v }),
+		},
+		{
+			Name: "controller_session_max_age_hours", Default: "`72`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many hours old, read from its session id, the project controller's session may grow before a launch the daemon makes of it starts a fresh session instead of resuming it: every launch of the controller that no operator's request raised, a death's, a launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past its bound, the keeper's retry or resume, and the boot relaunch of an unfinished launch among them. The daemon stops no live controller for it, and an operator's own resume, or a task an operator delivers to a suspended controller, keeps the session. The fresh session is told which session it replaces and why. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readHoursOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerSessionMaxAge = v }),
+		},
+		{
 			Name: "launch_failure_limit", RequiredBy: "no",
 			Description: "How many failed launches, and deaths of a ready agent while it had work outstanding, a claim takes before the daemon fails it.",
 			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.LaunchFailureLimit }},
@@ -473,6 +493,13 @@ func (g memberGroup) topLevel() string {
 		return g.Path[:cut]
 	}
 	return g.Path
+}
+
+// podDefault is the Default text of a `resources.<POD>` key the daemon fills itself: its own limit
+// or request for an issue pod and for the controller's, given from defaultResources so the table
+// holds no copy of the default.
+func podDefault(side, issue, controller string) string {
+	return "the daemon's own " + side + " for that pod: `" + issue + "` for an issue pod, `" + controller + "` for the controller's"
 }
 
 // nestedKeys is every mapping whose nested keys carry a description, by the path an operator
@@ -606,8 +633,8 @@ var nestedKeys = []memberGroup{
 			Description: "The kubeconfig the daemon reaches the cluster with, as a path resolved against this file's directory."},
 		{Name: "context", Default: "the kubeconfig's own current context", RequiredBy: "when the kubeconfig sets no current context",
 			Description: "Which context of that kubeconfig the daemon uses; naming one requires `kubeconfig`."},
-		{Name: "scheduling", Default: "a pod selects the Legion pool and tolerates nothing else", RequiredBy: "no",
-			Description: "Where the pods may run beyond the pool the runtime selects itself: the node labels they also select, the taints they tolerate and their priority class."},
+		{Name: "scheduling", Default: "a pod selects no node label and tolerates no taint, so it runs on any of the cluster's general nodes", RequiredBy: "no",
+			Description: "Where the pods may run on the cluster's general nodes, which they share: the node labels they select, the taints they tolerate and their priority class, and nothing else but a microVM pod's ComputeClass label and toleration."},
 		{Name: "resources", Default: "both pods take the daemon's own reservations", RequiredBy: "no",
 			Description: "What each of the two pods the daemon builds reserves and is bounded by: `issue`, every issue pod's, and `controller`, the daemon-launched controller's."},
 		{Name: "gateway", Default: "", RequiredBy: "no",
@@ -644,8 +671,8 @@ var nestedKeys = []memberGroup{
 			Description: "The sandbox the project's issue pods and its controller's pod run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod follows `type` alone, and the repository cache pods and the image probe run in gVisor whatever it says."},
 	}},
 	{Path: kubernetesKey + ".scheduling", Members: []member{
-		{Name: "node_selector", Default: "a pod selects the Legion pool alone", RequiredBy: "no",
-			Description: "The node labels every pod selects as well, merged over the pool label the runtime sets itself and which this key may not name, since the cluster's admission policy requires the pool's own value."},
+		{Name: "node_selector", Default: "a pod selects no node label but a microVM pod's ComputeClass", RequiredBy: "no",
+			Description: "The node labels every pod selects, as written, which may not name `legion.dev/pool`: Legion's pods share the cluster's general nodes, and that label would set them apart on nodes of their own."},
 		{Name: "tolerations", Default: "a pod tolerates no taint, so a tainted pool needs its toleration named here", RequiredBy: "no",
 			Description: "The node taints every pod tolerates, each a key, an operator and an effect."},
 		{Name: "priority_class", Default: "a pod runs at the namespace's own default priority", RequiredBy: "no",
@@ -662,17 +689,17 @@ var nestedKeys = []memberGroup{
 			Description: "The taint effect tolerated: `NoSchedule`, `NoExecute` or `PreferNoSchedule`."},
 	}},
 	{Path: kubernetesKey + ".resources.<POD>", Members: []member{
-		{Name: "cpu", Default: "the daemon's own limit for that pod: `3` for an issue pod, `1` for the controller's", RequiredBy: "no",
+		{Name: "cpu", Default: podDefault("limit", defaultResources.Issue.CPU, defaultResources.Controller.CPU), RequiredBy: "no",
 			Description: "The CPU limit every container of the pod carries, as a Kubernetes quantity."},
 		{Name: "cpu_request", Default: "the pod's own `cpu`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that CPU, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "memory", Default: "the daemon's own limit for that pod: `19Gi` for an issue pod, `4Gi` for the controller's", RequiredBy: "no",
+		{Name: "memory", Default: podDefault("limit", defaultResources.Issue.Memory, defaultResources.Controller.Memory), RequiredBy: "no",
 			Description: "The memory limit every container of the pod carries; under gVisor every process of the pod draws on this one number, so the pod's whole peak must fit it."},
 		{Name: "memory_request", Default: "the pod's own `memory`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that memory, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "ephemeral_storage", Default: "the daemon's own limit for that pod: `80Gi` for an issue pod, `10Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage", Default: podDefault("limit", defaultResources.Issue.EphemeralStorage, defaultResources.Controller.EphemeralStorage), RequiredBy: "no",
 			Description: "The pod's bound on the node's own disk — the image's content and each role's home and `/tmp`, the issue volume being its own — past which that pod alone is evicted."},
-		{Name: "ephemeral_storage_request", Default: "the daemon's own request for that pod: `6Gi` for an issue pod, `1Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage_request", Default: podDefault("request", defaultResources.Issue.EphemeralStorageRequest, defaultResources.Controller.EphemeralStorageRequest), RequiredBy: "no",
 			Description: "What the scheduler reserves of that disk; an operator who knows the root volume raises it so no pod is placed where a full node could not hold it."},
 		{Name: "requests", Default: "", RequiredBy: "no",
 			Description: "Removed: a reservation is its `cpu` and `memory` limits, with `cpu_request` and `memory_request` below them where set; the loader refuses a file that still sets it."},
@@ -688,6 +715,10 @@ var nestedKeys = []memberGroup{
 			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
+		{Name: "bucket", Default: "no bucket: an issue pod's feed comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
+			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's fetch downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
+		{Name: "service_account", Default: "the cache pods run as `pod.service_account`, as every issue pod does", RequiredBy: "when `bucket` is set",
+			Description: "The Kubernetes ServiceAccount the cache pods alone run as, the one the bucket's grant goes to; it must differ from the account the issue pods run as (`pod.service_account`, or `default` while that is unset), so no issue pod holds a grant on the bucket, and from `pod.controller_service_account` where that is set, so the controller's pod holds none either."},
 	}},
 	{Path: kubernetesKey + ".repository_cache.resources", Members: []member{
 		{Name: "cpu", Default: "`1`", RequiredBy: "no",
@@ -724,6 +755,8 @@ var nestedKeys = []memberGroup{
 			Description: "Where each of those volumes is mounted in every pod, read-only unless the mount says otherwise."},
 		{Name: "service_account", Default: "the namespace's `default` ServiceAccount", RequiredBy: "no",
 			Description: "The ServiceAccount the agents' pods run as; it needs no permission of its own, and its projected token can be the model route's credential."},
+		{Name: "controller_service_account", Default: "the controller's pod runs as `service_account`", RequiredBy: "no",
+			Description: "The ServiceAccount the daemon-launched controller's pod runs as in place of `service_account`, so that pod presents a cloud identity of its own; only `controller: daemon` may set it, since `controller: operator` launches no controller pod."},
 	}},
 	{Path: podKey + ".volumes[]", Members: []member{
 		{Name: "name", Default: "none: a volume that names no name is refused", RequiredBy: "yes",

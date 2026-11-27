@@ -25,14 +25,14 @@ func TestACacheURLTheFetchRefusesPrintsNoneOfIt(t *testing.T) {
 			if !strings.Contains(tc.cacheURL, user) || !strings.Contains(tc.cacheURL, password) {
 				t.Errorf("%s: the URL %q holds no credential, so the row could see none printed", tc.name, tc.cacheURL)
 			}
-			if _, err := fetchInputs("acme/widgets", "/feed", tc.cacheURL); err == nil || !strings.Contains(err.Error(), "--cache-url") {
+			if _, err := fetchInputs(workspaceProcess{}, "acme/widgets", "/feed", tc.cacheURL); err == nil || !strings.Contains(err.Error(), "--cache-url") {
 				t.Errorf("%s: fetchInputs = %v; want a refusal naming --cache-url", tc.name, err)
 			}
 		}
 	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := fetchInputs("acme/widgets", "/feed", tc.cacheURL)
+			_, err := fetchInputs(workspaceProcess{}, "acme/widgets", "/feed", tc.cacheURL)
 			if err == nil {
 				t.Fatalf("fetchInputs took --cache-url %q; want it refused", tc.cacheURL)
 			}

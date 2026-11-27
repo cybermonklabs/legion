@@ -19,6 +19,11 @@ const publicNamesOutput = resolve(
   import.meta.dir,
   "../../envoy/internal/redact/public_names_generated.go"
 );
+const dispatchFrameOutputs = [
+  resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
+  resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
+  resolve(import.meta.dir, "../fixtures/dispatch-frame-verdicts.json"),
+];
 // Every file the generator writes, so a copy of the whole set is checked and only the hand-edit
 // below is stale.
 const generated = [
@@ -28,6 +33,7 @@ const generated = [
   blockSchemaOutput,
   publicNamesOutput,
   blockSchemaTypes,
+  ...dispatchFrameOutputs,
 ];
 const questionSchema = resolve(import.meta.dir, "../schemas/dispatch-question.schema.json");
 const generator = resolve(import.meta.dir, "gen-go.ts");

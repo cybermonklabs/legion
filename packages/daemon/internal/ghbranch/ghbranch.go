@@ -26,20 +26,26 @@ import (
 // as GitHub's answer named it (Read), which the daemon records, so the error and the read's own
 // name print it only in a branch's shape (githubrest.ShownBranch); the read asks for it as it came.
 //
-// The ref name passes this repository's own private-name rules before anything is sent
-// (leakguard.Rules): a name they match, and a rule pass that could not be made to run, are each
-// an error, and the base is not even read. The check lives here rather than in the daemon that
-// calls Create so that the package's contract holds for every caller: a create of this package
-// publishes no ref name of a class the rules refuse.
+// The ref name passes the deployment's private-name rules before anything is sent: rules, the
+// rule set the daemon compiled from the deployment's rule file at boot, run alone
+// (leakguard.RuleSet.Check). A name they match, and a rule pass that could not be made to run, are
+// each an error, and the base is not even read. Nil rules are a deployment that names no rule
+// file, and no private-name rule runs. Either way the create reads no environment, so it depends
+// on nothing but what its caller hands it, and never on a rule file its process's environment may
+// point at. The check lives here rather than in the daemon that calls Create so that the
+// package's contract holds for every caller: a create of this package publishes no ref name the
+// rules it is handed refuse.
 //
 // The rule pass alone runs, and no shared public leak check: a ref name is a branch name of the
-// daemon's own making, which can carry one of this repository's four private classes — the
-// embedded rule file holds all four — and not a secret, customer text or private code, which is
-// what the shared check reads for. The write itself is one POST of a ref and a sha.
-func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string) error {
+// daemon's own making, which can carry one of the deployment's private names and none of what the
+// shared check reads for, a secret, customer text or private code. The write itself is one POST
+// of a ref and a sha.
+func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string, rules *leakguard.RuleSet) error {
 	ref := "refs/heads/" + branch
-	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.RefRecord(ref)); err != nil {
-		return fmt.Errorf("create a branch of %s: %w", repo, err)
+	if rules != nil {
+		if err := rules.Check(ctx, "the write", leakguard.RefRecord(ref)); err != nil {
+			return fmt.Errorf("create a branch of %s: %w", repo, err)
+		}
 	}
 	var read struct {
 		Object struct {

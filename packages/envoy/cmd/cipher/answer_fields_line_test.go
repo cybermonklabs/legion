@@ -36,6 +36,7 @@ func noControl(t *testing.T, what, text string) {
 // one, so it stays on its own one line; a verification_uri with a control character in it is no
 // plain URL, so it prints as redact.NotPrinted, on one line too.
 func TestMachineLoginPrintsTheBrokersCodeAndPageOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at answer_fields_line_test.go:40).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	const page = "https://dispatch.example/credentials/machine"
 	rows := []struct{ code, uri, want string }{
@@ -70,6 +71,7 @@ func TestMachineLoginPrintsTheBrokersCodeAndPageOnOneLine(t *testing.T) {
 // beside it, and a login waiting with none held - prints the code as it came where it holds no
 // control character, and Go-quoted where it holds one.
 func TestMachineLoginStatusPrintsTheBrokersCodeOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at answer_fields_line_test.go:93).
 	for _, code := range append([]string{"KQ7M-X4PZ"}, forgedValues...) {
 		printed := code
 		if code != "KQ7M-X4PZ" {
@@ -106,6 +108,7 @@ func TestMachineLoginStatusPrintsTheBrokersCodeOnOneLine(t *testing.T) {
 // waits on names the approve_url the broker answered as it came where it holds no control
 // character, and Go-quoted where it holds one.
 func TestAPendingRequestNamesTheBrokersPageOnOneLine(t *testing.T) {
+	t.Parallel()
 	const page = "https://broker.example/approve/req-1"
 	approver := redact.NewRemoteText("ada@example.com")
 	if got, want := waitingOn(cipheraddr.New("https://broker.example"), &approver, redact.NewRemoteText(page), false), "waiting for ada@example.com to approve it on the secrets broker: "+page; got != want {

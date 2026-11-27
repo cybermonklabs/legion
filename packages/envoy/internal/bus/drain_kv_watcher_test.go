@@ -31,6 +31,7 @@ import (
 // delete that one and warn of nothing (docs/testing.md, "A test that deletes a KV watcher's
 // consumer").
 func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		consumerGone bool
@@ -40,11 +41,12 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 		{name: "consumer already gone", consumerGone: true, want: "WARN drain-test watcher's consumer was already gone at its end"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			_, uri := testnats.Start(t)
-			logs := captureBusLogs(t)
+			logs := captureBusLogs()
 
 			name := t.Name()
-			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(name))
+			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(name), bus.WithLogger(logs.logger))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -53,7 +55,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create bucket: %v", err)
 			}
-			watcher := kvwatch.New("drain-test", kv, discardingCache{})
+			watcher := kvwatch.New("drain-test", kv, discardingCache{}, kvwatch.WithLogger(logs.logger))
 			watcher.Start()
 			// No span of its own: the first scan can end late on a loaded machine with nothing wrong.
 			ctx := testwait.Context(t)
@@ -88,13 +90,13 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 				t.Logf("nats.go replaced the held consumer: the row reads the replacement's end")
 				want = ""
 			}
-			if got := strings.Join(warnOrErrorRecords(t, logs, name), ", "); got != want {
+			if got := strings.Join(warnOrErrorRecords(t, logs), ", "); got != want {
 				t.Fatalf("the drain logged %q, want %q", got, want)
 			}
 			// The end's own record that it ended the watcher, in every row: without it, a drain whose
 			// hook never ran the end, or whose end sent no delete, passes wherever nothing logs a WARN
 			// or an ERROR, which is every row once nats.go has replaced the held consumer. The record
-			// names no client, and no other test runs beside this one, so it is this watcher's.
+			// names no client, and logs is this test's own, so it is this watcher's.
 			if got := logs.count("", "drain-test watcher ended"); got != 1 {
 				t.Fatalf("the drain logged %d %q records, want 1: the drain hook did not end the watcher", got, "drain-test watcher ended")
 			}
@@ -127,11 +129,7 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.drain-hook", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	type observed struct {
 		delivered, draining, deadline bool
 		flush                         error
@@ -164,26 +162,24 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 	}
 }
 
-// warnOrErrorRecords takes the client under test from the moment it is connected, though that
-// client may have logged nothing under its name yet: a healthy client of these tests first names
-// itself in its close's records (`envoy nats disconnected`, `envoy nats connection closed`, `envoy
-// nats recovery cancelled`), which nats.go reports from its own callbacks after the drain has
-// returned. In 20 measured drains of
-// TestAStuckDeliveryStillEndsTheKVWatchers' shape, 4 had no such record when Drain returned, the
-// first landing 1.6 to 2.3 ms later, and that test reads the records with no wait of its own, so
-// a helper that refuses its caller until such a record lands makes the test race nats.go's
-// callback.
+// warnOrErrorRecords takes a client that has logged nothing yet: a healthy client of these tests
+// first logs in its close's records (`envoy nats disconnected`, `envoy nats connection closed`,
+// `envoy nats recovery cancelled`), which nats.go reports from its own callbacks after the drain
+// has returned. In 20 measured drains of TestAStuckDeliveryStillEndsTheKVWatchers' shape, 4 had no
+// such record when Drain returned, the first landing 1.6 to 2.3 ms later, and that test reads the
+// records with no wait of its own.
 func TestWarnOrErrorRecordsTakesAClientThatHasLoggedNothing(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
-	logs := captureBusLogs(t)
+	logs := captureBusLogs()
 
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(t.Name()))
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(t.Name()), bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
 
-	if got := warnOrErrorRecords(t, logs, t.Name()); len(got) != 0 {
+	if got := warnOrErrorRecords(t, logs); len(got) != 0 {
 		t.Fatalf("the records of a client that has logged nothing = %q, want none", got)
 	}
 }
@@ -212,23 +208,12 @@ func consumerNames(t *testing.T, admin *natsgo.Conn, stream string) []string {
 	return names
 }
 
-// warnOrErrorRecords is every WARN or ERROR record the client named name logged so far, each as
-// its level and message, with the error for an async error report. name is the name that client
-// was connected with (bus.WithName). The caller passes it, rather than the helper waiting for a
-// record that names the client under test, which a healthy client of these tests may not have
-// logged yet when the assertion reads (TestWarnOrErrorRecordsTakesAClientThatHasLoggedNothing).
-// The capture (captureBusLogs) is the process's default logger, so every client of every test
-// running in this binary writes into it, and a record naming another client is dropped: without
-// that, a client an earlier test left connected to a cluster it has stopped fails this test with
-// its reconnect warning. A caller that names no client is refused, since the filter would then
-// drop every record that names a client, the client under test's among them. A record naming no
-// client is kept, since the records these tests require are a watcher's and a reconcile's, which
-// name none.
-func warnOrErrorRecords(t *testing.T, logs *busLogs, name string) []string {
+// warnOrErrorRecords is every WARN or ERROR record logs holds, each as its level and message, with
+// the error for an async error report. logs is the test's own (captureBusLogs): only the client
+// under test and the watchers on it write there, so every record is theirs, a watcher's and a
+// reconcile's among them, which name no client.
+func warnOrErrorRecords(t *testing.T, logs *busLogs) []string {
 	t.Helper()
-	if name == "" {
-		t.Fatal("warnOrErrorRecords needs the name the client under test was connected with (bus.WithName)")
-	}
 	var records []string
 	for _, line := range logs.lines() {
 		if line == "" {
@@ -238,15 +223,11 @@ func warnOrErrorRecords(t *testing.T, logs *busLogs, name string) []string {
 			Level string `json:"level"`
 			Msg   string `json:"msg"`
 			Error string `json:"error"`
-			Name  string `json:"name"`
 		}
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatalf("decode the log record %q: %v", line, err)
 		}
 		if record.Level != "WARN" && record.Level != "ERROR" {
-			continue
-		}
-		if record.Name != "" && record.Name != name {
 			continue
 		}
 		if record.Msg == "envoy nats async error" {

@@ -6,14 +6,14 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
 
 1. List the triage issues handed to Legion: `dispatch issues --project <PROJECT> --status triage --label legion --all`.
 2. `dispatch read` each and follow `Links:` up through each `child_of` parent (a `child_of` under `Referenced by:` is a child, not the parent).
-3. Leave a row whose `issues.<KEY>.tree`, or an ancestor, is a root in `admission.trees`: that tree's architect owns it.
+3. Leave a row whose `issues.<KEY>.tree`, or an ancestor, is the root of a live tree (`skill://legion-controller/references/admission.md`): that tree's architect owns it.
 4. Every other row with no `issues.<KEY>` in `read_state` is a root: [triage it](#triage-a-root). A root a person labelled is queued by the daemon and needs nothing from you.
 5. A root `read_state` records that is back in `triage` was pulled back by a person. Re-admit nothing; ask in your summary: "<KEY> was pulled back to triage; what do you want?".
 
 ## Triage a root
 
 1. Read `read_state`, then `dispatch read` the issue: in this project, a root, and whether it has children. A child the daemon carried to a root of its own when its old root closed is not new work: leave it. Never reassign its `Assignee:`: that person answers the tree's asks.
-2. Find who set the label: read `/api/v1/issues/<issue>/events?limit=200` with the `curl` of `skill://legion-controller/references/session.md` ("Reading Dispatch's API"), oldest first; while a page holds 200 events, read the next with `&after=<the last event's seq>`. The setter is the `actor` of the newest `issue.created` or `issue.updated` event whose `payload.labels` holds `legion` (any case) where the previous such event held none.
+2. Find who set the label: read `/api/v1/issues/<issue>/events?limit=200` with the `dispatch api` of `skill://legion-controller/references/session.md` ("Reading Dispatch's API"), oldest first; while a page holds 200 events, read the next with `&after=<the last event's seq>`. The setter is the `actor` of the newest `issue.created` or `issue.updated` event whose `payload.labels` holds `legion` (any case) where the previous such event held none.
    - `actor.kind` is `user`: the daemon queues the root itself. Do nothing more.
    - Your own filing hands it over: its spec as filed (`dispatch doc-read --issue <issue> --version 1`) holds a `Filed for` line, and the actor is this session (`dispatch whoami`) or an earlier one of yours, which is one whose reply `Filed dispatch://<this KEY>` stands under the ask or evidence that line names. Where that line names an ask, the reply counts only when it follows a newest answer of `File it for Legion` on that ask.
    - Any other actor hands over nothing. Leave the issue in `triage` and open an ask on the report issue naming it and who labelled it, options `Admit it` and `Leave it`. Reply under it `Admitted dispatch://<KEY>` or `Not admitted: <reason>`.

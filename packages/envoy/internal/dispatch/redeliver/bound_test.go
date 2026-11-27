@@ -260,6 +260,7 @@ func (h *harness) removeBucketOnRedelivery(status int) {
 // Every line about one delivery carries its GUID, its event and its action, all three GitHub's, so
 // the line a sweep writes when GitHub takes a redelivery request shows each to the bound.
 func TestTheSweepsDecisionLinesShowGitHubsTextToABound(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	texts := textsOf("redelivered")
 	h.failText(texts, http.StatusServiceUnavailable, time.Minute)
@@ -280,6 +281,7 @@ func TestTheSweepsDecisionLinesShowGitHubsTextToABound(t *testing.T) {
 // bucket is gone by then. A write the bucket refused is no error of the sweep's: it leaves the
 // sweep incomplete, and the delivery to the sweep after it (errNotWritten).
 func TestARecordWriteFailureShowsTheGUIDToABound(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	texts := textsOf("record")
 	failed := h.failText(texts, http.StatusServiceUnavailable, time.Minute)
@@ -312,6 +314,7 @@ func TestARecordWriteFailureShowsTheGUIDToABound(t *testing.T) {
 // entry is the first thing the sweep writes after the request. The clock is taken to half a
 // minute past the minute so that the two minutes differ whatever second the test starts on.
 func TestAnIndexEntryWriteFailureShowsTheGUIDToABound(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.clock.advance(time.Duration((90-h.clock.Now().Second())%60) * time.Second)
 	texts := textsOf("entry")
@@ -349,6 +352,7 @@ func TestAnIndexEntryWriteFailureShowsTheGUIDToABound(t *testing.T) {
 // delivery names another. Both GUIDs are GitHub's, the key's and the delivery's, so the error shows
 // each to the bound.
 func TestARecordNamingAnotherDeliveryShowsBothGUIDsToABound(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	now := h.clock.Now().UTC()
 	stored, named := textsOf("stored"), textsOf("named")
@@ -382,6 +386,7 @@ func TestARecordNamingAnotherDeliveryShowsBothGUIDsToABound(t *testing.T) {
 // errors the bucket answers quote the key they refused whole, and every key of a delivery holds
 // its GUID, so a refusal of that class (refusingCall) is shown to the bound too.
 func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
+	t.Parallel()
 	notJSON := []byte("not a record")
 	for _, tc := range []struct {
 		name string
@@ -564,6 +569,7 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 // even be read; the other is within the alphabet and so long that its record's key can be read and
 // its index entry's key, longer by the minute it is due at, cannot be written.
 func TestASweepLeavesOutADeliveryWhoseGUIDTheBucketCannotKey(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		guid string
@@ -784,6 +790,7 @@ func (h *harness) refusedRedelivery(t *testing.T, guid, text string, answer func
 }
 
 func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		require func(t *testing.T, s sighting)

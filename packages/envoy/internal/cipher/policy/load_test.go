@@ -469,8 +469,8 @@ func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
 // deployment's policy version. A deployment with no profiles file gives every secret an empty
 // digest; a file whose one profile serves nothing (its source is absent) leaves the version
 // exactly where such a deployment has it, so the file alone ends no running grant; and a profile
-// of one secret's own name, with its proxy block, moves it, as an edit of that entry moves it
-// again, which is what ends the grants that entry affects.
+// of one secret's own name, behind the kind its proxy string names, moves it, as an edit of that
+// entry moves it again, which is what ends the grants that entry affects.
 func TestTheProfileDigestIsInTheVersion(t *testing.T) {
 	store := secrets.NewLocal(
 		policytest.Secret("A_KEY", owner, policy.TierAgent, "v"),
@@ -481,7 +481,7 @@ func TestTheProfileDigestIsInTheVersion(t *testing.T) {
 		if profiles == nil {
 			return policytest.Current(t, store).Get()
 		}
-		return policytest.ProfiledCurrent(t, store, policytest.ProfilesFile(profiles...)).Get()
+		return policytest.ProfiledCurrent(t, store, policytest.KindsFile(profiles...)).Get()
 	}
 	none := served()
 	for _, name := range []string{"A_KEY", "B_KEY"} {
@@ -489,17 +489,17 @@ func TestTheProfileDigestIsInTheVersion(t *testing.T) {
 			t.Errorf("a deployment with no profiles file gave %s the digest %q, want none", name, d)
 		}
 	}
-	if unnamed := served(`{"name": "OTHER_KEY", "proxy": {"hosts": ["api.example.com"]}}`); unnamed.Version != none.Version {
+	if unnamed := served(`{"name": "OTHER_KEY", "proxy": "example"}`); unnamed.Version != none.Version {
 		t.Errorf("a profile that serves nothing moved the version to %s, want %s", unnamed.Version, none.Version)
 	}
-	named := served(`{"name": "B_KEY", "proxy": {"hosts": ["api.example.com"]}}`)
+	named := served(`{"name": "B_KEY", "proxy": "example"}`)
 	if got := named.Secrets["B_KEY"].ProfileDigest; got == "" {
 		t.Error("B_KEY, which a profile holds, has no digest")
 	}
 	if named.Version == none.Version {
 		t.Error("a secret a profile holds left the version unchanged")
 	}
-	if changed := served(`{"name": "B_KEY", "proxy": {"hosts": ["api.example.org"]}}`); changed.Version == named.Version {
+	if changed := served(`{"name": "B_KEY", "proxy": "github"}`); changed.Version == named.Version {
 		t.Error("a changed entry left the version unchanged")
 	}
 }

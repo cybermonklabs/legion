@@ -63,6 +63,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_plans: true,
   dispatch_project: true,
   dispatch_projects: true,
+  dispatch_project_update: true,
   dispatch_priorities: true,
   dispatch_open_asks: true,
   dispatch_answers: true,
@@ -597,7 +598,8 @@ export async function resolveOwnerArguments(
   // A retraction names one stored result by its id, and the server reads that result's issue for
   // itself. LEGION_ISSUE must not fill an issue in here: issue is a record's argument, and a
   // retraction that carried one would be refused as a record mixed with a retraction.
-  if (tool === "dispatch_result" && typeof args["retract"] === "string") {
+  const { retract } = args;
+  if (tool === "dispatch_result" && typeof retract === "string") {
     return { args, ref, owner: null };
   }
   const legionIssue = env.LEGION_ISSUE;

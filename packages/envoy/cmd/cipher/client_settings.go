@@ -32,9 +32,9 @@ type Settings struct {
 	GCPProject             string `json:"gcp_project,omitempty"`
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 	SecretTypeTag          bool   `json:"secret_type_tag,omitempty"`
-	// JudgeKeys is each key the broker's airlock rules give the model judge, with its judge
-	// seconds and its guidance; absent where the rules give the judge nothing. `secret show`
-	// reads it to say who decides a request for a key and what the judge will look for.
+	// JudgeKeys is each key whose judge tag gives the model judge seconds of it, with those
+	// seconds and its guidance tag; absent where no key carries one. `secret show` reads it to
+	// say who decides a request for a key and what the judge will look for.
 	JudgeKeys map[string]JudgeKey `json:"judge_keys,omitempty"`
 	// answeredBy is the address whose answer these settings are (client.Settings), so a message
 	// prints a field of them only as that address lets the text of its answer print (words).
@@ -57,6 +57,9 @@ type JudgeKey struct {
 	Seconds uint32 `json:"seconds"`
 	// Guidance is the key owner's instruction to the judge, "" for an entry that gives none.
 	Guidance string `json:"guidance,omitempty"`
+	// Source is the stored secret the name is a profile of, whose judge and guidance tags these
+	// are, "" for a name served as itself; `secret show` of that source names its judged profiles.
+	Source string `json:"source,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {

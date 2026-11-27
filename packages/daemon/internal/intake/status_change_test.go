@@ -69,6 +69,7 @@ func readDispatchLog(t *testing.T, name string) []json.RawMessage {
 // status the issue already shows changes nothing in Dispatch, which then writes no changed list,
 // and the reader takes it as no change.
 func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
+	t.Parallel()
 	session := func(id string) dispatch.Actor { return dispatch.Actor{Kind: "session", ID: id} }
 	type read struct {
 		typ     string
@@ -155,6 +156,7 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 // never takes a log it cannot read for a log with no status change in it. An event that does not
 // decode at all is refused by the read itself (dispatch.Client.EventsAfter).
 func TestStatusChangeOfRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
 	event := servedLog(t, json.RawMessage(`{"seq":7,"type":"issue.updated","actor":{"kind":"user","id":"a"},"payload":"a string"}`))[0]
 	if _, err := StatusChangeOf(event); err == nil || !strings.Contains(err.Error(), "decode the issue payload of Dispatch event 7") {
 		t.Fatalf("StatusChangeOf(an issue.updated whose payload is a string) = %v, want an error naming the event", err)
@@ -179,6 +181,7 @@ func approvalLogEvent(seq int) json.RawMessage {
 // status ends where it stood. Events of other kinds count for nothing. With no issue event at or
 // before seq, only a change between the later ones counts.
 func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		events []json.RawMessage
@@ -269,6 +272,7 @@ func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T
 // so the preparation fails and the approval is delivered again rather than applied as though
 // nothing changed.
 func TestStatusChangedAfterRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
 	const want = "decode Dispatch issue payload of event 2 of 2"
 	_, err := statusChangedAfter(servedLog(t, approvalLogEvent(9), payloadlessLogEvent(10, "issue.updated")), 9)
 	if err == nil || !strings.Contains(err.Error(), want) {

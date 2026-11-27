@@ -174,13 +174,15 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 // generateIDToken is IAM Credentials' half of a mint: an access token that may act as
 // serviceAccount (bearer) spent on one generateIdToken for audience, with includeEmail set, at
 // iamURL, or Google's own service where it is empty. Every error names the account as named
-// says. A workload identity pool spends its federated token here, and an external_account
-// credential the access token it mints. The call's URL is iamURL with the resource's path joined
-// onto its path (urljoin.Join), its query kept and its fragment, which no request sends, dropped:
-// the path appended to iamURL's text would sit inside a query or a fragment, and IAM Credentials
-// would be asked another path. An iamURL that does not parse or names no host is refused by its
-// class, "not a valid URL" (redact.ClassNotAURL), as postGoogle refuses a request it could not
-// build: url.Parse's error quotes the URL whole, user information and query included.
+// says. A workload identity pool and an X.509 certificate's external_account credential spend
+// their federated token here, and any other external_account credential the account's access
+// token it mints (ExternalAccountIdentity). The call's URL is iamURL with the resource's path
+// joined onto its path (urljoin.Join), its query kept and its fragment, which no request sends,
+// dropped: the path appended to iamURL's text would sit inside a query or a fragment, and IAM
+// Credentials would be asked another path. An iamURL that does not parse or names no host is
+// refused by its class, "not a valid URL" (redact.ClassNotAURL), as postGoogle refuses a request
+// it could not build: url.Parse's error quotes the URL whole, user information and query
+// included.
 func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, named, audience, bearer string) (string, error) {
 	origin := iamURL
 	if origin == "" {

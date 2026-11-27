@@ -5,10 +5,13 @@
 package judge
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,8 +23,10 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // testSecret is the key most tests ask for, with the guidance testGuidance; testIssue the issue
@@ -43,18 +48,32 @@ const (
 	testAnswerText    = "Yes, on this issue's own runs."
 )
 
-// testRules give the judge 900 seconds of testSecret and 300 of shortJudgeSecret, each with its
-// guidance, and nothing of any other name. Each entry binds a host, as every proxy block does.
-func testRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: testSecret, Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: testGuidance},
-		{Name: shortJudgeSecret, Hosts: []string{"release.example"}, Judge: new(uint32(shortJudgeSeconds)), Guidance: shortGuidance},
-		{Name: "NO_JUDGE_KEY", Hosts: []string{"other.example"}},
-	}}
+// testPolicy is a live policy whose tags give the judge 900 seconds of testSecret and 300 of
+// shortJudgeSecret, each with its guidance, and nothing of NO_JUDGE_KEY or any other name.
+func testPolicy(t *testing.T) *policy.Current {
+	t.Helper()
+	return judgedPolicy(t, testGuidance)
+}
+
+// judgedPolicy is testPolicy with guidance as testSecret's guidance tag.
+func judgedPolicy(t *testing.T, guidance string) *policy.Current {
+	t.Helper()
+	return guidedPolicy(t, guidance, shortGuidance)
+}
+
+// guidedPolicy is testPolicy with first as testSecret's guidance tag and second as
+// shortJudgeSecret's. Both keys are testApprover's own.
+func guidedPolicy(t *testing.T, first, second string) *policy.Current {
+	t.Helper()
+	return policytest.Current(t, secrets.NewLocal(
+		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, first),
+		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, second),
+		policytest.Secret("NO_JUDGE_KEY", testApprover, policy.TierHuman, "v"),
+	))
 }
 
 // agentKey is a key the requesting session gets at once, which a request names beside a judge
-// key: it needs no decision, the judge decides nothing of it, and the rules give it no entry.
+// key: it needs no decision, the judge decides nothing of it, and it carries no judge tag.
 const agentKey = "AGENT_KEY"
 
 // pending is a request the judge holds: one judge key, which is the key it decides, a signed
@@ -117,6 +136,14 @@ type dispatchStandIn struct {
 	// bound. A read the judge gave up on ends the handler at once, so a stand-in told to
 	// wait longer than the bound never keeps the server from closing.
 	delay time.Duration
+	// answerAt, when set, is when the issue and spec reads answer, in place of delay: it is
+	// given how many of them came before (0 for the first) and answers a time on the wall
+	// clock. The ask read keeps delay. A test that places each read at a fixed point of the
+	// phase keeps a read that woke late on a loaded runner from making every read after it
+	// late as well, which a delay per read would.
+	answerAt func(earlier int) time.Time
+	// phaseReads is how many issue and spec reads came so far, which answerAt is given.
+	phaseReads int
 }
 
 // newDispatch is a Dispatch holding one open issue with a spec document, and the ask on it that
@@ -153,13 +180,23 @@ func (d *dispatchStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	d.calls = append(d.calls, dispatchCall{r.Method, r.URL.Path, r.Header.Get("Authorization")})
 	status, body, delay, raw := d.issueStatus, d.issue, d.delay, ""
+	ask := false
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/artifacts/spec/text"):
 		status, body = d.specStatus, d.spec
 	case strings.HasPrefix(r.URL.Path, "/api/v1/asks/"):
 		status, body, raw = d.askStatus, d.ask, d.askRaw
+		ask = true
+	}
+	answerAt := d.answerAt
+	earlier := d.phaseReads
+	if !ask {
+		d.phaseReads++
 	}
 	d.mu.Unlock()
+	if answerAt != nil && !ask {
+		delay = time.Until(answerAt(earlier))
+	}
 	if delay > 0 {
 		select {
 		case <-time.After(delay):
@@ -216,6 +253,14 @@ type modelStandIn struct {
 	reply  string
 	delay  time.Duration
 	tokens chatTokens
+	// replies, when it names the one key a call decides, is that call's reply in place of reply,
+	// so a test can have one key's call grant and another's deny; delays, the same for delay, so
+	// one key's call can run past the model's bound while another's answers.
+	replies map[string]string
+	delays  map[string]time.Duration
+	// obey, when set, answers each call as a model that obeys every guidance in its prompt
+	// would (proxyrulestest.ObeyedVerdict), in place of reply.
+	obey bool
 }
 
 // chatTokens are the counts the stand-in's usage chunk reports.
@@ -244,6 +289,23 @@ func (m *modelStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	m.bodies = append(m.bodies, body)
 	m.authorizations = append(m.authorizations, r.Header.Get("Authorization"))
 	status, reply, delay, tokens := m.status, m.reply, m.delay, m.tokens
+	if data, err := callData(body); err == nil {
+		if len(data.Keys) == 1 {
+			if own, ok := m.replies[data.Keys[0].Name]; ok {
+				reply = own
+			}
+			if own, ok := m.delays[data.Keys[0].Name]; ok {
+				delay = own
+			}
+		}
+		if m.obey {
+			keys := make([]proxyrulestest.GuidedKey, 0, len(data.Keys))
+			for _, k := range data.Keys {
+				keys = append(keys, proxyrulestest.GuidedKey{Name: k.Name, Guidance: k.Guidance})
+			}
+			reply = verdictReply(proxyrulestest.ObeyedVerdict(keys, data.Reason))
+		}
+	}
 	m.mu.Unlock()
 	if delay > 0 {
 		select {
@@ -312,49 +374,88 @@ func (m *modelStandIn) presented() []string {
 // data is the Data object the judge sent with its first call, read back out of the user message.
 func (m *modelStandIn) data(t *testing.T) Data {
 	t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.bodies) == 0 {
+	every := m.everyData(t)
+	if len(every) == 0 {
 		t.Fatal("the model was never asked, so it got no data")
 	}
+	return every[0]
+}
+
+// everyData is the Data object of every call the model got, in the order the calls arrived.
+func (m *modelStandIn) everyData(t *testing.T) []Data {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var every []Data
+	for _, body := range m.bodies {
+		data, err := callData(body)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, body)
+		}
+		every = append(every, data)
+	}
+	return every
+}
+
+// callBodies is the raw body of every call the model got, in order.
+func (m *modelStandIn) callBodies() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][]byte(nil), m.bodies...)
+}
+
+// callData reads the Data object back out of one Chat Completions request body's user message.
+func callData(body []byte) (Data, error) {
 	var call struct {
 		Messages []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(m.bodies[0], &call); err != nil {
-		t.Fatalf("the model call is no JSON object: %v\n%s", err, m.bodies[0])
+	if err := json.Unmarshal(body, &call); err != nil {
+		return Data{}, fmt.Errorf("the model call is no JSON object: %w", err)
 	}
-	var data Data
 	for _, message := range call.Messages {
 		if message.Role != "user" {
 			continue
 		}
-		if err := json.Unmarshal([]byte(contentText(t, message.Content)), &data); err != nil {
-			t.Fatalf("the user message is no Data object: %v\n%s", err, message.Content)
+		text, err := messageText(message.Content)
+		if err != nil {
+			return Data{}, err
 		}
-		return data
+		var data Data
+		if err := json.Unmarshal([]byte(text), &data); err != nil {
+			return Data{}, fmt.Errorf("the user message is no Data object: %w", err)
+		}
+		return data, nil
 	}
-	t.Fatalf("the model call carries no user message:\n%s", m.bodies[0])
-	return data
+	return Data{}, errors.New("the model call carries no user message")
 }
 
 // contentText is a chat message's text, whether the provider shape carried it as one string or
 // as a list of parts.
 func contentText(t *testing.T, content json.RawMessage) string {
 	t.Helper()
+	text, err := messageText(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return text
+}
+
+// messageText is contentText for a caller with no t: the text, or why there is none.
+func messageText(content json.RawMessage) (string, error) {
 	var text string
 	if json.Unmarshal(content, &text) == nil {
-		return text
+		return text, nil
 	}
 	var parts []struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(content, &parts); err != nil || len(parts) == 0 {
-		t.Fatalf("a message's content is neither a string nor parts: %s", content)
+		return "", fmt.Errorf("a message's content is neither a string nor parts: %s", content)
 	}
-	return parts[0].Text
+	return parts[0].Text, nil
 }
 
 // fakeRequests is the request machine as the judge sees it: it answers the policy question a
@@ -375,13 +476,19 @@ type fakeRequests struct {
 	// private and projectErr are what JudgeProject answers, projectAsked the names it was
 	// asked about and projectReasons the signed reasons, and projectTakes how long it takes to
 	// answer: like the real read of Dispatch, it gives up when its context ends first.
-	private        bool
-	projectErr     error
-	projectAsked   []string
-	projectReasons []string
-	projectTakes   time.Duration
+	// projectBeforeEnd, when not zero, has it answer that long before the deadline holdPhase
+	// recorded instead, and only under holdPhase: without it there is no such deadline, and the
+	// call fails, naming the knob.
+	private          bool
+	projectErr       error
+	projectAsked     []string
+	projectReasons   []string
+	projectTakes     time.Duration
+	projectBeforeEnd time.Duration
+	// phase is what holdPhase and notePhase recorded of the run's Dispatch phase (phaseTimes).
+	phase dispatchTimes
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
-	// times a run asked it.
+	// times a run asked it. LogJudged reads state too, for the verdict of the row it writes.
 	state      string
 	stateErr   error
 	stateAsked int
@@ -405,10 +512,37 @@ type fakeRequests struct {
 	// (JudgePolicy and JudgeProject), the method's name and whether its context was one
 	// requests.JudgeDispatch made.
 	bounded []boundedCall
-	// applied, logged and denied are the detail objects of each write, in order, and refusals
-	// the reason each denial gave its agent.
+	// applied, logged and denied are the rows of each write, in order (written), and refusals
+	// the reason each denial gave its agent; given is every verdict the run itself gave a
+	// write, which the machine never takes.
 	applied, logged, denied []map[string]any
 	refusals                []string
+	given                   []string
+}
+
+// written is the row a write of this machine keeps: what the run gave it, with the verdict the
+// row's own transaction sets, as the machine's do (decider.judgedRow, LogJudged), and none where
+// that transaction wrote nothing. A verdict the run gave is recorded in given and not kept.
+func (f *fakeRequests) written(judged map[string]any, verdict string) map[string]any {
+	row := maps.Clone(judged)
+	if row == nil {
+		row = map[string]any{}
+	}
+	if given, ok := row["verdict"]; ok {
+		f.given = append(f.given, fmt.Sprint(given))
+		delete(row, "verdict")
+	}
+	if verdict != "" {
+		row["verdict"] = verdict
+	}
+	return row
+}
+
+// givenVerdicts is every verdict the run gave a write of this machine.
+func (f *fakeRequests) givenVerdicts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.given...)
 }
 
 func newRequests() *fakeRequests {
@@ -427,6 +561,7 @@ func (f *fakeRequests) JudgePolicy(ctx context.Context, _, name string) (policy.
 	defer f.mu.Unlock()
 	f.policyAsked = append(f.policyAsked, name)
 	f.bounded = append(f.bounded, boundedCall{"JudgePolicy", requests.UnderJudgeDispatch(ctx)})
+	f.notePhase(ctx)
 	withheld := f.withheld || (f.withheldName != "" && f.withheldName == name)
 	decision := f.decision
 	switch name {
@@ -446,7 +581,15 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	f.projectAsked = append(f.projectAsked, name)
 	f.projectReasons = append(f.projectReasons, reason)
 	f.bounded = append(f.bounded, boundedCall{"JudgeProject", requests.UnderJudgeDispatch(ctx)})
+	f.notePhase(ctx)
 	takes := f.projectTakes
+	if f.projectBeforeEnd > 0 {
+		if f.phase.end.IsZero() {
+			f.mu.Unlock()
+			return false, errors.New("stand-in: projectBeforeEnd is set, but no holdPhase made the run's Dispatch phase, so there is no deadline to answer before")
+		}
+		takes = time.Until(f.phase.end.Add(-f.projectBeforeEnd))
+	}
 	f.mu.Unlock()
 	if takes > 0 {
 		select {
@@ -458,6 +601,61 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.private, f.projectErr
+}
+
+// notePhase records the deadline on the context of the first call made under the run's Dispatch
+// phase. f.mu is held.
+func (f *fakeRequests) notePhase(ctx context.Context) {
+	if !f.phase.seen.IsZero() || !requests.UnderJudgeDispatch(ctx) {
+		return
+	}
+	f.phase.seen, _ = ctx.Deadline()
+}
+
+// holdPhase replaces the Runner's dispatchPhase: it makes the run's Dispatch phase as
+// requests.JudgeDispatch does, records the deadline JudgeDispatch gave it with the wall clock just
+// before and after, and answers a phase that carries that deadline and JudgeDispatch's marker but
+// that only the judge's own cancel or the run's end ends, never the wall clock passing the
+// deadline. A read can then answer at the deadline itself, and however late the judge takes its
+// answer on a loaded runner, the read is not cut short: a test holds the judge to the phase's
+// whole bound without racing it. A judge that cut the phase short itself still cuts its reads
+// short, since a context it derives keeps its own, earlier deadline.
+func (f *fakeRequests) holdPhase(ctx context.Context) (context.Context, context.CancelFunc) {
+	before := time.Now()
+	made, stop := requests.JudgeDispatch(ctx)
+	after := time.Now()
+	deadline, _ := made.Deadline()
+	held, cancel := context.WithCancel(context.WithoutCancel(made))
+	stop()
+	unhook := context.AfterFunc(ctx, cancel)
+	f.mu.Lock()
+	f.phase.before, f.phase.after, f.phase.end = before, after, deadline
+	f.mu.Unlock()
+	return heldPhase{Context: held, deadline: deadline}, func() { unhook(); cancel() }
+}
+
+// heldPhase is the phase holdPhase answers: its Context ends only by its cancel, and Deadline
+// answers the deadline requests.JudgeDispatch gave the phase.
+type heldPhase struct {
+	context.Context
+	deadline time.Time
+}
+
+func (p heldPhase) Deadline() (time.Time, bool) { return p.deadline, true }
+
+// dispatchTimes are the times recorded for a run's Dispatch phase: the wall clock just before and
+// just after holdPhase made it, the deadline requests.JudgeDispatch gave it (end), and the
+// deadline on the context of the phase's first read, its first JudgePolicy call (seen). Each is
+// zero until it is recorded.
+type dispatchTimes struct {
+	before, after, end, seen time.Time
+}
+
+// phaseTimes is what was recorded of the run's Dispatch phase so far.
+func (f *fakeRequests) phaseTimes() dispatchTimes {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.phase
 }
 
 // projectsAsked is every name JudgeProject was asked about, in order, and reasonsAsked every
@@ -522,7 +720,11 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.applied = append(f.applied, judged)
+	verdict := requests.JudgedGranted
+	if f.applyErr != nil {
+		verdict = "" // the transaction rolled back and wrote nothing
+	}
+	f.applied = append(f.applied, f.written(judged, verdict))
 	if f.onApply != nil {
 		f.onApply()
 	}
@@ -533,21 +735,28 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 }
 
 // LogJudged writes the row, or answers what wrote answers in its place: JudgedAlreadyApplied
-// writes nothing, as the machine does when the approval's own row is there.
-func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedWrite, error) {
+// writes nothing, as the machine does when the approval's own row is there. The row's verdict is
+// what the machine's is: applied unknown where wrote says so, else handed to the person for a
+// request still pending (state), else not pending.
+func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedLog, error) {
 	if err := f.transact(ctx); err != nil {
-		return "", err
+		return requests.JudgedLog{}, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	wrote := f.wrote
-	if wrote == "" {
-		wrote = requests.JudgedWritten
+	wrote := cmp.Or(f.wrote, requests.JudgedWritten)
+	if wrote == requests.JudgedAlreadyApplied {
+		return requests.JudgedLog{Write: wrote}, f.logErr
 	}
-	if wrote != requests.JudgedAlreadyApplied {
-		f.logged = append(f.logged, judged)
+	verdict := requests.JudgedNotPending
+	switch {
+	case wrote == requests.JudgedAppliedUnknown:
+		verdict = requests.AppliedUnknown
+	case f.state == "pending":
+		verdict = requests.JudgedHandedOver
 	}
-	return wrote, f.logErr
+	f.logged = append(f.logged, f.written(judged, verdict))
+	return requests.JudgedLog{Write: wrote, Verdict: verdict}, f.logErr
 }
 
 func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string, judged map[string]any, why string) (requests.Decision, error) {
@@ -556,7 +765,11 @@ func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.denied = append(f.denied, judged)
+	verdict := requests.JudgedRefused
+	if f.denyErr != nil {
+		verdict = "" // the transaction rolled back and wrote nothing
+	}
+	f.denied = append(f.denied, f.written(judged, verdict))
 	f.refusals = append(f.refusals, why)
 	if f.denyErr != nil {
 		return requests.Decision{}, f.denyErr
@@ -602,11 +815,12 @@ func tokenFile(t *testing.T, token string) string {
 	return path
 }
 
-// testOptions judges with the three stand-ins, under the rules that give the judge testSecret.
+// testOptions judges with the three stand-ins, under the policy whose tags give the judge
+// testSecret.
 func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeRequests) Options {
 	t.Helper()
 	return Options{
-		Rules:    testRules(),
+		Policy:   testPolicy(t),
 		Dispatch: newDispatchClient(t, d, "projected-token"),
 		Model: Model{
 			ID: testModel,

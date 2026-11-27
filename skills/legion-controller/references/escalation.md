@@ -1,10 +1,8 @@
 # Architect escalation
 
-Read this when an architect sends you a matter, on a `held` wake with `reason: "escalated"`, and on an `update-stalled` wake. Three matters are yours: a child that looks independent of its tree, capacity, and a conflict between trees. Send an issue-design decision back to its architect with `envoy_publish`: it is not yours to make.
+Read this when an architect sends you a matter, on a `held` wake with `reason: "escalated"`, and on an `update-stalled` wake. Two matters come to you from an architect: a child that looks independent of its tree, and capacity. A conflict between trees is not yours: the architect that finds it writes to the other tree's architect itself. Send an issue-design decision back to the architect that sent it, as a Dispatch comment on the owning issue that mentions its role: it is not yours to make.
 
-**Capacity.** Order is your only lever: `admission.cap` is the operator's `legion.yaml` setting, and a tree's children compete for it with every other tree's. Tell the architect where its issues stand in `admission.waiting`, and open a finding ask when the deployment needs a larger cap.
-
-**A conflict between trees.** Read both roots, publish what you read to both architects, and open a finding ask when they need a person's decision.
+**Capacity.** Order is your only lever: `admission.cap` is the operator's `legion.yaml` setting, and a tree's children compete for it with every other tree's. Tell the architect where its tree's issues stand in `admission.waiting`, as a Dispatch comment on the owning issue that mentions its role, and open a finding ask when the deployment needs a larger cap.
 
 ## An escalated hold
 
@@ -27,6 +25,12 @@ Check the child and its parent in `read_state` and Dispatch. When it still looks
 
 ## An update round that is not finishing (`update-stalled`)
 
-The daemon replaces a pod whose configuration moved only after an update round: it asks each role of the issue to push its work, let its subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and the round ends at `pod_update_grace_minutes`, or earlier once all answered, no role is in a turn and each role's last report names no background work that runs. This wake says that bound has passed and `reason` names what still holds the round. Work a role did not push goes with the pod.
+The daemon replaces a pod whose configuration moved, or one you asked `replace_pod` for, only after an update round: it asks each role of the issue to push its work, let its subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and the round ends at `pod_update_grace_minutes`, or earlier once all answered, no role is in a turn and each role's last report names no background work that runs. This wake says that bound has passed and `reason` names what still holds the round. At the end of the round the daemon reads the workspace. Where that read finds work that no branch or tag on origin holds, or fails, the round keeps the pod and ends with no replacement, unless the round is over a drift that breaks the pod; a round that you asked for is never over such a drift. Work that a role did not push goes with a pod that the daemon replaces.
 
-Whatever `reason` names (an operator's suspension, a refused pod replacement, no process in the pod, two pods, or anything else), open a finding ask naming the issue, the round and `reason`, so an operator acts on it. Send no role a message about the round, park nothing and write no status: the daemon replaces the pod once the hold clears.
+For each hold that `reason` names:
+
+- The operator's suspension: open a finding ask that names the issue and each role the operator suspended.
+- Your own suspension: `resume_agent` the agent once its cause is gone, or keep the agent held. Open no ask.
+- Anything else (a refused pod replacement, no process in the pod, two pods): open a finding ask naming the issue, the round and `reason`, so an operator acts on it.
+
+Send no role a message about the round, park nothing and write no status: the round ends once the hold clears.

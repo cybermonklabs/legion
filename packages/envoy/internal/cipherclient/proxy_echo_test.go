@@ -134,10 +134,10 @@ func writeSubject(t *testing.T, token string) string {
 // a Basic header.
 const workforceSecret = "workforce-client-secret-RDX-0a7c"
 
-// externalAccountJSON is an external_account credential whose subject token is subject (in a
-// file of its own), whose client is a confidential one (so the exchange carries its secret on a
-// Basic header), and whose exchange and impersonation run at sts and impersonation.
-func externalAccountJSON(t *testing.T, subject, sts, impersonation string) []byte {
+// confidentialExternalAccountJSON is an external_account credential whose subject token is
+// subject (in a file of its own), whose client is a confidential one (so the exchange carries its
+// secret on a Basic header), and whose exchange and impersonation run at sts and impersonation.
+func confidentialExternalAccountJSON(t *testing.T, subject, sts, impersonation string) []byte {
 	t.Helper()
 	data, err := json.Marshal(map[string]any{
 		"type":                              "external_account",
@@ -168,7 +168,7 @@ func TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials(t *testin
 		sts := httptest.NewServer(stand)
 		t.Cleanup(sts.Close)
 		identity := &ExternalAccountIdentity{
-			CredentialsJSON: externalAccountJSON(t, subject, sts.URL, "http://127.0.0.1:1"),
+			CredentialsJSON: confidentialExternalAccountJSON(t, subject, sts.URL, "http://127.0.0.1:1"),
 			ServiceAccount:  "robot@example.iam.gserviceaccount.com", Audience: testAudience, IAMCredentialsURL: "http://127.0.0.1:1",
 		}
 		_, _, err := identity.Token(context.Background())
@@ -185,7 +185,7 @@ func TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials(t *testin
 		impersonation := httptest.NewServer(stand)
 		t.Cleanup(impersonation.Close)
 		identity := &ExternalAccountIdentity{
-			CredentialsJSON: externalAccountJSON(t, subject, sts.URL, impersonation.URL),
+			CredentialsJSON: confidentialExternalAccountJSON(t, subject, sts.URL, impersonation.URL),
 			ServiceAccount:  "robot@example.iam.gserviceaccount.com", Audience: testAudience, IAMCredentialsURL: "http://127.0.0.1:1",
 		}
 		_, _, err := identity.Token(context.Background())

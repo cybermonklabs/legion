@@ -244,7 +244,9 @@ func issuesOrNone(name string, issues []string) string {
 // where the controller's cause is read, since its claim is on no claim view of the state. A
 // claim whose idle pod the daemon released prints `suspended:released` for its state
 // (claimStateWord): it is not a suspension anyone is waiting to lift — its next delivery resumes
-// it in a pod of its own — so an operator reading the list must not read it as one.
+// its agent in a pod of its own — so an operator reading the list must not read it as one. A
+// claim whose agent the project's controller suspended prints `suspended:controller`, so the
+// operator tells it from a suspension of its own.
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
 	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
 		c.Generation, c.PluginContract,
@@ -279,11 +281,17 @@ func openCallWord(step *api.StepView) string {
 	return fmt.Sprintf("%s %s since %s", step.Tool, step.CallID, step.StartedAt.UTC().Format(time.RFC3339))
 }
 
-// claimStateWord is the claim's state as the line prints it: `suspended:released` for a claim the
-// idle release suspended, and the state itself for every other claim, whose suspendedBy the
-// operator reads with --json.
+// claimStateWord is the claim's state as the line prints it: `suspended:released` for a claim whose
+// agent the idle release suspended, `suspended:controller` for one whose agent the project's
+// controller suspended through its own tool, a suspension its `resume_agent` lifts as well as the
+// operator's, and the state itself for every other claim, whose suspendedBy the operator reads
+// with --json. A plain `suspended` is therefore the operator's own suspension, or the daemon's.
 func claimStateWord(c api.OperatorClaim) string {
-	if c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByReleased) {
+	if c.State != string(supervise.StateSuspended) {
+		return c.State
+	}
+	switch supervise.SuspendSource(c.SuspendedBy) {
+	case supervise.SuspendedByReleased, supervise.SuspendedByController:
 		return c.State + ":" + c.SuspendedBy
 	}
 	return c.State
@@ -443,16 +451,17 @@ func printReleasedNames(w io.Writer, answer []byte) error {
 	return err
 }
 
-// claimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim whatever
-// task it owes again: what a claim whose provider keeps refusing its session reaches for before a
-// fresh session, since the session, its workspace and everything the worker knows of its issue
-// stay where they are (api's compact).
+// claimsCompact compacts --claim's Oh My Pi session with a handoff and has the daemon send the
+// claim whatever task it owes again: what a claim whose provider keeps refusing its session
+// reaches for before a fresh session, since the session, its workspace and everything the worker
+// knows of its issue stay where they are (api's compact).
 //
-// The request carries no deadline of its own, as no `legion claims` request does: a compaction
+// The request carries no deadline of its own, as no `legion claims` request does: the handoff
 // is a model call over the whole transcript, and the daemon bounds it at ten minutes
 // (runtime.CompactTimeout). The daemon's answer is printed whether or not the session was
-// compacted — a session too small to compact, or one already compacted, is reported with Oh My
-// Pi's own words for it, and whatever task the claim owed has gone again in either case.
+// shortened — a handoff Oh My Pi refused is reported with Oh My Pi's own words for it, and one
+// that made no document with the daemon's — and whatever task the claim owed has gone again in
+// either case.
 func claimsCompact(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	return func(ctx context.Context, _ []string) int {
@@ -483,25 +492,28 @@ func printCompaction(w io.Writer, answer []byte) error {
 }
 
 // claimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
-// order the daemon lists them: an architect is relaunched on its session with fresh budgets, a
-// phase worker is relaunched by the start of its issue's phase — the phase it is held from, or the
-// one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
-// naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim
-// prints it, each refusal is reported naming its claim, and the command fails once any was
-// refused, having asked for every one. A failed claim the list names by a token in no shape the
-// daemon makes one in (legionclaim.Token.Shaped), which no token the daemon makes is, is reported
-// as not retried and not asked for. A claim an operator stopped is retired rather than failed, so
-// --failed passes over it: name it with --claim.
+// order the daemon lists them: an architect's agent is launched again with fresh budgets, a phase
+// worker's is launched again by the start of its issue's phase — the phase it is held from, or
+// the one it stands in, which is where an operator's stop leaves it — and the daemon refuses the
+// rest, naming why (api's retryClaim). Under --failed each retried claim prints its line as
+// --claim prints it, each refusal is reported naming its claim, and the command fails once any
+// was refused, having asked for every one. A failed claim the list names by a token in no shape
+// the daemon makes one in (legionclaim.Token.Shaped), which no token the daemon makes is, is
+// reported as not retried and not asked for. A claim an operator stopped is retired rather than
+// failed, so --failed passes over it: name it with --claim.
 //
-// --fresh-session starts the claim in a new session rather than resuming the recorded one. Every
-// other retry resumes the recorded session with fresh budgets, whatever its run of refused turns
-// (supervise's freshSession): a new session is the operator's or the controller's choice, for an
-// agent wedged in a way no budget counts, or a session its provider keeps refusing when a new one
-// would not be.
+// --fresh-session starts the claim's agent in a new session rather than resuming the recorded
+// one. Every other retry resumes the recorded session with fresh budgets, whatever its run of
+// refused turns (supervise's freshSession): a new session is the operator's or the controller's
+// choice, for an agent wedged in a way no budget counts, or a session its provider keeps refusing
+// when a new one would not be. The one exception is a claim held for OpenAI's cyber-policy
+// refusal, whose agent every retry starts in a new session, with the flag or without it and under
+// --failed as under --claim, since its recorded session would send the refused content to OpenAI
+// again.
 func claimsRetry(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")
-	fresh := c.flags.Bool("fresh-session", false, "start the claim in a new session rather than resuming the recorded one")
+	fresh := c.flags.Bool("fresh-session", false, "start the claim's agent in a new session rather than resuming the recorded one")
 	return func(ctx context.Context, _ []string) int { return c.retry(ctx, *token, *failed, *fresh) }
 }
 

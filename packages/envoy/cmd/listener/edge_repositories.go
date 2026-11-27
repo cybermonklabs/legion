@@ -15,7 +15,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -130,11 +129,13 @@ func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects
 }
 
 // newEdgeWithheldCounter registers envoy_edge_github_withheld_total, which counts every frame the
-// edge withholds: a GitHub frame by the repository rule, and any frame of a project the session's
-// token does not list (withheldProjectNotHeld, edge_frames.go).
+// edge withholds: a GitHub frame by the repository rule, any frame of a project the session's
+// token does not list (withheldProjectNotHeld, edge_frames.go), any frame that names a field the
+// edge judges by under a key readers disagree on (withheldAmbiguousKey, withheldPrototypeKey), and
+// a Dispatch frame the edge cannot place in a project (withheldDispatchProjectUnread).
 func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_edge_github_withheld_total",
-		"Frames the edge listener withheld from a session, by reason: not_in_project and project_not_held acknowledged undelivered, answer_unknown acknowledged undelivered with its gap mark owed to the session's next frame")
+		"Frames the edge listener withheld from a session, by reason: not_in_project, project_not_held, ambiguous_key, prototype_key and dispatch_project_unread acknowledged undelivered, answer_unknown acknowledged undelivered with its gap mark owed to the session's next frame")
 }
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
@@ -330,12 +331,16 @@ func (e *edgeRepositories) standing(projects []string) (repositories []string, c
 // has already read that subject is a GitHub topic. The frame is relayed while a fresh answer of
 // the session's projects names the repository the event itself names (eventRepository), withheld
 // not_in_project when the event names none or once every one of those answers is fresh and none
-// names it, and withheld answer_unknown otherwise. The event's own repository decides, not the
-// subject's tokens: a subject writes a dot in a name as an underscore
+// names it, withheld ambiguous_key or prototype_key when its payload or repo key is one readers
+// disagree on (frameKeyWithheld), and withheld answer_unknown otherwise. The event's own
+// repository decides, not the subject's tokens: a subject writes a dot in a name as an underscore
 // (contracts.SanitizeSubjectSegment), so acme/a.b and acme/a_b publish on one subject, and an
 // answer naming one must not admit the other's events.
 func (e *edgeRepositories) relayVerdict(projects []string, subject string, data []byte) frameVerdict {
-	owner, name, named := eventRepository(data)
+	owner, name, named, err := eventRepository(data)
+	if err != nil {
+		return frameKeyWithheld(err)
+	}
 	if !named {
 		return frameDrops(withheldNotInProject)
 	}
@@ -352,25 +357,32 @@ func (e *edgeRepositories) relayVerdict(projects []string, subject string, data 
 // eventRepository is the owner and name of the repository a GitHub event names, data being its
 // stored envelope: the payload's repo, which every GitHub event carries (contracts' githubPayload,
 // and the CI settlement's summary), and false for an event that names none, whose envelope or
-// payload does not decode or whose repo is no owner/name.
-func eventRepository(data []byte) (owner, name string, ok bool) {
-	var envelope struct {
-		Payload string `json:"payload"`
+// payload is no JSON object encoding/json reads (frameIsJSON, json.Valid: text JSON.parse refuses
+// too, which the plugin shows raw, or a document nested deeper than 10,000), or whose repo is no
+// owner/name. The payload and its repo are each read by their exact keys, as the plugin reads the
+// event it shows the session (exactFramePayload, exactJSONString), and an event that names either
+// under more than one key, or under a key that differs from its name only in case, is
+// errAmbiguousFrameKey: encoding/json, which read both before, takes the last key of any case, so
+// a later "Payload" or "Repo" key passed an event under a repository of the session's projects
+// that the session then read as another repository's. An envelope or payload with a top-level
+// "__proto__" key is errPrototypeFrameKey.
+func eventRepository(data []byte) (owner, name string, named bool, err error) {
+	if !frameIsJSON(data) {
+		return "", "", false, nil
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Payload == "" {
-		return "", "", false
+	payload, named, err := exactFramePayload(data)
+	if err != nil || !named {
+		return "", "", false, err
 	}
-	var payload struct {
-		Repo string `json:"repo"`
+	repo, named, err := exactJSONString(payload, "repo")
+	if err != nil || !named {
+		return "", "", false, err
 	}
-	if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
-		return "", "", false
-	}
-	owner, name, found := strings.Cut(payload.Repo, "/")
+	owner, name, found := strings.Cut(repo, "/")
 	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
-		return "", "", false
+		return "", "", false, nil
 	}
-	return owner, name, true
+	return owner, name, true, nil
 }
 
 // repositoryNamed reports whether one of repositories, each owner/name as Dispatch answers it,

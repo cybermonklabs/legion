@@ -497,6 +497,7 @@ func postCorrections(seq int64, ask string, actor dispatch.Actor) []json.RawMess
 // and the delete of that reply, which carry the ask's id, and of a message - move no turn, so a
 // window that holds them alone leaves the root waiting on the person.
 func TestCatchUpAppliesADeletedReplysTurnAndPassesOverTheCorrections(t *testing.T) {
+	t.Parallel()
 	t.Run("a deleted reply handing the open ask to the agent", func(t *testing.T) {
 		events := append([]json.RawMessage{deletedReply(9, "ask-root", "agent", alice)}, postCorrections(10, "ask-root", alice)...)
 		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: events})
@@ -1171,7 +1172,7 @@ func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T)
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3})
 	})
 	ctx := context.Background()
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	// A version-3 seed queued earlier reads the version-4 review before the registration's own,
 	// older read applies.
 	if err := runner.seedGate(ctx, record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 3, Generation: 1}); err != nil {
@@ -1211,7 +1212,7 @@ func TestAGateSeedAnswersAGateWaitOnlyWhenTheRequestIsWithTheAgent(t *testing.T)
 		}
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 4})
 	})
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	seed := func() {
 		t.Helper()
 		if err := runner.seedGate(context.Background(), record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 4, Generation: 1}); err != nil {

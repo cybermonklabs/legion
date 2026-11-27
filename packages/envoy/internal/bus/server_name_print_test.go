@@ -95,9 +95,9 @@ func TestAConfiguredNATSServerPrintsByItsSchemeAndHostAlone(t *testing.T) {
 	})
 
 	t.Run("connected", func(t *testing.T) {
-		logs := captureLogs(t)
+		logs := captureLogs()
 		var background nats.Options
-		if err := connectInBackground("print-connected", nil, newReconnectErrThrottle(nil), nil)(&background); err != nil {
+		if err := connectInBackground(logs.logger, "print-connected", nil, newReconnectErrThrottle(nil), nil)(&background); err != nil {
 			t.Fatalf("apply connectInBackground: %v", err)
 		}
 		background.ConnectedCB(nc)
@@ -109,8 +109,8 @@ func TestAConfiguredNATSServerPrintsByItsSchemeAndHostAlone(t *testing.T) {
 	})
 
 	t.Run("reconnected", func(t *testing.T) {
-		logs := captureLogs(t)
-		options("print-reconnected", nil, nil, nil, nil, nil, nil).ReconnectedCB(nc)
+		logs := captureLogs()
+		options(logs.logger, "print-reconnected", nil, nil, nil, nil, nil, nil).ReconnectedCB(nc)
 		line, record := printRecord(t, logs, "print-reconnected", "envoy nats reconnected")
 		redacttest.RequireNoPiece(t, "bus.reconnected-line", line, redacttest.User, redacttest.Password, redacttest.Token)
 		if record["url"] != named {
@@ -119,9 +119,9 @@ func TestAConfiguredNATSServerPrintsByItsSchemeAndHostAlone(t *testing.T) {
 	})
 
 	t.Run("refusal", func(t *testing.T) {
-		logs := captureLogs(t)
+		logs := captureLogs()
 		var background nats.Options
-		if err := connectInBackground("print-refusal", []string{configured}, newReconnectErrThrottle(nil), nil)(&background); err != nil {
+		if err := connectInBackground(logs.logger, "print-refusal", []string{configured}, newReconnectErrThrottle(nil), nil)(&background); err != nil {
 			t.Fatalf("apply connectInBackground: %v", err)
 		}
 		background.AsyncErrorCB(nc, nil, nats.ErrAuthorization)
@@ -133,8 +133,8 @@ func TestAConfiguredNATSServerPrintsByItsSchemeAndHostAlone(t *testing.T) {
 	})
 
 	t.Run("reconnect-failed", func(t *testing.T) {
-		logs := captureLogs(t)
-		options("print-reconnect-failed", []string{configured}, nil, nil, nil, nil, nil).ReconnectErrCB(nil, errors.New("dial refused"))
+		logs := captureLogs()
+		options(logs.logger, "print-reconnect-failed", []string{configured}, nil, nil, nil, nil, nil).ReconnectErrCB(nil, errors.New("dial refused"))
 		line, record := printRecord(t, logs, "print-reconnect-failed", "envoy nats reconnect attempt failed")
 		redacttest.RequireNoPiece(t, "bus.reconnect-failed-line", line, redacttest.User, redacttest.Password, redacttest.Token)
 		if record["servers"] != named {

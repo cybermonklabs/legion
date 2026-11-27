@@ -146,7 +146,7 @@ func TestAGoogleOrIssuerCallFollowsNoRedirect(t *testing.T) {
 		}},
 		{"external-account", "HTTP 302", []string{externalSubject}, func(t *testing.T) error {
 			identity := &ExternalAccountIdentity{
-				CredentialsJSON: externalAccountJSON(t, externalSubject, newRawServer(t, bodyEcho(http.StatusFound, target, "subject_token")), dead),
+				CredentialsJSON: confidentialExternalAccountJSON(t, externalSubject, newRawServer(t, bodyEcho(http.StatusFound, target, "subject_token")), dead),
 				ServiceAccount:  "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: HTTPClient(), IAMCredentialsURL: dead,
 			}
 			_, _, err := identity.Token(context.Background())

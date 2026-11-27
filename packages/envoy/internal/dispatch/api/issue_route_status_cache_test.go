@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -241,10 +240,9 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 // and a millisecond, so a fetch that held its call past the bound it was given is ended by the
 // client's window instead, whatever the machine's speed, and the error says which ended it: the
 // fetch's own context (listRouteRoster) takes its deadline before the call begins and the window
-// starts with the call, so the call's context is the sooner of the two, net/http sets no deadline
-// of its own and the error its *url.Error wraps is context.DeadlineExceeded itself; a call the
-// window ended wraps net/http's own timeout type instead (net/http's setRequestCancel), which
-// errors.Is reads as context.DeadlineExceeded too. The chain is read, not the text: the listener
+// starts with the call, so the call's context is the sooner of the two. Either end is
+// context.DeadlineExceeded; a call the window ended is also envoy.ErrCallWindow, which the client
+// adds only when its caller's context had not ended. The chain is read, not the text: the listener
 // client prints a call's failure by its class (redact.Cause), "timed out" for either. Whether a
 // later read asked again is read off the stored answer, not off the listener's count of calls: a
 // read that asked would have stored a silence of its own, sent later, while a call a loaded machine
@@ -261,8 +259,8 @@ func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) 
 	if roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
 	}
-	if call := (*url.Error)(nil); !errors.As(roster.err, &call) || call.Err != context.DeadlineExceeded {
-		t.Fatalf("the first read's fetch ended with %v, want its own %s bound's %v, not the listener client's window", roster.err, bound, context.DeadlineExceeded)
+	if !errors.Is(roster.err, context.DeadlineExceeded) || errors.Is(roster.err, envoy.ErrCallWindow) {
+		t.Fatalf("the first read's fetch ended with %v, want its own %s bound's %v, not the listener client's window (%v)", roster.err, bound, context.DeadlineExceeded, envoy.ErrCallWindow)
 	}
 	sent, _ := storedRosterTimes(t, served)
 	if roster := readRoster(t, served, context.Background()); roster.answered {

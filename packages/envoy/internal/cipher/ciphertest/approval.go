@@ -11,6 +11,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/sjawhar/envoy/internal/cipher/approval"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -42,13 +43,27 @@ func SignIn(issuer *oidctest.Issuer, key *oidctest.Key) approval.SignIn {
 	return approval.SignIn{Issuer: issuer.URL(), ClientID: SignInClientID, ClientSecret: SignInClientSecret, Domain: SignInDomain, SessionLifetime: time.Hour}
 }
 
+// ApprovalOption changes the approval page NewApprovalPage builds. It is variadic, so a caller
+// that needs none builds the page as before.
+type ApprovalOption func(*approval.Config)
+
+// WithApprovalHold gives the page the broker's hold gate, as cmd/cipherd/main.go does where
+// BROKER_PROJECT_ACCESS_URL is set; a nil gate holds nobody.
+func WithApprovalHold(gate *hold.Gate) ApprovalOption {
+	return func(c *approval.Config) { c.Hold = gate }
+}
+
 // NewApprovalPage builds the broker's approval page as cmd/cipherd/main.go does, for a broker at
 // publicURL whose records m reads and decides and whose sessions st keeps.
-func NewApprovalPage(t *testing.T, signIn approval.SignIn, publicURL string, st *store.Store, m *requests.Machine) *approval.Page {
+func NewApprovalPage(t *testing.T, signIn approval.SignIn, publicURL string, st *store.Store, m *requests.Machine, options ...ApprovalOption) *approval.Page {
 	t.Helper()
-	page, err := approval.New(approval.Config{
+	cfg := approval.Config{
 		SignIn: signIn, PublicURL: publicURL, MachineLoginURL: MachineLoginURL, Store: st, Machine: m,
-	})
+	}
+	for _, option := range options {
+		option(&cfg)
+	}
+	page, err := approval.New(cfg)
 	if err != nil {
 		t.Fatalf("approval.New: %v", err)
 	}

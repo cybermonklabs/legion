@@ -15,8 +15,8 @@
 //
 // The entry fixture directory holds only regular files named `<14-digit id>_<slug>.json`, and the
 // daemon's `TestEveryEntryHasOneFixture` refuses any other entry there. This module, like
-// scripts/daemon-contract.sh and agent-infra's legion-pins, counts the names of that form alone,
-// so every reader of one tree gives one number; it leaves the refusal to that test.
+// scripts/daemon-contract.sh and the deployment repository's legion-pins, counts the names of that
+// form alone, so every reader of one tree gives one number; it leaves the refusal to that test.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
