@@ -2723,7 +2723,7 @@ function commentRead() {
     ...first,
     cursor: null,
     nodes: [...head, ...secondNodes, ...rest],
-    remaining: null,
+    remaining: undefined,
   });
   const second: TreeAnswer = {
     ...converted,
@@ -2752,7 +2752,7 @@ function commentRead() {
         written === undefined
           ? rest
           : [...rest.slice(0, unranked), written, ...rest.slice(unranked)],
-      remaining: null,
+      remaining: undefined,
       tuples: [],
     }),
   };
