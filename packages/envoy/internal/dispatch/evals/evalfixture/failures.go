@@ -262,6 +262,14 @@ func commitOf(project, what string) string {
 //   - with controller not "", a Legion read of each project whose controller observation names it
 //     (legion.RecordRead), written where the project's newest read names another session or none.
 //
+// Where a server runs, its loop (signals.Run) reads each input as soon as it commits, so the mode
+// writes them in the order a real record meets them: the issues the pull requests name, then the
+// pull requests, the runs and the revert; then, once the GitHub adapter has written every deploy
+// row, the issues labelled incident and bug, each filed after the deploy its link names. The
+// incidents feed reads an incident whose links name no deploy row yet as no failure, and makes its
+// row only when a link that names one is added (signals.recordIncident): an incident written before
+// R6's row, read by a running server's loop at once, would make none.
+//
 // Every time is relative to now: the window is the two days from the midnight three days before
 // now's. The issues take the projects' first numbers (<project>-1 and -2, <project>B-1 to -3), and a
 // load is refused where a project holds one of those keys under another title, so the mode goes
@@ -327,15 +335,21 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 	checkFail := failureResult{block: "k-after-merge-fail", verdict: "fail", commit: head(2), at: at(1, 9, 30)}
 	passing := failureResult{block: "k-after-merge-pass", verdict: "pass", commit: head(0), at: at(1, 9, 40)}
 	unmatched := failureResult{block: "k-unmatched-commit", verdict: "fail", commit: commitOf(project, "unmatched"), at: at(1, 9, 50)}
+	// The issues the pull requests name, filed before them, the first holding the after-merge
+	// check results.
 	issues := []failureIssue{
 		{key: work, number: 1, project: project, repo: appRepo, title: "A change of the first project", created: at(-1, 9, 0),
 			results: []failureResult{checkFail, passing, unmatched}},
-		{key: bug, number: 2, project: project, repo: appRepo, title: "A bug the first project tracks", labels: []string{"bug"},
-			link: pullURL(appRepo, 3), created: at(1, 15, 30)},
 		{key: shipped, number: 1, project: second, repo: appRepo, title: "A change of the second project in the first project's repository", created: at(-1, 9, 10)},
 		{key: secondWork, number: 2, project: second, repo: secondRepo, title: "A change of the second project", created: at(-1, 9, 20)},
+	}
+	// The labelled issues, in the order they were filed, each after the deploy its link names:
+	// written once the deploy rows have landed (WriteFailures).
+	filed := []failureIssue{
 		{key: incident, number: 3, project: second, repo: secondRepo, title: "Production broke after a deploy", labels: []string{"incident"},
 			link: pullURL(secondRepo, 1), created: at(1, 15, 0)},
+		{key: bug, number: 2, project: project, repo: appRepo, title: "A bug the first project tracks", labels: []string{"bug"},
+			link: pullURL(appRepo, 3), created: at(1, 15, 30)},
 	}
 	var keywordFill bool
 	if err := pool.QueryRow(ctx, `select to_regclass('public.search_text_versions_fill') is not null`).Scan(&keywordFill); err != nil {
@@ -465,44 +479,23 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 		return FailuresResult{}, fmt.Errorf("write the revert of the failures mode: %w", err)
 	}
 
-	// The production signals' rows: the GitHub adapter's deploy rows, the revert, the incident and
-	// the check_fail whose deploy row lands with them.
+	// The GitHub adapter's deploy rows of the runs above, which the production signals' loop
+	// writes; the check_fail whose result came before R3's row and the revert follow them.
 	deployRun := func(ctx context.Context, index int) (prodevents.Event, bool, error) {
 		return prodevents.DeployForRun(ctx, pool, runs[index].repo, runID(index))
 	}
-	signalRefs := map[string]string{
-		prodevents.SignalRevert:        signals.RevertSourceRef(appRepo, 4),
-		prodevents.SignalIncidentIssue: signals.IncidentSourceRef(incident),
-	}
-	landed := func(ctx context.Context) (bool, error) {
+	deploysLanded := func(ctx context.Context) (bool, error) {
 		for index, run := range runs {
 			if run.why != "" {
 				continue
 			}
-			row, held, err := deployRun(ctx, index)
-			if err != nil || !held {
-				return false, err
-			}
-			if index == 2 {
-				var artifact string
-				if err := pool.QueryRow(ctx, `select check_artifact_id::text from check_results where id = $1`, checkFail.id(project)).Scan(&artifact); err != nil {
-					return false, fmt.Errorf("read the Verification document of %s: %w", checkFail.block, err)
-				}
-				signalRefs[prodevents.SignalCheckFail] = signals.CheckSourceRef(artifact, checkFail.block, row.ID)
-			}
-		}
-		for signal, ref := range signalRefs {
-			owner := project
-			if signal == prodevents.SignalIncidentIssue {
-				owner = second
-			}
-			if _, held, err := prodevents.BySourceRef(ctx, pool, owner, ref); err != nil || !held {
+			if _, held, err := deployRun(ctx, index); err != nil || !held {
 				return false, err
 			}
 		}
 		return true, nil
 	}
-	if err := awaitSignals(ctx, pool, landed); err != nil {
+	if err := awaitSignals(ctx, pool, "the failures mode's deploy rows", deploysLanded); err != nil {
 		return FailuresResult{}, err
 	}
 	deploys := map[string]prodevents.Event{}
@@ -516,6 +509,39 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 		}
 		deploys[run.name] = row
 		result.Deploys = append(result.Deploys, deployOf(run.name, row, new(runID(index)), reaches[run.name]))
+	}
+
+	// The incident and the bug, filed now that the deploys their links name have their rows, and
+	// the failure rows of the three automatic signals the loop writes: the check_fail, the revert
+	// and the incident.
+	for _, issue := range filed {
+		if err := writeFailureIssue(ctx, pool, issue, keywordFill); err != nil {
+			return FailuresResult{}, err
+		}
+	}
+	var artifact string
+	if err := pool.QueryRow(ctx, `select check_artifact_id::text from check_results where id = $1`, checkFail.id(project)).Scan(&artifact); err != nil {
+		return FailuresResult{}, fmt.Errorf("read the Verification document of %s: %w", checkFail.block, err)
+	}
+	signalRefs := map[string]string{
+		prodevents.SignalCheckFail:     signals.CheckSourceRef(artifact, checkFail.block, deploys["R3"].ID),
+		prodevents.SignalRevert:        signals.RevertSourceRef(appRepo, 4),
+		prodevents.SignalIncidentIssue: signals.IncidentSourceRef(incident),
+	}
+	landed := func(ctx context.Context) (bool, error) {
+		for signal, ref := range signalRefs {
+			owner := project
+			if signal == prodevents.SignalIncidentIssue {
+				owner = second
+			}
+			if _, held, err := prodevents.BySourceRef(ctx, pool, owner, ref); err != nil || !held {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	if err := awaitSignals(ctx, pool, "the failures mode's check_fail, revert and incident_issue rows", landed); err != nil {
+		return FailuresResult{}, err
 	}
 
 	// The second project's posted deploys and the failure posted on P1, through the record's store
@@ -829,17 +855,18 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 	return nil
 }
 
-// signalsCallers numbers the lease pool's reservations awaitSignals takes, one per load that waits,
-// since a process reserves each name once (store.LeaseCallers.For).
+// signalsCallers numbers the lease pool's reservations awaitSignals takes, one per wait that starts
+// a loop, since a process reserves each name once (store.LeaseCallers.For).
 var signalsCallers atomic.Int64
 
 // awaitSignals runs the production signals' loop as the server runs it (signals.Run, under its
-// lease, so it waits its turn behind a server's loop that holds it) until landed answers true, and
-// stops it; a load whose rows have landed already (a second load, or one into a database a
-// server's loop writes) starts none. The loop's event feeds read up to the event horizon, which any
-// open transaction on the Postgres instance holds back (events.Horizon), so the wait stands while
-// the loop's horizon is held back, and refuses to wait signalsWait past that.
-func awaitSignals(ctx context.Context, pool *store.Pool, landed func(context.Context) (bool, error)) error {
+// lease, so it waits its turn behind a server's loop that holds it) until landed answers true that
+// the rows named what have landed, and stops it; a load whose rows have landed already (a second
+// load, or one into a database a server's loop writes) starts none. The loop's event feeds read up
+// to the event horizon, which any open transaction on the Postgres instance holds back
+// (events.Horizon), so the wait stands while the loop's horizon is held back, and refuses to wait
+// signalsWait past that.
+func awaitSignals(ctx context.Context, pool *store.Pool, what string, landed func(context.Context) (bool, error)) error {
 	if done, err := landed(ctx); err != nil || done {
 		return err
 	}
@@ -872,7 +899,7 @@ func awaitSignals(ctx context.Context, pool *store.Pool, landed func(context.Con
 			deadline = time.Now().Add(signalsWait)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the production signals' loop wrote the failures mode's deploy and failure rows in no %s", signalsWait)
+			return fmt.Errorf("the production signals' loop wrote %s in no %s", what, signalsWait)
 		}
 		select {
 		case <-ctx.Done():
