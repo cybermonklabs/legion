@@ -5,7 +5,13 @@ import type { Actor, DisplayTree } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { editWords } from "../own-act";
 import { ANSWER_LINES } from "../page-words";
-import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
+import { nextTreeCursor } from "../tree-read/tree-nodes";
+import {
+  outlineQuery,
+  readNextTreePage,
+  type TreeAnswer,
+  type TreeAnswerNode,
+} from "../tree-read/tree-read";
 import { heldRead, type NewEntry, parentRefOf, placeNode, readOutlinesAgain } from "./node-writes";
 import { type NewPlace, type PlaceLine, placingOf } from "./placement";
 import { ownPathTo } from "./row-reveal";
@@ -22,10 +28,13 @@ import { ownPathTo } from "./row-reveal";
  * read to hold its node by that block id with a `rank` and a `placement_seq`: the read the tree
  * artifact's version event sends (`api/event-refresh.ts`, which this adds no read to), and,
  * while the read Graph holds names the tree artifact among `owed_documents`, one read each 30 s
- * of the page's clock, the period of the block index's reconcile tick, for at most 2 minutes. The
- * first read within those 2 minutes that holds the node so sends the one `PATCH` to the row's
- * place (`placingOf`) on the node's chain (`node-writes.ts`' `placeNode`), `placing` until it
- * ends; a taken one leaves the node where its answer puts it in the held read, and the row leaves
+ * of the page's clock, the period of the block index's reconcile tick, for at most 2 minutes.
+ * Where Graph's held read owes that index nothing, lacks the node and names a next page, the
+ * page reads the next pages one at a time (`readNextTreePage`), since a new block waits at the
+ * end of the issue's own blocks and a re-read reads only the pages loaded. The first read within
+ * those 2 minutes that holds the node so sends the one `PATCH` to the row's place (`placingOf`)
+ * on the node's chain (`node-writes.ts`' `placeNode`), `placing` until it ends; a taken one
+ * leaves the node where its answer puts it in the held read, and the row leaves
  * this store once the outline has been told of that read, its node drawn there by the read
  * itself. A refused one leaves it where the server keeps it, with the row's line, and tells the
  * outline (`subscribeRefusedPlacings`), which keeps the focus on it. Past the 2 minutes the row is
@@ -94,6 +103,8 @@ interface IssueRows {
   readonly deadlines: Map<string, number>;
   /** The next 30 s read, while a row waits. */
   poll: number | undefined;
+  /** Whether a next-page read of Graph's tree is out for a waiting row (`readNextPage`). */
+  paging: boolean;
   /** The watch of Graph's read in the cache, while a row waits. */
   unwatch: (() => void) | undefined;
   readonly refused: Set<RefusedPlacing>;
@@ -127,6 +138,7 @@ function issueOf(client: QueryClient, issue: string): IssueRows {
     held = {
       deadlines: new Map(),
       holders: 0,
+      paging: false,
       poll: undefined,
       refused: new Set(),
       release: undefined,
@@ -314,17 +326,45 @@ export function readNodeOf(answer: TreeAnswer, blockId: string): TreeAnswerNode 
   );
 }
 
+/** Reads the next page of Graph's tree read of `issue`, one at a time, while a typed row's node is
+ *  missing from a held read that does not owe the tree artifact's index and names a next page.
+ *  A page that answers merges into the cache and calls `placeHeld` again (so another page is read
+ *  if the node still stands past it); a refused page leaves the row waiting with no retry loop of
+ *  its own: the next answer of Graph's read tries again (`typeNewRow`'s watch). */
+function readNextPage(client: QueryClient, issue: string, held: IssueRows): void {
+  if (held.paging) return;
+  held.paging = true;
+  void readNextTreePage(client, issue, "graph").then(
+    () => {
+      held.paging = false;
+      placeHeld(client, issue);
+    },
+    () => {
+      held.paging = false;
+    }
+  );
+}
+
 /** Sends the one placing `PATCH` of each typed row of `issue` whose node Graph's read holds now
- *  with a rank and a `placement_seq`, within its 2 minutes. */
+ *  with a rank and a `placement_seq`, within its 2 minutes, and reads the next page of Graph's
+ *  read where a typed row within its 2 minutes still lacks its node on an answer that owes the
+ *  tree artifact's index nothing and names a next page. A read from before the row's first
+ *  character is such an answer too: its pages are read then, once, and the read the write's
+ *  version event sends reads every page loaded, so it holds the node wherever it stands. */
 function placeHeld(client: QueryClient, issue: string): void {
   const held = stateOf(client).issues.get(issue);
   const answer = heldRead(client, issue);
   if (held === undefined || answer === undefined) return;
   const now = Date.now();
+  let missing = false;
   for (const [blockId, at] of [...held.waits]) {
     const row = held.rows.find((each) => each.blockId === blockId);
+    if (now >= at + NEW_ROW_WAIT_MS || row?.stage !== "typed") continue;
     const node = readNodeOf(answer, blockId);
-    if (now >= at + NEW_ROW_WAIT_MS || row?.stage !== "typed" || node === undefined) continue;
+    if (node === undefined) {
+      missing = true;
+      continue;
+    }
     const placing = placingOf({ held: answer, node: node.id, place: row.place });
     if (placing.kind !== "send") continue;
     stopWait(held, blockId);
@@ -343,6 +383,9 @@ function placeHeld(client: QueryClient, issue: string): void {
       // (`IssueTree.tsx`), and the letters the reader types on go nowhere.
       notifyManager.schedule(() => change(client, issue, blockId, () => undefined));
     });
+  }
+  if (missing && !owesTree(answer) && nextTreeCursor(answer) !== undefined) {
+    readNextPage(client, issue, held);
   }
 }
 

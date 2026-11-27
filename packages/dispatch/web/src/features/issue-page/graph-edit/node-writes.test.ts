@@ -741,9 +741,9 @@ function belowCriterion(): NewRowAsk {
 }
 
 /** The server's answer to the one placing `PATCH` of `ask`: the node where its body puts it, under
- *  the next placement_seq, as a move's answer is (`fixture.moved`). */
-function placedAnswer(ask: NewRowAsk): Exchange {
-  return { body: { ...ask.place.body, placement_seq: "<seq:owed-paragraph>@2" }, status: 200 };
+ *  the next placement_seq, `placementSeq`, as a move's answer is (`fixture.moved`). */
+function placedAnswer(ask: NewRowAsk, placementSeq = "<seq:owed-paragraph>@2"): Exchange {
+  return { body: { ...ask.place.body, placement_seq: placementSeq }, status: 200 };
 }
 
 // The reads a case holds, each put back after the case.
@@ -933,4 +933,176 @@ test("a refused placing PATCH keeps the node where the server holds it", async (
   } finally {
     stop();
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// A new row on a tree read of several pages (R3, R15): until its PATCH the server keeps the block
+// at the end of the issue's own blocks, which the fixture's `paged` read holds on its second page,
+// and a read made again reads only the pages the page has loaded. The paragraph of the issue's own
+// fragment under the issue that only that page holds, with a rank and a placement_seq, stands for
+// the new row's block.
+// ---------------------------------------------------------------------------------------------
+
+const firstPage = renamed(fixture.paged.pages[0]?.body) as unknown as TreeAnswer;
+const secondPage = renamed(fixture.paged.pages[1]?.body) as unknown as TreeAnswer;
+
+/** The block the page wrote, by the block id it chose for it: the paragraph the second page
+ *  holds. */
+const PAGED = "<tree/paragraph>";
+
+/** New row under the first statement, a row of the first page whose subtree stands whole there,
+ *  made on the first page alone. */
+function underFirstStatement(): NewRowAsk {
+  const from = "<statement-1>";
+  const verdict = placementOf({ held: firstPage, node: from, status: "in_progress" }).new_under;
+  if (verdict.kind !== "new")
+    throw new Error("New row under is not offered on the first statement");
+  return {
+    blockId: PAGED,
+    entry: "new_under",
+    from,
+    parent: from,
+    place: verdict.place,
+    under: from,
+  };
+}
+
+// A typed row whose node only the second page holds, on a first page that owes the tree artifact
+// nothing: the page reads the next page once, and that page, merged, holds the node with a rank
+// and a placement_seq, so the one placing PATCH goes with the row's body under that placement_seq.
+test("a new row's node the first page lacks is read for on the next page and placed", async () => {
+  const reads = answerTreeReads(fixture.paged.pages);
+  const ask = underFirstStatement();
+  const out = Promise.withResolvers<void>();
+  const patches = answerPatches({
+    ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
+    gate: out.promise,
+  });
+  expect(firstPage.owed_documents ?? [], "the first page owes an index").toEqual([]);
+  expect(
+    firstPage.nodes?.some((node) => node.block_id === PAGED),
+    "the first page holds it"
+  ).toBe(false);
+  const written = secondPage.nodes?.find((node) => node.id === PAGED);
+  expect(written?.rank, "the second page holds the node with no rank").toBeString();
+  const { client, view } = mountNewRows(firstPage);
+  typed(client, ask);
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  expect(reads.cursors, "the reads before the PATCH").toEqual([firstPage.cursor]);
+  expect(patches.calls[0]).toEqual({
+    body: ask.place.body,
+    id: PAGED,
+    ifMatch: `"${String(written?.placement_seq)}"`,
+  });
+  await act(async () => {
+    out.resolve();
+  });
+  await waitFor(() => expect(view.result.current.rows).toEqual([]));
+  await waitInAct(50);
+  expect(patches.calls, "a later read sent a second PATCH").toHaveLength(1);
+});
+
+// While the read Graph holds names the tree artifact among `owed_documents`, the block is not
+// indexed yet: no next page is read for its node, however often that read is held again. The
+// first read that owes it no more has the next page read, and the node placed.
+test("no next page is read for a new row's node while the read owes the tree artifact's index", async () => {
+  const reads = answerTreeReads(fixture.paged.pages);
+  const ask = underFirstStatement();
+  const out = Promise.withResolvers<void>();
+  const patches = answerPatches({
+    ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
+    gate: out.promise,
+  });
+  const { tree } = firstPage;
+  if (tree === null) throw new Error("the paged read names no tree artifact");
+  const owing: TreeAnswer = { ...firstPage, owed_documents: [{ artifact_id: tree, version: 1 }] };
+  const { queryKey } = outlineQuery(KEY, "graph");
+  const { client } = mountNewRows(owing);
+  typed(client, ask);
+  await waitInAct(50);
+  act(() => client.setQueryData(queryKey, { ...owing }));
+  await waitInAct(50);
+  expect(reads.cursors, "a page was read while the read owes the tree's index").toEqual([]);
+  expect(patches.calls).toEqual([]);
+  act(() => client.setQueryData(queryKey, firstPage));
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  expect(reads.cursors, "the reads before the PATCH").toEqual([firstPage.cursor]);
+  await act(async () => {
+    out.resolve();
+  });
+});
+
+// Three pages: when the second page still lacks the node and names a third, the page reads page
+// after page until the node is held, one page at a time, then sends the one placing PATCH.
+test("a new row's node past the second page is read for page by page and placed", async () => {
+  const middleCursor = "<cursor:page-2>";
+  const thirdCursor = firstPage.cursor;
+  const page1: TreeAnswer = { ...firstPage, cursor: middleCursor };
+  const page2: TreeAnswer = {
+    ...secondPage,
+    cursor: thirdCursor,
+    nodes: [],
+    remaining: secondPage.nodes?.length ?? 0,
+    tuples: [],
+  };
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      if (cursor === middleCursor) return Response.json(page2);
+      if (cursor === thirdCursor) return Response.json(secondPage);
+      return Response.json(page1);
+    })
+  );
+  const ask = underFirstStatement();
+  const out = Promise.withResolvers<void>();
+  const patches = answerPatches({
+    ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
+    gate: out.promise,
+  });
+  const { client } = mountNewRows(page1);
+  typed(client, ask);
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  expect(cursors, "the reads before the PATCH").toEqual([middleCursor, thirdCursor]);
+  await act(async () => {
+    out.resolve();
+  });
+});
+
+// A refused next page leaves the row waiting with no retry loop of its own; the next update of
+// Graph's held read within the 2 minutes tries the page again.
+test("a refused next page does not retry on its own and leaves the row waiting", async () => {
+  const cursors: (string | null)[] = [];
+  let refusedOnce = false;
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      if (cursor !== null && !refusedOnce) {
+        refusedOnce = true;
+        return Response.json({ code: "UNAVAILABLE", error: "unavailable" }, { status: 503 });
+      }
+      return Response.json(cursor === null ? firstPage : secondPage);
+    })
+  );
+  const ask = underFirstStatement();
+  const out = Promise.withResolvers<void>();
+  const patches = answerPatches({
+    ...placedAnswer(ask, "<seq:tree/paragraph>@2"),
+    gate: out.promise,
+  });
+  const { client, view } = mountNewRows(firstPage);
+  typed(client, ask);
+  await waitFor(() => expect(cursors).toEqual([firstPage.cursor]));
+  await waitInAct(80);
+  expect(cursors, "a refused page retried on its own").toEqual([firstPage.cursor]);
+  expect(patches.calls).toEqual([]);
+  expect(view.result.current.rows[0]?.stage).toBe("typed");
+  act(() => client.setQueryData(outlineQuery(KEY, "graph").queryKey, { ...firstPage }));
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  expect(cursors).toEqual([firstPage.cursor, firstPage.cursor]);
+  await act(async () => {
+    out.resolve();
+  });
 });
