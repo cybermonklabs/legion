@@ -42,6 +42,7 @@ import (
 // node write skipped (docs/ask_blocks.go createAskBlock): either way the test fails, naming the
 // ask the create left without a node.
 func TestEveryCreateStoresItsNode(t *testing.T) {
+	t.Parallel()
 	rig := newStoreWriterRig(t)
 	ctx := context.Background()
 	fixture := seedEveryKind(t, rig)
@@ -365,6 +366,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/me/inbox/dismiss":                                        noObject,
 	"POST /api/v1/projects":                                                noObject,
 	"POST /api/v1/priorities":                                              noObject,
+	"POST /api/v1/deploys":                                                 noObject,
 	"POST /api/v1/delivery/session-groups":                                 noObject,
 	"POST /api/v1/credential-requests/{id}/approve":                        noObject,
 	"POST /api/v1/credential-requests/{id}/deny":                           noObject,

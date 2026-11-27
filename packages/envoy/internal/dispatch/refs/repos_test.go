@@ -32,6 +32,7 @@ var canonicalCases = []struct {
 // The old name of a pair, in any case, is its new name; every other name, the new name too, is
 // itself as it was given. With no pairs, every name is itself.
 func TestCanonicalAnswersTheNewNameOfAPairInAnyCase(t *testing.T) {
+	t.Parallel()
 	renamed := NewRenames(legionRenamed)
 	for _, c := range canonicalCases {
 		if got := renamed.Canonical(c.repo); got != c.renamed {
@@ -116,6 +117,7 @@ func TestNewRenamesDropsAPairWhoseNewNameGitHubCannotHold(t *testing.T) {
 // built with no pairs is the statement that names no rename. A name that holds a quote is
 // quoted as a literal and not read as SQL.
 func TestCanonicalRepoSQLAnswersWhatCanonicalAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if got := CanonicalRepoSQL(Renames{}, "issue.repo"); got != "issue.repo" {
@@ -185,6 +187,7 @@ var urlCases = []struct {
 // with only the owner and the name changed. A URL that names neither name of the pair, and any
 // URL with no pairs, is its one spelling.
 func TestTheURLRuleRewritesTheOwnerAndNameAlone(t *testing.T) {
+	t.Parallel()
 	renamed := NewRenames(legionRenamed)
 	for _, c := range urlCases {
 		want := append([]string{c.url}, c.spellings...)
@@ -201,6 +204,7 @@ func TestTheURLRuleRewritesTheOwnerAndNameAlone(t *testing.T) {
 // the owner and the name changed. A URL under the new name, a URL of another repository and any
 // URL with no pairs are the URL as it is given.
 func TestCanonicalURLAnswersAURLUnderTheNewName(t *testing.T) {
+	t.Parallel()
 	renamed := NewRenames(legionRenamed)
 	for url, want := range map[string]string{
 		"https://github.com/SJawhar/Legion/pull/7":           "https://github.com/cybermonklabs/legion/pull/7",
@@ -224,6 +228,7 @@ func TestCanonicalURLAnswersAURLUnderTheNewName(t *testing.T) {
 // spellings in lower case, the URL itself first. A rewrite of a URL that names neither name of a
 // pair is the URL again. With no pairs the one spelling is the URL in lower case.
 func TestURLSpellingsSQLAnswersWhatURLSpellingsAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for name, renames := range map[string]Renames{"one pair": NewRenames(legionRenamed), "no pairs": {}} {
@@ -376,6 +381,7 @@ func TestRenamesSQLAnswersWhatCanonicalAnswers(t *testing.T) {
 // The negative control is the bound put to the trimmed name alone, as it was, which takes
 // `acme/<97 characters>.git` and `acme/<100 characters>.git`.
 func TestSplitGitHubRepoBoundsTheNameAsTheGitHubPathCarriesIt(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		full string
 		ok   bool

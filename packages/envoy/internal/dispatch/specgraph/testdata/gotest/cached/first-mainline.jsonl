@@ -1,0 +1,10 @@
+{"Time":"2026-11-17T06:31:12.895089565Z","Action":"start","Package":"example.com/acme/gotest/mainline"}
+{"Time":"2026-11-17T06:31:12.923694011Z","Action":"run","Package":"example.com/acme/gotest/mainline","Test":"TestA"}
+{"Time":"2026-11-17T06:31:12.923750563Z","Action":"output","Package":"example.com/acme/gotest/mainline","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-11-17T06:31:12.923801349Z","Action":"output","Package":"example.com/acme/gotest/mainline","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-17T06:31:12.923806863Z","Action":"pass","Package":"example.com/acme/gotest/mainline","Test":"TestA","Elapsed":0}
+{"Time":"2026-11-17T06:31:12.923814969Z","Action":"output","Package":"example.com/acme/gotest/mainline","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-17T06:31:12.923820658Z","Action":"run","Package":"example.com/acme/gotest/mainline","Test":"TestZ"}
+{"Time":"2026-11-17T06:31:12.923822938Z","Action":"output","Package":"example.com/acme/gotest/mainline","Test":"TestZ","Output":"=== RUN   TestZ\n","OutputType":"frame"}
+{"Time":"2026-11-17T06:31:12.932625757Z","Action":"output","Package":"example.com/acme/gotest/mainline","Test":"TestZ","Output":"ok  \texample.com/acme/gotest/mainline\t0.037s\n"}
+{"Time":"2026-11-17T06:31:12.935326002Z","Action":"pass","Package":"example.com/acme/gotest/mainline","Test":"TestZ","Elapsed":0.04}

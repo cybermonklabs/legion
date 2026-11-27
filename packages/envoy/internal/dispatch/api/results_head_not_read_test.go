@@ -506,8 +506,8 @@ func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 				wantNotReadAnswer(t, database, 85, "nobody, not known")
 			}
 			wantNotReadAnswer(t, database, 70, issue+", known")
-			if branch, err := unrenamed().BaseBranchMergedFor(context.Background(), database.Pool, issue, delivery.HeadAnswers{}); err != nil || branch != "release" {
-				t.Fatalf("SETUP: BaseBranchMergedFor(%s) answers %q (%v), want release", issue, branch, err)
+			if merged, err := unrenamed().MergeOfIssue(context.Background(), database.Pool, issue, delivery.HeadAnswers{}); err != nil || len(merged) == 0 || merged[0].BaseRef != "release" {
+				t.Fatalf("SETUP: MergeOfIssue(%s) answers %+v (%v), want its newest merge on release", issue, merged, err)
 			}
 			onRelease := recordNotReadPass(t, handler, issue, "k2", integrationCommit)
 			onMain := ""

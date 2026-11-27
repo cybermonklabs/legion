@@ -20,8 +20,8 @@ import (
 // each write for the request instead of the pool (HeadAnswers): every statement of that code runs
 // in a transaction of the pool that first makes the writes the request kept before it, in their
 // order, and is rolled back. A write it makes is kept, and every later read of the request, the
-// reads of the results path among them (HeadsAttributedTo, NewestPullRequestHead,
-// BaseBranchMergedFor, BaseBranchMergedIn, PullRequestsNotKnown, LinkedHeadsUnread, and the read
+// reads of the results path among them (HeadsAttributedTo, NewestPullRequestHead, MergeOfIssue,
+// MergeIn, LandingOf, MergedPullRequestOf, PullRequestsNotKnown, LinkedHeadsUnread, and the read
 // of a commit's place on a branch, Branches.ReadCommitOnBranch), runs in such a transaction too
 // (HeadAnswers.Read). So each read sees the rows a writer's read would see at that place, by the
 // writer's own statements and triggers, and no copy of any rule of the write exists to drift from

@@ -49,16 +49,21 @@ var processHolds = map[string][]string{
 // not here is a read no history asks, and so a read that could ignore the request's writes with
 // no test failing: TestAReadOnlyReadKeepsNothingPastItsRequest fails on it.
 var answeredReads = map[string]string{
-	"Attributor.HeadsAttributedTo":     readAsked,
-	"Attributor.NewestPullRequestHead": readAsked,
-	"Attributor.BaseBranchMergedFor":   readAsked,
-	"Attributor.BaseBranchMergedIn":    readAsked,
-	"Attributor.PullRequestsNotKnown":  readAsked,
-	"Attributor.LinkedHeadsUnread":     readAsked,
-	"Branches.ReadCommitOnBranch":      readAsked,
-	"Branches.readCommitOnBranch":      innerRead,
-	"Attributor.AnswerCommitPulls":     keptThrough,
-	"Attributor.AnswerLinkedHead":      keptThrough,
+	"Attributor.HeadsAttributedTo":        readAsked,
+	"Attributor.NewestPullRequestHead":    readAsked,
+	"Attributor.MergeOfIssue":             readAsked,
+	"Attributor.MergeIn":                  readAsked,
+	"LandingOf":                           readAsked,
+	"MergedPullRequestOf":                 readAsked,
+	"Attributor.PullRequestsNotKnown":     readAsked,
+	"Attributor.LinkedHeadsUnread":        readAsked,
+	"Branches.ReadCommitOnBranch":         readAsked,
+	"Branches.readCommitOnBranch":         innerRead,
+	"readMerged":                          innerRead,
+	"Attributor.AnswerCommitPulls":        keptThrough,
+	"Attributor.AnswerCommitsPulls":       keptThrough,
+	"Attributor.AnswerLinkedHead":         keptThrough,
+	"Attributor.RefreshMergedPullRequest": keptThrough,
 }
 
 const (

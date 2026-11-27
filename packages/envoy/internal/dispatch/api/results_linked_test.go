@@ -70,8 +70,10 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 		unheldCommit = "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
 	)
 	linked := &linkedGitHub{
-		held:     map[string][]string{"acme/tools": {toolsMerge}},
-		pulls:    map[string]string{"acme/tools#9": "merged"},
+		held:  map[string][]string{"acme/tools": {toolsMerge}},
+		pulls: map[string]string{"acme/tools#9": "merged"},
+		merged: map[string]linkedMerge{"acme/tools#9": {title: "The linked work", headRef: "work", headSHA: headCommit,
+			base: "main", mergeCommit: toolsMerge, mergedAt: "2026-11-20T12:00:00Z"}},
 		branches: map[string][]string{"acme/tools:main": {toolsMerge}},
 		failing:  []string{"acme/widgets"},
 	}
@@ -496,8 +498,8 @@ func storeLinkedHead(t *testing.T, database *store.Store, repo string, number in
 }
 
 // storeLinkedHeadOn is storeLinkedHead for a pull request in state on the base branch base: a
-// merged one is the row delivery.Attributor.BaseBranchMergedIn answers the branch of. No
-// caller's server holds a rename pair, so it writes with unrenamed.
+// merged one is a row delivery.Attributor.MergeIn answers the issue's merges from. No caller's
+// server holds a rename pair, so it writes with unrenamed.
 func storeLinkedHeadOn(t *testing.T, database *store.Store, repo string, number int, sha, state, base string) {
 	t.Helper()
 	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)

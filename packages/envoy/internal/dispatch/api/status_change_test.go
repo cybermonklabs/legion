@@ -252,6 +252,7 @@ func (rig ruleRig) requireIssue(t *testing.T, key, status, parent string) {
 // option moved no issue, and none after a call with no option. With the rule on, the same close
 // with no option is refused before anything is written.
 func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 
 	t.Run("done closes every open issue under the issue, deepest first", func(t *testing.T) {
@@ -352,6 +353,7 @@ func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 // two base attributes are stated. It states no authored_by: the system actor is nobody the store
 // names (graphstore.AuthorOf), so the store census reads no author off its row either.
 func TestAStatusChangesCommentIsANodeOfTheStore(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	ctx := context.Background()
 	root := rig.file(t, "Root closed with its child", "in_progress", "")
@@ -780,6 +782,7 @@ func iapServer(t *testing.T, on bool) statusChangeServer {
 // token, a broker token acting as its session, and one scoped to its person. Both hold with the
 // setting off too.
 func TestOnlyABrowserSignInClosesChildrenWithTheirParent(t *testing.T) {
+	t.Parallel()
 	for _, on := range []bool{true, false} {
 		t.Run(fmt.Sprintf("with the rule on %t", on), func(t *testing.T) {
 			for _, server := range []statusChangeServer{tokenCallersServer(t, on), cookieServer(t, on), iapServer(t, on)} {
@@ -815,6 +818,7 @@ func TestOnlyABrowserSignInClosesChildrenWithTheirParent(t *testing.T) {
 // sign-in cookie, is the token's. Its include_children with done is refused as a token's, and the
 // write of a call it is allowed records the session the token acts as, not the person.
 func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
+	t.Parallel()
 	tokens := tokenCallersServer(t, true)
 	cookies := cookieServer(t, true)
 	for _, beside := range []struct {
@@ -863,6 +867,7 @@ func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
 // gets into it. An id the cleaning empties is "a session". A personal token names the person it
 // belongs to, whatever session its body names.
 func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	// started starts a new issue on the backlog, under a new parent on the backlog, with
 	// include_parent and actor as the body's actor, sent by send, and answers the parent, which
@@ -956,6 +961,7 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 // done child stays. Each unlinked child has one comment that names the call, and the issue the
 // call names has one after them, which names the call and lists each unlink.
 func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent closed without its children", "in_progress", "")
 	triaged := rig.file(t, "Child in triage", model.IssueStatusTriage, named)
@@ -998,6 +1004,7 @@ func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
 // call, and the issue the call names has one after them, which names the call and lists each
 // move; it has none when every ancestor is in work already.
 func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 
 	t.Run("two ancestors that have not started, highest first", func(t *testing.T) {
@@ -1125,6 +1132,7 @@ func (rig ruleRig) keyedStatusChange(t *testing.T, write ruleWrite, key string) 
 // answer, with no changed added or moved. With the rule off, a dry run of a call the rule would
 // refuse answers 409 PARENT_STATUS_CONFLICT as with it on, and the real call is taken.
 func TestADryRunWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	for index, test := range statusChangeCases {
 		t.Run(test.option, func(t *testing.T) {
@@ -1223,6 +1231,7 @@ func TestADryRunWritesNothing(t *testing.T) {
 // a member it does not declare, so the close moves no child: with the rule off it closes the
 // parent alone, and with the rule on it is refused for the open child.
 func TestTheOptionsRideARouteOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	for _, on := range []bool{false, true} {
 		t.Run(fmt.Sprintf("with the rule on %t", on), func(t *testing.T) {
 			rig := newRuleRig(t, on)
@@ -1252,6 +1261,7 @@ func TestTheOptionsRideARouteOfTheirOwn(t *testing.T) {
 // status, code and body, with changed holding the first child's entry as its write answered it,
 // and no step after it runs. A call refused before its first step answers changed [].
 func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent closed with its children", "in_progress", "")
 	first := rig.file(t, "First child", "todo", named)
@@ -1307,6 +1317,7 @@ func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
 // work. The key sent again with another body (422 KEY_REUSED) and a malformed key (400
 // KEY_INVALID), under which nothing ran, answer changed [].
 func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
+	t.Parallel()
 	rig := newRepeatRig(t)
 	named := rig.file(t, "Issue whose key is refused", "backlog", "")
 	rig.file(t, "Child of the keyed call", "backlog", named)
@@ -1361,6 +1372,7 @@ func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
 // /api/v1/issues/{key} with for the same credential, and with changed [] beside them, which the
 // PATCH's answer does not carry, under a Content-Length that counts it. Nothing is written.
 func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{parentStatusRule: true})
 	agent := newBrokerCaller(t)
 	const readOnly, serviceOnly = "a-read-only-token-that-changes-a-status", "a-token-naming-no-person-that-changes-a-status"
@@ -1433,6 +1445,7 @@ func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
 // issue's own step moves it into work (one event), and each child's step moves it with a comment
 // (two events), and no label the other writer added is in any issue of the answer.
 func TestARepeatOfAStatusChangeAnswersTheIssuesItsStepsRead(t *testing.T) {
+	t.Parallel()
 	rig := newRepeatRig(t)
 	label := func(t *testing.T, issue, label string) {
 		t.Helper()
@@ -1672,6 +1685,7 @@ const reopenNotes = "Notes context\n\n:::ask{#reopen-decision urgency=\"med\" mu
 // Through the step hook, another writer's event on the named issue stops the call at the next
 // step, and an issue that another writer moved first is left as that writer left it.
 func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
+	t.Parallel()
 	const changedSince = "issue changed since the hand-over read"
 
 	t.Run("a stale expected_sequence refuses each option and its dry run", func(t *testing.T) {
@@ -1923,6 +1937,7 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 // issue makes a dry run wait for it, which pg_locks shows, and the open child that writer files
 // under that issue before it commits is in the dry run's answer.
 func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent whose plan is read under its locks", "in_progress", "")
@@ -2191,6 +2206,7 @@ func movedComment(key, from, to, named string) string {
 // so every json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey,
 // replayRecovered) names each member as those statements do.
 func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.T) {
+	t.Parallel()
 	members := map[string]string{
 		"Changed": pointChanged, "Events": pointEvents, "Withdrawn": pointWithdrawn, "Moved": pointMoved, "Finished": pointFinished,
 		"Issue": pointIssue,
@@ -2219,6 +2235,7 @@ func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.
 // the bound, not far before it. The paragraph names the option of each move, of a move the list
 // leaves out too. A call whose moves fit lists each of them and counts none.
 func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	const named = "ACME-1"
 	// moved is count moves by include_children of the issues after first, then, past the cut, one
 	// move by include_parent: no call writes in that order, so that only a move the list leaves out
@@ -2287,6 +2304,7 @@ func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *test
 // stored, and a holder inside its lease is KEY_IN_FLIGHT. A repeat judged once its body arrived
 // (answerDrainedRepeat) is judged the same way.
 func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
+	t.Parallel()
 	const changedSince = "issue changed since the hand-over read"
 	rig := newRepeatRig(t)
 
@@ -2903,6 +2921,7 @@ var statusChangeFixtures = filepath.Join("testdata", "status-change")
 // `go -C packages/envoy test -count=1 -run '^TestStatusChangeAnswersMatchTheirFixtures$' ./internal/dispatch/api -update`
 // rewrites them.
 func TestStatusChangeAnswersMatchTheirFixtures(t *testing.T) {
+	t.Parallel()
 	const rewrite = "go -C packages/envoy test -count=1 -run '^TestStatusChangeAnswersMatchTheirFixtures$' ./internal/dispatch/api -update"
 	rig := newStatusChangeRig(t, true)
 	type answer struct {

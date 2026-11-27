@@ -96,6 +96,15 @@ func queryGitHubPage(ctx context.Context, client *githubapp.Client, token, query
 // one of GitHub's own gateway-timeout answers (it reports a query it gave up on as a 502 or a
 // 504). Everything else -- a 404, a rate limit, a decode failure, a response past the size cap,
 // the caller's own context ending -- is the answer, not a reason to ask again.
+//
+// The other outage statuses (a 408, a 500, a 503: httpoutage.Is) go back to the caller,
+// whose retry is the next reconcile pass: a step that fails a page fails its window, and the next
+// pass, at most ReconcileInterval later, asks for it again from the last window it recorded; an
+// intake handler logs the failed fetch and acknowledges it, leaving the event to that pass. Asking
+// again within seconds helps a query GitHub gave up on under load. A 500 or a 503 says GitHub is
+// failing, which seconds rarely mend and the next pass meets minutes later, and each try would
+// hold an intake handler 1 s and then 2 s more (githubPageRetryWait). A 429 is a limit whose wait
+// the caller keeps (githubapp.RateLimit).
 func retryGitHubPage(ctx context.Context, attempt, status int, err error) bool {
 	if attempt >= githubPageAttempts {
 		return false

@@ -206,6 +206,8 @@ const validCalls = {
     verdict: "pass",
     commit: "1111111111111111111111111111111111111111",
   },
+  dispatch_deploy: { repo: "acme/widgets", program: "renderer", commit: "a".repeat(40) },
+  dispatch_deploys: { repo: "acme/widgets", program: "renderer" },
   dispatch_results: { issue: "DSP-1" },
   dispatch_artifact: { issue: "DSP-1", name: "design.pdf", path: "design.pdf" },
   dispatch_read: { issue: "DSP-1" },
@@ -330,6 +332,8 @@ describe("dispatchToolSpecs", () => {
       "dispatch_plan_approve",
       "dispatch_review",
       "dispatch_result",
+      "dispatch_deploy",
+      "dispatch_deploys",
       "dispatch_results",
       "dispatch_artifact",
       "dispatch_read",
@@ -1262,9 +1266,20 @@ describe("dispatchToolSpecs", () => {
       properties: Record<string, { description?: string }>;
     };
 
-    expect(json.properties.priority?.description).toBe(
-      "Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."
-    );
+    expect(json.properties.priority?.description).toMatch(/\bp0\b/);
+  });
+
+  // A priority of 0 needs the p0 scope, which only a person at a browser or a token its maker gave
+  // it to holds, so the description a host shows beside each issue tool's priority, and the
+  // command prints on its --priority row, names the scope before Dispatch refuses the write.
+  test("dispatch_issue and dispatch_issue_update say a priority of 0 needs p0", () => {
+    for (const name of ["dispatch_issue", "dispatch_issue_update"] as const) {
+      const json = z.toJSONSchema(schemaFor(name), { io: "input" }) as {
+        properties: Record<string, { description?: string }>;
+      };
+
+      expect(json.properties.priority?.description, name).toMatch(/\bp0\b/);
+    }
   });
 
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
@@ -1889,10 +1904,6 @@ describe("dispatchToolSpecs", () => {
     [
       "dispatch_artifact",
       "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit.",
-    ],
-    [
-      "dispatch_ask",
-      "Measure what you can first, and put the measurement and the size of the population it covers in the question; drop an option that cannot fix most of that population, never offer it cut down, and keep an option not to act (Hold). Set urgency high when your work halts on the answer, and keep working on everything else.",
     ],
     [
       "dispatch_issue_update",

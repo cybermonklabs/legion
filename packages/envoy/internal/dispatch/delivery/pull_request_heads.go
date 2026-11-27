@@ -90,12 +90,15 @@ type PullRequestHead struct {
 	// facts the statement reads its issue from. A nil value means that this write read no texts,
 	// and leaves the stored texts row as it is.
 	Texts *PullRequestTexts
-	// MergeCommitSHA is the commit GitHub made when this pull request merged. It is set only
-	// for a merged pull request, and only by a writer that read it; one that did not read it
-	// leaves it empty, which asks for nothing. It is written to no column of
-	// pull_request_heads: it exists to seed branch_commits with the one fact the merge itself
-	// proves, that the base branch held this commit (UpsertPullRequestHead).
+	// MergeCommitSHA is the commit GitHub made when this pull request merged, and MergedAt the
+	// time it merged. Each is set only for a merged pull request, and only by a writer that read
+	// it; one that did not read it leaves it empty, which keeps what the row holds
+	// (upsertHeadRow). The row stores both (merge_commit_sha, merged_at), which is how a read
+	// names the merge of the work and orders two merges by when each merged (MergeOfIssue), and
+	// the merge commit also seeds branch_commits with the one fact the merge itself proves, that
+	// the base branch held this commit (UpsertPullRequestHead).
 	MergeCommitSHA string
+	MergedAt       *time.Time
 }
 
 // PullRequestTexts is what a read of GitHub answered about a pull request besides its head row:
@@ -427,6 +430,13 @@ const headWriteRollback = 2 * time.Second
 // (attributedTerms). An update names no issue. A write of texts clears the refusal and the proof
 // of absence of a read of the facts ($13).
 //
+// The merge commit and the merge time are written only for a merged row, and a write that
+// carries neither keeps what the row holds: an envelope of the release before this one carries
+// no merge time, and an edit of a merged pull request is a write too, so a write that carries
+// none says nothing about the merge, which never changes once made. An open row stores neither:
+// GitHub answers a merge_commit_sha for an open pull request too, its test merge (mergeCommitOf),
+// which is no merge.
+//
 // github_read_at is the reader's clock as the read of GitHub whose answer the write carries began
 // (PullRequestHead.GitHubReadAt), and null for a write that is no answer of GitHub's: a mark, and
 // the time a reader sees. Every read of this build begins at a moment of its own, so a write of
@@ -472,13 +482,19 @@ const headWriteRollback = 2 * time.Second
 // CTE reads the statement's snapshot, and a CTE's `for update` skips a row the statement's own
 // update has changed.
 func (a *Attributor) upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
+	mergeCommit, mergedAt := "", (*time.Time)(nil)
+	if head.State == "merged" {
+		mergeCommit, mergedAt = head.MergeCommitSHA, head.MergedAt
+	}
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key,
-			title, url, event_at, checked_at, github_read_at, github_read_order
+			title, url, event_at, checked_at, github_read_at, github_read_order,
+			merge_commit_sha, merged_at
 		)
 		select $1::text, $2::integer, $3::text, $4::text, $5::text, $6::text, f.issue_key,
-			$7::text, $8::text, $9::timestamptz, $10::timestamptz, $11::timestamptz, $12::bigint
+			$7::text, $8::text, $9::timestamptz, $10::timestamptz, $11::timestamptz, $12::bigint,
+			$14::text, $15::timestamptz
 		from (
 			select case when o.repo is not null then o.issue_key else d.issue_key end as issue_key
 			from (select 1) one
@@ -506,6 +522,9 @@ func (a *Attributor) upsertHeadRow(ctx context.Context, db refs.Execer, head Pul
 			checked_at = coalesce(excluded.checked_at, pull_request_heads.checked_at),
 			github_read_at = excluded.github_read_at,
 			github_read_order = excluded.github_read_order,
+			merge_commit_sha = case when excluded.merge_commit_sha <> '' then excluded.merge_commit_sha
+				else pull_request_heads.merge_commit_sha end,
+			merged_at = coalesce(excluded.merged_at, pull_request_heads.merged_at),
 			attribution_refused_at = case when $13::boolean then null else pull_request_heads.attribution_refused_at end,
 			attribution_absent_at = case when $13::boolean then null else pull_request_heads.attribution_absent_at end
 		where excluded.event_at is null
@@ -515,7 +534,7 @@ func (a *Attributor) upsertHeadRow(ctx context.Context, db refs.Execer, head Pul
 	`,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.Title, head.URL, head.EventAt, head.CheckedAt, head.GitHubReadAt, head.GitHubReadOrder,
-		head.Texts != nil,
+		head.Texts != nil, mergeCommit, mergedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
@@ -590,10 +609,10 @@ var headAttributedToSelect = `
 
 // AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
 // among the heads a `before_merge` check compares its results with: the pull request's number,
-// the commit its head is, and the two times Dispatch may have learned that head by. CheckedAt
-// is when Dispatch last read the pull request from GitHub and EventAt is the pull request's
-// own update time on GitHub, as the read that wrote the head answered it; each is nil where no
-// writer has carried it. The reader shows the later of the two and names which it is
+// whether it is open, the commit its head is, and the two times Dispatch may have learned that
+// head by. CheckedAt is when Dispatch last read the pull request from GitHub and EventAt is the
+// pull request's own update time on GitHub, as the read that wrote the head answered it; each is
+// nil where no writer has carried it. The reader shows the later of the two and names which it is
 // (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt). HeadKnown is false for a pull request
 // Dispatch holds no results row of, only a timeline row: it has no head, HeadSHA is "" and both
 // times are nil. HeadKnown is false too while a read of GitHub is owed for the pull request, and
@@ -605,17 +624,46 @@ var headAttributedToSelect = `
 // repository beside the number, which alone would read as a pull request of the issue's own
 // repository. Repo is the canonical name of the pull request's repository (refs.CanonicalRepoSQL),
 // for every pull request, which the record route reads to say which repository holds a commit
-// that heads it (api/results_linked.go, refuseUnknownCommit).
+// that heads it (api/results_linked.go, refuseUnknownCommit), and the repository to read the
+// head's check runs from, as NewestHead.Repo is: GitHub answers a read under the canonical name
+// alone.
+//
+// MergedAt is when a merged pull request merged, as GitHub gave it (pull_request_heads.merged_at),
+// and nil where Dispatch holds no time of its merge; AttributionRule is the rule that last judged
+// the row (AttributionRuleVersion). The results read orders an issue's merged pull requests by the
+// two (MergeTime): the newest is the one that merged last. NewestMerged marks that one, chosen by
+// the statement's own order (newestMergeFirst), not by a second ordering rule in Go.
 type AttributedHead struct {
-	Number       int
-	Repo         string
-	HeadSHA      string
-	HeadKnown    bool
-	CheckedAt    *time.Time
-	EventAt      *time.Time
-	RefusedAs    string
-	RefusedSince *time.Time
-	LinkedRepo   string
+	Number    int
+	Repo      string
+	HeadSHA   string
+	HeadKnown bool
+	// Open is whether the pull request is open; a merged one's head is its final head.
+	Open            bool
+	CheckedAt       *time.Time
+	EventAt         *time.Time
+	RefusedAs       string
+	RefusedSince    *time.Time
+	LinkedRepo      string
+	MergedAt        *time.Time
+	AttributionRule int
+	NewestMerged    bool
+}
+
+// MergeTime is one merged pull request row as a read that orders merged pull requests by when
+// each merged takes it: the row's repository and number, when it merged (nil where the row holds
+// no time of its merge), and the rule that last judged the row (AttributionRuleVersion), which
+// says whether a read of GitHub may still give it a time. An AttributedHead gives one (MergeTime).
+type MergeTime struct {
+	Repo            string
+	Number          int
+	MergedAt        *time.Time
+	AttributionRule int
+}
+
+// MergeTime is head's row as a read orders merged pull requests by when each merged.
+func (head AttributedHead) MergeTime() MergeTime {
+	return MergeTime{Repo: head.Repo, Number: head.Number, MergedAt: head.MergedAt, AttributionRule: head.AttributionRule}
 }
 
 // HeadsAttributedTo is every open or merged pull request attributed to issueKey, newest learned
@@ -664,8 +712,9 @@ func readAttributedHeads(ctx context.Context, q Querier, statement, issueKey str
 	for rows.Next() {
 		var head AttributedHead
 		var refusedAs *string
-		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.HeadKnown, &head.CheckedAt, &head.EventAt,
-			&refusedAs, &head.RefusedSince, &head.LinkedRepo, &head.Repo); err != nil {
+		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.HeadKnown, &head.Open, &head.CheckedAt, &head.EventAt,
+			&refusedAs, &head.RefusedSince, &head.LinkedRepo, &head.Repo, &head.MergedAt, &head.AttributionRule,
+			&head.NewestMerged); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		if refusedAs != nil {
@@ -683,10 +732,16 @@ func readAttributedHeads(ctx context.Context, q Querier, statement, issueKey str
 // left join with heads, so a pull request with a timeline row only is listed with no head, and a
 // left join with its owed read (owedReadJoin), so a pull request owed a read is listed with its
 // stored head and HeadKnown false. A pull request the statement gives by a link in a repository
-// the issue does not resolve to names that repository, lowercased.
+// the issue does not resolve to names that repository, lowercased. newest_merged marks the merged
+// row that merged last among the issue's merged rows, in newestMergeFirst's order (the latest
+// merged_at first, a row with none after every row with one, the higher number first), whether or
+// not a read is owed for it, so a reader that must take the newest merge knows which it is.
 var headsAttributedToSelect = `
-	select a.number, coalesce(h.head_sha, ''), h.repo is not null and o.reason is null, h.checked_at, h.event_at,
-		o.refused_as, o.refused_since, case when a.linked then lower(a.repo) else '' end, a.repo
+	select a.number, coalesce(h.head_sha, ''), h.repo is not null and o.reason is null, coalesce(h.state = 'open', false),
+		h.checked_at, h.event_at, o.refused_as, o.refused_since, case when a.linked then lower(a.repo) else '' end, a.repo,
+		h.merged_at, coalesce(h.attribution_rule, 0),
+		coalesce(h.state = 'merged' and row_number() over (
+			partition by h.state = 'merged' order by h.merged_at desc nulls last, a.number desc) = 1, false)
 	from attributed a left join heads h on h.j_repo = a.repo and h.j_number = a.number
 	` + owedReadJoin + `
 	where a.issue_key = $1 and (h.repo is null or h.state in ('open', 'merged'))
@@ -707,18 +762,21 @@ type NewestHead struct {
 }
 
 // NewestPullRequestHead is the head of the open pull request of the highest number attributed
-// to issueKey, or, where none is open, the final head of its merged pull request of the highest
-// number, and false where Dispatch holds neither. GitHub's numbers rise, so the highest is the
-// newest. A pull request of the repository the issue resolves to comes before one the issue links
-// in another repository (attributedTerms' linked), since the numbers of two repositories say
-// nothing of which is newer: an issue's own repository answers where it holds a pull request of
-// the issue, as it did before a link could give the issue one of another repository. Both are
-// heads HeadsAttributedTo lists, so a result at the commit answered here stands at one of the
-// heads a `before_merge` check compares its results with. A closed-unmerged pull request is no
-// head, and a pull request with no results row has none. The repository is the canonical name
-// (refs.CanonicalRepoSQL), which GitHub answers the head's check runs under (api/results_ci.go),
-// whatever name the row is stored under. A pull request owed a read is answered as before, with
-// ReadOwed true.
+// to issueKey, or, where none is open, the final head of its merged pull request that merged
+// last, and false where Dispatch holds neither. GitHub's numbers rise, so the highest is the
+// newest open one; a merge's time is when GitHub merged it (merged_at), and among merged pull
+// requests a row holding no time comes after every row that holds one, the higher number first
+// between two of one time or of none (newestMergeFirst). A read that must not take the newest of
+// rows it cannot order asks first whether each holds a time (api's fillMergeTimes). A pull request
+// of the repository the issue resolves to comes before one the issue links in another repository
+// (attributedTerms' linked), since the numbers of two repositories say nothing of which is newer:
+// an issue's own repository answers where it holds a pull request of the issue, as it did before
+// a link could give the issue one of another repository. Both are heads HeadsAttributedTo lists,
+// so a result at the commit answered here stands at one of the heads a `before_merge` check
+// compares its results with. A closed-unmerged pull request is no head, and a pull request with
+// no results row has none. The repository is the canonical name (refs.CanonicalRepoSQL), which
+// GitHub answers the head's check runs under (api/results_ci.go), whatever name the row is stored
+// under. A pull request owed a read is answered as before, with ReadOwed true.
 func (a *Attributor) NewestPullRequestHead(ctx context.Context, q Querier, issueKey string, answers HeadAnswers) (NewestHead, bool, error) {
 	statements, err := a.attribution()
 	if err != nil {
@@ -738,111 +796,18 @@ func (a *Attributor) NewestPullRequestHead(ctx context.Context, q Querier, issue
 	return head, true, nil
 }
 
+// newestPullRequestHeadSelect is NewestPullRequestHead's select over the statement's terms by
+// issue: the merged rows in newestMergeFirst's order, after the open ones by number.
 var newestPullRequestHeadSelect = `
 	select a.repo, a.number, h.head_sha, h.state, o.reason is not null
 	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
 	` + owedReadJoin + `
 	where a.issue_key = $1 and h.state in ('open', 'merged')
-	order by a.linked, h.state = 'open' desc, a.number desc
+	order by a.linked, h.state = 'open' desc, h.merged_at desc nulls last, a.number desc
 	limit 1`
 
-// BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
-// into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
-// issue is measured against (api/results_comparison.go). An issue whose pull request merged
-// into an integration branch has reached that branch and no other, so a result of it at a
-// commit that branch's history carries stands at that branch. The repository's default branch
-// answers nothing about the work until the integration branch itself lands. The merged row
-// last updated answers: event_at is the pull request's updated_at as GitHub answered the read
-// that wrote the row, which is the time of the merge only until a later change of that pull
-// request (an edit, a label) moves it. The rows are ordered by event_at descending with the rows
-// carrying none last, since a row with no update time says less than any row that has one, and
-// by the pull request's own number descending where two share a time, so the answer does not
-// turn on whichever row the planner returned first.
-//
-// The read is keyed by the issue and not by the result's commit because Legion merges with
-// squash: the commit that lands on the base branch is the one the squash makes, which is no
-// pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
-// commit is such a head — can never answer for it. Keying by the issue rests on the rule of the
-// statement (own_head, attributionHeld). The rule gives a pull request to an issue only where its
-// head is a branch of the pull request's own repository, and this reads the pull requests of the
-// repository the issue resolves to alone: one the issue links in another repository is
-// BaseBranchMergedIn's. So the branch this answers is one the issue's own work merged into. A
-// pull request whose texts do not describe its stored head keeps the issue its results row
-// stores (R4's fallback): an earlier answer of the statement (SyncAttributions), or what a writer
-// of the release before stored.
-//
-// An empty answer is "no branch to measure against", which a merged row carrying no base_ref
-// gives as much as no merged row at all. The column is declared not null with the empty string
-// as its default, and a `pull_request` envelope published before Dispatch carried the field
-// writes exactly that, so such a row names no base branch; the empty answer leaves the caller
-// on its own fallback, the repository's default branch, where handing that value on as a
-// branch would have it build a GitHub compare read against a branch with no name. A timeline row
-// stores no base branch, so a pull request with no results row names none either. answers is the
-// caller's request's, as HeadsAttributedTo takes them.
-func (a *Attributor) BaseBranchMergedFor(ctx context.Context, q Querier, issueKey string, answers HeadAnswers) (string, error) {
-	statements, err := a.attribution()
-	if err != nil {
-		return "", err
-	}
-	var branch string
-	err = answers.Read(ctx, q, func(q Querier) error {
-		return q.QueryRow(ctx, statements.baseBranchMergedFor, issueKey).Scan(&branch)
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
-	}
-	return branch, nil
-}
-
-const baseBranchMergedForSelect = `
-	select h.base_ref
-	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
-	where a.issue_key = $1 and not a.linked and h.state = 'merged'
-	order by h.event_at desc nulls last, a.number desc
-	limit 1`
-
-// BaseBranchMergedIn is BaseBranchMergedFor for repoFull, a repository issueKey does not resolve
-// to: the branch the newest merged pull request that the statement gives the issue by a link of
-// its URL in repoFull merged into (attributedTerms' linked), and "" where Dispatch holds no merge
-// of such a pull request. An issue whose work spans two repositories links the pull request it
-// has in the second one, and BaseBranchMergedFor reads the repository the issue resolves to
-// alone, so it never names that merge. The results read measures an `after_merge` result whose
-// commit the second repository holds against the branch answered here
-// (api/results_comparison.go).
-//
-// The rows are ordered as BaseBranchMergedFor orders them, and the empty answer means what its
-// empty answer means: no branch to measure against. A link to a pull request of the repository
-// the issue resolves to is no linked pull request, so a repoFull the issue resolves to answers
-// "". repoFull is compared without case with the canonical name of each pull request, as every
-// other comparison of a repository here is. answers is the caller's request's, as
-// HeadsAttributedTo takes them.
-func (a *Attributor) BaseBranchMergedIn(ctx context.Context, q Querier, issueKey, repoFull string, answers HeadAnswers) (string, error) {
-	statements, err := a.attribution()
-	if err != nil {
-		return "", err
-	}
-	var branch string
-	err = answers.Read(ctx, q, func(q Querier) error {
-		return q.QueryRow(ctx, statements.baseBranchMergedIn, issueKey, repoFull).Scan(&branch)
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
-	}
-	return branch, nil
-}
-
-const baseBranchMergedInSelect = `
-	select h.base_ref
-	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
-	where a.issue_key = $1 and a.linked and lower(a.repo) = lower($2::text) and h.state = 'merged'
-	order by h.event_at desc nulls last, a.number desc
-	limit 1`
+// The merges of an issue's work, which an `after_merge` and a `default_branch` check read, are
+// merge_holds.go's (MergeOfIssue, MergeIn, LandingOf, MergedPullRequestOf).
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
 // reconcile reads it again.
@@ -887,6 +852,12 @@ const PullRequestHeadBatch = 200
 // offered never: no read can reach it, so it is warned of and stamped read here, as a row of a
 // repository the App cannot read is stamped (MarkPullRequestHeadChecked), and leaves the front of
 // the next batches rather than holding one of its places every pass.
+//
+// No merged row is offered here. A merged row's merge commit and merge time (merge_commit_sha,
+// merged_at) come with any read of GitHub that writes it (headRow, upsertHeadRow): the facts
+// line's, which reads each row whose texts are not current, a merged row stored before those
+// columns among them, and a results read's refresh of a merged row it must order and that holds
+// no time (api's fillMergeTimes).
 func (a *Attributor) ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestRef, error) {
 	rows, err := pool.Query(ctx, `
 		select h.repo, `+refs.CanonicalRepoSQL(a.renames, "h.repo")+`, h.number from pull_request_heads h
@@ -949,16 +920,17 @@ func headInOwnRepository(repoFull, headRepo string) bool {
 
 // headRow is the row one pull request GitHub answered makes: the one builder every GitHub reader
 // below writes through, so they cannot drift. The list form of a pull request carries merged_at
-// but not merged, so a merge is read from whichever of the two GitHub sent. The row is marked a
-// read of GitHub that took its start read (GitHubReadAt and GitHubReadOrder) where GitHub's answer
-// carried its updated_at, since the mark says the row's time is GitHub's own; each reader takes
-// read before its request goes out (startRead).
+// but not merged, so a merge is read from whichever of the two GitHub sent; merged_at is also the
+// time the row stores for the merge, so any read of a merged row fills it (upsertHeadRow). The row
+// is marked a read of GitHub that took its start read (GitHubReadAt and GitHubReadOrder) where
+// GitHub's answer carried its updated_at, since the mark says the row's time is GitHub's own; each
+// reader takes read before its request goes out (startRead).
 func headRow(repoFull string, payload pullRequestPayload, checkedAt *time.Time, read readStart) PullRequestHead {
 	row := PullRequestHead{
 		Repo: repoFull, Number: payload.Number, HeadSHA: payload.Head.SHA, HeadRef: payload.Head.Ref,
 		BaseRef: payload.Base.Ref, State: PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
 		Title: payload.Title, URL: payload.HTMLURL, EventAt: payload.UpdatedAt, CheckedAt: checkedAt,
-		MergeCommitSHA: mergeCommitOf(payload),
+		MergeCommitSHA: mergeCommitOf(payload), MergedAt: payload.MergedAt,
 	}
 	if payload.UpdatedAt != nil {
 		row.GitHubReadAt, row.GitHubReadOrder = &read.at, &read.order

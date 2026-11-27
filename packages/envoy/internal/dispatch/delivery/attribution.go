@@ -72,6 +72,17 @@ import (
 // messages are not read and no higher source decides, the answer is not known. Where no texts
 // describe the stored head, the answer is the issue that the stored rows hold (attributedTerms).
 
+// AttributionRuleVersion is the rule the release before this one judges a pull request by and
+// stamps on pull_request_heads.attribution_rule as it reads GitHub: 6, its rule 2 with each merged
+// row's merge commit and merge time stored (it is 6, not 3, because cybermonklabs/legion#4230
+// numbers its own rules 3 to 5). This build judges no row by a number and stamps none: the
+// statement reads the texts at each read (attributedTerms), and the column is that release's alone
+// while it serves beside this one. So a merged row whose rule is below this number is one no read
+// of a release that stores merge times has stamped, a row this build inserted (rule 0) among them,
+// and a results read that must order merges and finds such a row with no merge time refreshes it
+// (api's fillMergeTimes).
+const AttributionRuleVersion = 6
+
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
 
@@ -343,7 +354,7 @@ func attributedTermsOver(schema string, renames refs.Renames, judged, texts stri
 		select j.repo as j_repo, j.number as j_number, h.*
 		from judged j cross join lateral (
 			select h.repo, h.number, h.url, h.issue_key, h.attribution_source, h.head_sha, h.base_ref, h.event_at,
-				h.head_ref, h.title, h.state, h.checked_at
+				h.head_ref, h.title, h.state, h.checked_at, h.merge_commit_sha, h.merged_at, h.attribution_rule
 			from pull_request_heads h
 			where h.number = j.number and lower(h.repo) = any(j.names)
 			order by lower(h.repo) = lower(j.repo) desc, h.github_read_at desc nulls last, h.repo
@@ -498,8 +509,8 @@ type attributionStatements struct {
 	headsAttributedTo     string
 	headAttributedTo      string
 	newestPullRequestHead string
-	baseBranchMergedFor   string
-	baseBranchMergedIn    string
+	mergeOfIssue          string
+	mergeIn               string
 	pullRequestsNotKnown  string
 	pullRequestsOfIssues  string
 	syncAttributions      string
@@ -515,8 +526,8 @@ func attributionStatementsFor(schema string, renames refs.Renames) *attributionS
 		headsAttributedTo:     byIssue + headsAttributedToSelect,
 		headAttributedTo:      byIssue + headAttributedToSelect,
 		newestPullRequestHead: byIssue + newestPullRequestHeadSelect,
-		baseBranchMergedFor:   byIssue + baseBranchMergedForSelect,
-		baseBranchMergedIn:    byIssue + baseBranchMergedInSelect,
+		mergeOfIssue:          byIssue + mergeOfIssueSelect,
+		mergeIn:               byIssue + mergeInSelect,
 		pullRequestsNotKnown:  attributedTerms(schema, renames, notKnownJudged(renames)) + notKnownSelect,
 		pullRequestsOfIssues:  attributedTerms(schema, renames, timelineByIssues(renames)) + pullRequestsOfIssuesSelect,
 		syncAttributions:      syncAttributionsStatement(schema, renames),

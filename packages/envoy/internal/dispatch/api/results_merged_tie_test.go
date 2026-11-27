@@ -12,9 +12,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// mergedPull is GitHub's answer for pull request number of repo, merged at head sha, with that
-// title and body and a branch that names no issue.
-func mergedPull(repo string, number int, sha, title, body string) string {
+// mergedPullBody is GitHub's answer for pull request number of repo, merged at head sha, with
+// that title and body and a branch that names no issue.
+func mergedPullBody(repo string, number int, sha, title, body string) string {
 	return fmt.Sprintf(`{"number":%d,"title":%q,"body":%q,"html_url":"https://github.com/%s/pull/%d",
 		"state":"closed","merged":true,"merged_at":"2026-11-05T07:15:08Z","updated_at":"2026-11-05T07:15:08Z",
 		"head":{"ref":"feature/no-key","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}`,
@@ -24,7 +24,7 @@ func mergedPull(repo string, number int, sha, title, body string) string {
 // mergedPullAt is GitHub's answer for a commit that is the head of one merged pull request with
 // that title and body, in whichever repository was asked about.
 func mergedPullAt(number int, title, body string) func(repo, sha string) string {
-	return func(repo, sha string) string { return "[" + mergedPull(repo, number, sha, title, body) + "]" }
+	return func(repo, sha string) string { return "[" + mergedPullBody(repo, number, sha, title, body) + "]" }
 }
 
 // patchIssue sends one PATCH of an issue and fails the test unless it answers 200.
@@ -195,7 +195,7 @@ func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *test
 			}
 			patchIssue(t, handler, check, map[string]any{"external_links": githubIssueLink("https://github.com/acme/widgets/issues/81")})
 			fake.answers(func(repo, sha string) string {
-				pulls := mergedPull(repo, 81, sha, "A change", "Fixes #81.")
+				pulls := mergedPullBody(repo, 81, sha, "A change", "Fixes #81.")
 				if withOpen {
 					pulls += "," + fmt.Sprintf(`{"number":91,"title":"A backport","body":"","html_url":"https://github.com/%s/pull/91",
 						"state":"open","merged":false,"updated_at":"2026-11-05T07:15:08Z",
@@ -341,7 +341,7 @@ func TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass(t *testing.T) {
 			if repo != "acme/widgets" || number != "84" {
 				return ""
 			}
-			return mergedPull(repo, 84, headCommit, "A change", "")
+			return mergedPullBody(repo, 84, headCommit, "A change", "")
 		})
 		spent := fake.asks("acme/widgets")
 		patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{{"url": "https://github.com/acme/widgets/pull/84"}}})
@@ -368,7 +368,7 @@ func TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass(t *testing.T) {
 			if repo != "acme/widgets" || number != "85" {
 				return ""
 			}
-			return mergedPull(repo, 85, headCommit, "A change", "")
+			return mergedPullBody(repo, 85, headCommit, "A change", "")
 		})
 		patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{}})
 		queried := fake.factsQueries()

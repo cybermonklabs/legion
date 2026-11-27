@@ -752,7 +752,6 @@ const server = Bun.serve({
               created_at: createdAtOf(seeded) ?? null,
               deletions: 1,
               labels: (seeded.labels ?? []).map((name) => ({ name })),
-              merged_at: mergedAtOf(seeded) ?? null,
               user: { login: authorOf(seeded) },
             }
           : {}),
@@ -766,10 +765,11 @@ const server = Bun.serve({
         html_url: `https://github.com/${pull[1]}/${pull[2]}/pull/${pull[3]}`,
         merge_commit_sha: seeded.merge_commit_sha ?? null,
         merged: seeded.merged ?? false,
+        merged_at: (completes(seeded) ? mergedAtOf(seeded) : seeded.merged_at) ?? null,
         number: Number(pull[3]),
         state: seeded.state,
         title: seeded.title,
-        updated_at: seeded.updated_at ?? null,
+        updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
       });
     }
 
@@ -861,6 +861,8 @@ const server = Bun.serve({
               },
               html_url: `https://github.com/${commitPulls[1]}/${commitPulls[2]}/pull/${number}`,
               merged: seeded.merged ?? false,
+              merge_commit_sha: seeded.merge_commit_sha ?? null,
+              merged_at: seeded.merged_at ?? null,
               number,
               state: seeded.state,
               title: seeded.title,

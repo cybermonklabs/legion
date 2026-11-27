@@ -347,8 +347,10 @@ func readLinkPairs(t *testing.T, ctx context.Context, q Querier, statements *att
 		for rows.Next() {
 			var number int
 			// The select's columns are HeadsAttributedTo's scan: with the merge of main's #4426, the
-			// linked repository and the pull request's repository follow the times.
-			if err := rows.Scan(&number, new(string), new(bool), new(*time.Time), new(*time.Time), new(*string), new(*time.Time), new(string), new(string)); err != nil {
+			// linked repository and the pull request's repository follow the times, and with main's
+			// #5416 the merge's time, the row's rule and the newest-merged mark follow them.
+			if err := rows.Scan(&number, new(string), new(bool), new(bool), new(*time.Time), new(*time.Time),
+				new(*string), new(*time.Time), new(string), new(string), new(*time.Time), new(int), new(bool)); err != nil {
 				t.Fatal(err)
 			}
 			listed = append(listed, number)

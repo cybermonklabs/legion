@@ -1250,54 +1250,126 @@ type claimCost struct {
 	fastest     float64
 }
 
-// claimReads runs the claim once on conn, inside a transaction it rolls back, and reports what
-// Postgres read while it ran: the rows it read from events, all of them and the ones a sequential
-// scan read, the blocks it fetched from the indexes of events, and the event ids the claim
-// returned. Both counters count for the whole backend and a rollback keeps the count, so each
-// figure is the difference across the claim rather than the counter itself, and every call must
-// take the same pinned connection.
+// claimReads runs the claim on conn, inside a transaction it rolls back, until two runs in a row
+// read the same, and reports what Postgres read while the later of those two ran: the rows it read
+// from events, all of them and the ones a sequential scan read, the blocks it fetched from the
+// indexes of events, and the event ids the claim returned. Both counters count for the whole
+// backend and a rollback keeps the count, so each figure is the difference across one run of the
+// claim rather than the counter itself, and every call must take the same pinned connection.
+//
+// Two runs in a row, rather than one, because the figure counts the claim's planning, and the
+// planner reads a btree index's metapage whenever the backend's relcache holds no copy of it:
+// _bt_getrootheight (Postgres 18's nbtpage.c:675-704), which the planner calls for each index of
+// each table the claim names. Postgres drops the relcache and catalog caches of a backend that
+// falls too far behind the server's one queue of catalog changes, which holds 4,096 of them
+// (SICleanupQueue, sinvaladt.c:601-619; the reset, sinval.c:100-105 and relcache.c:2996-3033), and
+// the catalog changes of every database on the server go through that queue. So a transaction
+// changing enough of another database's catalog resets this backend, and the claim after the reset
+// reads the metapage of each index of events that has a root once more: one block in each of eight
+// of events' fourteen indexes, 57 blocks against 49 on 2026-11-26. envoy-go of run 45864503045
+// failed so, beside the module's other packages on one server; on a private Postgres, a
+// transaction in the postgres database that created and dropped 1,000 tables between the explains
+// and the measurement gave the same 57 and 49, and the server logged "cache state reset" for this
+// backend.
+//
+// A reset is taken wherever the backend reads from the client with a catch-up signal pending
+// (postgres.c:512-513) and wherever it calls AcceptInvalidationMessages, which parsing a statement
+// that names a relation does (RangeVarGetRelidExtended), so no run of the claim can be fenced off
+// from one. A reset costs the run it lands in and no later run, because the run after it finds the
+// caches loaded again: the figures of two runs in a row are equal only if no reset fell in the
+// later of them. So the two counted runs and the counters around each go in one statement,
+// claimReadsSQL's function, which runs the claim until two in a row agree and reports the later;
+// the figure it reports is then the claim's own reads, on a machine where another database's
+// catalog is busy as well as on a quiet one (claimReadRuns).
 func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRead, seqRead, indexBlocks int64, kept []int64) {
 	t.Helper()
 	ctx := context.Background()
+	if len(claim.args) != 2 {
+		t.Fatalf("the scan ran the claim with %d arguments, want two, its batch size and the owners in flight: %v", len(claim.args), claim.args)
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	// The view holds no row for events until this transaction has read it, so sum over the rows
-	// it does hold: that answers 0 and 0 rather than no row at all. The blocks are counted per
-	// index, so they are summed over the indexes of events.
-	counters := func() (seq, fetched, blocks int64) {
-		if err := tx.QueryRow(ctx, `
+	if _, err := tx.Exec(ctx, claimReadsSQL); err != nil {
+		t.Fatalf("create the function that counts the claim's reads: %v", err)
+	}
+	var fetched int64
+	var runs int
+	var agreed bool
+	var readings []int64
+	if err := tx.QueryRow(ctx, `select seq, fetched, blocks, ids, runs, agreed, readings from pg_temp.claim_reads($1, $2, $3, $4)`,
+		claim.sql, claim.args[0], claim.args[1], claimReadRuns).Scan(&seqRead, &fetched, &indexBlocks, &kept, &runs, &agreed, &readings); err != nil {
+		t.Fatalf("count what the claim read from events: %v\n%s", err, claim.sql)
+	}
+	if !agreed {
+		t.Fatalf("no two runs in a row of the claim read the same in %d runs, which fetched %v blocks from the indexes of events: a reset of this backend's caches costs the run it falls in, and with this many in a row the figure is nobody's measurement",
+			runs, readings)
+	}
+	t.Logf("the claim's reads held still on run %d of at most %d, which fetched %v blocks from the indexes of events",
+		runs, claimReadRuns, readings)
+	return seqRead + fetched, seqRead, indexBlocks, kept
+}
+
+// claimReadRuns bounds the runs claimReads takes to get two in a row that agree. Two is the usual
+// answer: a reset costs one run, and only a reset in the run after it costs a third. On 2026-11-26
+// every measurement held still on run 2 on a quiet server, and on run 2 or 3 under twelve floods
+// of 1,000 catalog changes each, 700 ms apart through the whole test.
+const claimReadRuns = 8
+
+// claimReadsSQL creates claimReads' function in the session's own schema, inside claimReads'
+// transaction, whose rollback drops it. The function runs claim with size and lanes as its $1 and
+// $2, as the scan passes them, until two runs in a row read the same rows and blocks of events or
+// it has run it tries times, and answers what the last run read: seq_tup_read, idx_tup_fetch and
+// the blocks fetched from the indexes of events, each the difference across that run, and the ids
+// it returned, in order; with how many runs it took, whether two in a row agreed, and every run's
+// blocks, which the caller prints. pg_stat_xact_user_tables holds no row for events until the
+// transaction has read it, so each reading sums over the rows it does hold, which answers 0 rather
+// than no row at all. A dynamic EXECUTE is planned on each run with the values it is given, as the
+// scan's own statement is on each of its first five runs on a connection, and claim's first column
+// is the event's id.
+const claimReadsSQL = `
+	create function pg_temp.claim_reads(claim text, size bigint, lanes text[], tries int,
+		out seq bigint, out fetched bigint, out blocks bigint, out ids bigint[],
+		out runs int, out agreed boolean, out readings bigint[])
+	language plpgsql as $fn$
+	declare
+		seq_before bigint;
+		fetched_before bigint;
+		blocks_before bigint;
+		last_rows bigint := -1;
+		last_blocks bigint := -1;
+		claimed record;
+	begin
+		readings := '{}';
+		agreed := false;
+		for run in 1..tries loop
+			runs := run;
 			select coalesce(sum(seq_tup_read), 0), coalesce(sum(idx_tup_fetch), 0),
 			       (select coalesce(sum(pg_stat_get_xact_blocks_fetched(indexrelid)), 0)
 			          from pg_index where indrelid = 'events'::regclass)
-			  from pg_stat_xact_user_tables where relname = 'events'
-		`).Scan(&seq, &fetched, &blocks); err != nil {
-			t.Fatalf("read what the claim read from events: %v", err)
-		}
-		return seq, fetched, blocks
-	}
-	seqBefore, fetchedBefore, blocksBefore := counters()
-	rows, err := tx.Query(ctx, claim.sql, claim.args...)
-	if err != nil {
-		t.Fatalf("run the claim: %v\n%s", err, claim.sql)
-	}
-	// The first column is the event's id. Taking the row's values drains the row set, which the
-	// counters need, and spells out none of the row's other nineteen columns.
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			t.Fatalf("read a claimed event: %v", err)
-		}
-		kept = append(kept, values[0].(int64))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the claimed events: %v", err)
-	}
-	seqAfter, fetchedAfter, blocksAfter := counters()
-	return (seqAfter - seqBefore) + (fetchedAfter - fetchedBefore), seqAfter - seqBefore, blocksAfter - blocksBefore, kept
-}
+			  into seq_before, fetched_before, blocks_before
+			  from pg_stat_xact_user_tables where relname = 'events';
+			ids := '{}';
+			for claimed in execute claim using size, lanes loop
+				ids := ids || claimed.id;
+			end loop;
+			select coalesce(sum(seq_tup_read), 0) - seq_before, coalesce(sum(idx_tup_fetch), 0) - fetched_before,
+			       (select coalesce(sum(pg_stat_get_xact_blocks_fetched(indexrelid)), 0)
+			          from pg_index where indrelid = 'events'::regclass) - blocks_before
+			  into seq, fetched, blocks
+			  from pg_stat_xact_user_tables where relname = 'events';
+			readings := readings || blocks;
+			if seq + fetched = last_rows and blocks = last_blocks then
+				agreed := true;
+				return;
+			end if;
+			last_rows := seq + fetched;
+			last_blocks := blocks;
+		end loop;
+	end
+	$fn$`
 
 // measureClaim seeds a database of its own with backlog backed-off events and backlog pending
 // commands, ten events the publisher has sent and ten it has not, and reports what the statement
@@ -1404,10 +1476,13 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 			rowsRead, secondRowsRead)
 	}
 	// The blocks are as steady as the rows once the dead entries the scan's publish left are
-	// vacuumed away (above): 37 on both runs of each size, in all 12 readings of 3 runs of the
-	// healthy claim on 2026-11-09, and 56 and 113 on both runs of the mutated one.
+	// vacuumed away (above), and once each measurement is two runs of the claim in a row that
+	// read the same, which no reset of this backend's caches fell in (claimReads): 37 on both
+	// measurements of each size, in all 12 readings of 3 runs of the healthy claim on 2026-11-09,
+	// and 56 and 113 on both of the mutated one; 49 on both of each size on 2026-11-26, events
+	// having gained indexes since.
 	if indexBlocks != secondIndexBlocks {
-		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and with no dead index entry left for the first run to mark, a second run on the same connection fetches the same blocks",
+		t.Errorf("the claim fetched %d blocks from the indexes of events in the first measurement and %d in the second, want one figure twice: each figure is the difference across a run that read the same as the run before it, and no claim whose own reads are steady gives two such figures",
 			indexBlocks, secondIndexBlocks)
 	}
 	if rowsRead == 0 && secondRowsRead == 0 {

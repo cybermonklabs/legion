@@ -88,20 +88,26 @@ func (c *comparisonReader) possibleHeadAt(ctx context.Context, issueKey, sha str
 }
 
 // mergedElsewhere is the numbers of the merged pull requests of the check's repository whose answer
-// is not known and that merged into another base branch than the issue's: the branch
-// delivery.Attributor.BaseBranchMergedFor answers, or the default branch where it answers none.
-// Such a pull request can be the issue's own, so the issue's work can have reached that other
-// branch. It is nil where decides is false, and for every check that no merge decides.
+// is not known and that merged into another base branch than the issue's: the branch the issue's
+// newest merged pull request in that repository merged into (mergesIn, over
+// delivery.Attributor.MergeOfIssue, newest merge first), or the default branch where the issue
+// holds no merge there. Such a pull request can be the issue's own, so the issue's work can have
+// reached that other branch. It is nil where decides is false, and for every check that no merge
+// decides.
 func (c *comparisonReader) mergedElsewhere(ctx context.Context, check model.CheckBlock) []int {
 	if check.When != checkWhenAfterMerge || c.at != noCommitNamed || !c.decides(ctx, check.IssueKey) {
 		return nil
 	}
 	pulls, read := c.notKnownOf(ctx, check.IssueKey)
-	merged, mergedRead := c.baseBranchMergedFor(ctx, check.IssueKey)
-	if !read || !mergedRead {
+	repo, _ := c.repositoryOf(ctx, check.IssueKey)
+	merges := c.mergesIn(ctx, check.IssueKey, *repo, false)
+	if !read || !merges.read {
 		return nil
 	}
-	issueBranch := merged
+	issueBranch := noMergedBranch
+	if len(merges.pulls) > 0 {
+		issueBranch = merges.pulls[0].BaseRef
+	}
 	if issueBranch == noMergedBranch {
 		issueBranch, _ = c.defaultBranchOf(ctx, check.IssueKey)
 	}
