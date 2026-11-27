@@ -376,7 +376,7 @@ test("the person's Approve on the Needs you card of the issue page shows Dispatc
       .locator(`[data-margin-item="${tree.asks.card}"]`)
       .getByTestId(`ask-${tree.asks.card}`);
     await card.getByRole("radio", { name: /^Approve / }).check();
-    // The compact card's disclosure, "Add a note or answer in your own words", also holds the word.
+    // Exact, since another control of an ask body can hold the word ("Answer with it anyway").
     const answer = card.getByRole("button", { exact: true, name: "Answer" });
     await answer.click();
     await expect(card.getByRole("alert")).toContainText(
