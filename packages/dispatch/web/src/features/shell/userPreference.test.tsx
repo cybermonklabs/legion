@@ -176,6 +176,7 @@ const ALICE_KEYS: Record<UserPreference, string> = {
   "inbox.folded-groups": "dispatch.inbox.folded-groups:alice",
   "inbox.pane-width": "dispatch.inbox.pane-width:alice",
   "inbox.thread-order": "dispatch.inbox.thread-order:alice",
+  "issue.details": "dispatch.issue.details:alice",
   "issue.margin-sections": "dispatch.issue.margin-sections:alice",
   "issue.page": "dispatch.issue.page:alice",
   "project.board-edges": "dispatch.project.board-edges:alice",

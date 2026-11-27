@@ -6,7 +6,7 @@
 #
 # The three reads are GET /api/v1/inbox (listInbox), GET /api/v1/me/replies (listMyReplies) and
 # GET /api/v1/agents/{session_id}/messages (listAgentMessages). They stay served for one release,
-# with their handlers, their rows in api/routes_table.go and their contract response types, and
+# with their handlers, their declarations in api/route_*.go and their contract response types, and
 # the root deletes them a release later. POST /api/v1/agents/{session_id}/messages, the send on
 # the same path, stays.
 #
@@ -992,8 +992,8 @@ post_stays_section() {
 # --- names: no read of the two is named inbox ----------------------------------------------------
 
 readonly name_files=(
-  packages/envoy/internal/dispatch/api/routes_table.go
-  packages/envoy/internal/dispatch/api/routes_shapes.go
+  "packages/envoy/internal/dispatch/api/route_api_v1_asks_open+get.go"
+  "packages/envoy/internal/dispatch/api/route_api_v1_agents_{session_id}_conversation+get.go"
   packages/contracts/src/dispatch-api.generated.ts
   packages/dispatch/web/src/api/client.ts
   packages/dispatch/web/src/api/queries.ts
@@ -1001,10 +1001,10 @@ readonly name_files=(
 readonly name_kinds="handler shape operation contract-type client-method query query-key"
 
 # names_of ROOT PATH: every name the read at PATH goes by under ROOT, one `<kind> <name>` each: its
-# path; its handler, from its row in api/routes_table.go; its response and parameter shapes, from
-# api/routes_shapes.go; its operation and the contract types its 200 answer is, with those types'
-# own, in the generated contract; the web client's method that reads it; and the query that calls
-# that method, with the words of its key.
+# path; its handler and its response and parameter shapes, from its GET declaration in the route's
+# own file (api/route_*.go, one declareRoute each); its operation and the contract types its 200
+# answer is, with those types' own, in the generated contract; the web client's method that reads
+# it; and the query that calls that method, with the words of its key.
 names_of() {
   local path="$2" api="$1/packages/envoy/internal/dispatch/api" contract operation type method
   local generated="$1/packages/contracts/src/dispatch-api.generated.ts" web="$1/packages/dispatch/web/src/api"
@@ -1016,9 +1016,24 @@ names_of() {
     function opened() {f = 1; match($0, /^ */); indent = RLENGTH}
     function closes() {match($0, /^ */); return RLENGTH == indent && $0 ~ /^ *};?$/}'
   printf 'path %s\n' "$path"
-  grep -F "{http.MethodGet, \"$path\"," "$api/routes_table.go" | sed -nE 's/.*s\.([A-Za-z0-9_]+)\},?[[:space:]]*$/handler \1/p'
-  grep -F "\"GET $path\":" "$api/routes_shapes.go" | grep -oE '(Response|Params): *(\[\])?[A-Za-z0-9_]+' |
-    sed -E 's/^[A-Za-z]+: *(\[\])?/shape /'
+  # A route's declaration is one declareRoute block, closed by `})` at the line's start; the GET
+  # block whose Pattern is PATH names the handler (a method expression) and the shapes.
+  awk -v p="\"$path\"," '
+      /^var _ = declareRoute\(routeDecl\{/ {get = 0; at = 0; handler = ""; shapes = ""; next}
+      /^[[:space:]]*Method:[[:space:]]*http\.MethodGet,/ {get = 1}
+      /^[[:space:]]*Pattern:/ && index($0, p) {at = 1}
+      /^[[:space:]]*Handler:/ {handler = $0; sub(/.*\(\*server\)\./, "", handler); sub(/,.*/, "", handler)}
+      /^[[:space:]]*Shape:/ {shapes = $0}
+      /^\}\)/ {
+        if (get && at) {
+          if (handler != "") print "handler " handler
+          while (match(shapes, /(Response|Params): *(\[\])?[A-Za-z0-9_]+/)) {
+            shape = substr(shapes, RSTART, RLENGTH); sub(/^[A-Za-z]+: *(\[\])?/, "", shape); print "shape " shape
+            shapes = substr(shapes, RSTART + RLENGTH)
+          }
+        }
+        get = 0; at = 0
+      }' "$api"/route_*.go
   operation="$(awk -v p="\"$path\": {" "$block"' !f && trimmed() == p {opened(); next}
       f && /get: operations\["/ {sub(/.*get: operations\["/, ""); sub(/"\].*/, ""); print; exit} f && closes() {exit}' "$generated")"
   [[ -z "$operation" ]] || printf 'operation %s\n' "$operation"
@@ -1075,8 +1090,8 @@ names_section() {
   # One name of each kind but the path planted: a handler, a response shape, an operation, a
   # contract type and a type of its own (read from the first's block), a client method (and the
   # query's call of it), a query and the words of two keys.
-  sed -i 's/s\.listOpenAsks},/s.listInboxOpenAsks},/' "$plant/${name_files[0]}"
-  sed -i 's/Response: openAsksResponse{}/Response: openAsksInboxResponse{}/' "$plant/${name_files[1]}"
+  sed -i -e 's/(\*server)\.listOpenAsks,/(*server).listInboxOpenAsks,/' \
+    -e 's/Response: openAsksResponse{}/Response: openAsksInboxResponse{}/' "$plant/${name_files[0]}"
   sed -i -e 's/\["OpenAsksResponse"\]/["OpenAsksInboxResponse"]/' -e 's/^\( *\)OpenAsksResponse: {/\1OpenAsksInboxResponse: {/' \
     -e 's/\["OpenAsk"\]/["OpenAskInbox"]/g' \
     -e 's/getApiV1AsksOpen/getApiV1InboxAsksOpen/g' \
