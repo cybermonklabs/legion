@@ -9,6 +9,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { holdNotifications } from "../../__tests__/commits";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
@@ -625,6 +626,67 @@ test("a card drawn again while an Unfollow's and an Unsubscribe's writes are out
     page.unmount();
     page.queryClient.clear();
     unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// A host draws one card for one ask after another, and the card finds the press out on the ask it
+// shows by the press's own values (`usePendingKeyedPress`). Drawn for another ask while an Unfollow
+// of the first is out, the card lets its Unfollow go; drawn back for the first, with no other press
+// made meanwhile, it holds that Unfollow again in the commit that draws it, so a press of it opens
+// no dialog and no second write can be confirmed. A browser tells TanStack's observers of a change
+// a timer after it (`holdNotifications`), so that commit is what the reader has until then.
+// Dispatch never answers the Unfollow: each try fails at the network and is tried again under its
+// key.
+test("a card drawn for another ask and back while the first ask's Unfollow is out holds that Unfollow again at once, and a press of it opens nothing", async () => {
+  const dropped = new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch"));
+  const removeFollower = mock((_askId: string, _sessionId: string, _bounds: WriteBounds) =>
+    Promise.reject<void>(dropped)
+  );
+  const page = await renderRecipients({ removeFollower });
+  /** The second follower's Unfollow of the card as drawn now. */
+  const unfollowOfDrawn = () =>
+    within(screen.getByRole("region", { name: "Recipients" })).getAllByRole<HTMLButtonElement>(
+      "button",
+      { name: "Unfollow" }
+    )[1] as HTMLButtonElement;
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await user.click(unfollowOfDrawn());
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unfollow" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await tick(0);
+      expect(pressesOf([removeFollower])).toBe(1);
+
+      page.rerender({ askId: "ask-2" });
+      await tick(0);
+      expect(
+        heldNotDisabled(unfollowOfDrawn(), "Unfollow"),
+        "the card drawn for another ask held its Unfollow for the first ask's write"
+      ).toBe(false);
+
+      const notifications = holdNotifications();
+      try {
+        page.rerender({ askId: "ask-1" });
+        const unfollow = unfollowOfDrawn();
+        expect(
+          heldNotDisabled(unfollow, "Unfollow"),
+          "the card drawn back let the Unfollow go while its write was out"
+        ).toBe(true);
+        await user.click(unfollow);
+        expect(screen.queryByRole("dialog")).toBeNull();
+      } finally {
+        notifications.tell();
+      }
+      await tick(0);
+      expect(pressesOf([removeFollower])).toBe(1);
+    });
+  } finally {
+    page.unmount();
+    page.queryClient.clear();
   }
 });
 

@@ -17,7 +17,7 @@
 
 import { inboxThreadRow } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -638,7 +638,9 @@ function AgentThreadBody({
   const messages = useQuery(agentMessagesQuery(sessionId));
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
-  const sendKey = threadSendKey(thread.thread_id);
+  // One name while the thread is drawn: the composer follows the mutation cache under it
+  // (`AgentMessageComposer`), which a new name at each render would drop and take up again.
+  const sendKey = useMemo(() => threadSendKey(thread.thread_id), [thread.thread_id]);
   const hold = useSending(sendKey);
   // Read before the loading branches, because the mark below is a hook: the thread's own
   // conversation among the session's, which is undefined until the read lands.

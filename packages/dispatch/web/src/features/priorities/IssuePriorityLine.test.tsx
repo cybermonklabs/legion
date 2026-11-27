@@ -704,10 +704,12 @@ test("inside NoTooltips, the first priority added to an issue that advances none
     expect(view.patchIssue).toHaveBeenCalledTimes(1);
     await act(async () => answer.resolve({} as never));
     await tick(0);
+    // The write read the priorities itself: the line, its picker closed and its issue advancing
+    // none, reads none, and the issue read again below would turn the line's own read on.
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
     // The issue read again names the priority added, from the priorities' read.
     view.reread([{ id: "evals-now", inherited: false }], REVISION + 1);
     await tick(0);
-    expect(view.listPriorities).toHaveBeenCalledTimes(2);
     expect(
       heldNotDisabled(trigger, name),
       "the first add let the trigger go before the priorities were read"

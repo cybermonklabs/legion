@@ -45,7 +45,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 
-import { deliveryAttempts } from "./attempts";
+import { deliveryAttempts, messageDeliveryRetryKey } from "./attempts";
 import { excludedParts } from "./broadcast-plan";
 import { useMarkShownRepliesRead } from "./unread";
 
@@ -87,12 +87,11 @@ function BroadcastRecipientRow({
   // names it, and the row's accessible name is the same name as text.
   const recipientAgent: AgentPart = { sessionId: recipient.session_id, storedTitle: undefined };
   const label = text.sessionText(recipient.session_id, undefined);
-  // The retry goes under the recipient's message's name, as every retry of a message does on
-  // whichever page, so a row drawn again while it is out, before it lands - after a broadcast
-  // read that failed draws the page's failure in place of every row - holds Retry and the mode
-  // changes from that press until its deadline, as the row it was made on did
-  // (`usePendingKeyedPress`).
-  const retryKey = ["message-delivery-retry", recipient.message.id];
+  // The retry goes under the recipient's message's name (`messageDeliveryRetryKey`), so a row
+  // drawn again while it is out, before it lands - after a broadcast read that failed draws the
+  // page's failure in place of every row - holds Retry and the mode changes from that press until
+  // its deadline, as the row it was made on did (`usePendingKeyedPress`).
+  const retryKey = messageDeliveryRetryKey(recipient.message.id);
   const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,

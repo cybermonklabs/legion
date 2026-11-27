@@ -47,7 +47,7 @@ export function readWithinBound(read: Promise<unknown>): Promise<string | undefi
  * whose press made it, whether it holds still, and why its read has not settled once the bound
  * ended it.
  */
-export interface ReadHold {
+export interface BoundHold {
   /** The row whose press made the hold, in its caller's own name for it: a list's key for the row
    *  (`useListReadBound`), a decision's form (`DecisionActions`), or, where one control speaks for
    *  each press in turn, what it said that press did (the issues table's notice,
@@ -62,32 +62,48 @@ export interface ReadHold {
 }
 
 /** A hold as the store keeps it: what its callers read of it, and the read it waits on. */
-interface KeptHold extends ReadHold {
+interface KeptBoundHold extends BoundHold {
   readonly read: Promise<unknown>;
 }
 
 /**
- * The holds through reads that live with one query client (`readHoldsOf`): the latest hold of
+ * The holds through reads that live with one query client (`boundHoldsOf`): the latest hold of
  * each read, by the hash of the read's query key. Every caller of a read draws this one hold, so
  * two callers of one read share one bound and one reason, and a caller drawn again while the read
  * is out - a card's view closed and opened, a tab or a view switched away and back - finds the
- * hold and its reason where the caller drawn before it left them.
+ * hold and its reason where the caller drawn before it left them. A hold that has ended - it holds
+ * no more and its read has settled - is kept only while a caller of its read is drawn, which still
+ * reads whose press made it (`DecisionActions`): with none drawn the store drops it, since the
+ * next caller drawn reads it as no hold.
  */
-class ReadHolds {
-  readonly #holds = new Map<string, KeptHold>();
-  readonly #listeners = new Set<() => void>();
+class BoundHolds {
+  readonly #holds = new Map<string, KeptBoundHold>();
+  readonly #listeners = new Map<string, Set<() => void>>();
 
-  /** Tells `listener` each time the latest hold of any read changes. */
-  readonly subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
+  /** Tells `listener` each time the latest hold of the read whose query key hashes to `hash`
+   *  changes. As the last listener of that read goes, a hold of it that has ended goes too. */
+  subscribe(hash: string, listener: () => void): () => void {
+    let listeners = this.#listeners.get(hash);
+    if (listeners === undefined) {
+      listeners = new Set();
+      this.#listeners.set(hash, listeners);
+    }
+    listeners.add(listener);
     return () => {
-      this.#listeners.delete(listener);
+      listeners.delete(listener);
+      if (listeners.size > 0) return;
+      this.#listeners.delete(hash);
+      const hold = this.#holds.get(hash);
+      if (hold !== undefined && !hold.holding && hold.unsettled === undefined) {
+        this.#holds.delete(hash);
+      }
     };
-  };
+  }
 
   /** The latest hold through the read whose query key hashes to `hash`: the same object until it
-   *  changes, and `undefined` where no hold of that read was ever taken. */
-  latest(hash: string): ReadHold | undefined {
+   *  changes, and `undefined` where no hold of that read was taken, or where the latest ended
+   *  with no caller of the read drawn. */
+  latest(hash: string): BoundHold | undefined {
     return this.#holds.get(hash);
   }
 
@@ -97,7 +113,7 @@ class ReadHolds {
    * once `read` settles or `readWithinBound`'s bound ends, whichever is first. Where the bound
    * ends first, the hold keeps why `read` has not settled until it does. An earlier hold whose
    * bound ends, or whose read settles, once a later hold of the same read has begun changes
-   * nothing.
+   * nothing: the store holds the later hold then, or none where that one has ended undrawn.
    */
   async wait(hash: string, row: string | undefined, read: Promise<unknown>): Promise<void> {
     this.#keep(hash, { holding: true, read, row, unsettled: undefined });
@@ -113,20 +129,28 @@ class ReadHolds {
     read.then(settled, settled);
   }
 
-  #keep(hash: string, hold: KeptHold): void {
-    this.#holds.set(hash, hold);
-    for (const listener of this.#listeners) listener();
+  /** Keeps `hold` as the latest of the read whose query key hashes to `hash`, or drops that
+   *  read's entry where `hold` has ended and no caller of the read is drawn, and tells that
+   *  read's callers. */
+  #keep(hash: string, hold: KeptBoundHold): void {
+    const listeners = this.#listeners.get(hash);
+    if (listeners === undefined && !hold.holding && hold.unsettled === undefined) {
+      this.#holds.delete(hash);
+    } else {
+      this.#holds.set(hash, hold);
+    }
+    for (const listener of listeners ?? []) listener();
   }
 }
 
-const stores = new WeakMap<QueryClient, ReadHolds>();
+const stores = new WeakMap<QueryClient, BoundHolds>();
 
 /** The holds through reads that live with `client`: one store per app, as there is one client,
  *  as the writes are (`writesOf`). */
-function readHoldsOf(client: QueryClient): ReadHolds {
+function boundHoldsOf(client: QueryClient): BoundHolds {
   let store = stores.get(client);
   if (store === undefined) {
-    store = new ReadHolds();
+    store = new BoundHolds();
     stores.set(client, store);
   }
   return store;
@@ -134,8 +158,8 @@ function readHoldsOf(client: QueryClient): ReadHolds {
 
 /**
  * The latest hold through the read `readKey` names, the query key of the read its caller holds
- * through (`ReadHold`), and the hold that caller takes (`waitWithinBound`). Every caller of one
- * read, and every caller drawn again while it is out, reads that one hold (`ReadHolds`).
+ * through (`BoundHold`), and the hold that caller takes (`waitWithinBound`). Every caller of one
+ * read, and every caller drawn again while it is out, reads that one hold (`BoundHolds`).
  * `waitWithinBound` takes a read as it begins, with the row whose press made it, forgets at once
  * why the earlier read of that key had not settled, and answers once the read settles or
  * `readWithinBound`'s bound ends, whichever is first. Where the bound ends first and no later
@@ -147,12 +171,16 @@ function readHoldsOf(client: QueryClient): ReadHolds {
 export function useUnsettledRead(
   readKey: QueryKey
 ): readonly [
-  latest: ReadHold | undefined,
+  latest: BoundHold | undefined,
   waitWithinBound: (row: string | undefined, read: Promise<unknown>) => Promise<void>,
 ] {
-  const holds = readHoldsOf(useQueryClient());
+  const holds = boundHoldsOf(useQueryClient());
   const hash = hashKey(readKey);
-  const latest = useSyncExternalStore(holds.subscribe, () => holds.latest(hash));
+  const subscribe = useCallback(
+    (listener: () => void) => holds.subscribe(hash, listener),
+    [hash, holds]
+  );
+  const latest = useSyncExternalStore(subscribe, () => holds.latest(hash));
   const waitWithinBound = useCallback(
     (row: string | undefined, read: Promise<unknown>) => holds.wait(hash, row, read),
     [hash, holds]
@@ -226,11 +254,12 @@ export type ListReadBound = readonly [
  * the Inbox's Credential requests section (`CredentialRequestsSection`), the documents of an
  * issue, each of whose Remove takes the hold of the issue's one document list, on its row of the
  * Artifacts tab and in a document page's header alike (`RemoveDocument`), the Inbox's thread
- * cards (`Inbox`), the comments of an issue's Conversation, whose every edit reads the comments
- * again (`ConversationTab`), the approval chips of the new issue page's header, whose every
- * review reads the issue again (`IssuePropertiesRow`), every other approval chip, through its own
- * document's read (`ApprovalChip`), and the priority line of each issue, through the priorities
- * read (`usePriorityLineWrite`). `holdThrough` takes the row whose press made the read with the
+ * cards, each through the Inbox's read (`ThreadRowCard`), the comments of an issue's
+ * Conversation, whose every edit reads the comments again (`ConversationTab`), the approval chips
+ * of the new issue page's header, whose every review reads the issue again
+ * (`IssuePropertiesRow`), every other approval chip, through its own document's read
+ * (`ApprovalChip`), and the priority line of each issue, through the priorities read
+ * (`usePriorityLineWrite`). `holdThrough` takes the row whose press made the read with the
  * read (`ListReadHold`). Each press begins a new read of the same list, so it forgets why an
  * earlier read had not settled, whichever row's press made that one. `unsettledOf` answers that
  * reason for the row whose press made the latest read, and `holdingOf` whether its hold is on,

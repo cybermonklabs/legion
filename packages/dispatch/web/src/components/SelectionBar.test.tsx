@@ -2689,12 +2689,8 @@ test.each([
 
 // The same landing is still made where the focus has moved to no control that stays: where the
 // leaving row's going drops it onto the page's body, as after the reader's untick of the last mark
-// with the focus on it, and where the page has moved it into another leaving row, which goes too.
-// CORE-14 stands at the place of the rows the press took away.
-test.each([
-  ["the leaving row's going drops it onto the page's body", false],
-  ["the page has moved it into another leaving row, which goes too", true],
-] as const)("a landing the bar's going owed with the focus in a leaving row is made once the rows go, where %s", (_how, intoLeaving) => {
+// with the focus on it. CORE-14 stands at the place of the rows the press took away.
+test("a landing the bar's going owed with the focus in a leaving row is made once the rows go, where the leaving row's going drops it onto the page's body", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
   try {
@@ -2702,13 +2698,54 @@ test.each([
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
-    if (intoLeaving) act(() => rowBox("CORE-12").focus());
     view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
     expect(focusedName()).toBe("Select CORE-14");
   } finally {
     view.unmount();
+    laidOut();
+  }
+});
+
+// And where the page has moved it into another row it names as leaving, which goes too. Once the
+// press's rows go, the landing waits for the foot's pass; before that pass runs, the page moves the
+// focus into CORE-11 and names that row as leaving in a commit. A focus in a row the list names as
+// leaving stands on no control that stays (`focusMovedOn`), so the pass still makes the landing,
+// on CORE-14, and CORE-11 goes after it.
+test("a landing the bar's going owed with the focus in a leaving row is made once the rows go, where the page has moved it into another leaving row, which goes too", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  // The foot's pass reads the screen under the float (`clearScrollers`); happy-dom has no hit
+  // test, and no scroller stands there.
+  Object.defineProperty(document, "elementsFromPoint", { configurable: true, value: () => [] });
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  // A float at the foot keeps the foot's pass still to come as the bar goes.
+  const float = render(<FootFloat />);
+  try {
+    await act(nextFrame);
+    act(() => rowBox("CORE-13").focus());
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    const gone = without(PLACED_KEYS, "CORE-12", "CORE-13");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={gone} />);
+    act(() => rowBox("CORE-11").focus());
+    view.rerender(<PlacedList count={0} last="CORE-13" leaving={["CORE-11"]} listed={gone} />);
+    expect(focusedName(), "the landing was made before the foot's pass").toBe("Select CORE-11");
+    await act(nextFrame);
+    expect(focusedName()).toBe("Select CORE-14");
+    view.rerender(
+      <PlacedList
+        count={0}
+        last="CORE-13"
+        listed={without(PLACED_KEYS, "CORE-11", "CORE-12", "CORE-13")}
+      />
+    );
+    expect(focusedName()).toBe("Select CORE-14");
+  } finally {
+    float.unmount();
+    view.unmount();
+    Reflect.deleteProperty(document, "elementsFromPoint");
     laidOut();
   }
 });

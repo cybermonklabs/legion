@@ -6,7 +6,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
-import type { ListReadHold } from "../../api/read-bound";
+import { useListReadBound } from "../../api/read-bound";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
@@ -47,29 +47,18 @@ export const INBOX_NOT_LOADED = "Could not load your inbox.";
  * is no place to open one. Mark read is held while its write is out within its deadline
  * (`heldPress`, `late`), on a card drawn again while it is out too (`usePendingKeyedPress`), and
  * through the re-read it starts, up to the read's request deadline.
- * Every Mark read reads the Inbox's one list again, so the list holds every card's Mark read
- * through that read with one hold (`useListReadBound`), which it hands the card (`holdThrough`)
- * with why that read has not settled where this card's mark made the latest one (`unsettled`),
- * and whether its hold is on (`holding`): a card drawn again while it is - the Peek drawer closed
- * and opened - holds Mark read by it, as the card its mark was made on did.
+ * Every Mark read reads the Inbox's one list again, so every card's Mark read takes that list's
+ * one hold through that read (`useListReadBound`): a mark that lands forgets why an earlier one's
+ * read had not settled, whichever card made it, and only the card whose mark made the latest read
+ * says why that one has not. The hold is the Inbox read's own, so a card drawn again while it is
+ * on - the Peek drawer closed and opened - holds Mark read by it, as the card its mark was made on
+ * did.
  */
-export function ThreadRowCard({
-  holding,
-  holdThrough,
-  thread,
-  unsettled,
-}: {
-  /** Whether the list's hold through its re-read is on, where this card's mark made it. */
-  holding: boolean;
-  /** The list's hold through its re-read, which a landed mark makes as the thread's it marked
-   *  (`useListReadBound`). */
-  holdThrough: ListReadHold;
-  thread: MyReplyRow;
-  /** Why the list's re-read has not settled, where this card's mark made the latest one, else
-   *  undefined. */
-  unsettled: string | undefined;
-}): ReactNode {
+export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
+  const [unsettledOf, holdThrough, holdingOf] = useListReadBound(myRepliesKey);
+  const holding = holdingOf(thread.thread_id);
+  const unsettled = unsettledOf(thread.thread_id);
   // The press carries the row as it stood when Mark read was pressed: its newest reply and its
   // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
   // that press marked. The mark goes under the thread's name, so a card drawn again while it is

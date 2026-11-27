@@ -1517,7 +1517,6 @@ test("a send that lands leaves the focus on another row's checkbox the reader mo
     // The send has landed once its draft is cleared.
     await waitFor(() => expect(comment).toHaveValue(""));
     expect(reviewer).toHaveFocus();
-    expect(comment).not.toHaveFocus();
   } finally {
     window.removeEventListener("keydown", afterPress);
     page.view.unmount();

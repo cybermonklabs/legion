@@ -113,7 +113,7 @@ import {
   useAgentFilters,
 } from "./agent-search";
 import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
-import { deliveryAttempts } from "./attempts";
+import { deliveryAttempts, messageDeliveryRetryKey } from "./attempts";
 import { BroadcastSends, useBroadcastQueue } from "./BroadcastSends";
 import { useBroadcastComposition } from "./broadcast-composition";
 import { broadcastSendState, type ComposedBroadcast, composedBroadcast } from "./broadcast-plan";
@@ -227,11 +227,11 @@ function AgentExchangeReply({
 }): ReactNode {
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
-  // The retry goes under the reply's name, so a turn drawn again while it is out, before it
-  // lands - its exchange folded under "Show N older" and shown again - holds Retry and the mode
-  // changes from that press until its deadline, as the turn it was made on did
+  // The retry goes under the reply's name (`messageDeliveryRetryKey`), so a turn drawn again while
+  // it is out, before it lands - its exchange folded under "Show N older" and shown again - holds
+  // Retry and the mode changes from that press until its deadline, as the turn it was made on did
   // (`usePendingKeyedPress`).
-  const mutationKey = ["message-delivery-retry", reply.id];
+  const mutationKey = messageDeliveryRetryKey(reply.id);
   const retryOut = usePendingKeyedPress(mutationKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
@@ -330,7 +330,7 @@ function AgentTargetedMessage({
   const label = text.sessionText(agent.session_id, agent.title);
   // The retry goes under the message's name, as a reply's does, and for the same reason: the
   // message folded under "Show N older" and shown again holds its Retry from the press out.
-  const mutationKey = ["message-delivery-retry", read.message.id];
+  const mutationKey = messageDeliveryRetryKey(read.message.id);
   const retryOut = usePendingKeyedPress(mutationKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>

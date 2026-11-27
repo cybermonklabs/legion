@@ -12,7 +12,7 @@ import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from 
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
-import { pastDeadlineKey } from "../../hooks/useSending";
+import { holdName, pastDeadlineKey } from "../../hooks/useSending";
 import { newSendKey } from "../../lib/send-key";
 import { partyMention } from "../refs/party-references";
 import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
@@ -312,18 +312,6 @@ function sendName(mutationKey: MutationKey): readonly string[] {
   return mutationKey.map((part) => (typeof part === "string" ? part : JSON.stringify(part)));
 }
 
-/** Holds `mutationKey` in TanStack's mutation cache while `answer` is out, so a host's hold on the
- *  name (`useSending`) counts a send from the task that starts it on, whether or not its composer
- *  is still mounted. Run whether or not the browser says it is online (`networkMode: "always"`):
- *  a mutation TanStack paused offline would hold nothing. */
-function hold(client: QueryClient, mutationKey: MutationKey, answer: () => Promise<unknown>): void {
-  client
-    .getMutationCache()
-    .build(client, { mutationFn: answer, mutationKey, networkMode: "always" })
-    .execute(undefined)
-    .catch(() => {});
-}
-
 /** A kept edit as the send it belongs to saves it again: through the default save - the host
  *  that gave the page its save is gone with it - carrying the ids its press carried, so every
  *  attempt under the send's own key, however many reloads it outlives, sends the very body
@@ -422,15 +410,15 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
   started: (client, write, settled, late) => {
     const name = write.detail.mutationKey;
     if (late) {
-      hold(client, pastDeadlineKey(name), () => settled);
+      void holdName(client, pastDeadlineKey(name), () => settled);
       return;
     }
     // Past its deadline the request is not refused: it goes on under `pastDeadlineKey`, held
     // before the name lets go, so a hold on the name never drops between them.
-    hold(client, name, () => {
+    void holdName(client, name, () => {
       const { promise, reject, resolve } = Promise.withResolvers<unknown>();
       const deadline = setTimeout(() => {
-        hold(client, pastDeadlineKey(name), () => settled);
+        void holdName(client, pastDeadlineKey(name), () => settled);
         resolve(undefined);
       }, SEND_DEADLINE_MS);
       settled.then(resolve, reject).finally(() => clearTimeout(deadline));

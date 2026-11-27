@@ -11,7 +11,7 @@ import { createElement, type ReactNode } from "react";
 import { onFakeClock, realClock, settle, tick } from "../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "./client";
 import { DispatchQueryClient, waitingForPausedReads } from "./query-client";
-import { readWithinBound, useListReadBound, useReadBound } from "./read-bound";
+import { readWithinBound, useListReadBound, useReadBound, useUnsettledRead } from "./read-bound";
 
 /** What `answer` holds so far: its value once it has settled, else `"waiting"`. */
 function watch<T>(answer: Promise<T>): () => T | "waiting" {
@@ -474,6 +474,52 @@ test("useListReadBound drawn again while its read is out holds and says why for 
 
     await tick(REQUEST_DEADLINE_MS);
     expect(shown()).toEqual({ first: [false, NOT_ANSWERED], second: [false, undefined] });
+  } finally {
+    again.unmount();
+    realClock();
+  }
+});
+
+// A hold that has ended reads as no hold, so the store keeps it only while a caller of its read is
+// drawn, which still reads whose press made it (`DecisionActions`). A hold whose read settles with
+// no caller drawn, and one whose last caller goes once it has ended, leave nothing: the caller
+// drawn next finds no hold of that read at all (`useUnsettledRead`'s `latest`).
+test("a hold that ended with no caller of its read drawn leaves no hold for the caller drawn next", async () => {
+  jest.useFakeTimers();
+  const wrapper = under();
+  const drawn = renderHook(() => useUnsettledRead(ISSUES), { wrapper });
+  const read = Promise.withResolvers<void>();
+  act(() => {
+    void drawn.result.current[1]("first", read.promise);
+  });
+  drawn.unmount();
+  await act(async () => {
+    read.resolve();
+    await settle();
+  });
+  const again = renderHook(() => useUnsettledRead(ISSUES), { wrapper });
+  try {
+    expect(again.result.current[0], "a hold that ended undrawn was kept").toBeUndefined();
+
+    act(() => {
+      void again.result.current[1]("second", Promise.resolve());
+    });
+    await act(settle);
+    expect(again.result.current[0], "a drawn caller lost the hold that ended").toMatchObject({
+      holding: false,
+      row: "second",
+      unsettled: undefined,
+    });
+    again.unmount();
+    const later = renderHook(() => useUnsettledRead(ISSUES), { wrapper });
+    try {
+      expect(
+        later.result.current[0],
+        "a hold that ended was kept once its last caller went"
+      ).toBeUndefined();
+    } finally {
+      later.unmount();
+    }
   } finally {
     again.unmount();
     realClock();

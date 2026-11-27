@@ -1,6 +1,7 @@
 import {
   type MutationFilters,
   type MutationKey,
+  type QueryClient,
   useIsMutating,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -14,6 +15,29 @@ const PAST_DEADLINE = "past-deadline";
  *  answers, and a hold `untilDeadline` lets go of it. */
 export function pastDeadlineKey(mutationKey: MutationKey): MutationKey {
   return [...mutationKey, PAST_DEADLINE];
+}
+
+/** Holds `mutationKey` in TanStack's mutation cache, with `variables`, while `answer` is out, so a
+ *  hold on the name (`useSending`, `useIsMutating`) counts it from the task that calls this on,
+ *  whether or not what started it is still drawn: a composer's send (`held-sends.ts`), an issues
+ *  table's action and each write it waits on (`issues-table-actions.ts`). Runs whether or not the
+ *  browser says it is online (`networkMode: "always"`): a mutation TanStack paused offline would
+ *  hold nothing. Answers once the cache counts it no longer, and never rejects. The cache then
+ *  drops it at once rather than at TanStack's cleanup five minutes on, since every reader of these
+ *  names counts the pending ones alone, and each settled one kept is scanned by every
+ *  `useMutationState` and `useIsMutating` until then. */
+export function holdName(
+  client: QueryClient,
+  mutationKey: MutationKey,
+  answer: () => Promise<unknown>,
+  variables?: unknown
+): Promise<unknown> {
+  const cache = client.getMutationCache();
+  const mutation = cache.build(client, { mutationFn: answer, mutationKey, networkMode: "always" });
+  return mutation
+    .execute(variables)
+    .catch(() => undefined)
+    .finally(() => cache.remove(mutation));
 }
 
 /** The sends named `mutationKey`, or a key beneath it (TanStack matches a key's prefix), as the

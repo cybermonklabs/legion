@@ -225,21 +225,16 @@ export function ReplacingUploadNote(): ReactNode {
 }
 
 /** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's, and a
- *  correction's of a title (`refreshArtifact`). Answers when the owner's document list has been
- *  read again, or has failed to be. A removal reads its own (`refreshRemoval`). */
-export function refreshOwnerArtifacts(
-  queryClient: QueryClient,
-  owner: ArtifactOwner
-): Promise<void> {
+ *  correction's of a title (`refreshArtifact`). A removal reads its own (`refreshRemoval`). */
+export function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
   if ("issue" in owner) {
-    const list = queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
+    void queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
     void queryClient.invalidateQueries({ queryKey: ["issue", owner.issue] });
-    return list;
+  } else if ("project" in owner) {
+    void queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
+  } else {
+    void queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
   }
-  if ("project" in owner) {
-    return queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
-  }
-  return queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
 }
 
 /** `text` added to the end of a draft, a space apart from what is already there. */
@@ -366,7 +361,7 @@ export function useDraftUpload<Draft = void>(
     // Stored either way; with no answer to give, its reference cannot be added to the draft, and
     // the field says so (`upload.unanswered`).
     onSuccess: (landed, { draft, file, owner }) => {
-      void refreshOwnerArtifacts(queryClient, owner);
+      refreshOwnerArtifacts(queryClient, owner);
       if (landed !== null) insert(uploadedFileText(owner, file, landed.result), draft);
     },
     onSettled: (_landed, _error, press) => {
@@ -587,7 +582,7 @@ export function useArtifactUpload(
       // with no answer to give, the row says so (`upload.unanswered`).
       setPendingFile(null);
       setSummary("");
-      void refreshOwnerArtifacts(queryClient, owner);
+      refreshOwnerArtifacts(queryClient, owner);
       if (result !== null) {
         void queryClient.invalidateQueries({ queryKey: ["artifact", result.artifact.id] });
       }

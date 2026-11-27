@@ -8,7 +8,7 @@ import {
   type UseMutationOptions,
   type UseMutationResult,
   useMutation,
-  useMutationState,
+  useQueryClient,
 } from "@tanstack/react-query";
 import {
   useCallback,
@@ -273,22 +273,30 @@ export function usePendingKeyedPress<TVariables = unknown>(
   readonly submittedAt: number;
 } {
   const writes = useWrites();
-  const press = useMutationState({
-    filters: {
-      exact: true,
-      mutationKey,
-      predicate:
-        of === undefined
-          ? undefined
-          : ({ state }) => of((state.variables as Press<TVariables>).variables),
-      status: "pending",
-    },
-    select: ({ state }) => ({
-      key: (state.variables as Press<unknown> | undefined)?.key,
-      submittedAt: state.submittedAt,
-    }),
-  }).at(-1);
-  const late = useLateIn(writes, press?.key);
+  const cache = useQueryClient().getMutationCache();
+  // The newest pending press under this render's key and `of`, read with this render's filters.
+  // TanStack's `useMutationState` filters only in its cache listener, with the options an effect
+  // hands it after each commit, so a card drawn for another subject drew the press of the one
+  // before until some other mutation event came: a card drawn back for an ask whose Unfollow was
+  // out let it go, and a second DELETE could be sent. The snapshot is that press's state, which
+  // TanStack replaces as the press changes and keeps otherwise, so the surface draws again only as
+  // the newest press changes, settles or gives way to another.
+  const press = useSyncExternalStore(
+    cache.subscribe,
+    () =>
+      cache
+        .findAll({
+          exact: true,
+          mutationKey,
+          predicate:
+            of === undefined
+              ? undefined
+              : ({ state }) => of((state.variables as Press<TVariables>).variables),
+          status: "pending",
+        })
+        .at(-1)?.state
+  );
+  const late = useLateIn(writes, (press?.variables as Press<unknown> | undefined)?.key);
   return { isPending: press !== undefined, late, submittedAt: press?.submittedAt ?? 0 };
 }
 

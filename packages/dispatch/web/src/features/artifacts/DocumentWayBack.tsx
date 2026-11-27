@@ -64,7 +64,7 @@ function refreshDocumentReads(queryClient: QueryClient, artifact: Artifact): voi
  * what makes the writer's own page move whether or not that stream is up.
  */
 function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
-  void refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
+  refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
   refreshDocumentReads(queryClient, artifact);
 }
 

@@ -1,6 +1,5 @@
 import {
   type MutationKey,
-  type QueryClient,
   useIsMutating,
   useMutationState,
   useQueryClient,
@@ -16,11 +15,12 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { advancesIssuesParams, advancesIssuesQuery, projectIssuesQuery } from "../../api/queries";
+import { advancesIssuesParams } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useUnsettledRead } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { holdHandOff } from "../../components/focus-place";
+import { holdName } from "../../hooks/useSending";
 import { issueProject } from "../../lib/issue-key";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
@@ -34,7 +34,7 @@ import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../write
 import { useLateWrites } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites, type Writes } from "../writes/write-store";
 import { IN_WORK_STATUSES, statusText } from "./board-model";
-import { type IssueListing, listingName } from "./issues-table-data";
+import { type IssueListing, listingName, listingQuery } from "./issues-table-data";
 import {
   buildItems,
   type Item,
@@ -184,24 +184,6 @@ interface ResumableAction {
   resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>;
 }
 
-/** Holds `mutationKey` in TanStack's mutation cache, with `variables`, until `until` settles, as a
- *  held send holds its name (`held-sends.ts`): a List drawn again while it is held counts it,
- *  whatever took the List that holds it off the page. It runs whether or not the browser says it
- *  is online (`networkMode: "always"`): a mutation TanStack paused offline would hold nothing.
- *  Answers once the cache counts it no longer. */
-function holdInCache(
-  client: QueryClient,
-  mutationKey: MutationKey,
-  variables: unknown,
-  until: Promise<unknown>
-): Promise<unknown> {
-  return client
-    .getMutationCache()
-    .build(client, { mutationFn: () => until, mutationKey, networkMode: "always" })
-    .execute(variables)
-    .catch(() => undefined);
-}
-
 /** Answers once Dispatch decides the write `writes` holds under `key` - landed, refused, stopped
  *  or discarded. */
 function decided(writes: Writes, key: string): Promise<void> {
@@ -237,7 +219,7 @@ export function useIssueTableActions({
   const [running, setRunning] = useState(0);
   // Each action of the listing is held in TanStack's mutation cache under the listing's name from
   // its press until its controls are let go, and each write it waits on, by the write's key, from
-  // the moment it waits on it until Dispatch decides it (`holdInCache`). So a List drawn again
+  // the moment it waits on it until Dispatch decides it (`holdName`). So a List drawn again
   // while an action is out - the List switched to the Board and back - counts that action as the
   // List it ran in did, though no press of its own made it, and reads the lateness of the writes
   // it waits on, which hold the controls only until each is late.
@@ -259,7 +241,10 @@ export function useIssueTableActions({
   /** Notes that an action waits on the write the store holds under `key`, until Dispatch decides
    *  it. */
   const waitOn = (key: string) => {
-    void holdInCache(client, waitsName, key, decided(writes, key));
+    // Followed from this call: the cache calls the hold's answer a microtask later, and a
+    // decision told before then would be missed.
+    const until = decided(writes, key);
+    void holdName(client, waitsName, () => until, key);
   };
   const [notice, setNotice] = useState<Notice>();
   // The latest action's hold through the read of this table's listing after it, under what that
@@ -267,10 +252,7 @@ export function useIssueTableActions({
   // settled once the hold ran out, which the next action takes away as its hold begins, and
   // whether the hold is on. A table drawn again while it is - the List switched to the Board and
   // back - finds both, and says what the action did before why, as the table it ran in did.
-  const [listRead, waitWithinBound] = useUnsettledRead(
-    ("project" in listing ? projectIssuesQuery(listing.project, []) : advancesIssuesQuery(listing))
-      .queryKey
-  );
+  const [listRead, waitWithinBound] = useUnsettledRead(listingQuery(listing).queryKey);
   const unsettled = listRead?.unsettled;
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   // The issues the action in hand is taking out of the view, which `leaving` names: each issue its
@@ -422,7 +404,7 @@ export function useIssueTableActions({
     // The cache holds the action under the listing's name until its controls are let go, for a
     // List drawn again meanwhile (`out`); this List counts it from the render the press makes.
     const run = Promise.withResolvers<void>();
-    const held = holdInCache(client, actionsName, undefined, run.promise);
+    const held = holdName(client, actionsName, () => run.promise);
     setRunning((count) => count + 1);
     setNotice(undefined);
     setMoved(new Set());

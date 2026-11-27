@@ -51,7 +51,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { deliveryAttempts } from "../agents/attempts";
+import { deliveryAttempts, messageDeliveryRetryKey } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
@@ -247,11 +247,10 @@ function ConversationReply({
   const queryClient = useQueryClient();
   const text = useAgentText();
   const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
-  // The retry goes under the reply's name, as every retry of a message does on whichever page,
-  // so a turn drawn again while it is out, before it lands - the Conversation tab left and
-  // opened again - holds the retry row from that press until its deadline, as the turn it was
-  // made on did (`usePendingKeyedPress`).
-  const retryKey = ["message-delivery-retry", reply.id];
+  // The retry goes under the reply's name (`messageDeliveryRetryKey`), so a turn drawn again while
+  // it is out, before it lands - the Conversation tab left and opened again - holds the retry row
+  // from that press until its deadline, as the turn it was made on did (`usePendingKeyedPress`).
+  const retryKey = messageDeliveryRetryKey(reply.id);
   const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
@@ -1024,7 +1023,7 @@ function TargetedMessageTurn({
   const text = useAgentText();
   const targetName = recipientOf(item.root.deliveries ?? [], item.root.target);
   // The retry goes under the message's name, as a reply's does, and for the same reason.
-  const retryKey = ["message-delivery-retry", item.root.id];
+  const retryKey = messageDeliveryRetryKey(item.root.id);
   const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>

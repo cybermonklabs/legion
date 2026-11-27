@@ -475,10 +475,10 @@ async function markOpenThread(user: UserEvent): Promise<HTMLElement> {
 // Dismiss of the open row takes the row off the list, and the commit that does draws the list for
 // that one commit, before the selection is handed on to the next row, whose view hides the list
 // again in the commit after. The hand-off reads the open row from the selection, so its landing
-// waits through that commit and is made on the next row's own mark in its view. At 390 px the bar
-// stands under the header and no foot pass is pending, so a landing is made in the commit that
-// asks for it.
-test("at 390 px the bar's Dismiss of the open row lands on the next row's own mark in its reading view, never in the hidden list", async () => {
+// waits through that commit and is made on the next row's scroller in its reading view. At 390 px
+// the bar stands under the header and no foot pass is pending, so a landing is made in the commit
+// that asks for it.
+test("at 390 px the bar's Dismiss of the open row lands on the next row's scroller in its reading view, never in the hidden list", async () => {
   const user = userEvent.setup();
   const width = movableReadingPaneWidth(390);
   const threads = serveThreads();
@@ -511,9 +511,9 @@ test("at 390 px the bar's Dismiss of the open row lands on the next row's own ma
 
 // The same for the bar's Snooze of the open row: the bar stays up and the row stays drawn in its
 // view while the write is out, and the commit the write lands in takes the row and the bar away
-// together and draws the list for that one commit. The landing is made on the next row's own mark
-// in its view.
-test("at 390 px the bar's Snooze of the open row lands on the next row's own mark in its reading view once the write lands, never in the hidden list", async () => {
+// together and draws the list for that one commit. The landing is made on the next row's scroller
+// in its reading view.
+test("at 390 px the bar's Snooze of the open row lands on the next row's scroller in its reading view once the write lands, never in the hidden list", async () => {
   const user = userEvent.setup();
   const width = movableReadingPaneWidth(390);
   const snoozes = serveHeldSnoozes(SNOOZED_ROWS);
@@ -605,8 +605,8 @@ test.each([
 // focus stands (`MarkedList`'s `row`). The write lands and takes the row, its view and the bar
 // away in one commit, which drops the focus onto the body before the bar's going can read it. The
 // hand-off remembered the mark in its leaving row, so the going owes the landing, and it is made
-// on the next row's own mark in its view.
-test("at 390 px, with the bar's Snooze of the open row out, an untick of the row's mark in its reading view owes the landing, made on the next row's mark once the row goes", async () => {
+// on the next row's scroller in its reading view.
+test("at 390 px, with the bar's Snooze of the open row out, an untick of the row's mark in its reading view owes the landing, made on the next row's scroller once the row goes", async () => {
   const user = userEvent.setup();
   const width = movableReadingPaneWidth(390);
   const snoozes = serveHeldSnoozes(SNOOZED_ROWS);

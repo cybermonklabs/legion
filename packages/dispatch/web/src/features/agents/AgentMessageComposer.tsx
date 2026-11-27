@@ -130,7 +130,7 @@ export function AgentMessageComposer({
   // `MentionComposer` holds its control fieldset while a send is in flight (`aria-disabled`, each
   // text field read-only), never disabled, so the box and Send keep the focus through the send.
   // Where the focus is as the send goes out is noted (`sentFrom`) in the task that starts it, from
-  // the mutation cache's own event for the send it adds (`held-sends.ts`'s `hold`): the host's
+  // the mutation cache's own event for the send it adds (`useSending.ts`'s `holdName`): the host's
   // `sending` is drawn a task or more after that (`useIsMutating`), and a reader who moves on in
   // that gap has put the focus on another control by then, which a note taken there would name as
   // the place the send left. Only a new send notes: one added under the name, matched whole, while
@@ -144,12 +144,12 @@ export function AgentMessageComposer({
       queryClient.getMutationCache().subscribe((event) => {
         if (event.type !== "added") return;
         if (!matchMutation({ exact: true, mutationKey: sendKey }, event.mutation)) return;
-        // The cache adds a mutation before it runs it (`hold`), so this counts the sends out
+        // The cache adds a mutation before it runs it (`holdName`), so this counts the sends out
         // before this one.
-        if (queryClient.isMutating({ mutationKey: sendKey }) > 0) return;
+        if (sendingNow()) return;
         sentFrom.current = document.activeElement;
       }),
-    [queryClient, sendKey]
+    [queryClient, sendKey, sendingNow]
   );
   /** Gives the box the focus once a send lands, only while the focus is still where the send left
    *  it: on the box, on Send, on the control the send was made from, or lost to the page's body by

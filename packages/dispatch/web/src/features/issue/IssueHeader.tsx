@@ -60,6 +60,7 @@ import { TURN_ROW } from "../conversation/turn-keys";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { outsideAskCard } from "../inbox/ask-card";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
+import { useRetryHandOff } from "../issue-page/details-error";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import {
   isIssueStatus,
@@ -229,7 +230,7 @@ export function IssueHeader({
   // line away, with the focus Retry holds, as it sends the release again: the focus goes on to
   // Release, held beside the claim while that release is out, and from there to Release's place
   // once it lands, as after a first release; or to Release's place at once where the release has
-  // already taken the claim's box (`retryLeft`, which Retry's press arms, `retried`).
+  // already taken the claim's box (`useRetryHandOff`, which Retry's press arms).
   const headerElement = useRef<HTMLElement>(null);
   const stateActions = useRef<HTMLDivElement>(null);
   const releaseControl = useRef<HTMLButtonElement>(null);
@@ -243,14 +244,13 @@ export function IssueHeader({
     );
   };
   const claimLeft = useFocusHandOff(releasePlace, released);
-  const retried = useRef(false);
-  const retryLeft = useFocusHandOff(() => releaseControl.current ?? releasePlace(), retried);
+  const retry = useRetryHandOff(() => releaseControl.current ?? releasePlace());
   const pressRelease = () => {
     released.current = true;
     releaseClaim.mutate();
   };
   const retryRelease = () => {
-    retried.current = true;
+    retry.retried.current = true;
     released.current = true;
     releaseClaim.retry();
   };
@@ -1075,8 +1075,8 @@ export function IssueHeader({
       ) : null}
       {releaseClaim.isError ? (
         // Retry's press takes this line away as it sends the release again, and the focus Retry
-        // holds goes on to Release, or to Release's place (`retryLeft`).
-        <div className="contents" ref={retryLeft}>
+        // holds goes on to Release, or to Release's place (`useRetryHandOff`).
+        <div className="contents" ref={retry.retryRef}>
           <QueryError
             message={
               stoppedNote(releaseClaim, "the release of this claim", "made") ??
