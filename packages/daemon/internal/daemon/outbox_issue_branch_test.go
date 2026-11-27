@@ -35,7 +35,8 @@ const nextBranch = "legion/LEGION-208"
 // reference documents it, and a compare of two commits answered with the status compared names for
 // "base...head". pushAfterRead, where set, is a push of another process that lands on the branch
 // just after the first read of its ref is answered. Every create and move is recorded; any other
-// request, a REST move of a ref among them, fails the test.
+// request, a REST move of a ref among them, fails the test. answer, where set, answers first: a
+// request it answers (ok) gets its status and body and nothing else, and is counted in answered.
 type nextBranchGitHub struct {
 	url           string
 	mu            sync.Mutex
@@ -44,6 +45,8 @@ type nextBranchGitHub struct {
 	pushAfterRead string
 	creates       []map[string]string
 	moves         []map[string]any
+	answer        func(r *http.Request) (status int, body string, ok bool)
+	answered      int
 }
 
 // nextRepositoryID is acme/widgets's GraphQL node id.
@@ -55,6 +58,14 @@ func newNextBranchGitHub(t *testing.T, refs, compared map[string]string) *nextBr
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
+		if g.answer != nil {
+			if status, body, ok := g.answer(r); ok {
+				g.answered++
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(body))
+				return
+			}
+		}
 		read, isRead := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
 		basehead, isCompare := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/compare/")
 		switch {

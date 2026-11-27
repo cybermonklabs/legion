@@ -2789,6 +2789,16 @@ type Store interface {
 	PutCheckRead(ctx context.Context, tx pgx.Tx, read CheckRead) (bool, error)
 	// NewestCheckRead is the issue's newest stored read, nil where none is stored.
 	NewestCheckRead(ctx context.Context, tx pgx.Tx, issue string) (*CheckRead, error)
+	// RefuseBranch records refusal, the refusal for good of an issue_branch row, as its issue's
+	// refusal of its generation, where none of that generation stands. It answers whether it was
+	// recorded: a second refused row of the generation finds the first, so its architect is told
+	// once (internal/daemon's finishRefused).
+	RefuseBranch(ctx context.Context, tx pgx.Tx, refusal BranchRefusal) (bool, error)
+	// ClearBranchRefusals deletes every refusal issue records: a later row wrote its branch.
+	ClearBranchRefusals(ctx context.Context, tx pgx.Tx, issue string) error
+	// BranchRefusals is the refusal of each issue of project at the generation it stands in now,
+	// by issue key: what the state names (api.Issue.BranchRefused).
+	BranchRefusals(ctx context.Context, tx pgx.Tx, project string) ([]BranchRefusal, error)
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
 	// the start of a step's record raises it in its own transaction (workflow's startStep), and

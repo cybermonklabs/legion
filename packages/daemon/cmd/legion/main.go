@@ -1323,6 +1323,12 @@ func heldSummary(held []api.HeldOutboxRow) string {
 		len(held), longest.Kind, longest.ID, longest.Issue, time.Duration(longest.WaitedSeconds)*time.Second, longest.WaitsOn)
 }
 
+// branchRefusedLines is the block an operator reads for the issues whose branch row GitHub refused
+// for good (api.Issue.BranchRefused).
+func branchRefusedLines(issues map[string]api.Issue) []string {
+	return nil
+}
+
 // strandedPhrases is how `legion state` names each move that brings a stranded claim back
 // (api.StrandedClaim.Move) before the claims it brings back.
 var strandedPhrases = map[api.StrandedMove]string{

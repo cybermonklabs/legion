@@ -1051,6 +1051,23 @@ type Issue struct {
 	// (record.StoredWait), read in this state's own snapshot. Absent from every issue of the body
 	// served a caller below the defect-calls entry (withoutCloseWait).
 	CloseWait *CloseWaitView `json:"closeWait,omitempty"`
+	// BranchRefused is the refusal for good of the issue's branch row at the generation it stands
+	// in now (BranchRefusedView): GitHub, or the deployment's rules, refused the create or the move
+	// of its branch in a way a retry meets again, so the row ended and the owning architect was
+	// told once. Absent while no such refusal stands, and from every issue of the body served a
+	// caller below the branch-refused entry (withoutBranchRefused).
+	BranchRefused *BranchRefusedView `json:"branchRefused,omitempty"`
+}
+
+// BranchRefusedView is a branch row refused for good, as the state shows it (record.BranchRefusal):
+// the outbox row, what it wrote (`create` or `move`), the refusal's kind (ghbranch.RefusalKind),
+// the row's error as the row kept it, and when it was refused.
+type BranchRefusedView struct {
+	Row    int64     `json:"row"`
+	Write  string    `json:"write"`
+	Kind   string    `json:"kind"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
 }
 
 // PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
