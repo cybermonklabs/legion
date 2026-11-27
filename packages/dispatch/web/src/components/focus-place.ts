@@ -940,6 +940,11 @@ interface ArmedPress {
    *  holds it in the page, the controls held in it now (`HELD`) to those held before the press
    *  (`holds`): the same press heard at a component's root inside another's is armed at both. */
   readonly addRoot: (root: Element) => void;
+  /** Whether `pressed` is empty space inside a selection bar root this press was armed at while
+   *  its write is out (landing on no control in `ROW_CONTROL` inside the bar): clicking empty
+   *  space in the bar's line focuses that box and acts on no control, so it keeps the bar's held
+   *  press live rather than ending or replacing it with an unheld one. */
+  readonly blankInBar: (pressed: Element) => boolean;
   /** The control the press landed on: the nearest of the element it landed on and the elements
    *  around it that a row holds as a control by markup (`ROW_CONTROL`) - the button a span or an
    *  icon of it is drawn in - else that element. */
@@ -1042,10 +1047,14 @@ let armed: ArmedPress | null = null;
  * and a task later.
  *
  * The reader's next act disarms it, read by listeners on the document installed only while a
- * press is armed: a pointer press anywhere outside the armed control and the controls it holds
- * (`holds`), and any key that is a press of theirs (`isPress`) and no modifier pressed alone,
- * other than a key on one of those. Tab, with Shift or without, moves the focus off that control
- * to another, so it disarms the press as well, save while the press's write is out - a hold on
+ * press is armed: a pointer press anywhere outside the armed control, the controls it holds
+ * (`holds`), and empty space inside a selection bar root it was armed at while its write is out
+ * (`blankInBar`, where a click focuses the bar's line and acts on no control, so the bar's later
+ * going still hands the focus on as from the bar, while a press on another control in the bar or
+ * anywhere outside it still ends it), and any key that is a press of theirs (`isPress`) and no
+ * modifier pressed alone, other than a key on one of those. Tab, with Shift or without, moves the
+ * focus off that control to another, so it disarms the press as well, save while the press's write
+ * is out - a hold on
  * what answers it on, or its control held as above - where it waits for the focus to land
  * (`focusin`, or the Tab's own `keyup`): a landing inside the region the press was made in keeps
  * it live, since that region's later going is the press's own doing, as the project List's
@@ -1063,7 +1072,10 @@ let armed: ArmedPress | null = null;
 export function armHandOff(pressed: Element, root?: Element): void {
   const control = pressed.closest(ROW_CONTROL) ?? pressed;
   const before = armed;
-  if (before !== null && (before.control === control || before.holds(pressed))) {
+  if (
+    before !== null &&
+    (before.control === control || before.holds(pressed) || before.blankInBar(pressed))
+  ) {
     if (root !== undefined) before.addRoot(root);
     return;
   }
@@ -1298,10 +1310,30 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
     if (press.takenFrom !== null || !(from instanceof Element)) return;
     if (from !== document.body && from.isConnected) press.takenFrom = from;
   };
+  // Empty space inside a selection bar root this press was armed at while its write is out: a
+  // pointer press there focuses the bar's `tabindex="-1"` line and activates no control, so it
+  // keeps the held press live rather than ending or replacing it with an unheld one; when the bar
+  // then goes with the rows, the focus is handed on as from the bar rather than left on the body.
+  // Any press on another control in the bar (`ROW_CONTROL`) or outside the bar still ends it.
+  const blankInBar = (pressed: Element): boolean => {
+    if (!writeOut() || pastBound) return false;
+    for (const each of roots) {
+      if (each.matches(SELECTION_BAR) && each.contains(pressed)) {
+        const hit = pressed.closest(ROW_CONTROL);
+        return hit === null || !each.contains(hit);
+      }
+    }
+    return false;
+  };
   const onPointer = ({ target }: PointerEvent) => {
-    if (!(target instanceof Element && (control.contains(target) || holds(target)))) {
+    if (
+      !(
+        target instanceof Element &&
+        (control.contains(target) || holds(target) || blankInBar(target))
+      )
+    ) {
       end();
-    } else if (control.contains(target)) {
+    } else if (control.contains(target) || blankInBar(target)) {
       pointed = null;
     } else {
       pointed = target;
@@ -1353,6 +1385,7 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   };
   const press: ArmedPress = {
     addRoot,
+    blankInBar,
     control,
     end,
     hold: () => {

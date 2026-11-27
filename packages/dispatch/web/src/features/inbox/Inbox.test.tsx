@@ -1,4 +1,4 @@
-import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, describe, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, the motion hold's bare pointermove, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -9799,4 +9799,72 @@ test("on a phone, another row's own Dismiss pressed while the bar's Snooze is ou
     reads();
     snoozeAsk.mockRestore();
   }
+});
+
+// With the selection bar drawn and focus on the bar's `tabindex="-1"` line after a pointer press
+// on empty space, the Inbox's keys (`j`, `k`, the bar's `h` and `Escape`, and global `?`) answer
+// as they do with focus on the page's body or the bar's root.
+describe("selection bar line pointer focus and Inbox keymap", () => {
+  test("j, k, h, ? and Escape answer with focus on the Inbox selection bar's line after a pointer press", async () => {
+    const user = userEvent.setup();
+    const asks = [
+      inboxIssue("ask-a", "CORE-1", "Which approach?"),
+      inboxIssue("ask-b", "CORE-2", "Which format?"),
+      inboxIssue("ask-c", "CORE-3", "Which owner?"),
+    ];
+    const getInbox = spyOn(api, "getInbox").mockResolvedValue(asks);
+    const getAsk = mockAskReads(asks);
+    let helpOpened = 0;
+    const unregisterHelp = appKeymap.register("global", [
+      { id: "help", keys: "?", label: "Keyboard shortcuts", run: () => (helpOpened += 1) },
+    ]);
+    const { unmount } = renderInbox("/?group=none");
+    try {
+      await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c"]));
+      await user.click(markOf("ask-b"));
+      await screen.findByText("1 selected");
+      const bar = screen.getByRole("toolbar", { name: "Selected rows" });
+      const line = within(bar).getByRole("button", { name: "Clear selection" }).parentElement;
+      if (line === null) throw new Error("the selection bar draws no line around its actions");
+      expect(line.getAttribute("tabindex")).toBe("-1");
+      const focusLineByPointer = () => {
+        act(() => {
+          line.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          line.focus();
+          line.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          line.click();
+        });
+        expect(document.activeElement === line).toBe(true);
+      };
+
+      focusLineByPointer();
+      await user.keyboard("j");
+      expect(shortRow("ask-a")).toHaveFocus();
+
+      focusLineByPointer();
+      await user.keyboard("k");
+      expect(shortRow("ask-c")).toHaveFocus();
+
+      focusLineByPointer();
+      await user.keyboard("h");
+      expect(screen.getByLabelText("Snooze selected asks")).toHaveFocus();
+
+      focusLineByPointer();
+      await user.keyboard("?");
+      expect(helpOpened).toBe(1);
+
+      focusLineByPointer();
+      await user.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument()
+      );
+      await waitFor(() => expect(markOf("ask-b")).toHaveFocus());
+    } finally {
+      unregisterHelp();
+      unmount();
+      disarm();
+      getAsk.mockRestore();
+      getInbox.mockRestore();
+    }
+  });
 });

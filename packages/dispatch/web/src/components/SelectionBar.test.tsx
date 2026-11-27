@@ -3023,3 +3023,100 @@ test.each([
     }
   }
 );
+
+// With a landing owed (a bar press whose writes are held), a pointer press on empty space inside
+// the bar's `tabindex="-1"` line counts as the reader's own act, never as the body and never as a
+// leaving row: the owed landing is not made over that focus while the bar stays. A focus moved
+// onto that box without an act likewise ends the owed landing under the Handed on rule.
+test.each([
+  "a pointer press on empty space in the bar's line",
+  "focus moved onto the bar's line",
+] as const)("with a landing owed, %s ends the landing unmade while the bar stays", async (how) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-12", "CORE-13"];
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    // The bar goes while CORE-12 and CORE-13 are still leaving: focus is parked and landing is owed.
+    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    expect(focusedName()).toBe("Select CORE-13");
+    // The bar is drawn again (e.g. another mark stays) while the leaving rows have not gone yet.
+    view.rerender(<PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    const line = screen.getByRole("button", { name: "Dismiss" }).parentElement;
+    if (line === null) throw new Error("the bar draws no line around its actions");
+    expect(line.getAttribute("tabindex")).toBe("-1");
+    if (how === "a pointer press on empty space in the bar's line") {
+      act(() => {
+        line.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        line.focus();
+        line.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        line.click();
+      });
+      await act(afterTask);
+    } else {
+      act(() => line.focus());
+    }
+    expect(document.activeElement === line).toBe(true);
+    // The leaving rows leave while the bar stays: no landing is made over the bar's line.
+    view.rerender(
+      <PlacedList count={1} last="CORE-13" listed={without(PLACED_KEYS, ...leaving)} />
+    );
+    expect(document.activeElement === line).toBe(true);
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// With a bar press whose writes are held while the bar stays drawn, a pointer press on empty space
+// inside the bar's `tabindex="-1"` line focuses that line without landing over it while the bar
+// stays, and once the writes finish and the bar goes with the rows, the focus is handed on as from
+// the bar (to the row now at the leaving rows' place), never left on the body.
+test("a pointer press on empty space in the bar's line while writes are held hands focus on from the bar when the bar goes with the rows", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-12", "CORE-13"];
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    // The bar stays drawn while the writes are out, with CORE-12 and CORE-13 named as leaving.
+    view.rerender(<PlacedList count={2} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    const line = screen.getByRole("button", { name: "Dismiss" }).parentElement;
+    if (line === null) throw new Error("the bar draws no line around its actions");
+    expect(line.getAttribute("tabindex")).toBe("-1");
+    act(() => {
+      line.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      line.focus();
+      line.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      line.click();
+    });
+    expect(document.activeElement === line).toBe(true);
+    // Wait past the transient frame and task an unheld press would expire in: while the bar stays,
+    // the focus remains on the bar's line and the held press stays live.
+    for (const _ of [0, 1]) {
+      await act(nextFrame);
+      await act(afterTask);
+    }
+    expect(document.activeElement === line).toBe(true);
+    // The writes settle and the bar goes with the rows: focus is handed on as from the bar.
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, ...leaving)} />
+    );
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(focusLanding()).toBe("Select CORE-14");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});

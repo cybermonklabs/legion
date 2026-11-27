@@ -1,4 +1,4 @@
-import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, describe, expect, jest, spyOn, test } from "bun:test";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -33,6 +33,7 @@ import {
 } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { useDialog } from "../shell/useDialog";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -2299,4 +2300,78 @@ test("Shift+H of a card with an open child, its question's Move them with it lan
     patchIssue.mockRestore();
     statusChanges.mockRestore();
   }
+});
+
+// With the focus on the board's `tabindex="-1"` scroller (or a swimlane's scroller) after a
+// pointer press on empty space, the page's keys (`j`, `k`, `h`, `l` and global `?`) answer as
+// they do with the focus on the page's body.
+describe("board keymap with pointer focus on a scroll box", () => {
+  test("j, k, h, l and ? answer with focus on the board's scroller after a pointer press", async () => {
+    const user = userEvent.setup();
+    const { cleanup } = renderBoard({}, undefined, keyboardIssues);
+    let helpOpened = 0;
+    const unregisterHelp = appKeymap.register("global", [
+      { id: "help", keys: "?", label: "Keyboard shortcuts", run: () => (helpOpened += 1) },
+    ]);
+    try {
+      const board = await screen.findByRole("region", { name: "Project board" });
+      const scroller = within(board).getByTestId("board-scroll-container");
+      expect(scroller.getAttribute("tabindex")).toBe("-1");
+      const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
+      const delta = within(board).getByRole("article", { name: "CORE-4 Delta" });
+      const focusScrollerByPointer = () => {
+        act(() => {
+          scroller.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          scroller.focus();
+          scroller.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          fireEvent.click(scroller);
+        });
+        expect(document.activeElement === scroller).toBe(true);
+      };
+
+      focusScrollerByPointer();
+      await user.keyboard("j");
+      expect(alpha).toHaveFocus();
+
+      focusScrollerByPointer();
+      await user.keyboard("k");
+      expect(delta).toHaveFocus();
+
+      focusScrollerByPointer();
+      await user.keyboard("l");
+      expect(alpha).toHaveFocus();
+
+      focusScrollerByPointer();
+      await user.keyboard("h");
+      expect(delta).toHaveFocus();
+
+      focusScrollerByPointer();
+      await user.keyboard("?");
+      expect(helpOpened).toBe(1);
+    } finally {
+      unregisterHelp();
+      cleanup();
+    }
+  });
+
+  test("j answers with focus on a swimlane's scroller after a pointer press", async () => {
+    const user = userEvent.setup();
+    const { cleanup } = renderBoard({}, undefined, laneIssues, "/projects/CORE", true);
+    try {
+      const p0Lane = await screen.findByRole("region", { name: "P0 lane" });
+      const scroller = within(p0Lane).getByTestId("board-lane-scroll-container");
+      expect(scroller.getAttribute("tabindex")).toBe("-1");
+      act(() => {
+        scroller.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        scroller.focus();
+        scroller.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        fireEvent.click(scroller);
+      });
+      expect(document.activeElement === scroller).toBe(true);
+      await user.keyboard("j");
+      expect(within(p0Lane).getByRole("article", { name: "CORE-1 P0 card" })).toHaveFocus();
+    } finally {
+      cleanup();
+    }
+  });
 });

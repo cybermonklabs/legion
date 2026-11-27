@@ -13396,3 +13396,152 @@ test("with Take out of epic's writes held and both marks then unticked, the proj
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// Pressing empty space inside a `tabindex="-1"` scroll box puts the focus on that box without a
+// focus ring (only `:focus-visible` may draw one), and Tab from there moves to the next control
+// with its focus ring drawn as usual.
+// Its engines: `:focus-visible` and pointer-focus outline rules differ across Chromium, Firefox
+// and WebKit (e2e/playwright.config.ts).
+// SLOW(>=2s): two issues seeded, and the project List and the project Board opened at 1440.
+test("a pointer press on empty space in the List's selection bar line or the Board's scroller focuses the box with no focus ring, and Tab draws the next control's ring @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const first = await createIssue({ project: "CORE", title: "First issue" });
+  await createIssue({ project: "CORE", title: "Second issue" });
+  await patchIssue(first.key, { status: "todo" });
+
+  /** A visible point inside `box`'s client area (above any scrollbar) where `elementFromPoint`
+   *  hits `box` itself rather than a child control. */
+  const findSpot = (box: Locator) =>
+    box.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      const left = Math.max(rect.left + 2, 1);
+      const right = Math.min(rect.left + node.clientWidth - 2, window.innerWidth - 1);
+      const top = Math.max(rect.top + 2, 1);
+      const bottom = Math.min(rect.top + node.clientHeight - 2, window.innerHeight - 1);
+      if (right <= left || bottom <= top) return null;
+      const midY = (top + bottom) / 2;
+      const candidates: [number, number][] = [
+        [left + 4, bottom - 3],
+        [(left + right) / 2, bottom - 3],
+        [right - 4, bottom - 3],
+      ];
+      for (const child of node.children) {
+        const childRect = child.getBoundingClientRect();
+        candidates.push([childRect.right + 3, midY]);
+        candidates.push([childRect.left - 3, midY]);
+      }
+      for (const [x, y] of candidates) {
+        if (x < left || x > right || y < top || y > bottom) continue;
+        if (document.elementFromPoint(x, y) === node) {
+          return { x: Math.round(x), y: Math.round(y) };
+        }
+      }
+      return null;
+    });
+
+  const emptySpotIn = async (what: string, box: Locator) => {
+    await expect.poll(() => findSpot(box), { message: `no empty spot in ${what}` }).not.toBeNull();
+    const settled = await settledValue(`${what} empty spot`, () => findSpot(box));
+    expect(settled, `no settled empty spot in ${what}`).not.toBeNull();
+    return settled;
+  };
+
+  /** Reads `document.activeElement`, `:focus-visible`, and the computed `outline-style` and
+   *  `box-shadow` relative to `box`. */
+  const focusRingOn = (box: Locator) =>
+    box.evaluate((node) => {
+      const active = document.activeElement;
+      const style = active instanceof HTMLElement ? getComputedStyle(active) : null;
+      return {
+        boxShadow: style?.boxShadow ?? "none",
+        focusVisible: active?.matches(":focus-visible") ?? false,
+        isBox: active === node,
+        outlineStyle: style?.outlineStyle ?? "none",
+        tag: active?.tagName ?? "",
+      };
+    });
+
+  // Project List: selection bar's line (`tabindex="-1"`).
+  await page.goto("/projects/CORE/issues");
+  const mark = page.getByRole("checkbox", { exact: true, name: `Select ${first.key}` });
+  await expect(mark).toBeVisible();
+  await mark.click();
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  await expect(bar).toBeVisible();
+  const barLine = bar.locator('> div[tabindex="-1"]').first();
+  await expect(barLine).toBeVisible();
+  const barSpot = await emptySpotIn("selection bar line", barLine);
+  await page.mouse.click(barSpot?.x ?? -1, barSpot?.y ?? -1);
+  await expect
+    .poll(() => focusRingOn(barLine))
+    .toEqual({
+      boxShadow: "none",
+      focusVisible: false,
+      isBox: true,
+      outlineStyle: "none",
+      tag: "DIV",
+    });
+  await page.keyboard.press("Tab");
+  await expect
+    .poll(async () => {
+      const state = await focusRingOn(barLine);
+      const inBar = await bar.evaluate((node) => {
+        const active = document.activeElement;
+        return active !== null && active !== node && node.contains(active);
+      });
+      return {
+        drewRing: state.outlineStyle !== "none" || state.boxShadow !== "none",
+        focusVisible: state.focusVisible,
+        inBar,
+        isBox: state.isBox,
+      };
+    })
+    .toEqual({
+      drewRing: true,
+      focusVisible: true,
+      inBar: true,
+      isBox: false,
+    });
+
+  // Project Board: flat board scroller (`tabindex="-1"`).
+  await openIssuesTab(page, "CORE", "Board");
+  const scroller = page.getByTestId("board-scroll-container");
+  await expect(scroller).toBeVisible();
+  await expect(scroller).toHaveAttribute("tabindex", "-1");
+  await expect(page.locator(`[data-board-card="${first.key}"]`)).toBeVisible();
+  const boardSpot = await emptySpotIn("board scroller", scroller);
+  await page.mouse.click(boardSpot?.x ?? -1, boardSpot?.y ?? -1);
+  await expect
+    .poll(() => focusRingOn(scroller))
+    .toEqual({
+      boxShadow: "none",
+      focusVisible: false,
+      isBox: true,
+      outlineStyle: "none",
+      tag: "DIV",
+    });
+  await page.keyboard.press("Tab");
+  await expect
+    .poll(async () => {
+      const state = await focusRingOn(scroller);
+      const inScroller = await scroller.evaluate((node) => {
+        const active = document.activeElement;
+        return active !== null && active !== node && node.contains(active);
+      });
+      return {
+        drewRing: state.outlineStyle !== "none" || state.boxShadow !== "none",
+        focusVisible: state.focusVisible,
+        inScroller,
+        isBox: state.isBox,
+      };
+    })
+    .toEqual({
+      drewRing: true,
+      focusVisible: true,
+      inScroller: true,
+      isBox: false,
+    });
+});

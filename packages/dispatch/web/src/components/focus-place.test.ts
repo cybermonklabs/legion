@@ -2028,3 +2028,91 @@ test("a landing on a control already whole in sight inside a box's scroll paddin
     "in the top strip": { above: 337, below: 50, box: [], window: [] },
   });
 });
+
+// Empty space inside a selection bar root whose held press's write is out: clicking the bar's
+// `tabindex="-1"` line focuses that line and acts on no control, so it must neither end the held
+// press nor replace it with an unheld one; when the bar then goes with the rows, the focus on the
+// line is still the press's doing (`causedByReader`). Clicking another unheld control in the bar,
+// or empty space outside the bar, still ends the held press as before.
+test("a pointer press on empty space inside a held selection bar keeps the press live, while another control or space outside it ends it", async () => {
+  const view = render(
+    createElement(
+      "section",
+      ARM_ON_PRESS,
+      createElement("div", { "data-testid": "outside-blank" }, "Blank outside bar"),
+      createElement(
+        "div",
+        {
+          ...ARM_ON_PRESS,
+          "data-control": CONTROL.selectionBar,
+          "data-testid": "bar",
+          role: "toolbar",
+          tabIndex: -1,
+        },
+        createElement(
+          "div",
+          { "data-testid": "bar-line", tabIndex: -1 },
+          createElement("span", null, "2 selected"),
+          createElement("button", { type: "button" }, "Take out of epic"),
+          createElement("button", { type: "button" }, "Clear selection")
+        )
+      )
+    )
+  );
+  let release = () => undefined;
+  try {
+    const bar = view.getByTestId("bar");
+    const line = view.getByTestId("bar-line");
+    const takeOut = view.getByRole("button", { name: "Take out of epic" });
+    const clear = view.getByRole("button", { name: "Clear selection" });
+    const outside = view.getByTestId("outside-blank");
+    const pressHeld = () => {
+      release();
+      disarm();
+      act(() => {
+        takeOut.focus();
+        fireEvent.click(takeOut);
+      });
+      release = holdHandOff();
+    };
+    const pointerClick = (target: HTMLElement) => {
+      act(() => {
+        target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        if (target.hasAttribute("tabindex") || target.tagName === "BUTTON") target.focus();
+        target.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        fireEvent.click(target);
+      });
+    };
+
+    // Empty space inside the bar's line: keeps the held press live past frames and tasks, notes the
+    // line inside the bar, and does not count as the armed control itself (`pressIsArmedOwn`).
+    pressHeld();
+    pointerClick(line);
+    expect(document.activeElement === line).toBe(true);
+    expect(pressIsArmedOwn(line)).toBe(false);
+    for (const _ of [0, 1]) await frameAndTasks();
+    expect(pressArmed()).toBe(true);
+    expect(causedByReader(line)).toBe(true);
+    // Removing the bar with focus on the line still reports the loss as caused by the reader.
+    bar.remove();
+    expect(causedByReader(line)).toBe(true);
+
+    // Re-attach bar and verify that another unheld control inside it ends the held press (replaced
+    // by an unheld press that expires after frames and tasks).
+    view.container.firstElementChild?.append(bar);
+    pressHeld();
+    pointerClick(clear);
+    for (const _ of [0, 1]) await frameAndTasks();
+    expect(pressArmed()).toBe(false);
+
+    // Empty space outside the bar (inside the outer section) also ends the held press.
+    pressHeld();
+    pointerClick(outside);
+    for (const _ of [0, 1]) await frameAndTasks();
+    expect(pressArmed()).toBe(false);
+  } finally {
+    release();
+    disarm();
+    view.unmount();
+  }
+});

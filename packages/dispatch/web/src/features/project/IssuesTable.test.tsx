@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -26,7 +26,7 @@ import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/stat
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { useKeymapScope } from "../shell/keymap";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
@@ -6316,4 +6316,49 @@ test("a Finish whose writes sent again outlast the bound together, each sent wit
   } finally {
     realClock();
   }
+});
+
+// With the selection bar drawn and focus on the bar's `tabindex="-1"` line after a pointer press
+// on empty space, the List's `j` and `k` keys (through `useRowKeymap`) and global `?` answer as
+// they do with focus on the page's body or the bar's root.
+describe("selection bar line pointer focus and List keymap", () => {
+  test("j, k and ? answer with focus on the List selection bar's line after a pointer press", async () => {
+    const user = userEvent.setup();
+    table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")]);
+    let helpOpened = 0;
+    const unregisterHelp = appKeymap.register("global", [
+      { id: "help", keys: "?", label: "Keyboard shortcuts", run: () => (helpOpened += 1) },
+    ]);
+    try {
+      const secondMark = await screen.findByRole("checkbox", { name: "Select CORE-2" });
+      await user.click(secondMark);
+      const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+      const line = within(bar).getByRole("button", { name: "Clear selection" }).parentElement;
+      if (line === null) throw new Error("the selection bar draws no line around its actions");
+      expect(line.getAttribute("tabindex")).toBe("-1");
+      const focusLineByPointer = () => {
+        act(() => {
+          line.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          line.focus();
+          line.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          line.click();
+        });
+        expect(document.activeElement === line).toBe(true);
+      };
+
+      focusLineByPointer();
+      await user.keyboard("j");
+      expect(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).toHaveFocus();
+
+      focusLineByPointer();
+      await user.keyboard("k");
+      expect(screen.getByRole("row", { name: "CORE-3 Work CORE-3" })).toHaveFocus();
+
+      focusLineByPointer();
+      await user.keyboard("?");
+      expect(helpOpened).toBe(1);
+    } finally {
+      unregisterHelp();
+    }
+  });
 });
