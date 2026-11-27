@@ -1162,7 +1162,14 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 			t.Errorf("%s: ?view=decisions answers the entry %s with no decision, want the decisions read's %s", what, entryKey(entry), entryJSON(t, want))
 			continue
 		}
-		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, want); got != expected {
+		// The old `decisions` member answers a person's un-kept decision block kind `person`, for a page
+		// of the release before that lists it under "Your decisions" (compatDecision). The view names
+		// the node's shape, as the entry does (below), and says who decided in decided_by.
+		compat := want
+		if entry.Node.Kind == refs.BlockNodeKind {
+			compat.Kind = entry.Kind
+		}
+		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, compat); got != expected {
 			t.Errorf("%s: ?view=decisions answers the entry %s with the decision\n%s\nwant the decisions read's\n%s", what, entryKey(entry), got, expected)
 		}
 		if entryJSON(t, node.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, node.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
