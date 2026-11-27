@@ -85,14 +85,19 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
+		// DIAG (never merged): the leader writes its pid at $5.pid, and its trap writes, at $5.trap,
+		// the uptime and its own schedstat line as it begins and again once its rm is done.
+		diag := filepath.Join(dir, "diag")
+		script := testexec.MarkStart(`"$3"`) + `; printf '%s\n' "$$" >"$5.pid"; : >"$1"; trap 'read -r tu </proc/uptime; read -r ts </proc/self/schedstat; rm -f "$1"; read -r ou </proc/uptime; read -r os </proc/self/schedstat; printf "%s\n%s\n%s\n%s\n" "$tu" "$ts" "$ou" "$os" >"$5.trap"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
 		// CONTROL (never merged): the machine holds the command on CPU 0's run queue, at nice 19
 		// behind 16 busy loops, until it reports that it is running.
-		holdOnCPU0(t, 16, ready)
+		h := holdOnCPU0(t, 16, ready)
+		w := watchStop(t, ready, diag+".pid", h)
+		anchorWall, anchorBoot := time.Now(), bootNow()
 		call := calling(t)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"nice", "-n", "19", "taskset", "-c", "0", "sh", "-c", script, "sh", lock, ready, mark, readyAt})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"nice", "-n", "19", "taskset", "-c", "0", "sh", "-c", script, "sh", lock, ready, mark, readyAt, diag})
 		returned := time.Now()
 		cpu := processCPU(t)
 		elapsed := returned.Sub(started)
@@ -118,9 +123,12 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget ended the command, however cleanly it then left", err, elapsed)
 		}
-		if stopped := returned.Sub(passed); stopped > procgroup.StopGrace/2 {
+		stopped := returned.Sub(passed)
+		if stopped > procgroup.StopGrace/2 {
 			t.Errorf("the run returned %s after its budget passed, past half the %s grace: a command that leaves on its SIGTERM must end the grace, not sit out its whole span", stopped, procgroup.StopGrace)
 		}
+		t.Logf("DIAG the run returned %s after its budget passed", stopped)
+		timeline(t, anchorBoot+passed.Sub(anchorWall), anchorBoot+returned.Sub(anchorWall), reached, waits[0], diag+".trap", h, w)
 	})
 
 	t.Run("a helper the command forked is stopped with it", func(t *testing.T) {
