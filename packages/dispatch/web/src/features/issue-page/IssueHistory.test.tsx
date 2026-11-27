@@ -2584,6 +2584,207 @@ test("a turn past the first 20 entries is drawn by its address, also when the ad
   }
 });
 
+/** alice, whom the landing cases sign in as: the reader whose new turn a landing goes to. */
+const ALICE = { id: "alice", kind: "user" } as const;
+
+/** The daemon's thread of the landing cases: its root `m-root`, two minutes old, then alice's
+ *  earlier reply `m-earlier`, then `later`. */
+function daemonThread(later: readonly MessageRead["message"][] = []): MessageRead {
+  const earlier = {
+    ...agentMessage("m-earlier", 90).message,
+    author: ALICE,
+    in_reply_to: "m-root",
+  };
+  return { ...agentMessage("m-root", 120), replies: [earlier, ...later] };
+}
+
+/** alice's new reply in `daemonThread`, which the read after her send brings. */
+const MINE = {
+  ...agentMessage("m-mine", 1).message,
+  author: ALICE,
+  body: "My reply from the line at the foot.",
+  in_reply_to: "m-root",
+};
+
+/** How tall each turn of `daemonThread` is drawn: the root and alice's earlier reply 50 px each,
+ *  so the thread's foot stands at the foot of Details' view under the ten claims above it, and
+ *  her new reply 100 px, so it is drawn wholly below that view. */
+const TURN_HEIGHTS: Record<string, number> = { "m-earlier": 50, "m-mine": 100, "m-root": 50 };
+
+/**
+ * The history of ten claims and `daemonThread` under them, drawn in Details' own box under the
+ * page's writer with alice signed in, and the focus in a field outside Details: the line at the
+ * foot she sent from. Returns the box, that field, the query client, the writer, and what puts
+ * everything back.
+ */
+async function drawLandingHistory(): Promise<{
+  box: HTMLElement;
+  field: HTMLElement;
+  queryClient: QueryClient;
+  restore: () => void;
+  writer: () => OutlineWriter | undefined;
+}> {
+  await warmMarkdownRenderer();
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 10 }, (_, index) => claimAgo(20 - index, index + 1)),
+    [daemonThread()]
+  );
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const turnHeight = (turn: Element) =>
+    TURN_HEIGHTS[turn.getAttribute("data-history-item") ?? ""] ?? ROW_HEIGHT;
+  const restoreLayout = installDetailsLayout(
+    box,
+    (row) => {
+      const turns = [...row.querySelectorAll("[data-history-item]")];
+      return turns.length === 0
+        ? ROW_HEIGHT
+        : turns.reduce((sum, turn) => sum + turnHeight(turn), 0);
+    },
+    turnHeight
+  );
+  const field = document.body.appendChild(document.createElement("textarea"));
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  queryClient.setQueryData(["whoami"], { kind: "user", login: ALICE.id });
+  const held: { writer?: OutlineWriter } = {};
+  function Probe(): ReactNode {
+    held.writer = useOutlineWriter();
+    return null;
+  }
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  const { unmount } = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <OutlineWriterProvider issueKey={KEY}>
+          <Probe />
+          <IssueHistory
+            activityFollowing={undefined}
+            issue={issue}
+            item={undefined}
+            state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
+            visitMark={99999}
+          />
+        </OutlineWriterProvider>
+      </QueryClientProvider>
+    </MemoryRouter>,
+    { container: box }
+  );
+  const restore = () => {
+    unmount();
+    restoreLayout();
+    field.remove();
+    box.remove();
+    restoreReads();
+  };
+  try {
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "the thread is not drawn"
+      ).not.toBeNull()
+    );
+    act(() => field.focus());
+    return { box, field, queryClient, restore, writer: () => held.writer };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// A reply the line at the foot sends to a turn of a thread the history holds is the history's to
+// land (`HeldLanding.in`), not the outline's, which draws no row of it. The send has landed when
+// the line asks, and the read that brings the reader's new turn is still out: the history waits
+// for it and moves nothing, and alice's earlier reply in the thread is no new turn. Once that read
+// has brought the new turn and the list has drawn it, the focus goes to the turn's first control,
+// and Details brings the turn wholly into view by the least scroll of its own box: the page under
+// it does not scroll, and no element is scrolled into view. Here the thread's foot stands at the
+// foot of Details' view, so the new turn drawn under it stands wholly below the view.
+test("a reply sent to a turn of the history takes the focus to the reader's new turn there once it is drawn, wholly in Details' view", async () => {
+  const { box, field, queryClient, restore, writer } = await drawLandingHistory();
+  const intoView = spyOn(Element.prototype, "scrollIntoView");
+  const focus = spyOn(HTMLElement.prototype, "focus");
+
+  try {
+    act(() => writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } }));
+    expect(
+      writer()?.landing,
+      "a landing under a turn of the history is not the history's"
+    ).toMatchObject({ in: "history" });
+    expect(
+      document.activeElement,
+      "the history moved the focus before the reader's new turn was drawn"
+    ).toBe(field);
+
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    const turn = await waitFor(() => {
+      const drawn = box.querySelector<HTMLElement>('[data-history-item="m-mine"]');
+      expect(
+        drawn?.contains(document.activeElement) === true,
+        "the landing did not move the focus to the reader's new turn in the history"
+      ).toBe(true);
+      return drawn as HTMLElement;
+    });
+    expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
+      turn.querySelector("a[href], button:not(:disabled)")
+    );
+    expect(
+      writer()?.landing,
+      "the landing did not end once it took the reader there"
+    ).toBeUndefined();
+    const at = turn.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reader's new turn stood at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(at.bottom, "Details scrolled more than the least that shows the new turn").toBe(
+      VIEW_HEIGHT
+    );
+    expect(box.scrollTop).toBe(100);
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+    expect(
+      intoView,
+      "an element was scrolled into view, which scrolls the page too"
+    ).not.toHaveBeenCalled();
+    expect(focus.mock.calls.at(-1), "the focus moved with a scroll of its own").toEqual([
+      { preventScroll: true },
+    ]);
+  } finally {
+    intoView.mockRestore();
+    focus.mockRestore();
+    restore();
+  }
+});
+
+// A landing under a row of the outline is the outline's (`HeldLanding.in`): the history ends
+// nothing of it and moves no focus for it, even as a read brings a new turn of the reader's into
+// a thread it holds.
+test("a landing under a row of the outline is left to the outline, and the history moves no focus for it", async () => {
+  const { field, queryClient, restore, writer } = await drawLandingHistory();
+
+  try {
+    act(() => writer()?.land({ to: "newest", under: { id: "c-outline", kind: "comment" } }));
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    expect(
+      writer()?.landing,
+      "the history ended a landing under a row of the outline"
+    ).toMatchObject({ in: "outline", under: { id: "c-outline" } });
+    expect(
+      document.activeElement,
+      "the history moved the focus for a landing under a row of the outline"
+    ).toBe(field);
+  } finally {
+    restore();
+  }
+});
+
 // A turn carries the marks `main` draws on a post its author corrected: one its author edited
 // reads " · edited" after its author, and one its author deleted is drawn as its deleted line,
 // who deleted it and when, in place of its words, with no Reply, as Dispatch takes no reply to a

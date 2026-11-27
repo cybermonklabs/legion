@@ -13,13 +13,15 @@ import {
 import { marginShell } from "./issue-page";
 import { focusRow, READER, recorderActor, rowAct } from "./issue-page-g";
 import { onScreen } from "./issue-page-i";
+import { daemonOf } from "./issue-page-m";
 
 /**
  * What the browser rows of the page's writing (the spec file
  * `e2e/issue-page-l.e2e.ts`) read of the new issue page's box at the foot of the screen and of
  * its read mark, and the issues they seed. `e2e/issue-page.ts`, `e2e/issue-page-g.ts`
- * and `e2e/issue-page-i.ts` hold the page's frame, a node's row and the outline; this file
- * holds what those do not (decision 2 of the parts).
+ * and `e2e/issue-page-i.ts` hold the page's frame, a node's row and the outline, and
+ * `e2e/issue-page-m.ts` the Legion daemon of a project (`daemonOf`) and a turn of Details'
+ * history (`historyItem`); this file holds what those do not (decision 2 of the parts).
  *
  * What the box draws (`IssueComposer.tsx`, `slots/foot.tsx`):
  *
@@ -456,12 +458,6 @@ export async function seedResultAfterAct(): Promise<ResultAfterActSeed> {
   return { comment: comment.id, key: issue.key };
 }
 
-/** The Legion daemon, which writes on an issue as a session of its own. */
-const DAEMON = {
-  actor: { id: "legion-daemon", kind: "session" as const, origin: { session_title: "Legion" } },
-  as: "agent" as const,
-};
-
 /** One entry `seedHistoryTurns` writes: its id and its words. */
 export interface SeededEntry {
   readonly id: string;
@@ -472,8 +468,9 @@ export interface HistoryTurnsSeed {
   /** A comment an agent wrote on the issue, tied to no text, in a thread no person wrote in,
    *  which the panel's history holds and the outline draws only once a person writes in it. */
   readonly agent: SeededEntry;
-  /** The Legion daemon's message, the first turn of a thread it began, which the panel's
-   *  history holds. */
+  /** The Legion daemon's message, written as the daemon of the issue's project
+   *  (`legion-daemon:<PROJECT>`, `daemonOf`): the first turn of a thread it began, which the
+   *  panel's history holds whole, whoever writes in it. */
   readonly daemon: SeededEntry;
   readonly key: string;
   /** A comment of the reader's own, which its Edit opens in the box. */
@@ -490,7 +487,7 @@ export async function seedHistoryTurns(): Promise<HistoryTurnsSeed> {
     title: "The panel's history holds turns a reply can answer",
   });
   const daemonWords = "The planner's session was replaced; its claim moves to the new one.";
-  const daemon = await createMessage(issue.key, { body: daemonWords }, DAEMON);
+  const daemon = await createMessage(issue.key, { body: daemonWords }, daemonOf(PROJECT));
   const agentWords = "Status: the plan is drafted and waits on its review.";
   const agent = await createComment(issue.key, { body: agentWords }, AGENT);
   const ownWords = "A comment of the reader's own, which its writer alone edits.";

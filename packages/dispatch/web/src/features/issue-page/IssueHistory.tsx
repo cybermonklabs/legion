@@ -9,7 +9,7 @@ import { useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
-import { issueResultsQuery } from "../../api/queries";
+import { issueResultsQuery, whoAmIQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
@@ -17,6 +17,7 @@ import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
+import { isViewer } from "../refs/actor";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
 import { DetailsErrorLine, retryRead } from "./details-error";
@@ -29,11 +30,15 @@ import {
   HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
   type HistoryPlace,
+  type HistoryTurn,
   historyBlocks,
   historyDownTo,
   placeUnder,
+  threadOf,
   turnPlace,
 } from "./history-model";
+import { useMarginDrawer } from "./margin-slot";
+import { LANDING_WAIT_MS, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { nearestScroll, scrollingAncestor } from "./scroll-box";
@@ -73,8 +78,10 @@ export interface AddressedTurn {
  * upload splits it (`runKeys`); a thread the history holds (`agents-only.ts`: a thread the Legion
  * daemon began, whoever wrote in it, or an agents' post tied to no text) is one entry drawn
  * whole, each turn's words whole at any length, with the marks of a post its author corrected
- * and with its Reply, which sets the line at the foot of the outline to reply to it. Once a person
- * has written in an agents' post, the outline draws it and this list no longer does.
+ * and with its Reply, which sets the line at the foot of the outline to reply to it. What the
+ * line then sends lands here, not in the outline (`HeldLanding`): the reader's new turn in that
+ * thread takes the focus once a read draws it, wholly in Details' view. Once a person has written
+ * in an agents' post, the outline draws it and this list no longer does.
  *
  * `/activity`, `t v` and the address of a turn of such a thread open Details here:
  * at `/activity` the heading is brought into Details' view once for each following of that
@@ -503,6 +510,37 @@ export function IssueHistory({
   // (`keepFocusedInView`): the next hand-on ends it, and so does the history going.
   const focusKept = useRef<AbortController | null>(null);
   useEffect(() => () => focusKept.current?.abort(), []);
+  // Gives `element` the focus, brought first into Details' view by the least scroll, the one
+  // `block: "nearest"` makes (`nearestScroll`): each hand-on of a press below, and the landing of
+  // a write that answered a turn here (`landing`). The scroll is of Details' box alone, never of
+  // the page under it, and the history's anchor takes it for its own (`scrollBox`), so its event
+  // records no place. It comes before the focus, which then scrolls nothing (`preventScroll`), so
+  // that the focus moving into the entries, which the anchor records as the reader's place, is
+  // recorded where the reader sees it. The element can grow after the focus, as a reference in an
+  // entry's line does once its target's name is read, so it is kept wholly in Details' view by the
+  // same least scroll until the reader acts (`keepFocusedInView`). It can also stop being a link,
+  // as such a reference does once its target answers that it is missing: the focus then goes on to
+  // the entry's first control left, the same way.
+  const handTo = (element: HTMLElement) => {
+    focusKept.current?.abort();
+    focusKept.current = null;
+    const box = scroller.current;
+    if (box !== null) {
+      const at = element.getBoundingClientRect();
+      const view = box.getBoundingClientRect();
+      const by = nearestScroll(at, view);
+      if (by !== 0) anchor.current?.scrollBox(by);
+    }
+    element.focus({ preventScroll: true });
+    if (box !== null) {
+      focusKept.current = keepFocusedInView(
+        element,
+        box,
+        (by) => anchor.current?.scrollBox(by),
+        handTo
+      );
+    }
+  };
   useLayoutEffect(() => {
     const press = pressed.current;
     const reads = press?.kind === "retry" || press?.reads === true;
@@ -512,37 +550,6 @@ export function IssueHistory({
     const onPage = active === null || active === document.body;
     const onPressedAfterRead = active === press.control && !(reads && log.isError);
     if (!onPage && !onPressedAfterRead) return;
-    // Gives `element` the focus, brought first into Details' view by the least scroll, the one
-    // `block: "nearest"` makes (`nearestScroll`). The scroll is of Details' box alone, never of
-    // the page under it, and the history's anchor takes it for its own (`scrollBox`), so its
-    // event records no place. It comes before the focus, which then scrolls nothing
-    // (`preventScroll`), so that the focus moving into the entries, which the anchor records as
-    // the reader's place, is recorded where the reader sees it. The element can grow after the
-    // focus, as a reference in an entry's line does once its target's name is read, so it is kept
-    // wholly in Details' view by the same least scroll until the reader acts
-    // (`keepFocusedInView`). It can also stop being a link, as such a reference does once its
-    // target answers that it is missing: the focus then goes on to the entry's first control left,
-    // the same way.
-    const handTo = (element: HTMLElement) => {
-      focusKept.current?.abort();
-      focusKept.current = null;
-      const box = scroller.current;
-      if (box !== null) {
-        const at = element.getBoundingClientRect();
-        const view = box.getBoundingClientRect();
-        const by = nearestScroll(at, view);
-        if (by !== 0) anchor.current?.scrollBox(by);
-      }
-      element.focus({ preventScroll: true });
-      if (box !== null) {
-        focusKept.current = keepFocusedInView(
-          element,
-          box,
-          (by) => anchor.current?.scrollBox(by),
-          handTo
-        );
-      }
-    };
     if (press.kind === "retry") {
       const retried = failure.current?.querySelector("button") ?? heading.current;
       if (retried !== null) handTo(retried);
@@ -591,6 +598,76 @@ export function IssueHistory({
     keeping.current = false;
     anchor.current?.keepRow(null);
   });
+  // A write from the line at the foot that answered a turn of a thread this history holds is the
+  // history's to land (`HeldLanding.in`), as every other write's is the outline's: the reader is
+  // taken to their new turn in that thread - or, for a `self` landing, back to the turn they
+  // answered - focused, and wholly in Details' view by the least scroll of Details' box, never of
+  // the page, as a hand-on brings what it focuses there (`handTo`), the turn first and then its
+  // first control, which takes the focus. The send has landed when the line asks, but the read
+  // that draws the new turn is still out, so the turns the thread holds are noted first, and the
+  // reader's turn that is new is gone to once a read has brought it and the list has drawn it, as
+  // the outline goes to their new row (`IssueTree.tsx`). A landing the writer already holds as the
+  // history mounts was asked for while it was not drawn, with Details shut, and the reader has
+  // been elsewhere since; one asked for while Details is shut around the list has no turn on
+  // screen to go to, and nor has one whose thread this history no longer holds, as an agents' post
+  // a person wrote in, which the outline draws from then on. Each of these ends with the focus
+  // where it is, as the outline ends a landing it draws no row for, and so does one whose new turn
+  // no read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
+  const writer = useOutlineWriter();
+  const drawer = useMarginDrawer();
+  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
+  const endLanding = writer?.landed;
+  const landingAtMount = useRef(landing);
+  const landingFrom = useRef<
+    { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
+  >(undefined);
+  // The reader, whose own new turn a landing goes to, as the outline reads them: read only while
+  // a landing waits, and answered by the shell's own read of them.
+  const signedIn = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH, enabled: landing !== undefined });
+  const reader = signedIn.data?.login;
+  useLayoutEffect(() => {
+    if (landing === undefined || endLanding === undefined) return;
+    const answered = landing.under?.id;
+    const thread = answered === undefined ? undefined : threadOf(days, answered);
+    if (landing === landingAtMount.current || drawer?.open === false || thread === undefined) {
+      endLanding();
+      return;
+    }
+    const turns = [thread.root, ...thread.replies];
+    let to: HistoryTurn | undefined;
+    if (landing.to === "self") {
+      to = turns.find((turn) => turn.id === answered);
+    } else {
+      const held = landingFrom.current;
+      if (held?.landing !== landing) {
+        landingFrom.current = { before: new Set(turns.map((turn) => turn.id)), landing };
+        return;
+      }
+      to = turns.find((turn) => !held.before.has(turn.id) && isViewer(turn.author, reader));
+    }
+    const drawnTurn =
+      to === undefined
+        ? null
+        : (anchorRoot.current?.querySelector<HTMLElement>(
+            `[data-history-item="${CSS.escape(to.id)}"]`
+          ) ?? null);
+    if (drawnTurn === null || drawnTurn.getClientRects().length === 0) return;
+    endLanding();
+    const box = scroller.current;
+    if (box !== null) {
+      const by = nearestScroll(drawnTurn.getBoundingClientRect(), box.getBoundingClientRect());
+      if (by !== 0) anchor.current?.scrollBox(by);
+    }
+    const control = drawnTurn.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    if (control !== null) handTo(control);
+  });
+  useEffect(() => {
+    if (landing === undefined || landing === landingAtMount.current || endLanding === undefined) {
+      return;
+    }
+    const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
+    return () => window.clearTimeout(late);
+  }, [endLanding, landing]);
   // The history draws the log it holds whatever the last read's outcome. The log's own line
   // stands under the heading, in place of the loading line, while the log stands failed
   // (`standsFailed`). A failed next page is said where Show more is, below the pages held, and

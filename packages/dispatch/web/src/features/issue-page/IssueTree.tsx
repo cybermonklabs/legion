@@ -32,7 +32,7 @@ import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
-import { conversationItem, useOutlineWriter } from "./outline-writer";
+import { conversationItem, LANDING_WAIT_MS, useOutlineWriter } from "./outline-writer";
 import { editWords, NoteOwnAct, noteAfterDraw, type OwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
@@ -1203,8 +1203,10 @@ export function IssueTree({
   // mounts was asked for while no outline was drawn - under a view drawn in its place, or before
   // a reload - so the reader has been elsewhere since, and it ends with the focus where it is.
   // Each landing goes to its node as `reach` does and notes that node (`landedOn`): a read that
-  // drops its row before the reader's next key or press is their write's (`heldRow`).
-  const landing = writer?.landing;
+  // drops its row before the reader's next key or press is their write's (`heldRow`). A write
+  // that answered a turn of a thread the panel's history holds, of which the tree draws no row,
+  // is the history's to land (`HeldLanding.in`), and the tree leaves it alone.
+  const landing = writer?.landing?.in === "outline" ? writer.landing : undefined;
   const heldAtMount = useRef(landing);
   const landedFrom = useRef<
     { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
@@ -1417,11 +1419,6 @@ export function IssueTree({
     </PublishedReferenceNames>
   );
 }
-
-/** How long a write's landing waits for the read that draws it before it takes the reader to
- *  their newest node where it looked, in milliseconds: the line's send has landed and its read
- *  is a request away, so a read that has not drawn the node by then is not going to. */
-export const LANDING_WAIT_MS = 10_000;
 
 /** No branch folded in the cycle's last state: the state it starts in each time. */
 const NO_FOLDS: ReadonlySet<string> = new Set();

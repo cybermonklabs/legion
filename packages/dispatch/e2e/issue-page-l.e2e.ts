@@ -19,6 +19,7 @@ import {
   createProject,
   getArtifactBlocks,
   getIssueEvents,
+  getMessage,
   getMyState,
   listComments,
 } from "./api";
@@ -80,6 +81,7 @@ import {
   sendWithKeys,
   wordsInField,
 } from "./issue-page-l";
+import { historyItem, historyPanel } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
@@ -96,8 +98,8 @@ import { asUser } from "./users";
  * marks on one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that
  * the reader causes, beside the row of `issue-page-i.e2e.ts` for the other half. A reading that a
  * check owes on a part not yet under this part's head is a row of its own beside its check's
- * rows, skipped with an annotation naming that part and tagged `@owed`: four of c-replies, one of
- * c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
+ * rows, skipped with an annotation naming that part and tagged `@owed`: three of c-replies, one
+ * of c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
@@ -747,33 +749,46 @@ test.skip("what the reader sends from the box past the first 50 rows is drawn, i
   });
 });
 
-// c-replies (3), owed on part M (root R15, decision 127): a reply from the panel's history to a
+/** The id of the reply whose words are `words` that Dispatch holds to message `turn` of issue
+ *  `key`, once it holds one: a reply to a message is a message (`send-request.ts`), which the
+ *  root's read lists among its replies with `in_reply_to` naming the turn it answers. */
+async function replyToMessage(key: string, turn: string, words: string): Promise<string> {
+  const read = async () =>
+    ((await getMessage(key, turn)).replies ?? []).find(
+      (one) => one.body === words && one.in_reply_to === turn
+    )?.id;
+  await expect
+    .poll(read, { message: `Dispatch holds no reply "${words}" to message ${turn}` })
+    .toBeDefined();
+  const id = await read();
+  if (id === undefined) throw new Error(`Dispatch holds no reply "${words}" to message ${turn}`);
+  return id;
+}
+
+// c-replies (3), part M's reading (root R15, decision 127): a reply from the panel's history to a
 // turn of a thread the Legion daemon began lands in the history, under that turn, on screen and
-// focused, and the outline draws no row of it. Until part M is under this part's head the panel
-// draws no history with a Reply, so the reading is skipped with an annotation naming M and tagged
-// `@owed`, which the check's run leaves out (decision 135). The round that brings M under the
-// head takes the skip and the tag off.
-test.skip("what the reader sends from the box as a reply to a turn of the daemon's thread is drawn in the panel's history under that turn @owed", {
-  annotation: {
-    description:
-      "Owed on part M (decision 127): the panel's history and its Reply come with part M, so this reading is skipped until M is under this part's head.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+// focused, and the outline draws no row of it. The daemon writes as the session of its project
+// (`daemonOf`), which is what puts its thread in the history (`agents-only.ts`).
+test("what the reader sends from the box as a reply to a turn of the daemon's thread is drawn in the panel's history under that turn", async ({
+  browser,
+}) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await openDetails(page);
-    const turn = panelEntry(page, seeded.daemon.words);
+    const turn = historyItem(page, seeded.daemon.id);
     await expect(turn, "the panel's history draws no turn of the daemon's thread").toHaveCount(1);
-    await turn.getByRole("button", { exact: true, name: CONTROL_LABELS.reply }).click();
+    await turn.locator(`[data-history-reply="${seeded.daemon.id}"]`).click();
     await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
     const words = "A reply to the daemon's turn, from the history.";
     await sendFromComposer(page, words);
-    const reply = panelEntry(page, words);
+    const sent = await replyToMessage(seeded.key, seeded.daemon.id, words);
+    const reply = historyItem(page, sent);
     await expect(reply, "the reply is not drawn in the panel's history").toBeVisible();
     await expect(
-      turn.filter({ hasText: words }),
+      historyPanel(page)
+        .locator(`[data-history-entry="thread:${seeded.daemon.id}"]`)
+        .locator(`[data-history-item="${sent}"]`),
       "the reply is not drawn under the daemon's turn in the history"
     ).toHaveCount(1);
     await expect

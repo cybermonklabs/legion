@@ -210,12 +210,13 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
  * nothing here: while the writer holds an answer the box is as it is with no target.
  *
  * Once a write lands, the outline takes the reader to it (`Landing`): the row of what they wrote,
- * its branch unfolded, on screen and focused (R4). A comment on a statement is drawn as a row
- * under the issue, at the outline's end, and the reader is taken back to the statement's own
- * row; no margin beside the statement draws it yet. Under a view no outline is drawn to
- * consume a landing, so the box asks for none there and gives the focus back to where the reader
- * came to it from. Either way the focus never falls to the page's body as a line's controls
- * unmount.
+ * its branch unfolded, on screen and focused (R4); a reply to a turn of a thread the panel's
+ * history holds, which the outline draws no row of, is landed in that history instead
+ * (`HeldLanding`). A comment on a statement is drawn as a row under the issue, at the outline's
+ * end, and the reader is taken back to the statement's own row; no margin beside the statement
+ * draws it yet. Under a view no outline is drawn to consume a landing, so the box asks for none
+ * there and gives the focus back to where the reader came to it from. Either way the focus never
+ * falls to the page's body as a line's controls unmount.
  *
  * Hidden rather than unmounted while it is not drawn (`useComposerShown`), and the line that
  * writes on the issue stays mounted, hidden, while the line edits a comment, so what the reader
@@ -344,7 +345,7 @@ interface LinePlace {
    *  the line's target has drawn. */
   readonly giveBack: () => void;
   /** The stage draws the outline - no view is on, with or without a document open - whose tree
-   *  takes the reader to a landing (`IssueTree.tsx`, the one consumer of one). */
+   *  takes the reader to a landing, or the panel's history for a turn of it (`HeldLanding.in`). */
   readonly outlineDrawn: boolean;
   /** 760 px and below, where each placeholder says its shorter words. */
   readonly phone: boolean;
@@ -352,8 +353,10 @@ interface LinePlace {
 
 /**
  * Ends the line's target and puts the reader back: on the outline, on the row `landing` names
- * once its read draws it (R4); under a view, where no outline is drawn to consume a landing and
- * one would act on the outline the next time it mounts, where the reader came to the box from.
+ * once its read draws it (R4), or, where it names a turn of a thread the panel's history holds,
+ * on the reader's new turn there (`HeldLanding.in`); under a view, where no outline is drawn to
+ * consume a landing and one would act on the outline the next time it mounts, where the reader
+ * came to the box from.
  */
 function finish(writer: OutlineWriter, place: LinePlace, landing: Landing): void {
   if (place.outlineDrawn) {

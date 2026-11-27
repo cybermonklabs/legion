@@ -424,13 +424,22 @@ export function placeUnder(
   return last === undefined ? from : placeOf(last);
 }
 
+/** The entry of the thread that holds the turn `id`, its root or a reply, where `days` holds
+ *  that thread. */
+export function threadOf(
+  days: readonly HistoryDay[],
+  id: string
+): Extract<HistoryEntry, { kind: "thread" }> | undefined {
+  return datedIn(days).find(
+    (one): one is Extract<HistoryEntry, { kind: "thread" }> =>
+      one.kind === "thread" && (one.root.id === id || one.replies.some((reply) => reply.id === id))
+  );
+}
+
 /** The place of the entry of the thread that holds the turn `id`, its root or a reply, where
  *  `days` holds that thread. */
 export function turnPlace(days: readonly HistoryDay[], id: string): HistoryPlace | undefined {
-  const entry = datedIn(days).find(
-    (one) =>
-      one.kind === "thread" && (one.root.id === id || one.replies.some((reply) => reply.id === id))
-  );
+  const entry = threadOf(days, id);
   return entry === undefined ? undefined : placeOf(entry);
 }
 
