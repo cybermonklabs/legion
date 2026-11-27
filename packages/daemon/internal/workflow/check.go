@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"strings"
 	"time"
@@ -96,23 +97,31 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 
 // startLook starts the next look of issue's check, woken by cause with detail, last marking the
 // bound's look: the record counts the look open from now with that wake and no wake standing —
-// the row this look starts from is spent, and only a pending report names the next one — the
-// check's role (record.ProductionCheck.Role, the role the check opened with, never the setting as
-// it stands now) is started on the check task — a start with no phase, fenced on the check and its
-// look (record.SuperviseRequest.CheckLook and CheckOpenedAt) rather than on the generation, and
-// stamped with the generation the issue holds as the delivery's run — and a check_look row due at
-// the look bound, naming the check and the look, ends the look should nobody report it.
+// the row this look starts from is spent, and only a pending report names the next one — and
+// holds the look's own look id (record.ProductionCheck.LookID: crypto/rand's Text, 26 base32
+// characters, 130 bits, made afresh for each look and never derived from the check's OpenedAt,
+// which every state shows) with the look and the check instance it was made for (LookIDLook,
+// LookIDOpenedAt), so CurrentLookID names it. The check's role (record.ProductionCheck.Role,
+// the role the check opened with, never the setting as it stands now) is started on the check
+// task, the one text that gives the role that id — a start with no phase, fenced on the check,
+// its look and the look's id (record.SuperviseRequest.CheckLook, CheckOpenedAt and LookID) rather
+// than on the generation, and stamped with the generation the issue holds as the delivery's run —
+// and a check_look row due at the look bound, naming the check and the look, ends the look should
+// nobody report it. The log line names the look by its number alone: no line carries the id or
+// the task (R3 of dispatch://INFRA-3518).
 func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, check *record.ProductionCheck, cause, detail string, last bool) error {
 	now := e.now()
 	check.Looks++
 	check.LookOpen, check.LookWakeAt = true, &now
 	check.LastWakeKind, check.LastWakeDetail, check.LastWakeAt = cause, detail, &now
 	check.WakeAt, check.Last = nil, last
+	check.LookID, check.LookIDLook, check.LookIDOpenedAt = rand.Text(), check.Looks, check.OpenedAt
 	if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
 		return err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: check.Role,
-		Generation: issue.Generation, CheckLook: check.Looks, CheckOpenedAt: check.OpenedAt, Task: checkTask(issue, *check, cause, detail, last)}); err != nil {
+		Generation: issue.Generation, CheckLook: check.Looks, CheckOpenedAt: check.OpenedAt, LookID: check.LookID,
+		Task: checkTask(issue, *check, check.LookID, cause, detail, last)}); err != nil {
 		return err
 	}
 	if err := e.enqueueAt(ctx, tx, issue.Key, record.CheckLook{Look: check.Looks, OpenedAt: check.OpenedAt}, now.Add(CheckLookBound)); err != nil {
@@ -130,7 +139,10 @@ const checkTaskLead = "Production check of "
 // checkTask is what the check's role is told at a look of the closed issue's production check. The
 // session it reaches may be fresh — a woken pod after a lost volume — so the text stands on its
 // own: the issue, the repository, the pull request, the merge commit, the look and what woke it
-// (wokenBy), whether it is the last, and the rules of the check in prose: each requirement only
+// (wokenBy), the check's OpenedAt in the form the report sends it back as check_opened_at,
+// whether it is the last, then on a line of its own the look's id (lookID, the id startLook made
+// for this look: record.ProductionCheck.LookID) and that the report gives check_opened_at and
+// look_id from this task, and the rules of the check in prose: each requirement only
 // the deploy can show observed as it names it, the three verdicts and what each asks of the pull
 // request, no commit, the wake a pending names for its own next look and the suspension that
 // follows it, and nothing to wait for in the session, since the look ends with the report. A merge
@@ -140,8 +152,10 @@ const checkTaskLead = "Production check of "
 // only for an issue with none of those requirements, a pending that closes the check as not run.
 // The fail clause says so once, the same on every look, in terms of the look that follows.
 // For an issue whose spec is a view on an ancestor's requirements, the line after the first says
-// so (viewSentence), as every phase task of the issue does.
-func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
+// so (viewSentence), as every phase task of the issue does. This text is the one place the look
+// id reaches the role (R3 of dispatch://INFRA-3518): the id is a secret, so no log line carries
+// the text.
+func checkTask(issue record.Issue, check record.ProductionCheck, lookID, cause, detail string, last bool) string {
 	merge := check.MergeSHA
 	if merge == "" {
 		merge = "unknown, read it from the pull request on GitHub"
@@ -158,9 +172,10 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	if last {
 		text.WriteString(" This is the last look: no look follows.")
 	}
+	fmt.Fprintf(&text, "\nThis look has the look id `%s`. Your report gives check_opened_at and look_id from this task.", lookID)
 	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
 		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
-		"Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing: " +
+		"Then report with the legion tool's handoff_complete, check_opened_at and look_id from this task and a verdict, committing nothing: " +
 		"pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; " +
 		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller of the project that repository maps to, or to your own project's controller, the one your Legion addressing line names, when Dispatch maps it to none: a dispatch comment on that controller's report issue with --mention role:<that controller's role token>, and that controller files it; a defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a person's authority, taste or risk appetite, is a dispatch ask, whose reference you then publish to the controller topic so that the controller follows the ask and files what the answer asks for (skill://legion-worker/references/findings.md, Tell the controller about the ask). Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the comment or the ask in its observed, in the line you put in the pull request body and in the summary.")
 	if last {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -29,15 +31,22 @@ func checkRoot() record.Issue {
 	return record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until}
 }
 
+// checkLookID is the look id of look 1 of openCheck's check, which checkStart's row gives: the
+// id workflow's startLook makes for a look (crypto/rand's Text, 26 base32 characters), stores
+// with the look and the check instance, and writes on the look's start row.
+const checkLookID = "M4XQ2RZK7TBV6NWJHC5DLP3YGA"
+
 // openCheck is issue's production check on acme/widgets#42 at merge, worked by the implementer —
 // the role every row open before the project could name one carries — opened an hour ago with
-// look 1 open since, woken by the merge, and bound two weeks out.
+// look 1 open since, woken by the merge, holding checkLookID as that look's id, and bound two
+// weeks out.
 func openCheck(issue record.Issue, merge string) record.ProductionCheck {
 	opened := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
 	return record.ProductionCheck{
 		Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: "acme/widgets", Number: 42, MergeSHA: merge,
 		Role: claim.RoleImplementer, OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 1, LookOpen: true, LookWakeAt: &opened,
 		LastWakeKind: "merge", LastWakeDetail: merge, LastWakeAt: &opened,
+		LookID: checkLookID, LookIDLook: 1, LookIDOpenedAt: opened,
 	}
 }
 
@@ -81,11 +90,12 @@ func suspendedImplementer(t *testing.T, sup *supervisor, issue record.Issue, by 
 
 // checkStart is the start row of look of issue's production check: the implementer, no phase, the
 // issue's generation, fenced on the check (record.SuperviseRequest.CheckLook), naming no instance
-// (a row queued before starts carried one).
+// (a row queued before starts carried one), and giving checkLookID, the id openCheck's look 1
+// holds.
 func checkStart(t *testing.T, issue record.Issue, look int) record.OutboxRow {
 	t.Helper()
 	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Generation: issue.Generation,
-		CheckLook: look, Task: "Production check of " + issue.Key}, time.Now())
+		CheckLook: look, LookID: checkLookID, Task: "Production check of " + issue.Key}, time.Now())
 	row.ID = 57
 	return row
 }
@@ -109,7 +119,7 @@ func sameCheckFact(got, want intake.Fact, check record.ProductionCheck) bool {
 // A check start is the one start a lingering tree runs: it reaches the implementer the linger
 // suspended, resumes it, and delivers the look's task, where a phase start on the same tree finishes
 // without acting. The delivery names no phase, so nothing drops it for the phase the issue has left,
-// and the row's id is its delivery's.
+// the row's id is its delivery's, and the delivery keeps the look id the row gives.
 func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -129,12 +139,85 @@ func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing
 	if got.LastStartRow != 57 || len(rt.CallsOf("Resume")) != 1 {
 		t.Fatalf("implementer after the check start = %s with last start %d and %d resumes, want resumed by row 57", got.State, got.LastStartRow, len(rt.CallsOf("Resume")))
 	}
-	if got.Pending == nil || got.Pending.ID != "outbox:57" || got.Pending.Phase != "" || got.Pending.Generation != 1 || !strings.HasPrefix(got.Pending.Task, "Production check of ") {
-		t.Fatalf("implementer's pending delivery = %+v, want the look's task under outbox:57 with no phase at generation 1", got.Pending)
+	if got.Pending == nil || got.Pending.ID != "outbox:57" || got.Pending.Phase != "" || got.Pending.Generation != 1 || !strings.HasPrefix(got.Pending.Task, "Production check of ") ||
+		got.Pending.LookID != checkLookID {
+		t.Fatalf("implementer's pending delivery = %+v, want the look's task under outbox:57 with no phase at generation 1, keeping the row's look id", got.Pending)
 	}
 	// The same row again is the same delivery, not a second one.
 	if err := runner.execute(ctx, checkStart(t, root, 1)); err != nil {
 		t.Fatalf("the check start run again = %v, want its delivery accepted as the same", err)
+	}
+}
+
+// A check start whose look id is not the one the check holds for its look finishes without acting,
+// logged with why: a row with no look id, which an older daemon queued and whose task gives none;
+// a row with another id; a row of a look for which the check holds no id; and a row that gives the
+// id the check holds for the look before (CurrentLookID is "" for each of the last two). The
+// implementer stays as it was, with nothing queued to it and no start recorded against it, the
+// row is done, and the look stays open. No line of the log carries a look id or the row's task.
+func TestACheckStartWhoseLookIDIsNotTheStoredOneFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
+	const (
+		anotherID = "Z7Y6X5W4V3U2TSRQPONMLKJIHG"
+		noID      = "the row gives no look id: an older daemon queued it"
+		notOurs   = "the row's look id is not the id the check holds for the look"
+	)
+	for _, tc := range []struct {
+		name   string
+		check  func(record.ProductionCheck) record.ProductionCheck
+		look   int
+		lookID string
+		why    string
+	}{
+		{name: "no id", check: func(c record.ProductionCheck) record.ProductionCheck { return c }, look: 1, why: noID},
+		{name: "another id", check: func(c record.ProductionCheck) record.ProductionCheck { return c }, look: 1, lookID: anotherID, why: notOurs},
+		{name: "no stored id", check: func(c record.ProductionCheck) record.ProductionCheck {
+			c.LookID, c.LookIDLook, c.LookIDOpenedAt = "", 0, time.Time{}
+			return c
+		}, look: 1, lookID: checkLookID, why: notOurs},
+		{name: "an id stored for the previous look", check: func(c record.ProductionCheck) record.ProductionCheck {
+			c.Looks = 2
+			return c
+		}, look: 2, lookID: checkLookID, why: notOurs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			check := tc.check(openCheck(root, "a1b2c3d4"))
+			putProductionCheck(t, pool, records, check)
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			machine, _ := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
+			var logged testlog.Buffer
+			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				log: slog.New(slog.NewTextHandler(&logged, nil)), now: time.Now}
+			task := "Production check of " + root.Key + ": root.\nThis look has the look id `" + tc.lookID + "`."
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer,
+				Generation: root.Generation, CheckLook: tc.look, CheckOpenedAt: check.OpenedAt, LookID: tc.lookID, Task: task}, time.Now()))
+
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("run once: %v", err)
+			}
+			if got := machine.Claim(); got.State != supervise.StateSuspended || got.LastStartRow != 0 || got.Pending != nil || len(rt.CallsOf("Resume")) != 0 {
+				t.Fatalf("implementer = %s with last start %d, pending %+v and %d resumes, want left suspended with nothing queued to it", got.State, got.LastStartRow, got.Pending, len(rt.CallsOf("Resume")))
+			}
+			if left := outboxRows(t, pool); left != 0 {
+				t.Fatalf("outbox rows after the start = %d, want the start done", left)
+			}
+			if got := readProductionCheck(t, pool, records, root.Key); !got.Open() || !got.LookOpen || got.Looks != tc.look {
+				t.Fatalf("the check after the start = look %d open %t, want look %d left open", got.Looks, got.LookOpen, tc.look)
+			}
+			log := logged.String()
+			if !strings.Contains(log, "production check start finishes without acting") || !strings.Contains(log, tc.why) {
+				t.Fatalf("the log = %q, want the start finished without acting because %s", log, tc.why)
+			}
+			for _, secret := range []string{checkLookID, anotherID, "Production check of"} {
+				if strings.Contains(log, secret) {
+					t.Fatalf("the log carries %q, a look id or the row's task: %q", secret, log)
+				}
+			}
+		})
 	}
 }
 
@@ -264,7 +347,7 @@ func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
 		handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
 
 	stale := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer, Generation: root.Generation,
-		CheckLook: 1, CheckOpenedAt: first.OpenedAt, Task: "Production check of " + root.Key}, time.Now())
+		CheckLook: 1, CheckOpenedAt: first.OpenedAt, LookID: checkLookID, Task: "Production check of " + root.Key}, time.Now())
 	stale.ID = 58
 	if err := runner.execute(context.Background(), stale); err != nil {
 		t.Fatalf("the first check's start against the second = %v, want finished without acting", err)
@@ -281,7 +364,7 @@ func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
 
 	// The second check's own start row, naming it, resumes the implementer.
 	own := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer, Generation: root.Generation,
-		CheckLook: 1, CheckOpenedAt: second.OpenedAt, Task: "Production check of " + root.Key}, time.Now())
+		CheckLook: 1, CheckOpenedAt: second.OpenedAt, LookID: checkLookID, Task: "Production check of " + root.Key}, time.Now())
 	own.ID = 59
 	if err := runner.execute(context.Background(), own); err != nil {
 		t.Fatalf("the second check's own start = %v, want the implementer resumed", err)

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -8,25 +9,53 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// checkTaskLookID is the look id the tests give checkTask: 26 base32 characters, the form
+// crypto/rand's Text makes in startLook.
+const checkTaskLookID = "Q3VZ7KXNM2HD5WRTB4PLJ6CYAF"
+
+// The task gives the check's identity and the look's id in the form the report sends each back:
+// check_opened_at as RFC 3339 with its microseconds, and then, on a line of its own after the line
+// that gives check_opened_at, the look id, with the rule that the report gives check_opened_at and
+// look_id from this task. The sentence that asks for the report names both fields. The id is on
+// that line alone, the last look's task included.
 func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
 	t.Parallel()
 	opened := time.Date(2026, 10, 19, 6, 0, 0, 123456000, time.UTC)
 	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
-	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)
-	_, value, ok := strings.Cut(task, "check_opened_at `")
-	if !ok {
-		t.Fatal("the task gives no check identity to report")
-	}
-	value, _, ok = strings.Cut(value, "`")
-	if !ok {
-		t.Fatal("the task gives no closing delimiter for the check identity")
-	}
-	got, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil || !got.Equal(opened) {
-		t.Fatalf("reported check identity %q = %s (%v), want %s", value, got, err, opened)
-	}
-	if value != "2026-10-19T06:00:00.123456Z" {
-		t.Fatalf("wire identity = %q, want RFC3339 with its microseconds", value)
+	for _, last := range []bool{false, true} {
+		task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, checkTaskLookID, "merge", "merge-43", last)
+		_, value, ok := strings.Cut(task, "check_opened_at `")
+		if !ok {
+			t.Fatal("the task gives no check identity to report")
+		}
+		value, _, ok = strings.Cut(value, "`")
+		if !ok {
+			t.Fatal("the task gives no closing delimiter for the check identity")
+		}
+		got, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil || !got.Equal(opened) {
+			t.Fatalf("reported check identity %q = %s (%v), want %s", value, got, err, opened)
+		}
+		if value != "2026-10-19T06:00:00.123456Z" {
+			t.Fatalf("wire identity = %q, want RFC3339 with its microseconds", value)
+		}
+		_, id, _ := strings.Cut(task, "look id `")
+		id, _, ok = strings.Cut(id, "`")
+		if !ok || id != checkTaskLookID {
+			t.Fatalf("the task (last %t) gives the look id %q (%t), want %q", last, id, ok, checkTaskLookID)
+		}
+		lines := strings.Split(task, "\n")
+		const idLine = "This look has the look id `" + checkTaskLookID + "`. Your report gives check_opened_at and look_id from this task."
+		at := slices.Index(lines, idLine)
+		if at < 1 || !strings.Contains(lines[at-1], "check_opened_at `"+value+"`") {
+			t.Fatalf("the task (last %t) = %q, want the line %q right after the line that gives check_opened_at", last, task, idLine)
+		}
+		if strings.Count(task, checkTaskLookID) != 1 {
+			t.Fatalf("the task (last %t) gives the look id %d times, want once, on its own line", last, strings.Count(task, checkTaskLookID))
+		}
+		if asks := "Then report with the legion tool's handoff_complete, check_opened_at and look_id from this task and a verdict"; !strings.Contains(task, asks) {
+			t.Fatalf("the task (last %t) = %q, want it to ask %q", last, task, asks)
+		}
 	}
 }
 
@@ -57,7 +86,7 @@ func checkTaskFor(cause, detail string, last bool) string {
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}
 	check := record.ProductionCheck{Issue: issue.Key, Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43",
 		OpenedAt: checkOpened, Looks: 2}
-	return checkTask(issue, check, cause, detail, last)
+	return checkTask(issue, check, checkTaskLookID, cause, detail, last)
 }
 
 // The task tells the checking agent what woke this look, and nothing else does: the session may be

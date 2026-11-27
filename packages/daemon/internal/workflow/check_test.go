@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -717,7 +719,7 @@ func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}
 	check := record.ProductionCheck{Issue: issue.Key, Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43", OpenedAt: checkOpened, Looks: 1}
 	for _, last := range []bool{false, true} {
-		task := checkTask(issue, check, wakeMerge, "", last)
+		task := checkTask(issue, check, checkTaskLookID, wakeMerge, "", last)
 		for _, retired := range []string{"Production: line", "pending deploy of", "proof array"} {
 			if strings.Contains(task, retired) {
 				t.Errorf("the check task (last %t) still says %q", last, retired)
@@ -728,6 +730,56 @@ func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
 				t.Errorf("the check task (last %t) omits %q", last, want)
 			}
 		}
+	}
+}
+
+// Each look of a check gets a look id of its own when it starts: crypto/rand's Text, 26 base32
+// characters. The record holds the id with the look and the check instance it was made for, so
+// the id is the check's CurrentLookID while its look is current, and the look's start row carries
+// it, as the task on that row gives it. The next look of the same check gets another id. Neither
+// id is a form of the check's OpenedAt, which every state and read_record body shows (R3 of
+// dispatch://INFRA-3518): not RFC 3339, not the check's ID (its microseconds) and not its Unix
+// seconds. The engine's journal carries neither id.
+func TestEachLookGetsALookIDOfItsOwn(t *testing.T) {
+	t.Parallel()
+	rig := childCheckRig(t)
+	first := productionCheck(t, rig.pool, "LEGION-209")
+	wake := checkOpened.Add(time.Hour)
+	rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "the deploy has not carried the merge", WakeAt: &wake})
+	rig.clock.now = wake
+	rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the deploy has not carried the merge"})
+	second := productionCheck(t, rig.pool, "LEGION-209")
+	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
+	if first == nil || second == nil || len(starts) != 2 {
+		t.Fatalf("the check = %+v then %+v with start rows %+v, want two looks, each with its start row", first, second, starts)
+	}
+	base32 := regexp.MustCompile(`^[A-Z2-7]{26}$`)
+	opened := first.OpenedAt
+	forms := []string{opened.UTC().Format(time.RFC3339Nano), opened.Format(time.RFC3339Nano), first.ID(), strconv.FormatInt(opened.Unix(), 10)}
+	for i, look := range []struct {
+		check *record.ProductionCheck
+		start record.SuperviseRequest
+	}{{first, starts[0]}, {second, starts[1]}} {
+		n, id := i+1, look.check.LookID
+		if look.check.Looks != n || !base32.MatchString(id) || look.check.LookIDLook != n || !look.check.LookIDOpenedAt.Equal(look.check.OpenedAt) ||
+			look.check.CurrentLookID() != id {
+			t.Fatalf("the check at look %d = look %d with look id %q made for look %d of the check opened %s (current %q), want 26 base32 characters made for look %d of the check opened %s",
+				n, look.check.Looks, id, look.check.LookIDLook, look.check.LookIDOpenedAt, look.check.CurrentLookID(), n, look.check.OpenedAt)
+		}
+		if look.start.CheckLook != n || look.start.LookID != id || !strings.Contains(look.start.Task, "look id `"+id+"`") {
+			t.Fatalf("look %d's start row = look %d with look id %q, want the look id the check holds for it on the row and in its task", n, look.start.CheckLook, look.start.LookID)
+		}
+		for _, form := range forms {
+			if strings.Contains(id, form) {
+				t.Fatalf("look %d's look id %q holds %q, a form of the check's opening time", n, id, form)
+			}
+		}
+		if strings.Contains(rig.logged.String(), id) {
+			t.Fatalf("the engine's journal carries look %d's look id", n)
+		}
+	}
+	if first.LookID == second.LookID || second.CurrentLookID() == first.LookID {
+		t.Fatalf("look 2's look id is look 1's, want an id of its own")
 	}
 }
 
