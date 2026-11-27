@@ -1,6 +1,8 @@
 import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { createAgentTitleSelector } from "../refs/agent-registry";
+import { AgentTitleScope } from "../refs/agent-title-scope";
 import { HeldChipLinesProvider } from "./held-chip-lines";
 import { newRowsDrawn, RowsDrawnContext } from "./rows-drawn";
 import { type IssueTreeView, useIssueTree } from "./useIssueTree";
@@ -45,12 +47,15 @@ export function IssueTreeOwnerProvider({
   // changes.
   const owned = useMemo((): OwnedTree => ({ key, tree }), [key, tree]);
   const [rowsDrawn] = useState(newRowsDrawn);
+  const [agentTitles] = useState(createAgentTitleSelector);
   return (
     <IssueTreeOwner.Provider value={owned}>
       <RowsDrawnContext.Provider value={rowsDrawn}>
-        <HeldChipLinesProvider namesFailed={tree.namesFailure !== undefined} root={tree.root}>
-          {children}
-        </HeldChipLinesProvider>
+        <AgentTitleScope select={agentTitles}>
+          <HeldChipLinesProvider namesFailed={tree.namesFailure !== undefined} root={tree.root}>
+            {children}
+          </HeldChipLinesProvider>
+        </AgentTitleScope>
       </RowsDrawnContext.Provider>
     </IssueTreeOwner.Provider>
   );
