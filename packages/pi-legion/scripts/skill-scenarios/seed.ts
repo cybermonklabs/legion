@@ -88,8 +88,9 @@
 //                                          captureScored)
 //   seed.ts case-world                     seed the Dispatch part of $SKILL_SCENARIO_RUN/launch-world.json:
 //                                          its records in case time order, then its step runs at
-//                                          times among the records' stamps (seedCaseDispatch);
-//                                          writes dispatch-ids.json and dispatch-fixture.json there
+//                                          times among the records' stamps and a retro's rating
+//                                          (seedCaseDispatch); writes dispatch-ids.json and
+//                                          dispatch-fixture.json there
 //   seed.ts case-readback <run dir>         capture the issue, documents, handoffs, comments,
 //                                          asks, results, step runs and complete event log (with
 //                                          seed cursor)
@@ -131,6 +132,7 @@ import {
   recordCheckResult,
   resolveAsk,
 } from "../../../dispatch/e2e/api";
+import type { Body } from "../../../dispatch/web/src/api/paths";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { World } from "./heldout-case";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
@@ -1083,10 +1085,12 @@ const KEPT_HANDOFF_GAP = 60_000_000_000n;
 /** A second in nanoseconds: how far before the first seeded record a step run's time is placed
  * where no record comes before it, and after the last where none comes after it. */
 const SECOND = 1_000_000_000n;
-/** The namespace of the daemon's step record ids (StepID in
- * packages/daemon/internal/workflow/steps.go). A seeded run's id is the version 5 uuid of
- * `<issue key>/<case id>` in it: Dispatch refuses a step id that is no uuid. */
+/** The namespace of the daemon's step record ids (stepRecordNamespace in
+ * packages/daemon/internal/workflow/steps.go): Dispatch refuses a step id that is no uuid. */
 const STEP_RECORD_NAMESPACE = Bun.randomUUIDv5("legion-step-record", "oid");
+/** The run of the issue the seed writes every step run under: its first, as the daemon counts an
+ * issue's runs (record.Issue.Generation). */
+const SEEDED_GENERATION = 1;
 /** The type of work of a step's role, as the daemon's plan records it (builtinRoles in
  * packages/daemon/internal/plan/plan.go). A retro and a merge have none. */
 const STEP_TYPES: Readonly<Record<string, string>> = {
@@ -1108,6 +1112,94 @@ interface Stamped {
 function instantText(at: bigint): string {
   const whole = new Date(Number(at / SECOND) * 1000).toISOString().slice(0, 19);
   return `${whole}.${(at % SECOND).toString().padStart(9, "0")}Z`;
+}
+
+/** One step run of a world, as the case holds it. */
+type WorldStep = NonNullable<World["dispatch"]["steps"]>[number];
+
+/** Each step run of `steps`, the world's runs of `issue` in project `project`, as the seed writes
+ * it, in world order: the run, its place in the world (`<issue> steps[<n>]`), the id the daemon
+ * gives its record, the fields of its step write but its times, and the retro's rating with its
+ * reason where the world holds one.
+ *
+ * The id is the daemon's StepID (packages/daemon/internal/workflow/steps.go): the version 5 uuid
+ * of `<issue>/<generation>/<task>/<kind>/<step>/<starts>`, where starts counts the world's runs of
+ * that task, kind and step up to and including this one, as the daemon counts the starts of a
+ * place. A run Dispatch cannot hold as the daemon writes it is refused here, before the seed writes
+ * anything: one with no role, since Dispatch makes a run's record only from a write that names its
+ * task, kind, step, role and generation (missingIdentity in
+ * packages/envoy/internal/dispatch/workflowstore/write.go); a step whose role has no type of work
+ * the seed knows; and a rating without its reason or a reason without its rating, since the rating
+ * route takes the two together (stepRatingInput in packages/envoy/internal/dispatch/api/steps.go). */
+function stepWrites(issue: string, project: string, steps: readonly WorldStep[]) {
+  const starts = new Map<string, number>();
+  return steps.map((run, index) => {
+    const label = `${issue} steps[${index}]`;
+    const { task, step, kind, role, planRating, planReason } = run;
+    if (role === null)
+      throw new Error(
+        `${label}: a run with no role is no run the seed can write: Dispatch makes a run's record only from a write that names its task, kind, step, role and generation`
+      );
+    const type = kind === "step" ? STEP_TYPES[role] : undefined;
+    if (kind === "step" && type === undefined)
+      throw new Error(
+        `${label}: the role ${role} has no type of work the seed knows (${Object.keys(STEP_TYPES).join(", ")})`
+      );
+    if ((planRating === undefined) !== (planReason === undefined))
+      throw new Error(
+        `${label}: the world holds ${planRating === undefined ? "a planReason with no planRating" : "a planRating with no planReason"}, and Dispatch takes a retro's rating only with its reason (PUT /api/v1/issues/{key}/steps/{id}/rating requires both)`
+      );
+    const place = JSON.stringify([task, kind, step]);
+    const count = (starts.get(place) ?? 0) + 1;
+    starts.set(place, count);
+    const name = `${issue}/${SEEDED_GENERATION}/${task}/${kind}/${step}/${count}`;
+    return {
+      run,
+      label,
+      id: Bun.randomUUIDv5(name, STEP_RECORD_NAMESPACE),
+      identity: {
+        task,
+        step,
+        kind,
+        role,
+        ...(type === undefined ? {} : { type }),
+        agent: `legion-${project}-${issue}-${role}`.toLowerCase(),
+        generation: SEEDED_GENERATION,
+      },
+      rating:
+        planRating === undefined || planReason === undefined
+          ? undefined
+          : { rating: planRating, rating_reason: planReason },
+    };
+  });
+}
+
+/** The rating a retro gave the plan, written onto the retro's record `id` of `issue` as the daemon
+ * writes it (PutStepRating in packages/daemon/internal/dispatch/client.go): through the record's
+ * rating route, PUT /api/v1/issues/{key}/steps/{id}/rating, which e2e/api.ts has no helper for,
+ * with the step write's body and the rating with its reason, under the agent bearer as the session
+ * of the daemon of the issue's project, as putStep writes the step. A refusal names the route and
+ * Dispatch's answer. */
+async function putStepRating(
+  issue: string,
+  id: string,
+  input: Body<"/api/v1/issues/{key}/steps/{id}/rating", "put">
+): Promise<void> {
+  const project = issue.slice(0, issue.indexOf("-"));
+  const route = `/api/v1/issues/${encodeURIComponent(issue)}/steps/${encodeURIComponent(id)}/rating`;
+  const response = await fetch(new URL(route, baseUrl), {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${e2eAgentToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      ...input,
+      actor: { kind: "session", id: `legion-daemon:${project}` },
+    }),
+  });
+  if (!response.ok)
+    throw new Error(`PUT ${route} failed: ${response.status} ${await response.text()}`);
 }
 
 /** The time in the run's Dispatch of each case time of `times`, the starts and ends of the
@@ -1162,9 +1254,11 @@ function placeStepTimes(
  * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order: a
  * comment with an anchor on its document's words, a reply in the thread of the comment it names,
  * and between two handoffs seeded one after the other at most 60 s apart a wait (`sleep`) of that
- * gap. Then each step run, as the daemon writes it, under the uuid of the issue key and its case
- * id, at times among the records' stamps (placeStepTimes). Writes dispatch-ids.json (each seeded
- * handoff's and comment's Dispatch id by its case id) and dispatch-fixture.json. */
+ * gap. Then each step run, as the daemon writes it, under the id the daemon gives its record, at
+ * times among the records' stamps (placeStepTimes), and a retro's rating after its run
+ * (stepWrites); a run the seed cannot write so is refused before anything is written. Writes
+ * dispatch-ids.json (each seeded handoff's and comment's Dispatch id by its case id) and
+ * dispatch-fixture.json. */
 export async function seedCaseDispatch(
   runDir: string,
   sleep: Sleep = (ms) => Bun.sleep(ms)
@@ -1186,6 +1280,7 @@ export async function seedCaseDispatch(
     return [project, n];
   };
   const [project, number] = keyParts(issue.key);
+  const runs = stepWrites(issue.key, project, steps);
   const parent = issue.parent === null ? undefined : keyParts(issue.parent);
   if (parent?.[0] === project && parent[1] >= number)
     throw new Error(`${issue.key}: parent ${issue.parent} must precede its child in the project`);
@@ -1231,7 +1326,7 @@ export async function seedCaseDispatch(
     ids.set(`document/${name}`, uploaded.artifact.id);
   }
   /** The id Dispatch gave the world's `kind` named `id`, which the seed wrote before it. */
-  const dispatchId = (kind: "document" | "comment" | "handoff", id: string): string => {
+  const dispatchId = (kind: "document" | "comment", id: string): string => {
     const given = ids.get(`${kind}/${id}`);
     if (given === undefined) throw new Error(`${id}: no ${kind} of the world was seeded so named`);
     return given;
@@ -1357,41 +1452,31 @@ export async function seedCaseDispatch(
     path.join(runDir, "dispatch-ids.json"),
     `${JSON.stringify(Object.fromEntries(seededIds))}\n`
   );
-  // Each step run as the daemon writes it, with times among the stamps of the records around it.
-  if (steps.length > 0) {
+  // Each step run as the daemon writes it, with times among the stamps of the records around it,
+  // and then a retro's rating.
+  if (runs.length > 0) {
     const placed = placeStepTimes(
       issue.key,
       stamped,
-      steps.flatMap(({ id, startedAt, endedAt }) =>
-        (endedAt === null ? [startedAt] : [startedAt, endedAt]).map((at) => time(at, id))
+      runs.flatMap(({ run: { startedAt, endedAt }, label }) =>
+        (endedAt === null ? [startedAt] : [startedAt, endedAt]).map((at) => time(at, label))
       )
     );
-    const placedText = (at: string, run: string): string => {
-      const stamp = placed.get(time(at, run));
-      if (stamp === undefined) throw new Error(`${run}: its time ${at} was not placed`);
+    const placedText = (at: string, label: string): string => {
+      const stamp = placed.get(time(at, label));
+      if (stamp === undefined) throw new Error(`${label}: its time ${at} was not placed`);
       return instantText(stamp);
     };
-    for (const run of steps) {
-      const type = run.kind === "step" ? STEP_TYPES[run.role] : undefined;
-      if (run.kind === "step" && type === undefined)
-        throw new Error(
-          `${run.id}: the role ${run.role} has no type of work the seed knows (${Object.keys(STEP_TYPES).join(", ")})`
-        );
-      await putStep(issue.key, Bun.randomUUIDv5(`${issue.key}/${run.id}`, STEP_RECORD_NAMESPACE), {
-        task: run.task,
-        step: run.step,
-        kind: run.kind,
-        role: run.role,
-        ...(type === undefined ? {} : { type }),
-        agent: `legion-${project}-${issue.key}-${run.role}`.toLowerCase(),
-        generation: 1,
-        started_at: placedText(run.startedAt, run.id),
-        ...(run.session === null ? {} : { session: run.session }),
+    for (const { run, label, id, identity, rating } of runs) {
+      const write = {
+        ...identity,
+        started_at: placedText(run.startedAt, label),
         ...(run.endedAt === null || run.result === null
           ? {}
-          : { ended_at: placedText(run.endedAt, run.id), result: run.result }),
-        ...(run.report === null ? {} : { report: dispatchId("handoff", run.report) }),
-      });
+          : { ended_at: placedText(run.endedAt, label), result: run.result }),
+      };
+      await putStep(issue.key, id, write);
+      if (rating !== undefined) await putStepRating(issue.key, id, { ...write, ...rating });
     }
   }
   // The run's task names a comment or an ask as the case does: it now names the id Dispatch gave.

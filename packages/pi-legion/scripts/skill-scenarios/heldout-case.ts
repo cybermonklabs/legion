@@ -11,9 +11,10 @@
 //
 // A case's world is the starting state of each part a run reaches. Its Dispatch part holds the
 // issue with its documents, handoffs, comments, asks and results, and the runs of the steps of
-// the issue's workflow (`steps`; a file locked before them holds none), each run that ended naming
-// the world's handoff it ended with. A comment may be on words of one of the world's documents
-// (`anchor`), or be a reply in the thread of an earlier comment of the world (`replyTo`), not both.
+// the issue's workflow as `dispatch steps` lists them (`steps`; a file locked before them holds
+// none), a retro that ended with the rating it gave the plan where it gave one. A comment may be
+// on words of one of the world's documents (`anchor`), or be a reply in the thread of an earlier
+// comment of the world (`replyTo`), not both.
 //
 //   heldout-case.ts gaps <heldout or devcase file> [<skilluse file>]
 //       each file's gaps: its number of gaps alone on stdout (`<file>: <n> gaps`), each gap line on
@@ -173,33 +174,46 @@ const Source = z.strictObject({
 /** The handoff words of the file-backed phases (pi-shared's handoff-record.ts FILE_BACKED). */
 const HandoffWord = z.enum(["plan", "implement", "test", "review"]);
 
-/** One run of a step of the issue's workflow, as the Legion daemon records it in Dispatch
- * (`PUT /api/v1/issues/{key}/steps/{id}`): `id` the case's name for it, `step` its place in the
- * task (0 for a retro or a merge), and `report` the id of the world's handoff its end named. A run
- * whose `endedAt` is null still runs, so it names no session, result or report, as a running step
- * does; a run that ended names its result. */
+/** One run of a step of the issue's workflow, as `dispatch steps` lists it: the plan task it runs
+ * in, its place in that task (`step`: 1 or more for a `step`, exactly 0 for a `retro` and a
+ * `merge`), its kind, its role, and how and when it ended. `result` and `endedAt` are both null
+ * for a run that has not ended and both set for one that has. A retro that ended may hold the
+ * rating it gave the plan, 1 to 5 (`planRating`), and its reason (`planReason`); no other run
+ * holds either. */
 const StepRun = z
   .strictObject({
-    id: Name,
-    task: Name,
-    step: z.number().int().nonnegative(),
+    task: Text,
+    step: z.number().int(),
     kind: z.enum(["step", "retro", "merge"]),
-    role: Name,
-    session: Text.nullable(),
+    role: Name.nullable(),
+    result: z.enum(["passed", "failed", "stopped"]).nullable(),
     startedAt: Instant,
     endedAt: Instant.nullable(),
-    result: z.enum(["passed", "failed", "stopped"]).nullable(),
-    report: Text.nullable(),
+    planRating: z.number().int().min(1).max(5).optional(),
+    planReason: Text.optional(),
   })
   .superRefine((run, context) => {
-    if (run.endedAt === null) {
-      for (const part of ["session", "result", "report"] as const)
-        if (run[part] !== null) refuse(context, [part], `a running step names no ${part}`);
-      return;
-    }
-    if (earlier(run.startedAt, run.endedAt) === false)
+    if (run.kind === "step" && run.step < 1)
+      refuse(context, ["step"], `a step is at step 1 or more, not ${run.step}`);
+    if (run.kind !== "step" && run.step !== 0)
+      refuse(context, ["step"], `a ${run.kind} is at step 0, not ${run.step}`);
+    if (run.endedAt === null && run.result !== null)
+      refuse(context, ["endedAt"], "a run that holds its result has ended");
+    if (run.endedAt !== null && run.result === null)
+      refuse(context, ["result"], "a run that ended holds its result");
+    if (run.endedAt !== null && earlier(run.startedAt, run.endedAt) === false)
       refuse(context, ["endedAt"], `${run.endedAt} is not after startedAt ${run.startedAt}`);
-    if (run.result === null) refuse(context, ["result"], "a run that ended holds its result");
+    for (const part of ["planRating", "planReason"] as const) {
+      if (run[part] === undefined) continue;
+      if (run.kind !== "retro")
+        refuse(context, [part], `a ${run.kind} holds no ${part}: only a retro rates the plan`);
+      else if (run.endedAt === null)
+        refuse(
+          context,
+          [part],
+          `a running retro holds no ${part}: a retro rates the plan as it ends`
+        );
+    }
   });
 
 /** A comment of the world. `anchor` puts it on words of one of the world's documents, by name;
@@ -300,17 +314,6 @@ const DispatchWorld = z
       const before = dispatch.comments[parent];
       if (before === undefined || !seededBefore(before, parent, comment, index))
         refuse(context, [...at, "replyTo"], `${replyTo} is no earlier comment of the world`);
-    });
-    const steps = dispatch.steps ?? [];
-    refuseRepeats(
-      context,
-      steps.map(({ id }) => id),
-      (index) => ["steps", index, "id"]
-    );
-    const handoffs = new Set(dispatch.handoffs.map(({ id }) => id));
-    steps.forEach(({ report }, index) => {
-      if (report !== null && !handoffs.has(report))
-        refuse(context, ["steps", index, "report"], `${report} is no handoff of the world`);
     });
   });
 

@@ -252,34 +252,49 @@ describe("parseHeldoutFile", () => {
     expect(() => parseHeldoutFile(JSON.stringify(noDaemon))).toThrow("case P05: world.daemon:");
   });
 
-  /** P05's world given the runs of its task's steps: the planner's, which ended with the plan
-   * handoff the world holds, and the implementer's, still running. */
+  /** P05's world given the runs of its task's steps as `dispatch steps` lists them: the
+   * planner's and the implementer's ended, the retro's ended with the rating it gave the plan, and
+   * the merge still running. */
   const steppedFile = () => {
     const file = heldoutJson();
     file.cases[0].world.dispatch.steps = [
       {
-        id: "stp-acme-12-plan",
         task: "t1",
         step: 1,
         kind: "step",
         role: "planner",
-        session: "ses-acme-12-planner",
+        result: "passed",
         startedAt: "2030-01-07T12:40:00Z",
         endedAt: "2030-01-07T13:10:30Z",
-        result: "passed",
-        report: "hnd-acme-12-plan-1",
       },
       {
-        id: "stp-acme-12-implement",
         task: "t1",
         step: 2,
         kind: "step",
         role: "implementer",
-        session: null,
+        result: "passed",
         startedAt: "2030-01-07T13:10:30Z",
-        endedAt: null,
+        endedAt: "2030-01-07T13:50:30Z",
+      },
+      {
+        task: "t1",
+        step: 0,
+        kind: "retro",
+        role: "implementer",
+        result: "passed",
+        startedAt: "2030-01-07T13:50:30Z",
+        endedAt: "2030-01-07T14:00:00Z",
+        planRating: 4,
+        planReason: "The plan fit the work.",
+      },
+      {
+        task: "t1",
+        step: 0,
+        kind: "merge",
+        role: "merger",
         result: null,
-        report: null,
+        startedAt: "2030-01-07T14:00:00Z",
+        endedAt: null,
       },
     ];
     return file;
@@ -291,10 +306,30 @@ describe("parseHeldoutFile", () => {
     return parseHeldoutFile(JSON.stringify(file));
   };
 
-  test("a world's step runs parse, and a run that ended before it started, a running step that names a session or a report, and a report that names no handoff of the world are refused", () => {
+  test("a world's step runs parse, a run with no role among them, and a step at step 0, a retro or a merge at another step, and a run that ended before it started are refused", () => {
     expect(parseHeldoutFile(JSON.stringify(steppedFile())).cases[0].world.dispatch.steps).toEqual(
       steppedFile().cases[0].world.dispatch.steps
     );
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[3] ?? {}, { role: null });
+      })
+    ).not.toThrow();
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[0] ?? {}, { step: 0 });
+      })
+    ).toThrow("case P05: world.dispatch.steps[0].step: a step is at step 1 or more, not 0");
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[2] ?? {}, { step: 1 });
+      })
+    ).toThrow("case P05: world.dispatch.steps[2].step: a retro is at step 0, not 1");
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[3] ?? {}, { step: 5 });
+      })
+    ).toThrow("case P05: world.dispatch.steps[3].step: a merge is at step 0, not 5");
     expect(
       steppedRefusal((steps) => {
         Object.assign(steps[0] ?? {}, { endedAt: "2030-01-07T12:30:00Z" });
@@ -302,36 +337,63 @@ describe("parseHeldoutFile", () => {
     ).toThrow(
       "case P05: world.dispatch.steps[0].endedAt: 2030-01-07T12:30:00Z is not after startedAt 2030-01-07T12:40:00Z"
     );
-    expect(
-      steppedRefusal((steps) => {
-        Object.assign(steps[1] ?? {}, { session: "ses-acme-12-implementer" });
-      })
-    ).toThrow("case P05: world.dispatch.steps[1].session: a running step names no session");
-    expect(
-      steppedRefusal((steps) => {
-        Object.assign(steps[1] ?? {}, { report: "hnd-acme-12-plan-1" });
-      })
-    ).toThrow("case P05: world.dispatch.steps[1].report: a running step names no report");
-    expect(
-      steppedRefusal((steps) => {
-        Object.assign(steps[0] ?? {}, { report: "hnd-acme-12-plan-2" });
-      })
-    ).toThrow(
-      "case P05: world.dispatch.steps[0].report: hnd-acme-12-plan-2 is no handoff of the world"
-    );
   });
 
-  test("a step run's id named twice, and a run that ended with no result, are refused", () => {
+  test("a run's result and endedAt are both null or both set", () => {
     expect(
       steppedRefusal((steps) => {
-        Object.assign(steps[1] ?? {}, { id: "stp-acme-12-plan" });
+        Object.assign(steps[3] ?? {}, { result: "passed" });
       })
-    ).toThrow("case P05: world.dispatch.steps[1].id: stp-acme-12-plan is named twice");
+    ).toThrow("case P05: world.dispatch.steps[3].endedAt: a run that holds its result has ended");
     expect(
       steppedRefusal((steps) => {
         Object.assign(steps[0] ?? {}, { result: null });
       })
     ).toThrow("case P05: world.dispatch.steps[0].result: a run that ended holds its result");
+  });
+
+  test("a plan's rating and its reason are held by a retro that ended alone, and a rating is 1 to 5", () => {
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[1] ?? {}, { planRating: 3 });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.steps[1].planRating: a step holds no planRating: only a retro rates the plan"
+    );
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[3] ?? {}, { planReason: "The merge waited." });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.steps[3].planReason: a merge holds no planReason: only a retro rates the plan"
+    );
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[2] ?? {}, { result: null, endedAt: null });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.steps[2].planRating: a running retro holds no planRating: a retro rates the plan as it ends"
+    );
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[2] ?? {}, { planRating: 6 });
+      })
+    ).toThrow("case P05: world.dispatch.steps[2].planRating:");
+  });
+
+  // Catches: a world that still names a run by a case id, or a run's session or report, which
+  // `dispatch steps` lists none of, parsing as one of the shape's runs.
+  test("a step run that names an id, a session or a report is refused", () => {
+    for (const [part, value] of [
+      ["id", "stp-acme-12-plan"],
+      ["session", "ses-acme-12-planner"],
+      ["report", "hnd-acme-12-plan-1"],
+    ] as const)
+      expect(
+        steppedRefusal((steps) => {
+          Object.assign(steps[0] ?? {}, { [part]: value });
+        })
+      ).toThrow(`case P05: world.dispatch.steps[0]: Unrecognized key: "${part}"`);
   });
 
   test("a comment's anchor names a document of the world and words of its body, and a reply names an earlier comment and holds no anchor", () => {
