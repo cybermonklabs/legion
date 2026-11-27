@@ -729,9 +729,11 @@ func TestEachMultipleOfTheRoundCapTellsTheCountAndGoesOn(t *testing.T) {
 	}
 }
 
-// A reason that comes while a change is open starts no second generation: the open change has
-// passed its last step, so a new check's fail waits for the change after it, and the one hard
-// guard (StartNextChange's) holds the start while the change is open.
+// A reason that comes while a change is open starts no second generation: the read of an issue
+// whose change is open goes to the judge of that change (judgeOpenChange), which starts nothing,
+// so the reason waits for the change after it. And where a caller reaches StartNextChange itself
+// with such an issue, which each door of Task 13 can, its one hard guard holds the start: the
+// record keeps the generation and the count it had.
 func TestANextChangeNeverStartsWhileOneIsOpen(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, "")
@@ -749,6 +751,17 @@ func TestANextChangeNeverStartsWhileOneIsOpen(t *testing.T) {
 	rows := rig.defectRows(waitRoot)
 	if len(rows) != 2 || rows[1].check != "c-other" || rows[1].carriedBy != 0 {
 		t.Fatalf("the reasons = %+v, want c-other's waiting for the change after the open one", rows)
+	}
+
+	// The guard itself, which no routing stands in front of: StartNextChange called with an issue
+	// whose change is open starts nothing and raises no generation.
+	open := rig.issue(waitRoot)
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		return rig.engine.StartNextChange(t.Context(), tx, open, nil, ChangeInPlace(open))
+	})
+	if got := rig.issue(waitRoot); got.Generation != open.Generation || got.NextChange != open.NextChange || got.NextChanges != open.NextChanges {
+		t.Fatalf("after StartNextChange over an open change %s stands at generation %d, change %d of %d; want %d, %d of %d",
+			waitRoot, got.Generation, got.NextChange, got.NextChanges, open.Generation, open.NextChange, open.NextChanges)
 	}
 }
 
