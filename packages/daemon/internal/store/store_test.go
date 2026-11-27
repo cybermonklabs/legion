@@ -1099,8 +1099,9 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
-// version (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before
-// that table exists, it fails on the missing table. dispatch://INFRA-3320's 20261114232555 is in it
+// version (20261124033010) and the parent of a plan task (20261124022547) add a column to
+// 20261117034837's issue_plans and plan_tasks: applied as main's, before that table exists, each
+// fails on the missing table. dispatch://INFRA-3320's 20261114232555 is in it
 // as a rewrite of a check of its own: it writes issues_phase_check again with awaiting_children,
 // which 20261029120700 of the list writes without it, so applied as main's, before that version,
 // it would leave a check that refuses the phase. Its 20261114064234, the basis columns, is in it as
@@ -1135,7 +1136,7 @@ var thisRelease = map[int]bool{
 	20261115194357: true, 20261116144907: true, 20261116165926: true, 20261117000528: true,
 	20261117004117: true, 20261117023932: true, 20261117034837: true, 20261117064152: true,
 	20261119003157: true, 20261119203047: true, 20261122154643: true, 20261123212127: true,
-	20261124033010: true, 20261126110259: true, 20261126163320: true,
+	20261124022547: true, 20261124033010: true, 20261126110259: true, 20261126163320: true,
 }
 
 const idleRelease = 20261101222956

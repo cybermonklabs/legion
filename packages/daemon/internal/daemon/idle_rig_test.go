@@ -197,8 +197,12 @@ type idleRigOptions struct {
 	configure func(*config.Config)
 	// controllerPlan is the plan the project controller's role process follows, set before the
 	// first boot, which launches it where configure names `controller: daemon`; nil leaves the
-	// rig's own.
 	controllerPlan *idleRigPlan
+	// ListenerEnv is each NAME=VALUE the Envoy listener is started with beside the rig's own, at
+	// its first start and at every start after (awaitListenerReady), such as the session windows a
+	// test shortens so a session it stops hearing from is unresponsive, then gone, and its role
+	// claim freed within the test.
+	ListenerEnv []string
 }
 
 // idleRigSeed is one issue the rig seeds: what the test calls it, every role it has a claim of
@@ -231,6 +235,12 @@ type idleRigSeed struct {
 // name in plans that names no issue of issues fails the test.
 func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
+	return newIdleWakeRigWith(t, idleRigOptions{}, plans, issues...)
+}
+
+// newIdleWakeRigWith is newIdleWakeRig with what options asks beyond it.
+func newIdleWakeRigWith(t *testing.T, options idleRigOptions, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
+	t.Helper()
 	for name := range plans {
 		if !slices.Contains(issues, name) {
 			t.Fatalf("the rig seeded no issue called %s", name)
@@ -243,7 +253,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 			seeds[i].plan = &plan
 		}
 	}
-	rig := newIdleRigWith(t, idleRigOptions{}, seeds...)
+	rig := newIdleRigWith(t, options, seeds...)
 	rig.launchAll()
 	return rig
 }
@@ -262,7 +272,7 @@ func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) 
 	natsURL := testnats.URL(t)
 	// The listener owns the notification stream: it creates it with its own subjects before the
 	// daemon binds a consumer on it, which is the order a deployment rolls them in.
-	listener := startIdleRigListener(t, natsURL, "idlerig")
+	listener := startIdleRigListener(t, natsURL, "idlerig", options.ListenerEnv...)
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
 	cfg.EnvoyURL = listener.url
@@ -451,7 +461,7 @@ func (r *idleWakeRig) awaitListenerReady() {
 			restarted = true
 			socket, port := r.listener.socket, r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port)
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port, r.options.ListenerEnv...)
 		}
 		return false
 	})

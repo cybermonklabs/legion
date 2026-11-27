@@ -14,7 +14,7 @@ import (
 // projectAccess's ParseProjects, with no log line naming the entry (seen against the real binary at
 // b10331eb0a with BROKER_EXCHANGE_ACCOUNTS=system:serviceaccount:agent-sessions:agent-session=priv=erin@example.com,
 // which booted and answered every pod trade 500 server_error, where the merge base minted). So the
-// set refuses it at boot, naming the entry, for each of the three settings that name a project.
+// set refuses it at boot, naming the entry, for each of the four settings that name a project.
 //
 // A job entry's projects never reach the set as text: each of the three job settings reads its
 // projects field through ParseJobProjects, and a JobProjects is built by nothing else, so such a
@@ -28,6 +28,7 @@ func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 				accounts  []exchange.AccountEntry
 				workflows []exchange.WorkflowEntry
 				machines  []exchange.GoogleEntry
+				results   []exchange.ResultWorkflowEntry
 				names     string
 			}{
 				{setting: "BROKER_EXCHANGE_ACCOUNTS",
@@ -36,8 +37,10 @@ func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 					workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: bad, Person: person}}, names: workflow},
 				{setting: "BROKER_VM_EXCHANGE_ACCOUNTS",
 					machines: []exchange.GoogleEntry{{Account: pinnedAccount, Service: pinnedService, Project: bad, Person: person}}, names: pinnedAccount},
+				{setting: "BROKER_EXCHANGE_RESULT_WORKFLOWS",
+					results: []exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultsWorkflow, RefPattern: resultsPattern, Project: bad, Person: person}}, names: resultsWorkflow},
 			} {
-				set, err := exchange.NewSet(c.accounts, nil, c.workflows, c.machines, signInDomain)
+				set, err := exchange.NewSet(c.accounts, nil, c.workflows, c.results, c.machines, signInDomain)
 				if err == nil {
 					t.Errorf("NewSet with a %s entry naming the project %q = %v, want a refusal: every token it minted would name a project no list holds, and every trade would fail", c.setting, bad, set)
 					continue

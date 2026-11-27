@@ -92,7 +92,7 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 	t.Helper()
 	subject := "system:serviceaccount:example:" + name
 	if project != "" {
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
+		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider, Issuers: []string{""}}}, nil, nil, nil, nil, "")
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}
@@ -125,7 +125,7 @@ func jobPods(t *testing.T, m *Machine, lists ...string) []jobPod {
 		name := "job-" + strings.ToLower(strings.ReplaceAll(list, ",", "-"))
 		entries[i] = exchange.AccountEntry{Account: "system:serviceaccount:example:" + name, Job: job, Issuers: []string{""}}
 	}
-	set, err := exchange.NewSet(entries, nil, nil, nil, "")
+	set, err := exchange.NewSet(entries, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 	set, err := exchange.NewSet([]exchange.AccountEntry{
 		{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}},
 		{Account: otherSubject, Project: teamProject, Person: insider, Issuers: []string{""}},
-	}, nil, nil, nil, "")
+	}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

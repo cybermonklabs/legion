@@ -44,6 +44,9 @@ export interface TurnsUntilOptions {
   /** Done before each turn, such as moving the fake clock a millisecond for a wait on a timer of
    *  the code's; nothing by default. */
   readonly each?: () => void;
+  /** How one turn is taken, {@link turn} by default: a React row takes each turn inside `act`, so
+   *  what the turn set going renders, inside `act`, before `done` reads it. */
+  readonly turn?: () => Promise<void>;
 }
 
 /**
@@ -70,6 +73,6 @@ export async function turnsUntil(
       throw new Error(`still not ${what} after ${boundMs / 1000} s of real time${state}`);
     }
     options.each?.();
-    await turn();
+    await (options.turn ?? turn)();
   }
 }

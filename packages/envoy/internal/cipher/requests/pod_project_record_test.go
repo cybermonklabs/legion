@@ -22,7 +22,7 @@ import (
 // credential names PRIV (Exchange.PodProjects), so its requests and grants are PRIV's.
 func mapFixtureSubjectToPriv(t *testing.T, m *Machine) {
 	t.Helper()
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestAServicesPodNamesItsEntrysProjectOnlyForAnIssuerTheEntryNames(t *testin
 		{"a pod of an issuer the setting no longer holds", new("https://gone.example"), []string{firstIssuer.Name, secondIssuer.Name}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: c.issuers}}, nil, nil, nil, "")
+			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: c.issuers}}, nil, nil, nil, nil, "")
 			if err != nil {
 				t.Fatalf("exchange.NewSet: %v", err)
 			}

@@ -54,6 +54,7 @@ A reason that ends `This release of Legion does not carry it out yet.` names a p
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+The one exception is a version that changes only the text of its running task `default`, which Legion takes as for any issue.
 `read_record` shows such an issue: one of its `assignments` has `plan` `default`.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
@@ -64,13 +65,13 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
-  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`, and `running` for a task that runs.
   A project's experiment draws the child when the daemon records it.
   If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
-A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
+After a stop of the task `default`, a `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
 
 ## Reading how plans went

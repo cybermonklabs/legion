@@ -169,7 +169,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com", Issuers: []string{""}}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com", Issuers: []string{""}}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

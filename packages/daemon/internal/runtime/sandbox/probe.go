@@ -196,9 +196,10 @@ type ImageProbe struct {
 	RoleReferences promptrefs.Names
 	// Resources are the probe container's requirements, as the daemon hands them: the probe's own
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
-	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
-	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), checks the image's capability rows and the roles' overlays, and exits, so it is
+	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. The
+	// probe is the daemon's boot run (LEGION_IMAGE_PROBE_RUN=boot): it starts Oh My Pi for the
+	// plugin's load, then for the image's capability rows, for the reads of Oh My Pi's model
+	// fallback, version and help, and for the roles' overlays, one at a time, and exits, so it is
 	// sized for that and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
@@ -1422,6 +1423,12 @@ type probeSpec struct {
 	ShutdownTime   metav1.Time `json:"shutdownTime"`
 }
 
+// probeOwned are the variables the runtime sets in the image probe's container and in no worker's:
+// bootprobe.ImageProbeRunVariable, which tells `legion probe-image` that it runs as the daemon's
+// boot run. podVariables names each, so CheckPod refuses it in runtime.kubernetes.pod.env and as a
+// provider key; it stays out of runtimeOwned and specOwned, since no worker carries it.
+var probeOwned = map[string]bool{bootprobe.ImageProbeRunVariable: true}
+
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
 // deleted by the controller at shutdown, placed as a gVisor worker is placed — gVisor, the
 // configured scheduling alone — whatever runtime.kubernetes.sandbox says, as a repository
@@ -1437,12 +1444,18 @@ type probeSpec struct {
 // ProbeImage requires, and, first, running one role generation's namespaces as an issue pod's
 // launcher runs every role (--role-namespaces), over a disk emptyDir of its own at RoleProbeDir,
 // as an issue pod's role homes volume is, so a runtime that refuses a role's namespaces fails the
-// probe rather than every role's start. Its command and env are escaped against the kubelet's
-// expansion as every worker container's are (kubeletLiteral). It carries Karpenter's
-// `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate sets both):
-// GKE Autopilot places a pod carrying that one on a node of its own whenever possible, so each
-// boot's probe would ask for a node, and a probe minutes long and already retried on failure
-// (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
+// probe rather than every role's start. Its env is the operator's variables, then the pointers
+// (providersPointers, sessionDSNPointer), then, last, LEGION_IMAGE_PROBE_RUN=boot
+// (bootprobe.ImageProbeRunVariable, probeOwned): that variable tells the image's `legion
+// probe-image` that it is the daemon's boot run, so it makes no pi.agents probe, no
+// session-storage probe and no Claude lane, and its OK line says session-storage=skipped. It is a
+// variable and not a flag: a legion built before the variable ignores it and makes every launch
+// probe, but it refuses a flag it does not define (undefinedFlag). Its command and env are escaped
+// against the kubelet's expansion as every worker container's are (kubeletLiteral). It carries
+// Karpenter's `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate
+// sets both): GKE Autopilot places a pod carrying that one on a node of its own whenever possible,
+// so each boot's probe would ask for a node, and a probe minutes long and already retried on
+// failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
 // passes that role's overlays (--role-config-files), and for every workflow role one value per
 // arm the project declares that names overlays (Options.ExperimentVariants), that arm's files
@@ -1490,7 +1503,7 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 		Name:            probeContainer,
 		Image:           r.image,
 		Command:         command,
-		Env:             slices.Concat(r.operatorEnv(), r.providersPointers(), r.sessionDSNPointer()),
+		Env:             slices.Concat(r.operatorEnv(), r.providersPointers(), r.sessionDSNPointer(), []corev1.EnvVar{{Name: bootprobe.ImageProbeRunVariable, Value: bootprobe.ImageProbeRunBoot}}),
 		VolumeMounts:    slices.Concat([]corev1.VolumeMount{{Name: roleProbeVolume, MountPath: RoleProbeDir}}, providersMounts, r.pod.VolumeMounts),
 		Resources:       p.Resources,
 		SecurityContext: restrictedContainer(),

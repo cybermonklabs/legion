@@ -278,7 +278,7 @@ func TestAPodsOtherGrantIsJudgedUnderTheIssuerItEnrolledUnder(t *testing.T) {
 			m, _, _, _ := newProjectFixture(t, bound(rule("PRIV_KEY", "example"), rule("PRIV_SECOND", "example")), publicTeam)
 			retag(t, m, taggedSecret("PRIV_SECOND", policy.OwnerShared, policy.TierAgent, privProject, "priv-second-v1"))
 			m.Issuers = []oidc.NamedIssuer{firstIssuer, secondIssuer}
-			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{c.issuer.Name}}}, nil, nil, nil, "")
+			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{c.issuer.Name}}}, nil, nil, nil, nil, "")
 			if err != nil {
 				t.Fatalf("exchange.NewSet: %v", err)
 			}

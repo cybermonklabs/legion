@@ -70,7 +70,7 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 	// One policy holds every entry, so one broker mints every row's token. NewSet refuses two
 	// entries that fix one session name, so each entry below fixes a name of its own.
 	f := newSignInFixtureWith(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicyReading(t,
+		c.Exchange.Policy = newPolicyListing(t,
 			[]exchange.AccountEntry{
 				{Account: account, Project: project, Person: person, Issuers: []string{clusterName}},
 				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession, Issuers: []string{clusterName}},
@@ -83,6 +83,7 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 			[]exchange.WorkflowEntry{
 				{Repository: repository, Workflow: legionWorkflow, Ref: ref, Project: "WF", Person: person, Session: "legion-daemon:WF"},
 			},
+			nil,
 			exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
 			exchange.GoogleEntry{Account: vmMachine, Service: vmService, Project: "VM", Person: person, Session: "legion-daemon:VM"},
 		)

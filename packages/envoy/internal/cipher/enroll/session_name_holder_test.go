@@ -438,7 +438,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 	// The exchange as the cluster's deployment lists this account: the entry fixes no session
 	// name, so the name the pod asks under is the name it writes, which is the name it enrols.
 	// It names the cluster's one issuer, which, written as a bare URL, has the empty name.
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: "LEGION", Person: "ada@example.com", Issuers: []string{""}}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: "LEGION", Person: "ada@example.com", Issuers: []string{""}}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

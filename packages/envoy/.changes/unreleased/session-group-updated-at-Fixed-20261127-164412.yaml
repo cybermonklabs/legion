@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A Delivery session group's `updated_at` now follows the order its writes commit in. A rename or
+  a membership edit (`PATCH /api/v1/delivery/session-groups/{id}`) stamped it with its
+  transaction's start, and the transaction starts before it takes the group writers' lock, so of
+  two edits of one group the one that started first and committed last held the earlier time: a
+  reader that keeps the version with the later `updated_at` kept the one the row no longer holds.
+  The edit now stamps the clock time of its update statement, which runs under the lock, and at
+  least one microsecond past the value the row already holds, so the column never moves backwards
+  and two versions of a group never share one time.
+time: 2026-11-27T16:44:12Z
+custom:
+    Issue: session-group-updated-at

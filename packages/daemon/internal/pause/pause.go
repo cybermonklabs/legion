@@ -134,7 +134,7 @@ type Options struct {
 	Store *store.Store
 	// Records marks the rows the pause holds with the pause at its resume, and reads them for the
 	// resume's log (record.Postgres.MarkPauseHeldRows), and reads whether a controller is
-	// registered (record.Postgres.ControllerRegistered).
+	// registered (record.Postgres.ControllerSession).
 	Records *record.Postgres
 	// Project is the project's Dispatch key ("LEGION"), the spelling of project_pauses and of the
 	// outbox (internal/store/pause.go). The project token is derived from it where one is read.
@@ -481,20 +481,21 @@ func (s *Service) LastEndedPause(ctx context.Context) (store.Pause, bool, error)
 // tellsController is whether an act by `by` queues the controller's notice (decision 24). The
 // operator's act does and the controller's own does not, and only while a controller is
 // registered, which is the rule every wake of the controller keeps (admit.Admission.wakeController):
-// with none registered nothing reads the notice, since a controller that starts later is handed
-// nothing published before it (notify.ControllerTopic) and reads the pause from the state instead
-// (decision 25). The pause's notice has no rule of a waiting notice of its kind, as that function
-// has: each names its own pause, who acted and why, which the next notice does not repeat. The
-// registration is read just before the act's transaction, which reads it no more firmly: a
-// registration takes neither the fact serializer nor the pause's row.
+// a controller that starts later reads the pause from the state instead (decision 25). A notice
+// queued while one is registered waits, as every controller notice does, for the registered
+// session to hold the controller's role live (the daemon's outbox, controllerNotice). The pause's
+// notice has no rule of a waiting notice of its kind, as that function has: each names its own
+// pause, who acted and why, which the next notice does not repeat. The registration is read just
+// before the act's transaction, which reads it no more firmly: a registration takes neither the
+// fact serializer nor the pause's row.
 func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (bool, error) {
 	if by.Kind != store.PauseByOperator {
 		return false, nil
 	}
 	var registered bool
 	if err := store.TransactWith(ctx, s.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		registered, err = s.records.ControllerRegistered(ctx, tx, s.project)
+		session, err := s.records.ControllerSession(ctx, tx, s.project)
+		registered = session != ""
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("pause %s: %w", s.project, err)

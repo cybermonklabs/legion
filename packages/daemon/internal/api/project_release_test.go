@@ -107,8 +107,8 @@ func TestProjectReleaseRefusesEveryStartAndPromptOfARole(t *testing.T) {
 				len(h.runtime.CallsOf("Resume"))-resumes)
 		}
 		released.Store(false)
-		if recorder := h.operator(http.MethodPost, route, nil); recorder.Code != http.StatusOK {
-			t.Fatalf("resume with the mark clear = %d, want 200; body %s", recorder.Code, recorder.Body)
+		if recorder := h.operator(http.MethodPost, route, nil); recorder.Code != http.StatusAccepted {
+			t.Fatalf("resume with the mark clear = %d, want 202; body %s", recorder.Code, recorder.Body)
 		}
 		if got := len(h.runtime.CallsOf("Resume")) - resumes; got != 1 {
 			t.Fatalf("resumes with the mark clear = %d, want 1", got)
@@ -137,8 +137,8 @@ func TestProjectReleaseRefusesEveryStartAndPromptOfARole(t *testing.T) {
 			t.Fatalf("after the refused retry the architect is %s at generation %d, want failed at %d", got.State, got.Generation, failed.Generation)
 		}
 		released.Store(false)
-		if recorder := h.operator(http.MethodPost, route, nil); recorder.Code != http.StatusOK {
-			t.Fatalf("retry with the mark clear = %d, want 200; body %s", recorder.Code, recorder.Body)
+		if recorder := h.operator(http.MethodPost, route, nil); recorder.Code != http.StatusAccepted {
+			t.Fatalf("retry with the mark clear = %d, want 202; body %s", recorder.Code, recorder.Body)
 		}
 		if got := h.stored(architectToken); got.State != supervise.StateLaunching || got.Generation != failed.Generation+1 {
 			t.Fatalf("after the retry the architect is %s at generation %d, want launching at %d", got.State, got.Generation, failed.Generation+1)
@@ -164,8 +164,8 @@ func TestProjectReleaseRefusesEveryStartAndPromptOfARole(t *testing.T) {
 					got.State, got.Generation, got.Session, before.State, before.Generation, before.Session)
 			}
 			released.Store(false)
-			if recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil); recorder.Code != http.StatusOK {
-				t.Fatalf("fresh session with the mark clear = %d, want 200; body %s", recorder.Code, recorder.Body)
+			if recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil); recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("fresh session with the mark clear = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
 			}
 			if got := h.stored(token); got.Session == before.Session {
 				t.Fatalf("the fresh session with the mark clear kept session %q", got.Session)
@@ -231,8 +231,9 @@ func TestProjectReleaseLeavesTheSuspendOfAClaimToTheOperator(t *testing.T) {
 // answer, so the refusal is the mark's and nothing else's.
 //
 // The negative control is any of the three releaseRefused calls undone: the resume and the retry
-// reach the agent and are answered 200, and the pod update is answered 404 NO_POD by this daemon,
-// which runs no pod update rounds.
+// reach the agent and are answered 202 with the claim launching, their starts under way
+// (dispatch://INFRA-5649 R4), and the pod update is answered 404 NO_POD by this daemon, which runs
+// no pod update rounds.
 func TestProjectReleaseRefusesTheControllersResumeRetryAndPodUpdate(t *testing.T) {
 	h, released := projectReleaseHarness(t)
 	// The implementer the controller suspended, which its resume would lift, and the tester its
@@ -277,9 +278,9 @@ func TestProjectReleaseRefusesTheControllersResumeRetryAndPodUpdate(t *testing.T
 	released.Store(false)
 	resumes := len(h.runtime.CallsOf("Resume"))
 	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/resume", "LEGION-209", claim.RoleImplementer),
-		http.StatusOK, AgentActionResponse{State: "launching"})
+		http.StatusAccepted, AgentActionResponse{State: "launching"})
 	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleTester),
-		http.StatusOK, AgentActionResponse{State: "launching"})
+		http.StatusAccepted, AgentActionResponse{State: "launching"})
 	if got := len(h.runtime.CallsOf("Resume")) - resumes; got != 2 {
 		t.Fatalf("the resume and the retry with the mark clear made %d resumes of a session, want 2: the implementer's and the tester's", got)
 	}

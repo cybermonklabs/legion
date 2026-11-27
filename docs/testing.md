@@ -114,7 +114,11 @@ itself, whose tests import its sources by relative path.
   `temporaryDirectory(prefix)`: call it at the test file's module scope, or in the body of a
   `describe`, never inside a test body. It reserves the path at the call and returns it, and
   registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
-  called. A directory per test is `temporaryDirectories(prefix)`, registered in those same two
+  called; with `{ removeInBackground: true }` the `afterAll` hands the directory to a removal in a
+  process of its own and does not wait for it, so no removal runs under Bun's 5 s default hook
+  limit, which a slow disk's removal of a large tree (a stack's built binaries) can outlast. A
+  directory per test is
+  `temporaryDirectories(prefix)`, registered in those same two
   places, which returns a maker that makes a directory at each call and removes every one of them in
   its `afterEach`. Call that maker from a test body or a `beforeEach`, never from a `beforeAll`: it
   makes its directory at the call, and its `afterEach` removes it after the scope's first row, so
@@ -498,10 +502,10 @@ printed an act message, naming each message with its component and the frames th
 `packages/dispatch/bunfig.toml` sets `[test] randomize = true`. Bun reads that file only from the
 directory it starts in, and `bun run <script>` starts in the package's directory, so the file
 reaches `bun run test`, `test:web`, `test:web:cold`, `test:harness` and `test:repeat` from any
-directory, and with them CI's "Test dispatch dashboard" step and the weekly repeated run. It also
-reaches a `bun test <file>` started in `packages/dispatch`, but not one started from the repository
-root or from a subdirectory. Each `web/src/` and `e2e/` path below is under `packages/dispatch`,
-and each command runs there.
+directory, and with them CI's "Test dispatch dashboard" and "Test dispatch harness" steps and the
+weekly repeated run. It also reaches a `bun test <file>` started in `packages/dispatch`, but not one
+started from the repository root or from a subdirectory. Each `web/src/` and `e2e/` path below is
+under `packages/dispatch`, and each command runs there.
 
 - To reproduce a failing row, run its file alone with the seed its lane printed in its summary
   (` --seed=<n>`): `bun run test:web web/src/<file> --seed=<n>`,
@@ -708,11 +712,12 @@ such a test would take the binary toward the step's limit.
 
 ## A test in a daemon package that states the rule runs beside the others
 
-Five packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
+Six packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
 the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
-`internal/workflow`, `internal/store`, `internal/runtime/sandbox` and `cmd/legion`. Each
-`TestMain` sets how many run at once (`daemonTestParallelism`, `workflowTestParallelism` and
-`storeTestParallelism` 4, `sandboxTestParallelism` and `cmdTestParallelism` 8).
+`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace` and
+`cmd/legion`. Each `TestMain` sets how many run at once (`daemonTestParallelism`,
+`workflowTestParallelism` and `storeTestParallelism` 4, `sandboxTestParallelism`,
+`workspaceTestParallelism` and `cmdTestParallelism` 8).
 The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
 `internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
 check below reads only the default build. Each test of `internal/daemon` already has a database of
@@ -732,9 +737,9 @@ one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second bo
 `TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce`). A new test with neither the call nor
 the comment runs alone for no reason.
 
-So each of the five packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
-in its `main_test.go`, runs `packages/daemon/internal/testparallel`'s `Require` over the package's
-own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
+So each of the six packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
+in the file that declares `TestMain`, runs `packages/daemon/internal/testparallel`'s `Require`
+over the package's own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
 does, whatever name the file imported `testing` under. The reason goes on the comment's first
 line, after the colon: a `// Not parallel:` line with nothing after it is no reason, and neither
 is a comment that is not the body's first. A `t.Parallel()` after another statement, in a `defer`
@@ -748,13 +753,26 @@ the rule holds it the same way, with a test of its own that calls `Require` on i
 `internal/intake` states a looser one (above): a serial test whose reason is a call in its own body
 needs no comment there.
 
+## A test in `packages/daemon/internal/workspace` keeps its runner's state local
+
+The package's `TestMain` runs eight parallel tests at once (`workspaceTestParallelism`); an
+explicit `go test -parallel` overrides it. Tests that change the process environment, stderr or a
+package variable stay serial. The stalled-download row also runs alone because it changes
+`downloadWindow`; its sibling rows call `t.Parallel()`.
+
+Each recording runner supplies its own jj identity and tool wrappers to `NewRunnerIn`. The
+GitHub stand-in supplies its own certificate and proxy there too, without changing the process
+environment. Tests share one temporary home: jj stores repository and workspace configuration
+under their own random ids. A test that plants such configuration must use a fresh id. A seeded
+remote is copied from a template built once per default branch; the template itself is not changed.
+
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`), a test writes a file it or its
-program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH) with
-`packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile` or
-an `os.OpenFile` of its own. A child
+`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`, `internal/workspace`), a test
+writes a file it or its program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH)
+with `packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile`
+or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
 (ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
@@ -799,6 +817,14 @@ redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `Te
 re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
 resolver tests that replace the default logger.
 
+`internal/dispatch/cireconcile` also runs 4 at once through `storetest.SetDefaultParallel`.
+Each harness has its own database, GitHub stand-in and NATS account on the package's shared
+server. Tests of a pass ending on its bound give the reconciler a `clocktest.Fake` through its
+unexported `clock.Clock` field. The harness's clock wrapper checks the configured `PassTimeout`;
+the fake preserves `context.DeadlineExceeded`. Outside the pacing tests, one deadline control keeps the real timer.
+Pacing tests also retain real pass bounds. They and the settlement quiet-window tests stay
+serial, with a comment naming the wall-clock span.
+
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
 through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
@@ -806,7 +832,8 @@ variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `Heart
 `PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
 `syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
 bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
-on a correct product or pass with the defect present; the comment names the span. A wait for an
+on a correct product or pass with the defect present; the comment names the span. A seam that
+takes the deciding clock out lets the test run beside the others. A wait for an
 event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
 and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
 marker in these packages: a new test with neither the call nor the comment runs alone for no
@@ -835,13 +862,47 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/envoy/internal/dispatch/legion`, the Legion state intake, took 489 s alone on an issue
-pod's two shared CPUs, and ran go test's ten minutes out with another test run beside it. Its
-seeded test of the read rule
-(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`)
-takes 226 s of that: where a row ends with a message handed back with a delay, the row waits in
-real time for its redelivery, up to `ReadRetryAfter`, a minute (seed 12's row waits 59 s of its
-92 s).
+`packages/envoy/internal/dispatch/legion`, the Legion state intake, waits rather than computes: the
+whole package used 2 % of one core over the 913 s it took alone on a four-CPU CI runner
+(`/usr/bin/time -v`, job 140689032093). Its seeded test of the read rule
+(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`) was
+508 s of that, because a row that ends with a message handed back with a delay waits in real time
+for its redelivery, up to `ReadRetryAfter`, a minute. So each of its seeds is a parallel subtest,
+`storetest.DefaultParallel` of them at once (the package's `TestMain` calls
+`storetest.SetDefaultParallel`), and the test takes about as long as its longest seed alone.
+
+A seed holds a rig of its own: its own database (`storetest.Open`), its own NATS account
+(`testnats.URL`), its own fake daemons and its own intake, whose clock, logger and client window
+are the rig's. The intake writes its lines to `Intake.log` and calls its daemons with
+`Intake.stateOptions`, both of them the rig's, so **a seed** replaces neither the process's default
+logger nor `http.DefaultTransport`, which every test of the process shares. That is what lets the
+seeds run beside each other.
+
+The package's other tests are the package's serial ones, and **none of them runs while a seed
+does**: a top-level test that calls no `t.Parallel` holds the binary to itself, and the seeds'
+parent holds it while they run. The 86 tests of the files declared before
+`read_rule_model_test.go` run before them and the 33 of the five files after it run after. Five of
+those tests still write something the whole process shares, which is what stands in the way of
+making them parallel next:
+
+- `TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes`,
+  `TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes`,
+  `TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes` and
+  `TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead` each clone
+  `http.DefaultTransport`, give the clone a `ResponseHeaderTimeout` and put it back at the end, so
+  their daemons' answers have a window. A test beside one of them would take that window too.
+  Each is the rig's `windowed` written out before the rig existed; `rig.windowed(d)`, which names
+  the window on that rig's intake alone (`Intake.stateOptions`), replaces it where someone makes
+  them parallel.
+- `TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler` replaces the process's default
+  logger (`logtest.SetDefault`) on purpose: it reads the whole-read line as `cmd/dispatch`'s own
+  text handler writes it, through `ReadWhole`, which builds an intake with no logger of its own.
+  It stays serial.
+
+A test here holds wall-clock bounds of its own besides (`ReadRetryAfter`, the client window, a
+NATS redelivery), so one made parallel needs its bound read again under the load of the tests
+beside it.
+
 CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
 and a command that runs the whole package passes the same:
 
@@ -1354,6 +1415,55 @@ Those three causes are what GitHub can say, and none of them is a reading of you
 A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the memory the kernel reports available and the one-minute load of every second it watched, which is what tells the second cause from the other two on the next run that does store a log.
 `tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
 It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).
+
+## When each shell harness ran its cases
+
+A job's shell harnesses run beside each other through `.github/scripts/harness-pool.sh`, each into a log of its own, and the job's step "Wait for the script harnesses and judge them" prints every log when the last harness has ended.
+GitHub stamps a job's log by the line, so each line of a pooled harness carries the time the wait printed it, and the time the harness wrote it, which is the only one that says how long a case took, is in no log GitHub keeps.
+
+So the pool stamps the lines itself.
+Beside each harness it starts `.github/scripts/harness_line_times.py` on that harness's log, which writes one record per line to `<entry>.lines`, `<epoch seconds with microseconds>` and a tab and the line's own bytes.
+A line's time is when the stamper read it, which is after the line was written and normally within one poll of it, 50 ms; the sleep between polls is a least time, not a most, so a loaded runner can make that later.
+A last line the harness left without a newline carries the time its bytes were last read, since nothing says when such a line ended.
+The harness starts only once the stamper is reading, and a stamper that is not reading two seconds after its harness's slot is granted is killed, so that no line is stamped with the time of a late first read: that entry then has no record, which the reader reports as UNKNOWN.
+When the harness ends, the recorder first gives up the harness's slot (`<entry>.ended`), so the next harness queued never waits on the record, and then asks the stamper to stop.
+The stamper reads the log to its end, checks what it stamped against the log's own bytes, and writes the bytes it read to `<entry>.lines.end`; the recorder writes the log's size to `<entry>.logbytes`, and the entry's exit status is written last of all, which is what the wait waits for.
+A reader takes the record as whole only when those two numbers agree, and the wait drops `<entry>.logbytes` where a harness's log has grown since — a process the harness left behind — so that record reads as a part rather than as a whole one.
+
+The job uploads those files, with each entry's `.name`, `.started`, `.ended` (the exact moment its command returned, `date +%s.%N`), `.seconds`, `.exit` and `.bound` and the wait's `judged` (how many harnesses it judged, which tells a job that queued none from one whose record was lost), as the artifact `harness-times-<job id>` with `.github/actions/harness-times-upload` (`if: always()`, so a failed, timed-out or cancelled job keeps what was stamped).
+The harnesses' own logs are not uploaded: `.lines` carries every line's text beside its time, and the wait step still prints each log into the job's log.
+The artifact is kept for 90 days, this repository's default: the two artifacts of run 46030298068, made on 2026-11-27, carry `expires_at` 2027-02-25.
+They are small — 193,212 bytes for the test job's 55 harnesses and 77,657 for envoy-go-checks' 26, as GitHub stored them in that run.
+
+To read one run's cases, each with the time it started and ended:
+
+```sh
+.github/scripts/harness_case_times.py --run <run id>
+```
+
+It prints one JSON line per case — the job, the harness, the case's name, its status, its start, its end and its seconds — where a case is a `PASS:`/`FAIL:`, `ok`/`not ok`, `case: <name>` or `<name>: PASS` line of the harness's own output, a case ends at its line and starts at the previous case's line, and the first case of a harness starts when the harness did.
+A harness that printed no case line gets one row for the whole harness.
+A harness that exited non-zero always has a row of its own, `kind` `harness`, `status` `fail`, from its last case line to its end, and a passing harness gets a passing one when its end is more than 0.05 s after its last case line.
+Its end is the exact time in `<entry>.ended`; an entry with an `.exit` and no `.ended` is UNKNOWN, since its end is not known.
+Each harness row, and each UNKNOWN row of a harness whose `.exit` was read, carries that status as `exit`; a case row carries no `exit`.
+To find failures, select on `status`: `fail` is a failed case or a harness that exited non-zero, and `unknown` is a record that cannot say; `exit` alone says nothing about a case row.
+
+It prints an UNKNOWN row for a job that ran a pool wait step and has no artifact — an upload that failed included — and for a harness whose record is missing or does not cover its whole log — a stamper that was killed, or a harness still running when the job ended.
+It exits 1 when any row is UNKNOWN, and 3 when any row failed and nothing is UNKNOWN.
+An UNKNOWN row is printed rather than left out because a missing row reads as a case that never ran.
+
+Nothing in this record may change what a test decides.
+The stamper reads the log and never the harness, so the harness's output goes to the same file, with the same writer, as before the record existed; a stamper that cannot start, is killed or is cut off leaves an incomplete record and its own error output in the entry's recorder log, which the wait prints in the harness's group, and every file the recorder writes for the record is written so that a failure to write it cannot end the recorder.
+A harness's CPU seconds stay its own: the recorder runs it in a subshell of its own and reads `times` there, and a subshell starts with no children's seconds, so nothing else the recorder started can reach that number; where `times` cannot be written or read, the CPU is written `?`, never 0.
+The upload warns rather than fails when it finds no file (`if-no-files-found: warn`), since a job whose every harness step was skipped by its `if:` queues nothing and is rightly green.
+The upload step has `continue-on-error: true` in both jobs, so an upload that fails is a red mark on that step alone: the job, and the ci-ok report that reads its status, keep the harnesses' verdict, and the reader's UNKNOWN for a job with no artifact covers the lost record.
+
+The one thing the record changes for a harness is buffering: the pool exports `PYTHONUNBUFFERED=1` to it, so a Python harness, and a Python program a harness runs, writes each line when it prints it.
+Without it those lines reach the log when the program ends and carry that one time — a wrong time, which reads as a true one, where a missing record reads as missing.
+It changes no output and no status; it does change the order in which a Python program's standard output and error reach the log, which is now the order it wrote them.
+
+This repository's artifacts can be downloaded by anyone for those 90 days, and GitHub's log masking does not reach them: the record holds each harness's output as the harness wrote it.
+No pooled harness is given a secret today — each runs over fakes — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
 
 ## A test asserts no count of work a broker may repeat
 
