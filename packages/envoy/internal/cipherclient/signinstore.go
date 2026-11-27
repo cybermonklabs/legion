@@ -115,6 +115,14 @@ func (s SignInStore) Path(person string) string {
 	return filepath.Join(s.Dir, hex.EncodeToString(sum[:])+".json")
 }
 
+// RenewalDir is the directory beside one person's record that agent-secrets keeps the renewal of
+// that person's sign-in enrollment in: the renewer's lock, the time a command last used the
+// sign-in, and the requests still waiting for a person. List reads no directory, so it is no
+// record.
+func (s SignInStore) RenewalDir(person string) string {
+	return strings.TrimSuffix(s.Path(person), ".json") + ".renewal"
+}
+
 // Write keeps a record, making the directory 0700 and the file 0600 so the person's own user
 // alone reads the key and the refresh token in it. A second sign-in as the same person replaces
 // that person's record and leaves every other person's alone.

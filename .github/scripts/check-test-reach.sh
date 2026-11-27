@@ -105,10 +105,10 @@
 # .github/go-legs.yaml lists for every leg of that job, each read whole), `for` loops, `-tags`,
 # `-race`, `-run`, `-skip`, `-exec`, a gotestsum command (its `--packages`, and the `go test`
 # flags after its `--`), a go command behind .github/scripts/go-test.sh, a script the step runs
-# whose lines the reader reads, and the scripts
-# its AUDITED_SCRIPTS reads (database-skips.sh, backend-count.sh, race-unit.sh and forced-order.sh,
-# by their arguments); a -run of the pattern .github/scripts/go-tagged-tests.sh prints is the
-# alternation that script prints, read off the
+# whose lines the reader reads, and the scripts .github/scripts/audited_scripts.py's
+# AUDITED_SCRIPTS reads (database-skips.sh, backend-count.sh, race-unit.sh, natslive.sh,
+# forced-order.sh and its test, by their arguments); a -run of the pattern
+# .github/scripts/go-tagged-tests.sh prints is the alternation that script prints, read off the
 # source as it reads it. A script of TEST_BINARY_SCRIPTS (pmdoc's
 # differential.sh) is read by each `<binary> -test.run '<pattern>'` it runs, with the variables it
 # sets for that run. A test file is in a step's build when its constraint and its file name hold
@@ -123,7 +123,10 @@
 # root through `$GITHUB_WORKSPACE`) through that script's own commands, with the variables it
 # exports. A command these read is read past the words that only start it: the variables set
 # before it, `env`, `exec`, and coreutils `timeout` with its options and duration
-# (dispatch-unit-repeat.yaml's lane step runs `exec timeout … bun run test:repeat …`). A
+# (dispatch-unit-repeat.yaml's lane step runs `exec timeout … bun run test:repeat …`). A step's
+# `"${NAME[@]}"` word is the words a `read -ra NAME <<< "$VAR"` before it read from the value its
+# env: blocks give VAR, split at blanks, as ci-job-dispatch-ui.yaml's steps run
+# `bun run "${web[@]}"`; an array whose variable no env: block gives a value stays the one word. A
 # `playwright test` runs every spec under its `--config`'s directory that its file filters keep:
 # its `--project`s and `--grep` choose among those specs and are not read, so a spec counts as run
 # by every Playwright step of its config. The Go reader (go_test_steps.py) refuses a line that
@@ -154,7 +157,10 @@
 # a required step runs names it - an action, a `package.json` script, a script already counted,
 # a test file a required step runs, or a module of the same package such a Bun test imports - by
 # a path whose end is the script's path or by its bare name; a Python script reaches another only
-# through an import.
+# through an import. A shell text reaches each script a path pattern of it names
+# (`"$dir"/rows/test-rows-*.sh`) only where a command of the same text sources or runs a script
+# of that directory by a path whose variables, read as `*`, match the script too
+# (`. "$dir/rows/test-rows-$name.sh"`), as operator-token-minters.test.sh runs its row files.
 #
 # What it cannot see there: a mention is not a run. A test file that names a script counts as
 # running it, so a test that reads a script or lifts its functions out without running the script
@@ -172,9 +178,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # The step reader is .github/scripts/go_test_steps.py, beside this script in the repository it
-# checks, which PYTHONPATH names, with go_build_tags.py, which this search imports.
-# PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in
-# the tree.
+# checks, which PYTHONPATH names, with audited_scripts.py, which it imports, and go_build_tags.py,
+# which this search imports. PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__
+# in the tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
 from __future__ import annotations
 
@@ -2453,6 +2459,66 @@ def unwrapped(words: list[str], env: set[str]) -> list[str]:
     return words
 
 
+# A step that reads a variable of its env: blocks into an array and hands the array on as a
+# command's words, `read -ra lane <<< "$LANE"` and then `bun run "${lane[@]}"`: the steps of
+# ci-job-dispatch-ui.yaml run each command of packages/dispatch's `test` script so, from the
+# workflow's env:.
+ARRAY_WORD = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}$")
+HERE_VARIABLE = re.compile(r"^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$")
+
+
+def read_array(words: list[str], values: dict) -> tuple[str, list[str] | None] | None:
+    """The array a `read -a NAME <<< "$VAR"` command fills (`-ra NAME` too), with the words it
+    holds: VAR's value in the step's env: blocks, split at blanks as read splits it; None for the
+    words where no env: block gives VAR a value, or where the here-string is anything but that one
+    variable. None for any other command."""
+    if words[:1] != ["read"]:
+        return None
+    name, index = None, 1
+    while index < len(words) and words[index].startswith("-"):
+        option = words[index]
+        index += 1
+        if option.endswith("a") and index < len(words):
+            name = words[index]
+            index += 1
+    rest = words[index:]
+    if rest[:1] == ["<<<"] and len(rest) == 2:
+        here = rest[1]
+    elif len(rest) == 1 and rest[0].startswith("<<<"):
+        here = rest[0][3:]
+    else:
+        return None
+    if name is None:
+        return None
+    variable = HERE_VARIABLE.match(here)
+    value = values.get(variable.group(1) or variable.group(2)) if variable else None
+    return name, (str(value).split() if value is not None else None)
+
+
+def step_words(step: RunStep) -> list[list[str]]:
+    """The words of each command of a step's script, each `"${NAME[@]}"` word replaced by the
+    words a `read -a NAME <<< "$VAR"` before it read from the step's env: blocks (read_array). An
+    array read from a variable no env: block sets, or never read, stays the one word it is, so the
+    command that hands it on runs no package script and no file this search can name."""
+    arrays: dict[str, list[str]] = {}
+    found = []
+    for command in commands(step.script):
+        words = words_of(command)
+        read = read_array(words, step.values)
+        if read is not None:
+            name, held = read
+            if held is None:
+                arrays.pop(name, None)
+            else:
+                arrays[name] = held
+        expanded = []
+        for word in words:
+            array = ARRAY_WORD.match(word)
+            expanded += arrays[array.group(1)] if array and array.group(1) in arrays else [word]
+        found.append(expanded)
+    return found
+
+
 class BunReader:
     def __init__(self, files: list[str]):
         self.files = files
@@ -2475,8 +2541,7 @@ class BunReader:
     def runs(self, step: RunStep) -> list[BunRun]:
         found = []
         cwd = step.workdir
-        for command in commands(step.script):
-            words = words_of(command)
+        for words in step_words(step):
             if words[:1] == ["cd"] and len(words) == 2:
                 cwd = join(cwd, words[1])
                 continue
@@ -2817,14 +2882,26 @@ def comment_free(path: str, text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#") or line.startswith("#!"))
 
 
+# A path pattern a shell text names, `"$script_dir"/rows/test-rows-*.sh`: a word of path characters
+# holding a `*`, `?` or `[` and ending in a script's extension.
+GLOB_PATH = re.compile(r"(?<![A-Za-z0-9_./*?\[\]-])[A-Za-z0-9_./*?\[\]-]*[*?\[][A-Za-z0-9_./*?\[\]-]*"
+                       r"\.(?:sh|bash|py)(?![A-Za-z0-9_-])")
+# A command that sources or runs a script by a path, `. "$script_dir/rows/test-rows-$name.sh"`: `.`,
+# `source`, `bash` or `sh` at the start of a command, then the path, quoted or not.
+SOURCED_PATH = re.compile(r"(?:^|[;&|({]|\bthen|\bdo|\belse)\s*(?:\.|source|bash|sh)\s+\"?([^\s\"'`;|&<>()]+)", re.M)
+SHELL_VARIABLE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})")
+
+
 class Mentions:
     """The scripts a text names: by a path whose end is the script's path from the repository
     root (`../../.github/scripts/x.sh`, `"$script_dir/lib/x.sh"` for lib/x.sh), or by its bare
-    name; and the Python modules a text imports."""
+    name; by a path pattern a shell text runs its scripts from (globbed); and the Python modules a
+    text imports."""
 
     def __init__(self, by_name: dict[str, list[str]]):
         self.by_name = by_name
-        self.gate_files = sorted(path for paths in by_name.values() for path in paths
+        self.scripts = sorted(path for paths in by_name.values() for path in paths)
+        self.gate_files = sorted(path for path in self.scripts
                                  if path.startswith(f"{GATES_DIR}/") and path.endswith(".py"))
         # Most names end in .sh, .bash or .py: one pattern finds every such word and the name set
         # keeps the scripts; the few other names (a shebang file with no extension, or a .ts one)
@@ -2832,6 +2909,51 @@ class Mentions:
         others = sorted((n for n in by_name if not n.endswith(SCRIPT_EXTENSIONS)), key=len, reverse=True)
         alternatives = [r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:sh|bash|py)"] + [re.escape(n) for n in others]
         self.pattern = re.compile(r"(?<![A-Za-z0-9_.-])(" + "|".join(alternatives) + r")(?![A-Za-z0-9_-])")
+
+    @staticmethod
+    def segments(spelled: str) -> list[str]:
+        """A path's segments from the first one it names: the segments that hold a variable before
+        it (`$dir/x.sh`, `${dir}/x.sh`) say nothing of the directories the variable holds, and a
+        leading `./` or `../` nothing of which directory it is in."""
+        parts = [part for part in re.sub(r"^(?:\.\.?/)+", "", spelled.lstrip("/")).split("/") if part]
+        while parts and "$" in parts[0]:
+            parts = parts[1:]
+        return parts
+
+    def globbed(self, text: str) -> set[str]:
+        """The scripts a shell text runs through a path pattern: each script of the tree whose
+        path ends, segment by segment, in both a pattern the text names (GLOB_PATH) and the path of
+        a command of the same text that sources or runs a script (SOURCED_PATH), each variable of
+        that path read as `*`, the two in one directory. operator-token-minters.test.sh lists
+        `"$script_dir"/operator-token-minters/test-rows-*.sh` and sources
+        `"$script_dir/operator-token-minters/test-rows-$name.sh"` for each. A pattern no command
+        of the text sources or runs a script from - an `ls`, a `find` - names no run here, and
+        neither does a path that is a variable alone (`. "$file"`)."""
+        sourced = []
+        for match in SOURCED_PATH.finditer(text):
+            parts = self.segments(match.group(1))
+            if parts and "$" not in "/".join(parts[:-1]):
+                sourced.append(parts[:-1] + [SHELL_VARIABLE.sub("*", parts[-1])])
+        found = set()
+        if not sourced:
+            return found
+        for match in GLOB_PATH.finditer(text):
+            spelled = match.group()
+            start = match.start()
+            # A pattern that starts at a variable's name (`$dir/x-*.sh`) says nothing of its directory.
+            if start > 0 and text[start - 1] in "${" and not spelled.startswith("/"):
+                spelled = spelled.split("/", 1)[1] if "/" in spelled else ""
+            pattern = self.segments(spelled)
+            runs = [run for run in sourced if pattern and run[:-1] == pattern[:-1]]
+            for candidate in self.scripts if runs else ():
+                parts = candidate.split("/")
+                if len(parts) < len(pattern):
+                    continue
+                tail = parts[len(parts) - len(pattern):]
+                if all(fnmatch.fnmatchcase(part, glob) for part, glob in zip(tail, pattern)) and \
+                        any(fnmatch.fnmatchcase(tail[-1], run[-1]) for run in runs):
+                    found.add(candidate)
+        return found
 
     def of(self, path: str, text: str) -> set[str]:
         found = set()
@@ -2858,6 +2980,8 @@ class Mentions:
             for candidate in self.by_name[name]:
                 if tail == name or candidate == tail or candidate.endswith(f"/{tail}"):
                     found.add(candidate)
+        if not path.endswith((".go", ".ts", ".tsx", ".js", ".mjs", ".cjs")):
+            found |= self.globbed(text)
         return found
 
 
@@ -2871,9 +2995,9 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
     texts: list[tuple[str, str]] = []
     for step in required_steps(flows):
         texts.append((step.part.workflow, step.script))
-        for command in commands(step.script):
+        for words in step_words(step):
             texts += [(f"{step.workdir}/package.json", text)
-                      for text in package_script_texts(bun_reader, step.workdir, words_of(command), set())]
+                      for text in package_script_texts(bun_reader, step.workdir, words, set())]
     reached_files = set()
     for go_run in go:
         for directory in go_run.directories:

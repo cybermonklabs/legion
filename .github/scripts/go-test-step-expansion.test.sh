@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Tests for `go-test-step-expansion.py`'s reading of one line of a step's script: which command a
 # line runs, and which shapes it refuses rather than guesses at; that its step reader reads every
-# `go test` step of this head's workflows; and that each script AUDITED_SCRIPTS reads still has
-# the SHA-256 its entry pins. One case holds the refusals of go_test_steps.py's own reader, which
+# `go test` step of this head's workflows; that each script AUDITED_SCRIPTS reads still has the
+# SHA-256 its entry pins; and that it and check-ci-filters.sh's TAG_RUNS rule read every step that
+# is an audited script alike. One case holds the refusals of go_test_steps.py's own reader, which
 # the script imports and the test-reach search reads its steps with.
 #
-# Only the reader and the pins. What the script makes of a command - the packages a
+# Only the reader, the pins and that agreement. What the script makes of a command - the packages a
 # `go test -list` names, the pairs two steps share, the exceptions - needs all three Go modules'
 # test binaries built, which is minutes of compile and why no CI job runs that script (its own
 # header says so). This harness needs no Go at all: every case is text, read as the script reads
@@ -195,8 +196,9 @@ except ex.Refused:
     print("refused")
 else:
     print("none" if read is None else f"{read.workdir} {read.script}")' "$@"; }
-unit_listing=$(py 'print("packages/envoy set -o pipefail\npython3 ../../.github/scripts/go_legs.py packages/envoy envoy-go "
-      "${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -skip " + ex.UNIT_SKIP + " -timeout 20m")')
+unit_listing=$(py 'import audited_scripts
+print("packages/envoy set -o pipefail\npython3 ../../.github/scripts/go_legs.py packages/envoy envoy-go "
+      "${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -skip " + audited_scripts.UNIT_SKIP + " -timeout 20m")')
 check "envoy-go's unit legs pipe go_legs.py's packages into the counter's go test, less the fixture's, the backend count's and the alone rows' tests" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Unit test envoy Go package" "")" "$unit_listing")"
 check "the unit legs' step with one more argument, which the entry's xargs does not list, is refused" \
@@ -229,13 +231,14 @@ else:
     print(command.step.workdir, " ".join(command.packages), command.run)')" \
     "packages/envoy ./cmd/cipher/ ./internal/cipher/api/ ^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestUseCommandOutsideASessionReachesTheMachineSource|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$")"
 check "every unit leg skips all five, the four of cmd/cipher and the one of internal/cipher/api" \
-  "$(is "$(py 'ex.shell = lambda script, cwd, what: "(not-run)"
+  "$(is "$(py 'import audited_scripts
+ex.shell = lambda script, cwd, what: "(not-run)"
 steps = {step.row: step for step in ex.steps_of(ex.documents())
          if step.key == (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package") and step.row}
 skipping = {name: {test for command in ex.commands_of(step) for test in ex.skip_names(command.skip) or ()}
             for name, step in steps.items()}
 print(len(steps), " ".join(test + ":" + str(sum(test in tests for tests in skipping.values()))
-                           for test in ex.BACKEND_COUNT_TESTS))')" \
+                           for test in audited_scripts.BACKEND_COUNT_TESTS))')" \
     "5 TestEverySecretFormNamesTheSourceItUses:5 TestNoSecretFormAsksTheBrokerForACredential:5 TestUseCommandOutsideASessionReachesTheMachineSource:5 TestTheChainSkipsAbsenceAndStopsOnABrokenSource:5 TestSettingsNameTheGoogleExchangeAudienceOnEitherStore:5")"
 
 # The script stops at exit 2 on the first step it cannot read, and it runs by hand, so nothing
@@ -309,14 +312,15 @@ check "a line the reader cannot read is refused, by step and line" \
 # read then stops the harness under `set -e`, where a process substitution's failure would leave
 # the loop with nothing to check.
 echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
-pins=$(py 'for path, audited in ex.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
+pins=$(py 'import audited_scripts
+for path, audited in audited_scripts.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
 check "AUDITED_SCRIPTS names at least one script" "$(is "$([ -n "$pins" ] && echo yes || echo no)" yes)"
 declared=$(cd "$repo" && py 'import ci_job_reads
 print("\n".join(read.glob for gate in ci_job_reads.GATES
                 if gate.filter == "go_test_step_expansion_test" for read in gate.reads))')
 while IFS=$'\t' read -r path pinned; do
   actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
-  check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go_test_steps.py)" \
+  check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in .github/scripts/audited_scripts.py)" \
     "$(is "$actual" "$pinned")"
   check "$path is among the reads the go_test_step_expansion_test gate declares (add it to .github/ci-gates/test.go_test_step_expansion_test.py)" \
     "$(is "$(grep -Fxq -- "$path" <<<"$declared" && echo yes || echo no)" yes)"
@@ -345,5 +349,82 @@ check "the document service's three legs are read, one step" \
 stale=$(py 'keys = {s.key for s in ex.steps_of(ex.documents())}
 print(" ".join(sorted(f"{w}:{n}" for e in ex.EXCEPTIONS for (w, n) in e.steps if (w, n) not in keys)) or "none")')
 check "every EXCEPTIONS entry names steps the reader yields, so none is left unable to match" "$(is "$stale" "none")"
+
+# Two tools read what a step that is an audited script runs: this one (audited_step, which the
+# verdicts read every step through) and check-ci-filters.sh's TAG_RUNS rule (step_go_lines). Each
+# asks audited_scripts.reading_of whether a run: is such a script, and #5812 found what happens when
+# they ask two different matchers instead: TAG_RUNS read a run from outside the script's module,
+# and every legs step's xargs form, as naming no script, so a tag step run that way passed it with
+# no entry and was told to drop the one it had. This case holds the two call sites to the same
+# reading of every run: step of this head, read from the same text: the same refusal, or the same
+# go test lines, whether the run: is an audited script or not. Both sides are cut to their go test
+# lines here, so what the case compares is which reading each takes, not how much of it each
+# returns. A script whose text has moved past its digest is the case above's to report, and is
+# passed over here. Three steps written here show it can fail where it must: the natslive script
+# run from the repository root, which both read as the entry's go test; the same script with an
+# argument list no entry reads, which both refuse; and the unit legs' xargs form run from the root,
+# outside the module its lister must run in, refused by both. Before reading_of, TAG_RUNS read each
+# of the three as naming no script, and so read three real steps unlike this tool: the backend
+# count, run from the root, and both legs steps. The case also names the real steps it read
+# through an entry, so a reading of none is not a pass, and holds each of them to the steps the
+# verdicts' own steps_of yields: steps_of decides which steps reach audited_step at all, with
+# audited_scripts.names_audited, so a narrower test there would skip a step TAG_RUNS reads, and
+# only that last check would see it.
+echo "case: this tool and TAG_RUNS read every step that is an audited script alike"
+agreement=$(py 'import ci_filter_coverage as cfc
+from audited_scripts import Unreadable
+def lines(text):
+    return [line for line in cfc.script_lines(text) if cfc.TAG_RUN_TEST.search(line)]
+def both(path, document, job, body, step):
+    name = step.get("name") or "(a step)"
+    try:
+        read = ex.audited_step(path, job, name, cfc.step_workdir(document, body, step), step["run"])
+        expansion = lines(step["run"] if read is None else read.script)
+    except ex.Refused as refusal:
+        if " has SHA-256 " in str(refusal):
+            return None, None
+        read, expansion = None, "refused"
+    try:
+        tag_runs = [line for line in cfc.step_go_lines(document, body, step) if cfc.TAG_RUN_TEST.search(line)]
+    except Unreadable:
+        tag_runs = "refused"
+    if expansion != tag_runs:
+        print(f"disagree: {path} {job} / {name}: this tool {expansion!r}, TAG_RUNS {tag_runs!r}")
+    return read, expansion
+audited = []
+for path, document in ex.documents().items():
+    for job, body in (document.get("jobs") or {}).items():
+        for step in (body or {}).get("steps") or []:
+            if step.get("run"):
+                read, _ = both(path, document, job, body, step)
+                if read is not None:
+                    audited.append((path, step.get("name")))
+print("audited: " + "; ".join(sorted(name for _, name in audited)))
+yielded = {step.key for step in ex.steps_of(ex.documents())}
+print("unyielded: " + (" ".join(sorted(f"{path}:{name}" for path, name in audited if (path, name) not in yielded)) or "none"))
+unit = next(step for step in ex.documents()[".github/workflows/ci-job-envoy-go.yaml"]["jobs"]["envoy-go-legs"]["steps"]
+            if step.get("name") == "Unit test envoy Go package")
+for label, run in (("root", "packages/envoy/infra/scripts/natslive.sh ./core ./seed ./gcp"),
+                   ("other arguments", "scripts/natslive.sh ./core"),
+                   ("xargs from the root", unit["run"].replace("scripts/database-skips.sh", "packages/envoy/scripts/database-skips.sh"))):
+    workdir = {"other arguments": "packages/envoy/infra"}.get(label)
+    step = {"name": label, "run": run, **({"working-directory": workdir} if workdir else {})}
+    _, expansion = both("(written here)", {}, "job", {}, step)
+    print(f"{label}: " + (expansion if isinstance(expansion, str) else " | ".join(expansion)))')
+disagreements=$(grep '^disagree' <<<"$agreement" || true)
+check "the two read every step alike${disagreements:+; $(tr '\n' ' ' <<<"$disagreements")}" \
+  "$(is "$disagreements" "")"
+for name in "Count the store-form rows on each backend" "Live tests of envoy-infra against nats-server (natslive)" \
+  "Race-test the Dispatch API" "Unit test envoy Go package" "Unit test envoy-infra"; do
+  check "and it read \"$name\" through its entry" "$(contains "$(grep '^audited: ' <<<"$agreement")" "$name")"
+done
+check "and every step read through an entry is one the verdicts' steps_of yields" \
+  "$(contains "$agreement" '^unyielded: none$')"
+check "the natslive script run from the repository root is the entry's go test to both" \
+  "$(contains "$agreement" '^root: go test -count=1 -timeout 25m -tags natslive -run "$pattern" "$pkg"$')"
+check "the same script with an argument list no entry reads is refused by both" \
+  "$(contains "$agreement" '^other arguments: refused$')"
+check "the unit legs' xargs form run from the root is refused by both" \
+  "$(contains "$agreement" '^xargs from the root: refused$')"
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"

@@ -4,7 +4,9 @@
 # and a Bun test that skip on a variable no job sets, a helper that skips on the variable its
 # parameter names, read at each call, an assertion that runs only when such a variable is set, a
 # script with no tool line that no job runs, and a scheduled step - each of which must fail and
-# name its file; and the registry's classes, each held to a gate. Then the fixtures of the forms
+# name its file; a script reached through a step's env: array handed to bun run, and through a
+# path pattern a harness names and sources, each with the forms that reach nothing; and the
+# registry's classes, each held to a gate. Then the fixtures of the forms
 # the layout of matrix jobs writes, each named in its checks: a go test in a matrix value, in a
 # script, in a composite action and in a called workflow's input, read as runs; a $GITHUB_ENV
 # write of an action's step, read by that action's later steps and the job's; gotestsum's `-skip`
@@ -18,7 +20,8 @@
 # names; and the not-a-test line on a harness, a proof and a script that cancels runs.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks into it the
-# real script and the modules it imports, the step reader go_test_steps.py and go_build_tags.py,
+# real script and the modules it imports, the step reader go_test_steps.py, the readings it
+# imports (audited_scripts.py) and go_build_tags.py,
 # so the code under test is the code CI runs: the script resolves its root from its own path
 # (`cd "$(dirname "$0")/../.."`), which the symlink puts at the fixture root. A fixture is no git
 # checkout, so the search walks it.
@@ -56,7 +59,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/packages/envoy/unit" \
     "$root/packages/envoy/live" "$root/packages/web" "$root/scripts"
-  for linked in check-test-reach.sh go_test_steps.py go_build_tags.py; do
+  for linked in check-test-reach.sh go_test_steps.py audited_scripts.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
@@ -661,6 +664,87 @@ required_job "$root" smoke '    runs-on: ubuntu-24.04
       - run: bash scripts/smoke-run.sh'
 run_check "$root"
 passes "a script a required step runs passes"
+
+# A step that reads a variable of its env: into an array and hands the array to bun run, as
+# ci-job-dispatch-ui.yaml's steps run packages/dispatch's `test` script command by command: the
+# package script the array names runs, and so does each test file it runs, which names a script.
+# The negative controls: an array read from a variable no env: block gives a value, and one whose
+# words name no script of the package, leave the script unreached.
+echo "case: 4 - a script a test names, run by the package script a step reads from its env: into an array"
+root=$(fixture script-env-array)
+mkdir -p "$root/packages/lane/src"
+printf '{ "name": "lane", "scripts": { "test:lane": "bun test" } }\n' > "$root/packages/lane/package.json"
+cat > "$root/packages/lane/src/lane.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+import { join } from "node:path";
+
+test("the lane's check script sits beside this file", () => {
+  expect(join(import.meta.dir, "lane-check.sh")).toContain("lane-check.sh");
+});
+TS
+printf '#!/usr/bin/env bash\n# Checks the lane fixture.\necho checked\n' > "$root/packages/lane/src/lane-check.sh"
+required_job "$root" lane '    runs-on: ubuntu-24.04
+    env:
+      LANE_TEST: test:lane src
+    steps:
+      - name: The lane
+        run: |
+          read -ra lane <<< "$LANE_TEST"
+          bun run "${lane[@]}"
+        working-directory: packages/lane'
+run_check "$root"
+passes "the array is the env: value's words, so its bun run runs the test that names the script"
+sed -i 's|<<< "$LANE_TEST"|<<< "$LANE_GONE"|' "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "an array read from a variable no env: block sets runs nothing" "$(is "$status" 1)"
+check "so the script the test names is reached by no step" \
+  "$(contains "$out" '^check-test-reach: script: packages/lane/src/lane-check.sh:1: ')"
+sed -i -e 's|<<< "$LANE_GONE"|<<< "$LANE_TEST"|' -e 's|LANE_TEST: test:lane src|LANE_TEST: test:other src|' \
+  "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "an array whose words name no script of the package runs nothing" "$(is "$status" 1)"
+check "so the script stays unreached" \
+  "$(contains "$out" '^check-test-reach: script: packages/lane/src/lane-check.sh:1: ')"
+
+# A harness that lists its row files by a path pattern and sources each one by a path of that
+# pattern, as packages/envoy/infra/scripts/operator-token-minters.test.sh does: the files the
+# pattern names are run. The negative controls: a script of that directory the pattern does not
+# name, and the pattern once no command sources a script of it, leave the scripts unreached.
+echo "case: 4 - scripts a harness names by a path pattern and sources by a path of that pattern"
+root=$(fixture script-glob)
+mkdir -p "$root/scripts/rows"
+cat > "$root/scripts/rows.test.sh" <<'SH'
+#!/usr/bin/env bash
+# Tests the rows, one file of them at a time.
+set -euo pipefail
+script_dir=$(cd "$(dirname "$0")" && pwd)
+files=("$script_dir"/rows/test-rows-*.sh)
+for file in "${files[@]}"; do
+  name=${file##*/test-rows-}
+  name=${name%.sh}
+  . "$script_dir/rows/test-rows-$name.sh"
+done
+SH
+for name in alpha beta; do
+  printf '#!/usr/bin/env bash\n# The %s rows of the rows test.\necho %s\n' "$name" "$name" \
+    > "$root/scripts/rows/test-rows-$name.sh"
+done
+required_job "$root" rows '    runs-on: ubuntu-24.04
+    steps:
+      - run: bash scripts/rows.test.sh'
+run_check "$root"
+passes "each file the pattern names, which the harness sources by a path of that pattern, is run"
+printf '#!/usr/bin/env bash\n# The other rows test.\necho other\n' > "$root/scripts/rows/other-rows.sh"
+run_check "$root"
+check "a script of that directory the pattern does not name is not run by it" "$(is "$status" 1)"
+check "and is named" "$(contains "$out" '^check-test-reach: script: scripts/rows/other-rows.sh:1: ')"
+check "while the files the pattern names are not" "$(is "$(grep -c 'test-rows-' <<<"$out" || true)" 0)"
+rm "$root/scripts/rows/other-rows.sh"
+sed -i 's|^  \. "\$script_dir/rows/test-rows-\$name\.sh"$|  echo "$name"|' "$root/scripts/rows.test.sh"
+run_check "$root"
+check "a pattern no command of the harness sources a script by runs nothing" "$(is "$status" 1)"
+check "so each file it names is reached by no step" \
+  "$(contains "$out" '^check-test-reach: script: scripts/rows/test-rows-alpha.sh:1: ')"
 
 echo "case: 5 - a scheduled step whose test command no required job runs"
 root=$(fixture schedule)

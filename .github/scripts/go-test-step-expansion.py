@@ -68,7 +68,7 @@ merge base in a clone under a temporary directory:
     git clone --no-local "$(cd "$store" && realpath "$(cat git_target)")" "$TMPDIR/base"
     git -C "$TMPDIR/base" checkout <merge base>
     cp .github/scripts/go-test-step-expansion.py .github/scripts/go_test_steps.py \
-      "$TMPDIR/base/.github/scripts/"
+      .github/scripts/audited_scripts.py "$TMPDIR/base/.github/scripts/"
     (cd "$TMPDIR/base" && python3 .github/scripts/go-test-step-expansion.py) > "$TMPDIR/base.txt"
     echo "base: $?"
     grep '^PAIR' "$TMPDIR/head.txt" > "$TMPDIR/head.pairs"
@@ -76,13 +76,15 @@ merge base in a clone under a temporary directory:
     diff "$TMPDIR/base.pairs" "$TMPDIR/head.pairs"   # empty: the change loses no test
 
 It reads the repository root off its own path, so the copy under the temporary directory checks
-itself and not the workspace it was copied from. It reads a step's directory, its comment-free
-lines and the scripts AUDITED_SCRIPTS reads with the helpers of `go_test_steps.py`, the step
-reader the test-reach search imports, which sits beside it and needs PyYAML alone; the recipe
-copies that file too, so the copy runs with the helpers it was written against at any base, one
-older than that file included. Each job of ci.yaml holds its steps in a `ci-job-<id>.yaml` of its
-own, so the set of documents it reads is ci.yaml and every workflow a job of it calls, which it
-derives with that module's `called_workflows` (`documents()` below says why it loads them
+itself and not the workspace it was copied from. It reads a step's directory and its
+comment-free lines with the helpers of `go_test_steps.py`, the step reader the test-reach search
+imports, and which steps run an audited script, and what they then run, from
+`audited_scripts.py`, which both of them import; both files sit beside it. A merge base older
+than either file lacks that file, so the recipe copies both beside the tool: the copy runs with the
+helpers it was written against and this head's AUDITED_SCRIPTS, and checks the base's scripts
+against their digests. Each job of ci.yaml holds its steps in a `ci-job-<id>.yaml` of its own,
+so the set of documents it reads is ci.yaml and every workflow a job of it calls, which it
+derives with go_test_steps' `called_workflows` (`documents()` below says why it loads them
 itself).
 Keep `GOMODCACHE` and `GOCACHE` the same for both runs: the second run then reuses the first
 run's compile.
@@ -139,11 +141,15 @@ How it reads a step:
     `if false`, a `cd` in a branch, a test run inside `$(…)`), so each entry is a person's reading
     of the script, pinned by the script's SHA-256. An edit to the script makes the entry stale,
     and this script refuses the step, naming the file, until someone reads the script again and
-    updates the entry. A step that runs any other script is read as before, from its own run:
-    alone, so a `go test` inside that script is not seen: a step that runs a script from the
-    repository root and holds no `go test` of its own is skipped, which is how envoy-go's
+    updates the entry. An entry the test-reach search alone reads (audited_scripts.py's
+    search_only: forced-order.sh and its test) names no script here, since its go test builds
+    -tags odatrace against the hooked nats-server the script builds first, which this script's
+    `go test -list` cannot compile. A step that runs any other script is read as before, from its
+    own run: alone, so a `go test` inside that script is not seen: a step that runs a script from
+    the repository root and holds no `go test` of its own is skipped, which is how envoy-go's
     "Count the store-form rows on each backend" (backend-count.sh) was read as running nothing
-    until its entry below, and its five tests' second run was in neither verdict;
+    until its entry in .github/scripts/audited_scripts.py, and its five tests' second run was in
+    neither verdict;
   * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
     so `go test` builds those functions and runs none of them, and reading every one of them as
     compiled and unrun would say that over and over and name no hole anyone can close.
@@ -168,9 +174,10 @@ from pathlib import Path
 
 import yaml
 import go_test_steps
-from go_test_steps import (BACKEND_COUNT_TESTS, FOR_LINE, NAME, NO_TEST_GO, TAGGED_TESTS, UNIT_SKIP, VALUE_FLAGS,
-                           WORKFLOW, Refused, called_workflows, chained, expand, loop_body, passed_over,
-                           script_lines, skip_names, spellings, step_workdir)
+from audited_scripts import Unreadable, names_audited, reading_of
+from go_test_steps import (FOR_LINE, NAME, NO_TEST_GO, TAGGED_TESTS, VALUE_FLAGS, WORKFLOW, Refused,
+                           called_workflows, chained, expand, loop_body, passed_over, script_lines,
+                           skip_names, step_workdir)
 
 ROOT = Path(__file__).resolve().parents[2]
 # The three Go modules this check covers. packages/daemon joined them with the first pair of
@@ -409,18 +416,6 @@ MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 JOB_TOTAL = re.compile(r"\$\{\{\s*strategy\.job-total\s*\}\}")
 
 
-# The scripts a step runs as its whole run:, or as what a legs step pipes its packages into, each
-# read by a person with the one `go test` it runs for each argument list a step passes it, and
-# pinned by the SHA-256 of the text that reading was of: .github/scripts/go_test_steps.py's
-# AUDITED_SCRIPTS, the one table the test-reach search (.github/scripts/check-test-reach.sh) reads
-# too, so a script read again is read again in one place. Its entries for forced-order.sh and its
-# test are the search's alone: that script's `go test` builds -tags odatrace against the hooked
-# nats-server it builds first, so this script's `go test -list` could not compile it, and those
-# steps stay unread here.
-NOT_LISTED = ("packages/envoy/scripts/forced-order.sh", "packages/envoy/scripts/forced-order.test.sh")
-AUDITED_SCRIPTS = {path: entry for path, entry in go_test_steps.AUDITED_SCRIPTS.items() if path not in NOT_LISTED}
-
-
 @dataclass
 class Step:
     workflow: str  # repository-relative: the file that holds this step
@@ -525,7 +520,9 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 workdir = step_workdir(document, body, step)
                 name = step.get("name") or f"step {index + 1}"
-                audited = any(Path(script_path).name in script for script_path in AUDITED_SCRIPTS)
+                # The one test of whether a run: names an audited script, which reading_of starts
+                # from too, so a step that reaches it here is one that test names.
+                audited = bool(names_audited(script))
                 if not audited and (workdir not in MODULE_DIRS
                                     or not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script)))):
                     continue
@@ -574,68 +571,30 @@ def matrix_rows(label: str, body: dict) -> list[dict]:
     return [dict(zip(keys, values)) for values in itertools.product(*(matrix[key] for key in keys))]
 
 
-# A legs step's run: that hands its leg's packages to an audited script: `set -o pipefail`, then
-# the lister piped to `xargs [-r] <the script's path> <an argument list>`. `-r` runs nothing on
-# empty input (a refused leg), and changes nothing the command runs when it runs.
-XARGS_AUDITED = re.compile(
-    r"^set -o pipefail\n(?P<lister>[^\n|]+?) \| xargs (?P<empty>-r )?(?P<spelled>\S+) (?P<arguments>[^\n]+)$")
-
-
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str, row: str = "") -> Step | None:
-    """The step a run: that is the path of an AUDITED_SCRIPTS script makes, alone or followed by
-    an argument list its entry reads, read as that entry's command for those arguments in its
-    module; or, for a legs step that pipes its lister into `xargs <path> <arguments>` from that
-    module, the lister piped into the go test the entry's `xargs` gives for those arguments (which
-    read_block's xargs branch then reads, with the packages the lister prints); or None where the
-    run's text holds no such script's file name. A run whose text holds one anywhere else - an
-    operator, another command, a `$(…)`, a comment, another line, an argument list the entry does
-    not read - is refused rather than read or skipped: the test is on the raw text, before any
-    shell reading, so no quoting or substitution hides the script from it. So is a script whose
-    text no longer has its entry's SHA-256. `row` is the matrix row the run: is, kept on the
-    step."""
+    """The step a run: that is an AUDITED_SCRIPTS script makes: audited_scripts.reading_of's
+    reading of it, in the directory that reading names - the one reading of such a step, which
+    check-ci-filters.sh's TAG_RUNS rule takes too - or None where the run's text holds no such
+    script's file name, a search_only entry's among them. A run: that names one in a form no entry
+    reads (reading_of's Unreadable) is refused by step, as is a script whose text no longer has its
+    entry's SHA-256. For a legs step the reading is the lister piped into the entry's go test,
+    which read_block's xargs branch then reads, with the packages the lister prints. `row` is the
+    matrix row the run: is, kept on the step."""
     label = f"{workflow}'s {job} / {name}" + (f" ({row})" if row else "")
-    named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
-    if not named:
+    try:
+        reading = reading_of(workdir, script)
+    except Unreadable as unreadable:
+        raise Refused(f"{label}: {unreadable}") from None
+    if reading is None:
         return None
-    # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
-    # which bash reads as part of the name.
-    alone = script.strip(" \t\n")
-    piped = XARGS_AUDITED.match(alone)
-    if piped:
-        # The lister runs in the step's own directory, which must be the module the script moves
-        # into, so the packages it prints name the same directories there.
-        spelled, arguments = piped.group("spelled"), piped.group("arguments")
-        matches = [path for path in named if spelled in spellings(path, workdir)]
-        readable = (len(named) == 1 and len(matches) == 1 and workdir == AUDITED_SCRIPTS[matches[0]].module
-                    and arguments in AUDITED_SCRIPTS[matches[0]].xargs)
-    else:
-        # The path is the text up to the first space, and the arguments the text after it, compared
-        # with each listed argument list as written: one space between words, nothing else.
-        spelled, _, arguments = alone.partition(" ")
-        # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
-        # the file in Python and name nothing the shell can run.
-        matches = [path for path in named if spelled in spellings(path, workdir)]
-        readable = (len(named) == 1 and len(matches) == 1 and not any(c.isspace() for c in spelled)
-                    and arguments in AUDITED_SCRIPTS[matches[0]].commands)
-    if not readable:
-        raise Refused(f"{label}: names {', '.join(named)} in a form no AUDITED_SCRIPTS entry "
-                      "reads: an entry reads a run: that is that one path, alone or followed by "
-                      "an argument list the entry lists, or a legs step's `set -o pipefail` and "
-                      "lister piped to `xargs <path> <an argument list its xargs lists>`, run from "
-                      "the entry's module")
-    path = matches[0]
-    entry = AUDITED_SCRIPTS[path]
-    digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
-    if digest != entry.sha256:
-        raise Refused(f"{label}: {path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry was "
-                      f"read from {entry.sha256}; read the script again and update the entry's "
+    digest = hashlib.sha256((ROOT / reading.path).read_bytes()).hexdigest()
+    if digest != reading.entry.sha256:
+        raise Refused(f"{label}: {reading.path} has SHA-256 {digest}, and its entry in "
+                      f".github/scripts/audited_scripts.py's AUDITED_SCRIPTS was read from "
+                      f"{reading.entry.sha256}; read the script again and update the entry's "
                       "commands and digest")
-    if piped:
-        return Step(workflow=workflow, job=job, name=name, workdir=entry.module, row=row,
-                    script=f"set -o pipefail\n{piped.group('lister')} | xargs {piped.group('empty') or ''}"
-                           f"{entry.xargs[arguments]}")
-    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, row=row,
-                script=entry.commands[arguments])
+    return Step(workflow=workflow, job=job, name=name, workdir=reading.module, row=row,
+                script=reading.script)
 
 
 def commands_of(step: Step) -> list[GoTest]:

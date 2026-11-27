@@ -189,8 +189,8 @@ packages/envoy:
   # (2026-11-25, main at 7102278681e2), which ran these legs, each on an ubuntu-24.04-arm runner of
   # its own with this job's setup (unit legs 1-5: jobs 139424681543, 139424681329, 139424680750,
   # 139424681174, 139424681322; race legs 3-5: 139424681558, 139424681328, 139424681325, and
-  # cmd/listener alone, which legs 1-2 split, 139424681394), but envoy-go's legs 3-5, whose
-  # comments below name the runs their times are from.
+  # cmd/listener alone, which legs 1-2 split, 139424681394), but envoy-go's legs 3-5 and
+  # envoy-go-race's legs 4-6, whose comments below name the runs their times are from.
   # Rebalance from the times the legs' own runs print,
   # `pass <package> <seconds>s` in the unit legs and `ok <package> <seconds>s` in the race legs.
   # why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
@@ -266,9 +266,11 @@ packages/envoy:
     # 09bf0bc6aa0; leg 3 jobs 140647302877, 140647425996 and 140646999931), every test of it serial:
     # its seeded model of the read rule 508 s and its other 119 tests 414 s, and that leg took
     # 16.3-16.5 minutes. Group 1 is the model alone and group 2 the rest, each test weighed at its
-    # longest of the three runs.
+    # longest of the three runs. #5888 has since run the model's seeds beside each other, each on a
+    # rig of its own, and the whole package took 617 s in main's run 46059758378, against 909-919 s
+    # in those, so group 1 ends well inside its modelled time; rebalance from the legs' own times.
     3:
-      - internal/dispatch/legion: 1             # 1 test, 508 s modelled
+      - internal/dispatch/legion: 1             # 1 test, 508 s modelled before #5888
     4:
       - internal/dispatch/legion: 2             # 119 tests, 414 s modelled
     # Dispatch's commands and its other packages, with everything else: the NATS rig, the
@@ -415,6 +417,7 @@ packages/envoy:
       - internal/bus/bustest
       - internal/docnumbers
       - internal/dpopproof
+      - internal/dpopproof/dpopprooftest
       - internal/fixtureenv
       - internal/githubappjwt
       - internal/githubtest
@@ -467,22 +470,31 @@ packages/envoy:
       - internal/kvwatch                        # 98 s
       - natscred                                # 32 s
       - internal/kvwatch/kvwatchtest
-    # Dispatch: the Dispatch store and delivery, each with the packages under it.
+    # Dispatch's delivery, with the packages under it and under the Dispatch store, beside the NATS
+    # auth service and the sign-in code flow; the times beside them are their Elapsed in throwaway
+    # run 46045787166, which ran these packages in two legs of their own. Delivery's time is its
+    # serial tests' (435 s of its 488 s, its process using 0.09 of a core over them), so the
+    # packages beside it share four cores that are mostly idle.
     4:
-      - internal/dispatch/store                 # 554 s
-      - internal/dispatch/delivery              # 429 s
-      - internal/dispatch/store/storetest       # 18 s
-      - internal/dispatch/delivery/measures     # 1 s
+      - internal/dispatch/delivery              # 488 s
+      - internal/cipher/natscallout             # 219 s
+      - internal/dispatch/store/storetest       # 110 s
+      - internal/oidc                           # 44 s
+      - internal/dispatch/delivery/measures     # 6 s
       - internal/dispatch/delivery/citebody     # 1 s
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections
       - internal/dispatch/store/searchtest
       - internal/dispatch/store/storetest/lockstep
-    # The NATS auth service and the sign-in code flow, and the forced-order steps, which run no
-    # leg's packages.
+    # The Dispatch store, in two legs, a group of its tests each
+    # (.github/go-legs/packages/envoy/internal/dispatch/store.yaml, modelled 295 s a group): whole,
+    # beside delivery, it took 583-654 s in the 12 green merge groups of 2026-11-27 10:48Z-16:49Z,
+    # the lane's time, and its serial tests took 362 s of its 630 s in run 46045787549. The last
+    # leg also runs the forced-order steps, which run no leg's packages.
     5:
-      - internal/cipher/natscallout             # 211 s
-      - internal/oidc                           # 42 s
+      - internal/dispatch/store: 1
+    6:
+      - internal/dispatch/store: 2
   # envoy-go-race-api (.github/workflows/ci-job-envoy-go-race-api.yaml, job
   # envoy-go-race-api-legs): one package, internal/dispatch/api, in three legs, a group of its
   # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). The whole package took

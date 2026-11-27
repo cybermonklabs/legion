@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
@@ -30,7 +31,10 @@ const (
 	PlanSourceOwner = "owner"
 	// PlanSourceDefault is the project's default steps as one task, written at the start of the
 	// work of a generation no owner's plan reached, or whose experiment's group takes no plan from
-	// its owner: version 0, no document and no giver.
+	// its owner: version 0, no document and no giver. A later version an owner gives an issue of
+	// that group, which changes nothing but the text of its running task default (the workflow's
+	// versionRefusal), keeps this source, since the issue still runs the default steps, and names
+	// its document, its version and its giver.
 	PlanSourceDefault = "default"
 )
 
@@ -60,8 +64,9 @@ const (
 
 // PlanVersion is one version of the plan of an issue at one generation. The highest version of a
 // generation is the plan in force. An owner's version is the version of its document (ArtifactID)
-// it gave; a default plan has version 0, no document and no giver. GivenBy is the claim token of
-// the giver the store added last, and GivenAt the time of that giver's first give of the version.
+// it gave; a default plan has version 0, no document and no giver, and a later version of it an
+// owner gave (PlanSourceDefault) names all three. GivenBy is the claim token of the giver the
+// store added last, and GivenAt the time of that giver's first give of the version.
 // A give by an owner the version names already, as GivenBy or among EarlierGivers, changes nothing
 // (AddPlanGiver), so an earlier giver that gives the version again stays an earlier giver: GivenBy
 // is not always the owner that gave the version last, nor GivenAt the time of its last give.
@@ -164,8 +169,8 @@ type ReturnCounts struct {
 }
 
 // PlanTask is one task of a plan. PlanVersion is the version that wrote its text; BlockText, Needs,
-// PartOf, OwnerRole, Merges and StepsByDefault are what that version's block says. State,
-// StoppedReason, Place and Counts are where the task stands, which the walk writes (MoveTask,
+// PartOf, ParentRef, OwnerRole, Merges and StepsByDefault are what that version's block says.
+// State, StoppedReason, Place and Counts are where the task stands, which the walk writes (MoveTask,
 // StopTask, PutReturnCounts). Needs is nil where the block names none.
 type PlanTask struct {
 	Issue       string
@@ -175,8 +180,11 @@ type PlanTask struct {
 	BlockText   string
 	Needs       []string
 	PartOf      string
-	OwnerRole   string
-	Merges      bool
+	// ParentRef is the block's `parent` whole, as the version gave it (plan.Task.ParentRef), "" for
+	// none: a later version that changes it for a running task is refused (plan.RunningChange).
+	ParentRef string
+	OwnerRole string
+	Merges    bool
 	// StepsByDefault says that the block names no step, so the task's steps (PlanStep) are the
 	// default steps it runs (plan.StepsOf), not steps its block names: a later version is compared
 	// with the block as it was given, which names none (plan.ChangedTasks).
@@ -214,6 +222,100 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 		return PlanTask{}, fmt.Errorf("the plan of %s at generation %d holds %d tasks, and this release walks one", p.Version.Issue, p.Version.Generation, len(p.Tasks))
 	}
 	return p.Tasks[0], nil
+}
+
+// RunningStep is where one running task of a plan stands, as register_plan's answer names it: the
+// task, the act it stands at (a step of the task from place 1, its retro or its merge), and the
+// role whose agent works that act, the role of the phase it runs as (phase.RoleFor). It is the
+// agent an owner tells of a decision for the act that runs now: the task's text carries the
+// decision to every later start of the task, and the agent already at work reads no new start.
+type RunningStep struct {
+	Task  string
+	Place TaskPlace
+	Role  claim.Role
+}
+
+// BuiltinDeployment is the roles a step of this release runs as (plan.BuiltinRoles), read once:
+// the one Deployment the type of a stored step (the workflow's planSteps) and the phase it runs as
+// (Line) are read from.
+var BuiltinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+
+// NamedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
+// names: what a task's line is read from (Line), what a run's plan node and a started worker's
+// task write (plan.Words) and what a later version is compared with (the workflow's heldPlan).
+func NamedSteps(steps []PlanStep) []plan.Step {
+	named := make([]plan.Step, len(steps))
+	for i, step := range steps {
+		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
+	}
+	return named
+}
+
+// Line is the line of phases a task on steps walks (plan.Line over BuiltinDeployment): the phase
+// of each step's role in the steps' order, then the retro and the merge. A step whose role runs as
+// no phase stands in it as "".
+func Line(steps []PlanStep) []phase.Phase {
+	return plan.Line(NamedSteps(steps), BuiltinDeployment)
+}
+
+// LineSteps is the part of line (Line) each step runs: all of it but the retro and the merge,
+// which end every line; nil for a line too short to hold them. It is the one reading of that
+// shape, for PhaseAt and the workflow's walk (Walk.steps).
+func LineSteps(line []phase.Phase) []phase.Phase {
+	if len(line) < 2 {
+		return nil
+	}
+	return line[:len(line)-2]
+}
+
+// PhaseAt is the one mapping of where a task stands to a phase: the phase an issue whose one task
+// stands at place in state, on line (Line), stands in. It is done for a task that is done or left
+// the workflow before it was done (TaskLeft), whatever its place, which is the phase of an issue
+// out of the workflow; the phase of the step at place, retro or merging at the task's retro or
+// merge; and admitted for a task at no act, which has not started. A task stopped or held keeps
+// its place, and the hold overlays this phase (Hold.From). A step place the line does not hold
+// derives no phase. The workflow writes an issue's phase from it (moveTask, writeIssueOn), and
+// Running reads the role of a running task's act from it.
+func PhaseAt(line []phase.Phase, place TaskPlace, state TaskState) phase.Phase {
+	if state == TaskDone || state == TaskLeft {
+		return phase.Done
+	}
+	switch place.Kind {
+	case PlaceRetro:
+		return phase.Retro
+	case PlaceMerge:
+		return phase.Merging
+	case PlaceStep:
+		if steps := LineSteps(line); place.Position >= 1 && place.Position <= len(steps) {
+			return steps[place.Position-1]
+		}
+		return ""
+	}
+	return phase.Admitted
+}
+
+// Running is each running task of p (TaskRunning) and where it stands (RunningStep), in the order
+// of p's tasks, which is the order of their ids; nil where no task runs. The role is the one that
+// works the phase its act runs as (PhaseAt on the task's Line, phase.RoleFor). A running task at no
+// act, which PhaseAt reads as admitted and so as the architect's, at a step its steps do not hold,
+// or at a step whose role runs as no phase is an error: no plan this release takes writes one, and
+// no answer names a running task with no role.
+func (p *StoredPlan) Running() ([]RunningStep, error) {
+	var running []RunningStep
+	for _, task := range p.Tasks {
+		if task.State != TaskRunning {
+			continue
+		}
+		var role claim.Role
+		if task.Place.Started() {
+			role = phase.RoleFor(PhaseAt(Line(p.Steps[task.Task]), task.Place, task.State))
+		}
+		if role == "" {
+			return nil, fmt.Errorf("task %s of %s runs at %q %d, which no role of this release works", task.Task, task.Issue, task.Place.Kind, task.Place.Position)
+		}
+		running = append(running, RunningStep{Task: task.Task, Place: task.Place, Role: role})
+	}
+	return running, nil
 }
 
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the
@@ -258,13 +360,13 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 		if needs == nil {
 			needs = []string{}
 		}
-		if _, err := tx.Exec(ctx, `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges,
+		if _, err := tx.Exec(ctx, `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges,
 			steps_by_default, state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 			on conflict (issue, generation, task) do update set plan_version = excluded.plan_version, block_text = excluded.block_text,
-			needs = excluded.needs, part_of = excluded.part_of, owner_role = excluded.owner_role, merges = excluded.merges,
-			steps_by_default = excluded.steps_by_default`,
-			v.Issue, int64(v.Generation), task.Task, task.PlanVersion, task.BlockText, needs, task.PartOf, task.OwnerRole, task.Merges,
+			needs = excluded.needs, part_of = excluded.part_of, parent_ref = excluded.parent_ref, owner_role = excluded.owner_role,
+			merges = excluded.merges, steps_by_default = excluded.steps_by_default`,
+			v.Issue, int64(v.Generation), task.Task, task.PlanVersion, task.BlockText, needs, task.PartOf, task.ParentRef, task.OwnerRole, task.Merges,
 			task.StepsByDefault, task.State, task.StoppedReason, task.Place.Kind, task.Place.Position,
 			task.Counts.Pass, task.Counts.Rounds, task.Counts.ConflictRounds, moves, task.Counts.CapTold); err != nil {
 			return fmt.Errorf("%s: task %s: %w", describe, task.Task, err)
@@ -367,8 +469,8 @@ func (s *Postgres) PlanTasksOf(ctx context.Context, tx pgx.Tx, project string) (
 // planTaskColumns is the columns of a plan_tasks row, named by their table so a read joined to
 // another table names no column twice, in the order scanPlanTasks reads them.
 const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.task, plan_tasks.plan_version,
-	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.owner_role, plan_tasks.merges, plan_tasks.steps_by_default,
-	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
+	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.parent_ref, plan_tasks.owner_role, plan_tasks.merges,
+	plan_tasks.steps_by_default, plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
@@ -379,7 +481,7 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		var task PlanTask
 		var generation int64
 		var moves []byte
-		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
+		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf, &task.ParentRef,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold); err != nil {
 			return nil, err
@@ -510,13 +612,14 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if taken {
 		return fmt.Errorf("%s: generation %d holds a plan already", describe, to)
 	}
-	tasks := `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, state)
-		select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, 'waiting'
+	tasks := `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges,
+		steps_by_default, state)
+		select issue, $3, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges, steps_by_default, 'waiting'
 		from plan_tasks where issue = $1 and generation = $2`
 	if carried {
-		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
-			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
-			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
+		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges,
+			steps_by_default, state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
+			select issue, $3, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges, steps_by_default,
 			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told
 			from plan_tasks where issue = $1 and generation = $2`
 	}

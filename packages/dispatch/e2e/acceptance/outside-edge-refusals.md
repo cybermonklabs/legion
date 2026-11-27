@@ -133,8 +133,8 @@ with their fixtures in `outside-edge-refusals-fixtures.ts`:
   or `403` is a line reached, and an unmarked `404` with a backend's own body, or with an empty
   body where the edge's own 404 is empty too, is `UNKNOWN`.
 - `outside-edge-refusals-input.test.ts`, the inputs, tools and shells it refuses before any probe.
-  Its rows that run the script under dash and zsh skip where either is missing; CI's `dispatch-ui`
-  job installs zsh.
+  Its rows that run the script under dash and zsh skip where either is missing; CI's
+  `dispatch-ui-harness` job, which runs that file, installs zsh.
 - `outside-edge-refusals-signal.test.ts`, a signal while it reads a list, while it probes, after a
   line was reached, and during the exit's cleanup.
 

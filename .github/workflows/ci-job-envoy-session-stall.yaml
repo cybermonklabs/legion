@@ -13,10 +13,13 @@ name: CI job envoy-session-stall
 # balanced from the step times of the one serial job they replace (job 139688693306: the role
 # takeover smoke 109 s, the NATS connection options 106 s, the session state rig 84 s, claude-envoy
 # 73 s, the broker credential 46 s, pi-envoy 31 s, design-gate 25 s, the comment mention 17 s, the
-# keyed resend 7 s, the moved approval 6 s), so each leg ends within 5 minutes; rebalance them from
-# the legs' own step times. The job envoy-session-stall waits for the legs and passes only when
-# every leg passed: it carries the check-run name `envoy-session-stall / envoy-session-stall` that
-# the one job had before the legs.
+# keyed resend 7 s, the moved approval 6 s), so each leg ends within 5 minutes. Three suites came
+# after that job and have no time in it: the two CI results suites run together in leg 1, the
+# lightest, so the second compiles its stack from the Go build cache the first fills, and the role
+# topics across a relaunch in leg 2, away from the role takeover smoke, the other suite of real Oh
+# My Pi clients. Rebalance them from the legs' own step times. The job envoy-session-stall waits
+# for the legs and passes only when every leg passed: it carries the check-run name
+# `envoy-session-stall / envoy-session-stall` that the one job had before the legs.
 # why: .github/ci-notes/ci.md#why-the-session-stall-suites-run-in-legs
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run this job's own result
@@ -134,6 +137,15 @@ jobs:
         if: matrix.leg == 1
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
+      # The topics a deployment names for a role (ENVOY_ROLE_TOPICS), with real Oh My Pi client
+      # processes against the listener and natsd this job sets Go up for: a mention-free post to a
+      # private Slack channel, through the listener's own signed webhook, reaches the session that
+      # holds the role after its pod is killed and its session relaunched, and after a new session
+      # claims the role, and never reaches a session holding another role.
+      - name: Role topics across a relaunch
+        if: matrix.leg == 2
+        run: bun run test extensions/role-topics.test.ts
+        working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
         if: matrix.leg == 3
         run: bun test tests/envoy-channel-stall.test.ts
@@ -158,6 +170,27 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         if: matrix.leg == 1
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # A CI job's result over the whole path a job writes it through: the real
+      # `agent-secrets result-grant` trades the job's OIDC token from a stand-in of GitHub at
+      # the real secrets broker for the proxy placeholder of a result grant, the real CLI, run
+      # as its child, writes with that placeholder alone through the broker's airlock proxy,
+      # which puts the run's results token in its place, and the real Dispatch server stores the
+      # result or refuses it (packages/envoy-client/test/ci-results-stack.ts). The stack runs two
+      # brokers on one database behind two `dev-proxy-stands front`s, one for their API ports and
+      # one for their proxy ports. It builds from this tree ./cmd/cipherd, ./cmd/dev-oidc-issuer,
+      # ./cmd/dev-proxy-stands, ./cmd/cipher with -o agent-secrets, and the server, and runs them
+      # on this job's Postgres; it needs no container and no fixed port.
+      - name: A CI job's result through the real broker and a real Dispatch
+        if: matrix.leg == 1
+        run: bun test src/__tests__/ci-results.live.test.ts
+        working-directory: packages/envoy-client
+      # The same stack, for a commit whose spec file's name holds a line break and a workflow
+      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
+      # job's log that runs the command is a workflow command to its runner.
+      - name: A CI job's refused result prints no workflow command
+        if: matrix.leg == 1
+        run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
         working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry

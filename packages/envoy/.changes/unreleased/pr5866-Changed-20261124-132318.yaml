@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    The listener's rules for `notifications.legion.<project>.controller` do not change, but only a
+    Legion daemon of an earlier release publishes there now: a current daemon publishes its
+    controller notices to the controller's role topic, `notifications.role.legion-<project>-controller`.
+time: 2026-11-24T13:23:18Z
+custom:
+    Issue: pr5866
