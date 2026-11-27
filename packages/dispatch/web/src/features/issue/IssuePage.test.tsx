@@ -550,7 +550,9 @@ test("IssuePage says a refused Details write under the header while Details is c
     const details = await openIssueDetails(user);
     await pickRepo(user, repositoryTrigger(details), "zed/elsewhere");
     const row = within(details).getByTestId("issue-details-repository");
-    expect(await within(row).findByText("repo zed/elsewhere is not allowed")).toBeDefined();
+    expect(await within(row).findByRole("alert")).toHaveTextContent(
+      "repo zed/elsewhere is not allowed"
+    );
     expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
 
     const toggle = within(screen.getByTestId("issue-header")).getByRole("button", {
@@ -564,7 +566,7 @@ test("IssuePage says a refused Details write under the header while Details is c
     );
 
     await user.click(toggle);
-    expect(within(row).getByText("repo zed/elsewhere is not allowed")).toBeVisible();
+    expect(within(row).getByRole("alert")).toHaveTextContent("repo zed/elsewhere is not allowed");
     expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
     expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
@@ -624,7 +626,9 @@ test("IssuePage says a repository write Dispatch refused under the closed Detail
     const details = await openIssueDetails(user);
     await pickRepo(user, repositoryTrigger(details), "zed/elsewhere");
     const row = within(details).getByTestId("issue-details-repository");
-    expect(await within(row).findByText("repo zed/elsewhere is not allowed")).toBeDefined();
+    expect(await within(row).findByRole("alert")).toHaveTextContent(
+      "repo zed/elsewhere is not allowed"
+    );
     expect(within(row).getByRole("button", { name: "Retry" })).toBeDefined();
 
     await user.click(

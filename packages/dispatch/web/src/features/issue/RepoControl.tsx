@@ -27,9 +27,9 @@ import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
 import {
   badgeReachHandlers,
-  badgeSelectPageBadge,
   badgeSelectPageTrigger,
   badgeSelectPageWrapper,
+  badgeSelectTruncatedBadge,
 } from "./badge-select";
 import { useDetailsRefusal } from "./HeaderDetails";
 import { pickLook } from "./issue-field-looks";
@@ -64,7 +64,9 @@ interface RepoLayout {
  *   or the server's with its Retry - moves whole onto the next line under the box rather than
  *   squeezing it (dispatch://INFRA-5200). The box takes the row's width up to 28 rem, with an
  *   ellipsis for a name longer still, and keeps `pr-8` beside the clear control laid over its
- *   right end.
+ *   right end. On this branch the box is drawn inside `NoTooltips` alone (`RepoControl`), so of
+ *   this mode only `line` is read, by the shared list (`RepositoryList`) that today's header
+ *   draws in that row; its other fields are `main`'s, for a box outside `NoTooltips`.
  * - `page-details`: the value of a row of the new issue page's Details (`NoTooltips`, `inRow`).
  *   The line is as wide as the row's value, which is a flex row, in which a line of no width of
  *   its own is only as wide as what it holds, so the place's `w-full` and the box's would fill no
@@ -239,9 +241,12 @@ export function RepoControl({
  * `, inherited or the project's default` when it is not the issue's own, or `No repository`.
  *
  * The line is the box's in that row (`REPO_LAYOUTS.today`): as wide as the row, and it wraps, so
- * a refusal moves whole onto the next line under the badge rather than squeezing it, and the
- * badge narrows to the row and breaks a long name anywhere. A write Dispatch refused is said to
- * Details as well (`useDetailsRefusal`), which says it under the header while it is closed.
+ * a refusal moves whole onto the next line under the badge rather than squeezing it. The badge
+ * narrows to the row and ends a name longer than the row in an ellipsis; its title gives back
+ * the whole name with what it means (`, inherited or the project's default` where it is not the
+ * issue's own), since the trigger's own title says only what it means. A write Dispatch refused
+ * is said to Details as well (`useDetailsRefusal`), which says it under the header while it is
+ * closed.
  *
  * The list holds Inherit first, which clears the issue's own repository, then the project's
  * default repository (Settings → Projects), then the issue's own repository where it is another;
@@ -378,7 +383,8 @@ function RepositoryList({
               target as well as Inherit. */}
           <span
             aria-hidden="true"
-            className={`${badgeSelectPageBadge} font-mono ${tone.bg} ${tone.text}`}
+            className={`${badgeSelectTruncatedBadge} font-mono ${tone.bg} ${tone.text}`}
+            title={resolvedRepo === null ? undefined : spoken}
           >
             {resolvedRepo ?? "No repository"}
           </span>

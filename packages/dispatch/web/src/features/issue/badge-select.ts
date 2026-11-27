@@ -20,6 +20,13 @@ export const badgeSelectHeaderWrapper = `relative inline-flex min-h-6 min-w-0 ma
 /** The visible badge; the caller appends its tone's `bg` and `text`. */
 export const badgeSelectBadge =
   "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold";
+/** `badgeSelectBadge` for a value that can be longer than its row - today's Repository list in
+ *  its row of the issue header's Details: a block of one line, as wide as its text up to its
+ *  row's width, that ends what does not fit in an ellipsis. A flex box's own text takes no
+ *  ellipsis (`TruncatedText`), so this badge is a block, and the caller passes its whole text as
+ *  its `title`. */
+export const badgeSelectTruncatedBadge =
+  "inline-block max-w-full truncate rounded-sm px-1.5 py-0.5 align-middle text-xs font-semibold";
 /** Inside `NoTooltips` (the new issue page) every value a shared control draws wraps: it keeps
  *  `max-w-full` and breaks anywhere, and nothing around it keeps its width, so a long login with
  *  no space stays inside Details' row rather than running past it. These are
@@ -27,7 +34,10 @@ export const badgeSelectBadge =
  *  `badgeSelectBadge` with `max-w-full [overflow-wrap:anywhere]`. The list's trigger over the
  *  badge stays usable however many lines the badge takes: it stretches to the wrapper's height
  *  and narrows with it (`badgeSelectPageTrigger`), so it covers every line of a badge that
- *  wraps. */
+ *  wraps. The wrapper and the trigger also hold today's Repository list in its row of the issue
+ *  header's Details (`RepoControl.tsx`, `RepositoryList`), which narrows to the row the same way;
+ *  there the badge ends a long name in an ellipsis (`badgeSelectTruncatedBadge`), with the whole
+ *  name as its title, rather than wrap, since a `title` can give back what it cut. */
 const badgeSelectPageFrame =
   "relative inline-flex min-h-11 min-w-0 max-w-full items-center rounded-sm";
 export const badgeSelectPageWrapper = `${badgeSelectPageFrame} md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;

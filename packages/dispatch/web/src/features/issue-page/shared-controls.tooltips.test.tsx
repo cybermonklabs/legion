@@ -1572,13 +1572,19 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     // The default is now the shared list's, from #3729: outside `NoTooltips` each repository,
     // in a row of Details or not, is the list's badge, whose `title` says what it shows - the
     // issue's own repository, that an inherited one is inherited or the project's default, and
-    // an empty one where no repository resolves - and no clear control is drawn.
+    // an empty one where no repository resolves - and no clear control is drawn. The badge's
+    // name ends in an ellipsis where its row is too narrow for it, so the badge's own `title`
+    // gives back the whole name with what it means; "No repository" draws none.
     [
       "acme/api",
+      "acme/api",
       "Inherited or the project's default",
+      "acme/web, inherited or the project's default",
       "",
       "acme/app",
+      "acme/app",
       "Inherited or the project's default",
+      "acme/site, inherited or the project's default",
     ],
   ],
   // The default is now the shared list's, from #3729: the badge of an issue with no repository
