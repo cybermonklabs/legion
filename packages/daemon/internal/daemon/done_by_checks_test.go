@@ -5,18 +5,23 @@
 // and the close once each check passes at the newest merge. TestANextChangeNeedsAPassAtItsOwnHead
 // reads a before_merge check at the next change's own head. TestAWriteToItsOwnIssueIsTakenWhileTheIssueWaits
 // and TestAChildFiledAfterTheBootHoldsItsRootsClose are an issue's own write while it waits and a
-// child filed after the boot. Every wait is on a row the daemon or Dispatch wrote, which the log
-// names.
+// child filed after the boot. TestARequestOnAMergedIssueEndsWithNoPullRequestOnAFreshAssessment is
+// the controller's request for new work on a merged issue whose record lost its snapshot. Every
+// wait is on a row the daemon or Dispatch wrote, which the log names.
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -25,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -963,4 +969,365 @@ func productionOf(issue api.Issue) *api.CloseWaitProductionView {
 		return nil
 	}
 	return issue.CloseWait.Production
+}
+
+// Task 13's case on the whole daemon (plan Task 11b, Step 3b, written in Task 13's Step 4b): a
+// request for new work on an issue whose work merged, whose record a clear of the release before
+// left with no merge snapshot and no pull request. The issue merges, its production check passes,
+// and a person's done closes it while its check after the merge has no pass. The test then takes
+// the snapshot and the pull request row out of its record, so its production check of generation
+// 1, closed recorded, is the one row that names the merge: its merge history is ANSWERED by that
+// row alone. The controller comments "Reopened after an early close:" and asks todo with its grant.
+// The request saves the snapshot that row knows and reads no candidate, and it starts the issue's
+// next change at generation 2 with its gate kept. The change's branch moves to main's head before
+// its first task, and the pull request's read fills the base and the final head the snapshot
+// lacks. The owner withdraws the request with its evidence, and the change ends with no pull
+// request. A production check of generation 2 replaces the first one's row. The check after the
+// merge passes, and the issue still waits for that new check: only its pass closes the issue.
+func TestARequestOnAMergedIssueEndsWithNoPullRequestOnAFreshAssessment(t *testing.T) {
+	t.Parallel()
+	r := newDoneByChecksRigWith(t, doneByChecksOptions{production: claim.RoleTester, issues: []doneByChecksIssueSpec{
+		{title: doneByChecksTitle, verification: doneByChecksBothChecks, number: doneByChecksPull, head: stepRecordsHead},
+	}})
+	key := r.key
+	first := closedByAPersonAfterItsMerge(r, key)
+	gates := r.forgetMerge(key)
+	sent := r.controllerRequest(key)
+	requestTaken(r, key, gates, sent)
+	changeStarted(r, key, sent)
+	endedOnTheOwnersWithdrawal(r, key)
+	closesOnTheNewAssessment(r, key, first)
+}
+
+// closedByAPersonAfterItsMerge walks issue to its merge with a pass of its check before the merge at
+// its head. Its production check opens at the first read after the merge, and the tester's look 1
+// reports pass, so the check closes recorded at generation 1. Its check after the merge has no
+// pass, so it waits in verifying, and a person's done closes it. It answers the closed check.
+func closedByAPersonAfterItsMerge(r *doneByChecksRig, issue string) record.ProductionCheck {
+	t := r.t
+	t.Helper()
+	r.walkPlanning()
+	r.walkImplementing(stepRecordsHead)
+	r.walkTesting()
+	r.recordCheck(doneByChecksBeforeCheck, "pass", stepRecordsHead)
+	r.walkReview(doneByChecksPull, stepRecordsHead)
+	r.walkSignOff()
+	r.walkRetro(stepRecordsHead)
+	merged, status, body := r.mergeAndComplete(doneByChecksPull, doneByChecksMergeCommit)
+	if status != http.StatusOK {
+		t.Fatalf("the merger's completion of %s in verifying = %d %s, want 200", issue, status, body)
+	}
+	r.awaitCloseRead(issue, "the merge", merged, namesMerge(doneByChecksCheck, doneByChecksMergeCommit))
+	r.awaitIssue(issue, "its merge", inVerifying)
+	tester := r.worker(claim.RoleTester)
+	opened := r.lookOf(tester, 1, stepRecordsWait)
+	passed := r.reportLook(tester, opened, 1, "pass", nil)
+	tester.endTurn()
+	r.awaitCloseRead(issue, "the production check's pass", passed, namesMerge(doneByChecksCheck, doneByChecksMergeCommit))
+	r.awaitIssue(issue, "the production check's pass", func(got api.Issue) error {
+		if err := inVerifying(got); err != nil {
+			return err
+		}
+		if production := productionOf(got); production != nil {
+			return fmt.Errorf("its production term is %+v, want none: its check of the merge closed recorded", production)
+		}
+		return nil
+	})
+	check := readProductionCheck(t, r.st.Pool(), r.records, issue)
+	if check.Open() || check.Outcome != record.CheckRecorded || check.Generation != 1 || check.Number != doneByChecksPull || check.MergeSHA != doneByChecksMergeCommit {
+		t.Fatalf("%s's production check after its pass is %+v, want generation 1's closed recorded at #%d and %s", issue, check, doneByChecksPull, doneByChecksMergeCommit)
+	}
+	r.person(http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": record.DoneStatus}, http.StatusOK, nil)
+	r.awaitIssue(issue, "a person's done", inPhase(phase.Done))
+	return check
+}
+
+// forgetMerge takes issue's merge snapshot and its pull request row out of the daemon's store, as a
+// clear of the release before left the record of a merged issue, and checks what stays: its merge
+// history is ANSWERED by its production check's row alone, and its spec gate stands approved. It
+// answers issue's gates.
+func (r *doneByChecksRig) forgetMerge(issue string) map[record.DesignStep]record.DesignGate {
+	t := r.t
+	t.Helper()
+	var gates map[record.DesignStep]record.DesignGate
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `update issues set merge_number = null, merge_head = null, merge_sha = null, merge_base = null,
+			merge_repo = null, merged_at = null where key = $1`, issue); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `delete from pull_requests where issue = $1`, issue); err != nil {
+			return err
+		}
+		var err error
+		gates, err = record.NewStore().GatesOf(ctx, tx, issue)
+		return err
+	}); err != nil {
+		t.Fatalf("take the merge snapshot and the pull request of %s out of the store: %v", issue, err)
+	}
+	history := r.mergeHistoryOf(issue)
+	evidence := history.Evidence
+	if history.Class != record.MergeHistoryAnswered || evidence.Snapshot || evidence.MergedRow || evidence.PullRequest != nil || !evidence.MergeOnlyCheck ||
+		evidence.Merge.Number != doneByChecksPull || evidence.Merge.SHA != doneByChecksMergeCommit {
+		t.Fatalf("%s's merge history with no snapshot and no pull request is %s from %+v, want ANSWERED by its production check of #%d alone",
+			issue, history.Class, evidence, doneByChecksPull)
+	}
+	if spec, held := gates[record.DesignStepSpec]; !held || spec.ApprovedVersion == nil {
+		t.Fatalf("%s's gates after its close are %+v, want its spec gate approved", issue, gates)
+	}
+	t.Logf("%s holds no merge snapshot and no pull request: its merge history is %s by its production check of #%d at %s, and its spec gate stands at %+v",
+		issue, history.Class, evidence.Merge.Number, evidence.Merge.SHA, gates[record.DesignStepSpec])
+	return gates
+}
+
+// mergeHistoryOf is issue's merge history as the daemon's store derives it from its rows.
+func (r *doneByChecksRig) mergeHistoryOf(issue string) record.MergeHistoryRow {
+	r.t.Helper()
+	var history record.MergeHistoryRow
+	if err := store.TransactWith(context.Background(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		history, err = record.NewStore().MergeHistoryOf(ctx, tx, issue)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the merge history of %s: %v", issue, err)
+	}
+	return history
+}
+
+// gatesOf is issue's gates as the daemon's store holds them.
+func (r *doneByChecksRig) gatesOf(issue string) map[record.DesignStep]record.DesignGate {
+	r.t.Helper()
+	var gates map[record.DesignStep]record.DesignGate
+	if err := store.TransactWith(context.Background(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		gates, err = record.NewStore().GatesOf(ctx, tx, issue)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the gates of %s: %v", issue, err)
+	}
+	return gates
+}
+
+// openRequest is issue's open request for new work (record.DefectKindRequest), and whether it holds
+// one.
+func (r *doneByChecksRig) openRequest(issue string) (record.Defect, bool) {
+	r.t.Helper()
+	var open []record.Defect
+	if err := store.TransactWith(context.Background(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		open, err = r.records.OpenDefects(ctx, tx, issue)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the open reasons of %s: %v", issue, err)
+	}
+	for _, defect := range open {
+		if defect.Kind == record.DefectKindRequest {
+			return defect, true
+		}
+	}
+	return record.Defect{}, false
+}
+
+// mergeReads is the number of merge_read rows the outbox holds for issue.
+func (r *doneByChecksRig) mergeReads(issue string) int {
+	r.t.Helper()
+	var count int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
+		issue, string(record.OutboxKindMergeRead)).Scan(&count); err != nil {
+		r.t.Fatalf("count the merge reads of %s: %v", issue, err)
+	}
+	return count
+}
+
+// controllerRequest is the controller's request for new work on issue, a closed issue whose work
+// merged, as D17's procedure has the controller make it. The controller registers as `legion
+// controller start` registers the operator's own, comments `Reopened after an early close:` on the
+// issue from its session, and asks todo with its grant (set_status). It answers how many requests
+// the GitHub stand-in had taken before the ask, from which the test reads the daemon's requests.
+func (r *doneByChecksRig) controllerRequest(issue string) int {
+	t := r.t
+	t.Helper()
+	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
+	if status != http.StatusOK {
+		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
+	}
+	var capability api.ControllerSecretResponse
+	if err := json.Unmarshal(body, &capability); err != nil {
+		t.Fatalf("decode the controller's boot secret %s: %v", body, err)
+	}
+	session := "ses_controller_" + randomSuffix(t)
+	status, body = r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
+		BootToken: capability.Secret, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session,
+		PluginContract: api.DaemonAPIVersion(),
+	}, false)
+	if status != http.StatusOK {
+		t.Fatalf("register the controller = %d %s, want 200", status, body)
+	}
+	var registered api.ControllerRegisterResponse
+	if err := json.Unmarshal(body, &registered); err != nil {
+		t.Fatalf("decode the controller's registration %s: %v", body, err)
+	}
+	status, body = r.d.request(http.MethodPost, "/legion/v1/grants", api.GrantRequest{SessionID: session, Secret: registered.Secret}, false)
+	if status != http.StatusOK {
+		t.Fatalf("mint the controller's grant = %d %s, want 200", status, body)
+	}
+	var grant api.GrantResponse
+	if err := json.Unmarshal(body, &grant); err != nil {
+		t.Fatalf("decode the controller's grant %s: %v", body, err)
+	}
+	if code, posted := r.agent(http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
+		"body":  "Reopened after an early close: the widgets report no merge on main. The early-close table of this project records it.",
+		"actor": map[string]string{"kind": "session", "id": session},
+	}); code != http.StatusCreated {
+		t.Fatalf("the controller's comment on %s = %d %s, want 201", issue, code, posted)
+	}
+	_, from := r.standIn.requestsSince(0)
+	status, body = r.d.request(http.MethodPost, "/legion/v1/issues/status", api.IssueStatusRequest{GrantID: grant.GrantID, Issue: issue, Status: "todo"}, false)
+	if status != http.StatusOK {
+		t.Fatalf("the controller's todo on %s = %d %s, want 200", issue, status, body)
+	}
+	t.Logf("the controller (session %s) commented on %s and asked todo with its grant: %d %s", session, issue, status, body)
+	return from
+}
+
+// requestTaken is the first barrier after the request: its generation 2. The request saved the
+// snapshot the production check's row knows (D17's ANSWERED), queued no merge read and sent no
+// candidate read of a commit's pull requests, kept the gate, and started a next change carrying a
+// request of the controller's.
+func requestTaken(r *doneByChecksRig, issue string, gates map[record.DesignStep]record.DesignGate, sent int) {
+	t := r.t
+	t.Helper()
+	r.awaitIssue(issue, "the controller's request", func(got api.Issue) error {
+		if got.Generation < 2 {
+			return fmt.Errorf("it stands in %s at generation %d, want the request's generation 2", got.Phase, got.Generation)
+		}
+		return nil
+	})
+	row := r.issueRow(issue)
+	if row.Merge.Number != doneByChecksPull || row.Merge.SHA != doneByChecksMergeCommit || row.Merge.Repo != liveRepo {
+		t.Fatalf("the request on %s saved no snapshot of its merge: its row names %+v, want #%d at %s of %s, which its production check's row knows",
+			issue, row.Merge, doneByChecksPull, doneByChecksMergeCommit, liveRepo)
+	}
+	if spec, kept := r.gatesOf(issue)[record.DesignStepSpec], gates[record.DesignStepSpec]; spec.ArtifactID != kept.ArtifactID ||
+		spec.ApprovedVersion == nil || *spec.ApprovedVersion != *kept.ApprovedVersion {
+		t.Fatalf("the request on %s cleared its gate: its spec gate is %+v, want %+v as it stood", issue, spec, kept)
+	}
+	if history := r.mergeHistoryOf(issue); history.Class != record.MergeHistoryAnswered || !history.Evidence.Snapshot {
+		t.Fatalf("%s's merge history after the request is %s from %+v, want ANSWERED by its saved snapshot", issue, history.Class, history.Evidence)
+	}
+	if reads := r.mergeReads(issue); reads != 0 {
+		t.Fatalf("the outbox holds %d merge reads of %s, want none: an ANSWERED history reads no candidate", reads, issue)
+	}
+	after, _ := r.standIn.requestsSince(sent)
+	if candidate := slices.IndexFunc(after, func(request string) bool {
+		return strings.HasPrefix(request, "daemon GET /repos/"+liveRepo+"/commits/") && strings.HasSuffix(request, "/pulls")
+	}); candidate >= 0 {
+		t.Fatalf("the daemon read a candidate of %s's merge after the request (%s), want none: an ANSWERED history reads no candidate", issue, after[candidate])
+	}
+	if row.Generation != 2 || row.NextChange != 2 || row.NextChanges != 1 {
+		t.Fatalf("%s after the request stands at generation %d with next change %d of %d started, want generation 2, its first next change",
+			issue, row.Generation, row.NextChange, row.NextChanges)
+	}
+	if request, held := r.openRequest(issue); !held || request.Role != claim.RoleController || request.CarriedBy != 2 {
+		t.Fatalf("%s's open request after the controller's todo is %+v (held %t), want the controller's, carried by generation 2", issue, request, held)
+	}
+	t.Logf("the request on %s saved #%d at %s as its snapshot, read no candidate, kept its gate, and started generation 2 in %s",
+		issue, row.Merge.Number, row.Merge.SHA, row.Phase)
+}
+
+// changeStarted is the change's start: the branch moves to main's head before the first task, the
+// pull request's read fills the snapshot's base and final head, and the working copy starts at the
+// branch before that task.
+func changeStarted(r *doneByChecksRig, issue string, sent int) {
+	t := r.t
+	t.Helper()
+	branch := claim.IssueBranch(issue)
+	planner := r.worker(claim.RolePlanner)
+	r.taskOf(planner)
+	moves := r.standIn.refWritesOf(branch)
+	if len(moves) == 0 || moves[len(moves)-1].sha != doneByChecksMergeCommit || moves[len(moves)-1].caller != "daemon" {
+		t.Fatalf("the writes of %s on GitHub at the change's first task are %+v, want the daemon's move to main's head %s", branch, moves, doneByChecksMergeCommit)
+	}
+	if !slices.ContainsFunc(r.rt.Calls(), func(call fake.Call) bool {
+		return call.Method == "StartAtBranch" && call.Locator.Claim == planner.token && call.StartAt == runtime.StartAt{Bookmark: branch, Base: "main"}
+	}) {
+		t.Fatalf("the fake runtime holds no start of %s's working copy at %s before its first task", planner.token, branch)
+	}
+	after, _ := r.standIn.requestsSince(sent)
+	read := fmt.Sprintf("daemon GET /repos/%s/pulls/%d", liveRepo, doneByChecksPull)
+	if row := r.issueRow(issue); !slices.Contains(after, read) || row.Merge.Head != stepRecordsHead || row.Merge.Base != "main" {
+		t.Fatalf("%s's snapshot at the change's first task is %+v after the daemon's requests %v, want the base main and the final head %s that %s fills",
+			issue, row.Merge, after, stepRecordsHead, read)
+	}
+	planner.endTurn()
+	t.Logf("the change of %s started: the daemon's %s of %s to %s, %s, and the working copy at %s before the first task",
+		issue, moves[len(moves)-1].method, branch, doneByChecksMergeCommit, read, branch)
+}
+
+// endedOnTheOwnersWithdrawal is the owning architect's withdrawal of the controller's request with
+// its evidence: the change opened no pull request, so it ends, and the issue waits in verifying at
+// generation 2.
+func endedOnTheOwnersWithdrawal(r *doneByChecksRig, issue string) {
+	t := r.t
+	t.Helper()
+	request, held := r.openRequest(issue)
+	if !held {
+		t.Fatalf("%s holds no open request to withdraw", issue)
+	}
+	architect := r.worker(claim.RoleArchitect)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/defects/withdraw", api.DefectWithdrawRequest{GrantID: architect.grant(), Issue: issue,
+		Defect: strconv.FormatInt(request.ID, 10), Reason: "The widgets report their merge on main: the check after the merge passes there."}, false)
+	var withdrawn api.DefectWithdrawResponse
+	if status != http.StatusOK || json.Unmarshal(body, &withdrawn) != nil || withdrawn.State != "withdrawn" {
+		t.Fatalf("the owner's withdrawal of request %d of %s = %d %s, want 200 withdrawn", request.ID, issue, status, body)
+	}
+	r.awaitIssue(issue, "the request's withdrawal", func(got api.Issue) error {
+		if err := inVerifying(got); err != nil {
+			return err
+		}
+		if got.Generation != 2 {
+			return fmt.Errorf("it stands at generation %d, want the change's 2", got.Generation)
+		}
+		return nil
+	})
+	if ended := r.storedWait(issue).Ended; ended == nil || ended.Generation != 2 || ended.PullRequest != 0 {
+		t.Fatalf("%s's stored wait after the withdrawal names the end %+v, want change 2 ended with no pull request", issue, ended)
+	}
+}
+
+// closesOnTheNewAssessment is the close after the change's end. A production check of generation 2
+// opens at the retained merge and replaces first's row. A pass of the check after the merge, at a
+// commit that holds the merge, leaves the issue waiting for that new check. Its look 1 reports
+// pass, and the read after it closes the issue.
+func closesOnTheNewAssessment(r *doneByChecksRig, issue string, first record.ProductionCheck) {
+	t := r.t
+	t.Helper()
+	tester := r.worker(claim.RoleTester)
+	opened := r.lookOf(tester, 1, stepRecordsWait)
+	if check := readProductionCheck(t, r.st.Pool(), r.records, issue); !check.Open() || check.Generation != 2 || check.MergeSHA != doneByChecksMergeCommit ||
+		check.OpenedAt.Equal(first.OpenedAt) {
+		t.Fatalf("%s's production check after the change's end is %+v, want generation 2's own open at %s in place of generation 1's", issue, check, doneByChecksMergeCommit)
+	}
+	passed := r.awaitResultFact(r.record("pass", r.standIn.commitOnMain(doneByChecksLaterCommit)))
+	r.awaitCloseRead(issue, "the pass of the check after the merge", passed, func(read doneByChecksRead) error {
+		if block, held := read.check(doneByChecksCheck); !held || block.PassStands.Answer != dispatch.PassStandsYes {
+			return fmt.Errorf("%s answers %+v, want yes", doneByChecksCheck, block.PassStands)
+		}
+		return nil
+	})
+	r.awaitIssue(issue, "each check passing before the new production check's pass", func(got api.Issue) error {
+		if got.Phase == phase.Done {
+			return fmt.Errorf("it closed at generation %d before its new production check's pass", got.Generation)
+		}
+		if production := productionOf(got); got.Phase != phase.Verifying || production == nil || production.State != record.ProductionOpen || production.Generation != 2 {
+			return fmt.Errorf("it stands in %s with its production term %+v, want verifying with generation 2's check open", got.Phase, production)
+		}
+		return nil
+	})
+	reported := r.reportLook(tester, opened, 1, "pass", nil)
+	tester.endTurn()
+	r.awaitCloseRead(issue, "the new production check's pass", reported, passesAt(doneByChecksBeforeCheck, stepRecordsHead))
+	r.awaitIssue(issue, "the new production check's pass", inPhase(phase.Done))
+	if row := r.issueRow(issue); row.ClosedOnChecksAt == nil {
+		t.Fatalf("%s closed with no closed_on_checks_at", issue)
+	}
 }

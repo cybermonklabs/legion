@@ -1388,6 +1388,8 @@ type doneByChecksGitHub struct {
 	// as its caller, method and path.
 	served   int
 	unserved []string
+	// requests is each request the stand-in was sent, in order, as its caller, method and path.
+	requests []string
 }
 
 // doneByChecksRefWrite is one write of a branch's ref GitHub took: its method (POST makes the
@@ -1459,6 +1461,9 @@ func newDoneByChecksGitHub(t *testing.T) *doneByChecksGitHub {
 	routes.HandleFunc("POST /graphql", g.graphql)
 	routes.HandleFunc("/", g.noRoute)
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		g.requests = append(g.requests, standInCaller(r)+" "+r.Method+" "+r.URL.Path)
+		g.mu.Unlock()
 		answered := &doneByChecksStatus{ResponseWriter: w, status: http.StatusOK}
 		routes.ServeHTTP(answered, r)
 		t.Logf("github stand-in: %s %s %s answered %d", standInCaller(r), r.Method, r.URL.RequestURI(), answered.status)
@@ -1522,6 +1527,14 @@ func (g *doneByChecksGitHub) logRequests() {
 	}
 	g.t.Logf("github stand-in: %d requests, %d answered by a route, %d with no route, each answered 404: %s",
 		g.served+len(g.unserved), g.served, len(g.unserved), strings.Join(g.unserved, "; "))
+}
+
+// requestsSince is each request the stand-in was sent after the first from, as its caller, method
+// and path, and the count it holds now, which a later call names as its from.
+func (g *doneByChecksGitHub) requestsSince(from int) ([]string, int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.requests[from:]), len(g.requests)
 }
 
 // doneByChecksInstallation is the App's one installation, on acme, as GitHub answers it.
