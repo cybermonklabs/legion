@@ -1122,7 +1122,10 @@ func fakeJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-invocation")
 	bin := t.TempDir()
+	// CONTROL: the first jj of a row stalls (0.5 s in mode hang, 11 s otherwise), standing in for
+	// a loaded machine.
 	script := `#!/bin/sh
+[ -e "$FAKE_JJ_RECORD.stalled" ] || { : >"$FAKE_JJ_RECORD.stalled"; if [ "$FAKE_JJ_MODE" = hang ]; then sleep 0.5; else sleep 11; fi; }
 printf '%s\n' "$@" >> "$FAKE_JJ_RECORD"
 printf 'JJ_USER=%s\nJJ_EMAIL=%s\n' "$JJ_USER" "$JJ_EMAIL" >> "$FAKE_JJ_RECORD"
 case "$FAKE_JJ_MODE" in
@@ -1296,7 +1299,8 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 			bin := t.TempDir()
 			record := filepath.Join(t.TempDir(), "jj-invocation")
 			if tc.jjOnPath {
-				script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\n"
+				// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+				script := "#!/bin/sh\n[ -e \"$FAKE_JJ_RECORD.stalled\" ] || { : >\"$FAKE_JJ_RECORD.stalled\"; /bin/sleep 11; }\nprintf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\n"
 				if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 					t.Fatalf("write the fake jj: %v", err)
 				}
@@ -1412,7 +1416,8 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			// wrapper looking jj up on PATH never finds this one again.
 			record := filepath.Join(t.TempDir(), "jj-commands")
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
+			// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\n[ -e "+record+".stalled ] || { : >"+record+".stalled; sleep 11; }\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1480,6 +1485,12 @@ func TestAdoptWorkingCopyLeavesTheRepositoryTheShimRunsInUntouched(t *testing.T)
 	}
 	before := treeOf(t, decoy)
 	t.Chdir(decoy)
+	// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+	stallBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stallBin, "jj"), []byte("#!/bin/sh\n[ -e '"+stallBin+"/stalled' ] || { : >'"+stallBin+"/stalled'; sleep 11; }\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stallBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	path := socketPath(t)
 	daemon := listen(t, path)
@@ -1585,7 +1596,9 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 				t.Fatal(err)
 			}
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(tc.script(jj, lock)), 0o700); err != nil {
+			// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+			stalled := strings.Replace(tc.script(jj, lock), "#!/bin/sh\n", "#!/bin/sh\n[ -e '"+bin+"/stalled' ] || { : >'"+bin+"/stalled'; sleep 11; }\n", 1)
+			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(stalled), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1644,7 +1657,8 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
+	// CONTROL: the jj stalls 11 s, standing in for a loaded machine.
+	script := fmt.Sprintf("#!/bin/sh\nsleep 11\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
 		"echo >&2\necho \"fatal: Unable to create '%s': File exists.\" >&2\nexit 1\n", 2*shimwire.MaxFrameBytes, lock)
 	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
