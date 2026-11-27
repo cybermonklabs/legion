@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The daemon API contract moves with entry 20261127181502 (`owner-names-its-task`), which records
+  the task an owner's call is of: `LegionSignOffRequest`, `LegionPhaseBackwardRequest` and
+  `LegionPhaseRetryRequest` each take an optional `task`, the id of the task of the issue's plan
+  the acceptance, the move back or the retry-or-escalate decision is of. The three schemas already
+  took the field and the daemon already read it; no contract record held it, so this entry is
+  where it arrives. No answer key and no enumerated value moves with it.
+time: 2026-11-27T18:26:34Z
+custom:
+    Issue: pr5169

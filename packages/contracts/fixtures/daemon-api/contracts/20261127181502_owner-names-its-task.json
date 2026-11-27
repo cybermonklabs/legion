@@ -1,0 +1,25 @@
+{
+  "answers": [],
+  "routes": [
+    {
+      "route": "POST /legion/v1/phase/backward",
+      "addFieldPaths": [
+        "task"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/phase/retry",
+      "addFieldPaths": [
+        "task"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/signoff",
+      "addFieldPaths": [
+        "task"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": []
+}
