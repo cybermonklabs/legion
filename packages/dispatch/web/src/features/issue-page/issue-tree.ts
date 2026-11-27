@@ -445,12 +445,27 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
  * nothing more: no row and no count of the Verification filter, and no check of a statement.
  *
  * A check of another issue draws a state only where the read the tree is built from asked for
- * results (`IssueTreeReads.kinds`), so in Conversation's tree, whose read names none, it is no
- * check here: its kind tag opens no view, and a filter drawn off that tree draws it as no row.
+ * results (`IssueTreeReads.kinds`), so in Conversation's tree, whose read names none, it carries
+ * none and is no check here. It is a check all the same (`isBorrowedCheck`), which a reader that
+ * must count such a check reads beside this one.
  */
 export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
   return node.type === "check" && node.state !== undefined;
 }
+
+/**
+ * Whether `node` is a check of another issue: a `check` node that carries the key of an issue
+ * under this one (`TreeNode.issue`), as `model-rows/model-drafts.ts` drafts a child's check under
+ * each statement of this issue it serves. It is a check whatever its standing: a tree whose read
+ * named no `result`, as Conversation's, draws it with no state, and it is still a row and a count
+ * of the Verification filter (`presets.ts`' `kindOf`), and so one of the header's checks, which
+ * counts what that filter draws (`IssueThreeThings.tsx`' `briefCounts`), and a check its statement
+ * carries (`verification-filter/statement-state.ts`' `checksUnder`).
+ */
+export function isBorrowedCheck(node: Pick<TreeNode, "issue" | "type">): boolean {
+  return node.type === "check" && node.issue !== undefined;
+}
+
 /** An ask as the tree reads it: the issue read's open asks and the asks read both send the
  *  server's reading of the question, of each option's label and description, of the answer and
  *  of the reason it was closed with beside them, which `Ask` leaves out. */
@@ -482,7 +497,8 @@ export interface IssueTreeReads {
    *  `VIEW_KINDS`). Undefined where the read named none, as Graph's does, which answers every
    *  kind. A check of another issue stands as its result nodes say only where the read asked for
    *  results (`model-rows/model-drafts.ts`' `borrowedStanding`): an answer whose read named no
-   *  `result` holds none of a check's results, whatever results the check has. */
+   *  `result` holds none of a check's results, whatever results the check has, so such a check is
+   *  drawn with no standing and is a check all the same (`isBorrowedCheck`). */
   readonly kinds?: readonly string[];
   /** The issue's messages with their replies: what a message's author did to one - deleted it or
    *  last replaced its body - which the tree read answers no mark of
@@ -783,6 +799,10 @@ export function assemble(
       gaps: draft.gaps,
       held: heldBy(children),
       id: draft.id,
+      // `TreeNode.issue` holds, beside the key the Plan view gives a plan task of an issue under
+      // this one (`presets.ts`' `planFactsOf`), the key of the issue each check, plan task and
+      // result of another issue that `model-rows/model-drafts.ts` drafts is of (`Draft.issue`).
+      ...(draft.issue === undefined ? {} : { issue: draft.issue }),
       ...(draft.child === undefined ? {} : { child: draft.child }),
       ...(draft.changedBy === undefined ? {} : { changedBy: draft.changedBy }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),

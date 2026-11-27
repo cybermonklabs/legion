@@ -97,6 +97,11 @@ export interface Draft {
   facts: NodeFact[];
   gaps: GapKind[];
   readonly id: string;
+  /** The key of the issue under this one that this node is of, from the read's own `issue`
+   *  (`TreeNode.issue`): on each check, plan task and result of another issue that
+   *  `model-rows/model-drafts.ts` drafts, so a check of it is a check whatever its standing
+   *  (`issue-tree.ts`' `isBorrowedCheck`). Absent on every node of the issue itself. */
+  issue?: string;
   /** The child issue this node is, as the issue read carries it (`TreeNode.child`). */
   child?: IssueChild;
   /** The person whose Change this decision waits on (`TreeNode.changedBy`). */

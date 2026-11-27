@@ -1,5 +1,5 @@
 import type { CheckBlock, IssueCoverage } from "../../../api/types";
-import { isCheck, isStatement, type TreeNode } from "../issue-tree";
+import { isBorrowedCheck, isCheck, isStatement, type TreeNode } from "../issue-tree";
 import { borrowedReads } from "../model-rows/model-drafts";
 import { type CheckState, coverageNotes, type StatementState } from "../page-words";
 import type { CheckStateReads } from "../tree-drafts";
@@ -255,6 +255,8 @@ export function countedCoverage(
  * or a check the coverage read counts for it that this issue's tree does not hold - a
  * descendant issue's, which R10 counts and this issue's results read does not answer for
  * (`coverage.go`, `TreeNode.counts`).
+ * A check of an issue under this one that the tree draws under it carries it too, whatever its
+ * standing (`checksUnder`).
  */
 function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean {
   // A proposed statement carries no check, and a proposed check, or one at or under an
@@ -299,16 +301,13 @@ export function statementStandings(
 }
 
 /** The readings of the checks drawn under `node` (`checkReader`): each check (`isCheck`), and
- *  each check of an issue under this one that the Verification view's read answers
- *  (`CheckReading.issue`), which the outline's tree draws with no state where its read names no
- *  result (`model-rows/model-drafts.ts`' `borrowedStanding`), so the statement reads that check
- *  as the Verification view reads it. */
+ *  each check of an issue under this one whatever its standing (`isBorrowedCheck`), which the
+ *  outline's tree draws with no state where its read names no result
+ *  (`model-rows/model-drafts.ts`' `borrowedStanding`). So a statement that only such a check
+ *  serves carries a check whether or not the page holds the Verification view's answer, which is
+ *  what such a check's standing is read from where it is held (`checkReader`). */
 function checksUnder(node: TreeNode, read: (node: TreeNode) => CheckReading): CheckReading[] {
-  return node.children.flatMap((child) => {
-    if (child.type !== "check") return [];
-    const reading = read(child);
-    return isCheck(child) || reading.issue !== undefined ? [reading] : [];
-  });
+  return node.children.filter((child) => isCheck(child) || isBorrowedCheck(child)).map(read);
 }
 
 /**

@@ -6,6 +6,7 @@ import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
 import {
   heldBy,
+  isBorrowedCheck,
   isCheck,
   isStatement,
   type NodeChip,
@@ -174,6 +175,9 @@ const NO_BORROWED_ROWS: ReadonlySet<TreeAnswerNode> = new Set();
  *  undefined for both. */
 function kindOf(node: TreeNode): NodeType | undefined {
   if (node.type === "requirement" && !isStatement(node)) return undefined;
+  // A check of another issue is a check whatever its standing (`isBorrowedCheck`): a tree whose
+  // read named no result, as Conversation's, draws it with no state.
+  if (isBorrowedCheck(node)) return node.type;
   if (node.type === "check" && !isCheck(node)) return undefined;
   return node.type;
 }
@@ -1037,6 +1041,19 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   return found.size;
 }
 
+/** The checks of an issue under this one that `view`, the Verification view drawn from its held
+ *  read, draws as its own rows (`heldFilterView`'s `borrowedRows`), each once by the read's id of
+ *  its node (`TreeNode.readId`), however many statements it is drawn under (`isBorrowedCheck`). */
+function borrowedChecksDrawn(view: TreeNode): ReadonlySet<string> {
+  const drawn = new Set<string>();
+  const walk = (node: TreeNode): void => {
+    if (isBorrowedCheck(node)) drawn.add(node.readId ?? node.id);
+    for (const child of node.children) walk(child);
+  };
+  walk(view);
+  return drawn;
+}
+
 /** The signal each filter's control draws under `query`, which its count follows. A count read
  *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
  *  for a filter whose view is held, and the tree's for every other. Decisions is counted off the
@@ -1066,15 +1083,25 @@ export function filterSignals(
     const wanted = query.trim().toLowerCase();
     const words = (node: TreeAnswerNode): string =>
       node.text_tree === undefined ? node.text : wordsOf(node.text_tree);
-    return new Set(
-      (held.nodes ?? []).flatMap((node) =>
-        viewRow(node, filter, root.id) &&
-        kinds.includes(node.supertag) &&
-        (wanted === "" || words(node).toLowerCase().includes(wanted))
-          ? [node.id]
-          : []
-      )
-    ).size;
+    // The read's own nodes of the filter's main kind whose words hold the query.
+    const own = (): number => {
+      return new Set(
+        (held.nodes ?? []).flatMap((node) =>
+          viewRow(node, filter, root.id) &&
+          kinds.includes(node.supertag) &&
+          (wanted === "" || words(node).toLowerCase().includes(wanted))
+            ? [node.id]
+            : []
+        )
+      ).size;
+    };
+    // Under Verification each check of an issue under this one that the view draws as its own row
+    // (`borrowedRows`) counts too, once however many statements it is drawn under, where the view
+    // draws it under the words typed: the read answers such a check as context, which `own` takes
+    // for no row of the view (`viewRow`), so no check is counted twice. The view is the one built
+    // below (`verification`), which is built before any count is read.
+    const borrowed = filter === "verification" ? borrowedChecksDrawn(verification.root).size : 0;
+    return own() + borrowed;
   };
   const verification = view("verification");
   const decisions = presetView(decisionsRoot, "decisions", query);

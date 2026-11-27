@@ -43,7 +43,15 @@ import { countDocumentSockets } from "./editor";
 import { nextFrames } from "./frames";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { asPlanner, PLANNER_TITLE, readTree } from "./issue-layout-seed-support";
-import { gotoIssue, issuePage, issueRead, phase, presetChooser, presetCount } from "./issue-page";
+import {
+  contentsPane,
+  gotoIssue,
+  issuePage,
+  issueRead,
+  phase,
+  presetChooser,
+  presetCount,
+} from "./issue-page";
 import {
   blockNode,
   DESKTOP,
@@ -74,6 +82,7 @@ import {
   rowGaps,
   rowReference,
 } from "./issue-page-i";
+import { briefRow, checksDrawn } from "./issue-page-j";
 import { planChart, planView } from "./issue-page-k";
 import { composerField, composerTarget } from "./issue-page-l";
 import { decisionsFoot } from "./issue-page-q";
@@ -340,6 +349,19 @@ async function expectChildMark(
     "href",
     `/issues/${child}`
   );
+}
+
+/** What the header's second row draws in the Contents pane (`checksDrawn`): its number of checks,
+ *  and what the counts of its states add up to, each read as a whole number, the number `NaN`
+ *  while the row draws none. */
+async function headerChecks(
+  page: Page
+): Promise<{ readonly states: number; readonly total: number }> {
+  const drawn = await checksDrawn(briefRow(contentsPane(page), "verification"));
+  return {
+    states: drawn.states.reduce((sum, state) => sum + Number(state.count), 0),
+    total: Number.parseInt(drawn.total, 10),
+  };
 }
 
 /** The first word of node `id`'s words in `words` (`treeWordsOf`), or null where it has none: the
@@ -743,13 +765,18 @@ test("a person writes a criterion under the words they are reading @phone", asyn
 // Graph; Conversation's read names no result and no plan task (`CONVERSATION_KINDS`), so there
 // the check draws neither, and no standing either - no state on its row, no state word and no
 // state glyph - since a read that names no result cannot say how the check stands
-// (`model-rows/model-drafts.ts`' `borrowedStanding`), while Graph, which reads the whole tree,
-// draws the check's result under it and the child's plan task under the statement, and none of
-// them under the child's own row. That statement draws no "No check" in either, and under
-// Verification it is covered: the child's check is a row under it with its result. Under
-// Decisions the decision's reading is a row under it and the question's is not drawn; and no
-// element but a kind tag reads a model's word whole, nor any text a uuid. At 1440 px. How the
-// child's check stands where a read gives its results is the next row's.
+// (`model-rows/model-drafts.ts`' `borrowedStanding`). It is a check all the same: the Verification
+// control counts it, the header's second row counts it in its number and in no state, so there
+// the states add up to one less than the number, and its kind tag is a link to the child's own
+// Verification view at the check's block. Graph, which reads the whole tree, draws the check's
+// result under it and the child's plan task under the statement, and none of them under the
+// child's own row. That statement draws no "No check" in either, and under Verification it is
+// covered: the child's check is a row under it with its result, the control's count is the one
+// Conversation drew, and the header's states add up to its number, since the Verification view's
+// read gives the check its standing. Under Decisions the decision's reading is a row under it and
+// the question's is not drawn; and no element but a kind tag reads a model's word whole, nor any
+// text a uuid. At 1440 px. How the child's check stands where a read gives its results is the
+// next row's.
 //
 // The steps are asserted in the order (1), (3), (2), (4). On a page without the reading rows, no
 // step drafts a reading, so the row fails there on (1)'s first assertion.
@@ -825,6 +852,24 @@ test("a reading stands under what it reads and a child's check under the stateme
       },
       "in Conversation the child's check draws a standing, which its read, naming no result, cannot give"
     ).toEqual({ state: null, stateGlyphs: [], stateWord: null });
+    // It is a check all the same: the Verification control counts it, the header's second row
+    // counts it in its number and in no state, and its kind tag opens the child's own
+    // Verification view at the check's block.
+    const conversationCount = await presetCountOf(page, "verification");
+    await expect
+      .poll(() => headerChecks(page), {
+        message:
+          "in Conversation the header's number of checks is not the Verification control's count, or the child's check is in a state",
+      })
+      .toEqual({ states: conversationCount - 1, total: conversationCount });
+    const checkRoute = parseDispatchReference(child.check.address);
+    const checkBlock =
+      checkRoute !== undefined && "block" in checkRoute ? checkRoute.block?.id : undefined;
+    expect(checkBlock, "the child's check's address names no block").toBeDefined();
+    await expect(
+      nodeRow(page, child.check.row).first().locator("[data-node-margin] a[data-node-tag-link]"),
+      "in Conversation the child's check's kind tag does not open the child's Verification view at the check"
+    ).toHaveAttribute("href", `${presetPath(child.key, "verification")}#b-${checkBlock}`);
     await expect(
       nodeRow(page, child.result),
       "Conversation draws a row of the child's result, a kind its read does not name"
@@ -870,7 +915,8 @@ test("a reading stands under what it reads and a child's check under the stateme
     await expectStatementSevenChecked(page, statementSeven.row, "in Graph");
 
     // (3) Under Verification statement 7 is covered: the child's check is a row under it, with
-    // its result, and it draws no "No check".
+    // its result, and it draws no "No check". The control counts the check as Conversation's did,
+    // and the view's read gives it its standing, so the header's states add up to its number.
     await pickPreset(page, PRESET_NAMES.verification);
     await expect
       .poll(() => parentOfRow(page, child.check.row), {
@@ -883,6 +929,20 @@ test("a reading stands under what it reads and a child's check under the stateme
       "under Verification the child's check under statement 7 draws no row of its result"
     ).toHaveCount(1);
     await expectStatementSevenChecked(page, statementSeven.row, "under Verification");
+    await expect
+      .poll(() => presetCountOf(page, "verification"), {
+        message: "under Verification the control's count is not the one Conversation drew",
+      })
+      .toBe(conversationCount);
+    await expect
+      .poll(
+        async () => {
+          const { states, total } = await headerChecks(page);
+          return Number.isInteger(total) ? total - states : "no number of checks";
+        },
+        { message: "under Verification the header's states do not add up to its number of checks" }
+      )
+      .toBe(0);
 
     // (2) Under Decisions the decision's reading under it, and the question's nowhere.
     await pickPreset(page, PRESET_NAMES.decisions);

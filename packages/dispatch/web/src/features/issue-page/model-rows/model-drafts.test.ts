@@ -394,6 +394,47 @@ test("each tree the page builds reads a borrowed check's standing by what its re
   });
 });
 
+// R4: each node the model drafts of the child - its check, its result, its plan task - carries the
+// child's key (`Draft.issue`, `TreeNode.issue`), so the check is a check of the page whatever its
+// standing (`isBorrowedCheck`): in Conversation's tree, whose read names no result and no plan
+// task and so holds the check alone with no state, and in Graph's, which names every kind.
+test("the child's check, result and plan task carry the child's key in Conversation's tree and in Graph's", () => {
+  const check = childCheck("c-child", { check: { changed_version: 2, text_sha256: WORDS_NOW } });
+  const pass = childResult("res-1", "c-child", "pass", "2026-11-05T10:00:00Z");
+  const task = treeNode("t-child", "plan_task", CHILD, {
+    document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan-md" },
+    issue: CHILD,
+  });
+  const serves = [treeTuple("serves", "c-child", "r1"), treeTuple("serves", "t-child", "r1")];
+  const issuesIn = (root: TreeNode) =>
+    nodesOf(root).flatMap((node) =>
+      ["c-child", "res-1", "t-child"].includes(node.id) ? [[node.id, node.type, node.issue]] : []
+    );
+
+  expect({
+    conversation: issuesIn(
+      buildIssueTree({
+        issue: issue(),
+        kinds: CONVERSATION_KINDS,
+        tree: answer([statement("r1", 0), CHILD_NODE, check], serves),
+      })
+    ),
+    graph: issuesIn(
+      buildIssueTree({
+        issue: issue(),
+        tree: answer([statement("r1", 0), CHILD_NODE, check, pass, task], serves),
+      })
+    ),
+  }).toEqual({
+    conversation: [["c-child", "check", CHILD]],
+    graph: [
+      ["c-child", "check", CHILD],
+      ["res-1", "result", CHILD],
+      ["t-child", "plan_task", CHILD],
+    ],
+  });
+});
+
 // R4: a statement counts a child's check that serves it among the nodes it holds, each
 // statement it serves alike; the same check serving neither counts for neither.
 test("a borrowed check counts for each statement it serves", () => {

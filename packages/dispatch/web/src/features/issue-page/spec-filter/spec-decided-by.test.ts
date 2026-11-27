@@ -949,7 +949,7 @@ test("a statement a child's check serves reads that check as the Verification vi
   const tree = {
     ...issueTree([
       statement("r1", {
-        children: [node({ id: "c9", readId: check.id, type: "check" })],
+        children: [node({ id: "c9", issue: "CORE-2", readId: check.id, type: "check" })],
         counts: { checks: 1, planTasks: 0 },
       }),
     ]),
@@ -959,6 +959,26 @@ test("a statement a child's check serves reads that check as the Verification vi
   expect(bodyOf(tree)[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark])).toEqual([
     ["spec#b-r1", "met"],
   ]);
+});
+
+// R17: a statement that only a child's check serves carries that check before the page holds the
+// Verification view's answer: the outline's tree draws the check with no state, since
+// Conversation's read names no result, and the statement holds no coverage count, so the check
+// under it is what covers it. Its mark is not "No check"; what it reads instead waits on the
+// check's results.
+test("a statement only a child's check serves is covered with no Verification view answer", () => {
+  const tree = issueTree([
+    statement("r1", {
+      children: [
+        node({ id: "c9", issue: "CORE-2", readId: "CORE-2/verification-md#c9", type: "check" }),
+      ],
+      counts: { checks: 0, planTasks: 0 },
+    }),
+  ]);
+
+  const marks = bodyOf(tree)[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark]);
+  expect(marks?.map(([id]) => id)).toEqual(["spec#b-r1"]);
+  expect(marks?.map(([, mark]) => mark)).not.toContain("no_check");
 });
 
 // R20: a node an address names outranks the filter, whatever its kind. It is no statement: it

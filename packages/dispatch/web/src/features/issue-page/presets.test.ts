@@ -246,6 +246,28 @@ test("Verification draws each requirement as context with its checks under it an
   });
 });
 
+// R4, R9: a check of an issue under this one (`issue` set) is a check whatever its standing. In
+// Conversation's tree, whose read names no result, it carries no state, and still the
+// Verification control counts it, the view read off that tree draws it under the statement it
+// serves with no state, and its kind tag opens Verification. A `check` block with no state and no
+// `issue`, a block of another document of this issue, is still no check: it adds nothing to the
+// count, is no row, and its tag opens nothing.
+test("a child's check with no state is a check of the Verification view read off the tree", () => {
+  const own = node("verification#b-c1", "check", [], { state: "passed" });
+  const child = node("c9", "check", [], { issue: "CORE-2" });
+  const block = node("plan#b-c8", "check");
+  const root = node("CORE-1", "issue", [statement("spec#b-r1", [own, child, block])]);
+  const rows = presetView(root, "verification", "").root.children;
+
+  expect(filterSignals(root, "").verification.count).toBe(2);
+  expect(rows.map((row) => row.id)).toEqual(["spec#b-r1"]);
+  expect(rows[0]?.children.map((row) => [row.id, row.state])).toEqual([
+    ["verification#b-c1", "passed"],
+    ["c9", undefined],
+  ]);
+  expect([tagFilter(child), tagFilter(block)]).toEqual(["verification", undefined]);
+});
+
 test("Plan draws each plan task once, its requirement or comment one line on its row", () => {
   const root = issue();
   const view = presetView(root, "plan", "");
@@ -1123,6 +1145,54 @@ test("a child's check the Verification view draws stands as the view's own tree 
     ["c9", "failed"],
   ]);
   expect(filterSignals(root, "").verification.flag).toEqual({ count: 1, word: "failing" });
+});
+
+// R4: once the Verification view read is held, the control counts the read's own checks and each
+// check of an issue under this one that the view draws as its own row, though the read answers
+// that check as context: one own check and the child's check that serves the statement the view
+// draws count 2. A child's check that serves no statement the view draws, here only the child's
+// own requirement, is no row of the view and adds nothing.
+test("the held Verification view's count takes each child's check it draws as a row", () => {
+  const verification = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification", parent: "r1" }),
+      viewNode("c9", "check", "context", { in: "verification", issue: "CORE-2", parent: "r1" }),
+      viewNode("rx", "requirement", "context", { in: "spec", issue: "CORE-2" }),
+      viewNode("c8", "check", "context", { in: "verification", issue: "CORE-2", parent: "rx" }),
+    ],
+    [
+      treeTuple("serves", "c1", "r1"),
+      treeTuple("serves", "c9", "r1"),
+      treeTuple("serves", "c8", "rx"),
+    ],
+    { view: "verification" }
+  );
+  const root = {
+    ...node("CORE-1", "issue", [
+      statement(
+        "spec#b-r1",
+        [
+          node("verification#b-c1", "check", [], {
+            readId: "CORE-1/verification#c1",
+            state: "passed",
+          }),
+          node("c9", "check", [], { issue: "CORE-2", readId: "CORE-2/verification#c9" }),
+        ],
+        { readId: "CORE-1/spec#r1" }
+      ),
+      node("c8", "check", [], { issue: "CORE-2", readId: "CORE-2/verification#c8" }),
+    ]),
+    views: { verification },
+  };
+
+  expect(
+    presetView(root, "verification", "").root.children.map((row) => [
+      row.id,
+      row.children.map((check) => check.id),
+    ])
+  ).toEqual([["spec#b-r1", ["verification#b-c1", "c9"]]]);
+  expect(filterSignals(root, "").verification.count).toBe(2);
 });
 
 // Two documents of an issue that has not converted can hold one block id, and each block is a row

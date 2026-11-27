@@ -20,9 +20,11 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
  *   read names no `result`, so in its tree such a check draws no standing, while Graph's read,
  *   which names every kind, and the Verification view's draw the standing their results give.
  *   A borrowed plan task the Plan view's read answers with its place in the plan is drafted by
- *   the tree read's own step (`draftServing`).
+ *   the tree read's own step (`draftServing`). Each borrowed draft carries its issue's key, the
+ *   read's own `issue` (`Draft.issue`), so a borrowed check is a check of the page whatever its
+ *   standing (`issue-tree.ts`' `isBorrowedCheck`).
  * - **A borrowed result** stands under the borrowed check it was recorded against, with who
- *   recorded it and when.
+ *   recorded it and when, and its issue's key.
  *
  * A reading is drafted by the tree read's own step (`draftReading`), which draws its author too
  * (R3): no step here drafts one.
@@ -60,10 +62,10 @@ export function modelDraftSteps({
   };
 
   /** A check or a plan task of another issue: under each statement of this issue its `serves`
-   *  tuples name, in their order, with its address in its own issue (`draftOf`) and no author or
-   *  time, as this issue's own checks draw none; none where it serves no statement of this
-   *  issue. A check stands as its result nodes say where the read asked for them
-   *  (`borrowedStanding`). A plan task the read answers its place in the plan for (`plan`),
+   *  tuples name, in their order, with its address in its own issue (`draftOf`), its issue's key,
+   *  and no author or time, as this issue's own checks draw none; none where it serves no
+   *  statement of this issue. A check stands as its result nodes say where the read asked for
+   *  them (`borrowedStanding`). A plan task the read answers its place in the plan for (`plan`),
    *  which only the Plan view's read does, is the tree read's own step's (`draftServing`), which
    *  drafts its order and its needs. */
   const draftBorrowed: TreeDraftStep = (node, answer, context) => {
@@ -83,14 +85,15 @@ export function modelDraftSteps({
     if (statements.length === 0) return undefined;
     const draft = draftOf(node, node.supertag, context);
     draft.parents = [...new Set(statements)];
+    draft.issue = node.issue;
     const state = node.supertag === "check" ? borrowedStanding(node, answer, context) : undefined;
     if (state !== undefined) draft.state = state;
     return draft;
   };
 
   /** A result of another issue whose read parent is a borrowed check drafted here: who recorded
-   *  it and when, under that check (`placeOf`). No other step drafts a check of another issue,
-   *  so a draft standing for such a check was drafted here. */
+   *  it and when, and its issue's key, under that check (`placeOf`). No other step drafts a check
+   *  of another issue, so a draft standing for such a check was drafted here. */
   const draftBorrowedResult: TreeDraftStep = (node, _answer, context) => {
     if (node.supertag !== "result" || !isForeign(node, context.key) || node.parent === null) {
       return undefined;
@@ -106,6 +109,7 @@ export function modelDraftSteps({
     }
     const draft = draftOf(node, "result", context);
     madeBy(draft, node);
+    draft.issue = node.issue;
     return draft;
   };
 
