@@ -51,6 +51,8 @@ type githubPulls struct {
 	limited        bool
 	failing        bool
 	commitsFailing bool
+	// commitsLimited answers the pages of a pull request's commits with GitHub's rate limit (429).
+	commitsLimited bool
 	hidden         bool
 	holdFirst      func()
 	before         map[int]func()
@@ -109,9 +111,15 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 		g.commitReads.Add(1)
 		number, _ := strconv.Atoi(r.PathValue("number"))
 		g.mu.Lock()
-		messages, failing := g.messages[number], g.commitsFailing
+		messages, failing, limited := g.messages[number], g.commitsFailing, g.commitsLimited
 		g.mu.Unlock()
-		if failing {
+		switch {
+		case limited:
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+			return
+		case failing:
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, `{"message":"Server Error"}`)
 			return

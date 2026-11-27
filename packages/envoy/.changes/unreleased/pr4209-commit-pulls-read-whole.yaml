@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    A results read whose commit's pull requests pass GitHub's cap on a response (1 MiB) reads
+    them whole, and a read that GitHub fails no longer reads as "no pull request". The REST list
+    of a commit's pull requests is read page by page, 32 at a time, and a page past the cap is
+    asked again at half its size. A list Dispatch still cannot read whole, and every other read
+    of a commit that GitHub fails or that stops before the commit, leaves a `before_merge` result
+    there `unknown` with the reason `read_failed`, never `other_commit`, so a pass there makes
+    the check's pass_stands `unknown` rather than `no`. The failed read's five-minute claim
+    carries the failure (`commit_pull_reads.failed`), so every read the claim refuses, in any
+    process, answers the same. Before, a commit whose list passed the cap failed every read, and
+    each read answered `other_commit` and pass_stands `no` for passes GitHub would have placed.
+time: 2026-11-27T22:41:18.000000000Z
+custom:
+    Issue: pr4209

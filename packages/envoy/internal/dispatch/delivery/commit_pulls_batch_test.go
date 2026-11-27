@@ -284,11 +284,12 @@ func TestTheBatchedReadAsksAboutEveryCommitInBatches(t *testing.T) {
 }
 
 // A query that fails drops no commit of its batch silently: the error comes back, the commits the
-// read did answer are in its answer, and the commits the failed query named are asked, so a caller
-// can tell the commits it learned from those GitHub failed and from those it was never asked
-// about. The read stops at the failure, so a batch after it is asked nothing: of 21 commits, GitHub
-// answering 502 to the first batch's query, the 20 of that batch are asked and the 21st is not. The
-// control is the same read with GitHub answering: every commit is asked, read and stored.
+// read did answer are in its answer, and the commits the failed query named are asked and failed,
+// so a caller can tell the commits it learned from those GitHub failed and from those it was never
+// asked about. The read stops at the failure, so a batch after it is asked nothing: of 21 commits,
+// GitHub answering 502 to the first batch's query, the 20 of that batch are asked and failed and
+// the 21st is neither. The control is the same read with GitHub answering: every commit is asked,
+// read and stored, and none failed.
 func TestABatchedReadThatFailsDropsNoCommitSilently(t *testing.T) {
 	t.Parallel()
 	const commits = CommitPullsBatch + 1
@@ -320,15 +321,15 @@ func TestABatchedReadThatFailsDropsNoCommitSilently(t *testing.T) {
 		t.Fatalf("a query GitHub answered 502 answered %v and stored %v, want neither", answer.Reads, stored)
 	}
 	for index, sha := range shas {
-		if asked := answer.Asked[sha]; asked != (index < CommitPullsBatch) {
-			t.Fatalf("commit %d of %d is asked %t; want the %d of the failed batch asked and the one after it not, since the read stopped at the failure",
-				index+1, commits, asked, CommitPullsBatch)
+		if asked, failed := answer.Asked[sha], answer.Failed[sha]; asked != (index < CommitPullsBatch) || failed != asked {
+			t.Fatalf("commit %d of %d is asked %t and failed %t; want the %d of the failed batch asked and failed and the one after it neither, since the read stopped at the failure",
+				index+1, commits, asked, failed, CommitPullsBatch)
 		}
 	}
 	control, err, controlStored, _ := run(t, false)
-	if err != nil || len(control.Reads) != commits || len(control.Asked) != commits || len(controlStored) != commits {
-		t.Fatalf("the control = %v asked %d, %v, %v; want every commit asked, read and stored",
-			control.Reads, len(control.Asked), err, controlStored)
+	if err != nil || len(control.Reads) != commits || len(control.Asked) != commits || len(control.Failed) != 0 || len(controlStored) != commits {
+		t.Fatalf("the control = %v asked %d, failed %v, %v, %v; want every commit asked, read and stored, and none failed",
+			control.Reads, len(control.Asked), control.Failed, err, controlStored)
 	}
 }
 
@@ -434,10 +435,10 @@ func TestACommitWithMorePullRequestsThanTheQueryReadsIsReadOverREST(t *testing.T
 // stop: GitHub answered them, and nothing of that answer was stored, so no answer of GitHub's is
 // behind their claims. Of three commits in one query, the first has eleven pull requests, so it is
 // read over REST, and GitHub answers that REST read 502: the read ends with GitHub's error, the
-// first commit is asked (GitHub failed it, so its claim stands, as the read of one commit GitHub
-// failed keeps its claim), and the two after it are not asked, so their caller gives their claims
-// back and the next read asks them at once. The control is the same read with the REST read
-// answered: all three are asked, read and stored.
+// first commit is asked and failed (GitHub failed it, so its claim stands, as the read of one
+// commit GitHub failed keeps its claim, and carries the failure), and the two after it are neither,
+// so their caller gives their claims back and the next read asks them at once. The control is the
+// same read with the REST read answered: all three are asked, read and stored, and none failed.
 func TestAReadThatStopsInsideAnAnsweredQueryGivesBackTheCommitsAfterIt(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, refused bool) (CommitsPullsAnswer, error, []string) {
@@ -462,13 +463,14 @@ func TestAReadThatStopsInsideAnAnsweredQueryGivesBackTheCommitsAfterIt(t *testin
 	if err == nil {
 		t.Fatal("a read whose REST read of the first commit GitHub answered 502 ended with no error")
 	}
-	if !answer.Asked[shas[0]] {
-		t.Fatalf("the commit whose REST read GitHub failed is not asked, so its claim would be given back though GitHub failed it")
+	if !answer.Asked[shas[0]] || !answer.Failed[shas[0]] {
+		t.Fatalf("the commit whose REST read GitHub failed is asked %t and failed %t, want both: its claim stands on GitHub's failure",
+			answer.Asked[shas[0]], answer.Failed[shas[0]])
 	}
 	for _, sha := range shas[1:] {
-		if _, read := answer.Reads[sha]; read || answer.Asked[sha] {
-			t.Fatalf("the commit %s after the stop is read %t and asked %t; want neither: the read stopped before storing GitHub's answer about it, so its claim must be given back",
-				sha, read, answer.Asked[sha])
+		if _, read := answer.Reads[sha]; read || answer.Asked[sha] || answer.Failed[sha] {
+			t.Fatalf("the commit %s after the stop is read %t, asked %t and failed %t; want none: the read stopped before storing GitHub's answer about it, so its claim must be given back",
+				sha, read, answer.Asked[sha], answer.Failed[sha])
 		}
 	}
 	control, err, shas := run(t, false)
@@ -476,9 +478,48 @@ func TestAReadThatStopsInsideAnAnsweredQueryGivesBackTheCommitsAfterIt(t *testin
 		t.Fatalf("the control: %v", err)
 	}
 	for _, sha := range shas {
-		if _, read := control.Reads[sha]; !read || !control.Asked[sha] {
-			t.Fatalf("the control's commit %s is read %t and asked %t; want both", sha, read, control.Asked[sha])
+		if _, read := control.Reads[sha]; !read || !control.Asked[sha] || control.Failed[sha] {
+			t.Fatalf("the control's commit %s is read %t, asked %t and failed %t; want read and asked, not failed", sha, read, control.Asked[sha], control.Failed[sha])
 		}
+	}
+}
+
+// GitHub's rate limit on a pull request's commit messages cuts a commit's answer short after its
+// head is written (storePullRequestFacts): that commit is asked and failed, a failure of GitHub's
+// whose claim stands, never an answer about the commit, and the commit after it in the same query
+// is neither, so its claim is given back. Of two commits in one query, the first's pull request
+// names no held issue in its title, body or branch, so the read pages its commit messages, and
+// GitHub answers that page 429. The control is the same read with the page answered: both commits
+// are read, and none failed.
+func TestARateLimitOnACommitsMessagesFailsThatCommit(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, limited bool) (CommitsPullsAnswer, error, []string) {
+		pool, ctx := deliveryTestPool(t)
+		_, fake, github, shas := seedCommitPullsFixture(t, ctx, pool, 77, 2)
+		github.set("acme/widgets", 500, "open", shas[0], "feature/unnamed", "", time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC))
+		github.edit(500, func(pull map[string]any) { pull["title"] = "unrelated work" })
+		github.mu.Lock()
+		github.commitsLimited = limited
+		github.mu.Unlock()
+		serveCommitPullsQuery(t, fake, github, "acme/widgets", nil)
+		answer, err := unrenamed().ReadThroughCommitsPulls(ctx, pool, fake.newTestClient(), "acme/widgets", shas, time.Now())
+		return answer, err, shas
+	}
+
+	answer, err, shas := run(t, true)
+	if _, limit := githubapp.AsRateLimit(err); !limit {
+		t.Fatalf("a read whose commit messages GitHub answered 429 ended with %v, want GitHub's rate limit", err)
+	}
+	if _, read := answer.Reads[shas[0]]; read || !answer.Asked[shas[0]] || !answer.Failed[shas[0]] {
+		t.Fatalf("the commit whose answer the rate limit cut short is read %t, asked %t and failed %t; want asked and failed alone",
+			read, answer.Asked[shas[0]], answer.Failed[shas[0]])
+	}
+	if _, read := answer.Reads[shas[1]]; read || answer.Asked[shas[1]] || answer.Failed[shas[1]] {
+		t.Fatalf("the commit after the stop is read %t, asked %t and failed %t; want none", read, answer.Asked[shas[1]], answer.Failed[shas[1]])
+	}
+	control, err, shas := run(t, false)
+	if err != nil || len(control.Reads) != len(shas) || len(control.Failed) != 0 {
+		t.Fatalf("the control read %v, failed %v, %v; want both commits read and none failed", control.Reads, control.Failed, err)
 	}
 }
 
