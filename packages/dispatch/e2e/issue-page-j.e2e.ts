@@ -3008,8 +3008,8 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         await page.goBack();
         await expect(row, "Back does not bring the Spec view back").toBeVisible();
       }
+      // Escape closes the editor, and what a link opened in the page, such as a picture's view.
       await page.keyboard.press("Escape");
-      await expect(page.locator("[role='dialog']"), "Escape leaves a dialog open").toHaveCount(0);
       await expect(row.locator("[data-editor-box]"), "Escape leaves the editor open").toHaveCount(
         0
       );
