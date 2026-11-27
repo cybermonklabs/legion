@@ -90,6 +90,12 @@ export default {
       threads_reply_not_sent: "Could not send the reply.",
       /** What New thread's box, which writes a new thread's first message, says there (R10). */
       threads_message_not_sent: "Could not send the message.",
+      /** What a box that writes a message says before its send, where the live session its
+       *  message goes to advertises no delivery mode, as `plainDelivery`'s contract and a
+       *  message box on `main` (`MentionComposer`) say (R10): New thread's, once the reader
+       *  chose the agent, and each box of an opened record. */
+      threads_no_delivery:
+        "This agent advertises no delivery mode, so a message sent to it records a failed attempt.",
     },
     EMPTY_STATE_LINES: {
       /** All, where the issue holds no thread that All lists (R3). */

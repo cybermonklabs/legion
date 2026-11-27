@@ -3,7 +3,7 @@ import type { MutationKey } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef } from "react";
 
 import { ApiError, api } from "../../../api/client";
-import type { DeliveryCapability, Message } from "../../../api/types";
+import type { Agent, DeliveryCapability, Message } from "../../../api/types";
 import { submitOnModifiedEnter } from "../../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../../hooks/useSending";
 import {
@@ -14,9 +14,14 @@ import {
   pageMutedText,
   pageSend,
 } from "../../../theme/classes";
+import { deliveryModesOf } from "../../conversation/delivery";
 import { deliveryPlan } from "../../conversation/send-request";
 import { useUnsentDrafts } from "../../conversation/unsent-drafts";
+import { useAgents } from "../../conversation/useAgents";
 import { composerNameOf } from "../../conversation/useKeptDrafts";
+import { registeredAgent } from "../../refs/agent-registry";
+import { roleHolders } from "../../refs/role-holders";
+import { partyOfAddress } from "../../refs/routes";
 import { type ThreadMessage, threadMessageWrite } from "../../threads/thread-message-write";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { authorText, pageChrome } from "../page-structure";
@@ -46,6 +51,17 @@ function messageInput(body: string, address: MessageAddress): CreateMessageInput
   return { body: plan.body, delivery: plan.delivery, target: thread.target, ...reply };
 }
 
+/** The session the registry response `agents` lists for the delivery address `target`: the
+ *  session a `session:` address names, or the holder of the role a `role:` address names, which
+ *  is the session Dispatch delivers to (`role-holders.ts`). Undefined for a session it does not
+ *  list, a role no session it lists holds, and an address of no party (`partyOfAddress`). */
+function listedRecipient(agents: readonly Agent[], target: string): Agent | undefined {
+  const party = partyOfAddress(target);
+  if (party?.kind === "agent-session") return registeredAgent(agents, party.session);
+  if (party?.kind === "role") return roleHolders(agents).get(party.role);
+  return undefined;
+}
+
 /**
  * A box of Threads that writes a message (dispatch://INFRA-5704/spec#b-r-mentions, R9, R11): the
  * box under an entry of a message thread, the one at its foot, and New thread's. It is this
@@ -63,6 +79,14 @@ function messageInput(body: string, address: MessageAddress): CreateMessageInput
  * before the reader chose its agent, offers no Send (R10). A box whose message answers none, New
  * thread's, writes a new thread: its write is named New thread and its refusal says the message
  * was not sent, where a reply's says the reply was not.
+ *
+ * Where the session the registry lists for the thread's target advertises no delivery mode
+ * (`deliveryModesOf`), the box says before the send that a send to it records a failed attempt,
+ * as `plainDelivery`'s contract and a message box on `main` (`MentionComposer`) say (R10), and
+ * the send goes as it would without the warning. The box reads the registry the cache holds and
+ * sends no read of it (R15): New thread's chooser reads it, and an opened record sends no read but
+ * its read mark's. Only a current list says a party takes no message: a registry not read, a
+ * failed read and a role no listed session holds say nothing of the modes a party takes.
  */
 export function MessageBox({
   address,
@@ -92,6 +116,12 @@ export function MessageBox({
   const body = unsent.useUnsent(name)?.body ?? "";
   const field = useRef<HTMLTextAreaElement>(null);
   const { sending } = useSending(sendKey);
+  // R10 and R15: the registry as the cache holds it, never read here, and only a current list.
+  const { agents, current } = useAgents(false);
+  const target = address?.thread?.target;
+  const recipient = current && target !== undefined ? listedRecipient(agents, target) : undefined;
+  const takesNoMessage =
+    recipient !== undefined && deliveryModesOf(recipient.capabilities ?? []).length === 0;
   const write = useKeyedWrite<Message, MessagePress, unknown, ThreadMessage>({
     detail: (press) => ({ body: press.body, issueKey }),
     inline: true,
@@ -159,6 +189,11 @@ export function MessageBox({
           </button>
         </div>
       </div>
+      {takesNoMessage ? (
+        <p className={`text-sm ${pageFailedText}`} {...pageChrome}>
+          {ANSWER_LINES.threads_no_delivery}
+        </p>
+      ) : null}
       {write.isError && !sending ? (
         <p className={`flex flex-wrap items-center gap-2 text-sm ${pageFailedText}`} role="alert">
           {/* Dispatch's own words for the refusal are a value of the page. The page's line

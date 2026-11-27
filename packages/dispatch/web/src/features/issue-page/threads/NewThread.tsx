@@ -44,8 +44,10 @@ interface Party {
  * `@` offers nothing and stores no mention (R11). It offers Send once an agent is chosen and it
  * holds words. Send writes a root message of the issue with the chosen party's target, in the mode
  * `plainDelivery` gives its live session's capabilities, or `aside` for a role no live session
- * holds, as `features/search/new-issue.ts` sends one. `onSent` takes Dispatch's
- * answer, which the view opens the new thread from.
+ * holds, as `features/search/new-issue.ts` sends one. Where the chosen live party advertises no
+ * delivery mode, the box says before the send that a send to it records a failed attempt, from the
+ * registry the chooser read (`MessageBox`). `onSent` takes Dispatch's answer, which the view opens
+ * the new thread from.
  */
 export function NewThread({
   issueKey,
