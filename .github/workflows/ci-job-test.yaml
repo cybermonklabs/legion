@@ -476,6 +476,16 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_step_expansion_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
 
+      # After setup-go too: the check's fixtures run go list over a scratch pair of modules, and
+      # the build's build and list a scratch legion for two targets. One step and one filter for
+      # both, each queued as a harness of its own: the check runs the build script's modes in every
+      # fixture, so the one filter selects both.
+      - name: Test the legion release path check and the legion build it asks
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_legion_release_paths_test"')
+        run: |
+          .github/scripts/harness-pool.sh start .github/scripts/check-legion-release-paths.test.sh .github/scripts/check-legion-release-paths.test.sh
+          .github/scripts/harness-pool.sh start .github/scripts/release-build-legion.test.sh .github/scripts/release-build-legion.test.sh
+
       # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
       # lane labels and a label that names nothing. After the fetch above: the filter names are the
       # computed filters'.
