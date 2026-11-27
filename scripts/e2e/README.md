@@ -122,13 +122,13 @@ Each item below names a script, then what it proves.
 - `pack-memory-job.sh`
 
   git and jj stay within memory in a large workspace under gVisor, measured as one Kubernetes Job on the worker image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role", for the checks `c-git-rows`, `c-jj-snapshot-memory`, `c-handoff-head-read-memory`, `c-shim-adoption-memory` and `c-budget-under-gvisor`:
-  the image's own `legion workspace-init cache`, `fetch` and `provision` make the clone and the jj workspace on the Job's disk volume, as an issue pod's are made, with each jj command of provisioning measured through a measuring `jj` first on `PATH`;
+  the image's own `legion workspace-init cache` and `provision` make the clone and jj workspace on the Job's disk volume, as an issue pod's are made, with each jj command of provisioning measured through a measuring `jj` first on `PATH`;
   for `c-pack-window-config` and `c-release-source`, the image's `git config --system --get` of the four pack settings, and its `jj --version` against `worker.Dockerfile`'s `ARG JJ_TOOL`;
   under the role's own `GIT_CONFIG` block, which the harness builds from its checkout (`go run ./internal/runtime/sandbox/rolegitconfig` in `packages/daemon`), the four pack settings read at command scope, beside the clone's values;
   `git log --first-parent -- <file>`, `git status`, a push of a new commit to a `git daemon` outside every measured process tree, and a fetch from GitHub of the default branch's newer commits (100 MiB or more) into a clone lacking them, each with the role's settings and with git's defaults forced;
-  on the workspace and on a copy of the provisioning root, the same edits, then `jj diff`, `jj diff --name-only`, a commit made and pushed with git, `handoff-record.ts`'s `STANDING` read, unmeasured, `git fetch` of the feed's heads as refs the clone lacks (`refs/remotes/feed/*`) and `git commit` at fixed dates, then `describedArgs`, importing both, another commit, and `adoptionArgs`, with the image's jj on the workspace and with jj `0.45.1-sami.20260910-043938` on the copy;
+  on the workspace and on a copy of the provisioning root, the same edits, then `jj diff`, `jj diff --name-only`, a commit made and pushed with git, `handoff-record.ts`'s `STANDING` read, unmeasured, `git fetch` of the provisioned clone's heads as refs the copy lacks (`refs/remotes/source/*`) and `git commit` at fixed dates, then `describedArgs`, importing both, another commit, and `adoptionArgs`, with the image's jj on the workspace and with jj `0.45.1-sami.20260910-043938` on the copy;
   and R10's rows: the seven role commands R10 names, with the same fetch and commits, and provisioning's jj commands replayed on a fresh clone, each on a copy of its own, with jj `0.46.0-sami.20261008-234600`, the control, and the image's jj at `JJ_PACK_MAPPED_LIMIT` `64m`, `256m`, `512m` and `1g`.
-  Copies hardlink the clone's packs and `cp -a` the rest, alternates too; a disk too small stops it.
+  Copies hardlink the clone's packs and `cp -a` the rest; a disk too small stops it.
   Each measured command runs under GNU time and `lib/pack-memory-peak.py`, which every 0.1 s stops its tree (lest jj's chunk churn be read twice) to read `smaps`, and prints its largest total, that sample's pack `Rss` and anonymous memory, each part's peak, each process's split, the time stopped and the pod's cgroup charge;
   with the settings, a git row holds when the pod's charge, or the push's own tree, is under 2 GiB, and an image jj row when both figures are; a control under 2 GiB (git) or the pack (jj) is void.
   An R10 row holds when its stdout equals the control row's, its pack figure (largest pack `Rss`) is within its budget plus 8 MiB per object store plus 32 MiB, and its derived figure (GNU time's peak less its largest anonymous and other-file memory) within that plus 128 MiB; a control under 90% of the pack fails.
@@ -137,6 +137,48 @@ Each item below names a script, then what it proves.
   Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), `go` and a checkout of the head measured, the image to measure by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class, storage class, labels and annotations (`--node-selector`, `--storage-class`, `--label`, `--annotation`), whose values are in that deployment's own declaration and in no file of this repository.
   `--repo` and `--walk-file` name another public repository and file than firefox's;
   `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), creates nothing, and exits.
+  Legion pod only
+
+- `repository-cache-burst-job.sh`
+
+  a burst of 20 `legion workspace-init provision` runs at once leaves the repository cache pod's CPU below 0.2 CPU while the cache's bucket is on, and above 0.5 CPU while it is off (check `o2` of INFRA-5789), measured as one Kubernetes Job on the worker image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
+  the image's own `legion workspace-init cache` and `provision` run against a double of Cloud Storage, IAM Credentials' `signBlob` and the metadata server (`packages/daemon/internal/repocache/fakegcs`), because no identity a Job may use can sign an address (`iam.serviceAccounts.signBlob`), so a real bucket's signed addresses are proved in production alone, and not by this run.
+  Each provision runs as an issue pod's one init container does: `--issue BURST-<n> --repo <owner>/<repo> --default-branch <the clone's> --root <a directory of its own> --credential-helper '!legion git-credential'`, with `LEGION_PROVISION_TOKEN_FILE`, `LEGION_REPOSITORY_CACHE_URL`, `LEGION_REPOSITORY_CACHE_TOKEN_FILE` and a `TMPDIR` of its own, and the probe reads its `workspace-init:` lines.
+  The Job is one gVisor pod of three containers, `double`, `cache` and `fetchers`, each with a directory of its own on one disk volume mounted at `/scratch`, and two init containers that stage the files.
+  The `double` is the non-test Go files of the package and of `cmd/fakegcs` in the harness's checkout, written into the Job's command and compiled there with the worker image's Go, never installed in the image.
+  The probe the Job runs is `repository-cache-burst-probe.sh` beside the harness, which writes it and the double's sources into the Job's command, since a Job holds no checkout to read them from, so the files are one recipe and none is changed without the others, and the harness is run from a checkout of the commit whose worker image `--image` names.
+
+  - Measuring.
+    The `cache` container's request and limit are the production cache's default, 1 CPU and 4Gi, the same in both arms, and its sampler reads only that container's cumulative CPU counter (cgroup v2 `cpu.stat` `usage_usec`, or v1 `cpuacct.usage`, found from `/proc/self/cgroup` and `/proc/self/mountinfo`), so the double's and the fetches' CPU is not in it.
+    The probe prints both files once, with no pod uid, and keeps a sanitized copy of their shape under `testdata/repository-cache-burst/`, which its `self-test` parses.
+    Before the arms, the image's real `legion config check` passes a fixture `legion.yaml` with both `runtime.kubernetes.repository_cache` keys, passes one with neither, and refuses the bucket alone naming `service_account`.
+    An attribution check then runs: a 3-second CPU loop in the `fetchers` container must move the `cache` container's counter by under 0.5 CPU-seconds, the same loop in the `cache` container by 2.4 to 3.6, and the measuring loop's own cost, idle for 20 seconds, must be under 0.02 CPU, a tenth of the enabled arm's ceiling, or the run is void.
+
+  - The arms and the verdict.
+    The enabled arm starts the cache with `STORAGE_EMULATOR_HOST` at the double and `LEGION_REPOSITORY_CACHE_BUCKET` set, waits for `/healthz` ready and for `GET /packs` to answer 200 with a manifest of every pack and index of the clone with its size (printed: the count, the bytes and the names, never an address), reads the counter, releases 20 provisions at one barrier (a file on the volume), reads it every 10 seconds and when the last provision exits, and stops the cache.
+    `--refresh` is `24h`, so no refresh or repack lands in a timed interval.
+    The 20 issue roots are deleted, and the disabled arm starts the cache on the same clone root with neither variable and does the same.
+    Each arm prints the clone's refs count and pack sizes once, and each provision's exit status, wall time, `workspace-init: source=` line and reason, and `workspace-init: bucket object=` lines, never a URL, a query, a token or a ref's contents: every output is searched for `X-Goog-`, `Bearer`, `Authorization` and both tokens first, and a hit fails the run and prints nothing of that file.
+    Each interval's CPU is the counter's change over its wall seconds, the final partial interval included.
+    The run passes when, in the enabled arm, 20 provisions exit 0, each with `source=bucket` and the object lines of the manifest it was given, none with `source=/tar`, at least one sample read `/healthz`'s stream count and none found a `/tar` stream in flight, and every interval below 0.2 CPU;
+    and, in the disabled arm, 20 provisions exit 0, each with `source=/tar reason=/packs is not served`, `/packs` answers 404, and at least one full interval (9.5 seconds or more) is above 0.5 CPU.
+    A disabled arm with no such interval is void, not a pass: the run is too short to tell the arms apart.
+    The probe's last line is `JOB-RESULT pass`, `JOB-RESULT fail` or `JOB-RESULT void`, and the harness reads that line, never the Job's phase.
+    A leak fails the run, even one that stopped before any arm ended.
+    `bash scripts/e2e/repository-cache-burst-probe.sh self-test` runs on any Linux host with bash 4 or later, GNU coreutils, `jq` and `awk`: the cgroup parser against the fixtures, the counter reads, the manifest check, and the verdict against synthetic series (a passing one, an enabled interval at 0.25 and at exactly 0.2, a disabled arm that never crosses 0.5 in a full interval or only in a partial one, a wrong source, an enabled arm whose `/healthz` was never read and one read once, a leak, a run stopped before any arm ended with a leak and without one, a failed attribution).
+    `scripts/e2e/lib/repository-cache-burst-probe.test.ts` runs that self-test under `bun test`.
+
+  - Inputs and running.
+    Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), `kubectl` and `jq`, the image to test by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class, storage class, labels and annotations (`--node-selector`, `--storage-class`, `--label`, `--annotation`, or one file of them, `--job-settings`, whose lines are `<name>=<value>` with the names `node-selector`, `storage-class`, `namespace`, `service-account`, `label` and `annotation`), whose values are in that deployment's own declaration and in no file of this repository.
+    The pod's CPU, memory and disk are inputs too (`--fetch-cpu`, `--fetch-memory`, `--double-cpu`, `--double-memory`, `--disk`), and the harness prints their totals for the cost annotations.
+    The default disk, 120Gi, is sized for the default repository (`nodejs/node`, one pack and index of 1,777,396,269 bytes, measured 2026-11-26 in Job `infra-5789-cache-burst-fbmgg`): the cache's clone, the double's copy and 20 fresh issue roots at once, each the clone's packs, jj's import of them and a checkout of the default branch's files; the probe reads the clone's real size and the bytes of its default branch's files and refuses (void) when the volume cannot hold 20 roots beside it.
+    The default fetchers' CPU, 16, is sized for 20 `git fsck --connectivity-only` runs at once: on firefox's history, 20 of them on 8 CPU ran out of both the bucket attempt's 15-minute bound and `/tar`'s 30-minute bound, and on the default repository 16 CPU ran each of the 20 fills of the burst's runs of 2026-11-26, before the provision took the fill over, in 91 to 208 s; a provision runs its jj steps and its checkout after its fill.
+    A deployment whose admission lowers a CPU request that equals its limit gives the opt-out label of a timed run with `--label`, and the harness reads the cache container's request back from the admitted Job and refuses the run when it is not 1 CPU.
+    `--repo` names another public repository than node's;
+    `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), prints the cache container's CPU request as admitted, creates nothing, and exits.
+    Run it detached, as `docs/kubernetes.md`, "Running a workload in the cluster from a role", and the harness's own header set out (`flock "$log" setsid -f bash …`): it runs about ten minutes on the default repository, and its clean-up is a trap that a tool killing a long call does not let run.
+    Exit statuses: 0 pass; 1 the Job ran and a check failed; 2 the harness could not run, or the run is void; 3 the Job reached no verdict inside its deadline.
+
   Legion pod only
 
 - `controller-start-tmux.sh`
@@ -247,9 +289,10 @@ Each item below names a script, then what it proves.
 
 - `shared-clone-kind.sh`
 
-  on a throwaway kind cluster with Agent Sandbox v1.0.3 and gVisor, run as a GitHub-hosted proof on a dispatch at a branch's head alone (a GKE Autopilot cluster refuses the privileged pods kind needs, and the pods run the worker image published for that head), an issue pod Legion's own loader, `sandboxOptions` and Sandbox runtime build provisions its clone of a public repository of some tens of megabytes with `git clone --shared` from its read-only feed:
-  both init containers end 0, the clone's `.git/objects/info/alternates` names the feed's objects at `/legion/feed/<owner>/<repo>.git/objects` and its own `objects/pack` holds no pack, `du -s` of its `.git/objects` is under a tenth of the feed's objects while a plain `git clone --no-checkout` of the same feed, the release before's clone, copies them, the feed is read-only in `roles`, `git fsck --connectivity-only` passes, and `git log` and `jj log` of the default branch agree as the launched architect's agent runs them;
-  a second issue pod, launched once the repository cache the first launch made is Ready, fills its feed from the cache's tar with under 1 MiB from GitHub, and its clone borrows that feed's objects and passes `git fsck` (`cache-second-pod`)
+  on a throwaway kind cluster with Agent Sandbox v1.0.3 and gVisor, run as a GitHub-hosted proof
+  at a branch's head alone, two issue pods Legion's own loader, `sandboxOptions` and Sandbox runtime
+  build hold one clone of `tmux/tmux`, with no legacy repository directory or mount, narrow refs,
+  no tags and a default-branch-only repository cache
 
 - `dispatch-claimant-delivery.sh`
 
@@ -271,7 +314,16 @@ Each item below names a script, then what it proves.
   for `number_project`, `status`, `author`, `updated_since` and `keywords_only` in turn, `GET /api/v1/search` carrying the member answers the base build's own unnarrowed answer, which is the hazard this proof records;
   `GET /api/v1/search/results` carrying it answers 404 `NOT_FOUND` there;
   this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
-  Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
+  Deleting `GET /api/v1/search/results`'s route file (`route_api_v1_search_results+get.go`) leaves neither build serving the path, which is the negative control
+
+- `hook-prompt-two-builds.sh`
+
+  the daemon that keeps a hook prompt's row waiting while no live session holds its role ships before the listener that refuses to keep a role publish naming no source session, driven through `TestIdleReleaseAndWake/TheHookPromptsOfAReleasedRoleReachItsWokenSessionOnce` (a real daemon, a real listener binary, a `nats-server` container and a loopback PostgreSQL the caller names) from two trees — the tree of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, which for this proof is `legion-v23.21.0`, the daemon release before that change, and this checkout — with the listener of either tree (`LEGION_E2E_REPO_ROOT`):
+  the base tree's test passes with the base tree's listener, which is the negative control;
+  with this checkout's listener the base tree's test fails on the line that says no message reached the released role's woken session, since that daemon ends each prompt's row at the listener's 404;
+  and this checkout's test passes with this checkout's listener, each prompt reaching the woken session once.
+  Run by hand from a full checkout with go, git, tar and docker.
+  Each case reads its subtest's own result: PASS only with the subtest's `--- PASS` line and `go test` exiting 0, FAIL only with its `--- FAIL` line and a non-zero exit, and SKIP or UNKNOWN, which no case takes, for a skip or anything else; [`lib/hook-prompt-two-builds.test.ts`](lib/hook-prompt-two-builds.test.ts) (`bun test scripts/e2e/lib`) drives that reader over a stand-in `go`
 
 - `verification-results.sh`
 
@@ -356,7 +408,7 @@ Each item below names a script, then what it proves.
 
   a turn that ends in a provider error keeps its task, and the operator restarts the claims such turns leave (dispatch://INFRA-956 R2 and R3), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own:
   a 529 keeps the task on the claim and the daemon sends it to the same session again after 30 s, 60 s and 120 s;
-  the sixth such turn in a row tells the project's controller, once, and holds nothing;
+  the sixth such turn in a row tells the project's controller once and holds nothing (the daemon tells the issue's architect too, and this script reads the controller's copy alone);
   an OpenAI `finish_reason: content_filter` with no fallback model left carries no HTTP status at all, so the task goes again after 30 s, holding the issue for nobody;
   an HTTP 400, a client error that is none of 401, 403, 408 and 429, fails the claim and holds its issue for its architect;
   and `legion claims stop`, `legion claims retry --fresh-session` and `legion claims list`, the built binary against that daemon, drive and read the claims the first and the fourth leave.
@@ -468,12 +520,13 @@ Each item below names a script, then what it proves.
 
 - `dispatch-broker.sh`
 
-  every Dispatch client a Legion deployment runs writes with a token the secrets broker issued, and only inside its own project (dispatch://INFRA-4425's K2, K3 and K4), driven against the broker's own test rig on a PostgreSQL the caller names, the real Dispatch server this checkout builds on a database of its own behind a recording proxy, and the real clients — the daemon's own Dispatch client, the `dispatch` command, and one process holding the client that command builds and the client the pi-envoy plugin builds:
-  the daemon's client posts an issue message on an issue of its project, accepted under `DPoP`, and on an issue of another, refused 403 `PROJECT_SCOPE`;
+  every Dispatch client a Legion deployment runs writes with a token the secrets broker issued (dispatch://INFRA-4425's K2, K3 and K4), and a tool's reads go through `dispatch proxy` with one trade for each renewal of the role's token (dispatch://INFRA-4799's C2), driven against the broker's own test rig on a PostgreSQL the caller names, the real Dispatch server this checkout builds on a database of its own behind a recording proxy, and the real clients — the daemon's own Dispatch client, the `dispatch` command, and one process holding the client that command builds and the client the pi-envoy plugin builds:
+  the daemon's client writes on an issue of its project and on an issue of another, an issue message on each and on the other a status and its step, rating, plan and role holder records, each accepted under `DPoP`;
   a write of it whose proof names an origin outside `DISPATCH_PROOF_ORIGINS` is refused 401 `BROKER_TOKEN_PROOF_INVALID`;
-  `dispatch whoami`, in a role's environment read from the launch golden `pod-with-dispatch-broker.json`, acts for the role's person and writes its project alone, and without the setting both writes carry `Bearer` and whoami runs under the shared token;
-  with a role's token of its project every kind of write a role makes, through the command and through the plugin's client, and with the daemon's token every method of the daemon's client, is answered 2xx, while with a token of another project each write that names an issue or a document of the first is refused 403 `PROJECT_SCOPE`, and an upload into another session's conversation 403 `SESSION_SCOPE`;
-  and with `LEGION_E2E_TOKEN_RENEWAL=1`, in place of those, the three long-lived clients write over three lifetimes of a 420 s token with no restart, and once their pod's token is one the broker refuses for good they stop with the broker's refusal and send Dispatch nothing, which takes about fifteen minutes.
+  `dispatch whoami`, in a role's environment read from the launch golden `pod-with-dispatch-broker.json`, acts for the role's person and names the project its token names, and without the setting both messages carry `Bearer` and whoami runs under the shared token;
+  with a role's token of its project every kind of write a role makes, through the command and through the plugin's client, three writes of the command on another project's issue, and with the daemon's token every method of the daemon's client, is answered 2xx, while with a token of another project each write on the first project's objects is accepted too, but for the daemon script's step record, its rating and its plan, refused 403 `STEP_WRITER`, and its role holders, refused 403 `ROLE_HOLDER_FORBIDDEN`, since that token's session is no daemon's, and an upload into another session's conversation is refused 403 `SESSION_SCOPE`;
+  with `LEGION_E2E_TOKEN_RENEWAL=1`, in place of those, the three long-lived clients write over three lifetimes of a 420 s token with no restart, and once their pod's token is one the broker refuses for good they stop with the broker's refusal and send Dispatch nothing, which takes about fifteen minutes;
+  and with `LEGION_E2E_PROXY=1`, alone, in place of all of those and of the `LEGION_E2E_TOKEN_RENEWAL=1` run, `TestTheProxyServesAToolRunWithOneTradeForEachRenewal` runs `dispatch proxy` in a role's environment with a Python standard-library client over its unix socket for 480 s, longer than two renewal periods, 420 s, of a 420 s token: a file's version reads back with the bytes uploaded, one comment POST sent twice under one `Idempotency-Key` is answered 201 both times and replayed the second, the client makes at least 2,000 requests and each read is answered 200, and the trades, counted as distinct tokens at the recording proxy, are exactly 3, the second and the third each traded at the half life of the one before, at most 1 + T / (L - 300) and the count the proxy's exit line names, while the same proxy without `DISPATCH_TOKEN_BROKER` exits 2 and runs no command, which takes about nine minutes past the rig's start.
   Each test writes its tables to `TMPDIR` and logs their path.
   The Envoy listener and GitHub are stand-ins that know no session and no installation; no cluster
 
@@ -724,6 +777,11 @@ a daemon that answers `/healthz` and never latches fails the run all the same.
 It is read at the first boot and again after the restart, never at one of them alone:
 the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered whether or not the latch was set — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
 
+After the first boot, the run also reads `legion state`'s `P0:` line and requires it to carry `P0 bound 3 in force, 3 in legion.yaml; none set while the daemon runs`: `admission_p0_bound: 3` from its `legion.yaml` as the bound in force and in `legion.yaml`, with none set while the daemon runs.
+It then runs `legion project set-p0-bound --bound 0 --reason …` and requires exit 1 with the daemon's 400 named on stderr, and reads `400` `INVALID_P0_BOUND` off the same operator route.
+Stage 1's daemon has no `dispatch_url`, so it runs no workflow and refuses every valid live change `P0_BOUND_UNAVAILABLE`, and an invalid bound `INVALID_P0_BOUND` first;
+this step proves the configured bound and the floor of 1 on the real binary, so it reads neither the counts the `P0:` line gives before the bound nor the words of the refusal.
+
 After any exit — pass, failure, or an interrupt
 — the `EXIT` trap removes the container and signals the daemon, the proxy and the keepers;
 `docker ps -a --filter name=legion-e2e-pg` comes back empty and nothing is left holding the run's ports.
@@ -733,7 +791,7 @@ A failed run prints each log of `<work>/logs` that holds anything: the two daemo
 
 Every step is fatal and names its reason:
 a keeper that never held a port, a wrong password the daemon does not refuse, a refusal that does not name its host or that prints the password, a proxy that exits or holds no port, a first tmux that is a script or mise itself while `mise which tmux` names no tmux (`real_bin_path` refuses), a daemon that exits before it answers `/healthz` (the run stops at once and names the daemon's exit status; a daemon behind the proxy that exits at the first reset, as one that opens its store once does, stops it there), a `/healthz` that never answers (each poll times out after 2 s:
-the kept port queues a request no daemon accepts), a `/readyz` that answers anything but 200 at either boot or behind the proxy (the failure names the status it got and the body with it, which says whether the daemon called itself starting or stopping), a daemon behind the proxy whose log does not hold exactly its two waits to open the store, attempt `1/10` with `retryIn` `1s` and `2/10` with `2s`, a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
+the kept port queues a request no daemon accepts), a `/readyz` that answers anything but 200 at either boot or behind the proxy (the failure names the status it got and the body with it, which says whether the daemon called itself starting or stopping), a daemon behind the proxy whose log does not hold exactly its two waits to open the store, attempt `1/10` with `retryIn` `1s` and `2/10` with `2s`, a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a `P0:` line that does not report 3 in force and in `legion.yaml` with none set while the daemon runs, a `legion project set-p0-bound --bound 0` that does not exit 1 with the daemon's 400 named on stderr, an operator route that does not answer the same set `400` `INVALID_P0_BOUND`, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
 `stop_daemon` reads and judges the exit status, because `daemon.Run` returns 0 on a cancelled context — a non-zero status there is a defect, not a stop.
 
 Two notes on what the script had to learn about its own surface:
@@ -1674,7 +1732,7 @@ Here:
 
 1. **`begin bridge`**, right after `begin snapshot` (so a leaked bridge object shows up in `namespace-clean`'s before/after diff even if its own teardown fails) and before `begin session-db`:
    the operator context creates one pod and one ClusterIP Service, both named `bridge-<project>` and labelled `legion.dev/project=<project>`, running `mirror.gcr.io/jpillora/chisel` (pinned by digest) as a reverse-tunnel server
-   — non-root, read-only root filesystem, every capability dropped, tolerating the `legion` pool's taint without requiring it, and carrying the same eviction-protection annotation pair every Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`)
+   — non-root, read-only root filesystem, every capability dropped, and carrying the same eviction-protection annotation pair every Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`)
    — without them the bridge pod, alone on its own node, is fair game for GKE's node consolidation mid-run.
    Only the chisel server's *data* ports, the ones the caller names, are on the Service, each a Service port named `p<port>` (here the worker stream's and the session database's);
    its control port is never exposed by the Service or the cluster network, reachable only through `kubectl port-forward` under the operator context.
@@ -1866,7 +1924,7 @@ it appends its pod's uid to a marker file on the pod's own disk and sleeps, so t
 That marker proves a role's identity within one pod and nothing across pods
 — the disk dies with the pod, so a replacement starts with an empty one — and continuity across a pod is read from the session table instead.
 The runtime's settings: a 5-minute boot timeout, 3 registration intervals, a 15-second termination grace, a 10-second probe interval, storage class `LEGION_E2E_STORAGE_CLASS` (AWS's `gp2`, GKE's `standard-rwo`), a 20Gi issue volume, the daemon's default reservations with the issue pod's overridden field by field (`liveIssueOverride`:
-2500m CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling beyond the Legion pool the runtime selects:
+2500m CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling, so no pod selects or tolerates anything of a node pool:
 no pod asks for or keeps off another pod's node.
 
 The checks, in order, each printing what it observed and then `CHECK <name>: PASS`:
@@ -1912,9 +1970,13 @@ Each item below names a check, then what it does and what it requires.
 
 - `root-ready`
 
-  Spawn of the root: its Sandbox Ready, the returned locator's `podUid`, container (`roles`) and process incarnation, the init log (`pods/log`) carrying `workspace-init: /legion/workspaces/sjawhar/legion-smoke/s4a-1 on legion/S4A-1`, and a hello registered at generation 1 with that generation's token.
-  The root is the run's first issue pod, so the run's repository has no cache before it:
-  its launch makes the cache Sandbox (`legion-<project>-cache-<owner>-<repo>-<hash>`, recorded for the teardown first), and the root's fetch log ends `workspace-init fetch: <n> bytes from the repository cache http://<cache>.<namespace>.svc:8418 in <d>, its history verified in <d>; <m> bytes from GitHub for the delta (<k> refs)`, the address the runtime names, `<m>` under 1 MiB and no clone from GitHub
+  Spawn of the root: its Sandbox Ready, the returned locator's `podUid`, container (`roles`) and
+  process incarnation, the init log (`pods/log`) carrying `workspace-init: /legion/workspaces/sjawhar/legion-smoke/s4a-1 on legion/S4A-1`, and a hello registered at generation 1 with that generation's token.
+  The root is the run's first issue pod, so its launch makes the repository cache Sandbox
+  (`legion-<project>-cache-<owner>-<repo>-<hash>`, recorded for teardown first).
+  Once the cache is Ready, the root's provision log carries `workspace-init: <n> bytes from the
+  repository cache http://<cache>.<namespace>.svc:8418 in <d>, its history verified in <d>; <m>
+  bytes from GitHub for the delta (<k> refs)`, with `<m>` under 1 MiB.
 
 - `gvisor`
 
@@ -1922,7 +1984,7 @@ Each item below names a check, then what it does and what it requires.
 
 - `resources`
 
-  the root pod's one `roles` container and its two init containers each reserve the issue pod's one reservation, `runtime.kubernetes.resources.issue` as the rig sets it (`liveIssueOverride`:
+  the root pod's one `roles` container and its init container each reserve the issue pod's one reservation, `runtime.kubernetes.resources.issue` as the rig sets it (`liveIssueOverride`:
   2500m CPU, 4Gi of memory, and ephemeral-storage 10Gi as both request and limit), cpu and memory with request equal to limit, so the pod is `Guaranteed`;
   it carries no affinity but GKE Autopilot's own extended-duration one under `LEGION_E2E_PLATFORM=gke-autopilot`;
   `/proc/meminfo`'s `MemTotal` inside the pod is within 3 % of the `roles` container's memory limit on both platforms, the pod cgroup's own limit as gVisor sizes the sandbox;
@@ -2086,7 +2148,7 @@ Each item below names a check, then what it does and what it requires.
 
 - `second-owner`
 
-  an issue on `LEGION_E2E_REPO_SECOND_OWNER`, a repository of another owner, gets an issue pod whose init log names its workspace from that repository's default branch as GitHub names it, whose launch makes that repository's own cache (recorded for the teardown first) and whose fetch log streams its feed from it alone, and whose agent is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh` (one directory per owner account its App is installed on, the run's two owners among them), `GH_CONFIG_DIR` its own owner's directory and `LEGION_GH_PATH=/usr/local/bin/gh`.
+  an issue on `LEGION_E2E_REPO_SECOND_OWNER`, a repository of another owner, gets an issue pod whose init log names its workspace from that repository's default branch as GitHub names it, whose launch makes that repository's own cache (recorded for the teardown first) and whose `workspace-init` provision reads the cache tar and GitHub delta, and whose agent is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh` (one directory per owner account its App is installed on, the run's two owners among them), `GH_CONFIG_DIR` its own owner's directory and `LEGION_GH_PATH=/usr/local/bin/gh`.
   Under the agent's own environment its gh, the image's `legion gh` wrapper, answers `gh api repos/sjawhar/legion-smoke --jq .full_name` from sjawhar's directory;
   `git ls-remote` of sjawhar/legion-smoke through the clone's `legion git-credential` helper answers its `HEAD`;
   and the request a `git push` there opens with, `GET https://github.com/sjawhar/legion-smoke.git/info/refs?service=git-receive-pack` sent with the credential that same helper gives for it, answers `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
@@ -2098,14 +2160,14 @@ Each item below names a check, then what it does and what it requires.
 
   the cache the root's launch made is Ready in the runtime's stores at its Service, `http://<cache>.<namespace>.svc:8418`, which the cluster holds as the controller made it:
   controlled by `Sandbox/<cache>`, selecting `agents.x-k8s.io/sandbox-name-hash` at the hash of the cache's name, and headless (`clusterIP: None`) with no `externalName`, the shape the launch checked;
-  inside the cache's pod, `curl localhost:8418/healthz` with no token answers `ready: true` for the repository, with bytes and a fetch time no older than its refresh and two minutes, at the commit GitHub named for the default branch at that fetch:
+  inside the cache's pod, `curl localhost:8418/healthz` with no token answers `ready: true` and `defaultBranchOnly: true` for the repository, with bytes and a fetch time no older than its refresh and two minutes, at the commit GitHub named for the default branch at that fetch:
   the branch's head now, or, when another run has merged into the shared repository since, a commit on the branch's first-parent line whose next commit landed after the cache's fetch (less ten seconds), logged;
   and `/tar` answers 401 naming nothing without its token and 200 with the token its container holds, handed to curl on its stdin (`-H @-`), never in a process's argv
 
 - `cache-second-pod`
 
-  another issue pod of the run's repository (`cache-b`, on an issue key of its run's own, `S4A-<n>` with `<n>` the FNV-1a hash of the run's project), launched while the cache is Ready, logs the same stream from the cache, `<m>` under 1 MiB;
-  its clone's `.git/objects/info/alternates` names the feed's objects at `/legion/feed/<owner>/<repo>.git/objects`, so it reads them in place, and `git fsck --connectivity-only` passes through them with the feed mounted read-only
+  another issue pod of the run's repository (`cache-b`, on an issue key of its run's own, `S4A-<n>` with `<n>` the FNV-1a hash of the run's project), launched while the cache is Ready, logs its cache tar and GitHub delta, `<m>` under 1 MiB;
+  its clone owns its packs, has no tags and passes `git fsck --connectivity-only`
 
 - `cache-lost-volume`
 
@@ -2114,7 +2176,7 @@ Each item below names a check, then what it does and what it requires.
   deleted when the harness ends, and only while it still names that commit, so the run's teardown never deletes a branch the run did not push), checks that commit is neither the default branch's nor the head the cache serves, and checks inside the cache's pod that its clone lacks it (`git cat-file -e`);
   then, with no runtime running, deletes `cache-b`'s Sandbox, which takes its pod and, with the pod, the disk its workspace was on
   — what every stop of an issue now leaves.
-  A fresh runtime relaunches `cache-b` into a new Sandbox and a new pod with a disk of its own, whose fetch log streams the cache again and, while the cache still lacks the commit, brings more than no bytes from GitHub for the delta, whose init log reads `workspace-init: <dir> on legion/S4A-<n> from <default branch>`, whose workspace's `jj log -r @-` is the pushed commit, and whose `.legion-e2e/S4A-<n>.txt` holds the pushed line: the branch is where the work survived
+  A fresh runtime relaunches `cache-b` into a new Sandbox and a new pod with a disk of its own, whose provision reads the cache again and, while the cache still lacks the commit, brings more than no bytes from GitHub for the delta, whose init log reads `workspace-init: <dir> on legion/S4A-<n> from <default branch>`, whose workspace's `jj log -r @-` is the pushed commit, and whose `.legion-e2e/S4A-<n>.txt` holds the pushed line: the branch is where the work survived
 
 - `re-adopt`
 
@@ -2219,9 +2281,9 @@ Nothing outside `legion` is touched.
 What the run had to learn about production (AWS, `LEGION_E2E_RUNTIME_IDENTITY_KIND=aws-iam-role`):
 
 - **Nothing ties a pod to a node.**
-  Every issue pod owns its volume and carries no affinity, so the scheduler bin-packs it wherever the pool has room for its reservation, and Karpenter adds a node under the `legion` NodePool's floor, `karpenter.k8s.aws/instance-cpu` Gt 3 (set in the cluster's own infrastructure code), when none has.
+  Every issue pod owns its volume and carries no affinity, so the scheduler bin-packs it wherever a node of the cluster has room for its reservation, and Karpenter adds a node when none has.
   Under the tree-volume layout before LEGION-632 every pod of a tree had to join the node of the tree's first pod, and a `c7a.medium`'s 8 pod slots, 7 of them daemonsets, left no room for a second:
-  that is what the floor was set for, and it now only decides the smallest node the pool adds.
+  that is what the `legion` NodePool's floor, `karpenter.k8s.aws/instance-cpu` Gt 3 (set in the cluster's own infrastructure code), was set for while Legion's pods ran on that NodePool.
 
 - gVisor on production reports `4.19.0-gvisor` from `uname -r`.
 
@@ -2387,11 +2449,12 @@ Its verdict is one line, just before the evidence line:
 or `stage 4b e2e: BLOCKED (check <check>)` when the checkpoint could not run and the teardown checks (`transcripts`, `namespace-clean`, `production-audit`) passed, which makes the run no verdict on the change while the checkpoints before it stand, and gets no notes.
 Capacity is such a stop.
 No pod asks for or keeps off a node: each issue pod carries its own disk and the issue pod's one cpu and memory reservation, shared by its six roles (docs/kubernetes.md "Issue sizing:
-one reservation per pod"), so `preflight` counts the `legion` pool's room in pods of that reservation under the run's resources (`lib/stage4b-room.jq`) and ends BLOCKED `capacity: …` when it cannot place the run's four pods at once:
+one reservation per pod"), so `preflight` counts the room for the run's four pods at once in pods of that reservation under the run's resources (`lib/stage4b-room.jq`):
 tree 1's root and its two children beside tree 2's root.
-Its room is what each Ready, schedulable pool node, neither tainted `karpenter.sh/disrupted` nor being deleted, has free beside every non-terminal pod placed on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for beside what it already runs (a pool with no limit bounds nothing).
+It counts on the nodes the run's pods may use: each Ready, schedulable node, neither tainted `karpenter.sh/disrupted` nor being deleted, that carries every label of the run's `runtime.kubernetes.scheduling.node_selector` (every node, as the run sets none) and of RuntimeClass `gvisor`'s `scheduling.nodeSelector`, and whose `NoSchedule` and `NoExecute` taints the run's tolerations or the RuntimeClass's tolerate, with what it has free beside every non-terminal pod placed on it, of any namespace: admission adds the RuntimeClass's scheduling to every pod that runs under it, and refuses the pod where the RuntimeClass's node selector names a label the run's names at another value, so then no node admits the run's pods and the read names each such label with both values.
+No one NodePool's limits bound those pods and the cluster may add nodes, so the room bounds nothing: a cluster with no such node now, one whose matching nodes are at zero among them, is noted and the run goes on, and `preflight` ends BLOCKED `capacity: …` only where admission refuses the run's pods, naming each conflicting label, since no node the cluster has or adds can take a refused pod (`preflight_room`).
 A wait that needs a tree's pods placed names that tree (or the reachability pod) as its subject.
-If it times out while one of its subject's pods is Pending Unschedulable, and Karpenter's newest event of any reason for that pod's uid, no older than its Unschedulable transition, is its FailedScheduling finding every instance type over the pool's limits (a newer Nominated or other Karpenter event supersedes it), it ends BLOCKED `capacity: …`, naming the pod with its evidence:
+If it times out while one of its subject's pods is Pending Unschedulable, and Karpenter's newest event of any reason for that pod's uid, no older than its Unschedulable transition, is its FailedScheduling finding every instance type over the limits of the NodePool it names, whatever its name (a newer Nominated or other Karpenter event supersedes it), it ends BLOCKED `capacity: …`, naming the pod with its evidence:
 the limit event's time and message, the pod's PodScheduled condition, and the default scheduler's newest FailedScheduling message for it.
 A wrong classification can only read BLOCKED, never PASS, and the line shows it.
 A wait with no subject, a starved pod outside the subject, any other timeout, and any check that fails outright stay FAIL.
@@ -2441,7 +2504,7 @@ A pass proves that and no more:
 - Run it from the release tag the deployment pins and with `LEGION_E2E_IMAGE` set to the worker image it pins:
   the daemon's boot probe, its launch and the pod's shape are that release's.
 
-- The rest of `runtime.kubernetes` (namespace, pool, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion config check` on the deployment's whole `legion.yaml` at that release.
+- The rest of `runtime.kubernetes` (namespace, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion config check` on the deployment's whole `legion.yaml` at that release.
 
 - A Secret or ConfigMap volume is compared by its kind and object name, not its `items`.
 
@@ -2508,17 +2571,17 @@ neither protects a lane's own [`lib/built-from.sh`](#libbuilt-fromsh)
 A second lane's pack landing mid-read reads as this lane's own tree having changed, failing `prerequisites` or the build's own revision check for a reason that has nothing to do with the change under test.
 Run concurrent lanes from separate checkouts (`jj workspace add`, or separate clones) of the same commit.
 
-**Two lanes can race the legion pool's own capacity preflight, and that is a finding, not a bug to fix here.**
-`prerequisites` reads the legion NodePool's current room (`pool_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only if that one read already can't fit `run_pods_at_once` pods (4, the cap:
+**Two lanes can race for the cluster's capacity, and that is a finding, not a bug to fix here.**
+`preflight` reads the room on the nodes the run's pods may use (`run_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only where admission refuses the run's pods: it counts no NodePool's limits and runs on a cluster with no node for those pods now, so it never refuses for want of room for `run_pods_at_once` pods (4, the cap:
 tree 1's root and its two children beside tree 2's root).
-Two lanes starting close together can each read room enough for itself alone
+Two lanes starting close together both pass it
 — the read is not a reservation — so a true shortfall surfaces only once both are actually scheduling.
-That is never silent: every pod-placement wait is wrapped (`on_tree`/`on_issue`), so a wait stalled on the pool's own limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
-— the same outcome a single lane gets today when the pool is simply full.
+That is never silent: every pod-placement wait is wrapped (`on_tree`/`on_issue`), so a wait stalled on a NodePool's limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
+— the same outcome a single lane gets today when that NodePool is simply full.
 A pod that starves and is placed before its own claim's launch budget runs out, with the wait still timing out for some other reason, reads FAIL:
 neither path has evidence of a starvation that never reached either threshold.
-Running two lanes at once therefore needs either enough spare legion-pool capacity for both (8 pods' worth of reservations between them) or tolerance for the slower lane landing `BLOCKED` on capacity;
-widening the pool is infrastructure, not this change.
+Running two lanes at once therefore needs either enough spare capacity in the NodePool the run's pods use for both (8 pods' worth of reservations between them) or tolerance for the slower lane landing `BLOCKED` on capacity;
+widening that NodePool is infrastructure, not this change.
 
 **What the run touches in production**, all of it removed by the `EXIT`/`INT`/`TERM`/`HUP` trap of the run that owns it.
 A signal to the whole process group does not stop the removal:
@@ -2615,13 +2678,13 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `preflight`
 
   the runtime identity is the daemon's restricted IAM role and cannot list Secrets;
-  the Sandbox CRD and the `legion` NodePool's instance-cpu floor;
-  the pool's room for the run's four pods at once (tree 1's root and its two children, tree 2's root), counted in issue pods of the run's `issue` reservation (`lib/stage4b-room.jq`):
-  what each Ready, schedulable, undisrupted pool node has free beside every non-terminal pod on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for, below which the run ends BLOCKED `capacity: …`;
-  whether the NodePool's instance-cpu and instance-memory bounds let two of the run's pods share a node, which decides what `issue-independence` asserts of their nodes;
+  the Sandbox CRD;
+  the room for the run's four pods at once (tree 1's root and its two children, tree 2's root) on the nodes the run's pods may use, counted in issue pods of the run's `issue` reservation (`lib/stage4b-room.jq`):
+  what each Ready, schedulable, undisrupted node that both the run's `node_selector` (every node, as the run sets none) and RuntimeClass `gvisor`'s node selector select, and whose `NoSchedule` and `NoExecute` taints the run's tolerations or the RuntimeClass's tolerate, has free beside every non-terminal pod on it, of any namespace, no node being admitted where the two selectors name a label at different values, since admission refuses such a pod; a failed read of the nodes, the pods or the RuntimeClass ends the run BLOCKED; the room bounds nothing, since no one NodePool's limits bound the run's pods and the cluster may add nodes, so a cluster with no such node now is noted and the run goes on, and the run ends BLOCKED `capacity: …` only where admission refuses its pods;
+  whether one of those nodes' allocatable holds two of the run's pods, which `issue-independence` notes beside their nodes;
   the run's Dispatch bearer reads `whoami` as an agent session, and an invalid bearer is refused 401;
   LEGSMOKE has no todo root; the stream carries both halves of intake;
-  a throwaway pod on the Legion pool reaches Dispatch, the listener, the gateway and NATS, each within three tries 5 s apart (a fresh node's first outbound connection can fail while it settles), and a service that never answers fails the check with every try's error
+  a throwaway pod placed as the run's Sandbox pods are reaches Dispatch, the listener, the gateway and NATS, each within three tries 5 s apart (a fresh node's first outbound connection can fail while it settles), and a service that never answers fails the check with every try's error
 
 - `pod-watch`
 
@@ -2686,7 +2749,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   each pod has a disk of its own, `<pod>-issue`, Bound and owned by that pod, and the three are three;
   and no pod can read another issue's workspace, each way between the root's pod and child 1's (`ls` of the other's workspace path answers `No such file or directory`, while the same path exists in its own pod).
   Their nodes are recorded (`issue-independence-pods.txt`);
-  two or more are asserted only when preflight read the NodePool's instance bounds as holding no two of the run's pods, otherwise the count is noted.
+  no count of them is asserted, since preflight's read of whether one of the nodes the run's pods may use holds two of them never says two cannot share a node, and the count is noted.
   Tree 3 is then set todo, and the state reads the cap full of the four issues the daemon has started — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue the daemon has started, so one tree's children fill a cap beside another tree's root.
   Tree 1's planner is then told to plan.
   Tree 2's planner has held for the driver: a tree 2 that left planning before the driver sent it anything fails here by name.
@@ -2708,7 +2771,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The proof human parks child 2 again: within 900 s it has no Sandbox, no pod and no disk, and its planner is suspended by the daemon.
   The control, on the same claim and start path:
   `legion claims suspend` of the parked planner records `suspendedBy: operator`, and child 2 is set `todo` once more;
-  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the claim), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
+  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the agent), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
   `legion claims resume` relaunches it and the waiting start gives it the run's planning task, its session's third.
   Child 2 is parked a last time: within 900 s no Sandbox, no pod and no disk, its planner suspended by the daemon
   — what the session keeps is the table's, not the disk's
@@ -3094,7 +3157,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   — each stop deleted the member's Sandbox once its pod was gone, the children's at their parks and the root's at its production check's close;
   then every node any pod of tree 1 ran on (read from the pod watch:
   the root's, the children's, the replacements the fence and the stream move made, the pod the production check's last look brought back) is released
-  — the node is gone after the pool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
+  — the node is gone after its NodePool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
   a pod of another project (a production daemon running beside the run), the run's repository cache (`legion.dev/cache=true`, no tree's, alive as long as the daemon), or a pod of another tree of the run;
   a pod of tree 1, or of the run with no tree label other than the cache, holds the wait, one that has Succeeded or Failed counts for nothing, and a pod with no project label is no Legion pod (`node_pods_judged`, lib's `node-released.test.ts`).
   The note says which it saw where, and a timeout lists what the node still held with each pod's project and tree label.
@@ -3128,7 +3191,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `pod-shape`
 
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
-  gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, the pool, Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
+  gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, no selector or toleration of the retired Legion pool (`legion.dev/pool`), Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
   the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
@@ -3929,8 +3992,9 @@ Each item below names an observation, then what it judges; an item that names no
 
 - `cache <issue> <pod> [container]`
 
-  the named pod's `legion.dev/issue` label matches the issue (refusing an unrelated pod outright), its fetch container's log (`kubectl logs`, default container `workspace-fetch`) carries the producer's exact, anchored cache-stream-with-delta success line (`packages/daemon/cmd/legion/workspace_fetch.go:83`, the form `workspace_fetch_test.go:572` pins
-  — a whole-line match, not a loose substring), and `.repositories.live[] | select(.repo==<repo>) | .cache.ready` is `true`
+  the named pod's `legion.dev/issue` label matches the issue (refusing an unrelated pod outright),
+  its `workspace-init` log carries the producer's exact, anchored cache-stream-with-delta success
+  line, and `.repositories.live[] | select(.repo==<repo>) | .cache.ready` is `true`
 
 - `negative pr-in-x before|after <run id>? <T child>`
 
@@ -4019,7 +4083,7 @@ The cluster is deleted on any exit.
 
 | check | what it holds |
 | :--- | :--- |
-| `cluster`, `agent-sandbox`, `gvisor` | the lib's: the kind cluster, its one node labelled `legion.dev/pool=legion`, the `legion` namespace and the `standard` storage class; Agent Sandbox v1.0.3's release manifest, pinned by sha256, applied and its controller rolled out; gVisor's dated release, pinned by sha512, installed into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor` |
+| `cluster`, `agent-sandbox`, `gvisor` | the lib's: the kind cluster and its one node, the `legion` namespace and the `standard` storage class; Agent Sandbox v1.0.3's release manifest, pinned by sha256, applied and its controller rolled out; gVisor's dated release, pinned by sha512, installed into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor` |
 | `image` | the worker image, pulled into the node's containerd by digest |
 | `launch` | `TestABurstableIssuePodRendersLive` (`internal/daemon/burstable_live_test.go`, `-tags e2e`), built as a static test binary and run in a container on the kind network, writes two `legion.yaml` files, reads each with the daemon's loader, translates it with `sandboxOptions`, runs the cluster check, and launches one issue's root through the Sandbox runtime's `Spawn` on a worker stream bound to that container's address (pods reach the kind network's containers, while a host firewall can keep them from the host itself); the launch makes the repository's cache first, as every issue pod's does; it holds the `roles` container to the issue pod's request and limit (2 CPU, 8Gi under 32Gi, 6Gi under 80Gi for the first file; 2 CPU, 8Gi, 6Gi under 80Gi for the second) and the pod to its QoS class |
 | `qos-class` | `kubectl get pod <pod> -o jsonpath='{.status.qosClass}'` reads `Burstable` for the file with `issue: {memory: 32Gi, memory_request: 8Gi}` and `Guaranteed` for the file with no `resources` block; each pod has a `roles` container, is `PodScheduled=True` under `runtimeClassName: gvisor`, and its manifest is kept as evidence |
@@ -4029,9 +4093,12 @@ What the proof stands in for lies outside the reservation path:
 each role's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the files are documentation placeholders);
 the store answers as the daemon's does for an issue's first launch;
 the runtime's cache set names one public repository, which GitHub clones for its cache without asking for the placeholder provisioning token;
-and the roles' gh files hold a placeholder token.
-The pod's reservation, its admission, scheduling and QoS class, Agent Sandbox's pod and gVisor are the real ones.
-`burstable_kind_test.go`, untagged, builds both files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
+the roles' gh files hold a placeholder token;
+before each launch the driver creates the project's providers Secret, `legion-<project>-providers`, as an operator does, with a placeholder under each key the runtime mounts in every pod (`liveProvidersSecret`): here the session database's URL under `SESSION_DSN`, which `session_store: postgres` makes every pod mount, so a pod without the Secret waits at `Init` on `FailedMount … secret "legion-<project>-providers" not found` until its launch times out;
+and the shared public leak check, which every pod's launcher is pushed before any role of the pod starts and without which the start is refused (`the shared public leak check could not be installed: the daemon runs with no GitHub App, so it cannot read <the check's repository>`), is read under the proofs' own setting (`liveLeakCheckSetting`) by boot's own reader (`leakCheckSource`), through the stand-in App `outboxTokens`, from a stand-in GitHub in the driver's own process (`serveLiveLeakCheck`), whose check passes the launcher's install and its `--help` verification and holds none of the real check's rules, so no credential is read and no request reaches GitHub.
+The pod's reservation, its admission, scheduling and QoS class, Agent Sandbox's pod, the launcher's install of the check and gVisor are the real ones.
+`burstable_kind_test.go`, untagged, builds both files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`, holds the providers Secret to the key each file names, and installs the check the runtime's own reader serves as a pod's launcher installs it, so a contract change that refuses either fails CI, not the next live run.
+It cannot see what the cluster holds: a pod that needs an object the driver does not create fails only the live run, and no CI job makes the live run, since `.github/e2e-scripts.json` lists the three kind proofs under `elsewhere`, which `e2e.yaml` refuses by name.
 `BURSTABLE_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, both `legion.yaml` files and each pod's manifest as the API server holds it.
 
 ## controller-sweep-kind.sh
@@ -4054,10 +4121,13 @@ its cluster is [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s, `legion-controller
 
 What the proof stands in for lies outside the sweep:
 the controller's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the file are documentation placeholders);
-its App tokens are placeholders; and no record names a repository, and its gh files name no owner.
+its App tokens are placeholders;
+the driver creates the project's providers Secret before the launch, as `burstable-kind.sh`'s does, since the controller's pod mounts it too;
+boot's factory reads the shared public leak check, which the controller's launcher is pushed before its role starts, from the stand-in GitHub `burstable-kind.sh`'s driver serves, with the placeholder App's read token, so no request reaches GitHub (an empty GitHub root there would send that token to api.github.com);
+and no record names a repository, so its gh files name no owner.
 The claim the supervisor would store is written to the store by the driver, as the supervisor writes it before a launch begins.
 The store, the runtime's sweep and launch, Agent Sandbox's controller, its foreground deletion of the volume claim, and gVisor are the real ones.
-`controller_sweep_kind_test.go`, untagged, builds the proof's `legion.yaml` through the loader and its runtime through boot's factory and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
+`controller_sweep_kind_test.go`, untagged, builds the proof's `legion.yaml` through the loader and its runtime through boot's factory and `sandbox.New` on every `go test`, holds the providers Secret to the file's key, and installs the check boot's reader serves from the stand-in GitHub as a pod's launcher installs it, so a contract change that refuses either fails CI, not the next live run; what the cluster holds only the live run sees, as `burstable-kind.sh`'s section says.
 `CONTROLLER_SWEEP_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript and, on a failure, what the cluster held.
 
 ## share-volumes-kind.sh
@@ -4085,9 +4155,10 @@ The kind node's own `mount.nfs` mounts the share, as a GKE node's does.
 | `probe-missing-image` | `legion probe-boot` refuses, exit 1, within its first attempt and with no transient retry logged, the `shares` file with its image's digest swapped for an all-zero one the repository does not have: `worker image sha256:0…0 failed its probe: the registry does not have image <repository>@sha256:0…0: … rpc error: code = NotFound desc = failed to pull and unpack image … : not found`, once the pod's `Failed` events show the kubelet met that answer on two pulls |
 
 What the proof stands in for lies outside the volume path, as `burstable-kind.sh`'s does:
-the agents are sleep stubs, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
+the agents are sleep stubs, the store answers for an issue's first launch, the repository is public, the roles' gh files hold a placeholder token, and the leak check is that proof's stand-in.
+The driver creates the providers Secret of each of the four files' projects, the three it does not launch included, since the probe pod `legion probe-boot` starts on each file mounts its project's Secret as every pod does; without it every probe refuses on the Secret it cannot mount before it reaches a share.
 The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node's NFS client and the NFS server are the real ones.
-`share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
+`share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`, and holds each file's providers Secret and the runtime's leak check reader as `burstable_kind_test.go` does; what the cluster holds only the live run sees.
 `SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
 
 ## shared-clone-kind.sh
@@ -4102,25 +4173,32 @@ it installs kind v0.33.0 by sha256 and makes the cluster on that release's node 
 Its cluster is the lib's, `legion-shared-clone-<pid>`, deleted on any exit.
 A GKE Autopilot cluster cannot run it in a Job, since its policy refuses a privileged container (`autogke-disallow-privilege`), so `.github/e2e-scripts.json` lists it as a hosted proof, `dispatch_only`:
 e2e.yaml runs it on a `workflow_dispatch` at a branch, whose checkout is the branch's head, and never on the `e2e` label's merge commit or the nightly's main.
-The pods run the worker image of the checkout's own commit, since the image's `legion` runs each pod's `workspace-fetch` and `workspace-init`:
-`LEGION_E2E_IMAGE`, by digest, or, where it is unset, the digest the registry gives `ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of HEAD>`, which `worker-image.yaml` publishes for a pull request's head;
-the run fails naming the tag when the registry has none.
-The driver's `legion.yaml` reserves little for the pods (`sharedCloneLiveResources`, `internal/daemon/shared_clone_kind_test.go`), so two issue pods and the repository cache fit on one node of a hosted runner.
+The pods run the worker image of the checkout's own commit, since the image's `legion` runs each
+pod's `workspace-init`:
+`LEGION_E2E_IMAGE`, by digest, or, where it is unset, the digest the registry gives
+`ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of HEAD>`, which `worker-image.yaml`
+publishes for a pull request's head; the run fails naming the tag when the registry has none.
+The driver's `legion.yaml` reserves little for the pods (`sharedCloneLiveResources`,
+`internal/daemon/shared_clone_kind_test.go`), so two issue pods and the repository cache fit on one
+node of a hosted runner.
 
 |check|what it holds|
 |:---|:---|
-|`binaries`|a static test binary of `TestASharedCloneReadsTheFeedInAnIssuePodLive` (`internal/daemon/shared_clone_live_test.go`, `-tags e2e`)|
+|`binaries`|a static test binary of `TestAnIssuePodGetsOneRepositoryLive` (`internal/daemon/shared_clone_live_test.go`, `-tags e2e`)|
 |`cluster`, `agent-sandbox`, `gvisor`|as `burstable-kind.sh`'s, through the lib|
 |`images`|the worker image, pulled into the node's containerd|
-|`launch`|the driver, in a busybox container on the kind network, writes the `legion.yaml` and launches two issues' roots on `tmux/tmux` through the runtime's `Spawn`, under `runtimeClassName: gvisor`, as `share-volumes-kind.sh`'s driver launches its pod: the first, whose launch makes the repository's cache and whose `workspace-fetch` line the `provision` check prints, then, once that cache is Ready, the second|
-|`provision`|the first pod's `workspace-fetch` and `workspace-init` each ended 0, and its fetch's last line, which names where its feed came from, is printed|
+|`launch`|the driver writes the `legion.yaml` and launches two issue roots on `tmux/tmux` through the runtime's `Spawn` under `runtimeClassName: gvisor`; the first creates the repository cache and the second starts once it is Ready|
+|`provision`|each pod has one `workspace-init=0` init-container status|
+|`no-feed`|each pod lacks `/legion/feed`, and no container mounts that path|
+|`refs`|outside `refs/jj/`, the first clone has `refs/heads/master` and `refs/remotes/origin/master` alone, with no tag|
+|`clone-config`|the clone has narrow default-and-issue refspecs, `--no-tags`, `gc.auto=0`, `maintenance.auto=false` and jj's `remotes.origin.fetch-tags=~*`|
 |`gvisor-kernel`|the `roles` container's kernel is gVisor's|
-|`alternates`|the clone's `.git/objects/info/alternates` is the feed's objects and nothing else, and its own `objects/pack` holds no pack|
-|`disk`|`du -sk` of the clone's `.git/objects` is under a tenth of the feed's `objects`; the control, a plain `git clone --no-checkout` of the same feed made in the container, takes about the feed's size|
-|`feed-read-only`|a write to the feed from `roles` is refused `Read-only file system`|
-|`fsck`|`git fsck --connectivity-only --no-dangling` of the clone passes through its alternates|
-|`logs`|`git log -1 refs/remotes/origin/master` and `jj log -r master@origin`, run as the launched architect's agent, succeed and name the same commit|
-|`cache-second-pod`|the second pod, launched while the cache is Ready: both init containers ended 0, its `workspace-fetch` streamed the feed from the repository cache and fetched under 1 MiB from GitHub for the delta, its clone's alternates name the feed's objects, and `git fsck --connectivity-only` of its clone passes (the e2e check of `internal/runtime/sandbox`'s `checkCacheSecondPod`, on kind)|
+|`fsck`|`git fsck --connectivity-only --no-dangling` of the clone passes|
+|`logs`|`git log -1 refs/remotes/origin/master` and `jj log -r master@origin`, run as the launched architect's agent, name the same commit|
+|`plain-fetch`|plain `git fetch` and `jj git fetch`, run as the launched architect, exit 0 and retain the narrow refs|
+|`named-fetch`|`jj git fetch --branch <another tmux/tmux branch>` adds that branch's `@origin` row|
+|`cache-second-pod`|the second pod's `workspace-init` logs a cache tar and a GitHub delta under 1 MiB|
+|`cache-default-only`|the cache's `/healthz` says `defaultBranchOnly: true`, its refs hold `master` alone, and every pack-index object is reachable from `master`|
 
 What the proof stands in for lies outside the clone, as `burstable-kind.sh`'s does:
 the agent is a sleep stub, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
@@ -4883,7 +4961,7 @@ Each pane's Oh My Pi overlay sets `retry.enabled: false`, so the host walks no c
 | step | driven by | read back as |
 | :--- | :--- | :--- |
 | `step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder` | nothing: the task the planner's claim has held since the daemon booted, whose stand-in answers 529 | the daemon's own first send of it, read off the delivery's read mark, then its five re-sends of that same task to that same session, each at its own armed wait (30 s, 60 s and 120 s of wall clock, then the two driven ones), the claim neither failed nor empty-handed, the issue not held, and the stand-in asked once per send for a request carrying the task itself |
-| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice is the run's one exit, and no attempt limit holds the issue |
+| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice ends no run, and no attempt limit holds the issue |
 | `step3-a-content-filter-carries-no-status-and-the-task-goes-again` | one task delivered to the implementer once it has answered the warm-up task its seed left pending, with its stand-in then armed to end every turn with a content filter | the turn reported with no HTTP status at all, the task sent again after 30 s, the claim still holding it, the issue still `implementing` and its architect told nothing |
 | `step4-an-error-that-cannot-clear-fails-the-claim-and-holds-the-issue` | one task delivered to the tester once it has answered its own warm-up task, with its stand-in then armed to answer 400 | the turn reported with status 400, the claim failed and the issue held for its architect |
 | `step5-the-operator-stops-retries-and-reads-the-claims` | `legion claims stop`, then `legion claims retry --fresh-session`, then `legion claims list`, and the same retry of the claim step 4 failed, each the built `legion` against that daemon | the stopped planner retired, its retry running in a session that is not the one it recorded, the task its ladder kept sent to that fresh session, and the failed tester's claim running again |
@@ -5375,7 +5453,7 @@ the run fails at step 2, `timed out waiting for a message on <R>'s implementer's
 LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [LEGION_E2E_NATS_BIN=<nats-server>] [APPROVED_VERSION_NEWS_MODEL=<model>] \
-  [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce] \
+  [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=<gateway audience>] \
   [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head|base] [APPROVED_VERSION_NEWS_RUNS=<n>] \
   bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
 # → "approved version news e2e: PASS in <n>s (assertions: <counted>/<expected>; part two: a4 head 3/3 (head only: the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203); off head 3/3, base <p>/<n> (…); answers head 3/3 (head only: the base arm passed 10 of 10 at 578c6abb, the daemon's news task states the rule in both arms); model calls: <n>)", exit 0
@@ -5397,8 +5475,8 @@ The server must offer the `pgvector` extension that Dispatch's migrations create
 The `arguments` check refuses a DSN that is unset or whose host is not loopback with exit 2, before anything is built or extracted.
 Part two also needs `LEGION_OMP_PATH` (an executable), `ANTHROPIC_BASE_URL` (the model gateway) and a model key, each refused with exit 2 when it is missing; part one needs none of them.
 The model key is the key in the file `APPROVED_VERSION_NEWS_MODEL_KEY_FILE` names (default `/var/run/model-gateway-key/key`, where a Legion role pod mounts the gateway's key).
-Where that file holds no key, `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce` runs part two on the pod's own Google identity token for that audience in its place:
-a Kubernetes Job of the cluster's `builds` namespace labelled `builds.theorem.dev/model-gateway: "true"` holds no key, and signs in to the cluster model gateway with that token.
+Where that file holds no key, `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE` names the audience the cluster model gateway takes a pod's identity token for, and part two runs on the pod's own Google identity token for that audience in its place:
+a Kubernetes Job of the cluster's `builds` namespace that carries the deployment's gateway label (`<deployment domain>/model-gateway: "true"`) holds no key, and signs in to the cluster model gateway with that token.
 The GKE metadata server mints the token, which lasts an hour, and `curl` fetches it.
 The `gateway-token` check mints it into a key file of the run's own scratch, mode 600, before anything is built, and a refresher in the background mints it again whenever the token in that file has 40 minutes left (`gateway_keep_seconds`), until the script ends;
 a mint that fails is said in the transcript and tried again 30 s later.
@@ -6342,7 +6420,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Twelve call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Thirteen call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6357,6 +6435,7 @@ The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prere
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
 The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
+The thirteenth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database, through `run_database_url_env`, which takes the variable's name in the same way.
 They create and drop that database with `psql_env`, which takes the name in the same way too, and hand Dispatch the connection string `run_database_url_env` rebuilt from a subshell that turns xtrace off before it expands that string, so a run of either under `bash -x` traces no part of the DSN.
@@ -6412,11 +6491,12 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing, and a fourth, `psql_env`, runs `psql` on the DSN a variable holds.
-[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
+[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
 The sixth, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_env` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_env` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_env` in its own `arguments` check as well, before it builds or extracts anything.
+The thirteenth, `hook-prompt-two-builds.sh`, sources it on its own, and calls `require_loopback_env` in its `prerequisites` check, before it takes the base commit's tree.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -6687,7 +6767,7 @@ the caller does, with its work directory, which holds both (the profile holds `p
 
 ### The natives download
 
-OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 124 MiB at the pin;
+OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 125 MiB at the pin;
 builds before 18.11.0 wrote every variant they embed, about twice that) lives in `$HOME/.omp/natives/<omp version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest), and every profile under that `HOME` shares it; a profile has no natives of its own.
 `getNativesDir` (`@oh-my-pi/pi-natives/native/natives-dir.js`) takes the first of `PI_NATIVES_DIR`, `$OMP_DOWNLOAD_ROOT/natives`, `$XDG_CACHE_HOME/omp/natives` when `$XDG_CACHE_HOME/omp` exists, and `natives/` under `OMP_CONFIG_ROOT`, else under `$HOME/$PI_CONFIG_DIR` (`$HOME/.omp` when it is unset); the pinned build reads all of them, and none of `PI_NATIVES_DIR`, `OMP_DOWNLOAD_ROOT` and `OMP_CONFIG_ROOT` is set by any Legion process.
 OMP writes it on its first run under a `HOME` that has not run this OMP version, and in this script that run is `omp plugin install`.
@@ -7098,7 +7178,7 @@ a file it can open takes both, which still reach the reader, and a file whose di
 A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
 Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh` and `hook-prompt-two-builds.sh` source it themselves.
 
 ```sh
 . "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
@@ -7165,10 +7245,11 @@ It also drives the script, both parts and `--control`, from a branch merged forw
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
+Eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
 `envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) is the ninth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 `busy-relaunch-delivery.sh` is the tenth and `approved-version-news.sh` the eleventh: each has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
+`hook-prompt-two-builds.sh` is the thirteenth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
@@ -7331,6 +7412,13 @@ The walks of every process read it: `procs_naming` (and so `run_processes`, `mar
 A walk of the host's whole `/proc` held a row to the host's process count; on this devbox at 25,474 entries `refuse_leftovers` alone took 29 s.
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
 A harness shell makes the same root for itself with one `ln -s` an entry, as `lib/unread-proc.test.ts`'s row for an agent's member that outlives its TERM does
+
+## lib/process-alive.ts
+
+`alive(pid)` says whether a process a row started is still running: it answers signal 0, and `/proc/<pid>/stat` names a state other than `Z`, since a zombie still answers signal 0.
+A process that ends between the signal and the read leaves no stat file, and the read fails with `ENOENT` or `ESRCH`: `alive` returns false for it, and throws on any other failure of the read, which says nothing about the process.
+`lib/process-alive.test.ts` forces that race with a read that fails after the signal has succeeded.
+`lib/parked-decision-teardown.test.ts` waits on it for a pane, a broker and a broker's session to end.
 
 ## lib/process-tree.sh
 
@@ -8095,7 +8183,6 @@ Each item below names a function, then what it does.
 - `kind_sandbox_create NAME WORK`
 
   creates the cluster `NAME`, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
-  labels its one node (`kind_node`) `legion.dev/pool=legion`, the pool the runtime places every pod on;
   creates the `legion` namespace and checks kind's `standard` storage class
 
 - `kind_k ARGS…`
@@ -8108,7 +8195,8 @@ Each item below names a function, then what it does.
 
 - `kind_sandbox_install_gvisor WORK`
 
-  installs gVisor's dated release, pinned by sha512, into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and fails unless a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor`
+  installs gVisor's dated release, pinned by sha512, into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and fails unless a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor`.
+  The pod's whole log is read before it is matched: kubectl writes a log in several writes, so under the caller's `pipefail` a `grep -q` that exits at its first match lets kubectl die of `SIGPIPE` and fails the check on a log that holds the line
 
 - `kind_sandbox_load_image IMAGE`
 
@@ -8121,7 +8209,9 @@ Each item below names a function, then what it does.
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
   when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`; then deletes the cluster.
-  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone
+  It does nothing before `kind_sandbox_create` named a cluster, or once kind lists the cluster as gone;
+  a listing that fails says neither, and the cluster is deleted all the same.
+  kind's whole cluster list is read before the name is matched, for the reason the gvisor check's log is: kind writes a line per cluster, and a lookup that killed kind before its last line would leave the cluster running as one already gone
 
 ## lib/live-daemon-proof.sh
 

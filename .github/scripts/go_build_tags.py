@@ -74,18 +74,17 @@ def platforms(module: Path) -> tuple:
     return frozenset(o for o, _ in pairs) | EXTRA_OS, frozenset(a for _, a in pairs) | EXTRA_ARCH
 
 
-def constraint_names(path: Path) -> set:
-    """The names a Go file's build constraint lines use, `//go:build` and `// +build` alike, read
-    from the file's header as go/build's parseFileHeader reads it: a byte-order mark aside, each
-    line trimmed, line comments and `/* */` comments passed over (a constraint line inside a
-    block comment is none), up to the first text that is no comment."""
-    names, in_block = set(), False
+def constraint_lines(path: Path) -> list:
+    """The build-constraint expressions in path's header, as go/build's parseFileHeader reads them:
+    a byte-order mark aside, each line trimmed, line comments and block comments passed over, and
+    the first text that is no comment ending the header."""
+    lines, in_block = [], False
     for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = raw.strip()
         if not in_block:
             found = CONSTRAINT_LINE.match(line)
             if found:
-                names |= set(NAME.findall(found.group(1) or ""))
+                lines.append(found.group(1) or "")
         while line:
             if in_block:
                 end = line.find("*/")
@@ -97,8 +96,14 @@ def constraint_names(path: Path) -> set:
             elif line.startswith("/*"):
                 in_block, line = True, line[2:].strip()
             else:
-                return names
-    return names
+                return lines
+    return lines
+
+
+def constraint_names(path: Path) -> set:
+    """The names a Go file's build constraint lines use, `//go:build` and `// +build` alike, read
+    through constraint_lines so every caller has the same header parser."""
+    return {name for line in constraint_lines(path) for name in NAME.findall(line)}
 
 
 def is_tag(name: str, known: tuple) -> bool:
@@ -145,18 +150,20 @@ def decode_stream(text: str) -> list:
         out.append(obj)
 
 
-def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list) -> set:
+def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list, **env) -> set:
     """The files, as resolved paths, that go list compiles in `dirs` (each named as a directory,
     not a pattern, so a directory whose every file is excluded is still listed) for goos/goarch
     under `tags`: a package's files and its test files, which a vet reads too. `-find` keeps go
     list from loading the packages these import; in module mode go still resolves each import,
     which would download every module a cold runner's cache lacks. So it runs with GOPROXY=off:
     such an import is then a load error -e keeps, and the file lists, which go reads off each
-    directory under the build context, are the same."""
+    directory under the build context, are the same. `env` adds to the environment, as
+    CGO_ENABLED=1 does for a listing of a native runner's build from a machine of another GOARCH,
+    where go would otherwise turn cgo off."""
     base = module.resolve()
     patterns = ["." if d.resolve() == base else f"./{d.resolve().relative_to(base).as_posix()}" for d in dirs]
     out = go(module, ["list", "-e", "-find", f"-json=Dir,{','.join(LISTED)}", "-tags", ",".join(tags), *patterns],
-             GOOS=goos, GOARCH=goarch, GOPROXY="off")
+             GOOS=goos, GOARCH=goarch, GOPROXY="off", **env)
     return {str((Path(package["Dir"]) / name).resolve())
             for package in decode_stream(out) for field in LISTED for name in package.get(field) or []}
 

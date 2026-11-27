@@ -2,14 +2,20 @@ package integration
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testEnv is what a test of this package holds: its own NATS server, the bus client a producer
@@ -25,15 +31,42 @@ type testEnv struct {
 
 type testEnvOption func(*testEnvOpts)
 
-type testEnvOpts struct{ sessionTTL time.Duration }
+type testEnvOpts struct {
+	sessionTTL   time.Duration
+	sessionClock func() time.Time
+}
 
 func withSessionTTL(d time.Duration) testEnvOption {
 	return func(o *testEnvOpts) { o.sessionTTL = d }
 }
 
+// withSessionClock gives the session registry the clock a test moves (session.WithSessionClock).
+func withSessionClock(now func() time.Time) testEnvOption {
+	return func(o *testEnvOpts) { o.sessionClock = now }
+}
+
+// sessionClock is the session registry's clock in a test that crosses a TTL by moving it rather
+// than waiting the TTL out: the wall clock, plus every advance the test has made.
+type sessionClock struct {
+	mu     sync.Mutex
+	offset time.Duration
+}
+
+func (c *sessionClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.offset)
+}
+
+func (c *sessionClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offset += d
+}
+
 func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 	t.Helper()
-	opts := testEnvOpts{sessionTTL: 10 * time.Second}
+	opts := testEnvOpts{sessionTTL: 10 * time.Second, sessionClock: time.Now}
 	for _, o := range options {
 		o(&opts)
 	}
@@ -54,7 +87,7 @@ func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL), session.WithSessionClock(opts.sessionClock))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
@@ -109,6 +142,7 @@ func containsTopic(topics []string, want string) bool {
 }
 
 func TestRoleTransfer_ExactlyOneHolder(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 	env.registerInterest("ses_role_a", nil)
 	env.registerInterest("ses_role_b", nil)
@@ -120,31 +154,25 @@ func TestRoleTransfer_ExactlyOneHolder(t *testing.T) {
 		t.Fatalf("SetRole for B failed: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, "the role transfer to name B alone", func() (string, bool) {
 		a, errA := env.registry.Get(context.Background(), "ses_role_a")
 		b, errB := env.registry.Get(context.Background(), "ses_role_b")
 		matches := env.registry.Match("test-machine", "notifications.role.legion-controller")
-		if errA == nil && errB == nil && !containsTopic(a.Topics, "notifications.role.legion-controller") && containsTopic(b.Topics, "notifications.role.legion-controller") && len(matches) == 1 && matches[0].SessionID == "ses_role_b" {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	a, err := env.registry.Get(context.Background(), "ses_role_a")
-	if err != nil {
-		t.Fatalf("Get A failed: %v", err)
-	}
-	b, err := env.registry.Get(context.Background(), "ses_role_b")
-	if err != nil {
-		t.Fatalf("Get B failed: %v", err)
-	}
-	matches := env.registry.Match("test-machine", "notifications.role.legion-controller")
-	t.Fatalf("timed out waiting for role transfer: A=%v B=%v matches=%v", a.Topics, b.Topics, matches)
+		return fmt.Sprintf("A=%v (%v) B=%v (%v) matches=%v", a.Topics, errA, b.Topics, errB, matches),
+			errA == nil && errB == nil && !containsTopic(a.Topics, "notifications.role.legion-controller") &&
+				containsTopic(b.Topics, "notifications.role.legion-controller") && len(matches) == 1 && matches[0].SessionID == "ses_role_b"
+	})
 }
 
+// A session's KV entry expires at its TTL while its interest record stays. The TTL is crossed on
+// the session registry's own clock, which the test moves past it, as the registry's own tests do
+// (session.WithSessionClock): at a TTL of 2 s waited out on the wall clock, the registration, the
+// interest and the read that must still find the entry all had to land inside those 2 s.
 func TestDelivery_KVEntryExpiresButInterestPersists(t *testing.T) {
-	env := setupTestEnv(t, withSessionTTL(2*time.Second))
+	t.Parallel()
+	const ttl = time.Hour
+	now := &sessionClock{}
+	env := setupTestEnv(t, withSessionTTL(ttl), withSessionClock(now.Now))
 
 	env.registerKVSession("ses_expiry_check")
 	env.registerInterest("ses_expiry_check", nil)
@@ -153,40 +181,32 @@ func TestDelivery_KVEntryExpiresButInterestPersists(t *testing.T) {
 		t.Fatalf("expected KV entry to exist: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
-		if _, err := env.sessions.Get("ses_expiry_check"); err != nil {
-			interest, err := env.registry.Get(context.Background(), "ses_expiry_check")
-			if err != nil {
-				t.Fatalf("interest should persist after session expiry, got: %v", err)
-			}
-			if interest.SessionID != "ses_expiry_check" {
-				t.Fatalf("wrong interest session ID: %s", interest.SessionID)
-			}
-			return
-		}
+	now.advance(ttl + time.Minute)
+	if _, err := env.sessions.Get("ses_expiry_check"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the session entry a TTL past its registration: %v, want it expired (%v)", err, natsgo.ErrKeyNotFound)
 	}
-	t.Fatal("KV entry did not expire within 5s (TTL was 2s)")
+	interest, err := env.registry.Get(context.Background(), "ses_expiry_check")
+	if err != nil {
+		t.Fatalf("interest should persist after session expiry, got: %v", err)
+	}
+	if interest.SessionID != "ses_expiry_check" {
+		t.Fatalf("wrong interest session ID: %s", interest.SessionID)
+	}
 }
 
 func TestDelivery_RegistryListReturnsSortedInterests(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
 
 	env.registerInterest("ses_charlie", []string{"notifications.test.>"})
 	env.registerInterest("ses_alpha", []string{"notifications.test.>"})
 	env.registerInterest("ses_bravo", []string{"notifications.test.>"})
 
-	// Allow watcher to propagate Upsert events to cache
-	time.Sleep(500 * time.Millisecond)
-
-	items, err := env.registry.List()
-	if err != nil {
-		t.Fatalf("list interests: %v", err)
-	}
-	if len(items) != 3 {
-		t.Fatalf("expected 3 interests, got %d", len(items))
-	}
+	// The cache follows the bucket through its watcher: wait for the three upserts to reach it.
+	items := testwait.Until(t, "the three interests in the registry's cache", func() ([]store.Interest, bool) {
+		items, err := env.registry.List()
+		return items, err == nil && len(items) == 3
+	})
 	if items[0].SessionID != "ses_alpha" {
 		t.Fatalf("expected first item to be ses_alpha, got %s", items[0].SessionID)
 	}

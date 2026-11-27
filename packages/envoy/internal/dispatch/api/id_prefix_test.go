@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -135,7 +136,7 @@ type idPrefixRoute struct {
 	shortStatus int
 	shortCode   string
 	// notFoundCode is the 404 the route answers for a whole id of its kind that names no
-	// item, which is what the prefix layer answers for a prefix that names none (idRoutes).
+	// item, which is what the prefix layer answers for a prefix that names none (its ID).
 	notFoundCode string
 }
 
@@ -550,11 +551,12 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 	}
 }
 
-// TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk: the project check runs behind the
-// prefix layer, so it judges the item the prefix named. A credential scoped to one project is
-// refused another project's ask by its prefix exactly as it is by its whole id, and the refusal
-// names both projects.
-func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
+// TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix: the project check runs behind the
+// prefix layer, so it judges the item the prefix named, and a credential scoped to one project
+// writes another project's ask as a credential that names no project does (INFRA-4799). It
+// resolves one ask of another project by its whole id and another by its prefix, and each
+// request reaches the handler, which answers 200 with the ask the path named, resolved.
+func TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -563,24 +565,21 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 	seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTH", "Other")
 
-	const prefix = "b0000001"
-	id := chosenID(prefix, 1)
-	seedAsk(t, rig.database, other.issue, id, "Which way?")
-
 	body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
-	for _, spelling := range []struct{ name, written string }{{"the whole id", id}, {"its prefix", prefix}} {
-		name, written := spelling.name, spelling.written
-		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+written+"/resolve", token, body))
-		if refused.Code != http.StatusForbidden {
-			t.Fatalf("%s: status=%d body=%s, want 403", name, refused.Code, refused.Body.String())
-		}
-		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("%s: refusal = %+v, want %s", name, refusal, codeProjectScope)
-		}
-		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
-			t.Fatalf("%s: refusal %q names neither %s nor %s", name, refusal.Error, brokerTestProject, other.key)
-		}
+	for _, spelling := range []struct{ name, id, written string }{
+		{"the whole id", chosenID("b0000001", 1), chosenID("b0000001", 1)},
+		{"its prefix", chosenID("b0000002", 1), "b0000002"},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			seedAsk(t, rig.database, other.issue, spelling.id, "Which way?")
+			resolved := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+spelling.written+"/resolve", token, body))
+			if resolved.Code != http.StatusOK {
+				t.Fatalf("resolve %s's ask by %s: status=%d body=%s, want 200", other.key, spelling.name, resolved.Code, resolved.Body.String())
+			}
+			if ask := decodeBody[model.Ask](t, resolved); ask.ID != spelling.id || ask.Resolution == nil {
+				t.Fatalf("the answer is ask %s with resolution %+v, want %s resolved", ask.ID, ask.Resolution, spelling.id)
+			}
+		})
 	}
 }
 
@@ -1047,7 +1046,7 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 	return response
 }
 
-// idRoutes names, per route, the 404 that route answers for an id of its kind it does not hold,
+// A route's ID names the 404 that route answers for an id of its kind it does not hold,
 // and the prefix layer answers a prefix that names none with that code, copied there by hand
 // (resolvePathValue). This drives every resolving row with a whole uuid nothing carries - which
 // the layer leaves as written (text.IsIDPrefix), so the answer is the handler's own - and holds
@@ -1071,10 +1070,10 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 	}
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
 		name := route.Method + " " + route.Pattern
-		entry, named := idRoutes[name]
-		if !named || !entry.resolves() {
+		if route.ID == nil || !route.ID.resolves() {
 			continue
 		}
+		entry := *route.ID
 		t.Run(name, func(t *testing.T) {
 			probe := unknownIDRouteProbes[name]
 			// Each wildcard the row resolves, with every other value naming something that
@@ -1094,17 +1093,17 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 				answer := unknownIDRouteRequest(t, handler, route.Method, each.path, probe, routeProbeBody(route))
 				if each.want == notFoundNone {
 					if answer.Code == http.StatusNotFound {
-						t.Fatalf("%s answers 404 %s for %s nothing carries; idRoutes says it answers none: %s",
+						t.Fatalf("%s answers 404 %s for %s nothing carries; its ID says it answers none: %s",
 							name, decodeBody[refusedAnswer](t, answer).Code, each.what, answer.Body.String())
 					}
 					continue
 				}
 				if answer.Code != http.StatusNotFound {
-					t.Fatalf("%s answers %d for %s nothing carries, not the 404 idRoutes names (%s): %s",
+					t.Fatalf("%s answers %d for %s nothing carries, not the 404 its ID names (%s): %s",
 						name, answer.Code, each.what, each.want, answer.Body.String())
 				}
 				if code := decodeBody[refusedAnswer](t, answer).Code; code != each.want {
-					t.Fatalf("%s answers 404 %q for %s nothing carries; idRoutes names %q, which is what a prefix nothing carries gets",
+					t.Fatalf("%s answers 404 %q for %s nothing carries; its ID names %q, which is what a prefix nothing carries gets",
 						name, code, each.what, each.want)
 				}
 			}

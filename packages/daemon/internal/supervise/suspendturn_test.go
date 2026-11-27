@@ -335,7 +335,7 @@ func TestAStartWaitsOutTheOperatorsSuspension(t *testing.T) {
 	if got := h.claim().LastStartRow; got != 0 {
 		t.Fatalf("the claim recorded start row %d, want none while the operator's suspension holds", got)
 	}
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	if err := h.m.StartedBy(h.ctx, 42, nil); err != nil {
 		t.Fatalf("the start after the operator's resume: %v", err)
 	}

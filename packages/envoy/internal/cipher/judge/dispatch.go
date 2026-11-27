@@ -33,7 +33,7 @@ const maxDispatchAnswer = 1 << 20
 // Dispatch is the broker's read of Dispatch, and it is a read alone. Issue makes two GETs, Ask
 // one and Assignee one, and this type has no other method, no other verb and no body to send:
 // nothing here writes an ask, a comment, a label or a status, and nothing reads a person's own
-// data. Every route they read is authAny (internal/dispatch/api/routes_table.go), and the
+// data. Every route they read is authAny (each route's file in internal/dispatch/api), and the
 // projected ServiceAccount token Account reads authenticates as a service actor holding no
 // scope, which reaches an issue, its documents and the asks on it, and nothing that belongs to a
 // person.
@@ -45,7 +45,7 @@ type Dispatch struct {
 	// that caches for ciphertoken.AccountTokenCacheTTL picks a rotation up within 30 seconds,
 	// so a rotated token reaches the judge with no restart. It is the interface rather than
 	// the reader so a test can stand in for it; cmd/cipherd wires
-	// ciphertoken.NewAccountToken(BROKER_JUDGE_DISPATCH_TOKEN_FILE).
+	// ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", the file that setting names).
 	Account ciphertoken.Account
 	// HTTP is the client every call is made with; a nil client is http.DefaultClient.
 	HTTP *http.Client

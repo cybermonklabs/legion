@@ -105,12 +105,6 @@
                 "name": "config"
               },
               {
-                "mountPath": "/legion/feed",
-                "name": "issue",
-                "readOnly": true,
-                "subPath": "feed"
-              },
-              {
                 "mountPath": "/var/run/legion/roles/architect/launcher",
                 "name": "launcher-architect",
                 "readOnly": true
@@ -242,11 +236,17 @@
             "command": [
               "/opt/legion/bin/legion",
               "workspace-init",
-              "fetch",
+              "provision",
+              "--issue",
+              "LEGION-208",
               "--repo",
               "sjawhar/legion-smoke",
-              "--feed",
-              "/legion/feed"
+              "--default-branch",
+              "main",
+              "--root",
+              "/legion",
+              "--credential-helper",
+              "!legion git-credential"
             ],
             "env": [
               {
@@ -268,77 +268,6 @@
               {
                 "name": "LEGION_REPOSITORY_CACHE_TOKEN_FILE",
                 "value": "/var/run/legion/provision/LEGION_REPOSITORY_CACHE_TOKEN"
-              },
-              {
-                "name": "LEGION_DEFAULT_BRANCH",
-                "value": "main"
-              }
-            ],
-            "image": "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef",
-            "name": "workspace-fetch",
-            "resources": {
-              "limits": {
-                "cpu": "2",
-                "ephemeral-storage": "80Gi",
-                "memory": "8Gi"
-              },
-              "requests": {
-                "cpu": "2",
-                "ephemeral-storage": "6Gi",
-                "memory": "8Gi"
-              }
-            },
-            "securityContext": {
-              "allowPrivilegeEscalation": false,
-              "capabilities": {
-                "drop": [
-                  "ALL"
-                ]
-              },
-              "seccompProfile": {
-                "type": "RuntimeDefault"
-              }
-            },
-            "volumeMounts": [
-              {
-                "mountPath": "/var/run/legion/provision",
-                "name": "provision",
-                "readOnly": true
-              },
-              {
-                "mountPath": "/tmp",
-                "name": "tmp"
-              },
-              {
-                "mountPath": "/legion/feed",
-                "name": "issue",
-                "subPath": "feed"
-              }
-            ],
-            "workingDir": "/legion/feed"
-          },
-          {
-            "command": [
-              "/opt/legion/bin/legion",
-              "workspace-init",
-              "provision",
-              "--issue",
-              "LEGION-208",
-              "--repo",
-              "sjawhar/legion-smoke",
-              "--default-branch",
-              "main",
-              "--root",
-              "/legion",
-              "--credential-helper",
-              "!legion git-credential",
-              "--feed",
-              "/legion/feed"
-            ],
-            "env": [
-              {
-                "name": "PATH",
-                "value": "/opt/legion/bin:/opt/omp/bin:/opt/codegraph/bin:/usr/local/bin:/usr/bin:/bin"
               },
               {
                 "name": "XDG_CONFIG_HOME",
@@ -384,14 +313,17 @@
             },
             "volumeMounts": [
               {
-                "mountPath": "/legion",
-                "name": "issue"
+                "mountPath": "/var/run/legion/provision",
+                "name": "provision",
+                "readOnly": true
               },
               {
-                "mountPath": "/legion/feed",
-                "name": "issue",
-                "readOnly": true,
-                "subPath": "feed"
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/legion",
+                "name": "issue"
               },
               {
                 "mountPath": "/home/legion/.config",
@@ -402,8 +334,7 @@
           }
         ],
         "nodeSelector": {
-          "cloud.google.com/compute-class": "example-microvm",
-          "legion.dev/pool": "legion"
+          "cloud.google.com/compute-class": "example-microvm"
         },
         "priorityClassName": "legion",
         "restartPolicy": "Always",
@@ -417,12 +348,6 @@
         },
         "terminationGracePeriodSeconds": 30,
         "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          },
           {
             "effect": "NoSchedule",
             "key": "cloud.google.com/compute-class",

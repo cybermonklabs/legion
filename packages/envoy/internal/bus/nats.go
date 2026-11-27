@@ -637,7 +637,7 @@ type Client struct {
 // subscriptions on reconnect by itself, so it needs none of Client's recovery, and it touches no
 // stream. It refuses a NATS server that is not this machine's on the same terms as Connect,
 // reading ENVOY_ALLOW_REMOTE_NATS from environment too, which answers as os.LookupEnv does
-// (WithEnvironment).
+// (WithEnvironment), and a server URL nats.go would read other than as written (checkedNATSURLs).
 //
 // It takes the DialOptions: WithConnectInBackground, which returns the connection before it has
 // connected (a core subscription made on it before then is sent once it connects),
@@ -648,6 +648,10 @@ type Client struct {
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
 	name = connectionName(name)
+	dialled, err := checkedNATSURLs(urls)
+	if err != nil {
+		return nil, err
+	}
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
@@ -661,10 +665,10 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 	}
 	settings := opts.connectionSettings(credential)
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connect(opts.logger, name, urls, allOf(settings, first), dialer, nil, nil, nil, nil, opts.reconnectErrClock)
+		return connect(opts.logger, name, dialled, allOf(settings, first), dialer, nil, nil, nil, nil, opts.reconnectErrClock)
 	}
 	if opts.background {
-		return connectFirstInBackground(opts.logger, name, urls, opts.reconnectErrClock, dial, nil, nil)
+		return connectFirstInBackground(opts.logger, name, dialled, opts.reconnectErrClock, dial, nil, nil)
 	}
 	return dial(nil)
 }
@@ -682,7 +686,8 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 // Every client, from Connect or ConnectOwningStream, connects as the NATS user the environment
 // names: an nkey seed (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED) or a service's platform token
 // (NATS_SERVICE_TOKEN_FILE or NATS_SERVICE_GOOGLE_AUDIENCE; credential). An unusable one is an error
-// before any dial; none set connects without a credential. It connects through the
+// before any dial, and so is a server URL nats.go would read other than as written
+// (checkedNATSURLs); none set connects without a credential. It connects through the
 // SOCKS5 proxy the environment names (ENVOY_NATS_SOCKS5_PROXY, socks5Proxy), or directly when it
 // names none. Every connection the client dials later, to recover, is the same user's, through
 // the same proxy.
@@ -729,8 +734,12 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 // startClient that dials up to connectTries times, connectRetryWait after each dial that fails, and
 // whose check then runs. A start in the foreground that got in reports it to WithCredentialWait's
 // admitted before newClient returns.
-func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
-	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
+func newClient(configured []string, ownsStream bool, opts connectOpts) (*Client, error) {
+	urls, err := checkedNATSURLs(configured)
+	if err != nil {
+		return nil, err
+	}
+	if err := refuseRemoteNATS(configured, opts.environment); err != nil {
 		return nil, err
 	}
 	credential, err := credential(opts.environment)
@@ -763,9 +772,15 @@ func credentialStart(urls []string, ownsStream bool, opts connectOpts, settings 
 	}
 	refused := func(err error, next time.Duration) {
 		if next > 0 {
+			// The servers by their count, as every bus line names them (options' failed-reconnect
+			// line): a host can be a piece of a credential (refuseRemoteNATS). The error prints as
+			// it is, since only a refusal of the credential reaches here (credentialRefusal): a
+			// dial's prints as its class (connectTrying, natsconn.ConnectionError), and a start
+			// check's (WithStartCheck) is the server's refusal under the check's own words
+			// (cmd/listener's edgeStreamPresent).
 			slog.Warn("envoy nats credential refused at start; trying again",
 				slog.String("name", opts.name),
-				slog.String("servers", serverList(urls)),
+				slog.Int("servers", len(urls)),
 				slog.String("error", err.Error()),
 				slog.Duration("wait", next))
 		}
@@ -2870,17 +2885,21 @@ func expectLastSubjectSequence(expected uint64) nats.Header {
 }
 
 // publishStoredRaw publishes the raw bytes data to the notification stream on subject - bytes of
-// the caller's own rather than an envelope - under header, the stored write's one header or none
-// (msgIDHeader, expectLastSubjectSequence), and returns the server's acknowledgement. It is the
-// body of every stored write: the subject check, the size check of data and header together
+// the caller's own rather than an envelope - under header, the stored write's one header or none,
+// which carries what a caller would otherwise pass as a publish option (msgIDHeader,
+// expectLastSubjectSequence), and returns the server's acknowledgement. It
+// is the body of every stored write: the subject check, the size check of data and header together
 // (checkSend), the acknowledgement bound, the connect and the send (sendStored). The header rides
-// the message rather than a publish option, so the size check counts the bytes nats.go counts.
+// the message rather than a publish option, so the size check counts the bytes nats.go counts, as
+// the server does.
+//
 // Its callers name their own failures, since what a refusal means is theirs: PublishStoredAck,
 // which stores an envelope under its message id; PublishCursorAt and
 // Client.WriteTakeoverRecordAt, which write under a precondition and read a lost one by
 // preconditionLost; SessionConsumers.recordResumeFloorAt, which writes a record whose one writer
-// keeps no sequence to write against, so the newest write stands; and Client.WriteTakeoverRecord,
-// which writes a subject no other writer has.
+// keeps no sequence to write against, so the newest write stands; Client.WriteTakeoverRecord,
+// which writes a subject no other writer has; and Client.WriteHandoverRecord, which writes only
+// while its subject holds nothing and reads any refusal of that as the record being there already.
 func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, header nats.Header) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
