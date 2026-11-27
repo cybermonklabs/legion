@@ -49,7 +49,9 @@ func OutputLines(out string) []string {
 // the caller stopped by cancelling its context, rather than the budget ending it, reports the
 // signal its stop sent (procgroup.Err), not a timeout.
 func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	// PLANT (never merged, review 6085965957's two-stall fault): a 0.6 s prefix inside the
+	// command's own process before the command's first line.
+	cmd := exec.CommandContext(ctx, "sh", append([]string{"-c", `sleep 0.6; exec "$@"`, "sh"}, args...)...)
 	cmd.Env = env
 	cmd.Dir = dir
 	if len(stdin) > 0 {
@@ -65,6 +67,8 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	killed := procgroup.Configure(cmd)
 	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
 	// the start still reads as a timeout below.
+	// PLANT (never merged): the runner spends 0.6 s before Start.
+	time.Sleep(600 * time.Millisecond)
 	err := procgroup.Run(cmd, start)
 	command := strings.Join(args, " ")
 	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
