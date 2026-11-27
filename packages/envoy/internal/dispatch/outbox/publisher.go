@@ -1267,7 +1267,8 @@ func (d *destinations) err(cause error) error {
 // eventDestinations lists item's destinations in the order they are sent and recorded: its owner's
 // topic (item.item.Topic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
-// its follower routes and the previous claimant's notice. It answers the whole reading: the list,
+// its follower routes, the agents and roles an answer's text names (addAnswerParties) and the
+// previous claimant's notice. It answers the whole reading: the list,
 // and whether a session's copy was held back for a mention still being sent (destinations.leftTo).
 // A session a mention already delivered the comment to is no destination of it, and the batch
 // sends it nothing: that delivery is recorded under the attempt's own receipt (deliveredGraph).
@@ -1316,6 +1317,7 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 	if err := addFollowerRoutes(event, look, d); err != nil {
 		return d, d.err(err)
 	}
+	addAnswerParties(event, d)
 	addPreviousClaimant(event, d)
 	return d, d.err(nil)
 }
@@ -1342,15 +1344,22 @@ func addRoute(d *destinations, route *string) error {
 	}
 	switch parsed.Kind {
 	case "role":
-		d.addDestination(destination{subject: contracts.RoleTopicPrefix + parsed.ID, label: "publish route", id: *route,
-			role: parsed.ID, mentionKeys: d.mentions.fallbackKeys, settledKeys: d.mentions.settledKeys,
-			mentionStates: d.mentions.holds(), liveMention: d.mentions.anyLive()})
+		d.addRole(parsed.ID, "publish route", *route)
 	case "session":
 		d.addWorkingSession(parsed.ID, "publish route", *route)
 	default:
 		return fmt.Errorf("unsupported route %q", *route)
 	}
 	return nil
+}
+
+// addRole adds role's topic, which the batch forwards to the role's holder (resolveRoleHolders),
+// named by label and id, with the mentions of a new comment its copy is keyed by, as addRoute
+// states. Every other event has no mention to key by, and its copy carries none.
+func (d *destinations) addRole(role, label, id string) {
+	d.addDestination(destination{subject: contracts.RoleTopicPrefix + role, label: label, id: id,
+		role: role, mentionKeys: d.mentions.fallbackKeys, settledKeys: d.mentions.settledKeys,
+		mentionStates: d.mentions.holds(), liveMention: d.mentions.anyLive()})
 }
 
 // addClaimantRoute delivers a person's answer, comment or untargeted message on an issue - and
@@ -1456,6 +1465,37 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	}
 	d.addSessions(sessionIDs, "publish follower route to")
 	return nil
+}
+
+// addAnswerParties delivers an answer to each agent and each role its text names, as the answer
+// route recorded them on its ask.answered event (model.AskAnsweredEventPayload.NamedTargets): a
+// session on its own topic, as a follower is (destinations.addSessions), and a role on its role
+// topic, which the batch forwards to the role's holder as it forwards a role route (addRole,
+// resolveRoleHolders). Like the follower routes this ignores Notify. A party that is also the
+// asker, a follower or the route gets one copy: destinations adds a subject once per event. The
+// event's published_destinations record each copy, and a copy that is not sent is sent again
+// with the outbox's back-off, as every destination is.
+//
+// The text is not read again here, so an event that records no party - an answer written before
+// the field, the review route's answer of an approval request, a settlement's restored answer and
+// a carried approval - goes where it went before. A route that does not parse names nobody, as
+// it would have named nobody in the text: the answer route records none such.
+func addAnswerParties(event model.Event, d *destinations) {
+	if event.Type != "ask.answered" {
+		return
+	}
+	for _, target := range payloadStrings(event.Payload, "named_targets") {
+		route, err := model.ParseRoute(target)
+		if err != nil {
+			continue
+		}
+		switch route.Kind {
+		case "session":
+			d.addSessions([]string{route.ID}, "publish answer party route to")
+		case "role":
+			d.addRole(route.ID, "publish answer party route to", target)
+		}
+	}
 }
 
 // addPrimaryDocumentAuthors delivers a person's comment, its edit or its delete, on an issue
@@ -1836,6 +1876,20 @@ func payloadBool(payload any, key string) bool {
 	}
 	value, _ := values[key].(bool)
 	return value
+}
+
+// payloadStrings is the strings of an event payload's list under key, in its order, leaving out
+// an item that is no string; none for a payload that holds no list there.
+func payloadStrings(payload any, key string) []string {
+	values, _ := payload.(map[string]any)
+	items, _ := values[key].([]any)
+	found := make([]string, 0, len(items))
+	for _, item := range items {
+		if value, ok := item.(string); ok {
+			found = append(found, value)
+		}
+	}
+	return found
 }
 
 // askAnswerText renders an ask's answer as one line: the text alone, the selected options

@@ -1,13 +1,14 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Artifact, DispatchEvent, IssueDetails } from "../../api/types";
-import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ActivityLine } from "./ActivityLine";
+import { activityDescription } from "./activity-model";
+import type { SentencePart } from "./SentenceParts";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -99,7 +100,7 @@ const base = {
   notify: false,
 } as const;
 
-function renderLine(event: DispatchEvent, description: readonly AgentPart[]) {
+function renderLine(event: DispatchEvent, description: readonly SentencePart[]) {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -120,6 +121,8 @@ function renderLine(event: DispatchEvent, description: readonly AgentPart[]) {
   };
 }
 
+// The description comes from `activityDescription` itself, so each row holds the model and the
+// line to the same contract.
 test("an added artifact's name links to the artifact", () => {
   const event: DispatchEvent = {
     ...base,
@@ -128,7 +131,7 @@ test("an added artifact's name links to the artifact", () => {
     seq: 4,
     type: "artifact.created",
   };
-  const { cleanup } = renderLine(event, ["added cu-update-2026-09-15.md"]);
+  const { cleanup } = renderLine(event, activityDescription(event));
 
   try {
     const link = screen.getByRole("link", { name: "cu-update-2026-09-15.md" });
@@ -157,12 +160,120 @@ test("a saved version's name links to that version once the issue's artifacts ar
     seq: 5,
     type: "artifact.version",
   };
-  const { cleanup } = renderLine(event, ["saved cu-update-2026-09-15.md v2"]);
+  const { cleanup } = renderLine(event, activityDescription(event));
 
   try {
     const link = await screen.findByRole("link", { name: "cu-update-2026-09-15.md" });
     expect(link.getAttribute("href")).toBe("/issues/OPS-52/artifacts/cu-update-2026-09-15-md?v=2");
     expect(screen.getByText(/^saved/).textContent).toBe("saved cu-update-2026-09-15.md v2");
+  } finally {
+    cleanup();
+  }
+});
+
+// A correction's line names the document twice - `renamed <old> to <new>` - and the link is
+// the last reading of the name in the line's own words, the new title, which is the one that has
+// the page: an old title that holds the new one stays words.
+test("a renamed artifact's link lands on its new title, not on the old title that holds it", () => {
+  const event: DispatchEvent = {
+    ...base,
+    id: 4,
+    payload: { artifact: uploaded, previous_name: "cu-update-2026-09-15.md draft" },
+    seq: 4,
+    type: "artifact.renamed",
+  };
+  const { cleanup, view } = renderLine(event, activityDescription(event));
+  try {
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0]?.textContent).toBe("cu-update-2026-09-15.md");
+    expect(links[0]?.getAttribute("href")).toBe("/issues/OPS-52/artifacts/cu-update-2026-09-15-md");
+    expect(links[0]?.previousSibling?.textContent).toBe(
+      "renamed cu-update-2026-09-15.md draft to "
+    );
+    expect(view.container.textContent).toBe(
+      "renamed cu-update-2026-09-15.md draft to cu-update-2026-09-15.md"
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+// The case the old `indexOf` over the sentence's text got wrong: the quote beside the artifact
+// names it too, and the first occurrence of the name is the quoted one. The quote is a text of
+// the record (`ProsePart`), which the link is never looked for in, so the link lands on the
+// artifact the line's own words name and the quoted name stays words.
+test("an artifact's link lands on the artifact though the quote beside it names it too", async () => {
+  const event: DispatchEvent = {
+    ...base,
+    id: 4,
+    payload: { artifact: uploaded },
+    seq: 4,
+    type: "artifact.created",
+  };
+  const { cleanup, view } = renderLine(event, [
+    "replied to “",
+    {
+      prose: "Does **cu-update-2026-09-15.md** replace the plan?",
+      source: undefined,
+      tree: undefined,
+    },
+    "” and added cu-update-2026-09-15.md",
+  ]);
+
+  try {
+    await waitFor(() => expect(view.container.querySelector("strong")).not.toBeNull());
+    const quote = view.container.querySelector("[data-markdown-preview]");
+    expect(quote?.textContent).toBe("Does cu-update-2026-09-15.md replace the plan?");
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("href")).toBe("/issues/OPS-52/artifacts/cu-update-2026-09-15-md");
+    // The one link is in the sentence's own words, never the name the quote repeats before it.
+    expect(links[0]?.closest("[data-markdown-preview]")).toBeNull();
+    expect(view.container.textContent).toBe(
+      "replied to “Does cu-update-2026-09-15.md replace the plan?” and added cu-update-2026-09-15.md"
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+// The quoted question is a part of its own (`ProsePart`), so the line draws it through
+// `MarkdownPreview` at one line: the reader sees bold words, never the `**` their author typed.
+test("a quoted question is drawn as Markdown rather than as its source", async () => {
+  const event = {
+    ...base,
+    id: 8,
+    payload: {
+      anchor: null,
+      answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      author: base.actor,
+      created_at: "2026-09-15T00:00:00Z",
+      edited_at: null,
+      id: "ask-1",
+      issue_key: "OPS-52",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 8,
+      options: [],
+      question: "**Ship** the release tonight?",
+      state: "open",
+      urgency: "med",
+    },
+    seq: 8,
+    type: "ask.opened",
+  } as DispatchEvent;
+  const { cleanup, view } = renderLine(event, activityDescription(event));
+
+  try {
+    await waitFor(() => expect(view.container.querySelector("strong")).not.toBeNull());
+    expect(view.container.querySelector("strong")?.textContent).toBe("Ship");
+    expect(view.container.textContent).toBe("asked “Ship the release tonight?”");
   } finally {
     cleanup();
   }

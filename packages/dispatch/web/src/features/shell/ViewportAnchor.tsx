@@ -1,5 +1,6 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
+import { moveTheBox, whereTheReaderIs } from "../doc/readers-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 
 export interface AnchorRow {
@@ -141,10 +142,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  a scroll whose event has not arrived yet; in a named box the browser does not cover it,
    *  which is what `contentResized` stands in for.
    *
-   *  A different `scrollTop` means the view moved without this component hearing of it, and a
-   *  different `group` means the row was relocated rather than shifted. On either the top no
-   *  longer says where the reader's place is, and the commit measures the row instead. */
-  private held: { group: string | null; id: string; scrollTop: number; top: number } | null = null;
+   *  A different `offset` - how far down the box stood when the place was saved - means the
+   *  view moved without this component hearing of it, and a different `group` means the row was
+   *  relocated rather than shifted. On either the top no longer says where the reader's place
+   *  is, and the commit measures the row instead. */
+  private held: { group: string | null; id: string; offset: number; top: number } | null = null;
   private contentSize: ResizeObserver | null = null;
   /** Set by a scroll this component made, so the scroll event it raises is not read as the
    *  reader moving the view. Scroll events run before resize observations in a frame, so
@@ -186,7 +188,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     this.held = {
       group: this.groupOf(current.row),
       id: current.id,
-      scrollTop: scroller.scrollTop,
+      offset: scroller.scrollTop,
       top: current.row.getBoundingClientRect().top,
     };
   };
@@ -198,7 +200,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const held = this.held;
     const scroller = this.scrollerElement();
     if (held === null || scroller === null) return null;
-    const holds = held.id === id && held.group === group && held.scrollTop === scroller.scrollTop;
+    const holds = held.id === id && held.group === group && held.offset === scroller.scrollTop;
     return holds ? held.top : null;
   }
 
@@ -209,7 +211,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const held = this.held;
     const scroller = this.scrollerElement();
     if (held === null || scroller === null || held.id !== id || held.top !== top) return;
-    held.scrollTop = scroller.scrollTop;
+    held.offset = scroller.scrollTop;
   }
 
   /** True when this pointer event is the hand moving rather than the list moving under it. */
@@ -219,18 +221,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return at === null || at.x !== event.clientX || at.y !== event.clientY;
   }
 
-  /** Moves the box this anchor owns and remembers that it did. */
-  private scrollBy(delta: number): void {
+  /** Moves the box this anchor owns - the page itself where the host names none - and remembers
+   *  that it did. The move goes through the one call that records it as the page's own
+   *  place-keeping (`moveTheBox`, `features/doc/readers-place.ts`): a row put back under the
+   *  reader's hand is the page moving what it draws, so a landing correction watching the same
+   *  box reads it as such rather than as the reader taking the list over
+   *  (`refocus-when-settled.ts`). The flag stays this component's own: it tells the anchor's own
+   *  scroll listener, which hears the page's every box. */
+  private moveBy(delta: number): void {
     const scroller = this.scrollerElement();
-    if (scroller === null) {
-      const before = window.scrollY;
-      window.scrollBy(0, delta);
-      this.selfScrolled = window.scrollY !== before;
-      return;
-    }
-    const before = scroller.scrollTop;
-    scroller.scrollTop += delta;
-    this.selfScrolled = scroller.scrollTop !== before;
+    const before = whereTheReaderIs(scroller);
+    moveTheBox(scroller, delta);
+    this.selfScrolled = before !== whereTheReaderIs(scroller);
   }
 
   private readonly viewScrolled = (event: Event): void => {
@@ -265,7 +267,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (top === null) return;
     const delta = element.getBoundingClientRect().top - top;
     if (delta === 0) return;
-    this.scrollBy(delta);
+    this.moveBy(delta);
     this.restampHeld(held.id, top);
   };
 
@@ -368,7 +370,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const root = this.root;
     if (root === null) return null;
     const scroller = this.scrollerElement();
-    if ((scroller === null ? window.scrollY : scroller.scrollTop) <= 0) return null;
+    if (whereTheReaderIs(scroller) <= 0) return null;
     const row = rowAtCenter(root, `[${this.props.item}]`, scroller);
     return row === null ? null : { id: this.idOf(row), row, via: "center" };
   }
@@ -414,7 +416,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (group !== undefined && element.getAttribute(group) !== snapshot.group) return;
     const delta = element.getBoundingClientRect().top - snapshot.top;
     if (delta === 0) return;
-    this.scrollBy(delta);
+    this.moveBy(delta);
     this.restampHeld(snapshot.id, snapshot.top);
   }
 

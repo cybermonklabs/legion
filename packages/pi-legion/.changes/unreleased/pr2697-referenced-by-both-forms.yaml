@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The legion tool's rule for ending a folded child says how `dispatch read` names each issue the
+  child blocks under `Referenced by:`: as `blocks`, which the `dispatch` of this release prints
+  from the read issue's side, or as `blocked_by` in an older `dispatch`. An architect that looked
+  for `blocked_by` alone found nothing under a newer `dispatch`, and its fold's `done` started the
+  issues the child blocked.
+time: 2026-11-22T07:30:00Z
+custom:
+    Issue: pr2697

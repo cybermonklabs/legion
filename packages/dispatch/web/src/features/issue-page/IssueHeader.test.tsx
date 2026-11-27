@@ -9,7 +9,7 @@ import {
   test,
 } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window and its focus as the reader comes back, and a key pressed during an IME composition or, as Safari sends it, just after one.
+// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), and a blur of the window and its focus as the reader comes back.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
@@ -17,6 +17,12 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import {
+  COMPOSING,
+  KEY_CODE_229,
+  pressAsInputMethod,
+  pressInputMethodKey,
+} from "../../__tests__/input-method-keys";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -50,6 +56,7 @@ import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
+import { PROPERTY_LABELS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
@@ -1090,6 +1097,64 @@ test("the approval chip's keys press its own actions, and only while those take 
     answered.reject(new Error("the connection dropped"));
     view.unmount();
     createArtifactReview.mockRestore();
+    restore();
+  }
+});
+
+// Every key the header binds says what it does to the reader, and the watches over the reader's
+// place read the key by that alone (`effectOf`, read by `features/doc/readers-scroll.ts`): a key
+// that puts the focus in a header control, opens the title's editor or opens Request changes,
+// whose dialog takes the focus, moves the reader, as does Escape out of a focused control; the
+// digits, the pin and Approve write the issue and leave the focus where it was.
+test("the header's keys move the reader where they move the focus, and the writing keys move nobody", async () => {
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 2, state: "stale", version: 1 } },
+    ],
+    open_asks: [approvalAsk()],
+  });
+  const view = renderHeader();
+  const effectOf = (key: string, held: KeyboardEventInit = {}, into: Element = document.body) => {
+    const event = new KeyboardEvent("keydown", { ...held, key });
+    Object.defineProperty(event, "target", { value: into });
+    return appKeymap.effectOf(event);
+  };
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    await within(stateActions).findByRole("button", { name: "Approve v2" });
+    const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
+    if (chip === null) throw new Error("the header draws no approval chip");
+
+    expect({
+      "0": effectOf("0"),
+      "3": effectOf("3"),
+      e: effectOf("e"),
+      p: effectOf("p"),
+      s: effectOf("s"),
+      "Shift+P": effectOf("P", { shiftKey: true }),
+    }).toEqual({
+      "0": "moves nothing",
+      "3": "moves nothing",
+      e: "moves the reader",
+      p: "moves the reader",
+      s: "moves the reader",
+      "Shift+P": "moves nothing",
+    });
+
+    act(() => chip.focus());
+    expect({
+      a: effectOf("a", {}, chip),
+      "Shift+R": effectOf("R", { shiftKey: true }, chip),
+    }).toEqual({ a: "moves nothing", "Shift+R": "moves the reader" });
+
+    const status = screen.getByRole("combobox", { name: PROPERTY_LABELS.status });
+    act(() => status.focus());
+    expect(effectOf("Escape", {}, status)).toBe("moves the reader");
+  } finally {
+    view.unmount();
     restore();
   }
 });
@@ -2962,13 +3027,7 @@ test.each([
 
     try {
       const { editor, heading } = await editTitle(user, "Review the plan");
-      // user-event has no form for this: it cannot mark a key as an IME composition.
-      fireEvent.keyDown(
-        editor,
-        mark === "isComposing"
-          ? { isComposing: true, key }
-          : { isComposing: false, key, keyCode: 229 }
-      );
+      pressInputMethodKey(editor, key, mark === "isComposing" ? COMPOSING : KEY_CODE_229);
       expect(editor).toBeInTheDocument();
       expect(editor).toHaveValue("Review the plan");
       expect(editor).toHaveFocus();
@@ -3104,6 +3163,45 @@ test("the actions group closes once a focus moved by code goes to a control outs
     act(() => status.focus());
     expect(status).toHaveFocus();
     expect(group.contains(document.activeElement)).toBe(false);
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Safari focuses no button a press lands on, so the group can be open with the focus on no
+// control, and a key then puts the focus in a field outside it without closing it: `e` opens the
+// title's editor. A reader typing Chinese, Japanese or Korean there drops a candidate with Escape:
+// that Escape is the input method's, marked `isComposing`, or sent unmarked with keyCode 229 after
+// the composition's end, as Safari sends it (WebKit bug 165004), and the group stays open with the
+// focus in the editor. A plain Escape after it closes the group.
+test("an input method's Escape in the title's editor leaves the actions group open, and a plain Escape closes it", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const { control, first } = await openIssueActionsByKey(user);
+    // The focus falls to no control, as a press on the control leaves it in Safari.
+    act(() => first.blur());
+    expect(document.activeElement).toBe(document.body);
+    await user.keyboard("e");
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(control, "the title's editor closed the group").toHaveAttribute("aria-expanded", "true");
+
+    expect(
+      pressAsInputMethod(editor, "Escape", {
+        beforePlain: () => {
+          expect(control, "an input method's Escape closed the group").toHaveAttribute(
+            "aria-expanded",
+            "true"
+          );
+          expect(editor, "an input method's Escape took the focus from the editor").toHaveFocus();
+        },
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
   } finally {
     view.unmount();

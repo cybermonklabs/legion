@@ -1,4 +1,5 @@
 import { type RefObject, useEffect, useLayoutEffect, useState } from "react";
+import { moveTheBox, whereTheReaderIs } from "../doc/readers-place";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /**
@@ -49,6 +50,8 @@ export const CLEARANCE = 8;
  */
 export function bringOnScreen(element: HTMLElement): void {
   if (element.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null) {
+    // The drawer is a fixed layer with a scroll box of its own: this brings a row of it into
+    // that box, and moves no box the page's place-keeping watches.
     element.scrollIntoView({ block: "nearest" });
     return;
   }
@@ -61,12 +64,14 @@ export function bringOnScreen(element: HTMLElement): void {
   const floor = window.innerHeight - height(FOOT_HEIGHT_PROPERTY);
   const box = element.getBoundingClientRect();
   if (box.top >= clear && box.bottom <= floor) return;
-  window.scrollBy({
-    top:
-      box.bottom > floor && box.height <= floor - clear
-        ? box.bottom - floor + CLEARANCE
-        : box.top - clear - CLEARANCE,
-  });
+  // The page itself, through the module that records where the page's own moves leave it, so a
+  // landing correction watching the page reads this as the page's move, not the reader's.
+  moveTheBox(
+    null,
+    box.bottom > floor && box.height <= floor - clear
+      ? box.bottom - floor + CLEARANCE
+      : box.top - clear - CLEARANCE
+  );
 }
 
 /**
@@ -127,7 +132,7 @@ export function useIdentityBlock(
   useEffect(() => {
     if (ref.current === null) return;
     const narrow = window.matchMedia(HEADER_SCROLLS_QUERY);
-    const measure = () => setStuck(window.scrollY > CONDENSED_AFTER && !narrow.matches);
+    const measure = () => setStuck(whereTheReaderIs(null) > CONDENSED_AFTER && !narrow.matches);
     window.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure);
     narrow.addEventListener("change", measure);

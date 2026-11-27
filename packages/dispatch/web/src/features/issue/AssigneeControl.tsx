@@ -21,6 +21,7 @@ import {
   badgeSelectPageWrapper,
   badgeSelectWrapper,
 } from "./badge-select";
+import { assigneeBadgeWords, unassignedWords } from "./issue-header-words";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /** The name the assignee picker answers to, in its words on every page: the property it sets
@@ -81,7 +82,10 @@ export function AssigneeControl({
       : assignee === null
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
-  const label = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
+  const label =
+    assignee === null && page !== null
+      ? page.CONTROL_LABELS.unassigned
+      : assigneeBadgeWords(assignee);
   const mark = assignee === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the person is a value, so it keeps `max-w-full` and breaks anywhere, and
   // its wrapper narrows to the line rather than keep its width. The header variant is the new
@@ -136,7 +140,7 @@ export function AssigneeControl({
           }}
           value={assignee ?? ""}
         >
-          <option value="">Unassigned</option>
+          <option value="">{unassignedWords}</option>
           {options.map((login) => (
             <option key={login} value={login}>
               {login}

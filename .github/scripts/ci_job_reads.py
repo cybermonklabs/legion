@@ -2440,20 +2440,22 @@ DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e .
 # binaries job of dispatch-browser.yaml builds all four, since the shard and alone jobs run
 # them in a container and so run no go command of their own (that file says why).
 BROKER_PKGS = ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./internal/cipher/ciphertest/requestseed"]
+# The bus the alone job's chromium-bus leg starts for its stack (packages/dispatch/e2e/harness-bus.ts),
+# built in the same job for the same reason.
+BUS_PKGS = ["./internal/testnats/cmd/natsd"]
 # The steps of .github/workflows/dispatch-browser.yaml this table cites by name.
 BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed ./internal/testnats/cmd/natsd
 CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
-# shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
-# two-build jobs' own, outside their browser steps' budgets. One script; a name per job, since the
-# check finds a step by name across the workflow. Pinned whole, since `go run` is not a form the
-# simple form reduces.
+# shard, alone and visual jobs, whose containers have no Go or which keep none, and the
+# multiprocess, embedder and two-build jobs' own, outside their browser steps' budgets. One
+# script; a name per job, since the check finds a step by name across the workflow. Pinned whole,
+# since `go run` is not a form the simple form reduces.
 BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
-BROWSER_VISUAL_CONNECTIONS_STEP = "Read the connections the visual stack's Postgres must allow"
 BROWSER_MP_CONNECTIONS_STEP = "Read the connections the multiprocess stack's Postgres must allow"
 BROWSER_EMBEDDER_CONNECTIONS_STEP = "Read the connections the embedder stack's Postgres must allow"
 TWO_BUILDS_CONNECTIONS_STEP = "Read the connections the two-build stack's Postgres must allow"
@@ -2461,7 +2463,7 @@ BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
-BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
+BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 5)"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
@@ -2484,10 +2486,9 @@ BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that di
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
 # since the shard job's machine also runs the file store whose log that job collects.
 BROWSER_RECORD_STEP = "What the run left behind"
-# The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
-# `packages/dispatch/e2e/run-server.sh#go build` of the Dispatch server has already run, and then runs Playwright
-# in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
-# pinned build step in the gate below names already, so this job adds no command of its own.
+# The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host and then
+# runs Playwright in the pinned container. The stack it starts there runs the binaries job's
+# build (DISPATCH_E2E_SERVER_BIN and DISPATCH_E2E_BROKER_BIN_DIR), so this job runs no go command.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
 # The six steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
@@ -2627,8 +2628,8 @@ def browser_gate(filter, job):
     of it runs under every caller (ci_filter_coverage.called_job_owners) and each gate reads all
     of it, the jobs a lane skips by its `lane` input among them: which jobs run is a literal each
     caller passes, not a gate."""
-    # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
-    # projects, the two-process job, the visual job and the merge job, all in
+    # The browser suite, every row of it: the binaries job, the shard legs, the six `-alone`
+    # projects and the bus project's leg, the two-process job, the visual job and the merge job, all in
     # dispatch-browser.yaml, which ci.yaml's dispatch-browser, dispatch-browser-pr and
     # dispatch-references jobs and the nightly call (at_browser cites their steps).
     #
@@ -2648,28 +2649,28 @@ def browser_gate(filter, job):
     # reads that over every job of the called workflow. The shard and alone jobs run in a
     # container (dispatch://INFRA-1443), which shell_reason counts as exactly such a thing, so a
     # script Run here would fall to reading every Go file of the repository. It costs this
-    # filter nothing. Those two jobs run no go command at all - run-server.sh and run-broker.sh
-    # execute the binaries the first entry below builds - and the scripts the multiprocess job
-    # and the visual job still start compile closures this filter already carries:
-    # run-server.sh, which both of them start, builds ./cmd/dispatch, which the multiprocess
-    # job's own pinned build step below names, and run-signin-issuer.sh builds
-    # ./cmd/dev-oidc-issuer, which that first entry names. No job's e2e/harness-postgres.ts runs
-    # a go command in CI: each job that starts stacks there hands it the connection limit that
-    # a pinned step below reads.
+    # filter nothing. Those three jobs run no go command at all - run-server.sh and run-broker.sh
+    # execute the binaries the first entry below builds, in the shard and alone jobs and in the
+    # visual job alike - and the scripts the multiprocess job still starts compile closures this
+    # filter already carries: run-server.sh builds ./cmd/dispatch, which that job's own pinned
+    # build step below names, and run-signin-issuer.sh builds ./cmd/dev-oidc-issuer, which that
+    # first entry names. No job's e2e/harness-postgres.ts runs a go command in CI: each job that
+    # starts stacks there hands it the connection limit that a pinned step below reads.
     gate_ = gate(filter, job, exact=[
-        # The four commands the shard and alone jobs' scripts built before those jobs moved
-        # into a container, built once in the binaries job and downloaded by both: this is the
-        # closure that build compiles and no other. The step names an output (-o) and pins
-        # CGO_ENABLED on the line, neither of which the simple form reduces, so the step is
-        # pinned whole; the Run carries that CGO_ENABLED, since the closure go lists without
-        # cgo is the one this build compiles.
+        # The five commands the shard and alone jobs' scripts run, built once in the binaries
+        # job and downloaded by both and by the visual job: the four the shard and alone jobs
+        # built before those jobs moved into a container, and natsd, the bus of the alone job's
+        # chromium-bus leg. This is the closure that build compiles and no other. The step names an
+        # output (-o) and pins CGO_ENABLED on the line, neither of which the simple form
+        # reduces, so the step is pinned whole; the Run carries that CGO_ENABLED, since the
+        # closure go lists without cgo is the one this build compiles.
         pinned_step(BROWSER_BINARIES, BROWSER_BINARIES_STEP, ENVOY, BROWSER_BINARIES_SCRIPT, [
-            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
-             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
+            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS + BUS_PKGS,
+             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer, the seeding step and natsd",
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
-        # The stacks' connection limit, read on the host for the shard and alone jobs, whose
-        # containers have no Go, and in the visual, multiprocess and embedder jobs before their
+        # The stacks' connection limit, read in the binaries job for the shard, alone and visual
+        # jobs, none of which runs Go, and in the multiprocess and embedder jobs before their
         # timed browser steps.
         *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
@@ -2677,7 +2678,6 @@ def browser_gate(filter, job):
              {"mode": "build"}),
         ], workflow=BROWSER_SITE)
           for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
-                            (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP),
                             (BROWSER_MP, BROWSER_MP_CONNECTIONS_STEP),
                             (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
@@ -2702,7 +2702,7 @@ def browser_gate(filter, job):
         # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
         # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
-        # `build:dispatch`, whose five entries compile nothing outside dispatch_ui's.
+        # `build:dispatch`, whose fourteen entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "`packages/dispatch/e2e/inbox-cli.e2e.ts#runDispatch` runs it through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`"),
         (f"{FIX}/priority-ids.json", "`packages/dispatch/e2e/priorities.e2e.ts#idFixture` reads the shared list of the priority "
                                      "id rule's cases by path"),
@@ -2741,7 +2741,7 @@ def browser_gate(filter, job):
          "before it started, which it makes a bucket in and writes, reads back and deletes one "
          "object in"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
-         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's row time"),
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's fifth of the lane's row time"),
         (".github/scripts/dispatch-browser-shard-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
          "and the stacks' own logs"),

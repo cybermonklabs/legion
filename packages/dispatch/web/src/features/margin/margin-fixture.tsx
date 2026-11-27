@@ -242,16 +242,37 @@ const PX_PER_REM = 16;
 /** One `(min-width: …)` or `(max-width: …)` clause, in `px` or `rem`. */
 const WIDTH_CLAUSE = /^\(\s*(min|max)-width\s*:\s*(\d*\.?\d+)(px|rem)\s*\)$/;
 
+/** One clause of the range syntax, `(width < …)`, `(width <= …)`, `(width > …)` or
+ *  `(width >= …)`, in `px` or `rem`: how `COMPACT_VIEWPORT_QUERY` is written, so it is the exact
+ *  inverse of `READING_PANE_QUERY` at every width (`features/shell/useDialog.ts`). */
+const WIDTH_RANGE_CLAUSE = /^\(\s*width\s*(<=?|>=?)\s*(\d*\.?\d+)(px|rem)\s*\)$/;
+
 /** Whether a viewport `widthPx` wide matches `query`, which holds when every clause it joins with
  *  `and` holds. A clause of any other kind throws, naming the query, because a guessed answer
  *  would let a row pass on a layout that no real screen draws. */
 function viewportMatches(widthPx: number, query: string): boolean {
+  const pxOf = (value: string, unit: string) => Number(value) * (unit === "rem" ? PX_PER_REM : 1);
   return query.split(/\s+and\s+/i).every((clause) => {
-    const match = WIDTH_CLAUSE.exec(clause.trim());
-    if (match === null) throw new Error(`stubViewport cannot read the media query "${query}"`);
-    const [, bound, value, unit] = match;
-    const px = Number(value) * (unit === "rem" ? PX_PER_REM : 1);
-    return bound === "min" ? widthPx >= px : widthPx <= px;
+    const bounded = WIDTH_CLAUSE.exec(clause.trim());
+    if (bounded !== null) {
+      const [, bound, value = "", unit = ""] = bounded;
+      const px = pxOf(value, unit);
+      return bound === "min" ? widthPx >= px : widthPx <= px;
+    }
+    const ranged = WIDTH_RANGE_CLAUSE.exec(clause.trim());
+    if (ranged === null) throw new Error(`stubViewport cannot read the media query "${query}"`);
+    const [, operator, value = "", unit = ""] = ranged;
+    const px = pxOf(value, unit);
+    switch (operator) {
+      case "<":
+        return widthPx < px;
+      case "<=":
+        return widthPx <= px;
+      case ">":
+        return widthPx > px;
+      default:
+        return widthPx >= px;
+    }
   });
 }
 

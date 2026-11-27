@@ -4,7 +4,7 @@ import {
   actorName,
   sessionLabel,
   shortSessionId,
-} from "@legion/contracts";
+} from "@legion/contracts/actor-label";
 import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 
@@ -23,6 +23,7 @@ import {
   stalledDotBorder,
   unknownDotBorder,
 } from "../../theme/classes";
+import { useAfterTheFirstBatch } from "../doc/first-batch";
 import { askResolutionBadge } from "./actor";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
 import { AGENT_LIVE_PATH } from "./routes";
@@ -339,7 +340,13 @@ function SessionAgentName({
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
-  const registry = useAgentRegistry(true);
+  // Beside an opening document the registry waits for the editor's first batch: what it adds
+  // to this name is the agent's live title and its running mark, and neither is the block the
+  // reader is waiting for (`features/doc/first-batch.ts`). A name inside a panel the reader
+  // has opened reads it at once, because that panel says so (`ReaderIsHere`). Until the read
+  // lands this name is the one every page without the registry shows: the title stamped on the
+  // write, else the short id outside `NoTooltips`, the page's word inside.
+  const registry = useAgentRegistry(useAfterTheFirstBatch());
   const { attribution, sessionId } = resolveAgent(subject, registry);
   // Every form names a session by the one rule for a drawn session name, whether the host gave
   // the session's actor or its bare id: inside `NoTooltips` by a title, else the page's word, and

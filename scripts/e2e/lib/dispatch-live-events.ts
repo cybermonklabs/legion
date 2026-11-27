@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
+import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-constants";
 import { bodyForText } from "../../../packages/envoy-client/src/excerpt";
 
 const USAGE =

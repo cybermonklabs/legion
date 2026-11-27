@@ -24,6 +24,8 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
+The Answers page (`/answers`) shows replies as three-line previews with formatted text and live reference links, not full reference cards.
+
 An upload replaces whatever document the owner already holds under the name being uploaded, so it names the token of the version it replaces.
 It reads that document's token when the person chooses the file to upload (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so a write landing between that choice and the upload is refused `409 PRECONDITION_FAILED` instead of writing over the text it left.
 That is the whole window the dashboard guards: a change made before the file was chosen is replaced without a refusal, since the upload names the token the document held at the choice.
@@ -1136,9 +1138,10 @@ every recording no row writes any more.
 
 ## Projects
 
-The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
-stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
+The suite has nineteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+seven the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`), the one
+`chromium-bus` takes (below) and the stubbed layer's own ("The stubbed layer" above), which the
+last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
 only where the phone can change what it asserts: its layout, touch (`e2e/touch.ts`), a surface
@@ -1150,12 +1153,12 @@ that loses its tag drops out of them with no failure: read a project's rows with
 `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses Chromium with iPhone
 13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
-same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
-runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
-the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
+same projects but the two stubbed ones, the six `-alone` ones and `chromium-bus`, so its `iphone`
+project also runs only the `@phone` tests, and it holds no `-alone` row: that command names no
+project, and the six `-alone` projects are out of the default selection. Listed at 77471f15, a deployed
+run holds 1,511 rows in 190 files, and the other 59 are an `-alone` run of its own, under the
 same base URL:
-`bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
+`bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --project=iphone-long-build-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
 no use for. `bunx` and not a bare `playwright`, which is on no PATH here (`command -v
 playwright` in this package exits 1), and `build:contracts` because a fresh checkout has no
@@ -1188,29 +1191,57 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 `e2e/keyed-writes.e2e.ts` on that same origin, where the browser has no `navigator.locks`, so a
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
-The last three projects run the rows whose claim is a wall-clock time, with the machine to
+The six `-alone` projects run the rows whose claim is a wall-clock time, and the phone half of
+one file too costly for a shard, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
-(a card draws without holding the main thread for a second)
-and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
-back inside half a second on the fastest of up to five fresh wakes, a sleeping view at the
-stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and
-the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
-thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
-`firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
-caps its own workers at one.
-What holds a reading to a quiet machine is the run being one worker wide, and the three files
-reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
-`e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more than one worker,
-since four workers on one machine make a second of wall clock unmeasurable, and the rows of
-`e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
-the command that runs them.
-`bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
-beside them; one file in one engine is
-`bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that
-worker count itself rather than taking the configuration's default, and which writes the project
-as `--project=<name>`, since the option is variadic and would read the file after a space as a
-second project name.
+(a card draws without holding the main thread for a second), `e2e/agent-workspace-timing.e2e.ts`
+(a sleeping live view of an ordinary conversation comes back inside half a second on the
+fastest of up to five fresh wakes, a sleeping view at the stream's worst case comes back inside
+1.2 seconds on the fastest of up to eight fresh wakes, and the Agents page paints six hundred
+sessions inside 100 milliseconds while holding the main thread under 150 ms, the first load
+inside both of those bounds of up to twenty taken) and
+`e2e/large-documents-desktop-build.e2e.ts`, the longest main-thread task of a build read at a
+desktop width, `firefox-alone` and
+`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines, `iphone-alone` runs
+`e2e/large-documents-build-serves.e2e.ts` and `e2e/large-documents-build-serves.the-decision.e2e.ts`,
+the timer row and the decision row,
+`iphone-measure-alone` runs `e2e/large-documents-measured.e2e.ts`, the two measurements of a
+first editable block, which take
+three readings each and hold the median of them to R11's targets - a project of their own
+because three readings are three times the wall clock one is, and CI gives it a leg of its own
+for the same reason (`.github/workflows/dispatch-browser.yaml`, dispatch://INFRA-341) - and
+`iphone-long-build-alone` runs the phone half of `e2e/large-documents-long-build.e2e.ts`, three
+builds of the larger document under 4x CPU throttling that read no clock but cost too much to sit
+together at the tail of the last shard, as they did in `iphone`; `chromium` keeps that file's
+desktop half. Each
+project selects whole files and no row by its title, so the file a row is written in is the
+project that runs it (`clockSpecNames` and `phoneAloneSpecNames`, `e2e/configurations.ts`). Each
+sets `default: false`, so a run that names no project holds none of their 59 rows, and each
+caps its own workers at one. What holds a reading to a quiet machine is the run being one
+worker wide, and the seven files reach that in two ways: `e2e/main-thread-hold.ts` fails a
+measuring row of `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more
+than one worker, since four workers on one machine make a second of wall clock unmeasurable,
+and the rows of `e2e/agent-workspace-timing.e2e.ts` and the five rows of the four
+`e2e/large-documents-*` files above, which read a clock of their own, take that one worker
+from the command that runs them. `bun run e2e:clock` is the command that runs all six
+projects, and it names
+`--workers=1` beside them; one file in one engine is `bun run e2e -- --project=chromium-alone
+e2e/heavy-bodies.e2e.ts --workers=1`, which names that worker count itself rather than taking
+the configuration's default, and which writes the project as `--project=<name>`, since the
+option is variadic and would read the file after a space as a second project name.
+`chromium-bus` runs `e2e/answer-parties.bus.e2e.ts`, the rows whose claim is a delivery the
+server's outbox makes, which runs only for a server that has NATS: an answer reaching each agent
+its text names, an agent the answer named getting the next reply in the ask's thread, and the
+writing list's answer box (`BUS_BOXES`, `e2e/writing-boxes.ts`), whose answer is held to the copy
+its party gets and which `e2e/writing-surfaces.e2e.ts` therefore leaves out. A run of that
+project is a bus run: `globalSetup` gives each stack a natsd of its own before its harness
+(`e2e/harness-bus.ts`; `natsd` of `DISPATCH_E2E_BROKER_BIN_DIR` where that is set, otherwise one
+it builds into `packages/envoy/out/dispatch-e2e-bus`), whose address the stack carries as
+`DISPATCH_E2E_NATS_URLS` for its server and its fake Envoy, which reads the frames the outbox
+publishes (`GET /__fixture/bus-frames`, 409 on a listener started with no bus). A bus changes the
+server for every row of its stack, so the project sets `default: false`, `workers: 1` and
+`retries: 0`, and a run that names it beside another project is refused before anything starts.
+`bun run e2e:bus` runs it; CI runs it as a leg of the alone job.
 `bun run e2e:install` installs all three browsers.
 
 ## Accessibility and visual review

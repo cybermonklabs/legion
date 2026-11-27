@@ -14,7 +14,7 @@ import {
 import { colorForLogin } from "../doc/connection";
 import { DocumentRefPicker } from "../doc/DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "../doc/document-references";
-import { createDoc, type EditorHandle } from "../doc/editor";
+import { createDoc, type EditorConstruction, type EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { compiledBlockSchema } from "../doc/schema";
 import { watchPicturePath } from "../refs/reference-target";
@@ -356,7 +356,7 @@ export function PriorityDescription({
   };
   const latest = useRef({ description, kept, reading, send, setKept, writes });
   latest.current = { description, kept, reading, send, setKept, writes };
-  const { createEditor } = useContext(DocumentRuntime);
+  const { constructEditor } = useContext(DocumentRuntime);
   const login = useQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
   const followReference = useReferenceClick();
@@ -374,7 +374,9 @@ export function PriorityDescription({
     if (!drawn || parent === null || login === undefined) return;
     let mounted = true;
     let ydoc: Doc | undefined;
-    let handle: EditorHandle | undefined;
+    // The editor from the moment it is built, so a bind that throws, or an unmount while it
+    // binds, still tears down what the construction made (its `destroy` is the handle's).
+    let construction: EditorConstruction | undefined;
     // Every edit reaches the editor's Yjs document, the reader's and a draw of the server's text
     // alike; `save` writes only what differs from that text, and the editor then moves to the
     // form the text is drawn in where that waited on the typing (`rest`).
@@ -394,7 +396,10 @@ export function PriorityDescription({
         return;
       }
       ydoc = doc;
-      const created = await createEditor(parent, {
+      // The description is in hand before the editor exists - it is drawn with `take` below,
+      // over a standalone Yjs document - so there is nothing to wait for between the two
+      // phases (`features/doc/editor.ts`).
+      construction = await constructEditor(parent, {
         access: latest.current.writes ? "edit" : "read",
         awareness: null,
         blockSchema: compiledBlockSchema,
@@ -406,7 +411,7 @@ export function PriorityDescription({
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
-      handle = created;
+      const created = await construction.bind();
       if (!mounted) {
         void created.destroy();
         return;
@@ -422,14 +427,17 @@ export function PriorityDescription({
         timer: undefined,
       };
       take(current, latest.current.description, latest.current.reading);
+      // A description's text goes in after the build, which had no blocks to show, so the
+      // editor's root is shown here (`@legion/proof-editor`'s `reveal`), with its text in it.
+      created.reveal();
       seen.current = latest.current.description;
       held.current = current;
       doc.on("update", onUpdate);
       setEditor(created);
     };
     mount().catch((error: unknown) => {
-      void handle?.destroy();
-      handle = undefined;
+      void construction?.destroy();
+      construction = undefined;
       if (mounted) {
         setFailure({
           reason: error instanceof Error ? error.message : String(error),
@@ -446,11 +454,11 @@ export function PriorityDescription({
       held.current = undefined;
       if (current !== undefined) save(current, latest.current.send);
       ydoc?.off("update", onUpdate);
-      void handle?.destroy();
+      void construction?.destroy();
       ydoc?.destroy();
       setEditor(undefined);
     };
-  }, [createEditor, drawn, login, queryClient]);
+  }, [constructEditor, drawn, login, queryClient]);
 
   // The documents' editor is named "Document editor"; this one is named for the description it
   // holds, says it is read-only where the reader does not write in it, and is described by the

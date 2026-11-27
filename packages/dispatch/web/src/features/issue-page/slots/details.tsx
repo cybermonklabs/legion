@@ -6,7 +6,7 @@ import { primarySpec } from "../../../api/issue-cache";
 import { userStateQuery } from "../../../api/queries";
 import { labelsControlName } from "../../issue/IssueLabels";
 import { stateForIssue } from "../../issue/pins";
-import { useMargin } from "../../margin/margin-context";
+import { useDetailsDrawsConversation } from "../../margin/margin-context";
 import { useKeymap } from "../../shell/keymap";
 import { DETAILS_ROW_ATTRIBUTE, useOpenDetailsAt } from "../details-rows";
 import type { IssueField } from "../IssueFieldForms";
@@ -30,7 +30,7 @@ const LABELS_CONTROL_NAME = "Edit labels";
  * panel keeps one React parent while Details closes and opens, and nothing in it - an open
  * editor, a list the reader opened - is thrown away. The drawer's own cards, the threads of an
  * open document and its composer, stand above the sections only while a document's editor is
- * on the page (`useMargin().documentBridge`, which `ProofDocument.tsx` sets): the panel holds no
+ * on the page (`useDetailsDrawsConversation` in `margin/margin-context.tsx`): the panel holds no
  * list of the conversation, which is the outline.
  *
  * Slots share no state, so this slot keeps which of the two editors of its rows is open and
@@ -76,6 +76,7 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     {
       // The labels' control is in Details' Labels row: the key opens Details there and presses
       // it, as a reader does.
+      effect: "moves the reader",
       id: "labels",
       keys: "l",
       label: LABELS_CONTROL_NAME,
@@ -126,20 +127,21 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
 
 /**
  * Details' fill of the shell's margin slot: the host that holds the panel's stage, with the
- * margin's own cards above it while a document's editor is on the page. It reads the margin's
+ * margin's own cards above it while a document's editor is on the page
+ * (`useDetailsDrawsConversation`, which `MarginSheet`'s `seen` reads too). It reads the margin's
  * context, which changes with every hover, selection and placement of the margin, so it is a
  * component of its own and those changes draw it alone, not the panel.
  */
 function DetailsFill({ holdPanel }: { holdPanel: RefCallback<HTMLElement> }): null {
-  const documentUp = useMargin().documentBridge !== undefined;
+  const drawsConversation = useDetailsDrawsConversation();
   const fill = useCallback(
     (conversation: ReactNode) => (
       <IssueMarginCards
-        conversation={documentUp ? conversation : undefined}
+        conversation={drawsConversation ? conversation : undefined}
         panelHost={holdPanel}
       />
     ),
-    [documentUp, holdPanel]
+    [drawsConversation, holdPanel]
   );
   useFillMarginSlot(fill);
   return null;

@@ -27,6 +27,7 @@ type API interface {
 	TextWithToken(ctx context.Context, artifactID string) (string, string, error)
 	Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error)
 	TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error)
+	FirstScreenHTML(ctx context.Context, artifactID string) (string, error)
 	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)
 	BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error)
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
@@ -89,14 +90,21 @@ type VersionResult struct {
 // under the id of an ask the document already holds and settlement leaves closed: answered, or
 // resolved by a person. Written is what the batch wrote, read back off the tree it wrote
 // (editBatch.readBack), so a caller sees the markdown it left rather than only how many
-// operations landed.
+// operations landed. UnguardedBlocks is, for an edit under a block guard, each typed block a
+// replace's with of blocks rewrote in place under its own id that the guard did not name, with
+// the token it carried before the edit rewrote it (requirePreconditionCoverage), for the caller
+// to compare with the token its own read listed: the guard did not name them, and a named block
+// that holds one may still cover it; naming them in it refuses the edit when one of them
+// changed. A block the batch removed that the guard did not cover refuses the edit instead
+// (ErrPreconditionFailed.Unguarded), naming it at the token it carries now.
 type EditOutcome struct {
-	Applied        int
-	Changed        bool
-	Unchanged      []int
-	Token          string
-	AddedAskBlocks []AddedAskBlock
-	Written        string
+	Applied         int
+	Changed         bool
+	Unchanged       []int
+	Token           string
+	AddedAskBlocks  []AddedAskBlock
+	Written         string
+	UnguardedBlocks []model.EditBlockPrecondition
 }
 
 // AddedAskBlock is one ask block an edit added: its block id and its question as settlement reads

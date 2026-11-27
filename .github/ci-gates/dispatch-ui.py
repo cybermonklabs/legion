@@ -2,7 +2,7 @@
 # (.github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
 # says what they are). No go command runs here.
 GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
-    ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes and check:asset-sizes in packages/dispatch"),
+    ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes, check:asset-sizes, check:entry-chunk and check:no-zod in packages/dispatch"),
     ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; `packages/dispatch/web/vite.config.ts#alias`, whose @legion/proof-editor entries resolve into it"),
     # packages/contracts/src is no read of this gate's: which of its modules this job compiles is
     # what its two tsc programs list, so the changes job lists them into the filter's listed block
@@ -41,6 +41,11 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
      "`packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts#each budget of the repeat workflow is exactly its rule over the measurement beside it` reads it at a new URL and holds the workflow's "
      "budgets to the measurements beside them, and `packages/dispatch/e2e/__tests__/unit-repeat.test.ts#a step the run cancels names its running row, as GitHub's runner signals it` runs the test step's own "
      f"text as GitHub's runner cancels it, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
+    (".github/scripts/dispatch-browser-shard-suite.sh",
+     "`packages/dispatch/e2e/__tests__/shard-split.test.ts#legs` reads the leg count from the "
+     "script's `--shard` denominator at a new URL and holds each row to one leg at that count, "
+     "and `packages/dispatch/e2e/__tests__/shard-split.test.ts#shardSuiteScript` holds it to "
+     f"naming no bus project, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
     (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/__tests__/psql-password.test.ts#../../envoy/scripts/lib/pg-url.sh` sources it, and "
                                        "`packages/dispatch/e2e/acceptance/replace-blocks.sh#pg-url.sh` does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
                                        f"{at('dispatch-ui', 'Test dispatch dashboard')} runs both"),

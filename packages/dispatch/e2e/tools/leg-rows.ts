@@ -4,7 +4,7 @@
  *
  * Who runs it: .github/scripts/dispatch-browser-reading-rows.sh, in the merge job's step "Reading
  * one, the rows" of .github/workflows/dispatch-browser.yaml, with that job's selected rows
- * directory and every shard leg the run owed (`shard-1` to `shard-4`). The check itself is
+ * directory and every shard leg the run owed (`shard-1`, `shard-2` and on). The check itself is
  * `legRowFaults` (e2e/leg-rows.ts), which says why the merge job's row count cannot see a row no
  * leg ran.
  *

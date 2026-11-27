@@ -109,14 +109,13 @@ interface Construct {
   readonly pattern: RegExp;
 }
 
-/** The two editors that host the picker in their own way: a document's body through
- *  `createProofEditor`, an agent's live conversation through assistant-ui's composer input. A box
- *  made of one picks its row beside the mount rather than on it (the document body's picker, the
- *  live conversation's triggers). The pattern skips `createProofEditor`'s own declaration in the
- *  editor package, which is no mount. */
+/** The editors host the picker beside the mount rather than on it: Dispatch's document and
+ *  priority description use `constructProofEditor`, and a live conversation uses assistant-ui's
+ *  composer input. A function declaration is not a mount. */
 const EDITOR_MOUNT: Construct = {
   name: "an editor mount",
-  pattern: /(?<!function )\bcreateProofEditor\(|<ComposerPrimitive\.Input\b/,
+  pattern:
+    /(?<!function )\b(?:createProofEditor|constructProofEditor)\(|<ComposerPrimitive\.Input\b/,
 };
 
 /** The elements that mount the shared field, bare or through the composer that dresses it. A
@@ -582,9 +581,16 @@ function sitesOf(constructs: readonly Construct[], skipped: ReadonlySet<string>)
     const lines = LINES_BY_FILE.get(file) ?? [];
     lines.forEach((line, index) => {
       for (const construct of constructs) {
-        if (construct.pattern.test(line)) {
-          sites.push({ at: `${file}:${index + 1}`, construct: construct.name, file });
+        if (!construct.pattern.test(line)) continue;
+        // The library's one-phase factory delegates here. Only the host supplies a writing box.
+        if (
+          construct === EDITOR_MOUNT &&
+          file === "packages/proof-editor/src/lib.ts" &&
+          line.trim() === "const construction = await constructProofEditor(root, opts);"
+        ) {
+          continue;
         }
+        sites.push({ at: `${file}:${index + 1}`, construct: construct.name, file });
       }
     });
   }

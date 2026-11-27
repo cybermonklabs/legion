@@ -7,6 +7,7 @@ import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -20,8 +21,9 @@ import type {
 } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
-import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
+import { RefPreviewHost } from "./RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
+import { closeRefPreview, referenceTriggerProps } from "./ref-preview-state";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
 
@@ -175,6 +177,31 @@ test("the card opens only after the hover delay, loads populated, and closes whe
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(first).not.toHaveAttribute("aria-describedby");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// INFRA-341 (R7). The server's statuses are not the client's list: one the client does not know
+// is shown on the card as the server wrote it (`statusText`), never as an empty pill.
+test("the card shows a status the client does not know as the server wrote it", async () => {
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issue("CORE-1", "Design decision"),
+    status: "parked",
+  });
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    // A `pointerover` carrying its `pointerType`, which is what the preview opens on: user-event
+    // has no form that names the pointer kind.
+    fireEvent.pointerOver(screen.getByRole("link", { name: "first" }), { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    const card = screen.getByRole("tooltip");
+    await act(async () => {});
+    expect(card.textContent).toContain("parked");
   } finally {
     view.unmount();
     getIssue.mockRestore();
@@ -462,10 +489,12 @@ test("Escape closes the open card", async () => {
   }
 });
 
-// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
-// open and the key goes on to the page, which the card's capture listener on `document` would
-// stop. An Escape after the composition closes the card and stops there.
-test("an Escape that ends an IME composition leaves the open card open", () => {
+// The Escape that ends an IME composition is the composition's (decision 325), marked
+// `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as Safari sends it
+// (WebKit bug 165004): the open card stays open and the key goes on to the page, which the card's
+// capture listener on `document` would stop. An Escape after the composition closes the card and
+// stops there.
+test("an Escape that ends an IME composition, marked or sent with keyCode 229, leaves the open card open", () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();
   const behind: KeyboardEvent[] = [];
@@ -480,29 +509,19 @@ test("an Escape that ends an IME composition leaves the open card open", () => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
-    // user-event has no form for a key that ends a composition, so the event is made by hand.
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          bubbles: true,
-          cancelable: true,
-          isComposing: true,
-          key: "Escape",
-        })
-      );
-    });
-    expect(
-      screen.queryByRole("tooltip"),
-      "the Escape that ended a composition closed the card"
-    ).toBeInTheDocument();
-    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
-      );
+    pressAsInputMethod(document, "Escape", {
+      beforePlain: () => {
+        expect(
+          screen.queryByRole("tooltip"),
+          "an Escape that ended a composition closed the card"
+        ).toBeInTheDocument();
+        expect(behind.length, "an Escape that ended a composition stopped short of the page").toBe(
+          2
+        );
+      },
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(behind.length, "the card's Escape reached the page").toBe(1);
+    expect(behind.length, "the card's Escape reached the page").toBe(2);
   } finally {
     view.unmount();
     window.removeEventListener("keydown", hearBehind);

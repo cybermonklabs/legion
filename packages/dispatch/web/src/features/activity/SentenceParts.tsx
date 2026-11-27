@@ -3,7 +3,7 @@ import { Fragment, type ReactNode } from "react";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { type AgentPart, AgentParts, askResolutionParts } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 
 /**
@@ -70,12 +70,25 @@ export function askResolvedParts(
       ];
 }
 
+function isProse(part: SentencePart): part is ProsePart {
+  return typeof part === "object" && "prose" in part;
+}
+
 /**
  * Draws a sentence's parts in a line of text: its words and the agents it names as `AgentParts`
- * draws them, and each text of the record through the renderer, inline and with its record, so
- * a reference in it is a link reading as its target's name, as it is in the record's own body.
+ * draws them, and each text of the record through the renderer, with its record, so a
+ * reference in it is a link reading as its target's name, as it is in the record's own body.
  * No host of a sentence holds it inside a link or a button, so its references link (R6): the
  * reading list's `event-line` (`DISPATCH_READING_SURFACES`).
+ *
+ * A text of the record is formatted and cut to the one line the sentence gives it
+ * (`MarkdownPreview` at one line), so `**held**` reads as bold `held`, a list's items and a
+ * fence's command read on that line, and a long question ends in the browser's own ellipsis
+ * rather than wrapping the row (dispatch://INFRA-341, R6). A clamped preview is a box of its
+ * own, which cannot sit inside a run of text, so a sentence that holds one is drawn as a row of
+ * its parts: the sentence's own words sit beside the box and keep their spaces
+ * (`whitespace-pre-wrap`, which a flex item's text would otherwise collapse at its edges). A
+ * sentence without one is the run of text it always was.
  */
 export function SentenceParts({
   parts,
@@ -85,23 +98,39 @@ export function SentenceParts({
   /** How the host marks up a part that is the dashboard's own words (`AgentParts`). */
   text?: (part: string, index: number) => ReactNode;
 }): ReactNode {
-  return parts.map((part, index) => (
-    // biome-ignore lint/suspicious/noArrayIndexKey: the parts are one fixed sentence, in order.
-    <Fragment key={index}>
-      {typeof part === "object" && "prose" in part ? (
-        <MarkdownBody
-          markdown={part.prose}
-          source={part.source}
-          surface="event-line"
-          tree={part.tree}
-          variant="inline"
-        />
-      ) : (
-        <AgentParts
-          parts={[part]}
-          text={text === undefined ? undefined : (words) => text(words, index)}
-        />
-      )}
-    </Fragment>
-  ));
+  const quotes = parts.some(isProse);
+  const drawn = parts.map((part, index) => {
+    if (isProse(part)) {
+      return (
+        // biome-ignore lint/suspicious/noArrayIndexKey: the parts are one fixed sentence, in order.
+        <Fragment key={index}>
+          <MarkdownPreview
+            className="min-w-0"
+            lines={1}
+            markdown={part.prose}
+            source={part.source}
+            surface="event-line"
+            tree={part.tree}
+          />
+        </Fragment>
+      );
+    }
+    const words = (
+      <AgentParts
+        parts={[part]}
+        text={text === undefined ? undefined : (written) => text(written, index)}
+      />
+    );
+    return (
+      // biome-ignore lint/suspicious/noArrayIndexKey: the parts are one fixed sentence, in order.
+      <Fragment key={index}>
+        {quotes && typeof part === "string" ? (
+          <span className="whitespace-pre-wrap">{words}</span>
+        ) : (
+          words
+        )}
+      </Fragment>
+    );
+  });
+  return quotes ? <span className="inline-flex max-w-full items-baseline">{drawn}</span> : drawn;
 }

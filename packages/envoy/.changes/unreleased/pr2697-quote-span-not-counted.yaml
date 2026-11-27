@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A `dispatch doc-edit` quote - a `replace`'s or a `delete`'s `find`, an `insert`'s or a `move`'s
+  anchor - counts only its matches inside one block. A match that runs across two or more blocks
+  is none an edit can take, so it counts toward neither the quote's `occurrence` nor
+  `409 TARGET_AMBIGUOUS`: a quote with one match inside a block applies to it whatever such
+  matches it also has, one with two or more inside blocks is `TARGET_AMBIGUOUS` naming those
+  alone, and one whose only matches run across blocks is `400 TARGET_SPANS_BLOCKS` as before. A
+  `replace` of `v46). The`, once inside a paragraph and once across the join of two list items,
+  was refused `TARGET_AMBIGUOUS`, "matches 2 places". A comment's or an ask's anchor quote still
+  counts every match.
+time: 2026-11-19T06:00:00Z
+custom:
+    Issue: pr2697

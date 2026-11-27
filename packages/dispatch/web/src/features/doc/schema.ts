@@ -1,4 +1,9 @@
-import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
+// The attribute is what lets Node load this module too: the browser rows' other writer presents
+// the same numbers the page does (`e2e/large-documents-rows.ts`, `theOtherPersonsPen`), and
+// Node's ESM loader refuses a JSON import without it.
+import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json" with {
+  type: "json",
+};
 import type { BlockSchema } from "../../api/types";
 import { schemaCreatable } from "./schema-creatable";
 

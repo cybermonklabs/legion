@@ -1,7 +1,7 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api, isSourceNotFound } from "../../api/client";
 import { issueCollaboratorsQuery, usersQuery } from "../../api/queries";
@@ -200,6 +200,7 @@ function partyRow(
       kind: "role",
       label: party.role,
       reference: buildDispatchReference({ kind: "role", role: party.role }),
+      ...(option.lastSeen === undefined ? {} : { seen: option.lastSeen }),
     };
   }
   const reference = buildDispatchReference({ kind: "agent-session", session: option.sessionId });
@@ -211,6 +212,7 @@ function partyRow(
     label: option.title,
     parts: { kind: "documents", session: option.sessionId },
     reference,
+    ...(option.lastSeen === undefined ? {} : { seen: option.lastSeen }),
   };
 }
 
@@ -350,6 +352,12 @@ export function useRefPicker({
     queryKey: ["search", debounced, REF_PICKER_SEARCHED_KINDS, REF_PICKER_SEARCH_LIMIT],
   });
   const live = useAgents(open, true);
+  const { refetch: refreshAgents } = live;
+  useEffect(() => {
+    // Refresh on open even if the cached list is fresh, but share a read already in flight.
+    // The shell's registry poller keeps the list fresh while the picker stays open.
+    if (open) void refreshAgents({ cancelRefetch: false });
+  }, [open, refreshAgents]);
   const agentText = useAgentText();
   const readsCollaborators = open && issueKey !== undefined;
   const collaborators = useQuery({

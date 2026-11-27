@@ -5,8 +5,8 @@ import {
   CommentMentionSchema,
 } from "./dispatch-api-comments";
 import { DispatchEventSchema } from "./dispatch-api-events";
-import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import { MessageEventPayloadSchema } from "./dispatch-api-messages";
+import { DELIVERY_CAPABILITIES } from "./dispatch-constants";
 
 /**
  * A targeted delivery as the host that receives it reads it: the message or comment Dispatch

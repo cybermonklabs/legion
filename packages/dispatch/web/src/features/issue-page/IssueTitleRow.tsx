@@ -1,7 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
-import { inputMethodKey } from "../../lib/input-method-key";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   bgTransparent,
   borderStrongHover,
@@ -283,9 +283,8 @@ export function IssueTitleRow({
           }}
           onKeyDown={(event) => {
             // The Escape that cancels an IME composition and the Enter that confirms one are the
-            // input method's keys, not the reader ending the edit. Safari sends them after its
-            // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
-            if (inputMethodKey(event.nativeEvent)) return;
+            // input method's keys, not the reader ending the edit (`inputMethodKey`).
+            if (inputMethodKey(event)) return;
             if (event.key === "Escape") {
               // Puts back the issue's title, or while a write is out the title it carries, which
               // the issue is about to hold (decision 316).

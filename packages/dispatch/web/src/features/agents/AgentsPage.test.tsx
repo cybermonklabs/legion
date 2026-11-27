@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts/dispatch-constants";
 import {
   focusManager,
   onlineManager,
@@ -43,12 +43,13 @@ import type {
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view and the broadcast page are lazy routes of the app, and the margin a lazy part of
-// its shell (`MarginColumn.tsx`). No row here reads the margin or a broadcast page, and a load
-// that a row starts and ends before lands in a later row, where React's report of it is outside
-// `act`. So each module is loaded here, with the test file, and no row starts or waits for it.
+// The live view and the broadcast page are lazy routes of the app. No row here reads a broadcast
+// page, and a load that a row starts and ends before lands in a later row, where React's report
+// of it is outside `act`, or in the row itself when it runs first in the file. So each module is
+// loaded here, with the test file, and no row starts or waits for it; the app's lazy parts beyond
+// its pages load through `__tests__/app-chunks.ts` the same way.
+import "../../__tests__/app-chunks";
 import "../agent-view/AgentConversationPage";
-import "../margin/Margin";
 import "./BroadcastPage";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";

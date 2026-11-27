@@ -4,7 +4,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
   retriesUnderKey,
-} from "./dispatch-api-limits";
+} from "./dispatch-constants";
 import { mayHaveReachedServer, outage, retryAfterMs } from "./http-status";
 
 /** Every status from 100 to 599. */

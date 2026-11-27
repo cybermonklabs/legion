@@ -136,13 +136,16 @@ function Harness({
         front
         held={false}
         initialPlace={null}
+        modes={[]}
         notice={undefined}
+        onPickMode={() => {}}
         onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
         replayCount={0}
         resetKey="session-1"
         sends={NO_SESSION_SENDS}
+        sessionId="session-1"
       />
     </AssistantRuntimeProvider>
   );

@@ -146,6 +146,9 @@ test("harnessPorts resolves the stack's ports and keeps both of its refusals", (
 test("a run of more than one stack refuses every variable one stack owns, by name", () => {
   const refused: Record<string, string> = {
     DATABASE_URL: "postgres://localhost/dispatch",
+    // A bus run gives each stack a JetStream server of its own (e2e/harness-bus.ts): one bus
+    // named for the run would hand every stack's fake listener the other stacks' frames.
+    DISPATCH_E2E_NATS_URLS: "nats://127.0.0.1:4222",
     DISPATCH_E2E_PROCESSES: "2",
     DISPATCH_E2E_REUSE_SERVERS: "1",
     PLAYWRIGHT_BASE_URL: "https://dispatch.example",

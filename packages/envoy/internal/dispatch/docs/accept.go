@@ -173,7 +173,8 @@ func padCutTables(after *pmdoc.Node, found matchBlocks, budget *pmdoc.WriteBudge
 // either. An accept that is not padded is judged as the splice left it, which refuses one that cut
 // a table.
 func padsLikeTheBrowser(tree *pmdoc.Node, match pmdoc.Range, at pmdoc.TextblockAt, inline bool) bool {
-	if joinsTwo(tree, match, "table") || joinsTwo(tree, match, "table_row") {
+	end, _ := pmdoc.ContainingTextblock(tree, match.To)
+	if joinsTwo(at, end, "table") || joinsTwo(at, end, "table_row") {
 		return false
 	}
 	if inline {

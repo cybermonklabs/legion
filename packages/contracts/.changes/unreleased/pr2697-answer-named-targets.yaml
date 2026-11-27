@@ -1,0 +1,5 @@
+kind: Added
+body: '`AskAnsweredEventPayload.named_targets`, optional: the route of each agent (`session:<id>`) and each role (`role:<token>`) an answer''s text names, which Dispatch sends the answer to. The bus reading of an ask payload (`AskEventPayloadSchema`) declares it too; a reader built before it strips the key and reads the event as before.'
+time: 2026-11-27T10:53:25.000000000Z
+custom:
+    Issue: pr2697

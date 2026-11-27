@@ -1,47 +1,39 @@
 import { dispatchWritingBox } from "@legion/contracts";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
-import type { ArtifactOwner, DeclineAskInput, WriteBounds } from "../../api/client";
+import type { DeclineAskInput, WriteBounds } from "../../api/client";
 import type { Ask } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { RefusableButton } from "../../components/RefusableButton";
 import { Dot, KindBullet } from "../../components/RowMarks";
-import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
-import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import {
-  borderDefault,
-  cardHoverBorder,
-  focusBorder,
   inlineWarningText,
   linkHoverText,
   linkText,
-  pageHairBorder,
   pageInkFill,
   pageInkText,
   pageKindBullet,
   pageKindTag,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
-  pageQuietText,
   pageStateText,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
-  textMutedOnSurface,
+  secondaryButton,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import type { AgentNames } from "../conversation/CachedAuthor";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
-import { UnsentBox } from "../inbox/AskThread";
+import { type AskAnswerActions, AskAnswerArea } from "../inbox/AskAnswerArea";
+import { askUploadOwner, UnsentBox } from "../inbox/AskThread";
 import type { OwnedAsk } from "../inbox/ask-name";
 import { askTurnHolder } from "../inbox/ask-turn";
 import { askUrgency } from "../inbox/ask-urgency";
 import type { AskAnswerForm } from "../inbox/useAskAnswerForm";
-import { AgentName, useAgentText } from "../refs/AgentName";
-import { Timestamp } from "../refs/Timestamp";
+import { REF_PICKER_ASK_ANSWER_WORDS } from "../refs/ref-picker";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -51,6 +43,7 @@ import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
 import { AskCompletionCard, type AskFrame, OrphanedAnchorNotice } from "./AskCompletionCard";
 import { AskHandOn } from "./AskHandOn";
+import { AskHeader } from "./AskHeader";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskAgent } from "./ask-agent";
 import {
@@ -59,14 +52,7 @@ import {
   ASK_FORM_WORDS,
   ASK_LINE_WORDS,
 } from "./ask-body-words";
-import {
-  type AskPalette,
-  type AskTextRenderer,
-  authored,
-  ownPart,
-  ownWords,
-  type TextMarks,
-} from "./ask-text";
+import { type AskPalette, type AskTextRenderer, ownPart, type TextMarks } from "./ask-text";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 
@@ -74,10 +60,10 @@ import { EarlierApproval } from "./EarlierApproval";
  * Each colour the body's own elements draw inside `NoTooltips`, the new issue page's, by the
  * role `main`'s colour has: the question is the ink, what a reader acts on the muted grey, what
  * qualifies it the quiet grey, a link the ink, and a question that changed under the reader the
- * page's warning, its waiting orange; the answer box is the page's field, which keeps `main`'s
- * focus rule, the application's one focus indicator; Answer and Ask back instead are filled with
- * the ink, as the page's one filled control is, and the other actions are its header control's
- * rule and muted words. What the body's children draw is theirs: the options, the earlier
+ * page's warning, its waiting orange; Ask back instead is filled with the ink, as the page's one
+ * filled control is, and Cancel is its header control's rule and muted words. What the body's
+ * children draw is theirs: the first line (`AskHeader`), the answer box and the sends that refuse
+ * with a reason (`AskAnswerArea`, `MentionField`, `RefusableButton`), the options, the earlier
  * approval, the anchor, Decline to answer and the record in the palette the host hands them
  * (`AskBodyProps.palette`), the unsent answer's box (`UnsentBox`) in its own, and the card's
  * frame is the card's own (`inbox/AskCard.tsx`).
@@ -90,14 +76,17 @@ import { EarlierApproval } from "./EarlierApproval";
  */
 const ON_PAGE = {
   action: `${pageLineBorder} ${pageMutedText}`,
-  field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
   filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   ink: pageInkText,
   link: pageInkText,
   muted: pageMutedText,
-  quiet: pageQuietText,
   warning: pageStateText.waiting,
 } as const;
+
+/** The names the body's sends know their refusals by, which the answer area is typed over: a
+ *  misspelling is then a type error rather than a button whose on-screen reason goes missing
+ *  (`inbox/AskAnswerArea.tsx`). */
+type AnswerRefusalName = "answer" | "anyway" | "askBack";
 
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
  *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
@@ -136,23 +125,6 @@ function askDocumentProject(
   owner: { project: string; slug: string } | undefined
 ): string | undefined {
   return (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
-}
-
-/** Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
- *  ask's issue, or the project of the document it was asked on (`askDocumentProject`).
- *  `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
- *  cannot name it. */
-export function askUploadOwner(
-  ask: OwnedAsk,
-  displayedAsk: Ask,
-  owner: { project: string; slug: string } | undefined
-): ArtifactOwner | undefined {
-  const documentProject = askDocumentProject(ask, displayedAsk, owner);
-  return displayedAsk.issue_key !== null
-    ? { issue: displayedAsk.issue_key }
-    : documentProject === undefined
-      ? undefined
-      : { project: documentProject };
 }
 
 export interface AskBodyProps {
@@ -225,12 +197,13 @@ export interface AskBodyProps {
  * (`inbox/ask-card.ts`).
  *
  * An open ask is root R34's row, as the new issue page draws a question's (`NodeRow.tsx`): a
- * bullet in the question's colour, then the question's words, with the kind, who asked and when
- * at the right end of their first line, or under the words in a body narrower than 32rem
- * (`firstLineEnd`), and under the words everything else the body draws. In a document's ask
- * block the block's frame draws the question and its kind, so the body draws neither, and no
- * bullet; its first line keeps who asked and when. The answer box always stands in place under
- * the options.
+ * bullet in the question's colour, then the question's words, with the kind, who asked and when,
+ * the state label and the copy control at the right end of their first line, or under the words
+ * in a body narrower than 32rem (`AskHeader`, the one header every place draws an ask's fields
+ * through), and under the words everything else the body draws. In a document's ask block the
+ * block's frame draws the question and its kind, so the body draws neither, and no bullet; its
+ * first line keeps who asked and when. The answer box always stands in place under the options,
+ * in the ask's one answer area (`AskAnswerArea`).
  *
  * It sends no request of its own: it draws from the ask its caller hands it and the form
  * (`useAskAnswerForm`), and a control reads only when the reader presses it or reaches for it
@@ -260,24 +233,23 @@ export function AskBody({
   // left. The body holds nothing of its own but its handles on the elements it draws.
   const {
     answerFailure,
-    answerFieldId,
     answerPlaceholder,
+    answerRefusal,
     answers,
     answerText,
     askChanged,
-    cannotAnswer,
     canChangeAnswer,
     cancelChanging,
     changing,
     choiceShown,
     clarification,
+    clarificationRefusal,
     completed,
     disabledWhileOut,
     displayedAsk,
     edits,
     isApproval,
     mutation,
-    nothingToAskBack,
     otherSelected,
     reasonFieldShownBefore,
     reasonRequired,
@@ -291,7 +263,6 @@ export function AskBody({
     setQuestionChoice,
     startChanging,
     submit,
-    submitHint,
     toggleOther,
     submitGuard,
     threadQuery,
@@ -302,7 +273,7 @@ export function AskBody({
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
   const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
-  const uploadOwner = askUploadOwner(ask, displayedAsk, owner);
+  const uploadOwner = askUploadOwner(displayedAsk, ask.document ?? owner);
   const uploading = upload.pending > 0;
   const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists on. The
@@ -331,55 +302,25 @@ export function AskBody({
     }
   });
   const tooltips = useTooltips();
+  // Ask back instead takes the focus as it is drawn, once: its callback is stable across renders,
+  // as `useFormRef`'s is, so a re-render cannot take the focus back from Answer with it anyway
+  // while its answer is out, or from another card of the same ask whose box edits the shared
+  // draft (dispatch://INFRA-341 R2). Inside `NoTooltips` the choice leaves the page, and the
+  // button with it, once the ask is read again after the clarification; a focus the button still
+  // holds then goes where the form's own hand-off puts it, not to the body.
   const holdsFocus = !tooltips;
-  // Ask back instead takes the focus as it is drawn. Outside `NoTooltips` its callback is a new
-  // one at each render, which focuses it again at each render, as on `main`. Inside it is this
-  // one callback, stable across renders as `useFormRef`'s is, which focuses it once: a focus
-  // taken at each render would move the reader's focus while a write is out - from Answer with
-  // it anyway, say, whose answer is out. The choice leaves the page, and the button with it, as
-  // the clarification lands outside `NoTooltips`, and inside once the ask is read again after it;
-  // a focus the button still holds then goes where the form's own hand-off puts it, not to the
-  // body.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
       button.focus();
+      if (!holdsFocus) return undefined;
       return () => {
         const form = formRef.current;
         if (form !== null && document.activeElement === button) handOffFocus(form);
       };
     },
-    [formRef]
+    [formRef, holdsFocus]
   );
-  const submitHintId = `${answerFieldId}-hint`;
-  const agentText = useAgentText();
-  // The asker as its name's tooltip: a block ask the server indexed with no pending author has
-  // an empty label and reads as "asked". A session's tooltip also carries its full id, since
-  // the innermost title is the one a browser shows, and an untitled session's name is the short
-  // form `session:<8>…` that sessions started in the same minute share.
-  const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
-  const askerTitle =
-    displayedAsk.author.id === ""
-      ? ASK_LINE_WORDS.asked
-      : sessionAuthor === undefined
-        ? agentText.label(displayedAsk.author)
-        : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
-  // The asker's name, cut with its tooltip where one is drawn, and never cut to nothing: beside
-  // the words the first line's end leaves it little room. In a narrow body, where that end stands
-  // under the words and the name shares its line with the time (`firstLineEnd`), it wraps onto a
-  // second line before it is cut, so a name two lines hold stays whole. Inside `NoTooltips`,
-  // where no tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead.
-  const askerName = (name: ReactNode) =>
-    tooltips ? (
-      <TruncatedText
-        className="min-w-8 @max-[32rem]/ask-body:line-clamp-2 @max-[32rem]/ask-body:whitespace-normal @max-[32rem]/ask-body:[overflow-wrap:anywhere]"
-        title={askerTitle}
-      >
-        {name}
-      </TruncatedText>
-    ) : (
-      <span className="min-w-0 [overflow-wrap:anywhere]">{name}</span>
-    );
   const urgency = askUrgency(displayedAsk.urgency);
   // The urgency word a caller asked for stands beside the kind, where the card's notch would say
   // it: for an ask so urgent it carries one.
@@ -388,136 +329,89 @@ export function AskBody({
       ? ASK_LINE_WORDS.urgency[urgency]
       : undefined;
   const turnHolder = askTurnHolder(displayedAsk, (threadQuery.data?.replies ?? []).at(-1));
+  // A send this body draws keeps the focus while the body refuses, unless an upload holds it:
+  // that one is `disabled` on both sides (`RefusableButton`'s `busy`).
+  const sendRefusedWhileOut = refusedWhileOut === true && !uploading;
 
-  // Inside `NoTooltips` the actions are the page's (`ON_PAGE`): filled with the ink, or its
-  // header control's rule and muted words.
+  // Inside `NoTooltips` the actions the body draws itself are the page's (`ON_PAGE`): Ask back
+  // instead filled with the ink, and Cancel its header control's rule and muted words. Answer,
+  // Answer with it anyway and Ask back are `RefusableButton`s, whose looks are that component's
+  // on both sides.
   const filledLook = tooltips
     ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
     : ON_PAGE.filled;
-  const secondaryLook = tooltips
-    ? `${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`
-    : ON_PAGE.action;
-  const answerField = (
-    <>
-      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
-          under it in the page's words, and while the body refuses it is `readOnly` rather than
-          `disabled`, and takes no Ctrl+Enter, paste or drop (`refusing`). Outside it is
-          `disabled` while the write is out, as on `main`. The Inbox's Enter puts the caret in the
-          box by its `data-ask-answer` (`askAnswer`), as its 1 to 9 find an option by
-          `data-ask-option` (`Inbox.tsx`). */}
-      <MentionField
-        askAnswer={true}
-        body={answerText}
-        className="font-normal"
-        disabled={disabledWhileOut}
-        fieldClassName={tooltips ? undefined : ON_PAGE.field}
-        fieldRef={answerFieldRef}
-        hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
-        issueKey={displayedAsk.issue_key ?? undefined}
-        label={
-          reasonRequired
-            ? ASK_FORM_WORDS.reason_required
-            : isApproval
-              ? ASK_FORM_WORDS.reason_label
-              : ASK_FORM_WORDS.your_answer
-        }
-        labelClassName={tooltips ? undefined : `block text-sm font-medium ${ON_PAGE.muted}`}
-        labelHidden={!reasonRequired}
-        onChange={(change) => {
-          setAnswerText(change.body);
-          setQuestionChoice(false);
-        }}
-        onDrop={
-          uploadOwner === undefined
-            ? undefined
-            : (event) => {
-                if (!refusing) upload.drop(event, uploadOwner, ask.id);
-              }
-        }
-        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
-        onPaste={
-          uploadOwner === undefined
-            ? undefined
-            : (event) => {
-                if (!refusing) upload.paste(event, uploadOwner, ask.id);
-              }
-        }
-        placeholder={answerPlaceholder}
-        project={askDocumentProject(ask, displayedAsk, owner)}
-        readOnly={holdsFocus && refusing}
-        rows={2}
-        writing={dispatchWritingBox("ask-answer", "ask-answer")}
-      />
-      <DraftUploadStatus upload={upload} />
-    </>
-  );
-  const submitButton = (
-    <button
-      // While nothing can be sent it is `disabled` alone, on both sides of `NoTooltips`; while the
-      // body refuses, that is read from the form as the refusal found it (`held`).
-      aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
-      aria-describedby={submitHint === undefined ? undefined : submitHintId}
-      className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-      disabled={cannotAnswer || disabledWhileOut || uploading}
-      title={tooltips ? submitHint : undefined}
-      type="submit"
-      {...marks?.pageChrome}
-    >
-      {mutation.isPending
-        ? changing
-          ? ASK_FORM_WORDS.saving
-          : ASK_FORM_WORDS.answering
-        : changing
-          ? ASK_FORM_WORDS.save_answer
-          : ASK_FORM_WORDS.answer}
-    </button>
-  );
-  const submitHintNode =
-    submitHint === undefined ? null : (
-      <p
-        className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
-        id={submitHintId}
-        {...marks?.pageChrome}
-      >
-        {submitHint}
-      </p>
-    );
-  const answerActions = choiceShown ? (
-    <fieldset aria-label={ASK_FORM_WORDS.question_shaped} className="flex gap-2">
-      <button
-        aria-disabled={refusedWhileOut}
-        className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-        disabled={disabledWhileOut}
-        onClick={() => {
-          if (!refusing) sendClarification();
-        }}
-        ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
-        type="button"
-        {...marks?.pageChrome}
-      >
-        {clarification.isPending ? ASK_FORM_WORDS.sending : ASK_FORM_WORDS.ask_back_instead}
-      </button>
-      <button
-        aria-disabled={refusedWhileOut}
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-        disabled={disabledWhileOut}
-        onClick={() => {
-          if (!refusing) sendAnswer(answerText);
-        }}
-        type="button"
-        {...marks?.pageChrome}
-      >
-        {ASK_FORM_WORDS.answer_anyway}
-      </button>
-    </fieldset>
-  ) : (
-    <div className="space-y-2">
+  const answerLabel = changing ? ASK_FORM_WORDS.save_answer : ASK_FORM_WORDS.answer;
+  /** What Answer says while it is busy: this body's own send, or an upload the draft is waiting
+   *  on, which keeps the label while the picture lands. */
+  const answerBusy = mutation.isPending
+    ? changing
+      ? ASK_FORM_WORDS.saving
+      : ASK_FORM_WORDS.answering
+    : uploading
+      ? answerLabel
+      : undefined;
+  // Each send refuses the draft as it stands with its reason, on a line under the box and as its
+  // accessible description, and keeps the focus (dispatch://INFRA-341 R3): only its own send, or
+  // an upload the draft is waiting on, disables it. Inside `NoTooltips` its own send, and the read
+  // after it, refuse it holding the focus (`sendRefusedWhileOut`).
+  const answerActions = ({ reasonId }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
+    choiceShown ? (
+      // The pair a question-shaped answer offers is two more sends of this body, so a picture the
+      // draft is still taking holds them both, in the shape their siblings keep: the label stands
+      // and the press is taken away until the upload lands.
+      <fieldset aria-label={ASK_FORM_WORDS.question_shaped} className="flex gap-2">
+        <button
+          aria-disabled={sendRefusedWhileOut || undefined}
+          className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
+          disabled={disabledWhileOut || uploading}
+          onClick={() => {
+            if (!refusing) sendClarification();
+          }}
+          ref={focusAskBackInstead}
+          type="button"
+          {...marks?.pageChrome}
+        >
+          {clarification.isPending ? ASK_FORM_WORDS.sending : ASK_FORM_WORDS.ask_back_instead}
+        </button>
+        <RefusableButton
+          busy={
+            mutation.isPending
+              ? ASK_FORM_WORDS.answering
+              : uploading
+                ? ASK_FORM_WORDS.answer_anyway
+                : undefined
+          }
+          look="secondary"
+          onPress={() => sendAnswer(answerText)}
+          refusal={answerRefusal}
+          refusalShownBy={reasonId.anyway}
+          refusedWhileOut={sendRefusedWhileOut}
+          wordsMark={marks?.pageChrome}
+        >
+          {ASK_FORM_WORDS.answer_anyway}
+        </RefusableButton>
+      </fieldset>
+    ) : (
       <div className="flex gap-2">
-        {submitButton}
+        <RefusableButton
+          busy={answerBusy}
+          className="min-h-11"
+          refusal={answerRefusal}
+          refusalShownBy={reasonId.answer}
+          refusedWhileOut={sendRefusedWhileOut}
+          type="submit"
+          wordsMark={marks?.pageChrome}
+        >
+          {answerLabel}
+        </RefusableButton>
         {changing ? (
           <button
             aria-disabled={refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
+            className={
+              tooltips
+                ? secondaryButton
+                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${ON_PAGE.action}`
+            }
             disabled={disabledWhileOut}
             onClick={() => {
               if (!refusing) cancelChanging();
@@ -528,25 +422,84 @@ export function AskBody({
             {ASK_FORM_WORDS.cancel}
           </button>
         ) : (
-          <button
-            // While it has no text to send it is `disabled` alone, on both sides of `NoTooltips`;
-            // while the body refuses, that is read from the form as the refusal found it (`held`),
-            // so the text the landing clears leaves it refused and not `disabled`.
-            aria-disabled={nothingToAskBack || uploading ? undefined : refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={nothingToAskBack || disabledWhileOut || uploading}
-            onClick={() => {
-              if (!refusing) sendClarification();
-            }}
-            type="button"
-            {...marks?.pageChrome}
+          <RefusableButton
+            busy={
+              clarification.isPending
+                ? ASK_FORM_WORDS.sending
+                : uploading
+                  ? ASK_FORM_WORDS.ask_back
+                  : undefined
+            }
+            look="secondary"
+            onPress={sendClarification}
+            refusal={clarificationRefusal}
+            refusalShownBy={reasonId.askBack}
+            refusedWhileOut={sendRefusedWhileOut}
+            wordsMark={marks?.pageChrome}
           >
-            {clarification.isPending ? ASK_FORM_WORDS.sending : ASK_FORM_WORDS.ask_back}
-          </button>
+            {ASK_FORM_WORDS.ask_back}
+          </RefusableButton>
         )}
       </div>
-      {submitHintNode}
-    </div>
+    );
+  /** The body's half of the ask's one answer area (`inbox/AskAnswerArea.tsx`, which the reply box
+   *  under an answered ask mounts too): the draft and the field's paste, drop and keys are the
+   *  area's, and the box and these submits are the body's, because Answer, Save answer and Ask
+   *  back all post through `useAskAnswerForm` rather than as a comment of the box's own, and the
+   *  box is the ask's one row of the writing list. Inside `NoTooltips`, while the body refuses,
+   *  the box is `readOnly` in place of `disabled`, and takes no paste, drop or Ctrl+Enter; outside
+   *  it is `disabled` while the write is out, as on `main`. The Inbox's Enter puts the caret in
+   *  the box by its `data-ask-answer` (`askAnswer`), as its 1 to 9 find an option by
+   *  `data-ask-option` (`Inbox.tsx`). */
+  const answerArea = (
+    <AskAnswerArea
+      actions={answerActions}
+      draft={answerText}
+      field={(props) => (
+        <MentionField
+          {...props}
+          askAnswer={true}
+          className="font-normal"
+          disabled={disabledWhileOut}
+          fieldRef={answerFieldRef}
+          issueKey={displayedAsk.issue_key ?? undefined}
+          label={
+            reasonRequired
+              ? ASK_FORM_WORDS.reason_required
+              : isApproval
+                ? ASK_FORM_WORDS.reason_label
+                : ASK_FORM_WORDS.your_answer
+          }
+          labelHidden={!reasonRequired}
+          // The picker's words where they differ from every other box's: an answer delivers to
+          // the agents and roles it names (dispatch://INFRA-341 R14).
+          pickerWords={REF_PICKER_ASK_ANSWER_WORDS}
+          placeholder={answerPlaceholder}
+          project={askDocumentProject(ask, displayedAsk, owner)}
+          writing={dispatchWritingBox("ask-answer", "ask-answer")}
+        />
+      )}
+      onDraftChange={(text) => {
+        setAnswerText(text);
+        setQuestionChoice(false);
+      }}
+      readOnly={refusedWhileOut === true}
+      reasonMark={marks?.pageChrome}
+      // Every name the body's buttons know, whichever pair is drawn: a reason that is null shows
+      // no line, so the two the other pair uses cost the body nothing.
+      refusals={
+        choiceShown
+          ? { answer: null, anyway: answerRefusal, askBack: null }
+          : {
+              answer: answerRefusal,
+              anyway: null,
+              askBack: changing ? null : clarificationRefusal,
+            }
+      }
+      upload={upload}
+      uploadDraft={ask.id}
+      uploadOwner={uploadOwner}
+    />
   );
 
   if (completed !== null) {
@@ -562,6 +515,7 @@ export function AskBody({
           frame={frame}
           markRef={markRecord}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
+          owner={ask.document ?? owner}
           palette={palette}
           renderText={renderText}
         />
@@ -594,89 +548,53 @@ export function AskBody({
     );
   }
 
-  // Who asked: a session's name as the caller's control where the caller hands one (the card's
-  // toggle of its copy handles), else the agent alone. The asker's control keeps its name and
-  // opens what the caller folds behind it; the component's live link sits beside it, outside the
-  // control. `whitespace-pre` keeps the space before an attribution suffix, which a flex item
-  // would drop; inside `NoTooltips` `whitespace-pre-wrap` keeps it too, and lets the name wrap.
-  const asker =
-    sessionAuthor === undefined || askerControl === undefined ? (
-      askerName(
-        displayedAsk.author.id === "" ? (
-          ownWords(marks, ASK_LINE_WORDS.asked)
-        ) : (
-          <AskAgent actor={displayedAsk.author} agentNames={agentNames} marks={marks} />
-        )
-      )
-    ) : agentNames === "live" ? (
-      <AgentName
-        actor={sessionAuthor}
-        className={`flex min-w-0 items-center ${tooltips ? "whitespace-pre" : "whitespace-pre-wrap"}`}
-        control={(name) => askerControl(askerName(name))}
-        kind="control"
-      />
-    ) : (
-      askerControl(askerName(authored(marks, agentText.label(sessionAuthor))))
-    );
-  // What stands at the right end of the first line: an approval request's mark and the urgency
-  // word a caller asked for beside the kind, the kind in its colour (the new page's tag,
-  // `NodeRow.tsx`'s `RowMargin`), then who asked and when. In a document's ask block the block's
-  // frame draws the kind, so the line holds who asked and when alone. Outside `NoTooltips` it is
-  // one line, and the asker's name is what gives up width, cut with its tooltip; inside it no
-  // title gives back what an ellipsis cut, and a name and an instant are values, which wrap. In a
-  // body narrower than 32rem - the comments margin at its default 384 px, the Inbox's drawer, a
-  // phone - the line stands under the words, in the same order from the left, and each of its
-  // parts moves to a line of its own before it gives up width. The rule reads the body's own box
-  // (`@container/ask-body` on its root), never the window's: at 1440 px the margin's body is
-  // about 320 px wide, and beside the words there the line left them some 90 px, which broke a
-  // word such as "troubleshooting" over two lines, and the asker's name a few letters. Beside the
-  // words the line takes up to three quarters of the row, about 200 px for a kind, a short name
-  // and a time, so a body of 32rem still leaves the words a column of some 270 px. Who asked and
-  // when are one part, narrow and wide: the time never opens a line of its own. Outside
-  // `NoTooltips` the time is held whole and the asker's name gives up the width the time needs
-  // (`askerName` says how); inside, the time is a value that breaks anywhere as the name does,
-  // and the part's one flex line keeps the two together. Each word of the body's on it, and each
-  // dot between two parts, carries the mark of the body's words on its own element
-  // (`AskBodyProps.marks`); the line itself carries none.
+  // What leads the first line's end, before who asked and when (`AskHeader`'s first line): an
+  // approval request's mark and the urgency word a caller asked for beside the kind, then the kind
+  // in its colour (the new page's tag, `NodeRow.tsx`'s `RowMargin`). In a document's ask block the
+  // block's frame draws the kind, so nothing leads. Each word of the body's on it, and each dot
+  // between two parts, carries the mark of the body's words on its own element
+  // (`AskBodyProps.marks`).
   const dot = ownPart(marks, <Dot />);
-  const firstLineEnd = (
-    <div
-      className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 @max-[32rem]/ask-body:max-w-full @max-[32rem]/ask-body:basis-full @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
-    >
-      {inBlock ? null : (
+  const lead = inBlock ? null : (
+    <>
+      {isApproval ? (
         <>
-          {isApproval ? (
-            <>
-              <span className="shrink-0 font-semibold" {...marks?.pageChrome}>
-                {ASK_APPROVAL_WORDS.requested}
-              </span>
-              {dot}
-            </>
-          ) : null}
-          {urgencyText === undefined ? null : (
-            <>
-              <span className="shrink-0 font-semibold" {...marks?.pageChrome}>
-                {urgencyText}
-              </span>
-              {dot}
-            </>
-          )}
-          <span className={`shrink-0 font-semibold ${pageKindTag.question}`} {...marks?.pageChrome}>
-            {ASK_LINE_WORDS.kind}
+          <span className="shrink-0 font-semibold" {...marks?.pageChrome}>
+            {ASK_APPROVAL_WORDS.requested}
+          </span>
+          {dot}
+        </>
+      ) : null}
+      {urgencyText === undefined ? null : (
+        <>
+          <span className="shrink-0 font-semibold" {...marks?.pageChrome}>
+            {urgencyText}
           </span>
           {dot}
         </>
       )}
-      <span className="flex min-w-0 items-center gap-x-1.5">
-        {asker}
-        {dot}
-        <Timestamp at={displayedAsk.created_at} className={tooltips ? "shrink-0" : undefined} />
+      <span className={`shrink-0 font-semibold ${pageKindTag.question}`} {...marks?.pageChrome}>
+        {ASK_LINE_WORDS.kind}
       </span>
-    </div>
+      {dot}
+    </>
   );
   const rest = (
     <>
-      <div className="flex items-start justify-end gap-x-3 @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start">
+      {/* The one header every place draws an ask's fields through (dispatch://INFRA-341 R1), on
+          the first line of root R34's row (dispatch://INFRA-5702 R15): the question's words, and
+          at the right end of their first line the kind, who asked and when, the state label and
+          the copy control. */}
+      <AskHeader
+        agentNames={agentNames}
+        ask={displayedAsk}
+        control={askerControl}
+        inBlock={inBlock}
+        leading={lead}
+        marks={marks}
+        owner={ask.document ?? owner}
+        place="card"
+      >
         {inBlock ? null : (
           <div
             className={`min-w-0 flex-1 text-[15px] leading-relaxed font-medium @max-[32rem]/ask-body:basis-full ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
@@ -689,8 +607,7 @@ export function AskBody({
             })}
           </div>
         )}
-        {firstLineEnd}
-      </div>
+      </AskHeader>
       {isApproval && documentLink ? (
         <p className={`mt-1 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
           <AskApprovalLink ask={displayedAsk} marks={marks} />
@@ -796,8 +713,7 @@ export function AskBody({
             )}
           </fieldset>
         )}
-        {answerField}
-        {answerActions}
+        {answerArea}
         {answerFailure === null ? null : (
           <QueryError
             message={answerFailure.message}
@@ -835,7 +751,7 @@ export function AskBody({
     </>
   );
 
-  // The root is the size container the first line reads (`firstLineEnd`). Every caller draws it
+  // The root is the size container the first line reads (`AskHeader`). Every caller draws it
   // as a block as wide as the box it gives the body, so the inline-size containment a container
   // takes - its own content no longer widens it - takes no width from the body.
   return (

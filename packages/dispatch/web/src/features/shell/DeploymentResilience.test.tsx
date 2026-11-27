@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { rememberEarlyFocus } from "../../early-focus";
 import * as markdownEngine from "../refs/markdown-engine";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
@@ -202,6 +203,36 @@ test("a chunk that fails while the page is being left does not reload over the n
     expect(storedChunkReloads()).toHaveLength(1);
   } finally {
     window.dispatchEvent(new Event("pageshow"));
+    reload.mockRestore();
+    window.sessionStorage.clear();
+  }
+});
+
+// The recovery is installed from the boot chunk, one `import()` behind the entry
+// (`features/shell/boot.ts`), so a preload that failed before it arrived was already reloaded
+// for by `web/index.html`'s inline script, and that reload's `beforeunload` is over by the time
+// the listeners above bind. The inline script publishes what it decided, and this handler starts
+// from it: the same failure reaching Vite asks for no second reload, so one failure costs the tab
+// one of its three rather than two.
+test("a page already being left when the recovery is installed does not reload for its chunk", () => {
+  window.sessionStorage.clear();
+  // The inline script reloaded for the failed preload, and the page is on its way out.
+  Object.defineProperty(window, "__dispatchPageIsLeaving", { configurable: true, value: true });
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  const failure = new Event("vite:preloadError", { cancelable: true });
+
+  try {
+    installChunkFailureRecoveryForTest();
+    window.dispatchEvent(failure);
+    // The page goes, which is where a reload this handler asked for would be spent.
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(failure.defaultPrevented).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+    expect(storedChunkReloads()).toBeNull();
+  } finally {
+    window.dispatchEvent(new Event("pageshow"));
+    Reflect.deleteProperty(window, "__dispatchPageIsLeaving");
     reload.mockRestore();
     window.sessionStorage.clear();
   }
@@ -530,6 +561,65 @@ test("shows a reloadable update notice when one build other than the tab's is li
     expect(reload).toHaveBeenCalledTimes(1);
   } finally {
     reload.mockRestore();
+    fetch.mockRestore();
+    currentScript.remove();
+    view.unmount();
+  }
+});
+
+// The entry asks for the watch with `import()` (`TheDeploymentWatch` in `main.tsx`), so the tab
+// can regain focus before the watch is listening. The entry holds that it did (`early-focus.ts`),
+// and the watch runs the check that focus asked for as it mounts.
+test("a focus before the watch mounts still shows the update notice", async () => {
+  const currentScript = runningPage("/assets/index-current.js");
+  const fetch = spyOn(globalThis, "fetch").mockImplementation(
+    serverAnswering({
+      status: 200,
+      body: { serving: "/assets/index-new.js", live: ["/assets/index-new.js"] },
+    })
+  );
+  rememberEarlyFocus();
+  // The tab regaining focus is a window event: user-event has no form for it.
+  fireEvent.focus(window);
+  const view = render(<DeploymentResilience />);
+
+  try {
+    const notice = await screen.findByRole("status", { name: "A new version is available" });
+    expect(notice).toHaveTextContent("A new version is available - Reload");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith("/api/v1/dashboard/builds", {
+      cache: "no-store",
+      signal: expect.any(AbortSignal),
+    });
+  } finally {
+    fetch.mockRestore();
+    currentScript.remove();
+    view.unmount();
+  }
+});
+
+// The page's first screen counts its requests, and the watch's mount adds none: a page that
+// heard no focus asks for no check.
+test("a watch that mounts before any focus asks for no check", async () => {
+  jest.useFakeTimers();
+  const currentScript = runningPage("/assets/index-current.js");
+  const fetch = spyOn(globalThis, "fetch").mockImplementation(
+    serverAnswering({
+      status: 200,
+      body: { serving: "/assets/index-new.js", live: ["/assets/index-new.js"] },
+    })
+  );
+  rememberEarlyFocus();
+  const view = render(<DeploymentResilience />);
+
+  try {
+    await settleCheck();
+    expect(fetch.mock.calls.map(([input]) => input)).not.toContain("/api/v1/dashboard/builds");
+    expect(
+      screen.queryByRole("status", { name: "A new version is available" })
+    ).not.toBeInTheDocument();
+  } finally {
+    realClock();
     fetch.mockRestore();
     currentScript.remove();
     view.unmount();

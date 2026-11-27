@@ -2,6 +2,7 @@ import { type FocusEvent, type ReactNode, useId, useRef, useState } from "react"
 
 import type { Project } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   borderDefault,
   card,
@@ -169,7 +170,9 @@ export function SearchFilterBar({
           onBlur={takeAuthor}
           onChange={(event) => setAuthor(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter") {
+            // The Enter that confirms an input method's word is the input method's: it takes
+            // no author.
+            if (event.key === "Enter" && !inputMethodKey(event)) {
               event.preventDefault();
               takeAuthor();
             }

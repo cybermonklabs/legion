@@ -6,6 +6,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { pressAsInputMethod } from "../__tests__/input-method-keys";
 import { MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -111,6 +112,31 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean in the search confirms a word with Enter: that Enter
+// is the input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the
+// composition's end, as Safari sends it (WebKit bug 165004), and toggles no row. A plain Enter
+// after it toggles the active row.
+test("the Enter that confirms an input method's word in the search toggles no row, and a plain Enter toggles the active one", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host options={["api", "docs", "frontend"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Labels" }));
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    expect(search).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "api" }).id
+    );
+    expect(
+      pressAsInputMethod(search, "Enter", {
+        beforePlain: () => expect(screen.getByTestId("selected").textContent).toBe(""),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
+    expect(screen.getByTestId("selected").textContent).toBe("api");
   } finally {
     view.unmount();
   }

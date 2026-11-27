@@ -56,6 +56,7 @@ import { rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
+import { placeInView } from "../doc/readers-place";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
@@ -199,7 +200,8 @@ function ThreadTurns({
   const openAt = openAtFirstUnread && order === "oldest" ? threadId : undefined;
   useEffect(() => {
     if (openAt === undefined) return;
-    firstUnread.current?.scrollIntoView({ block: "start" });
+    const unreadFrom = firstUnread.current;
+    if (unreadFrom !== null) placeInView(unreadFrom, { block: "start" });
   }, [openAt]);
   /** The first message of the thread, in drawn order, that the reader has not read. */
   const firstUnreadId = [...(root === undefined ? [] : [root]), ...shown].find((turn) =>

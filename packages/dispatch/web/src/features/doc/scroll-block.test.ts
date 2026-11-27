@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { waitFor } from "@testing-library/react";
 
-import { scrollBlockToTop } from "./scroll-block";
+import { installResizeObserver } from "../../__tests__/scroll-box";
+import { cancelBlockScroll, scrollBlockToTop } from "./scroll-block";
 
 const CONTAINER_TOP = 100;
 
@@ -46,4 +48,44 @@ test("a block id a CSS selector would read as syntax is found by its own name", 
 
   expect(scrollBlockToTop("ship it.now", container)).toBe(true);
   expect(container.scrollTop).toBe(120);
+});
+
+// The skip's re-run watches the document drawn in the column. The blocks between the reader's
+// place and the block they skipped to come into view with the skip, and each one the browser
+// skipped (`content-visibility: auto`) paints at its own height in place of its estimate, which
+// pushes the block down: with no drawn root to watch and no diagram to wait on there was no
+// re-run, and a phone's reading view was left a screen above the answer (CI run 45994800355,
+// `inbox-reading-pane.e2e.ts`). happy-dom lays nothing out, so the column's overflow and sizes,
+// and where the document and the block stand in it, are stated here.
+test("a block the reader skipped to is put back at the top when the document drawn above it grows", async () => {
+  const sizes = installResizeObserver();
+  let grown = 0;
+  const container = document.createElement("div");
+  container.style.overflowY = "auto";
+  Object.defineProperty(container, "scrollHeight", { configurable: true, get: () => 4_000 });
+  Object.defineProperty(container, "clientHeight", { configurable: true, get: () => 400 });
+  container.getBoundingClientRect = () => ({ height: 400, top: CONTAINER_TOP }) as DOMRect;
+  const drawn = document.createElement("div");
+  drawn.getBoundingClientRect = () =>
+    ({ height: 1_000 + grown, top: CONTAINER_TOP - container.scrollTop }) as DOMRect;
+  const block = document.createElement("section");
+  block.setAttribute("data-block-id", "answer");
+  block.getBoundingClientRect = () =>
+    ({ top: CONTAINER_TOP + 600 + grown - container.scrollTop }) as DOMRect;
+  drawn.append(block);
+  container.append(drawn);
+  document.body.append(container);
+  try {
+    expect(scrollBlockToTop("answer", container, drawn)).toBe(true);
+    expect(container.scrollTop).toBe(600);
+
+    // The blocks above it paint at their own height: 450 px more than their estimates.
+    grown = 450;
+    sizes.resize(drawn);
+    await waitFor(() => expect(container.scrollTop).toBe(1_050));
+  } finally {
+    cancelBlockScroll();
+    container.remove();
+    sizes.restore();
+  }
 });

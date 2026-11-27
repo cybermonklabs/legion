@@ -1,9 +1,10 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -196,7 +197,13 @@ test("a press on the one control leaves the focus where it is, then opens its me
 function DialogOverTheRow(): ReactNode {
   const [open, setOpen] = useState(false);
   useKeymap("global", [
-    { id: "over-the-row", keys: "?", label: "A dialog over the row", run: () => setOpen(true) },
+    {
+      effect: "moves the reader",
+      id: "over-the-row",
+      keys: "?",
+      label: "A dialog over the row",
+      run: () => setOpen(true),
+    },
   ]);
   const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
   return open ? (
@@ -274,6 +281,45 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu"), "the next Escape left the menu open").toBeNull();
     expect(document.activeElement, "that Escape left the focus off the control").toBe(chooser);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// The menu closes on a press or Tab, so it stays open as a key puts the focus in a field outside
+// it: `e` opens the title's editor by a click, which sends no press. A reader typing Chinese,
+// Japanese or Korean there drops a candidate with Escape: that Escape is the input method's,
+// marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as Safari
+// sends it (WebKit bug 165004), and the menu stays open. A plain Escape after it closes the menu.
+test("below 1280 px, an input method's Escape in a field leaves the menu open, and a plain Escape closes it", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
+      <IssuePresets active="spec" issueKey="CORE-1" signals={SIGNALS} />
+      <textarea aria-label="Issue title" />
+    </MemoryRouter>
+  );
+  try {
+    const chooser = screen.getByRole("button", { name: /^Spec\b/ });
+    chooser.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("menu"), "Enter did not open the menu").not.toBeNull();
+    const field = screen.getByRole("textbox", { name: "Issue title" });
+    act(() => field.focus());
+    expect(screen.queryByRole("menu"), "the focus in the field closed the menu").not.toBeNull();
+
+    expect(
+      pressAsInputMethod(field, "Escape", {
+        beforePlain: () =>
+          expect(
+            screen.queryByRole("menu"),
+            "an input method's Escape closed the menu"
+          ).not.toBeNull(),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
+    expect(screen.queryByRole("menu"), "the plain Escape left the menu open").toBeNull();
   } finally {
     view.unmount();
     restoreMatchMedia();

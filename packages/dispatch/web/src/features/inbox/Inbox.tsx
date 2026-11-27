@@ -1356,8 +1356,9 @@ export function Inbox({
   useKeymap(keymapScope, [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
     // With the reading column on, movement is the selection's: the column follows it, and the
-    // focus stays where the reader left it in the list.
+    // focus stays where the reader left it in the list. Either way the reader is somewhere else.
     {
+      effect: "moves the reader",
       id: "next",
       keys: "j",
       label: "Next row",
@@ -1366,6 +1367,7 @@ export function Inbox({
       when: () => rows().length > 0,
     },
     {
+      effect: "moves the reader",
       id: "previous",
       keys: "k",
       label: "Previous row",
@@ -1374,6 +1376,7 @@ export function Inbox({
       when: () => rows().length > 0,
     },
     {
+      effect: "moves the reader",
       id: "arrows",
       keys: ["ArrowDown", "ArrowUp"],
       label: `Next / previous row while ${arrowsWhen}`,
@@ -1381,6 +1384,7 @@ export function Inbox({
       when: arrowsMove,
     },
     {
+      effect: "moves the reader",
       id: "answer",
       keys: "Enter",
       // Below 1280 px with no row open, the focused row holds no answer box: Enter opens its
@@ -1416,6 +1420,8 @@ export function Inbox({
             : inAnswerHand("[data-ask-answer]") !== null,
     },
     {
+      // Ticks the option where it stands; the focus stays where it was.
+      effect: "moves nothing",
       id: "option",
       keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
       label: `Select option 1–9 of the ${acted} ask`,
@@ -1434,6 +1440,7 @@ export function Inbox({
           : inAnswerHand("[data-ask-option]") !== null,
     },
     {
+      effect: "moves the reader",
       id: "open",
       keys: "o",
       label: "Open the row's issue, document or thread",
@@ -1451,6 +1458,8 @@ export function Inbox({
       when: () => inHand("[data-inbox-owner]") !== null,
     },
     {
+      // Copies the reference and moves nobody.
+      effect: "moves nothing",
       id: "copy-ref",
       keys: "y",
       // An Agent row has no reference of its own - its thread is a message to a session - so
@@ -1467,6 +1476,7 @@ export function Inbox({
         inHand(COPY_REF_SELECTOR) !== null || (mode === "list" && handRow()?.kind === "ask"),
     },
     {
+      effect: "moves the reader",
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -1514,6 +1524,7 @@ export function Inbox({
       // options the reader picked are the card's own state, and closing the view would drop
       // them. Registered ahead of `clear-selection`, so the marks the bulk bar holds outlast it.
       // Not a palette row, for the reason `clear-selection` gives.
+      effect: "moves the reader",
       id: "leave-reading",
       inEditable: true,
       keys: "Escape",
@@ -1536,6 +1547,7 @@ export function Inbox({
       // The column is the other half of the page, and `l` is the step into it: the scroller
       // takes the focus, and the browser scrolls it on the arrow keys, Page Up, Page Down,
       // Space, Home and End from there.
+      effect: "moves the reader",
       id: "read-pane",
       keys: "l",
       label: "Move the focus into the reading pane",
@@ -1563,7 +1575,9 @@ export function Inbox({
       when: () => keysOnShownRow && paneScroller() !== null,
     },
     {
-      // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
+      // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row. It
+      // ticks the row where the focus already is.
+      effect: "moves nothing",
       id: "select",
       keys: "x",
       label: `Select or deselect the ${acted} row`,
@@ -1575,6 +1589,8 @@ export function Inbox({
       when: () => markableRow() !== undefined,
     },
     {
+      // The row goes, and the selection and the column with it to the next row.
+      effect: "moves the reader",
       id: "dismiss",
       keys: "e",
       // The row goes out of the Inbox, and in the Dismissed view back into it; the selection then
@@ -1592,6 +1608,7 @@ export function Inbox({
       when: () => dismissableRow() !== undefined && (!keysOnShownRow || outsideAskCard()),
     },
     {
+      effect: "moves the reader",
       id: "snooze",
       keys: "h",
       // One key for both: with rows marked it is the whole selection, otherwise the row in hand.
@@ -1621,6 +1638,7 @@ export function Inbox({
         (inHand(SNOOZE_SELECTOR) !== null && (!keysOnShownRow || outsideAskCard())),
     },
     {
+      effect: "moves the reader",
       id: "back-from-bulk",
       inEditable: true,
       keys: "Escape",
@@ -1636,6 +1654,8 @@ export function Inbox({
       when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
     },
     {
+      // The bar goes with the selection, and the focus with it where the reader stood in it.
+      effect: "moves the reader",
       id: "clear-selection",
       keys: "Escape",
       // Escape is one level out, and the selection is the outermost thing a row press made:
@@ -1656,6 +1676,7 @@ export function Inbox({
       // the box itself a `search` input takes typed text (`keymap.ts`'s `TEXT_INPUT_TYPES`), so
       // the registry passes the key through and the reader types an `f` rather than re-focusing
       // what they are already in. A reading view below 1280 px hides the box with the list.
+      effect: "moves the reader",
       id: "search",
       keys: "f",
       label: "Search asks",
@@ -1667,8 +1688,9 @@ export function Inbox({
       // on the page, and the first row in the drawer, where nothing is selected. It is offered
       // only while the focus is in the box, so the three Escapes above are untouched - `back`
       // and `back-from-bulk` both answer false there, and `clear-selection` is not `inEditable`
-      // at all - and the drawer's own Close waits its turn, the Inbox's registration being the
-      // first of the scope to match (`keymap.ts`'s `resolve`).
+      // at all - and the drawer's own Close waits its turn, being `askedLast` (`useDialog`), so
+      // the Inbox's Escapes come first even when its chunk mounted after the drawer did.
+      effect: "moves the reader",
       id: "leave-search",
       inEditable: true,
       keys: "Escape",

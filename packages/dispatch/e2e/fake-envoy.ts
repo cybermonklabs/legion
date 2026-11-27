@@ -1,5 +1,5 @@
 import { type ExpectsReply, LEGION_ROLES, type LegionRole } from "@legion/contracts";
-import { connect, type KV, StringCodec } from "nats";
+import { connect, type KV, type NatsConnection, StringCodec } from "nats";
 import type { TmuxPlace } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 
@@ -32,6 +32,16 @@ interface SentMessage {
    *  than stored for. Dispatch leaves it out of every send but the live view's model and thinking
    *  switch. */
   readonly connected_only?: boolean;
+}
+
+/** One message the outbox published on a session's agent subject, as this listener read it off
+ *  the bus (`busFrames` below): the subject it came on, the session that subject names - its last
+ *  token - and the envelope it carried, the message's JSON (contracts.Envelope), or its text
+ *  where it is not JSON. */
+interface BusFrame {
+  readonly subject: string;
+  readonly session: string;
+  readonly envelope: unknown;
 }
 
 /** A persisted interest row, served as seeded. `updated_at` is the row's own last write;
@@ -209,10 +219,16 @@ interface FakeEnvoyState {
   /** The `Retry-After` of a refilling answer, `LISTENER_REFILLING_RETRY_AFTER_SECONDS` unless a
    *  test set its own with the list state. */
   listsRetryAfterSeconds: number;
+  /** What the outbox published on the agent subjects since the last reset, oldest first, read
+   *  off the bus (`readBusFrames`). Empty in a listener started with no bus, whose read of them
+   *  is refused. A session reseed keeps them: they are the bus's, and a row that reseeds while it
+   *  waits for a frame would otherwise lose it. */
+  readonly busFrames: BusFrame[];
 }
 
 function emptyState(): FakeEnvoyState {
   return {
+    busFrames: [],
     interests: [],
     legionAgents: [],
     legionRegistry: "ok",
@@ -399,6 +415,16 @@ const busServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
   .map((server) => server.trim())
   .filter((server) => server !== "");
 
+/** This listener's one connection to the bus, which the role buckets and the read of the frames
+ *  (`readBusFrames`) share. Opened at boot where there is a bus, before the listening line the
+ *  harness waits for. */
+let busConnection: Promise<NatsConnection> | undefined;
+
+function connectedBus(): Promise<NatsConnection> {
+  busConnection ??= connect({ servers: busServers });
+  return busConnection;
+}
+
 /** The two buckets of the real listener's that Dispatch's outbox reads itself rather than asking
  *  this listener (packages/envoy/internal/roles, Buckets): the role claims, keyed by role, and the
  *  session registrations, keyed by session id (packages/envoy/internal/bus, RoleClaimBucket and
@@ -410,7 +436,7 @@ let busBuckets: Promise<{ roles: KV; sessions: KV }> | undefined;
 
 function roleBuckets(): Promise<{ roles: KV; sessions: KV }> {
   busBuckets ??= (async () => {
-    const js = (await connect({ servers: busServers })).jetstream();
+    const js = (await connectedBus()).jetstream();
     return {
       roles: await js.views.kv("envoy_roles"),
       sessions: await js.views.kv("envoy_sessions"),
@@ -434,6 +460,44 @@ async function claimedHolder(roles: KV, role: string): Promise<string> {
     ? claim.holder_session_id
     : "";
 }
+
+/** The read of what the outbox publishes for each session: one core subscription on every agent
+ *  subject (`notifications.agent.>`, contracts.LegacyAgentSubject), on the connection the role
+ *  buckets use, each message recorded in `state.busFrames` as it arrives, its session the
+ *  subject's last token. It never replies: a stored publish and a role forward are each a
+ *  request the stream answers with its acknowledgement (outbox/role.go, roleForward), and a
+ *  subscriber that answered first would hand the outbox a reply that acknowledges nothing. A
+ *  core subscription sees every publish, a repeat the stream drops by its MsgId included, which
+ *  is the side to be wrong on for a row that counts copies. It is flushed before this listener
+ *  says it is listening, so the bus holds it before the Dispatch server, which the harness starts
+ *  after this listener, can publish anything. */
+async function readBusFrames(): Promise<void> {
+  const connection = await connectedBus();
+  connection.subscribe("notifications.agent.>", {
+    callback: (error, message) => {
+      if (error !== null) {
+        console.error(`fake envoy: the read of the bus's agent subjects ended: ${error.message}`);
+        return;
+      }
+      const text = codec.decode(message.data);
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(text);
+      } catch {
+        envelope = text;
+      }
+      const { subject } = message;
+      state.busFrames.push({
+        envelope,
+        session: subject.slice(subject.lastIndexOf(".") + 1),
+        subject,
+      });
+    },
+  });
+  await connection.flush();
+}
+
+if (busServers.length > 0) await readBusFrames();
 
 // FAKE_ENVOY_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
@@ -620,6 +684,25 @@ const server = Bun.serve({
       state = emptyState();
       return Response.json({ ok: true });
     }
+    // What the outbox published on each session's agent subject since the last reset, which this
+    // listener read off the bus (`readBusFrames`), `?session=<id>` narrowing it to one session. A
+    // listener started with no bus has read nothing and never will, which is 409, as the role
+    // claims' routes answer: a row that reads it is a row whose stack has no bus, which is a
+    // failure of that row and never a skip.
+    if (request.method === "GET" && url.pathname === "/__fixture/bus-frames") {
+      if (busServers.length === 0) {
+        return Response.json(
+          { error: "this listener has no bus: DISPATCH_E2E_NATS_URLS is unset" },
+          { status: 409 }
+        );
+      }
+      const session = url.searchParams.get("session");
+      return Response.json(
+        session === null
+          ? state.busFrames
+          : state.busFrames.filter((frame) => frame.session === session)
+      );
+    }
     // A reseed starts the sessions over (their live set, send statuses, sends and duplicate
     // window) and keeps the persisted subscriptions, the list answer and the Legion agent
     // registry - its entries and whether it can be read at all - which a test sets on their own.
@@ -628,6 +711,7 @@ const server = Bun.serve({
       const ids = sessions.map((session) => session.session_id);
       state = {
         ...emptyState(),
+        busFrames: state.busFrames,
         interests: state.interests,
         legionAgents: state.legionAgents,
         legionRegistry: state.legionRegistry,

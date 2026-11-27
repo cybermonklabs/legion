@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
+import { MAX_BLOCK_ID_BYTES } from "./dispatch-block-ref";
 import {
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
@@ -12,8 +13,7 @@ import {
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
-} from "./dispatch-api";
-import { MAX_BLOCK_ID_BYTES } from "./dispatch-block-ref";
+} from "./dispatch-constants";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_BLOCK_UNITS,
@@ -1901,7 +1901,7 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
 
   // Each row is the bounds a route holds a field to, one of each kind among them: a text's length,
   // a list's count of items and a number's value. An upper bound is a constant gen-go writes into
-  // Go for the handler that enforces it: one of dispatch-api-limits.ts, or SEARCH_QUERY_MAX of
+  // Go for the handler that enforces it: one of dispatch-constants.ts, or SEARCH_QUERY_MAX of
   // dispatch-tools.ts. A lower bound is the route's refusal of an empty value (1) or of a
   // one-character search (2). The field's generated Go states the same bounds, no looser and no
   // tighter.

@@ -18,6 +18,7 @@
     "/api/v1/issues",
     "/api/v1/issues/{key}",
     "/api/v1/issues/{key}/artifacts",
+    "/api/v1/issues/{key}/artifacts/{slug}/text",
     "/api/v1/issues/{key}/asks",
     "/api/v1/issues/{key}/comments",
     "/api/v1/issues/{key}/coverage",

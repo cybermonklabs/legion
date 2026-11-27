@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
-import { quietConsoleError } from "../../__tests__/act-warnings";
+import { quietConsoleError } from "../__tests__/act-warnings";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 function Throwing(): never {

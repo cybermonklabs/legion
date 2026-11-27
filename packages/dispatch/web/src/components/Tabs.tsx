@@ -1,12 +1,12 @@
 import { type KeyboardEvent, type ReactNode, useRef } from "react";
 
-import {
-  activeTabIndicatorBorder,
-  activeTabIndicatorText,
-  borderDefault,
-  textSecondaryOnCanvas,
-} from "../theme/classes";
 import { Pill } from "./Pill";
+import {
+  tabClassName,
+  tabCountClassName,
+  tabListClassName,
+  tabStripClassName,
+} from "./tab-classes";
 
 export interface TabDefinition<Id extends string> {
   id: Id;
@@ -82,15 +82,11 @@ export function Tabs<Id extends string>({
     tabRefs.current[next.id]?.focus();
   };
 
-  const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
-  const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
-  const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";
-
+  // The classes are `tab-classes.ts`, which the box the issue page keeps for this strip reads
+  // too, so the strip lands in a box of its own size.
   return (
-    <div
-      className={`${compact ? "mb-0" : "mb-3"} flex flex-wrap items-center gap-1 border-b ${borderDefault}`}
-    >
-      <div aria-label={ariaLabel} className={`flex min-w-0 flex-wrap ${tabGap}`} role="tablist">
+    <div className={tabStripClassName(compact)}>
+      <div aria-label={ariaLabel} className={tabListClassName(compact)} role="tablist">
         {tabs.map((tab) => (
           <button
             aria-controls={`${idPrefix}-${tab.id}-panel`}
@@ -101,11 +97,7 @@ export function Tabs<Id extends string>({
             // the count plainly.
             aria-label={tab.count === undefined ? undefined : `${tab.label} ${tab.count}`}
             aria-selected={activeTab === tab.id}
-            className={
-              activeTab === tab.id
-                ? `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 border-b-2 py-2 text-sm font-semibold whitespace-nowrap ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-                : `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 py-2 text-sm whitespace-nowrap ${textSecondaryOnCanvas}`
-            }
+            className={tabClassName(compact, activeTab === tab.id)}
             id={tabButtonId(idPrefix, tab.id)}
             key={tab.id}
             onClick={() => selectTab(tab.id)}
@@ -128,7 +120,7 @@ export function Tabs<Id extends string>({
             {tab.count === undefined ? null : (
               <>
                 {" "}
-                <Pill>{tab.count}</Pill>
+                <Pill className={tabCountClassName}>{tab.count}</Pill>
               </>
             )}
           </button>

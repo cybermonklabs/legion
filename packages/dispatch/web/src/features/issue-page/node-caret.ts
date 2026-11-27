@@ -5,6 +5,7 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import type * as YProseMirror from "y-prosemirror";
 
 import type { DisplayTree } from "../../api/types";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
@@ -64,12 +65,6 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
   drawn.editable.focus({ preventScroll: true });
   selectInEditor(firstPlace(drawn.block));
   return true;
-}
-
-/** Whether the editor in `host` draws `blockId`'s block, which is when a caret can go in it
- *  (`caretInBlock`). */
-export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
-  return drawnBlock(host, blockId) !== null;
 }
 
 /**
@@ -223,10 +218,11 @@ export function confineKey(
     // `selectionchange`, which every listener on the page hears, and the editor's action bar reads
     // each one on a touch selection as the reader's new selection, which it hides and shows again
     // 400 ms later (`@legion/proof-editor`'s `dispatch-action-bar.ts`): read before every key, the
-    // bar blinked at each Ctrl+C on a touch device with a keyboard. Not during a composition: the
-    // input method holds the caret then, and ProseMirror reads the page itself as a composition
-    // starts and as it ends, and leaves a key pressed in one alone (`inOrNearComposition`).
-    if (!event.isComposing && event.key !== "Process" && !holdsSelection(view, ...selected)) {
+    // bar blinked at each Ctrl+C on a touch device with a keyboard. Not for an input method's key
+    // (`inputMethodKey`): the input method holds the caret then, and ProseMirror reads the page
+    // itself as a composition starts and as it ends, and leaves a key pressed in one alone
+    // (`inOrNearComposition`).
+    if (!inputMethodKey(event) && !holdsSelection(view, ...selected)) {
       document.dispatchEvent(new Event("selectionchange"));
     }
     return;

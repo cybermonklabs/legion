@@ -16,22 +16,33 @@ import {
   useState,
 } from "react";
 
+import { useTooltips } from "../../components/tooltips";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
+  focusBorder,
   inputClasses,
+  pageHairBorder,
+  pageInkText,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
-import {
-  applyInsertion,
-  isCompositionKey,
-  type RefPickerInsertion,
-  type RefPickerWords,
-} from "../refs/ref-picker";
+import { applyInsertion, type RefPickerInsertion, type RefPickerWords } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { TextEditRange } from "./block-spans";
+
+/** Default colours on the issue page inside `NoTooltips`. The picker keeps its own colours. */
+const ON_PAGE = {
+  field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  hint: pageQuietText,
+  label: pageMutedText,
+  mentions: `${pageHairBorder} ${pageInkText}`,
+} as const;
 
 /** The parties a pick can name - the sessions the registry lists and the roles they hold - are
  *  `features/refs/party-options.ts`, not this file: the picker builds its agent and role rows
@@ -68,12 +79,10 @@ export interface MentionFieldHandle {
 }
 
 /**
- * The body field of a draft and the reference picker in it: one textarea, the mentions accepted
- * in it, and the rows that `[[`, `@` and `#` open (`useRefPicker`). The host holds the draft -
- * the text and the accepted mentions reach it through `onChange`, and come back as props -
- * because the host is what sends it; the field holds only where the caret is and what the
- * picker is showing. Every box a person writes prose in mounts it, so each one has the same
- * picker with the same rules (`DISPATCH_WRITING_BOXES`).
+ * One textarea and the reference picker that `[[`, `@` and `#` open (`useRefPicker`).
+ * The host owns the draft text and sends it. A pick writes a reference into that text,
+ * which the field returns through `onChange`. The field holds only the caret and the picker.
+ * Each host gets the same picker rules (`DISPATCH_WRITING_BOXES`).
  *
  * While the picker is open it owns the arrow keys, Enter, Tab and Escape, on a listener of the
  * field's own, and none of them reaches anything around the field: the Inbox binds the arrows
@@ -184,7 +193,8 @@ export function MentionField({
    *  above while the list is showing. */
   readonly onPickerOpenChange?: (open: boolean) => void;
   /** The words the picker draws in this box (`RefPickerWords`), where the host has its own: the
-   *  issue page's box. With none, the picker's own. */
+   *  issue page's box, and the ask card's answer box (`REF_PICKER_ASK_ANSWER_WORDS`). With
+   *  none, the picker's own. */
   readonly pickerWords?: RefPickerWords;
   /** What the empty box says it takes, where the host has words for it (an ask's answer box
    *  names what the picked option asks of the reader). */
@@ -210,6 +220,11 @@ export function MentionField({
    *  is the row's `hint`, so the words a person reads and the list cannot disagree. */
   readonly writing: DispatchWritingBoxRow;
 }): ReactNode {
+  const tooltips = useTooltips();
+  const fieldLook =
+    fieldClassName ?? (tooltips ? `${inputClasses(true)} ${textPrimaryOnSurface}` : ON_PAGE.field);
+  const labelLook = tooltips ? textSecondaryOnSurface : ON_PAGE.label;
+  const hintLook = tooltips ? textMutedOnSurface : ON_PAGE.hint;
   const element = useRef<HTMLTextAreaElement | null>(null);
   /** Where the caret is, which is what the picker reads the open door from. It follows the
    *  box's own selection rather than the end of the text: a trigger typed in the middle of a
@@ -282,7 +297,7 @@ export function MentionField({
   const pickerKey = useRef<(event: globalThis.KeyboardEvent) => void>(() => {});
   pickerKey.current = (event) => {
     // A composition's keys are the input method's: it confirms, cancels or moves in its word.
-    if (isCompositionKey(event)) return;
+    if (inputMethodKey(event)) return;
     if (!pickerNow.current.open) return;
     // A modified Enter is not the picker's: Ctrl/Cmd+Enter is the host's submit and Shift+Enter
     // the reader's newline, picker or no picker.
@@ -353,7 +368,7 @@ export function MentionField({
       <label
         className={
           labelClassName ??
-          (look === undefined ? `block text-sm font-medium ${textSecondaryOnSurface}` : "contents")
+          (look === undefined ? `block text-sm font-medium ${labelLook}` : "contents")
         }
       >
         {labelHidden ? null : label}
@@ -364,7 +379,7 @@ export function MentionField({
           aria-label={label}
           className={
             look === undefined
-              ? `mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`
+              ? `mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldLook} ${className ?? ""}`
               : `${look} ${className ?? ""}`
           }
           disabled={disabled}
@@ -410,11 +425,16 @@ export function MentionField({
         <ul
           aria-label={targets?.label ?? "Mention targets"}
           className={
-            look === undefined ? `flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}` : "sr-only"
+            look === undefined
+              ? `flex flex-wrap gap-2 text-xs ${tooltips ? textPrimaryOnSurface : ""}`
+              : "sr-only"
           }
         >
           {parties.map((target) => (
-            <li className="rounded-full border px-2 py-1" key={target}>
+            <li
+              className={`rounded-full border px-2 py-1 ${tooltips ? "" : `max-w-full [overflow-wrap:anywhere] ${ON_PAGE.mentions}`}`}
+              key={target}
+            >
               {targets === undefined ? <code>{target}</code> : targets.nameOf(target)}
             </li>
           ))}
@@ -435,9 +455,7 @@ export function MentionField({
           box and the list that drives the browser rows cannot drift apart - or, where the host
           says what the box's keys do in its own words, those (`description`). */}
       <p
-        className={
-          look === undefined ? (hintClassName ?? `text-xs ${textMutedOnSurface}`) : "sr-only"
-        }
+        className={look === undefined ? (hintClassName ?? `text-xs ${hintLook}`) : "sr-only"}
         id={hintId}
       >
         {description ?? writing.hint}

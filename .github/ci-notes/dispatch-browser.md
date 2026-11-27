@@ -20,15 +20,32 @@ lane; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
 starts every artifact name, so two callers of one run share no artifact. The rows are spread
-over four shard machines, the three `-alone` projects get a machine each, the two-process job,
-the fake-embedder job and the containerised visual review take one each, and one merge job
-joins what the shard and alone legs wrote into a single report and publishes the run's flake
-rate.
+over five shard machines, the six `-alone` projects and the bus project `chromium-bus` get a
+machine each, the two-process job, the fake-embedder job and the containerised visual review
+take one each, and one merge job joins what the shard and alone legs wrote into a single report
+and publishes the run's flake rate.
+
+Three of those six legs are the phone, where there was one until dispatch://INFRA-341: the two
+rows that measure a first editable block take three
+readings each and hold the median of them to R11's targets, so they are
+`large-documents-measured.e2e.ts`, which `iphone-measure-alone` runs with a budget of its
+own, and the timer row and the decision row are `large-documents-build-serves.e2e.ts` and
+`large-documents-build-serves.the-decision.e2e.ts`, which `iphone-alone` runs with
+the budget their own measurement earned. The one leg cost 184 s before the split, measured in
+the shard legs its rows reached it from, 106.3 s of that the two measurements. After it, and
+measured in this job at head f79cb07f (run 43098661012), the rows that stay in `iphone-alone`
+are 10.3 s and 19.8 s and the two that left were 16.2 s and 20.7 s at one reading apiece,
+which three readings put at about 110.7 s. So `iphone-alone`'s browser step keeps 4 minutes
+and `iphone-measure-alone`'s takes 3; the alone job's head derives both. The third is
+`iphone-long-build-alone`, the phone half of `large-documents-long-build.e2e.ts`: three builds
+of the larger document under 4x CPU throttling that read no clock but cost 1.8 min, 51.8 s and
+39.3 s in `shard (5)` of run 43421318396, where as the tail of the `iphone` listing they all
+landed together. Its 4 minutes are derived from those three rows in the alone job's head too.
 
 Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
 fake-embedder job, which holds a check of the pull request it is on; `full` runs every
-parallel project, the three `-alone` ones, the two-process job, the visual review and that
+parallel project, the six `-alone` ones, the two-process job, the visual review and that
 same embedder job, over every row. So a pull request pays for the rows that answer it, and the
 merge queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest,
 each of which has the wall time for them. A third lane, `references`, is a preview of the
@@ -51,7 +68,12 @@ reading of the stacks' PostgreSQL, which stood as a copy in each job's own step 
 review read the two together. Two more stood beside them, the Playwright install and the key
 its apt archive cache was restored under: those two jobs run in the image this repository
 builds now, which carries the three browsers and every host package they need, so both of
-those scripts are gone with the steps that called them (dispatch://INFRA-1443).
+those scripts are gone with the steps that called them (dispatch://INFRA-1443). The download
+of what the binaries job built is no shared body of either kind: each attempt at it carries a
+budget of its own, which a composite action's steps cannot, and it is
+actions/download-artifact, which no script can call. So the shard, alone and visual jobs each
+write out the same four steps for it - two attempts, the step that places the one that
+completed, and the chmod - and the shard job's comments on them say why each.
 
 The budget rule every job and step of dispatch-browser.yaml follows, this file being where it is written down now
 that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
@@ -87,7 +109,7 @@ report step skips there and no check is posted.
 
 `references` runs the `chromium` project over every row of the eleven spec files the
 reference framework's Verification document names and the nine of the reading list's walk,
-with main's parse-count walk beside them, on the four shard machines and the merge job alone,
+with main's parse-count walk beside them, on the five shard machines and the merge job alone,
 so a pull request that changes the reference framework gets those rows from CI at its head
 rather than from a run by hand. It runs only where its run does not run the full lane, whose
 `chromium` project already holds every one of those rows, and it gates nothing:
@@ -111,9 +133,9 @@ check.
 
 ## Why the binaries job builds what the suite runs
 
-The Go binaries the browser suite's stacks run: the Dispatch server and the real broker's
-three commands, built once here and handed to the shard and alone jobs in one
-artifact.
+The Go binaries the browser suite's stacks run: the Dispatch server, the real broker's
+three commands and natsd, the bus of the alone job's `chromium-bus` leg, built once here and
+handed to the shard, alone and visual jobs in one artifact.
 
 Why the build is a job of this file rather than of each caller: an artifact is visible only
 inside the run that uploaded it, and every caller runs this file - ci.yaml's dispatch-browser,
@@ -130,6 +152,11 @@ which is the opposite of what the `dispatch_browser` filter is for. So the build
 this job, which takes no container, and the suite's own scripts execute what it built
 instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
 run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
+
+The visual job runs on the runner and could build them, but its scripts would then build
+them inside its 4-minute browser step; it takes them from here too, and the section on its
+download step, "What the visual job downloads in place of a Go build", says what that build
+cost the step when its budget was 3 minutes.
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
 already decided the call. ci.yaml's three callers hold the `dispatch_browser`,
@@ -165,7 +192,7 @@ here saves either one.
 ## What the binaries build writes, and why it is static
 
 One `go build -o <directory>/` writes one binary per package, each named after it:
-dispatch, dev-oidc-issuer and requestseed; a second build names the broker's, from
+dispatch, dev-oidc-issuer, requestseed and natsd; a second build names the broker's, from
 ./cmd/cipherd, broker. CGO_ENABLED=0 is pinned on the build
 rather than left to the runner's default, so each binary is static by construction: the
 shard and alone jobs run them in a container of this repository's own image, and a
@@ -192,34 +219,47 @@ must find the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
-One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4` over four
+One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/5` over four
 Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
 one database cannot serve stacks that truncate it per row, and a run of more than one
 stack starts a server per stack and hands each its own (e2e/harness-postgres.ts).
 
-A leg's quarter is a quarter of the lane's row time, not of its rows. Playwright's own
-`--shard` cuts the rows into four runs of equal count, and rows do not cost the same: at main
-f02514268a it gave the full lane's heaviest leg 1.115 to 1.225 times the mean row time, over
-the per-row medians of two sets of 13 and 14 of main's runs (the pull request's body names them),
-and leg 2, all chromium rows, was the slowest leg of its run in 55 of the 85 runs of
-2026-11-21/22 whose four legs all ran. packages/dispatch/e2e/shard-reporter.ts, which the
+A leg's fifth is a fifth of the lane's row time, not of its rows. Playwright's own
+`--shard` cuts the rows into runs of equal count, and rows do not cost the same: at main
+f02514268a, whose shard job ran four legs, it gave the full lane's heaviest leg 1.115 to 1.225
+times the mean row time, over the per-row medians of two sets of 13 and 14 of main's runs (the
+pull request's body names them), and leg 2, all chromium rows, was the slowest leg of its run in
+55 of the 85 runs of 2026-11-21/22 whose four legs all ran. packages/dispatch/e2e/shard-reporter.ts, which the
 browser step names beside the failure reporter, takes the split over: every leg places every
 file of every project the lane selects by the row times main measured
 (packages/dispatch/e2e/shard-weights.json), heaviest first onto the lightest leg, and keeps its
-own files. The same two sets put that placement at 1.007 and 1.008 times the mean.
+own files. The same two sets put that placement at 1.007 and 1.008 times the mean of four legs.
 packages/dispatch/e2e/shard-split.ts says why Playwright 1.64.1 has no split by time of its own,
-why the file is the unit, how all four legs compute one placement, and what a file with no
+why the file is the unit, how every leg computes one placement, and what a file with no
 measured time is placed by; `bun e2e/tools/shard-weights.ts --main <count>` reads the table
-again. Each leg prints its own line before its first row, `shard N of 4, placed by measured row
+again. Each leg prints its own line before its first row, `shard N of 5, placed by measured row
 time: ...`, with the rows of it that were placed by an estimate.
+
+The rows of the six `-alone` projects are in no leg's placement. The reporter places the
+selection the leg's own command makes, and that command names none of those projects
+(.github/scripts/dispatch-browser-shard-suite.sh says why), while every project it names
+leaves their files out: `chromium`, `iphone`, `webkit` and `firefox` ignore every wall-clock
+file through `clockSpecPattern`, `iphone` ignores the phone half of
+large-documents-long-build.e2e.ts through `phoneAloneSpecPattern` (both in
+packages/dispatch/e2e/configurations.ts), and the rest select files of their own by
+`testMatch`. The table holds rows of `chromium-alone`, `firefox-alone` and `webkit-alone`,
+since it is read from merged reports that hold the alone legs' rows beside the shards', and no
+unit of the placement is weighed by them; the three phone `-alone` projects need no entry, for
+the same reason.
 
 Each leg also writes two row lists into the rows/ directory its blob upload carries: every row
 of the selection it read, and the rows Playwright gave it to run
 (DISPATCH_E2E_LEG_ROWS_DIR in .github/scripts/dispatch-browser-shard-suite.sh). The merge
-job's reading one holds the four legs' lists against each other and fails by name on a row of
-the selection that no leg ran or that two ran. Its row count cannot see either: a planted
+job's reading one holds the five legs' lists against each other and fails by name on a row of
+the selection that no leg ran or that two ran; the alone legs are not sharded and write none.
+Its row count cannot see either fault: a planted
 reporter that put the selection's last file on no leg ran 1,616 of the 1,617 rows, and the legs'
 count and the merged report both read 1,616.
 
@@ -308,6 +348,44 @@ head that sharded this suite (42334424798 and 42316487530), 42 of the census's l
 60 s of the limit, 34 of the 144 of 2026-11-21, and in run 44908680493 of #4613 and run
 44903205761 of #4199 three legs whose every row passed were cut at it.
 
+Why the leg list is five and not those four: at four, `shard (4)` was killed at
+the whole 540 s this step had then, twice in a row, at 5e5416aa (run 42794865122) and at cb6c44f3
+(run 42807545996), dispatch://INFRA-341. That is structural and not a flake.
+`fullyParallel: true`
+(packages/dispatch/e2e/playwright.config.ts) with no file in `mode: "serial"` makes
+Playwright shard by row, cutting the listed rows into contiguous slices of equal ROW
+COUNT, and the listing is project-major with the dear projects in its tail - webkit
+8.03 s a row, iphone 6.86 s, chromium 4.24 s. So the last slice of four is the dearest
+leg by construction: 2,058 row-seconds, iphone 828 + stub 521 + webkit 321 and the tail.
+A cut by row count cannot see that, which is why the fifth leg is the answer here and
+PWTEST_SHARD_WEIGHTS is not.
+
+What each leg is expected to cost, so the margin below is read and not a bare number: a
+cost table of all 1,373 rows of this job, and a fit of leg wall time on a leg's
+row-seconds over the seven four-leg legs that ran to the end -
+wall = 0.2562 x row-seconds + 15.9 s, residuals at most 6.9 s, which reproduces the
+killed leg at 543 s - give, in shard order, in seconds:
+
+  cut into 4   476, 268, 410, 543            longest 543, over this step's 540
+  cut into 5   404, 230, 335, 390, 355       longest 404, 25 per cent inside that 540
+
+The fifth machine is bought with runner time and spends lane wall time: the lane pays
+39.0 runner-minutes against 36.6 and its critical path is 8.8 min against 11.1, so 2.3
+min of wall time for 2.4 runner-minutes. A sixth leg takes the longest to 362 s and a
+seventh to 361 - both 0.7 min off the critical path, for 2.3 and 4.7 more runner-minutes
+- so five is where this stops.
+
+Those were estimates, and the legs measured since then are not them: at head 1aaa9135
+(run 43421318396) the five browser steps took 433, 277, 329, 369 and 499 s, so the fifth
+leg cost 144 s more than the 355 s the fit gave it. The browser step's own section,
+.github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is,
+says what was in that leg and is not in it now, and the next full-lane run measured the
+legs without those: at head 41eed1ec (run 43506575017) the five browser steps took 427, 352,
+306, 249 and 402 s, the longest the first leg's, 113 s inside the 540. The browser step's
+budget is now the hang guard of 18 minutes its own section derives from legs of main's
+four-leg runs: five legs each hold a fifth of the lane's row time rather than a quarter, so
+those 18 minutes hold them with more room.
+
 The job budget, the shard job's `timeout-minutes`, follows the rule over the same census: one
 window for every step. Each step without a budget of its own is counted at its maximum over
 the census's 672 legs, and the image pull, `Initialize containers`, at the larger of that and
@@ -371,22 +449,63 @@ budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
-again at this change's head, the suite holds 1,427 rows in 194 files, which is two
-listings rather than one: the three `-alone` projects are out of the default selection
-since dispatch://INFRA-1280, so a command that names no project lists 1,373 rows in 191
-files and one that names those three lists the other 54, in 3 files. The ten projects
-this job's shard command (.github/scripts/dispatch-browser-shard-suite.sh) names hold 1,353 rows in 190 files; the four of those the
-pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
-`visual` projects hold 20, which the visual job runs one row at a time, and the 54
-wall-clock rows are the alone job's.
+again at 6fefee10, the suite held 1,628 rows in 222 files, which is two
+listings rather than one: the six `-alone` projects are out of the default selection
+since dispatch://INFRA-1280, so a command that names no project lists 1,569 rows in 215
+files and one that names those six lists 59 more, in 8 files. One file is in both:
+large-documents-long-build.e2e.ts, whose desktop half `chromium` runs and whose phone half
+is `iphone-long-build-alone`'s; every other file of the second listing is a wall-clock
+file that project selects whole since sjawhar/legion#2697. The ten projects this job's
+shard command (.github/scripts/dispatch-browser-shard-suite.sh) names hold 1,547 rows in 214 files; the four of those the
+pull-request lane names hold 1,434 in 212, of which that lane's `@pr` grep selects 287
+in 147 files, 150 of them on the real stack - exactly the 150 of `realStackBudget`
+(e2e/__tests__/pull-request-lane.test.ts). That is one row more than the 286 at 1aaa9135
+and the same 150: main's #3730 moved the typed-block family's one tagged row out of
+text-typed-blocks.e2e.ts into the stubbed text-typed-blocks.stub.e2e.ts and tagged a new
+row of issue.e2e.ts, on the real stack. Neither the reconnect row this round added to
+large-documents-reader.e2e.ts nor the three phone rows it moved to
+`iphone-long-build-alone` carries the tag, nor do the two rows of main's
+issue-page-look.e2e.ts, and no row of a `large-documents-*` file is in that grep.
+The two `visual` projects hold 22, which the
+visual job runs one row at a time, and the 59 rows of the alone job are 23, 13, 16, 2, 2
+and 3. The 23 is `chromium-alone`'s 16 heavy-bodies rows, its two nested-directive rows,
+its four agent-workspace-timing rows and the one row of
+large-documents-desktop-build.e2e.ts; the 13 and the 16 are heavy-bodies.e2e.ts on
+`firefox-alone`, which inverts the three rows that read a reader's place, and whole on
+`webkit-alone`; the two 2s are the timer row of large-documents-build-serves.e2e.ts and
+the decision row of large-documents-build-serves.the-decision.e2e.ts on `iphone-alone`,
+and the two measurements of large-documents-measured.e2e.ts on `iphone-measure-alone`;
+the 3 is large-documents-long-build.e2e.ts on `iphone-long-build-alone`
+(dispatch://INFRA-341).
+
+Those 1,547 cut five ways, each leg listed at 6fefee10 with the ten projects the shard
+command names and this job's own denominator (`--shard=<i>/5 --list`): 310, 310, 309, 309
+and 309 rows, which sum to the 1,547. Equal row counts are all Playwright's cut promises,
+and the seconds above are where what a leg costs is read instead.
+
+That was Playwright's cut, from before main's split by row time reached this branch, and the
+legs hold equal row time now rather than equal rows. Listed at the merge of main 054cd5ca into
+e72e7579, each leg through packages/dispatch/e2e/shard-reporter.ts as the browser step names it
+(`--shard=<i>/5 --list --reporter=json,./e2e/shard-reporter.ts` over the same ten projects),
+the lane holds 1,757 rows in 227 files and the five legs 360, 341, 325, 387 and 344 of them,
+which sum to the 1,757, each placed at 1,458 or 1,459 s of the 7,292 s of row time the table
+expects of the run. 29, 25, 21, 16 and 31 of those rows are in files the table has no entry
+for, each leg under the tenth at which it warns. Every row of the whole listing is on exactly
+one leg (`legRowFaults`, packages/dispatch/e2e/leg-rows.ts), no row is of an `-alone` project
+or of a wall-clock file, and large-documents-long-build.e2e.ts, the one file both listings
+above hold, is in it by its three `chromium` rows alone.
 
 ## Why the leg count stands in two places
 
-Four legs. The count is written here and in the `--shard` denominator of the browser step
-(`.github/scripts/dispatch-browser-shard-suite.sh#--shard=$shard/4`), and nowhere else, so the two move together: a denominator larger than the leg list
+Five legs. The count is written here and in the `--shard` denominator of the browser step
+(`.github/scripts/dispatch-browser-shard-suite.sh#--shard=$shard/5`), and nowhere else, so the two move together: a denominator larger than the leg list
 would leave the rows of the missing legs unrun with nothing red. The split by row time
-(packages/dispatch/e2e/shard-reporter.ts) reads the count from that same `--shard`, so it is no
-third place.
+(packages/dispatch/e2e/shard-reporter.ts) reads the count from that same `--shard`, and
+packages/dispatch/e2e/__tests__/shard-split.test.ts, which holds that split leg by leg, reads it
+from the script, so neither is a third place. It was four until the
+last leg of four was killed at its step budget twice over; the shard job's head
+(.github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget)
+says what the fifth leg buys, what it costs and why no sixth.
 
 ## What the shard job downloads in place of a Go build
 
@@ -629,6 +748,12 @@ How the 18 minutes are read:
   guard, and be cut with its rows passing.
 - 534 s x 1.75 x 1.11 = 1,037 s, rounded up to 18 minutes, 1,080 s.
 
+Those legs were main's, four to a run, and this job runs five
+([why the leg count stands in two places](#why-the-leg-count-stands-in-two-places)): the
+placement listed in the job's head gives each leg of five 1,458 or 1,459 s of row time, under
+the 1,698 s this derivation rescales a leg to, so the 18 minutes hold a leg of five with more
+room than the leg derived here.
+
 What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
 `packages/dispatch/e2e/playwright.config.ts#testTimeout` or the longer one a row sets, and the leg goes on. What
 reaches 18 minutes is a leg that has stopped running rows - a stack that never comes up in
@@ -650,6 +775,25 @@ before the run, or when a tenth of its rows sit in files the table has no entry 
 (`packages/dispatch/e2e/shard-split.ts#tableWarnings`). Either one means
 `bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at the count split's 1.21, a
 p90 leg on that runner would end near 1,131 s.
+
+Before that census the step had 9 minutes, and the five legs ran inside them. The fit
+the job's head gives predicted the five legs at 404, 230, 335, 390 and 355 s; what they
+measured is longer, and the 540 s held with less room than that prediction gave: at head 1aaa9135 (run 43421318396) the five
+browser steps took 433, 277, 329, 369 and 499 s, `shard (5)` holding 295 rows and
+1,795.7 row-seconds by its own list reporter, 41 s inside the 540. Two things of
+this branch's own were in that last leg, and neither is in it now.
+24 stub rows that open a document waited out the page's ten-second
+wait for a document the stubbed layer has no server for
+(`NO_DOCUMENT_SERVER_CLOSE_CODE`, packages/contracts; e2e/stub/stub-test.ts now
+answers that socket with it): 337.8 row-seconds there, 323.7 of them the 23 that
+main's run 43421089840 also holds, which took 51.2 there; the 24th is new on this
+branch. And the three phone builds of
+large-documents-long-build.e2e.ts, 1.8 min, 51.8 s and 39.3 s, are
+`iphone-long-build-alone`'s leg now. With those two gone, the next full-lane run
+measured that leg: at head 41eed1ec (run 43506575017, job 132166911588) this step took
+402 s of its 540. Re-listed at 6fefee10 with this leg's own command, `--shard=5/5
+--list` over the ten projects .github/scripts/dispatch-browser-shard-suite.sh names,
+`shard (5)` holds 309 rows in 69 files.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -704,11 +848,16 @@ attempt failed. A green run's upload is small.
 
 ## The alone job, and what it keeps the same as the shard job
 
-The three projects whose rows are read from the wall clock, one machine each. Each leg runs
-one worker and names one project, and a wall-clock project takes nothing else with it - it
-names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
-while it measures. The full lane alone: a pull request runs no clock row, since a shard
-job's machine cannot hold one still enough to measure.
+The six `-alone` projects, one machine each: the five whose rows are read from the wall
+clock, and `iphone-long-build-alone`, the phone half of large-documents-long-build.e2e.ts,
+whose rows read no clock but are three builds too costly for a shard (its budget,
+.github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget, says
+what they cost). Each leg runs one worker and names one project, and such a project takes
+nothing else with it - it names no `dependencies` since dispatch://INFRA-1280 - so nothing
+else is on the machine while it measures. The full lane alone: a pull request runs no clock
+row, since a shard job's machine cannot hold one still enough to measure. A seventh leg,
+`chromium-bus`, is a leg of this job for a reason of its own, which
+.github/ci-notes/dispatch-browser.md#the-bus-leg-chromium-bus gives.
 
 Its steps are the shard job's, with three differences - one worker rather than four, the
 Playwright command of .github/scripts/dispatch-browser-alone-suite.sh, and no file store on the machine - and their commands are kept
@@ -721,12 +870,13 @@ too, and so do their reasons.
 ## The alone job's measured steps and its budget
 
 This job takes the container because its matrix holds webkit-alone and firefox-alone,
-which launch the two engines the image exists for; chromium-alone is a leg of a container
-job and rides in it, which is what keeps one job list and not two
+which launch the two engines the image exists for; chromium-alone, iphone-alone,
+iphone-measure-alone and iphone-long-build-alone are legs of a container job and ride in
+it, which is what keeps one job list and not two
 (dispatch://INFRA-1443). The shard job's head says what each option is for and why the
 digest is a literal.
 
-The browser step's budget, its `timeout-minutes: 3`, is measured, on the full-lane run of the head that sharded
+The browser step's budget, its `timeout-minutes`, is measured, on the full-lane run of the head that sharded
 this suite, 42316487530. The pull-request lane runs no leg of this job, so there is one
 run and three legs behind each figure, in seconds:
 
@@ -734,11 +884,89 @@ run and three legs behind each figure, in seconds:
   Browser-test dispatch dashboard                    116            111           141
   every other step summed                             74             72            82
 
-The rule is in this file's head. The browser step's maximum is webkit-alone's 141 s, so
-141 x 1.15 = 162 s -> 3 min. Three legs of one run is a thin reading, and these are the
-projects whose rows are read from the wall clock, so a slower machine moves them further
-than it moves a parallel row. The 15 per cent the rule adds is what carries that, and a
-leg that outran it fails the browser step by name, which is a reading of its own.
+The `chromium-alone` figure is now short of a row: the desktop guard of
+large-documents-desktop-build.e2e.ts reached that leg after that run.
+
+`iphone-alone` ran four rows until this change and runs two, which are
+large-documents-build-serves.e2e.ts and large-documents-build-serves.the-decision.e2e.ts
+whole: the row that times a page
+timer and a socket message served inside the editor's build, and the row that times a
+decision answered inside one. The two measuring rows are large-documents-measured.e2e.ts,
+which is the `iphone-measure-alone` leg
+(dispatch://INFRA-341). The 4 minutes were derived before that split and are kept
+as they were: `iphone-alone` has no reading of this job of its own yet, because its rows
+reached it from the shard legs, and what three of the four cost there, contended four
+lanes wide, is run 42485503469: the 28-section measurement 34.3 s, the 140-section one
+1.2 min and the timer row 1.3 min, 184 s summed; the fourth, the decision row, has no
+reading of its own in that run, and it asserts half a second of the page's own clock
+rather than a cost. The split carries 106.3 s of that 184 s away with the two
+measurements, so that figure is now an over-estimate of this leg twice over - once for
+the contention and once for the rows that left - and nothing of what stayed was measured
+by this change, which is why the two rows that stayed keep the budget they had.
+`chromium-alone` took that desktop guard the same way, and
+what it cost in a `chromium` shard leg, contended four lanes wide, is 38.0 s in run
+42628596511, 1.1 min in run 42682941869 and 1.3 min in run 42686241170 (job 129395267274,
+where it failed its guard): 78 s at worst, which over the 116 s above puts that leg at
+194 s. Both figures are over-estimates of this job, since the contention those rows were
+moved away from is in them; the first full-lane run of this head replaces each with a
+reading of its own.
+
+The rule is in this file's head. The browser step's maximum is `chromium-alone`'s 194 s,
+from the contended reading above, so 194 x 1.15 = 223 s -> 4 min, the same 4 minutes
+`iphone-alone`'s 184 s gave. Three legs of one run, and two rows read off another run's
+shard legs, is a thin reading, and these are the projects whose rows are read from the
+wall clock, so a slower machine moves them further than it moves a parallel row. The 15
+per cent the rule adds is what carries that, and a leg that outran it fails the browser
+step by name, which is a reading of its own.
+
+`iphone-measure-alone` is the exception to that pooled maximum, and the one leg of the
+matrix whose budget is not those 4 minutes: it is derived from its own two rows and from a
+reading of this job, in this container, taken on this branch. Each of those two rows now
+takes three readings of its document and holds the median of them to R11's targets, which
+is the protocol the spec's Design paragraph names, so each costs about three times what
+it cost when it took one. What it cost at one reading is run 43098661012's
+`dispatch-browser / alone (iphone-alone)` leg (job 130803182796) at head f79cb07f, the
+list reporter's own lines:
+
+  ✓  1 [iphone-alone] › ... measures the AHXV6-1-shaped document (28 sections) ... (16.2s)
+  ✓  2 [iphone-alone] › ... measures the larger document (140 sections) ... (20.7s)
+  ✓  3 [iphone-alone] › ... a page timer and a socket message are served ... (10.3s)
+  ✓  4 [iphone-alone] › ... a decision answered ... of the press ... (19.8s)
+
+Those four rows sum to 67.0 s and that leg's browser step took 74 s (21:01:43Z to
+21:02:57Z, the jobs API), so everything of the step that is not a row - the stacks
+`globalSetup` starts, the browser launch, `globalTeardown` and the sampler's reading - is
+7 s. A second and a third reading repeat a row's navigation and its 120 scroll steps and
+not the seeding before them, so three times a whole row over-states it, which is the side
+to be wrong on: 3 x 16.2 + 3 x 20.7 = 110.7 s for the two rows, and 110.7 + 7 = 117.7 s
+for the step. 117.7 x 1.15 = 135.4 s, 2 min 15 s, rounded up to the 3 minutes that leg
+carries. The first full-lane run of this head replaces it with a reading of the leg
+itself, as it replaces the two above.
+
+Why a leg and not three more minutes on `iphone-alone`: a budget is derived from what the
+rows under it measured, and raising that one to cover three readings would move the bound
+for the timer row and the decision row, which this change did not touch. A budget that
+covers work it did not measure cannot fail for the right reason.
+
+`iphone-long-build-alone` is derived the same way, from its own three rows, and lands on
+4 minutes by its own arithmetic rather than by the pool's. Its rows have no reading of this
+job yet: until this change they ran in the `iphone` project, four workers wide, and what
+they cost there is `shard (5)` of run 43421318396 at head 1aaa9135 (job 131872821142), the
+list reporter's own lines:
+
+  ✓  5 [iphone] › ... another person's edit reaches the larger document ... (39.3s)
+  ✓  6 [iphone] › ... builds over the whole drawn document ... one screenful @phone (51.8s)
+  ✓  1 [iphone] › ... the measurement's window stays open until ... editor opens (1.8m)
+
+The reporter prints a row over a minute to a tenth of one, so the third is read from the
+log's own timestamps: the leg printed `Running 295 tests` at 12:03:20.344Z, before any row
+began, and that row ended at 12:05:08.916Z, so it took at most 108.6 s. One worker runs the
+three one after another: 108.6 + 51.8 + 39.3 = 199.7 s, and the 7 s of the step that is
+not a row, which `iphone-alone`'s leg measured above, puts the step at 206.7 s.
+206.7 x 1.15 = 237.7 s, 3 min 58 s, rounded up to the 4 minutes that leg carries.
+Read four lanes wide, those rows carry the other three workers' load as well, so the figure
+over-states this leg, which is the side to be wrong on; the first full-lane run of this
+head replaces it with a reading of the leg itself.
 
 The job budget, the alone job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193 and not on the
 digest this file pins, for the reason the shard job's head gives, which also says why a
@@ -779,24 +1007,98 @@ nine legs, in seconds:
 The three uploads are three steps here too, and the sum below counts each of them:
 2 + 2 + 1, not 2.
 
-The browser step's own 3 minutes above still holds: 69 s is the most it took over these
-nine legs, webkit-alone's again, under the 141 s that budget was derived from, so the
-pooled maximum the rule reads is still that 141 s.
+The browser step's own 4 minutes above still holds: 69 s is the most it took over these
+nine legs, webkit-alone's again, well under the 194 s that budget was derived from - none
+of those nine is an `iphone-alone` leg, and none of the three `chromium-alone` legs among
+them ran the desktop guard, so the pooled maximum the rule reads is still that 194 s.
+None of those nine is an `iphone-measure-alone` leg either, which is why that leg's
+budget is derived above from its own rows rather than from this pool.
 
 The browser step was the one step of this job that carried a budget, so the job's budget was
-that budget plus the maxima above of every step without one, which summed to 137 s:
-180 + 137 = 317 s, 5 min 17 s, rounded up to 6 minutes.
+that budget plus the maxima above of every step without one, which summed to 137 s. That
+was two sums, because the browser step's budget is two numbers: 240 + 137 = 377 s,
+6 min 17 s, rounded up to 7 minutes for the five legs whose browser step has 4 minutes,
+`iphone-long-build-alone`'s derived 4 among them, and 180 + 137 = 317 s, 5 min 17 s,
+rounded up to 6 minutes for `iphone-measure-alone`.
 
 The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and one of its
 two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
 image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
-budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
-without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
+budget is the browser step's budget, the two download attempts' 120 s each, and the steps
+without a budget at 137 - 5 - 45 + 355 = 442 s, so it is two sums still: 240 + 240 + 442 =
+922 s, 15 min 22 s, rounded up to 16 minutes for the five legs whose browser step has 4
+minutes, and 180 + 240 + 442 = 862 s, 14 min 22 s, rounded up to 15 minutes for
+`iphone-measure-alone`: the two numbers of the alone job's `timeout-minutes`. Each leaves
+38 s over, which hold the new step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
-The browser step's own budget is unchanged, and it still
-fires first.
+The browser step's own budget is unchanged, and it still fires first.
+
+Each is a backstop above the sum of that leg's step budgets, as this file's head says a
+job budget is. The two steps that carry a budget read `matrix.project` for it rather than
+taking a matrix column of their own, which would put the number into each leg's name
+(`alone (chromium-alone, 4, 16)`) and so into the leg capture the merge job's row
+accounting reads.
+
+## The bus leg, chromium-bus
+
+The seventh entry of the alone job's matrix is the Playwright project
+`packages/dispatch/e2e/configurations.ts#busProjectNames` names, `chromium-bus`
+(`packages/dispatch/e2e/playwright.config.ts#busProjects`): the rows whose claim is a delivery
+Dispatch's outbox makes, which are check c-a14's browser part of R14 (dispatch://INFRA-341). An
+answer goes to each agent its text names, an agent the answer named that replies in the ask's
+thread gets the next reply there, and the writing list's answer box holds its answer to the
+copy its party gets. They are the rows of the one file
+`packages/dispatch/e2e/configurations.ts#busSpecPattern` selects, answer-parties.bus.e2e.ts,
+whose box rows run the driver writing-surfaces.e2e.ts runs every other box with.
+
+Why a project of its own. The outbox runs only for a server that has NATS
+(`packages/envoy/cmd/dispatch/main.go#OutboxPublishes`), and a server with NATS is another
+server for every row of its stack: a mention's send waits for the events before it
+(`packages/envoy/internal/dispatch/api/comment_delivery.go#mentionCopyHolderFor`), and
+`GET /api/v1/messages/_test/queued` answers 404. So no other row may share the stack, and
+`packages/dispatch/e2e/global-setup.ts#globalSetup` refuses a run that selects the bus project
+beside any other (`packages/dispatch/e2e/configurations.ts#busRunOf`); every default project
+that would see the file ignores it, and the project carries `default: false`.
+
+Why a leg of this job and not a shard leg. A shard leg runs a lane's ten projects in one run,
+which that refusal turns down, and its four stacks would need four buses; a leg of this job
+runs one project, `--project="$project" --workers=1`, on one stack
+(`.github/scripts/dispatch-browser-alone-suite.sh#DISPATCH_E2E_BROKER_BIN_DIR`), which is the
+whole of what the bus project asks. Its rows read no clock, so the quiet machine is not what
+puts them here, but nothing of this job's rules works against them: they need the binaries
+download, the contracts and dashboard builds, one stack's Postgres and no file store, as the
+six other legs do. `packages/dispatch/e2e/__tests__/shard-split.test.ts#shardSuiteScript`
+holds the shard job's lanes to naming no bus project, and the shard split places none of its
+rows. The merge job reads the leg as it reads every alone leg, `alone (chromium-bus)` becoming
+`alone-chromium-bus`, so no reading of it changes.
+
+Where its bus comes from. Each stack of a bus run starts one natsd of its own before its
+harness (`packages/dispatch/e2e/harness-pool.ts#startPool`), the nats-server of
+`packages/envoy/internal/testnats/cmd/natsd/main.go#run`, JetStream on and 127.0.0.1 alone, on
+ports the kernel chooses and read back from its log; the starter is the new module
+harness-bus.ts beside harness-postgres.ts. Its address reaches both readers as the stack's
+`DISPATCH_E2E_NATS_URLS`: `packages/dispatch/e2e/run-server.sh#nats_urls` hands it to the
+server as its NATS_URLS, and `packages/dispatch/e2e/fake-envoy.ts#readBusFrames` reads the
+frames the outbox publishes on `notifications.agent.>` off it, which the rows read through
+`GET /__fixture/bus-frames`; a listener started with no bus answers that read 409, and a row
+fails on it. The binary is the one the binaries job builds beside the server
+(`.github/scripts/ci_job_reads.py#BUS_PKGS` in `.github/scripts/ci_job_reads.py#BROWSER_BINARIES_SCRIPT`),
+from the go-envoy-test objects that job restores, which hold natsd's: this job runs no Go, for
+the container reason the binaries job's head gives, and no second build of nats-server is made.
+It lands in the directory the leg's script exports as DISPATCH_E2E_BROKER_BIN_DIR, made
+executable with the rest. A run outside CI builds natsd once itself, with the caller's
+toolchain, into packages/envoy/out.
+
+What it costs. It has no reading of this job yet. Three rows on one stack: the two c-a14 rows,
+each an answer through the Inbox and the outbox's publish and record of it, and the answer
+box's row, a walk of the writing list's box with a question back and an answer, so 10 to 20 s
+each for the first two and 30 to 60 s for the third is the expectation, with natsd's start of
+well under a second added to the stack's. The leg takes the pooled 4 minutes of the browser
+step and the 16 of the job until its first full-lane run measures it, and that reading - the
+jobs API's time for the browser step of `alone (chromium-bus)`, and the list reporter's time
+for each row - replaces this estimate. Either way it is well under one shard leg, whose browser
+step is derived from a 534 s leg.
 
 ## What the alone job downloads in place of a Go build
 
@@ -851,16 +1153,29 @@ DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18 with
 pgvector; the binaries directory is set on the command line, not in this step's
 `env:`, for the reason the job's head gives.
 
-No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
-legs run is a clock spec, and no clock spec uploads or downloads anything.
-chromium-alone runs both wall-clock specs (`packages/dispatch/e2e/configurations.ts#clockSpecNames`:
-heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
-that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
-And `packages/dispatch/e2e/harness-pool.ts#stackBucket` makes no bucket at one stack: it
-answers `undefined` on `count === 1`. A store serving nothing would be charged
-to the very reading these rows exist for, which is why the `weed` the image carries is
-started on the shard job's machines and not on these. A clock spec that later uploads
-fails here by name rather than quietly.
+No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
+legs run uploads or downloads anything. Each project selects whole files, out of the
+two lists of them: `packages/dispatch/e2e/configurations.ts#clockSpecNames`, named per
+project by `packages/dispatch/e2e/configurations.ts#clockSpecsNamed` in that project's
+`testMatch`, and `packages/dispatch/e2e/configurations.ts#phoneAloneSpecNames`, whose
+pattern `packages/dispatch/e2e/configurations.ts#phoneAloneSpecPattern` is the leg's
+`testMatch`. chromium-alone runs
+agent-workspace-timing, heavy-bodies and nested-directive, and with them
+large-documents-desktop-build.e2e.ts, the one row read at a desktop width;
+firefox-alone and webkit-alone run heavy-bodies alone; iphone-alone runs
+large-documents-build-serves.e2e.ts, the timer row, and
+large-documents-build-serves.the-decision.e2e.ts, the decision row;
+iphone-measure-alone runs
+large-documents-measured.e2e.ts, the two measurements of a first editable block,
+which take three readings each; and iphone-long-build-alone runs the phone half of
+large-documents-long-build.e2e.ts, three builds of the larger document
+(dispatch://INFRA-341). Each large-documents row
+seeds its document through the API and reads it. And
+`packages/dispatch/e2e/harness-pool.ts#stackBucket` makes no bucket at one stack: it
+answers `undefined` on `count === 1`. A store serving nothing would be charged to the
+very reading these rows exist for, which is why the `weed` the image carries is started
+on the shard job's machines and not on these. A row that later uploads fails here by name
+rather than quietly.
 
 The memory and CPU sampler both this job and the shard job run is
 .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
@@ -873,10 +1188,17 @@ beside the stack's own run directory: a file
 this step wrote into the checkout would leave it dirty afterwards. The blob report
 goes beside the list reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 3`, is the 3 minutes the job's head derives from the sharded head's own
-run, and the containerised reading taken on sha256:ba003193 does not move it: the most
-this step took over the nine legs the job's head lists is 69 s, well under
-webkit-alone's 141 s there, so the pooled maximum the rule reads is still 141 s.
+The step's budget, its `timeout-minutes`, is two numbers, one per leg, for the reason and
+with the arithmetic the job's head gives. Four legs take the 4 minutes it derives from
+`chromium-alone`'s measured leg plus the desktop guard as a shard leg ran it, which the
+containerised reading taken on sha256:ba003193 does not move: the most this step took
+over the nine legs the job's head lists is 69 s, well under that 194 s, and no leg of
+those nine ran the desktop guard or any of the four phone rows. The fifth leg,
+`iphone-measure-alone`, takes the 3 minutes derived from its own two rows as run
+43098661012 timed them, at three readings apiece. The sixth,
+`iphone-long-build-alone`, takes 4 minutes too, and by its own derivation: its three
+rows as run 43421318396's `shard (5)` timed them, 199.7 s, plus the 7 s that is not a
+row, x 1.15 = 237.7 s.
 
 ## Why the alone job's blob upload is always
 
@@ -893,7 +1215,7 @@ store log to collect.
 
 Always, not `if: failure()`: a green leg's logs are worth as much as a red one's here,
 since they say what the stack's servers did while the clock was read, and the memory and
-CPU readings are also what says the machine was quiet while it measured. These three
+CPU readings are also what says the machine was quiet while it measured. These six
 projects set `retries: 0` of their own (e2e/playwright.config.ts), so no row of this job
 is retried and none is reported flaky.
 
@@ -1195,21 +1517,65 @@ runs measured. A download this job does not control may not decide a required ch
 
 The step "Pull the stack's Postgres image" was added later, for the reason
 .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
-and its pull is counted at the 120 s the browser step spent before the stack's first output
-on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-it had. The reverse-order browser step this job ran after it, with its own 4 minutes, is gone:
-the section on the guard that took its place says why.
+and its pull was first counted at the 120 s the browser step spent before the stack's first
+output on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12
+minutes it had. The reverse-order browser step this job ran after it, with its own 4 minutes, is
+gone: the section on the guard that took its place says why.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
-six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
-240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
+six columns above, the sixth being run 42614920253 (job 129152410516). So that sum was
+240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stayed 12 minutes.
 
-## Why the visual job restores go-envoy-test
+The pull step carries a budget of its own now, derived from the pulls of that image this
+job's logs show. In job 134507372389, the first attempt of run 44211278336 at head d7548e82,
+whose browser step still pulled the image inside itself, on a saturated runner fleet, that
+step spent 205 s before the stack's first line; with the image already on the runner the
+same start takes 1.4 to 1.7 s (the pull step's section,
+.github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason,
+names the jobs), so 205 s is the slowest pull read, taken whole. The run's second attempt,
+job 134542482005, spent 25.8 s there, the pull among them. Pulled in its own step, it took
+5 to 13 s in each of the 16 passing visual jobs of the merge-group runs from 334ea4c6 (job
+134724850776) to 5589e6df (job 134948731616). So 205 x 1.15 = 236 s -> 4 min, 35 s over the
+slowest pull.
 
-go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
-this job's run-server.sh builds the Dispatch server, which only that family's entry
-holds. It saves none.
+The table's setup-go and go cache restore rows are gone from this job, and its connections
+step with them: the job runs no go command now
+(.github/ci-notes/dispatch-browser.md#what-the-visual-job-downloads-in-place-of-a-go-build
+says why), so the binaries job's artifact stands where those three stood, taken by the four
+steps the shard and alone jobs take it by - two attempts at the download, each with a budget
+of 2 minutes and the second only after a first that did not complete, the step that places
+the attempt that completed, and the chmod. The shard job's comments on those steps say why
+each, and its note "THE TWO NETWORK READS, AT A BUSY HOUR" why a read of this artifact
+carries a bound of its own: one leg's read of it took 428 s where its siblings' took seconds.
+
+So the job's budget is the browser step's 240 s, the two download attempts' 120 s each, the
+Postgres pull's 240 s, and the measured maximum of every step without a budget, read over
+the six columns above, those 16 jobs and both attempts of run 44211278336: checkout 15 s
+(job 134948731616), setup-bun 218 s (the outage column above), bun install 13 s
+(134901111320), the contracts build 1 s (134757244369), the dashboard build 39 s
+(134933935311), the Playwright pull 72 s (134739696645), the upload 3 s (134542482005), and
+the place step and the chmod, which read 0 s each in the shard job (job 134950289250), at a
+second each: 363 s. That is 1,083 s, 18 min 3 s, rounded up to the 19 minutes of the visual
+job's `timeout-minutes`.
+
+## What the visual job downloads in place of a Go build
+
+What the binaries job built, in place of this job's own actions/setup-go, go-envoy-test
+restore and connections step, which are gone: with no go command left here they bought
+nothing. Without these binaries, run-server.sh builds the Dispatch server and
+run-broker.sh the real broker's three commands with `go build` inside the browser step's
+own budget. In job 132744152651 of run 43691891752 that step started at 07:54:41, the
+server listened at 07:55:37 after its build's `go: downloading` lines, and the broker's
+issuer at 07:56:47, so 131 s of the step's 180 passed before Playwright ran a row at
+07:56:53, and the step timed out on its phone shots with every shot it reached passing.
+Built in the binaries job, they cost a build the shard and alone jobs already wait for,
+and the step's budget measures the shots again, as the image pull and the connections
+read were moved out of it before. The shard job's steps of these names say which
+directory they land in, why each attempt carries its own budget and directory, why there
+is a second and why the four are made executable, and the browser step's script names them
+there (.github/scripts/dispatch-browser-visual-suite.sh). They run on the
+host here, not in a container: the binaries job builds them static (CGO_ENABLED=0).
 
 ## Why the visual job builds contracts
 
@@ -1237,13 +1603,25 @@ repository's own package, so it fails here and says so.
 THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
 startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
 digest the browser step exports (.github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
-inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
-spent 120 s before the stack's first output, where five green visual jobs (134499880849,
-134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
-past its budget at 250 s. Its log does not time the pull apart from the rest of that
-start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
+inside that step's 4 minutes, which are for its rows. On #4129 (run 44215262087, job
+134503540243) the step spent 120 s before the stack's first output, and in job
+134507372389 (run 44211278336, head d7548e82, on a saturated runner fleet) 205 s, its
+4 minutes running out with the 13 rows it had reached all passing, where five green visual
+jobs (134499880849, 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to
+15 s. The image is pulled here rather than the stack started here because the pull is the
+whole of what a cold runner adds: with the image already on the runner, the stack printed
+its first line 1.4 to 1.7 s into the browser step (jobs 134739696645, 134948731616 and
+134757244369). The pull step's 4 minutes are derived from that 205 s
+(.github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets). The
 digest is written twice, here and in the browser step's script, and the two must stay the same:
 a pull of another digest here leaves the browser step to pull its own inside its budget again.
+
+## What the visual browser step's 4 minutes are for
+
+The 4 minutes of the step "Browser-test dispatch dashboard against its baselines" are its
+22 rows': the binaries are built and both images are on the runner by now, so what it
+spends before Playwright's first row is the stack's start from them and the seed, which
+pull and compile nothing.
 
 ## Why each visual row stops its page's writes, and runs once
 
@@ -1315,7 +1693,7 @@ Delete it as unused and `test-results` moves to the top of the archive, off that
 What the legs together ran. It joins every shard's and every alone leg's blob report into one
 report, publishes four readings of it - the rows, the flake rate, the legs that did not
 succeed and the row durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-and not seven.
+and not eleven, one per leg that uploads a report: five shards and six `-alone` projects.
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
 `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It
@@ -1370,10 +1748,14 @@ The read is paginated, so gh-read.sh can read no answer of its own: after an att
 exits 1 it reads GitHub's rate_limit route, bounded by its own `timeout 30`. So each attempt
 takes up to 30 + 30 s, and the ladder 3 x 60 + 10 + 20 = 210 s at most. The step's own work
 has a measured maximum of 4 s; it now also runs
-packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
-full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
-counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the next
-whole minute above, is the 4 min that step carries. The rule's two-minute floor does not bind.
+packages/dispatch/e2e/tools/leg-rows.ts over the five shard legs' row lists. Main measured it
+over four legs' lists (1.1 MB for the full lane's 1,617 rows) at 0.02 to 0.08 s on the
+development box over three runs; over five legs' lists of the 1,757 rows the shard job's head
+lists at the merge of main 054cd5ca into e72e7579 (1.4 MB, written by the reporter itself in each
+leg's listing) it took 0.04 to 0.10 s in a Legion pod over three runs, the process's start
+included. Counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the
+next whole minute above, is the 4 min that step carries. The rule's two-minute floor does not
+bind.
 
 A spent API budget is not in that bound: when the rate_limit route shows the core budget this
 read spends at 0, gh-read.sh's gh_wait_reset waits for its reset only when that falls at least

@@ -1694,9 +1694,10 @@ test("a comment on a statement sent again from a box mounted over its refused se
   await waitFor(() => expect(again.writer().statement).toBeUndefined());
   expect(again.writer().landing).toBeUndefined();
   await waitFor(() => expect(focusedRowId()).toBe("spec#b-r1"));
-  // Scrolled until the row's bottom clears the box at the foot (`bringOnScreen`).
+  // Scrolled until the row's bottom clears the box at the foot (`bringOnScreen`), as the page's
+  // own move (`readers-place.ts`'s `moveTheBox`).
   const floor = window.innerHeight - (Number.parseFloat(footHeight()) || 0);
-  expect(scrolled).toHaveBeenCalledWith({ top: 2024 - floor + 8 });
+  expect(scrolled).toHaveBeenCalledWith(0, 2024 - floor + 8);
 });
 
 // The reviewer's finding 4593511306: a statement whose words its document holds twice is

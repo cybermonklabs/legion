@@ -8,6 +8,9 @@ import { answerIssuePatches } from "./__tests__/send-answers";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import { AuthGate } from "./app";
+// Every file that renders the app through `renderApp` loads the app's lazy parts beyond its
+// pages with itself (`__tests__/app-chunks.ts`), so no row of it meets one of their loads.
+import "./__tests__/app-chunks";
 import type { UnsentChange } from "./features/shell/sign-in-channel";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 

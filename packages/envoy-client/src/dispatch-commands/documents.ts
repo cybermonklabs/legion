@@ -2,13 +2,14 @@ import { resolve as resolvePath } from "node:path";
 import type {
   Artifact,
   ArtifactBlock,
+  EditBlockPrecondition,
   EditOp,
   EditPrecondition,
   UploadPrecondition,
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
-import type { DispatchClient } from "../dispatch-http";
+import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { dispatchDocumentRef, documentLabel, issueTopic } from "../dispatch-owner";
 import { shownPictureLine } from "../dispatch-picture-tools";
 import {
@@ -37,6 +38,7 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import { dispatchAnswered } from "./failures";
 import {
   OPEN_BLOCK_ASK_THE_HUMAN,
   OPEN_BLOCK_WAIVED,
@@ -232,6 +234,36 @@ async function listDocumentBlocks(
   return { text: lines.join("\n"), token: live.token, version: live.version };
 }
 
+/**
+ * A `409 PRECONDITION_FAILED` naming the blocks an edit would remove that its block guard leaves
+ * out (`unguarded_blocks`), each at the token it carries now, with a line under Dispatch's own
+ * words that names each with that token and says how a guard names a block, and at which token.
+ * The token the refusal gives is one to compare with the token the caller's own read listed,
+ * never one to send, and Dispatch's refusal says how to answer it (`unguardedReason` in
+ * packages/envoy/internal/dispatch/docs/edits.go). Every other error is returned as it is, so a
+ * refusal naming no such block, an older server's among them, reads as it always did.
+ */
+function withUnguardedBlocks(error: unknown): unknown {
+  if (!dispatchAnswered(error, 409) || error.code !== "PRECONDITION_FAILED") return error;
+  const unguarded = error.unguardedBlocks ?? [];
+  if (unguarded.length === 0) return error;
+  return new DispatchServiceError(
+    error.code,
+    error.status,
+    `${error.message}\nBlock guard: this edit would remove ${guardedBlockList(unguarded, "block")}. A guard names a block as {id, token} in precondition.blocks (--precondition-json), at the token your own read listed.`,
+    error
+  );
+}
+
+/**
+ * `blocks`, one or more, as a `Block guard:` line names them: how many, as "a <kind>" or
+ * "<n> <kind>s", that the guard did not name them, and each block's id with its token.
+ */
+function guardedBlockList(blocks: readonly EditBlockPrecondition[], kind: string): string {
+  const count = blocks.length === 1 ? `a ${kind}` : `${blocks.length} ${kind}s`;
+  return `${count} the guard did not name: ${blocks.map((block) => `${block.id} (token ${block.token})`).join(", ")}`;
+}
+
 /** `dispatch doc-edit`: apply one batch of block operations to a live document. */
 export async function docEditCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, linkBase, documentOwner, resolveDocument } = context;
@@ -240,12 +272,16 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   const summary = optionalString(args, "summary");
   const precondition = optionalPrecondition<EditPrecondition>(args);
   await refuseRemovingOpenDecisionBlocks(client, input.tool, resolved, ops);
-  const edited = await client.docEdit(resolved.artifact.id, {
-    ops,
-    ...(summary === undefined ? {} : { summary }),
-    ...(precondition === undefined ? {} : { precondition }),
-    actor,
-  });
+  const edited = await client
+    .docEdit(resolved.artifact.id, {
+      ops,
+      ...(summary === undefined ? {} : { summary }),
+      ...(precondition === undefined ? {} : { precondition }),
+      actor,
+    })
+    .catch((error: unknown) => {
+      throw withUnguardedBlocks(error);
+    });
   const retyped = ops.filter((operation) => operation.op === "retype").length;
   const versionText =
     edited.version === null ? "no new version" : `version ${edited.version.number}`;
@@ -315,6 +351,20 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   // (packages/contracts/src/dispatch-tools.ts).
   const written = edited.written;
   const writtenLines = written === undefined || written === "" ? [] : [written];
+  // The typed blocks a replace's with of blocks rewrote in place under their own ids that the
+  // edit's block guard did not name, each at the token it carried before the edit rewrote it; a
+  // block the edit would remove that the guard leaves out refuses it instead, named at the token
+  // it carries now (withUnguardedBlocks). The guard may still have covered one, through a block it
+  // names that holds it, so the line says only that the guard did not name it, and gives its
+  // token to compare with the one the caller's own read listed. An edit under no block guard, or
+  // an older server, carries none, and the result reads as it always did.
+  const unguarded = edited.unguarded_blocks ?? [];
+  const unguardedLines =
+    unguarded.length === 0
+      ? []
+      : [
+          `Block guard: this edit rewrote in place ${guardedBlockList(unguarded, "typed block")}; compare ${unguarded.length === 1 ? "its token with the one" : "their tokens with the ones"} you read.`,
+        ];
   // The token of the document this edit produced, rendered as dispatch_doc_read renders it:
   // the next guarded edit passes it as `precondition.document` with no read in between. A
   // Dispatch server predating it returns none, and the result reads as it always did.
@@ -324,6 +374,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
       `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
       ...checkLines,
       ...declinedLines,
+      ...unguardedLines,
       ...writtenLines,
       ...tokenTrailer,
       ...adviceLines,
@@ -333,6 +384,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
       ...(edited.version === null ? {} : { version: edited.version.number }),
       ...(nothingChanged ? { changed: false } : {}),
       ...(lostOps === undefined ? {} : { lost_ops: lostOps }),
+      ...(unguarded.length === 0 ? {} : { unguarded_blocks: unguarded }),
       ...(edited.token === undefined ? {} : { token: edited.token }),
       ...(edited.advice === undefined ? {} : { advice: edited.advice }),
     }),

@@ -19,7 +19,7 @@
  *
  * Once its imports have loaded it posts `{ ready: true }`, so the page starts a body's deadline
  * when the worker can start on it, never while its chunk is still downloading. The page then
- * posts each body as `{ id, markdown, softBreaks }`; this worker answers each with
+ * posts each body as `{ id, markdown, rawHtml, softBreaks }`; this worker answers each with
  * `{ id, doc, openMermaidFence }` or, for a body the parser refuses, `{ id }` with no `doc`.
  * `openMermaidFence` is the open-fence check `mermaid-diagrams.ts` would otherwise run on the
  * page with a second parse of the same body, so a streaming turn ending in an unclosed
@@ -33,6 +33,7 @@
 import {
   createHeadlessProof,
   type HeadlessProofEditor,
+  type RawHtml,
   type SoftBreaks,
 } from "@legion/proof-editor/headless";
 
@@ -46,6 +47,7 @@ import type { WorkerReply } from "./worker-queue";
 export interface ParseRequest {
   id: number;
   markdown: string;
+  rawHtml: RawHtml;
   softBreaks: SoftBreaks;
 }
 
@@ -79,15 +81,15 @@ interface WorkerScope {
 }
 
 /** Answers one body: the parsed document as plain JSON with the open-fence check beside it, or a
- *  refusal for a body the parser throws on (a raw-HTML span, a mark span this schema has no node
- *  for), which the page shows as its literal text. */
+ *  refusal for a body the parser throws on (a mark span this schema has no node for; raw HTML
+ *  throws under neither policy), which the page shows as its literal text. */
 function answerParseRequest(
-  { id, markdown, softBreaks }: ParseRequest,
+  { id, markdown, rawHtml, softBreaks }: ParseRequest,
   proof: HeadlessProofEditor
 ): ParseReply {
   let parsed: ProseMirrorNode;
   try {
-    parsed = proof.parseMarkdown(markdown, softBreaks);
+    parsed = proof.parseMarkdown(markdown, softBreaks, rawHtml);
   } catch {
     return { id };
   }
@@ -96,7 +98,7 @@ function answerParseRequest(
     id,
     openMermaidFence: endsInOpenMermaidFence(parsed, markdown, (source) => {
       try {
-        return proof.parseMarkdown(source, softBreaks);
+        return proof.parseMarkdown(source, softBreaks, rawHtml);
       } catch {
         return undefined;
       }

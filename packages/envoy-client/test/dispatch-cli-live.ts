@@ -2,12 +2,13 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { type DispatchStack, useDispatchStackDirectory } from "./dispatch-stack";
 
-// What every file that proves a clause of a document write's advice over the whole path it is
-// printed through works out of: the real `dispatch` CLI of this checkout, run as a child process
-// against a real Dispatch server of this checkout, and the writes over the server's own routes
-// that make what a row writes about. The files are design-gate-advice.live.test.ts and
-// moved-approval-advice.live.test.ts; each keeps the constants, the writes and the sentences that
-// are its own, and reads the harness the two share from here.
+// What every file that proves a document write over the whole path an agent sends it through
+// works out of: the real `dispatch` CLI of this checkout, run as a child process against a real
+// Dispatch server of this checkout, and the writes over the server's own routes that make what a
+// row writes about. The files are design-gate-advice.live.test.ts and
+// moved-approval-advice.live.test.ts, which prove a clause of a write's advice, and
+// typed-block-insert.live.test.ts, which proves where an insert lands; each keeps the constants,
+// the writes and the sentences that are its own, and reads the harness they share from here.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
@@ -87,9 +88,14 @@ export interface DispatchCliLive {
   /**
    * One insert at the end of a document, run through the real CLI entry as an agent's shell runs
    * it, and the output it printed. A refusal, or anything on standard error, fails the row that
-   * called it: every row of both files is about the line a write that went through printed.
+   * called it: every row of the advice files is about the line a write that went through printed.
    */
   docEdit(issue: string, artifact: string, sentence: string): Promise<string>;
+  /**
+   * A document edit of `ops`, run through the real CLI entry as `docEdit` is, and the output it
+   * printed. A refusal, or anything on standard error, fails the row that called it.
+   */
+  docEditOps(issue: string, artifact: string, ops: readonly unknown[]): Promise<string>;
   /**
    * A read of one of the issue's documents, run through the real CLI entry as `docEdit` is, and
    * the summary it printed: the document's `Approval:` line among it. A refusal, or anything on
@@ -99,7 +105,7 @@ export interface DispatchCliLive {
 }
 
 /**
- * The harness both live files run their rows on, over the stack the calling file started.
+ * The harness the live files run their rows on, over the stack the calling file started.
  *
  * A file calls this once, in the body of its `describe`, and keeps for itself the project keys,
  * the writes and the sentences that are its own.
@@ -182,16 +188,14 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
     return stdout.trimEnd();
   }
 
+  const docEditOps = (issue: string, artifact: string, ops: readonly unknown[]): Promise<string> =>
+    cli("doc-edit", issue, ["--artifact", artifact, "--ops-json", JSON.stringify(ops)]);
+
   const docEdit = (issue: string, artifact: string, sentence: string): Promise<string> =>
-    cli("doc-edit", issue, [
-      "--artifact",
-      artifact,
-      "--ops-json",
-      JSON.stringify([{ op: "insert", markdown: sentence, after: "end" }]),
-    ]);
+    docEditOps(issue, artifact, [{ op: "insert", markdown: sentence, after: "end" }]);
 
   const read = (issue: string, artifact: string): Promise<string> =>
     cli("read", issue, ["--artifact", artifact]);
 
-  return { asPerson, asMachine, createIssue, upload, docEdit, read };
+  return { asPerson, asMachine, createIssue, upload, docEdit, docEditOps, read };
 }

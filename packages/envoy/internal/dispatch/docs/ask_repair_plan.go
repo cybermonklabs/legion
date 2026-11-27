@@ -56,10 +56,11 @@ type askRepairPlan struct {
 // decision's block is deleted by its id like any other. A nested decision the rule leaves
 // nothing of is deleted whole (askRepairKeepsNothingOfItsOwn).
 //
-// No document edit writes a decision a question, for the reason refuseEmptyQuestionEdit holds. So
-// a decision holding no paragraph with text keeps nothing its rule leaves room for, the re-read
-// below finds what the deletes leave unreadable, and the refusal says the decision is repaired
-// where a person writes it.
+// No delete writes a decision a question: a delete writes no words, and only an ask edit carrying
+// a question, or a document edit inserting one beside a paragraph of the decision, writes it
+// (refuseEmptyQuestionEdit holds both). So a decision holding no paragraph with text keeps
+// nothing its rule leaves room for, the re-read below finds what the deletes leave unreadable,
+// and the refusal says the decision is repaired where a person writes it.
 //
 // A document edit is refused where it leaves a decision it wrote or changed unreadable
 // (validateEditedAskBlocks), and a delete inside a decision changes every decision holding it, so
@@ -135,8 +136,8 @@ func askRepairDrops(ask *pmdoc.Node) (drop []*pmdoc.Node, changed []string) {
 // room for would keep none of them: its own blocks break the rule and it holds no paragraph with
 // text, so the rule leaves room for nothing it holds. Such a decision is deleted whole by the one
 // edit that repairs the decision holding it, since the deletes alone would leave a block no parse
-// reads as a decision, and no document edit writes another person's decision the question it
-// would need.
+// reads as a decision, and the question it would need is another person's to write, not the
+// caller's.
 func askRepairKeepsNothingOfItsOwn(ask *pmdoc.Node) bool {
 	if !askBreaksItsOwnRule(ask) {
 		return false
@@ -200,11 +201,11 @@ func nestedAsks(blocks []*pmdoc.Node) []*pmdoc.Node {
 // decision nested in them can still break the rule, and a kept list can hold an option the parse
 // cannot read.
 //
-// A decision no paragraph of which holds text keeps nothing: it asks nothing, and no document
-// edit can give it a question (refuseEmptyQuestionEdit holds that reason). Where it is the
-// decision being edited the caller's re-read finds what that leaves unreadable; where it is
-// nested in one, deleting it whole is what repairs the decision holding it
-// (askRepairKeepsNothingOfItsOwn).
+// A decision no paragraph of which holds text keeps nothing: it asks nothing, and no delete can
+// give it a question; an ask edit carrying one, or an insert anchored on one of its paragraphs,
+// writes it (refuseEmptyQuestionEdit holds both). Where it is the decision being edited the
+// caller's re-read finds what that leaves unreadable; where it is nested in one, deleting it
+// whole is what repairs the decision holding it (askRepairKeepsNothingOfItsOwn).
 func askBlocksToDrop(children []*pmdoc.Node) (drop, kept []*pmdoc.Node) {
 	first := slices.IndexFunc(children, func(child *pmdoc.Node) bool {
 		return child.Type == "paragraph" && strings.TrimSpace(pmdoc.TextContent(child)) != ""

@@ -1,0 +1,24 @@
+kind: Changed
+body: |-
+  `dispatch_doc_edit`'s description says a block guard must name the block each op names or whose
+  text it matches, and for a `move` the block it moves, and that a guard leaving one out is refused
+  naming each block it lacks. A guarded removal is refused when it takes a block that neither the
+  guard names nor a named block contains, such as the nested lists of a list item a `find`'s marker
+  selects: it is refused with `PRECONDITION_FAILED` and nothing is written, and the refusal's
+  `unguarded_blocks` and a line of it name each such block with the token it carries now. A
+  `PRECONDITION_FAILED` carrying `unguarded_blocks` is answered by comparing each such token with
+  the token the caller's own read listed, never by sending it: where they match, the caller adds
+  the block to the guard at the token it read and sends the edit again, and where they differ, or
+  the caller's read listed no token for the block, another writer changed or added the block, so
+  the caller reads the document again before it removes it; any other `PRECONDITION_FAILED` means
+  reading again. A list or quote a removal empties of blocks the guard covers is taken. A typed
+  block a `replace`'s `with` of blocks rewrites in place under its own id the guard need not name:
+  the result's `unguarded_blocks` and a line of the result name it with the token it carried
+  before the edit, and naming it in the guard refuses the edit with `PRECONDITION_FAILED` if it
+  changed. `EditArtifactResponse` and `EditPreconditionError` in `schemas/dispatch-openapi.json`
+  and `src/dispatch-api.generated.ts` carry the optional `unguarded_blocks`, a list of
+  `EditBlockPrecondition`, and so does `DispatchServiceErrorShape`.
+  `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same description.
+time: 2026-11-19T20:30:00Z
+custom:
+    Issue: pr2697

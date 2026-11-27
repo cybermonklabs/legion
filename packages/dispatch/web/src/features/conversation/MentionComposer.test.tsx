@@ -10,6 +10,11 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import {
+  COMPOSING,
+  pressAsInputMethod,
+  pressInputMethodKey,
+} from "../../__tests__/input-method-keys";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import {
   architectureTree,
@@ -35,6 +40,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { mentionOptions, stoppedRoleOptions } from "../refs/party-options";
 import { settleRefPickerSearch } from "../refs/ref-picker-fixture";
 import { recordedRoles, roleHolders } from "../refs/role-holders";
+import { relativeTimeLabel } from "../refs/Timestamp";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -1624,6 +1630,188 @@ test("opening the picker refetches the live agents", async () => {
   }
 });
 
+// INFRA-341 (R7). A session's last activity is a relative `<Timestamp>`, as every other surface
+// shows a time, with the exact time on its `title` - never the full locale date it used to be.
+test("the mention picker shows a session's last activity as a relative timestamp", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("@");
+    const option = await screen.findByRole("option", { name: /^Planner\b/ });
+    const seen = new Date(planner.last_seen);
+    const shown = option.querySelector("time");
+    expect(shown?.getAttribute("datetime")).toBe(seen.toISOString());
+    expect(shown?.getAttribute("title")).toBe(seen.toLocaleString());
+    expect(shown?.textContent).toBe(relativeTimeLabel(seen, Date.now()));
+    expect(option.textContent).toContain("/workspaces/planner");
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+// INFRA-341 (R7). The folder stays in the text the filter reads once the detail line splits the
+// time out of it: typing a session's directory still finds that session and nothing else.
+test("typing a session's folder finds it in the mention picker", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner, worker]);
+  const { view } = renderComposer({ agents: [planner, worker] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("@/workspaces/worker");
+    await settleRefPickerSearch();
+    const picker = await screen.findByTestId("ref-picker");
+    await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(1));
+    const [row] = within(picker).getAllByRole("option");
+    expect(row?.textContent).toContain("Worker");
+    expect(row?.textContent).toContain("/workspaces/worker");
+    expect(row?.querySelector("time")?.getAttribute("datetime")).toBe(
+      new Date(worker.last_seen).toISOString()
+    );
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+// INFRA-341 (R2). Escape belongs to the picker while it is open: it closes that and nothing
+// else - no Discard prompt, and no card or dialog around the field - and leaves the words.
+test("Escape closes the mention picker and leaves the typed text", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("hello @pla");
+    await screen.findByTestId("ref-picker");
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByTestId("ref-picker")).toBeNull();
+    expect(field.value).toBe("hello @pla");
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean drops a candidate with Escape: that Escape is the
+// input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's
+// end, as Safari sends it (WebKit bug 165004). With the picker open it closes nothing: the field
+// leaves it to the host (`MentionField.test.tsx`), and the composer reads it as the input
+// method's too, so it asks no Discard either. A plain Escape after it closes the picker alone.
+test("an input method's Escape leaves the open mention picker open, and a plain Escape closes it", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("hello @pla");
+    await screen.findByTestId("ref-picker");
+
+    pressAsInputMethod(field, "Escape", {
+      beforePlain: () => {
+        expect(screen.queryByTestId("ref-picker")).not.toBeNull();
+        expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+      },
+    });
+    await waitFor(() => expect(screen.queryByTestId("ref-picker")).toBeNull());
+    expect(field.value).toBe("hello @pla");
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+// With the picker closed, Escape is the composer's: it asks whether to drop a draft. The Escape
+// that drops an input method's candidate, marked or sent with keyCode 229 as above, asks nothing
+// and leaves the draft; a plain Escape after it asks.
+test("an input method's Escape in the composer asks no Discard, and a plain Escape asks it", async () => {
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("a draft to keep");
+    pressAsInputMethod(field, "Escape", {
+      beforePlain: () => {
+        expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+        expect(field.value).toBe("a draft to keep");
+      },
+    });
+    await screen.findByRole("button", { name: "Discard" });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). With the picker open and a row highlighted it picks
+// nothing; a plain Enter after it takes the row.
+test("the Enter that confirms an input method's word picks no mention, and a plain Enter does", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("@");
+    await screen.findByRole("option", { name: /^Planner\b/ });
+
+    expect(
+      pressAsInputMethod(field, "Enter", {
+        beforePlain: () => {
+          expect(field.value).toBe("@");
+          expect(screen.queryByTestId("ref-picker")).not.toBeNull();
+        },
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A)"));
+    expect(createComment).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// The ask builder's option label adds an option on Enter, and not on the Enter that confirms an
+// input method's word in it, marked or sent with keyCode 229 as above.
+test("the Enter that confirms an input method's word in an option's label adds no option, and a plain Enter adds one", () => {
+  const { view } = renderComposer({ kind: "ask" });
+
+  try {
+    const labels = () => screen.getAllByLabelText<HTMLTextAreaElement>(/^Option \d+ label$/);
+    const before = labels().length;
+    const first = labels()[0];
+    if (first === undefined) throw new Error("the ask builder drew no option label");
+    expect(
+      pressAsInputMethod(first, "Enter", {
+        beforePlain: () => expect(labels()).toHaveLength(before),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
+    expect(labels()).toHaveLength(before + 1);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a mention survives its target going offline before Send", async () => {
   const user = userEvent.setup();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
@@ -2230,8 +2418,7 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("still composing");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
+    pressInputMethodKey(field, "Enter", COMPOSING);
     expect(createComment).not.toHaveBeenCalled();
     field.focus();
     await user.keyboard("{Control>}{Enter}{/Control}");

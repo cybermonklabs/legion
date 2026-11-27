@@ -3,6 +3,7 @@ import type {
   ArtifactBlock,
   AskWithTrees,
   GraphEdge,
+  GraphEdgeKind,
   GraphNode,
   GraphReferences,
   IssueCoverage,
@@ -15,15 +16,36 @@ import { ITEM_KINDS, type ItemKind, type ParsedDispatchRef } from "../dispatch-o
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
 
+/** Which end of its edges a read stands on: `in` for the edges pointing at the read node (its
+ *  `?to=` read, printed under `Referenced by:`), `out` for the edges it writes (`?from=`,
+ *  `Links:`). */
+export type EdgeDirection = "in" | "out";
+
 /** A graph read's edges as a read shows them: edge type, the other node and its address,
  *  excerpt, when, and on a document's, ask's, comment's or message's read its block at the
  *  queried end. */
-function referenceLines(read: GraphReferences | string): string[] {
+function referenceLines(read: GraphReferences | string, direction: EdgeDirection): string[] {
   if (typeof read === "string") return [`- ${read}`];
   const edges = read.edges ?? [];
   if (edges.length === 0) return ["- none"];
-  return edges.map(edgeLine);
+  return edges.map((edge) => edgeLine(edge, direction));
 }
+
+/**
+ * The words an edge pointing at the read node reads with from that node's side, for each kind
+ * whose other direction has a name of its own: B `blocked_by` A reads on A's read as `blocks` B.
+ * Every other kind reads `<kind> from` its source, since its inverse would be only its own
+ * passive (`mentions`, `replies_to`, `answers`, `affects`, `depends_on`, and a typed block's
+ * attribute kinds, such as `serves`) or no word that reads plainly (`attached_to`,
+ * `anchored_to`, `part_of`). An edge the read node writes reads with its own kind. A map rather
+ * than an object, since a kind is whatever string the server sends, `constructor` included.
+ */
+const INVERSE_KINDS: ReadonlyMap<GraphEdgeKind, string> = new Map([
+  ["blocked_by", "blocks"],
+  ["child_of", "parent of"],
+  ["owned_by", "owns"],
+  ["followed_by", "follows"],
+]);
 
 /** Whether `kind`, a graph node's, is one of the items whose blocks are its own (`ITEM_KINDS`):
  *  the parents a block node naming no document has. One set serves every read of such a node
@@ -33,22 +55,26 @@ function isItemKind(kind: GraphNode["kind"] | undefined): kind is ItemKind {
   return ITEM_KINDS.some((item) => item === kind);
 }
 
-/** One edge of a graph read. A part of an ask, or a block of a comment or message (a block node
- *  naming no document), shows as its item, then the block: `ask <item ref> block <part id>`,
- *  `comment <item ref> block <id>`. Where the row names a comment or message its author
- *  withdrew, the mark every read prints for a deleted post (`deletedMark`) stands where its
- *  excerpt would: the server sends none, so the row would otherwise carry a bare time and leave
- *  the deletion unsaid. Where it names one its author edited, the mark every line prints for an
- *  edited post (`editedMark`) follows its excerpt, or stands alone where the row has none, so the
- *  row never gives a post's words without saying they may not be the ones it first held. */
-export function edgeLine(edge: GraphEdge): string {
+/** One edge of a graph read, from the read node's side: an edge it writes (`out`) by its kind,
+ *  one pointing at it (`in`) by the inverse word (`INVERSE_KINDS`). A part of an ask, or a block
+ *  of a comment or message (a block node naming no document), shows as its item, then the block:
+ *  `ask <item ref> block <part id>`, `comment <item ref> block <id>`. Where the row names a
+ *  comment or message its author withdrew, the mark every read prints for a deleted post
+ *  (`deletedMark`) stands where its excerpt would: the server sends none, so the row would
+ *  otherwise carry a bare time and leave the deletion unsaid. Where it names one its author
+ *  edited, the mark every line prints for an edited post (`editedMark`) follows its excerpt, or
+ *  stands alone where the row has none, so the row never gives a post's words without saying
+ *  they may not be the ones it first held. */
+export function edgeLine(edge: GraphEdge, direction: EdgeDirection): string {
   const { node } = edge;
-  const words = edge.excerpt === undefined ? "" : `${textHead(edge.excerpt.text)} · `;
+  const words =
+    direction === "out" ? edge.kind : (INVERSE_KINDS.get(edge.kind) ?? `${edge.kind} from`);
+  const head = edge.excerpt === undefined ? "" : `${textHead(edge.excerpt.text)} · `;
   const excerpt =
     node.deleted_at == null
       ? node.edited_at == null
-        ? words
-        : `${words}${editedMark(node.edited_at)} · `
+        ? head
+        : `${head}${editedMark(node.edited_at)} · `
       : `${deletedMark(node.deleted_at, node.deleted_by)} · `;
   const block = edge.block === undefined ? "" : ` (block ${edge.block.ref ?? edge.block.id})`;
   const parent = node.parent ?? undefined;
@@ -60,7 +86,7 @@ export function edgeLine(edge: GraphEdge): string {
     item === undefined
       ? `${node.kind} ${node.ref ?? node.id}`
       : `${item.kind} ${item.ref ?? item.id} block ${node.block_id ?? node.id}`;
-  return `- ${edge.kind} ${source} (${excerpt}${edge.created_at})${block}`;
+  return `- ${words} ${source} (${excerpt}${edge.created_at})${block}`;
 }
 
 /**
@@ -114,10 +140,10 @@ export async function issueCoverageOrReason(
 
 /**
  * The sections every read ends with: the `Node:` line (the read node's maker, last change and
- * parent), `Referenced by:` (edges pointing at the node, mentions and structure alike) and
- * `Links:` (edges it writes), read from the reference graph in both directions. A graph the
- * server cannot serve degrades to one "unavailable" row, like the References section, so the
- * read itself still answers.
+ * parent), `Referenced by:` (edges pointing at the node, mentions and structure alike, each read
+ * from the node's side) and `Links:` (edges it writes), read from the reference graph in both
+ * directions. A graph the server cannot serve degrades to one "unavailable" row, like the
+ * References section, so the read itself still answers.
  */
 export async function graphSections(client: DispatchClient, ref: string): Promise<string[]> {
   const [incoming, outgoing] = await Promise.all([
@@ -134,14 +160,14 @@ export async function graphSections(client: DispatchClient, ref: string): Promis
 export function graphSectionLines(
   incoming: GraphReferences | string,
   outgoing: GraphReferences | string,
-  referencedBy: readonly string[] = referenceLines(incoming)
+  referencedBy: readonly string[] = referenceLines(incoming, "in")
 ): string[] {
   return [
     ...(typeof incoming === "string" ? [] : nodeLine(incoming.node)),
     "Referenced by:",
     ...referencedBy,
     "Links:",
-    ...referenceLines(outgoing),
+    ...referenceLines(outgoing, "out"),
   ];
 }
 

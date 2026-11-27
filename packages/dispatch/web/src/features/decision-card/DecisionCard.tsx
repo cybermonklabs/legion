@@ -6,6 +6,7 @@ import type { Actor, DisplayTree } from "../../api/types";
 import { PAGE_LOOKS } from "../../components/RefusableButton";
 import { Dot, KindBullet } from "../../components/RowMarks";
 import type { PageWords } from "../../components/tooltips";
+import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   dangerText,
@@ -627,6 +628,9 @@ function ChangeForm({
         label={DECISION_ACT_WORDS.your_change}
         labelClassName={`block text-sm ${tones.ink}`}
         onChange={(next) => setBody(next.body)}
+        // Enter writes a line; Ctrl/Cmd+Enter sends, through this form's own submit, as every
+        // Dispatch-owned multi-line input does (dispatch://INFRA-341 R8).
+        onKeyDown={(event) => submitOnModifiedEnter(event)}
         rows={3}
         writing={dispatchWritingBox("decisions-change", "comment")}
       />

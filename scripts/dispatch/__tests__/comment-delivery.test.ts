@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { RECEIPT_TIMEOUT_CAUSE } from "../../../packages/contracts/src/dispatch-api.ts";
+import { RECEIPT_TIMEOUT_CAUSE } from "../../../packages/contracts/src/dispatch-constants.ts";
 import {
   type Judged,
   judge,

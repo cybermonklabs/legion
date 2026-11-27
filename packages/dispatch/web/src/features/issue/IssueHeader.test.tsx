@@ -1,12 +1,18 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the Enter and the Escape that end an input method's composition below, which user-event cannot mark as one
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
+import {
+  COMPOSING,
+  KEY_CODE_229,
+  pressAsInputMethod,
+  pressInputMethodKey,
+} from "../../__tests__/input-method-keys";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -255,6 +261,45 @@ test("a read of the state asked while the header's pin is out waits for its answ
   }
 });
 
+// A reader typing Chinese, Japanese or Korean drops a candidate with Escape: that Escape is the
+// input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's
+// end, as Safari sends it (WebKit bug 165004). In the route's and the parent's boxes, which
+// Details holds (`HeaderDetails`), it drops nothing and closes nothing; a plain Escape after it
+// drops the draft and closes the box. The title's box takes the same keys in the rows below.
+test("an input method's Escape in the route's or the parent's box keeps the edit, and a plain Escape ends it", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = renderHeader(client, <Header state={unpinnedState} />);
+  try {
+    await openIssueDetails(view.user);
+    for (const [opener, name] of [
+      [
+        () => view.q.getAllByRole("button", { name: "Messages default to no route" })[0],
+        "Message route",
+      ],
+      [() => view.q.getByRole("button", { name: "None, set parent issue" }), "Parent"],
+    ] as const) {
+      const control = opener();
+      if (control === undefined) throw new Error(`the header draws no control that opens ${name}`);
+      await view.user.click(control);
+      const box = view.q.getByRole("textbox", { name }) as HTMLInputElement;
+      await view.user.type(box, "x");
+      const draft = box.value;
+      pressAsInputMethod(box, "Escape", {
+        beforePlain: () => {
+          expect(view.q.queryByRole("textbox", { name }), `${name} closed`).toBe(box);
+          expect(box.value, `${name} dropped its draft`).toBe(draft);
+        },
+      });
+      expect(view.q.queryByRole("textbox", { name }), `${name} stayed open`).toBeNull();
+    }
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(ALICE_DETAILS_KEY);
+  }
+});
+
 // The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
 // word being composed, and the Escape that cancels one drops it: each is the input method's key
 // and no key of the reader's, so the title's editor stays open with its draft and writes nothing.
@@ -281,13 +326,7 @@ test.each([
       const title = view.q.getByRole("textbox", { name: "Issue title" });
       await view.user.clear(title);
       await view.user.paste("Pin it from the header");
-      // user-event has no form for this: it cannot mark a key as an IME composition.
-      fireEvent.keyDown(
-        title,
-        mark === "isComposing"
-          ? { isComposing: true, key }
-          : { isComposing: false, key, keyCode: 229 }
-      );
+      pressInputMethodKey(title, key, mark === "isComposing" ? COMPOSING : KEY_CODE_229);
       expect(title).toBeInTheDocument();
       expect(title).toHaveValue("Pin it from the header");
       expect(title).toHaveFocus();

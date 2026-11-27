@@ -1,0 +1,14 @@
+{
+  "astrolabe": "CORE-2",
+  "compactMargin": "CORE-3",
+  "documents": "CORE-4",
+  "failedSearch": "CORE-5",
+  "longList": "CORE-6",
+  "openers": "CORE-7",
+  "pageBehind": "CORE-1",
+  "panels": "CORE-8",
+  "project": "CORE",
+  "railSearch": "CORE-9",
+  "shortWindow": "CORE-10",
+  "shrinkingWindow": "CORE-11"
+}

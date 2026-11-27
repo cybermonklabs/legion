@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
+import { whatScrolls, whereTheReaderIs } from "../doc/readers-place";
 import { readLayout, type StoredColumns, writeLayout } from "./issues-table-storage";
 
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
@@ -391,7 +392,8 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     // while the document is scrolled past the table - a window resize, the page growing - took
     // the scroll for room, and the browser's scroll anchoring then kept the pager where it was,
     // so each measure grew the box by the last one's growth, without end (the Priorities page's
-    // fault lists at 1600x1000, scrolled to its end before the resize).
+    // fault lists at 1600x1000, scrolled to its end before the resize). The scroll offset is
+    // read through `readers-place.ts`, against whatever scrolls the pager.
     const pager = pagerRef.current;
     if (!pager) return;
     const padding = (element: Element | null) =>
@@ -400,7 +402,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
       window.innerHeight -
       padding(box.parentElement) -
       padding(box.closest("main")) -
-      (pager.getBoundingClientRect().bottom + window.scrollY);
+      (pager.getBoundingClientRect().bottom + whereTheReaderIs(whatScrolls(pager)));
     const available = bounds.height + slack;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
   }, []);

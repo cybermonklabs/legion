@@ -17,13 +17,14 @@ import "fmt"
 // FindHeading's validates the tree rather than the document, as it always did. An exported
 // function with no twin here (TableIndexErrorFor) validates the tree for itself.
 //
-// The zero ValidDocument holds no tree, and Node returns nil. Splice refuses it with the
-// invalid-splice error spliceShape gives, which it reads before any tree. A method with a plain twin
-// answers what that twin answers for a nil tree: TokenJSON the nil node EncodeTokenJSON(nil)
-// refuses, RenderWithBlockOffsets the nil document the renderer refuses, QuoteFinder a finder
-// answering FindQuote's refusal of a nil document, and so on; UpdateDocument answers updateShape's
-// refusal. Every other method refuses with the words ValidateDocument refuses a tree that is no
-// document with (wantsDocument).
+// The zero ValidDocument holds no tree: Node returns nil, and UncoveredBlocks, which answers no
+// error, leaves nothing uncovered (nil). Splice refuses it with the invalid-splice error
+// spliceShape gives, which it reads before any tree. A method with a plain twin answers what that
+// twin answers for a nil tree: TokenJSON the nil node EncodeTokenJSON(nil) refuses,
+// RenderWithBlockOffsets the nil document the renderer refuses, QuoteFinder a finder answering
+// FindQuote's refusal of a nil document, and so on; UpdateDocument answers updateShape's refusal.
+// Every other method refuses with the words ValidateDocument refuses a tree that is no document
+// with (wantsDocument).
 type ValidDocument struct {
 	doc *Node
 }

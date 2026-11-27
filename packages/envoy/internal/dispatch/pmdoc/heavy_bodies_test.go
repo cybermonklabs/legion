@@ -16,6 +16,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/cputest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
@@ -566,7 +567,7 @@ func cpuGrowsLinearly(t *testing.T, mode string, shape heavybodies.Shape) {
 // cpuOf is the CPU time op spends, the runs it spent it in, and the outcome of the last: op runs
 // once, and again on fresh input until its runs have spent cpuMeasuredAtLeast, so the time of a
 // call of a millisecond is read off many of them rather than off one reading of the clock. The
-// time is this process's, user and system (processCPUTime, linear_test.go), around each call and
+// time is this process's, user and system (cputest.Process), around each call and
 // not its input's making: op's own and the collector's while it runs. The runs start after a
 // collection, so the collector works through their own allocations and no earlier call's, and with
 // one processor for the program (GOMAXPROCS 1), so the collector's workers, which run on every
@@ -588,9 +589,9 @@ func cpuOf(t *testing.T, op heavyOp) (spent time.Duration, runs int, outcome hea
 		if err != nil {
 			t.Fatal(err)
 		}
-		started := processCPUTime()
+		started := cputest.Process()
 		outcome = call()
-		spent += processCPUTime() - started
+		spent += cputest.Process() - started
 		runs++
 	}
 	return spent, runs, outcome

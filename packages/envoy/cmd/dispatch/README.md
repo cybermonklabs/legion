@@ -2958,7 +2958,7 @@ A plain `create index` inside the runner's transaction, it holds `SHARE` on `ask
 Its census answers `0`: one index on an existing column, refusing no row and rewriting none.
 
 Migration `20261101182433_messages_issue_roots` creates `messages_issue_roots` on `messages (issue_key, created_at, id)`, for the read of an issue's root messages that `GET /api/v1/issues/{key}/messages` makes, `where issue_key = $1 and in_reply_to is null order by created_at, id` (`api/messages.go` `listIssueRootMessagesQuery`).
-No index of `messages` led with `issue_key` — `messages_in_reply_to` (`0033`) leads with the parent and `messages_search` (`0061`) is the text index
+No index of `messages` led with `issue_key` — `messages_in_reply_to` (`0013`, renamed in `0016`) leads with the parent and `messages_search` (`0061`) is the text index
 — so every read of an issue's threads scanned the table, 15.8 s of database time in the 24 hours to 2026-10-30 22:00Z.
 The key is the read's predicate and then its order, so the plan takes one range of the index and sorts nothing.
 It is deliberately not partial on `in_reply_to is null`:
@@ -4743,12 +4743,12 @@ Each item below names a status and code, then its meaning.
 
   A repeat under a key whose first request finished, with the same method, route, path values, query, media type and body:
   the stored status, every header the first answer set and its body, and nothing runs again.
-  What a repeat answers on each route, and when a kept answer is not replayed, is `IDEMPOTENCY_KEY_HEADER`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
+  What a repeat answers on each route, and when a kept answer is not replayed, is `IDEMPOTENCY_KEY_HEADER`'s description in `packages/contracts/src/dispatch-constants.ts`.
 
 - The first status with `ANSWER_NOT_KEPT`
 
   A repeat whose first answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or one that holds a comment or a message that was deleted or a document version name a delete replaced.
-  What a caller does with it - what a request that wrote made is read back, and a call that wrote nothing may be sent again under a new key - is `IDEMPOTENCY_ANSWER_NOT_KEPT`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
+  What a caller does with it - what a request that wrote made is read back, and a call that wrote nothing may be sent again under a new key - is `IDEMPOTENCY_ANSWER_NOT_KEPT`'s description in `packages/contracts/src/dispatch-constants.ts`.
 
 - `409 KEY_IN_FLIGHT`, `Retry-After: 1`
 
@@ -5916,6 +5916,12 @@ Each item below names a path with its method and identity, then its purpose.
   where they would leave the document's markdown longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, the ask still takes the whole answer and the block is written without them, saying who answered and when.
   The answer's state and who gave it and when are not weighed, so the asks of a document already past those limits can still be answered.
   The answer is kept on the ask as well: a block that leaves the document and returns gets it back at settlement, which weighs each returning answer on its own in document order and keeps one on the ask alone, the block saying who answered and when, while writing it back would take the document past those limits and make it bigger.
+  The answer's `ask.answered` reaches whoever asked, each session following the ask, and each agent and each role its text names:
+  the route reads the text's references as a comment's body is read (`text.ExtractAt`, `readBodyParties`) and records the route of each agent (`session:<id>`) and each role (`role:<token>`) on the event as `named_targets`, each once and in the order the text names them, absent when it names none.
+  A reference inside code names nobody, a named person is not told, and a reference no route reads names nobody; nothing the text names refuses the answer, and there is no cap on how many it names.
+  The outbox sends the event to each named agent on its own topic and to each named role on its role topic, forwarded to the role's holder, as it sends it to a follower: one copy to a party that also asked or follows, recorded in `published_destinations` and retried with the outbox's back-off.
+  A role no session holds has its copy kept on the role's kept lane for the session that claims it next, an hour at a time and three times at most, after which the event is recorded undelivered (`role.undelivered`); a role whose holder is not answering keeps the event pending until it answers.
+  A changed answer goes to the parties its new text names; the review route's answer of an approval request, a settlement's restored answer and a carried approval record none.
 
 - `/api/v1/asks/{id}/resolve` (POST; cookie, trusted header, or bearer)
 
@@ -6782,17 +6788,45 @@ Each item below names an operation and its required fields, then its behavior.
   Every `replace` names `with`, and `with: ""` deletes the target on purpose: a `replace` takes `op`, `find`, `with` and `occurrence` alone, and one with no `with`, or carrying any other member whatever it holds (`markdown`, `markdown: ""`, `text`, `replacement`), is `400 REPLACE_FIELDS` naming the operation and the member, with nothing written, where it was read as an empty `with` and deleted the target, or applied beside a member it never read.
   The route reads the request body a second time for each operation's member names (`api.replaceFieldsRefusal`), since a decoded operation's `with` is empty both for no `with` and for `with: ""`, and a member the operation type does not declare decodes to nothing.
   `dispatch doc-edit` refuses both shapes before it sends anything, exit 2 naming `ops[<index>]` and the field.
+  Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's own markup over all of the span's text it covers lets `with` decide that span's formatting over that text, whether the `find` covers the whole span (`**Sami bold**`) or runs past its edge (`**old** now` over `**Sami said bold** now`, `wrote [one](https://example.com/Sami)` over `wrote [one two](https://example.com/Sami)`), where the rest of the span keeps its mark, a link its URL and title - unless the part of a bold or italic span it keeps would end or start on a space beside the written text, which markdown cannot write (`**bold** now` there leaves `Sami said `), and that `find` is `400 FIND_CROSSES_SPAN`; one that spells it over part of that text (`a **b** c` over `**a b c**`) keeps the span.
+  A `find` matched as the text is written spells no markup: `2*3*4` inside `*a 2\*3\*4 b*` is the span's own text, so the replacement stays in the italic.
+  A `find` that crosses a span's edge, covering text inside it and text outside it without spelling the span's markup over all of the span's text it covers (`wrote this`, where only `this` is a link), is `400 FIND_CROSSES_SPAN` with nothing written; the refusal names the `find` that spells that markup over the same text (`wrote [this](https://example.com/Sami)`) where it is taken, and otherwise gives the advice of the span that stops every such `find` (`400 FIND_CROSSES_SPAN` below).
+  A link the `replace` removes whole must be spelled as it is wherever the `find` spells it, since the edit would remove a link another writer may have changed, its URL and title with it: a `find` that spells it with another URL or title is refused naming the link where it covers the link's whole text (`[this](https://wrong.example/9)`, `[one](https://wrong.example/9) two` over `[one two](https://example.com/Sami)`), or part of it whose rest is whitespace beside the `find`, which a `with` of blocks drops.
+  A `replace` that removes only part of a link (`[one](https://wrong.example/9)` or `wrote [one](https://wrong.example/9)` over `wrote [one two](https://example.com/Sami)`) changes only the text its `find` names, and the rest of the link keeps the document's URL and title.
+  The refusal names the `find` over the very text the refused `find` named, the link under its own URL and title, with the `occurrence` at which it matches that text and only where it is taken there.
+  A bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it spells it (`docs at https://example.com/x`), and one that spells it as a link to another URL (`[https://example.com/x](https://wrong.example/9)`) is refused as any other link's is.
+  No `find` spells strikethrough's markup: replace the text outside a struck span in an operation of its own.
+  A `with` that parses to blocks keeps none of the spans the match lies inside.
+  Each span is weighed alone: `wrote [this](https://a.example/1) and that`, where `that` is a second link, spells the first link and crosses the second's edge, so it is refused naming `that`.
 
-- `delete` (`find`)
+- `delete` (`find` or `block`)
 
-  Delete one plain-text target.
+  Delete one plain-text target; a `find` that is a block's whole text removes the block, and `block` removes the block with that id and everything it holds.
+  A `find` that opens with a list marker and matches no text as written selects an item of that kind of list whose text starts with the rest, and the delete removes that whole item, the items nested in it included.
+  A link the delete removes whole must be spelled as it is wherever the `find` spells it, as for a `replace`, since the delete would remove a link another writer may have changed: a `find` that spells a link with another URL or title is `400 FIND_CROSSES_SPAN` with nothing deleted where it covers the link's whole text, and where its list marker selects the item holding the link, which the delete removes whole (`- [one](https://wrong.example/9)` over `- [one two](https://example.com/Sami) and more`).
+  The refusal names the `find` that deletes what the refused `find` would have, the same item selected by the same marker (`- [one](https://example.com/Sami)`); a `find` with no marker over part of a link deletes only the text it names, and the rest of the link keeps the document's URL and title.
 
 - `insert` (`markdown`, exactly one of `after` or `before`)
 
-  Insert a sibling block before or after a quote or heading's enclosing document block.
+  Insert blocks before or after the block an anchor names - a quote's or a heading's block, or `block:<id>` - beside it among the children of that block's own parent: the innermost typed block (`requirement`, `check`, `plan_task`, `ask`, `callout`), list item or blockquote holding it, or the document where none does.
+  Markdown anchored on a paragraph of a requirement is that requirement's, markdown anchored on a list item's text lands in that item, after or before its text, and markdown anchored on a quote's paragraph lands in the quote; markdown anchored on a typed block's or a quote's own block lands beside that block, one anchored on a list item's own block beside its list, and one anchored in a table after the whole table, while list content anchored inside a list joins that list.
+  Markdown that parent's content rule cannot hold there - a heading in a requirement, a paragraph after an ask's options, a heading before a list item's text - is `400 INSERT_DOES_NOT_FIT` with nothing written.
   `"start"` and `"end"` select document edges.
   Pipe-table row fragments at a table-cell target are the exception: they extend that table before or after the containing row.
   Use `replace` for inline continuation.
+  A quote anchor names a place, not text to change, so it finds its block whatever URL or title it spells a link with and whatever span's edge it crosses, and the link stays as the document holds it; so does a `move`'s.
+
+The operations of one request apply in order, each reading the document as the operations before it left it, and none removes or changes a block it does not name.
+A delete of a block removes all it holds but the blocks an earlier `insert` or `move` of the request wrote into it: list content an `insert` joined to a list it was anchored on, a paragraph it wrote into a typed block, or a list item a `move` put in a list, stays where the deleted block stood, a list keeping it as a list of its own; a block an earlier `replace` wrote there goes with it.
+An operation whose `block` names a block an earlier `delete` by `block` removed, that block or one inside it, is `400 INVALID_OP` naming that delete; a `block:<id>` anchor naming such a block, and an operation whose block, text or heading is gone otherwise, are `404 TARGET_NOT_FOUND`, as a target the document never held is;
+either way, nothing in the request is written.
+A block guard (`precondition.blocks`) must name the block each operation names or whose text it matches, and for a move the block it moves: one that leaves such a block out is `400 INVALID_PRECONDITION` naming it.
+A guarded removal is refused when it takes a block that neither the guard names nor a named block contains: such a removal - the rest of what a delete or a move removes, such as the nested lists of an item a `find`'s list marker selects - is `409 PRECONDITION_FAILED` with nothing written, whose `error` names each such block and whose `unguarded_blocks` lists each as `{id, token}` at the token it carries now.
+That token is one to compare, never one to send: the caller compares it with the token its own read listed for that block, and where they match it adds the block to its guard at the token it read and sends the edit again, while where they differ, or its read listed no token for the block, another writer changed or added the block since that read, so the caller reads the document again before it removes the block.
+A list, a list item or a quote the removal empties of blocks the guard covers holds nothing of its own but its attributes, which no listed token covers, so it is taken; where the guard covers part of what it holds, the refusal names only the blocks the guard does not cover.
+A `delete` of an item's whole text whose one nested list takes the item's place removes that text alone, so a guard on its paragraph takes it.
+A typed block a `replace`'s `with` of blocks rewrites in place under its own id the guard need not name: the answer's `unguarded_blocks` lists each such block the guard did not name, `{id, token}` at the token it carried before the edit rewrote it, to compare with the token the caller read, and a guard that names one is `409 PRECONDITION_FAILED` when that block changed.
+Such a block may still be covered by one the guard names that holds it, whose token covers it; `dispatch doc-edit` prints that list on a `Block guard:` line, which says only that the guard did not name those blocks, and under a refusal for the blocks an edit would remove it prints, under the refusal's `error`, which says what to do with each token, a `Block guard:` line naming each block with the token it carries now and saying that a guard names a block in `precondition.blocks` (`--precondition-json`), and at which token: the one the caller's own read listed.
 
 Table-row fragments contain body rows only: omit the table header and delimiter row.
 Short rows are padded to the table width while all operations in the edit request add at most 10,000 cells;
@@ -6897,17 +6931,40 @@ Each item below names a status and code, then its meaning.
 - `409 TARGET_AMBIGUOUS`
 
   A quote matches more than once without an `occurrence`; the response includes candidate ranges and context.
+  A document edit's quote - a `replace`'s or a `delete`'s `find`, an `insert`'s or a `move`'s anchor - counts only its matches inside one block, here and for its `occurrence`: a match that runs across two or more blocks is none an edit can take, so a quote with one match inside a block applies to it whatever such matches it also has, and the candidates and the count the message names are the matches inside blocks alone.
   It also answers a reply's `quote` that its block holds more than once, sent without an `occurrence`, on the same routes, with no candidate ranges: a position inside one block means nothing to the reply's writer.
 
 - `400 TARGET_SPANS_BLOCKS`
 
-  A document edit quote crosses textblock boundaries.
+  A document edit quote crosses textblock boundaries: every match it has runs across two or more blocks.
+
+- `400 FIND_CROSSES_SPAN`
+
+  A `replace`'s `find` covers text inside a bold, italic, strikethrough, link or code span and text outside it without spelling the span's markup over all of the span's text it covers, which would write the replacement outside the span, dropping a link with its URL or cutting the span to end on a space; nothing is written.
+  So is one that spells it so where the part of a bold or italic span it leaves would end or start on a space beside the written text, which markdown cannot write: its message names that part, and says to move that space out of the span.
+  The message of a `find` that spells no such markup names the span's text and kind, and the `find` to send in its place, over the same text with the span's markup spelled over the part of it the `find` covers, which then replaces the markup too, where that `find` is taken.
+  Where none is taken, the message gives the advice of the span that stops every such `find`, naming it where it is another than the span the `find` crosses: to move the space out of a bold or italic span the `find` would leave ending or starting on one (`b c d` over `**ab** c *d e*`), for a struck span, whose markup no `find` spells, to replace the text inside it and the text outside it in two operations, and otherwise to read the document again.
+  A link the edit removes whole must be spelled as it is wherever the `find` spells it, since the edit would remove a link another writer may have changed, so a `replace`'s or a `delete`'s `find` that spells such a link with another URL or title than it has is refused the same way, nothing in the batch written.
+  That is a `find` over the link's whole text, with or without text outside it, however much of that text it spells so, a bare link's included; a `delete`'s whose list marker selects the item holding the link, which the delete removes whole (`- [one](https://wrong.example/9)` over `- [one two](https://example.com/Sami) and more`); and a `replace`'s over part of a link whose rest is whitespace beside the `find`, which a `with` of blocks drops.
+  An edit that removes only part of a link, with or without text outside it, is never refused for the URL or title its `find` spells the link with: it changes only the text the `find` names, and the rest of the link keeps the document's URL and title.
+  An `insert`'s or a `move`'s quote anchor names a place, so it finds its block whatever it spells a link with, and is never refused with this code.
+  The message of such a `find` names the `find` that covers the very text it named, selects as it does and is taken there, to send in its place, with the `occurrence` at which it matches that text where the `find` had one or the text matches in more than one place; a `replace`'s that spells the link's markup replaces that markup too.
+  The message of a `find` over the link's whole text and text outside it (`wrote [this](https://wrong.example/9) today`) says it crosses the link's edge and spells the link with another URL or title, and to write the whole link as it is in `find`, giving that `find` with the link's own URL and title (`wrote [this](https://example.com/Sami) today`).
+  The message of one over the link's whole text and nothing more (`[this](https://wrong.example/9)`) says it spells the link with another URL or title, and to write the link as it is in `find`, which for a bare link writes `with` inside the link.
+  The message of a `delete`'s `find` whose list marker selects the item holding the link says the delete removes that item whole with the link, and names the link as it is after the same marker (`- [one](https://example.com/Sami)`); that of a `replace`'s whose `with` is blocks says the blocks drop the rest of the link.
+  Each span the `find` covers is weighed alone: one that spells a span's markup crosses the edge of every other span it covers whose markup it does not spell, as `wrote [this](https://a.example/1) and that` does where `that` is a second link.
 
 - `400 REPLACE_FIELDS`
 
   A `replace` names no `with` (a JSON `null` is none), or carries a member besides `op`, `find`, `with` and `occurrence`, whatever that member holds (`markdown`, `markdown: ""`, `text`, `replacement`); nothing in the batch is written.
   Such a replace was read as an empty `with`, which deleted the text its `find` matched, or applied beside a member it never read; `with: ""` still deletes the match on purpose.
   The message names the operation and each such member: `operation 1: replace names no with, which would delete the text find matches, and carries markdown, which replace does not take; …`.
+
+- `400 INSERT_DOES_NOT_FIT`
+
+  An `insert` writes markdown the block it lands in cannot hold where the anchor puts it: a `requirement`, a `check` or a `plan_task` holds paragraphs alone, an `ask` the paragraphs of its question and then one bullet list of options, and a list item opens with its text, so no other block stands before it; nothing in the batch is written.
+  Such an insert was written after the typed block, at the document's level, so a requirement's words stood outside every requirement and no check's `serves` reached them, or before the whole list.
+  The message names the operation, the anchor, the block it lands in and its id, its rule and what breaks it, and the anchor on that block itself that writes the markdown outside it instead: `operation 0: insert after "block:<id>" lands inside the requirement block "r1", whose content rule, paragraph+, cannot hold a heading there; …`.
 
 - `400 TABLE_WIDTH`
 

@@ -548,10 +548,18 @@ function readLayout(program: Program): Layout {
   for (const mod of program.mods.values()) {
     for (const [name, decl] of mod.decls) {
       if (/_QUERY$/.test(name) && ts.isVariableDeclaration(decl)) {
+        // A query is written whole, or built from a length it names (`COMPACT_VIEWPORT_QUERY`
+        // from `XL_BREAKPOINT`): its own words say whether it is a width query.
         const init = decl.initializer;
-        if (init !== undefined && ts.isStringLiteralLike(init) && /width/.test(init.text)) {
-          queries.set(name, init.text);
-        }
+        const words =
+          init === undefined
+            ? undefined
+            : ts.isStringLiteralLike(init)
+              ? init.text
+              : ts.isTemplateExpression(init)
+                ? [init.head.text, ...init.templateSpans.map((span) => span.literal.text)].join("")
+                : undefined;
+        if (words !== undefined && /width/.test(words)) queries.set(name, words);
       }
       if (!/^use[A-Z]/.test(name)) continue;
       const fn = componentFunction(decl);

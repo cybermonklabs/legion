@@ -10,12 +10,15 @@
  *
  * Two tables are other files', and this list reads them where they are (`ASK_SHARED_WORDS`): how
  * a closed question was closed, `refs/actor.ts`'s `ASK_RESOLUTION_WORDS`, which the issue page's
- * list reads too, and each urgency's word, `inbox/ask-urgency.ts`'s `URGENCY_LABELS`.
+ * list reads too, and each urgency's word, `inbox/ask-urgency.ts`'s `URGENCY_LABELS`. So does one
+ * word: an empty box's refusal, which every box that sends a draft shares
+ * (`inbox/draft-store.ts`).
  *
  * This file, as every file under `features/ask-body/`, imports no file under
  * `features/issue-page/` (R22).
  */
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
+import { EMPTY_DRAFT_REFUSAL } from "../inbox/draft-store";
 import { ASK_RESOLUTION_WORDS } from "../refs/actor";
 
 /** The card's own words, around the body: its name for a screen reader, the box that keeps an
@@ -33,13 +36,27 @@ export const ASK_CARD_WORDS = Object.freeze({
 } as const);
 
 /** The body's first line and the line under it: the kind of every ask, the urgency word a
- *  caller that sets `urgencyWord` has drawn beside it, who asked, and whose turn it is. */
+ *  caller that sets `urgencyWord` has drawn beside it, who asked, the label of where the ask
+ *  stands, and whose turn it is. The header draws the same asker and label on a record and on a
+ *  decision block's own header (`AskHeader.tsx`, dispatch://INFRA-341 R1). */
 export const ASK_LINE_WORDS = Object.freeze({
   /** The asker of a block ask the server indexed with no author. */
   asked: "asked",
+  /** Before the asker on a decision block's own header: "Asked by planner". */
+  asked_by: "Asked by",
   /** The kind of every ask, at the right end of the first line: the new issue page's one word
    *  for an ask (`NODE_TYPE_NAMES.ask` in `issue-page/page-words.ts`). */
   kind: "question",
+  /** A decision block's urgency mark where the block cannot be answered as written. */
+  malformed: "Malformed",
+  /** The state label of every header (`askStateLabel`): a resolved ask's names how it was
+   *  resolved (`ASK_RESOLUTION_WORDS`), where it is known. */
+  state: Object.freeze({
+    answered: "Answered",
+    closed: "Closed",
+    open: "Open",
+    resolved: ASK_RESOLUTION_WORDS.resolved,
+  } as const),
   /** The urgency words the first line draws beside the kind (R17), only for an ask so urgent it
    *  carries one: the card's notch's words for those urgencies (`URGENCY_LABELS`). An ask of
    *  urgency `low` or `med` draws none. */
@@ -95,6 +112,14 @@ export const ASK_FORM_WORDS = Object.freeze({
    *  changes". */
   reason_hint: "Add a reason to send",
   question_shaped: "Your answer reads as a question",
+  /** Why a send refuses the draft as it stands, on a line under the box and as the button's
+   *  description (dispatch://INFRA-341 R3): Answer's where no option is picked and no words are
+   *  written, and Ask back's where the box is empty, which every box that sends a draft refuses
+   *  with (`inbox/draft-store.ts`'s `EMPTY_DRAFT_REFUSAL`). */
+  refused: Object.freeze({
+    answer: "Pick an option or write an answer.",
+    empty: EMPTY_DRAFT_REFUSAL,
+  } as const),
   reason_label: "Reason",
   reason_required: "Reason (required)",
   save_answer: "Save answer",

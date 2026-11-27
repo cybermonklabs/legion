@@ -1950,7 +1950,8 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 				mutationErr = err
 				return
 			}
-			if err := requirePreconditionCoverage(start, ops, *precondition, before); err != nil {
+			unguarded, err := requirePreconditionCoverage(start, ops, *precondition, before)
+			if err != nil {
 				mutationErr = err
 				return
 			}
@@ -1958,6 +1959,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			if outcome, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); mutationErr != nil {
 				return
 			}
+			outcome.UnguardedBlocks = unguarded
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
 				if err := pmdoc.UpdateDocument(transaction, fragment, written); err != nil {
 					return err

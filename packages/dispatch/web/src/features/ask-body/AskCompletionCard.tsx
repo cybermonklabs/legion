@@ -1,4 +1,5 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -31,13 +32,13 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import type { AgentNames } from "../conversation/CachedAuthor";
-import { askResolutionBadge, askResolutionReason } from "../refs/actor";
-import { buildIssuePath } from "../refs/routes";
+import { askResolutionReason } from "../refs/actor";
+import { buildIssuePath, type DocumentOwner } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
-import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
+import { AskHeader, hasUrgencyNotch } from "./AskHeader";
 import { AskOptionList } from "./AskOptionList";
 import { AskAgent, AskResolutionActor } from "./ask-agent";
 import { ASK_LINK_WORDS, ASK_RECORD_WORDS } from "./ask-body-words";
@@ -188,12 +189,12 @@ export function AskAnswerHistory({
         </summary>
         <div className="mt-2 space-y-3">
           {earlier.map((previous) => {
-            const selected = previous.selected ?? [];
+            const chosen = answerSelected(previous);
             return (
               <div key={previous.at}>
-                {selected.length === 0 ? null : (
+                {chosen.length === 0 ? null : (
                   <p>
-                    {selected.map((label, index) => (
+                    {chosen.map((label, index) => (
                       <Fragment key={label}>
                         {index === 0 ? null : ", "}
                         {/* Only a server older than `selected_trees` answers a label with no
@@ -280,6 +281,7 @@ function AnsweredAsk({
   frame,
   markRef,
   onChangeAnswer,
+  owner,
   palette,
   renderText,
 }: {
@@ -292,97 +294,103 @@ function AnsweredAsk({
   frame: AskFrame;
   markRef?: DwellRef;
   onChangeAnswer?: () => void;
+  owner: DocumentOwner | undefined;
   palette: AskPalette;
   renderText: AskTextRenderer;
 }): ReactNode {
   const { answer } = ask;
+  const chosen = answer === null ? [] : answerSelected(answer);
+  const inBlock = frame === "block";
   const tones = TONES[palette];
   // A chosen "Other" answer carries no real option (answer.selected is empty) but still has
   // free text - render it under an Other label so the record reads as a chosen option, not an
   // unlabeled addendum. An ask with no options at all has no Other row to have chosen, so its
   // free text is always the plain answer instead.
   const otherText =
-    (ask.options ?? []).length > 0 && answer !== null && (answer.selected ?? []).length === 0
-      ? answer.text
-      : null;
+    (ask.options ?? []).length > 0 && answer !== null && chosen.length === 0 ? answer.text : null;
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${tones.answered}`}
+      className={`relative rounded-xl p-4 text-sm ${inBlock || hasUrgencyNotch(ask, inBlock) ? "mt-3" : ""} ${tones.answered}`}
       data-testid={`ask-${ask.id}`}
       ref={markRef}
     >
       {/* The ask body's root (`AskBody`), inside the record its test id names. */}
       <div data-ask-body="">
-        <AskAnchorHeader ask={ask} inBlock={frame === "block"} palette={palette} tone="success" />
-        <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} palette={palette} />
-        {frame === "block" ? null : (
-          <div className={`font-medium ${tones.answeredInk}`}>
-            {renderText({
-              markdown: ask.question,
-              source: textSourceOf("ask", ask.id, ask.issue_key),
-              surface: "answered-ask",
-              tree: ask.question_tree,
-            })}
-          </div>
-        )}
-        <p className={`mt-1 text-xs ${tones.answeredQuiet}`}>
-          <AskAgent actor={ask.author} agentNames={agentNames} inline />
-        </p>
-        {ask.kind === "approval" && documentLink ? (
-          <p className={`mt-1 text-sm font-medium ${tones.answeredInk}`}>
-            <AskApprovalLink ask={ask} />
-          </p>
-        ) : null}
-        <AskEditHistory
+        {/* The one header every place draws an ask's fields through (dispatch://INFRA-341 R1):
+            its urgency, its anchor, and the record's line "Asked … · Answered by …", which the
+            state label opens and the copy control ends. */}
+        <AskHeader
           agentNames={agentNames}
           ask={ask}
-          edits={edits}
+          inBlock={inBlock}
+          labelTone={tones.badge}
+          lineTone={tones.answeredQuiet}
+          owner={owner}
           palette={palette}
-          renderText={renderText}
-        />
-        <AskOptionList
-          options={ask.options ?? []}
-          palette={palette}
-          renderText={renderText}
-          selected={answer?.selected ?? []}
-          source={textSourceOf("ask", ask.id, ask.issue_key)}
-        />
-        {otherText !== null && otherText !== "" ? (
-          <div className="mt-2">
-            <p className={`text-sm font-medium ${tones.answeredInk}`}>{ASK_RECORD_WORDS.other}</p>
-            <div className="mt-1">
+          place="answered"
+          trailing={
+            answer === null ? null : (
+              <>
+                {` · ${ASK_RECORD_WORDS.answered_by} `}
+                <span className="font-semibold">{actorActText(answer.user, answer.act)}</span>{" "}
+                <Timestamp at={answer.at} />
+              </>
+            )
+          }
+        >
+          <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} palette={palette} />
+          {inBlock ? null : (
+            <div className={`font-medium ${tones.answeredInk}`}>
               {renderText({
-                markdown: otherText,
+                markdown: ask.question,
                 source: textSourceOf("ask", ask.id, ask.issue_key),
                 surface: "answered-ask",
-                tree: answer?.text_tree,
+                tree: ask.question_tree,
               })}
             </div>
-          </div>
-        ) : answer === null || answer.text === null || answer.text === "" ? null : (
-          <div className="mt-1">
-            {renderText({
-              markdown: answer.text,
-              source: textSourceOf("ask", ask.id, ask.issue_key),
-              surface: "answered-ask",
-              tree: answer.text_tree,
-            })}
-          </div>
-        )}
-        {answer === null ? (
-          <p className={`mt-2 text-xs ${tones.answeredQuiet}`}>
-            {`${ASK_RECORD_WORDS.asked} `}
-            <Timestamp at={ask.created_at} />
-          </p>
-        ) : (
-          <p className={`mt-2 text-xs ${tones.answeredQuiet}`}>
-            {`${ASK_RECORD_WORDS.asked} `}
-            <Timestamp at={ask.created_at} />
-            {` · ${ASK_RECORD_WORDS.answered_by}`}{" "}
-            <span className="font-semibold">{actorActText(answer.user, answer.act)}</span>{" "}
-            <Timestamp at={answer.at} />
-          </p>
-        )}
+          )}
+          {ask.kind === "approval" && documentLink ? (
+            <p className={`mt-1 text-sm font-medium ${tones.answeredInk}`}>
+              <AskApprovalLink ask={ask} />
+            </p>
+          ) : null}
+          <AskEditHistory
+            agentNames={agentNames}
+            ask={ask}
+            edits={edits}
+            palette={palette}
+            renderText={renderText}
+          />
+          <AskOptionList
+            options={ask.options ?? []}
+            palette={palette}
+            renderText={renderText}
+            selected={chosen}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+          />
+          {otherText !== null && otherText !== "" ? (
+            <div className="mt-2">
+              <p className={`text-sm font-medium ${tones.answeredInk}`}>{ASK_RECORD_WORDS.other}</p>
+              <div className="mt-1">
+                {renderText({
+                  markdown: otherText,
+                  source: textSourceOf("ask", ask.id, ask.issue_key),
+                  surface: "answered-ask",
+                  tree: answer?.text_tree,
+                })}
+              </div>
+            </div>
+          ) : answer === null || answer.text === null || answer.text === "" ? null : (
+            <div className="mt-1">
+              {renderText({
+                markdown: answer.text,
+                source: textSourceOf("ask", ask.id, ask.issue_key),
+                surface: "answered-ask",
+                tree: answer.text_tree,
+              })}
+            </div>
+          )}
+        </AskHeader>
         <AskAnswerHistory
           answers={answers}
           askId={ask.id}
@@ -410,6 +418,7 @@ function ResolvedAsk({
   documentLink,
   edits,
   frame,
+  owner,
   palette,
   renderText,
 }: {
@@ -418,77 +427,82 @@ function ResolvedAsk({
   documentLink: boolean;
   edits: AskEditWithTrees[];
   frame: AskFrame;
+  owner: DocumentOwner | undefined;
   palette: AskPalette;
   renderText: AskTextRenderer;
 }): ReactNode {
   const { resolution } = ask;
+  const inBlock = frame === "block";
   const reason = askResolutionReason(resolution);
   const tones = TONES[palette];
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${tones.resolved}`}
+      className={`relative rounded-xl p-4 text-sm ${inBlock || hasUrgencyNotch(ask, inBlock) ? "mt-3" : ""} ${tones.resolved}`}
       data-testid={`ask-${ask.id}`}
     >
       {/* The ask body's root (`AskBody`), inside the record its test id names. */}
       <div data-ask-body="">
-        <AskAnchorHeader ask={ask} inBlock={frame === "block"} palette={palette} tone="surface" />
-        {frame === "block" ? null : (
-          <div className={`font-medium ${tones.ink}`}>
-            {renderText({
-              markdown: ask.question,
-              source: textSourceOf("ask", ask.id, ask.issue_key),
-              surface: "resolved-ask",
-              tree: ask.question_tree,
-            })}
-          </div>
-        )}
-        <span
-          className={`mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${tones.badge}`}
-          data-testid="ask-resolution-badge"
-        >
-          {askResolutionBadge(resolution)}
-        </span>
-        <p className={`mt-1 text-xs ${tones.quiet}`}>
-          <AskAgent actor={ask.author} agentNames={agentNames} inline />
-        </p>
-        {ask.kind === "approval" && documentLink ? (
-          <p className={`mt-1 text-sm ${tones.link}`}>
-            <AskApprovalLink ask={ask} />
-          </p>
-        ) : null}
-        <AskOptionList
-          options={ask.options ?? []}
-          palette={palette}
-          renderText={renderText}
-          selected={[]}
-          source={textSourceOf("ask", ask.id, ask.issue_key)}
-        />
-        <AskEditHistory
+        {/* The one header (dispatch://INFRA-341 R1): the record's line "Asked … · <how it
+            closed>", which the state label - the badge that names how it closed - opens. */}
+        <AskHeader
           agentNames={agentNames}
           ask={ask}
-          edits={edits}
+          inBlock={inBlock}
+          labelTone={tones.badge}
+          lineTone={tones.quiet}
+          owner={owner}
           palette={palette}
-          renderText={renderText}
-        />
-        <p className={`mt-2 text-xs ${tones.quiet}`}>
-          {`${ASK_RECORD_WORDS.asked} `}
-          <Timestamp at={ask.created_at} />
-          {" · "}
-          <AskResolutionActor agentNames={agentNames} resolution={resolution} />
-          {reason === undefined ? null : (
+          place="resolved"
+          trailing={
             <>
-              {" "}
-              -{" "}
+              {" · "}
+              <AskResolutionActor agentNames={agentNames} resolution={resolution} />
+              {reason === undefined ? null : (
+                <>
+                  {" "}
+                  -{" "}
+                  {renderText({
+                    markdown: reason,
+                    source: textSourceOf("ask", ask.id, ask.issue_key),
+                    surface: "resolved-ask",
+                    tree: ask.resolution.reason_tree,
+                    variant: "inline",
+                  })}
+                </>
+              )}
+            </>
+          }
+        >
+          {inBlock ? null : (
+            <div className={`font-medium ${tones.ink}`}>
               {renderText({
-                markdown: reason,
+                markdown: ask.question,
                 source: textSourceOf("ask", ask.id, ask.issue_key),
                 surface: "resolved-ask",
-                tree: ask.resolution.reason_tree,
-                variant: "inline",
+                tree: ask.question_tree,
               })}
-            </>
+            </div>
           )}
-        </p>
+          {ask.kind === "approval" && documentLink ? (
+            <p className={`mt-1 text-sm ${tones.link}`}>
+              <AskApprovalLink ask={ask} />
+            </p>
+          ) : null}
+          <AskOptionList
+            options={ask.options ?? []}
+            palette={palette}
+            renderText={renderText}
+            selected={[]}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+          />
+          <AskEditHistory
+            agentNames={agentNames}
+            ask={ask}
+            edits={edits}
+            palette={palette}
+            renderText={renderText}
+          />
+        </AskHeader>
       </div>
     </article>
   );
@@ -515,6 +529,9 @@ interface AskCompletionCardProps {
   markRef?: DwellRef;
   /** Shown only to the person who gave the current, non-approval answer. */
   onChangeAnswer?: () => void;
+  /** The project document that owns an ask with no issue, for the header's `dispatch://`
+   *  reference; mirrors `AskCardProps.owner`. */
+  owner?: DocumentOwner;
   /** The palette the record draws in (`TONES`): `main`'s, as every surface of today's pages
    *  draws it, unless the ask body it stands in hands the page's (`AskBodyProps.palette`). */
   palette?: AskPalette;
@@ -533,6 +550,7 @@ export function AskCompletionCard({
   frame = "card",
   markRef,
   onChangeAnswer,
+  owner,
   palette = "main",
   renderText = markdownText,
 }: AskCompletionCardProps): ReactNode {
@@ -547,6 +565,7 @@ export function AskCompletionCard({
         documentLink={documentLink}
         edits={edits}
         frame={frame}
+        owner={owner}
         palette={palette}
         renderText={renderText}
       />
@@ -563,6 +582,7 @@ export function AskCompletionCard({
       frame={frame}
       markRef={markRef}
       onChangeAnswer={onChangeAnswer}
+      owner={owner}
       palette={palette}
       renderText={renderText}
     />

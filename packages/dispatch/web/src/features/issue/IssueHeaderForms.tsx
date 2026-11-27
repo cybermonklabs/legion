@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { TruncatedText } from "../../components/TruncatedText";
-import { inputMethodKey } from "../../lib/input-method-key";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   borderTransparent,
   dangerText,
@@ -86,7 +86,7 @@ export function IssueRouteForm({
           // The Escape that drops an input method's composition is no key of the reader's: it
           // gives up the composition, not the edit. Safari sends it after its compositionend, with
           // `isComposing` false and keyCode 229 (`inputMethodKey`).
-          if (inputMethodKey(event.nativeEvent)) return;
+          if (inputMethodKey(event)) return;
           if (event.key === "Escape") onCancel();
         }}
         placeholder="role:legion-controller-core"
@@ -146,7 +146,7 @@ export function IssueParentForm({
         onChange={(event) => drafts.writeParent(event.target.value)}
         onKeyDown={(event) => {
           // The Escape that drops an input method's composition is no key of the reader's.
-          if (inputMethodKey(event.nativeEvent)) return;
+          if (inputMethodKey(event)) return;
           if (event.key === "Escape") onCancel();
         }}
         placeholder={`${project}-12`}

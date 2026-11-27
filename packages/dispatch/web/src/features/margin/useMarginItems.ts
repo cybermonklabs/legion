@@ -20,6 +20,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
+import { useAfterTheFirstBatch } from "../doc/first-batch";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import {
@@ -329,6 +330,7 @@ export function useMarginItems(
     decisionsDocumentId,
     documentShown = false,
     held = NO_THREADS,
+    reached = false,
   }: {
     /** The artifact id of the issue's `decisions.md`, from the issue read the margin already
      *  holds: the record each decision card's text is drawn as. */
@@ -341,6 +343,10 @@ export function useMarginItems(
      *  in the list it was in, open or resolved, whoever resolves or reopens it meanwhile: moving
      *  it between them would remount its card, and the composer and what it holds with it. */
     readonly held?: ReadonlySet<string>;
+    /** Whether a reader sees the margin (`MarginSheet`'s `placesItems`; its `seen` says when that
+     *  is). It is what lets the two reads below go out before the editor's first batch
+     *  (`features/doc/first-batch.ts`). */
+    readonly reached?: boolean;
   } = {}
 ) {
   const queryClient = useQueryClient();
@@ -365,9 +371,14 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
+  // The owner's comments and asks are cards beside a document, not the document: on a phone
+  // opening a large one they were read and parsed seconds before the reader's first editable
+  // block (dispatch://INFRA-341, R11). So they wait for the editor's first batch, unless the
+  // reader already has the cards on the screen, where the wait would be a wait of theirs.
+  const afterTheFirstBatch = useAfterTheFirstBatch(reached);
   const freshness = useNewIssuePageFreshness();
   const comments = useQuery({
-    enabled: owner !== undefined,
+    enabled: owner !== undefined && afterTheFirstBatch,
     queryKey: commentsQueryKey,
     queryFn: () => {
       if (owner === undefined) {
@@ -393,7 +404,7 @@ export function useMarginItems(
       return fetchPinnedEvents(api.getIssueEvents.bind(api), owner.key, pinnedIds);
     },
   });
-  const answeredAsks = useAnsweredAsks(owner, visibleArtifact?.id);
+  const answeredAsks = useAnsweredAsks(owner, visibleArtifact?.id, afterTheFirstBatch);
   // A Conversation card is pinned under its own id (`features/issue/pins.ts`), so the Pinned tab
   // resolves it from the lists this margin already reads: the issue's asks and its comments.
   // Only a pinned message needs a read of its own, and only while the tab is open.

@@ -1,0 +1,5 @@
+kind: Added
+body: A person's answer to an ask goes to each agent and each role its text names, beside whoever asked and each follower. The answer route reads the text's references by a comment's rules (a reference inside code names nobody, a named person is not told, a reference no route reads names nobody, no cap and no refusal) and records the routes on the `ask.answered` event as `named_targets`; the outbox sends the event to each named session on its own topic and to each named role on its role topic, one copy per subject, recorded and retried as every destination is. A changed answer goes to the parties its new text names; the review route's answer of an approval request, a restored answer and a carried approval name none. The store census and the outbox's graph record count a role an answer names as a role an event addressed.
+time: 2026-11-27T10:53:25.000000000Z
+custom:
+    Issue: pr2697

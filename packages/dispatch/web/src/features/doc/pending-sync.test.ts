@@ -6,7 +6,7 @@ import * as Y from "yjs";
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type DocumentConnection, loadDocumentTransport } from "./connection";
-import { createEditor } from "./editor";
+import { constructEditor } from "./editor";
 import type { PendingEdits, PendingKey } from "./pending-edits";
 import {
   artifactId,
@@ -777,6 +777,7 @@ test("a connection presents its schema version and creatable version, and its ve
     const connect = await loadDocumentTransport();
     connection = connect(artifact, {
       onAdmission() {},
+      onNoDocumentServer() {},
       onOutsideSchema() {},
       onPending() {},
       onStatus() {},
@@ -825,6 +826,7 @@ async function admitted(
   const connect = await loadDocumentTransport();
   const connection = connect(artifact, {
     onAdmission() {},
+    onNoDocumentServer() {},
     onOutsideSchema() {},
     onPending() {},
     onStatus() {},
@@ -893,17 +895,20 @@ test("an element the editor cannot build survives a read-only session and a late
   try {
     const readOnly = await admitted(artifact, server, "readonly");
     opened.push(readOnly.connection);
-    const editor = await createEditor(root, {
-      awareness: null,
-      blockSchema: compiledBlockSchema,
-      // This row reads the document the editor keeps, never its decision blocks.
-      onAskBlockHosts: () => {},
-      // No picture in this row's document, so nothing ever asks for a latest version.
-      watchPicture: () => () => {},
-      access: "read",
-      user: { color: "#f59e0b", name: "alice" },
-      ydoc: readOnly.connection.doc,
-    });
+    // The document is in hand, so the two phases run back to back (`constructEditor`).
+    const editor = await (
+      await constructEditor(root, {
+        awareness: null,
+        blockSchema: compiledBlockSchema,
+        // This row reads the document the editor keeps, never its decision blocks.
+        onAskBlockHosts: () => {},
+        // No picture in this row's document, so nothing ever asks for a latest version.
+        watchPicture: () => () => {},
+        access: "read",
+        user: { color: "#f59e0b", name: "alice" },
+        ydoc: readOnly.connection.doc,
+      })
+    ).bind();
     // The pinned y-prosemirror deletes the element from the page's copy of the document.
     expect(topElements(readOnly.connection.doc)).toEqual(["paragraph"]);
     readOnly.serve();
@@ -933,16 +938,19 @@ test("an edit typed in the editor is kept, and the editor's repair beside it is 
   const server = serverWithFutureBlock();
   const { artifact, doc } = await scripted(artifactId(), Y.encodeStateAsUpdate(server));
   const root = document.body.appendChild(document.createElement("div"));
-  const editor = await createEditor(root, {
-    awareness: null,
-    blockSchema: compiledBlockSchema,
-    // This row reads the document the editor keeps, never its decision blocks.
-    onAskBlockHosts: () => {},
-    // No picture in this row's document, so nothing ever asks for a latest version.
-    watchPicture: () => () => {},
-    user: { color: "#f59e0b", name: "alice" },
-    ydoc: doc,
-  });
+  // The document is in hand, so the two phases run back to back (`constructEditor`).
+  const editor = await (
+    await constructEditor(root, {
+      awareness: null,
+      blockSchema: compiledBlockSchema,
+      // This row reads the document the editor keeps, never its decision blocks.
+      onAskBlockHosts: () => {},
+      // No picture in this row's document, so nothing ever asks for a latest version.
+      watchPicture: () => () => {},
+      user: { color: "#f59e0b", name: "alice" },
+      ydoc: doc,
+    })
+  ).bind();
   try {
     expect(topElements(doc)).toEqual(["paragraph"]);
     editor.view.dispatch(editor.view.state.tr.insertText("Typed. ", 1));

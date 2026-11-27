@@ -1,4 +1,4 @@
-import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
+import { MAX_ISSUE_ADVANCES } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";

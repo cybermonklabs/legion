@@ -223,10 +223,26 @@ test("Ask back stands beside Answer, and a question-shaped answer offers Ask bac
   const view = draw(<Body ask={openAsk()} />);
   try {
     const body = within(bodyOf(view.container));
-    expect(await body.findByRole("button", { name: "Ask back" })).toBeDisabled();
+    // With nothing to send, Ask back and Answer each refuse with their reason and are not
+    // disabled: a press keeps the focus and sends nothing (dispatch://INFRA-341 R3, the
+    // architect's decision in dispatch://INFRA-341/comment/4f455df5-2d9d-45de-8a62-e4b070f41be9).
+    const askBack = await body.findByRole("button", { name: "Ask back" });
+    const answer = body.getByRole("button", { name: "Answer" });
+    for (const [send, reason] of [
+      [askBack, "Write something first."],
+      [answer, "Pick an option or write an answer."],
+    ] as const) {
+      expect(send).toBeEnabled();
+      expect(send).toHaveAttribute("aria-disabled", "true");
+      expect(send).toHaveAccessibleDescription(reason);
+      await user.click(send);
+      expect(send).toHaveFocus();
+    }
+    expect(body.queryByText(/^(Sending…|Answering…|Could not send)/)).toBe(null);
     await user.click(body.getByRole("textbox", { name: "Your answer" }));
     await user.paste("Can we wait for the freeze?");
     expect(body.getByRole("button", { name: "Ask back" })).toBeEnabled();
+    expect(body.getByRole("button", { name: "Ask back" })).not.toHaveAttribute("aria-disabled");
     await user.click(body.getByRole("button", { name: "Answer" }));
     const choice = await body.findByRole("group", { name: "Your answer reads as a question" });
     expect(within(choice).getByRole("button", { name: "Ask back instead" })).toBeTruthy();

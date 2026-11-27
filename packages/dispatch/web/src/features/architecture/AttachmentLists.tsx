@@ -10,6 +10,7 @@ import type {
 } from "../../api/types";
 import { StatusPill } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
+import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import {
   badgeHigh,
   borderDefault,
@@ -26,7 +27,7 @@ import { MentionField } from "../conversation/MentionField";
 import { type IssueComponentsWrite, useIssueComponents } from "../issue/useIssueComponents";
 import { statusText } from "../project/board-model";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { referenceTriggerProps } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/ref-preview-state";
 import { buildIssuePath } from "../refs/routes";
 import { ComponentPicker } from "./ComponentPicker";
 
@@ -301,7 +302,8 @@ function UnassignedRow({
         <form className="flex flex-wrap items-end gap-2" onSubmit={declareNone}>
           {/* The form lays its boxes out in a row, so the label the field wraps the box in is
               what flexes. An empty reason is refused by `declareNone` rather than by the
-              browser, the box being the shared field now. */}
+              browser, the box being the shared field now. Enter writes a line; Ctrl/Cmd+Enter
+              saves, through the form's own submit. */}
           <MentionField
             body={reason}
             className="min-h-11! text-sm"
@@ -309,6 +311,7 @@ function UnassignedRow({
             label={`Why ${issue.key} is not architectural`}
             labelClassName={`grid flex-1 gap-1 text-xs font-medium ${textSecondaryOnSurface}`}
             onChange={(change) => setReason(change.body)}
+            onKeyDown={(event) => submitOnModifiedEnter(event)}
             project={project}
             rows={2}
             writing={dispatchWritingBox("architecture-reason", "architecture-reason")}

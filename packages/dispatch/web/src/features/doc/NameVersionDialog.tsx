@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
-import { inputMethodKey } from "../../lib/input-method-key";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   backdrop40,
   card,
@@ -57,10 +57,8 @@ export function NameVersionDialog({
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    // The Enter that ends an input method's composition takes the word composed, and is no
-    // Enter of the reader's: it saves nothing. Safari sends it after its compositionend, with
-    // `isComposing` false and keyCode 229 (`inputMethodKey`).
-    if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) {
+    // The Enter that confirms an input method's word is the input method's, not the save.
+    if (event.key !== "Enter" || inputMethodKey(event)) {
       return;
     }
     event.preventDefault();

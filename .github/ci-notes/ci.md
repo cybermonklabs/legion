@@ -597,14 +597,14 @@ so that read is this gate's (ci_job_reads.py's dispatch_ui).
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-holds: the shards, the three `-alone` projects, the two-process job, the
+holds: the shards, the six `-alone` projects, the two-process job, the
 fake-embedder job, the visual review and the merge job. Every entry is something a
 browser row reads: the dashboard and its contracts, the Dispatch server its harness
 builds, and the two workflow files that hold the steps. The retired `dispatch` job's
 filter also held three fixture sets whose only readers are the dashboard's and the
 proof editor's unit tests, and they are not here: dispatch-ui's filter names all
 three, and with the dispatch_browser_pr output ungated on a pull request they would
-start four shard machines and the merge job for a fixture-only change. The
+start five shard machines and the merge job for a fixture-only change. The
 dispatch_browser gate (browser_gate in .github/scripts/ci_job_reads.py) says what this
 suite reads, and the changes job computes this filter from it: a path is in this filter
 because a browser row reads it and for no other reason. The dispatch_browser_pr gate is
@@ -633,7 +633,7 @@ whole suite's result before the merge can put it on a pull request with
 `lane:dispatch_browser`, and the group is where a change to that file meets it before main
 anyway. The nightly itself is not in this list:
 no step of this suite reads it, which rule 9's second direction refuses, since
-four shard machines and the merge job would start over a change no row sees. It
+five shard machines and the merge job would start over a change no row sees. It
 is a read of the ci_filters gate instead, so a change to it re-runs this check,
 which holds this filter and that gate together.
 
@@ -1164,7 +1164,7 @@ file of each covered box of the writing list, whose change can take a box's pick
 away, and no more: over the 200 newest pull-request runs of 2026-11-13, a list that
 also named the six feature directories mounting the field and the shared harness
 selected about half of them (about 300 runs and 6,000 runner-minutes a day), so the
-four shard machines start for a pull request that changes the references or a box
+five shard machines start for a pull request that changes the references or a box
 that holds the picker, and not for every dashboard change.
 For the same reason its file of .github/ci-gates, dispatch-references.py, declares it EXCLUDED
 (`EXCLUDED = excluded(...)`, its patterns written by hand) rather than as a gate, so the changes
@@ -1294,8 +1294,8 @@ envoy-refill, which build the same listener and natsd, listener-server-change an
 envoy-go-build, which build the listener, and envoy-go-checks, whose script tests run under the
 setup they had in envoy-go-build's job), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, the binaries, multiprocess
-and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
+the API's of that set, the binaries and multiprocess
+jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
 whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
 dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-race (every leg of
@@ -2541,7 +2541,7 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 ## The browser suite jobs: their lanes, their inputs, and why the matrix is in the called file
 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
+holds: the binaries job that builds the Go commands the lanes run, the shard legs, the six
 `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on the
 pull-request and full lanes, the containerised visual review, and the merge job that joins the
 shard and alone reports into one and posts its caller's ci-ok report. Three jobs of this file
@@ -2550,7 +2550,7 @@ call it.
 Two lanes, and which run pays for which. dispatch-browser-pr runs `pull-request` on a pull
 request: the two projects a change is held to (chromium and iphone) over the `@pr` rows, so such
 a run proves those rows and no more - it is not the run that proves the suite before main.
-dispatch-browser runs `full` - every project, the three `-alone` ones, the two-process job and
+dispatch-browser runs `full` - every project, the six `-alone` ones, the two-process job and
 the visual review - in the merge group, on a workflow_dispatch and on a pull request carrying
 `full-ci` or `lane:dispatch_browser`, where both jobs run. So the merge group is where a change
 meets the whole suite before it lands, and the nightly
@@ -2598,7 +2598,7 @@ that job's last step, the ci-ok report.
 
 `.github/workflows/dispatch-browser.yaml#lane`, which each of its three callers here passes as a literal:
 dispatch-browser-pr `pull-request`, which runs the two projects a pull request is held to over
-the `@pr` rows, dispatch-browser `full`, which runs every project, the three `-alone` ones,
+the `@pr` rows, dispatch-browser `full`, which runs every project, the six `-alone` ones,
 the two-process job and the visual review over every row, and dispatch-references
 `references`, which runs Chromium over the reference rows' spec files
 (.github/ci-notes/ci.md#the-reference-rows-preview-job).
@@ -2618,7 +2618,7 @@ What it runs, and why it gates nothing.
 
 The reference rows' preview: every Chromium row of the eleven spec files
 the reference framework's Verification document names and the nine of the reading list's
-walk, through the `references` lane of dispatch-browser.yaml - its binaries job, its four shard
+walk, through the `references` lane of dispatch-browser.yaml - its binaries job, its five shard
 legs and its merge job, and none of its
 alone, two-process, embedder or visual jobs. The pull-request lane, the dispatch-browser-pr job,
 runs only the few of those rows that carry `@pr`, so without this job a change to the

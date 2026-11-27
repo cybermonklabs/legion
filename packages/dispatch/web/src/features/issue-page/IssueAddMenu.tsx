@@ -7,9 +7,9 @@ import {
   useRef,
   useState,
 } from "react";
-
 import type { IssueDetails } from "../../api/types";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
+import { placeInView } from "../doc/readers-place";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
@@ -287,7 +287,7 @@ export function IssueAddMenu({
         open: () => {
           const control = reached();
           const reach = () => {
-            control?.scrollIntoView({ block: "nearest" });
+            if (control !== null) placeInView(control, { block: "nearest" });
             if (control instanceof HTMLSelectElement || control instanceof HTMLInputElement) {
               control.focus();
             } else {

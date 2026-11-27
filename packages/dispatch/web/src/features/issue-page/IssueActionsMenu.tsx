@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   pageHairBorder,
   pageHeaderControl,
@@ -62,8 +63,12 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
     };
     // The press is the open group's alone, as a menu's is: the page's own Escape - which closes
     // a document opened in place of the outline (`OpenedDocument.tsx`) - waits for the next one.
+    // An input method's Escape (`inputMethodKey`) is the input method's, and the group stays
+    // open. The focus can be in a field while the group is open: Safari focuses no button a press
+    // lands on, so a press on the control leaves the focus on no control, and `e` then opens the
+    // title's editor with the group still open.
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || inputMethodKey(event)) return;
       event.preventDefault();
       setOpen(false);
       control.current?.focus();
@@ -122,11 +127,14 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
           covered the control, which then could not be pressed again to close it. At 760 px and
           below the panel is fixed at the anchor's height and spans the screen less the page's
           14 px insets, so it never reaches past the right edge; from 761 px it is absolute
-          at the anchor, at the prototype's menu width. Each action keeps `main`'s 44 px floor
-          below 1280 px, where that floor applies, as a menu a header control opens does. */}
+          at the anchor, at the prototype's menu width. Below `xl` each action keeps the
+          stylesheet's 44 px floor, as every menu a header control opens does: the header's rule
+          that takes the floor off its own controls (`revert-layer`, `styles.css`) passes over
+          the panel by `data-issue-actions-menu`, since the group is not a `role="menu"`. */}
       <div className="absolute top-full left-0">
         <div
           className={`fixed inset-x-3.5 z-30 mt-1 flex flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] min-[761px]:absolute min-[761px]:inset-x-auto min-[761px]:top-0 min-[761px]:left-0 min-[761px]:w-64 ${pageHairBorder} ${pagePaperBg}`}
+          data-issue-actions-menu=""
           hidden={!open}
           id={panelId}
         >
@@ -134,7 +142,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
             <button
               aria-pressed={action.pressed}
               data-issue-action={action.id}
-              className={`flex min-h-11 w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium min-[1280px]:min-h-0 ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
+              className={`flex w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
               disabled={action.disabled}
               key={action.id}
               onClick={() => {

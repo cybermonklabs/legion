@@ -22,6 +22,7 @@ import {
   type RefPickerRow,
   type RefPickerWords,
 } from "./ref-picker";
+import { relativeTimeLabel, Timestamp, useRelativeTimeTick } from "./Timestamp";
 import type { RefPicker } from "./useRefPicker";
 
 /** A line a picker row draws whole where its surface draws no tooltips (the issue page), in the
@@ -217,22 +218,72 @@ export function RefRowLabel({
 }
 
 /**
- * A row's detail line, in both the hosts that draw the picker's rows. A role's row starts its
- * line with the session that holds the role, which it draws as an agent (`RowAgent`).
+ * A row's detail line, in both the hosts that draw the picker's rows: cut to the row's width,
+ * with what it reads whole on its `title` for a pointer reader to hover for what was cut. A
+ * surface with no tooltips (the issue page) carries no `title` for it (`useTooltips`), so there
+ * the line is drawn whole (`WRAPPED_LINE`). A role's row starts its line with the session that
+ * holds the role, which it draws as an agent (`RowAgent`), its state mark in `marks`. A party's
+ * row ends it with when that session was last seen (`RefPickerRow.seen`), in either form, drawn
+ * as the `<Timestamp>` every other relative time on the page is: the relative words, the exact
+ * time on its `title` (dispatch://INFRA-341, R7). Where the line has a `title`, it ends in the
+ * same relative words, so the line follows the tick `<Timestamp>` follows (`useRelativeTimeTick`)
+ * and hands its `<Timestamp>` the clock reading the line's `title` is measured from: the two say
+ * the same thing, on one subscription. A row with no detail draws no line.
  */
 export function RefRowDetail({
+  className,
   marks,
   row,
 }: {
+  /** The host's own classes for the line, before the look every host gives it. */
+  className?: string;
+  /** The words the agent's state mark says (`RefPickerWords.marks`); with none, its own. */
   marks?: AgentStateWords;
   row: RefPickerRow;
 }): ReactNode {
-  if (row.kind !== "role" || row.agent === undefined) return row.detail;
-  return (
+  const tooltips = useTooltips();
+  useRelativeTimeTick(row.detail !== "" && row.seen !== undefined);
+  if (row.detail === "") return null;
+  const now = Date.now();
+  const words = (
     <>
-      <RowAgent agent={row.agent} marks={marks} />
-      {row.detail.slice(row.agent.words.length)}
+      {row.kind === "role" && row.agent !== undefined ? (
+        <>
+          <RowAgent agent={row.agent} marks={marks} />
+          {row.detail.slice(row.agent.words.length)}
+        </>
+      ) : (
+        row.detail
+      )}
+      {row.seen === undefined ? null : (
+        <>
+          {" · "}
+          <Timestamp at={row.seen} now={now} />
+        </>
+      )}
     </>
+  );
+  if (!tooltips) {
+    return (
+      <span className={className === undefined ? WRAPPED_LINE : `${className} ${WRAPPED_LINE}`}>
+        {words}
+      </span>
+    );
+  }
+  // The stronger muted role, which clears AA over the sky fill a highlighted row wears as well as
+  // over `RefPickerList`'s own recessed surface.
+  const look = `text-xs ${textOptionDescription}`;
+  return (
+    <TruncatedText
+      className={className === undefined ? look : `${className} ${look}`}
+      title={
+        row.seen === undefined
+          ? row.detail
+          : `${row.detail} · ${relativeTimeLabel(new Date(row.seen), now) ?? row.seen}`
+      }
+    >
+      {words}
+    </TruncatedText>
   );
 }
 
@@ -261,8 +312,8 @@ export function RefPickerList({
 }): ReactNode {
   const headingPrefix = useId();
   // A row's detail is cut to one line, and its `title` gives the whole detail back. A surface
-  // with no tooltips (the issue page) carries no `title` for it (`useTooltips`), so there the
-  // detail is drawn whole (`WRAPPED_LINE`).
+  // with no tooltips (the issue page) carries no `title` (`useTooltips`), so there the detail is
+  // drawn whole (`RefRowDetail`), and a session's row draws its full id as a line (below).
   const tooltips = useTooltips();
   if (!picker.open) return null;
   const take = (id: string) => {
@@ -318,17 +369,7 @@ export function RefPickerList({
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
         <RefRowLabel marks={words.marks} row={one} />
-        {one.detail === "" ? null : tooltips ? (
-          // The stronger muted role, which clears AA over the sky fill a highlighted row wears
-          // as well as over the list's own surface.
-          <TruncatedText className={`text-xs ${textOptionDescription}`} title={one.detail}>
-            <RefRowDetail marks={words.marks} row={one} />
-          </TruncatedText>
-        ) : (
-          <span className={WRAPPED_LINE}>
-            <RefRowDetail marks={words.marks} row={one} />
-          </span>
-        )}
+        <RefRowDetail marks={words.marks} row={one} />
         {sessionLine(one)}
       </span>
       <RefPartsControl picker={picker} row={one} words={words} />

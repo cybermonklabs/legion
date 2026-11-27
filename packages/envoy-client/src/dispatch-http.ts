@@ -149,10 +149,13 @@ export type RouteAnswer =
 
 /** The members of Dispatch's refusal beside its code and its message that `DispatchServiceError`
  *  keeps: one list, which the refusal reader (`DispatchRefusal`) and the error's own details
- *  both name, so a member one of them carries cannot be dropped by the other. */
+ *  both name, so a member one of them carries cannot be dropped by the other. Each keeps its name
+ *  but a block guard's `unguarded_blocks`, which both name `unguardedBlocks`. */
 type RefusalMember = "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches";
 
-type RefusalMembers = { readonly [Member in RefusalMember]: DispatchServiceErrorShape[Member] };
+type RefusalMembers = { readonly [Member in RefusalMember]: DispatchServiceErrorShape[Member] } & {
+  readonly unguardedBlocks: DispatchServiceErrorShape["unguarded_blocks"];
+};
 
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
@@ -168,6 +171,9 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /** A block guard's refusal: each block the edit would remove that the guard does not name, with
+   *  the token it carries now (`unguarded_blocks`). */
+  readonly unguardedBlocks: DispatchServiceErrorShape["unguarded_blocks"] | undefined;
   /**
    * Whether Dispatch marked the answer as its refusal of a text for the text alone
    * (`TEXT_REFUSAL_HEADER`), whatever its status: the refusals of the two markdown round trips,
@@ -184,8 +190,11 @@ export class DispatchServiceError extends Error {
     readonly status: number,
     message: string,
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
-     *  its answer's JSON, or another refusal whose members it keeps. */
-    details: { readonly [Member in RefusalMember]?: RefusalMembers[Member] | undefined } & {
+     *  its answer's JSON, whose `unguarded_blocks` it is given as `unguardedBlocks`, or another
+     *  refusal whose members it keeps. */
+    details: {
+      readonly [Member in keyof RefusalMembers]?: RefusalMembers[Member] | undefined;
+    } & {
       readonly textRefusal?: boolean | undefined;
     } = {}
   ) {
@@ -195,6 +204,7 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.unguardedBlocks = details.unguardedBlocks;
     this.textRefusal = details.textRefusal ?? false;
     this.hint = details.hint;
   }
@@ -912,6 +922,7 @@ function refusalIn(json: ParsedJson): DispatchRefusal | undefined {
     hint: typeof shape.hint === "string" ? shape.hint : undefined,
     issues: shape.issues,
     mismatches: shape.mismatches,
+    unguardedBlocks: shape.unguarded_blocks,
   };
 }
 

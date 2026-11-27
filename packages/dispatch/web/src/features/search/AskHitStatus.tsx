@@ -1,4 +1,5 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import { Fragment, type ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";
@@ -44,6 +45,7 @@ export function AskHitStatus({
   source?: TextSource;
 }): ReactNode {
   const answer = ask.state === "open" ? undefined : ask.answer;
+  const chosen = answer === undefined ? [] : answerSelected(answer);
   // `resolution` is on an ask the server resolved alone, so the state and the record are read
   // together: a resolved hit whose record did not come carries no line of its own.
   const resolution = ask.resolution;
@@ -66,12 +68,12 @@ export function AskHitStatus({
             className={`min-w-0 [overflow-wrap:anywhere] ${ask.state === "resolved" ? "basis-full" : ""}`}
           >
             {actorActText(answer.user, answer.act)} · <Timestamp at={answer.at} /> ·{" "}
-            {(answer.selected ?? []).length === 0 ? (
+            {chosen.length === 0 ? (
               "No option chosen"
             ) : (
               <>
                 Chose{" "}
-                {(answer.selected ?? []).map((label, index) => (
+                {chosen.map((label, index) => (
                   <Fragment key={label}>
                     {index === 0 ? null : ", "}
                     {/* Each label is drawn from its own tree, beside it at the same index. Only

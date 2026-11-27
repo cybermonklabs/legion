@@ -9,13 +9,14 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
+import type { DocumentOwner } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { AskBlockCard } from "./AskBlockCard";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
-import { createDoc, type EditorHandle } from "./editor";
+import { createDoc, type EditorConstruction, type EditorHandle } from "./editor";
 import type { Highlight } from "./highlight";
 import { embedHighlight } from "./highlight";
 import { refocusWhenSettled } from "./refocus-when-settled";
@@ -41,7 +42,7 @@ export interface VersionViewProps {
    *  document. */
   issueKey: string | null;
   /** The project document shown, for block asks with no issue to be referenced under. */
-  owner: { project: string; slug: string } | undefined;
+  owner: DocumentOwner | undefined;
   version: number;
 }
 
@@ -62,7 +63,7 @@ export function VersionView({
   const [editorHandle, setEditorHandle] = useState<EditorHandle | undefined>(undefined);
   const [highlightMissing, setHighlightMissing] = useState(false);
   const [renderError, setRenderError] = useState<string | undefined>(undefined);
-  const { createEditor } = useContext(DocumentRuntime);
+  const { constructEditor } = useContext(DocumentRuntime);
   const versionQuery = useQuery({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
@@ -135,7 +136,9 @@ export function VersionView({
     }
 
     let ydoc: Doc | undefined;
-    let handle: EditorHandle | undefined;
+    // The editor from the moment it is built, so a bind that throws, or an unmount while it
+    // binds, still tears down what the construction made (its `destroy` is the handle's).
+    let construction: EditorConstruction | undefined;
     let mounted = true;
     let disposeRefocus = () => {};
     setRenderError(undefined);
@@ -146,7 +149,10 @@ export function VersionView({
         return;
       }
       ydoc = doc;
-      const editor = await createEditor(parent, {
+      // A version's document is in hand before the editor exists - it is drawn with
+      // `setMarkdown` below, over a standalone Yjs document - so there is nothing to wait for
+      // between the two phases (`features/doc/editor.ts`).
+      construction = await constructEditor(parent, {
         access: "read",
         awareness: null,
         blockSchema: compiledBlockSchema,
@@ -156,7 +162,7 @@ export function VersionView({
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
-      handle = editor;
+      const editor = await construction.bind();
       if (!mounted) {
         editor.destroy();
         return;
@@ -180,6 +186,10 @@ export function VersionView({
       } else if (tree !== undefined) {
         editor.setDocumentJSON(tree);
       }
+      // The editor's root is hidden from the moment it is created until this
+      // (`@legion/proof-editor`'s `reveal`), so a version is drawn once, with its text in it,
+      // rather than as an empty editor that fills a task later.
+      editor.reveal();
       setHighlightMissing(highlighted !== undefined && embedded === undefined);
       // Once the version's text is in: its references are drawn over what it reads now.
       setEditorHandle(editor);
@@ -204,8 +214,8 @@ export function VersionView({
     mount().catch((error: unknown) => {
       // A version the editor cannot build the server's tree into must say so; an empty
       // read-only editor looks like an empty document.
-      handle?.destroy();
-      handle = undefined;
+      construction?.destroy();
+      construction = undefined;
       setEditorHandle(undefined);
       if (mounted) {
         setRenderError(error instanceof Error ? error.message : String(error));
@@ -215,11 +225,11 @@ export function VersionView({
     return () => {
       mounted = false;
       disposeRefocus();
-      handle?.destroy();
+      construction?.destroy();
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [baseline, createEditor, highlighted, login, markdown, queryClient, tree]);
+  }, [baseline, constructEditor, highlighted, login, markdown, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;

@@ -263,7 +263,9 @@ function ArchitectureTreeView({
   useKeymapScope("architecture");
   useKeymap("architecture", [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
+    // Every binding here moves the focus to a row, a level or a component's page.
     {
+      effect: "moves the reader",
       id: "next",
       keys: "j",
       label: "Next component",
@@ -271,6 +273,7 @@ function ArchitectureTreeView({
       run: () => rove(1),
     },
     {
+      effect: "moves the reader",
       id: "previous",
       keys: "k",
       label: "Previous component",
@@ -278,6 +281,7 @@ function ArchitectureTreeView({
       run: () => rove(-1),
     },
     {
+      effect: "moves the reader",
       id: "arrows",
       keys: ["ArrowDown", "ArrowUp"],
       label: "Next / previous component while one is focused",
@@ -286,6 +290,7 @@ function ArchitectureTreeView({
     },
     {
       // Both keys do the same thing, so the palette offers it; a row presses Enter.
+      effect: "moves the reader",
       id: "open",
       keys: ["Enter", "o"],
       label: "Open the focused component: its children, else its details",
@@ -306,6 +311,7 @@ function ArchitectureTreeView({
     {
       // Out of the palette: on a row with children `open` above already goes into them, and on
       // a leaf this row would do nothing.
+      effect: "moves the reader",
       id: "descend",
       keys: ["l", "ArrowRight"],
       label: "Into the focused component's children",
@@ -315,6 +321,7 @@ function ArchitectureTreeView({
     },
     {
       // Both keys do the same thing, and its `when` needs no focused row, so it is a row.
+      effect: "moves the reader",
       id: "ascend",
       keys: ["h", "ArrowLeft"],
       label: "Up one level",
@@ -323,6 +330,7 @@ function ArchitectureTreeView({
       when: () => level !== undefined,
     },
     {
+      effect: "moves the reader",
       id: "back",
       inEditable: true,
       keys: "Escape",

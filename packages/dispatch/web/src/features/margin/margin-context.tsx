@@ -151,7 +151,7 @@ const REANCHOR_SEND_WAIT_MS = 5000;
 
 /** How long a refused send waits for a document to register its bridge before the margin tells
  *  the reader the document is not open. The bridge binds only once the document has synced and
- *  its editor is built (`ProofDocument`'s `onSynced`, `createEditor`, `bindEditor`), while a
+ *  its editor is built (`ProofDocument`'s `onSynced`, `constructEditor`, `bindEditor`), while a
  *  reload resumes a margin send pressed within `KEPT_SEND_RESUME_MS`: the refusal of a send on
  *  the document the reader is looking at can land seconds before that document's editor exists.
  *  Long enough for a document to load on a slow connection, and short enough that a reader on no
@@ -257,6 +257,9 @@ interface MarginContextValue {
   hoveredItemId: string | undefined;
   hoveredMarkId: string | undefined;
   markPlacements: ReadonlyMap<string, MarkPlacement>;
+  /** Whether a reader sees the margin, which has an owner and nothing covering it: `MarginSheet`'s
+   *  `placesItems`. Its `seen` says when a reader sees the margin and what turns on that. */
+  placesItems: boolean;
   /** Whether the registered document has reported its layout: it says so by publishing
    *  placements, and the answer resets whenever a document registers or unregisters, or the
    *  registered document withdraws a hidden layout. An empty map is still an answer - a document
@@ -275,6 +278,8 @@ interface MarginContextValue {
   setHoveredItemId(id: string | undefined): void;
   setMarkItemIds(markItemIds: ReadonlyMap<string, string>): void;
   setMarkPlacements(placements: ReadonlyMap<string, MarkPlacement>): void;
+  /** The margin sheet says whether a reader sees it; nothing else calls it. */
+  setPlacesItems(places: boolean): void;
   shownCompose: ShownCompose | undefined;
   /** Takes back the registered document's layout while it is hidden and has no layout to report. */
   withdrawPlacements(): void;
@@ -301,6 +306,7 @@ const MarginContext = createContext<MarginContextValue>({
   hoveredItemId: undefined,
   hoveredMarkId: undefined,
   markPlacements: new Map(),
+  placesItems: false,
   placementsReported: false,
   registerDocument: unavailableMargin,
   revealCompose: unavailableMargin,
@@ -311,6 +317,9 @@ const MarginContext = createContext<MarginContextValue>({
   setHoveredItemId: unavailableMargin,
   setMarkItemIds: unavailableMargin,
   setMarkPlacements: unavailableMargin,
+  // A margin sheet outside a provider - a test's bare one - stands beside no document, so it
+  // reports whether it is seen to nobody rather than throwing on a render of its own.
+  setPlacesItems: () => {},
   shownCompose: undefined,
   withdrawPlacements: unavailableMargin,
 });
@@ -343,6 +352,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
     () => new Map()
   );
   const [placementsReported, setPlacementsReported] = useState(false);
+  const [placesItems, setPlacesItems] = useState(false);
   const [composes, setComposes] = useState<ReadonlyMap<string, DocumentCompose>>(() => new Map());
   const [shownCompose, setShownCompose] = useState<ShownCompose>();
   const [selectedItemId, setSelectedItemId] = useState<string>();
@@ -738,6 +748,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       hoveredMarkId,
       markPlacements,
       placementsReported,
+      placesItems,
       registerDocument,
       revealCompose,
       retypeCompose,
@@ -747,6 +758,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       setHoveredItemId: selectHoveredItem,
       setMarkItemIds,
       setMarkPlacements: publishMarkPlacements,
+      setPlacesItems,
       shownCompose,
       withdrawPlacements,
     }),
@@ -768,6 +780,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       hoveredMarkId,
       markPlacements,
       placementsReported,
+      placesItems,
       publishBlockPlacements,
       publishMarkPlacements,
       registerDocument,
@@ -790,6 +803,17 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
 
 export function useMargin(): MarginContextValue {
   return useContext(MarginContext);
+}
+
+/** Whether the new issue page's Details draws the margin's conversation - its cards and its
+ *  composer - above its panel. It does once a document's editor is bound (the margin's
+ *  `documentBridge`, which `ProofDocument`'s `bindEditor` registers after the build the
+ *  document's first batch comes out of), and not before. `DetailsFill`
+ *  (`issue-page/slots/details.tsx`) draws the conversation by this answer, and `MarginSheet`'s
+ *  `seen` counts an open Details as a reader seeing the margin by the same answer, so what
+ *  Details draws and whether the margin's reads wait for the first batch cannot disagree. */
+export function useDetailsDrawsConversation(): boolean {
+  return useContext(MarginContext).documentBridge !== undefined;
 }
 
 /** Takes the composer that holds the draft of a held send, for as long as it is mounted, and

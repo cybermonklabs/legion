@@ -92,6 +92,8 @@ import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+// The app's lazy parts beyond its pages load with the test file (`__tests__/app-chunks.ts`).
+import "../../__tests__/app-chunks";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.

@@ -1,4 +1,5 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -47,7 +48,7 @@ function AskEventBody({
   // A changed answer names the one it replaced; the first answer's event carries none. An event
   // written before answers stored an empty list holds null for either's selected: no option.
   const previous = event.type === "ask.answered" ? event.payload.previous_answer : undefined;
-  const wasSelected = previous?.selected ?? [];
+  const wasSelected = previous === undefined ? [] : answerSelected(previous);
   const wasText = previous?.text ?? "";
   // An option's two texts are keyed by its place in the payload's own list, so the trees pair
   // with the options by index, never by label.
@@ -68,7 +69,11 @@ function AskEventBody({
         surface="activity-event-body"
         tree={payloadTree(event, "payload.question")}
       />
-      <AskOptionList options={optionsWithTrees} selected={answer?.selected ?? []} source={source} />
+      <AskOptionList
+        options={optionsWithTrees}
+        selected={answer === null ? [] : answerSelected(answer)}
+        source={source}
+      />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Opened <Timestamp at={created_at} />
       </p>

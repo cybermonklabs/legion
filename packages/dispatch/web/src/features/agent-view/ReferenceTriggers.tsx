@@ -16,20 +16,18 @@ import {
   useState,
 } from "react";
 
-import { TruncatedText } from "../../components/TruncatedText";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   card,
   cardHoverBorder,
   selectedCardBg,
   selectedCardBorder,
   textMutedOnSurface,
-  textOptionDescription,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
 import { RefPartsControl, RefPickerNotes, RefRowDetail, RefRowLabel } from "../refs/RefPickerList";
 import {
   insertionText,
-  isCompositionKey,
   orderedRows,
   REF_PICKER_HEADINGS,
   REF_PICKER_TRIGGERS,
@@ -111,6 +109,8 @@ function RefRow({
   const highlighted = unstable_useTriggerPopoverScopeContext().highlightedIndex === index;
   const element = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    // The picker is a popover with a scroll box of its own: this brings its highlighted row into
+    // that box, and moves no box the page's place-keeping watches.
     if (highlighted) element.current?.scrollIntoView({ block: "nearest" });
   }, [highlighted]);
   return (
@@ -137,14 +137,7 @@ function RefRow({
         <RefKindIcon kind={row.kind} />
         <span className="flex min-w-0 flex-1 flex-col">
           <RefRowLabel row={row} />
-          {item.description === undefined ? null : (
-            <TruncatedText
-              className={`self-stretch text-xs ${textOptionDescription}`}
-              title={item.description}
-            >
-              <RefRowDetail row={row} />
-            </TruncatedText>
-          )}
+          <RefRowDetail className="self-stretch" row={row} />
         </span>
         <RefPartsControl picker={picker} row={row} />
       </div>
@@ -305,7 +298,7 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
   useEffect(() => {
     keys.current = (event) => {
       // A composition's keys are the input method's: its arrows move between the word's segments.
-      if (isCompositionKey(event.nativeEvent)) {
+      if (inputMethodKey(event)) {
         // assistant-ui skips a key marked `isComposing` itself, but not Safari's confirming
         // Enter, which carries only the IME key code 229. Its default is prevented, so the
         // library's own key handler never runs: Radix's `composeEventHandlers` skips it after a

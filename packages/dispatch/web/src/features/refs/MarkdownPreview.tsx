@@ -203,7 +203,14 @@ export function MarkdownPreview({
     markdown,
     tree,
     paintOneLine,
-    { pictures: "inline", decorate, references }
+    {
+      pictures: "inline",
+      decorate,
+      // A preview shows a body, so raw HTML in one reads as the text it shows: an HTML comment
+      // draws as nothing and any other raw HTML as its own characters (`MarkdownBody`).
+      rawHtml: "text",
+      references,
+    }
   );
   // The whole text for a pointer reader is the one plain-text projection, where a reference
   // reads as its target's own name rather than as its short form (`PlainText`), by the facts

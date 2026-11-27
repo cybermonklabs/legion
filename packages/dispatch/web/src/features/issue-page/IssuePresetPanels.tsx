@@ -6,7 +6,7 @@ import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
 import { StagedDocument } from "./StagedDocument";
 import { useToolbarSink } from "./useDocumentToolbars";
-import type { OnEditing, OnEditor } from "./useNodeEditing";
+import type { OnEditing, RowEditorHandlers } from "./useNodeEditing";
 
 /**
  * How a body that draws the outline's rows lets one be edited in its document's one editor:
@@ -26,12 +26,12 @@ export function useOutlineEditing(issue: IssueDetails): {
   const navigate = useNavigate();
   const toolbarSink = useToolbarSink();
   const [editing, setEditing] = useState<
-    { readonly artifactId: string; readonly onEditor?: OnEditor } | undefined
+    { readonly artifactId: string; readonly handlers?: RowEditorHandlers } | undefined
   >(undefined);
   // Stable: the rows call it from an effect that depends on it.
   const onEditing = useCallback<OnEditing>(
-    (artifactId, onEditor) =>
-      setEditing(artifactId === undefined ? undefined : { artifactId, onEditor }),
+    (artifactId, handlers) =>
+      setEditing(artifactId === undefined ? undefined : { artifactId, handlers }),
     []
   );
   const edited =
@@ -43,9 +43,9 @@ export function useOutlineEditing(issue: IssueDetails): {
     panels: (
       <IssuePresetPanels
         editedDocument={edited}
+        handlers={editing?.handlers}
         isClosed={issue.closed_at !== null}
         issueKey={issue.key}
-        onEditor={editing?.onEditor}
         onToolbarSink={toolbarSink}
         // A version picked in the edited document's own editor opens that document at it.
         onVersionChange={(artifact, version) =>
@@ -71,18 +71,20 @@ export function useOutlineEditing(issue: IssueDetails): {
  */
 export function IssuePresetPanels({
   editedDocument,
+  handlers,
   isClosed,
   issueKey,
-  onEditor,
   onToolbarSink,
   onVersionChange,
 }: {
   /** The document a row of the outline is being edited in. */
   editedDocument: Artifact | undefined;
+  /** Take that document's editor for the row: as it is constructed, so the row's hold stands
+   *  before its build draws a block, again as it is made and torn down, and the word that none
+   *  is coming where the document says so. */
+  handlers?: RowEditorHandlers;
   isClosed: boolean;
   issueKey: string;
-  /** Takes that document's live editor for the row, as the editor is made and torn down. */
-  onEditor?: OnEditor;
   onToolbarSink: (artifactId: string) => (next: DocumentToolbar | undefined) => void;
   onVersionChange: (artifact: Artifact, version: number | null) => void;
 }): ReactNode {
@@ -93,7 +95,9 @@ export function IssuePresetPanels({
       artifact={editedDocument}
       isClosed={isClosed}
       issueKey={issueKey}
-      onEditorHandle={onEditor}
+      onEditorConstructed={handlers?.constructed}
+      onEditorHandle={handlers?.handle}
+      onNoEditor={handlers?.none}
       onToolbarChange={onToolbarSink(editedDocument.id)}
       onVersionChange={(version) => onVersionChange(editedDocument, version)}
       showDiff={false}

@@ -15,14 +15,14 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
-// The Answers, document and project pages are lazy routes of the app, and the margin a lazy part
-// of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
+// The Answers, document and project pages are lazy routes of the app. A page module's first
 // compile is not what a wait is for, and a load a row starts and ends before lands in a later row
 // as React's report of a suspended resource outside `act`. So the modules are loaded here, with
-// the test file, and no row starts or waits for that load.
+// the test file, and no row starts or waits for that load; the app's lazy parts beyond its pages,
+// the margin among them, load through `__tests__/app-chunks.ts` the same way.
+import "./__tests__/app-chunks";
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
-import "./features/margin/Margin";
 import "./features/project/ProjectPage";
 import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
 import { SendStoppedError } from "./features/writes/keyed-write";
@@ -963,7 +963,9 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
     );
     try {
       await screen.findByRole("button", { name: "Show sidebar" });
-      expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
+      // The margin is a deferred part of the shell (`features/shell/deferred-shell.ts`), so its
+      // control can draw a commit after the sidebar's: read it once it has.
+      expect(await screen.findByRole("button", { name: "Show margin" })).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Show margin" }));
       expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(

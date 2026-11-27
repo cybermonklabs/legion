@@ -12,6 +12,10 @@ import { createDraftStore } from "./draft-store";
  * their text under it - until they select another row (`pane-selection.ts`, `paneAsk`;
  * `AskCard.tsx`, `unsentAnswer`). An answer the server records drops the draft, since it is no
  * longer unsent.
+ *
+ * The draft is the text, a mention the reader picked in it included: a mention is a reference
+ * written in the text (`features/conversation/MentionField.tsx`), so a box that closes and opens
+ * again holds it, and so does the page a reload draws.
  */
 const store = createDraftStore("answer");
 

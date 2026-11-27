@@ -7,7 +7,7 @@ import type { SchemaApi, SchemaNode } from "../src/tool-schema";
 // so the Go the server validates a call with is the TypeScript declaration itself rather than a
 // second copy of it. A bound (min, max) is a text's length in UTF-16 units, as a JavaScript string
 // counts it, a list's count of items or a number's value. Most are a route's own: a constant of
-// dispatch-api-limits.ts or dispatch-tools.ts that gen-go writes into Go for the handler that
+// dispatch-constants.ts or dispatch-tools.ts that gen-go writes into Go for the handler that
 // enforces it and names it in its refusal, or the route's refusal of an empty value. A few are the
 // tool's alone, which no route reads: dispatch_issues' priority list of at most 5 buckets (0 to 3,
 // and null for none), which the route reads as repeated values, and the image files of `images`,

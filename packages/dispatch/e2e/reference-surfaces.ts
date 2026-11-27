@@ -419,6 +419,11 @@ export function answeredQuestionPreview(page: Page, askId: string): Locator {
   return page.locator(`[data-answer-row="${askId}"]`).locator("[data-markdown-preview]").first();
 }
 
+/** The reply preview follows the question preview in the same Answers row. */
+export function answeredReplyPreview(row: Locator): Locator {
+  return row.locator("[data-markdown-preview]").nth(1);
+}
+
 /** Opens the Inbox drawer, whose every row is the card that draws its own thread rather than a
  *  title alone: the Inbox page draws short rows at every width and reads one row at a time
  *  (`e2e/inbox-pane.ts`). The drawer opens over another page, so this navigates to one. */

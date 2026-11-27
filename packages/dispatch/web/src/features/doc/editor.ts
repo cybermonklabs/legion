@@ -1,4 +1,9 @@
-import type { CreateProofEditorOptions, ProofEditorHandle, StoredMark } from "@legion/proof-editor";
+import type {
+  CreateProofEditorOptions,
+  ProofEditorConstruction,
+  ProofEditorHandle,
+  StoredMark,
+} from "@legion/proof-editor";
 import type { Doc } from "yjs";
 
 import type { BlockSchema } from "../../api/types";
@@ -35,7 +40,13 @@ export type EditorOptions = CreateProofEditorOptions & {
    *  the caller passes it because only React holds that client. */
   watchPicture: WatchPicture;
 };
-export type CreateEditor = (root: HTMLElement, options: EditorOptions) => Promise<EditorHandle>;
+/** An editor built and standing with no document in it, which binds its document when the
+ *  host has one (`@legion/proof-editor`'s `ProofEditorConstruction`). */
+export type EditorConstruction = ProofEditorConstruction;
+export type ConstructEditor = (
+  root: HTMLElement,
+  options: EditorOptions
+) => Promise<EditorConstruction>;
 
 export const editorAttributes = {
   "aria-label": "Document editor",
@@ -52,26 +63,75 @@ export const editorAttributes = {
 // ProseMirror's `DOMSerializer`, `Plugin` and `PluginKey`, so a page that imported them to call
 // them after the editor existed would parse a quarter of a megabyte of the editor's library
 // before its first paint - which is the very thing this `import()` is here to prevent.
-export const createEditor: CreateEditor = async (root, options) => {
-  const [{ createProofEditor }, { installTypedBlocks }] = await importWhenOnline(() =>
+const editorModule = () =>
+  importWhenOnline(() =>
     Promise.all([
       import("@legion/proof-editor"),
       import("./ask-block"),
       import("@legion/proof-editor/style.css"),
     ])
   );
-  const handle = await createProofEditor(root, { ...options, drawMermaid: requestMermaidDrawing });
-  for (const [name, value] of Object.entries(editorAttributes)) {
-    handle.view.dom.setAttribute(name, value);
-  }
-  installTypedBlocks(
-    handle.view,
-    options.blockSchema,
-    options.onAskBlockHosts,
-    options.watchPicture,
-    options.anchoredBlock
-  );
-  return handle;
+
+/**
+ * Starts the editor chunk's download without building anything with it, for a caller that knows
+ * an editor is coming before it has anywhere to build one: the page's reading ahead asks from
+ * the address alone, before React has rendered anything, so the chunk arrives while the issue,
+ * the document's text and the schema do rather than after them (dispatch://INFRA-341, R11,
+ * `open-document-early.ts`). A second call costs nothing - the module cache answers it - and a
+ * failure is the business of the `constructEditor` that follows, which reports it where a
+ * reader sees it.
+ */
+export const loadEditor = (): void => {
+  void editorModule().catch(() => undefined);
+};
+
+/**
+ * Builds the editor, with no document in it, and answers what binds one
+ * (`@legion/proof-editor`'s two phases). Nothing here needs the document, so a host whose
+ * document is still arriving over its socket calls this as the socket opens and binds when the
+ * state frame has been applied: the construction cost 415 ms of the main thread for the
+ * 81,294-character document and 493 ms for the 406,319-character one, on a phone at 4x CPU
+ * throttling, and it used to be paid after the sync rather than beside it
+ * (dispatch://INFRA-341, R11). `ProofDocument` is that host; a host with its document in hand
+ * constructs and binds in one call (`VersionView`, the reading pane).
+ *
+ * The document's typed blocks go on the view before the build, not after the handle arrives:
+ * every `ask`, every host-rendered block and every picture gets its node view inside the batch
+ * that builds its block, where a `setProps` with a new `nodeViews` map over a built document
+ * re-runs ProseMirror's view update across every node of it - one task of 1,218 ms for the
+ * 406,319-character document on a phone at 4x CPU throttling. The host's own `beforeBuild`,
+ * where it passes one, runs after them, over the same empty document.
+ *
+ * The editor wears its `Document editor` name from the moment it is bound, which is a task
+ * after the binding connected, so a name on the page is an editor whose document is in it
+ * (`e2e/large-documents-page.ts` times the build's end by it).
+ */
+export const constructEditor: ConstructEditor = async (root, options) => {
+  const [{ constructProofEditor }, { installTypedBlocks }] = await editorModule();
+  const construction = await constructProofEditor(root, {
+    ...options,
+    beforeBuild: (view) => {
+      installTypedBlocks(
+        view,
+        options.blockSchema,
+        options.onAskBlockHosts,
+        options.watchPicture,
+        options.anchoredBlock
+      );
+      options.beforeBuild?.(view);
+    },
+    drawMermaid: requestMermaidDrawing,
+  });
+  return {
+    ...construction,
+    bind: async () => {
+      const handle = await construction.bind();
+      for (const [name, value] of Object.entries(editorAttributes)) {
+        handle.view.dom.setAttribute(name, value);
+      }
+      return handle;
+    },
+  };
 };
 
 // bindRemoteMarks projects the document's `marks` map into the editor now and after every

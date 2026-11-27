@@ -597,12 +597,29 @@ and each command runs there.
   web-cold lane holds each lazy load 1 s, and the engine's loads come one after another, 2 to 3 s
   in all: rows of `reference-titles.test.tsx` and `document-references.test.tsx` that waited 2 s,
   and rows of `SearchPalette.test.tsx` on a held clock, failed there. A test file whose rows mount
-  a lazily loaded part that no row reads, such as the shell's margin, imports that module at its
-  top: a load that a row starts can arrive between two of that row's `act` scopes or in a later
-  row, where React reports a suspended resource outside `act`
-  (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`,
-  `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
-  do).
+  a lazily loaded part that no row reads imports that module at its top: a load that a row starts
+  can arrive between two of that row's `act` scopes or in a later row, where React reports a
+  suspended resource outside `act`.
+  A test module that renders the app's shell (`AuthGate`, `App` or `AppShell`) imports
+  `web/src/__tests__/app-chunks.ts`, which loads every part the app loads lazily beyond a route's
+  own page before the file's rows begin: a part whose module exports its loader (`importInbox`,
+  `issueTabChunks`) through that loader, which it awaits at its top level, and each other part by
+  name. A file that opens a route and reads its page waits for that page with a `findBy*` query
+  or imports the page: `web/src/app.test.tsx` imports the Answers, document and project pages it
+  opens, and `web/src/app-sign-out.test.tsx` waits for the Agents page it opens.
+  `web/src/app-sign-out-fixture.tsx` opens `/` unless a row names another route, and the Inbox
+  at `/` comes through `app-chunks.ts`. A part the app starts loading lazily is added to
+  `app-chunks.ts`: through its loader where its module exports one, by name where it does not.
+
+- `window.__dispatchHoldBuild` is what the editor's build awaits between two of its batches:
+  `web/src/features/doc/ProofDocument.tsx` reads it as the editor is constructed and passes it
+  to `@legion/proof-editor` as `betweenBatches`, only where it is a function, since a window
+  answers a name no script has set with the element whose `id` it is. `holdTheBuild`
+  (`e2e/large-documents-build-hold.ts`) sets it, for the end-to-end rows that act while the
+  editor is being built: those of `e2e/build-typing.e2e.ts`, `e2e/large-documents-build.e2e.ts`
+  and `e2e/large-documents-reader.e2e.ts`. It either holds the build at a batch until the row
+  lets it go, or paces every boundary between two batches with a frame of the page. Nothing else
+  may set it, in a test or in production.
 
 - A harness test drops a database it made with `dropDatabase` from `e2e/psql.ts`, never with
   `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,

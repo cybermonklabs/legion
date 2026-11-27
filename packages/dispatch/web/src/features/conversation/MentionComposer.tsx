@@ -32,6 +32,7 @@ import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
@@ -81,7 +82,7 @@ import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
 import { draftParties } from "../refs/party-references";
 import { postDeletion } from "../refs/post-marks";
-import { isCompositionKey, type RefPickerWords } from "../refs/ref-picker";
+import type { RefPickerWords } from "../refs/ref-picker";
 import { partyOfAddress } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import {
@@ -596,7 +597,7 @@ function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
 
 /** Enter on the line of the issue page's box sends, as the prototype's does, and Shift+Enter
  *  breaks the line (`OutlineLook`). Enter while an input method composes is the method's
- *  (`isCompositionKey`). With the reference picker open, an Enter that reaches here is one the
+ *  (`inputMethodKey`). With the reference picker open, an Enter that reaches here is one the
  *  picker left - it takes the keys it acts on on the field's own listener (`MentionField`) - so
  *  it is the field's own newline, as in every box. */
 function sendOnEnter(
@@ -604,7 +605,7 @@ function sendOnEnter(
   pickerOpen: boolean,
   send: () => void
 ): void {
-  if (isCompositionKey(event.nativeEvent)) return;
+  if (inputMethodKey(event)) return;
   if (event.key !== "Enter" || event.shiftKey) return;
   if (pickerOpen) return;
   event.preventDefault();
@@ -1017,11 +1018,6 @@ export function MentionComposer({
       focusAddedOption.current = false;
     }
   }, [askOptions.length]);
-  useEffect(() => {
-    // An open picker reads the registry again the moment it opens, inside the shell poller's
-    // 15 s: a session started since the last poll is offered to the reader asking for it now.
-    if (suppliedAgents === undefined && pickerOpen) void live.refetch();
-  }, [live.refetch, pickerOpen, suppliedAgents]);
   /** Whether a send of this composer's holds its draft: out, or refused. */
   const holdsSend = outgoing.held !== undefined;
   useEffect(() => {
@@ -1202,13 +1198,12 @@ export function MentionComposer({
     const form = formRef.current;
     if (form === null || dormant) return;
     const handleEscape = (event: globalThis.KeyboardEvent) => {
-      // A key that ends an IME composition is the input method's, not the composer's
-      // (`isCompositionKey`): it closes nothing, cancels no reply and asks nothing, as
-      // `NameVersionDialog.tsx`'s Enter does.
-      if (isCompositionKey(event)) return;
-      if (event.key !== "Escape") return;
-      // An open picker takes Escape on the field's own listener and stops it there, so this
-      // never sees it: Escape shuts the list, and the one after it reaches the composer.
+      // The Escape that ends an input method's composition in the field is the input method's,
+      // not the composer's (`inputMethodKey`): it closes nothing, cancels no reply and asks
+      // nothing, as `NameVersionDialog.tsx`'s Enter does. An open picker takes a plain Escape on
+      // the field's own listener and stops it there, so this never sees it: Escape shuts the
+      // list, and the one after it reaches the composer.
+      if (event.key !== "Escape" || inputMethodKey(event)) return;
       // The issue page's line stays mounted with its draft whatever ends it, so Escape there
       // asks nothing: it ends the target as the target line's control does (`endTarget`).
       if (outlined) {
@@ -2171,13 +2166,12 @@ export function MentionComposer({
                     labelHidden
                     onChange={(change) => updateAskOption(index, "label", change.body)}
                     onKeyDown={(event) => {
-                      // An Enter that ends an IME composition commits the reader's words and
-                      // adds no option.
-                      if (isCompositionKey(event.nativeEvent)) return;
                       // With the picker open its own listener took this Enter and stopped it
                       // before this ran: the key takes the row under it rather than adding an
-                      // option nobody asked for.
-                      if (event.key === "Enter") {
+                      // option nobody asked for. The Enter that ends an input method's
+                      // composition commits the reader's words and adds no option either
+                      // (`inputMethodKey`).
+                      if (event.key === "Enter" && !inputMethodKey(event)) {
                         event.preventDefault();
                         addAskOption();
                       }

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the Enter that ends an input method's composition below, which user-event cannot mark as one
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { NameVersionDialog } from "./NameVersionDialog";
 
@@ -68,42 +68,6 @@ test("Enter submits the trimmed summary", async () => {
   }
 });
 
-// The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
-// word being composed, and is no Enter of the reader's: it saves nothing. Chromium and Firefox
-// mark it `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode 229
-// (`inputMethodKey`). A plain Enter after it saves the summary.
-test.each([
-  ["isComposing", { isComposing: true, key: "Enter" }],
-  ["keyCode 229", { isComposing: false, key: "Enter", keyCode: 229 }],
-] as const)(
-  "the Enter that ends a composition, marked by %s, saves nothing, and a plain one saves",
-  async (_mark, composing) => {
-    const user = userEvent.setup();
-    const saved: string[] = [];
-    const view = render(
-      <NameVersionDialog
-        error={null}
-        onClose={() => {}}
-        onSave={(summary) => saved.push(summary)}
-        open
-        saving={false}
-      />
-    );
-    try {
-      const input = screen.getByLabelText("What changed?");
-      await user.click(input);
-      await user.paste("Tightened the intro");
-      // user-event has no form for this: it cannot mark a key as an IME composition.
-      fireEvent.keyDown(input, composing);
-      expect(saved).toEqual([]);
-      await user.keyboard("{Enter}");
-      expect(saved).toEqual(["Tightened the intro"]);
-    } finally {
-      view.unmount();
-    }
-  }
-);
-
 test("Enter does nothing while the input is empty", async () => {
   const user = userEvent.setup();
   const saved: string[] = [];
@@ -121,6 +85,34 @@ test("Enter does nothing while the input is empty", async () => {
     await user.click(input);
     await user.keyboard("{Enter}");
     expect(saved).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It saves nothing; a plain Enter after it saves.
+test("the Enter that confirms an input method's word saves no version, and a plain Enter saves", async () => {
+  const user = userEvent.setup();
+  const saved: string[] = [];
+  const view = render(
+    <NameVersionDialog
+      error={null}
+      onClose={() => {}}
+      onSave={(summary) => saved.push(summary)}
+      open
+      saving={false}
+    />
+  );
+  try {
+    const input = screen.getByLabelText("What changed?");
+    await user.click(input);
+    await user.paste("Tightened the intro");
+    expect(
+      pressAsInputMethod(input, "Enter", { beforePlain: () => expect(saved).toEqual([]) })
+    ).toEqual({ composing: true, plain: false, safari: true });
+    expect(saved).toEqual(["Tightened the intro"]);
   } finally {
     view.unmount();
   }

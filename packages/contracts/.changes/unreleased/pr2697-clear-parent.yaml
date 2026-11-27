@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `dispatch_issue_update`'s `parent` takes `null`, which clears the issue's parent, so the
+  command derives `--clear-parent` from it and the description says `null` clears the parent.
+  The CLI's `--parent ''` still clears it too, its executor mapping `""` to `null`; the going
+  catalogue sends `""` unchanged, and the server refuses it with `400 PARENT_INPUT`.
+  `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the field as nullable.
+time: 2026-11-15T00:21:53Z
+custom:
+    Issue: pr2697

@@ -3,7 +3,7 @@ import { type ReactNode, type Ref, useLayoutEffect, useRef } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
-import type { EditorHandle } from "../doc/editor";
+import type { EditorConstruction, EditorHandle } from "../doc/editor";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useReportAdmission } from "./document-admission";
@@ -43,7 +43,9 @@ export function StagedDocument({
   artifact,
   isClosed,
   issueKey,
+  onEditorConstructed,
   onEditorHandle,
+  onNoEditor,
   onToolbarChange,
   onVersionChange,
   showDiff,
@@ -51,8 +53,14 @@ export function StagedDocument({
   artifact: Artifact;
   isClosed: boolean;
   issueKey: string;
+  /** Takes the document's editor as it is constructed, before its binding draws a block, so
+   *  the row's hold on its edits stands from the first one (`ProofDocument`'s
+   *  `onEditorConstructed`). */
+  onEditorConstructed?: (editor: Pick<EditorConstruction, "view">) => void;
   /** Takes the document's live editor as it is made, and `undefined` as it is torn down. */
   onEditorHandle?: (handle: EditorHandle | undefined) => void;
+  /** Told where no editor is coming: the document could not make or build one. */
+  onNoEditor?: () => void;
   onToolbarChange: (toolbar: DocumentToolbar | undefined) => void;
   onVersionChange: (version: number | null) => void;
   showDiff: boolean;
@@ -102,7 +110,9 @@ export function StagedDocument({
             highlightTerm={undefined}
             isClosed={isClosed}
             key={artifact.id}
+            onEditorConstructed={onEditorConstructed}
             onEditorHandle={takeEditor}
+            onNoEditor={onNoEditor}
             onToolbarChange={onToolbarChange}
             onVersionChange={onVersionChange}
             owner={{ key: issueKey, kind: "issue" }}

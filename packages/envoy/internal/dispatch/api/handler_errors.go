@@ -74,21 +74,28 @@ type editPreconditionCurrent struct {
 }
 
 // editPreconditionError is the 409 PRECONDITION_FAILED body every document write answers a
-// precondition the document no longer meets.
+// precondition the document no longer meets. UnguardedBlocks is, for an edit under a block guard
+// that would remove blocks the guard does not cover, each of them with the token it carries now
+// (docs.ErrPreconditionFailed.Unguarded): a token to compare with the token the caller's own read
+// listed, never one to send, and Error says how to answer it (docs.unguardedReason). It is absent
+// from every other refusal.
 type editPreconditionError struct {
-	Code       string                           `json:"code"`
-	Current    editPreconditionCurrent          `json:"current"`
-	Error      string                           `json:"error"`
-	Mismatches []model.EditPreconditionMismatch `json:"mismatches"`
+	Code            string                           `json:"code"`
+	Current         editPreconditionCurrent          `json:"current"`
+	Error           string                           `json:"error"`
+	Mismatches      []model.EditPreconditionMismatch `json:"mismatches"`
+	UnguardedBlocks []model.EditBlockPrecondition    `json:"unguarded_blocks,omitempty"`
 }
 
 // editPreconditionBody reads that body off the refusal: the live document token, the block
-// tokens the write found, and the mismatches that named them. The version is the caller's to
-// fill in, since the write reads no version rows: an edit's refusal names none, and an upload's
-// names the number it read beside its write and adds the sentence saying where a current token
-// is printed (writeUploadDocumentError).
+// tokens the write found, the mismatches that named them, and the blocks the edit would remove
+// that its guard does not cover. The version is the caller's to fill in, since the write reads no
+// version rows: an edit's refusal names none, and an upload's names the number it read beside its
+// write and adds the sentence saying where a current token is printed (writeUploadDocumentError).
 func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
-	return preconditionBody(failed.CurrentDocument, failed.Mismatches, failed.Error())
+	body := preconditionBody(failed.CurrentDocument, failed.Mismatches, failed.Error())
+	body.UnguardedBlocks = failed.Unguarded
+	return body
 }
 
 // preconditionBody is that body from its parts: the token that stands, the mismatches that named
@@ -257,6 +264,16 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, pmdoc.ErrTargetSpansBlocks) {
 		writeError(w, "TARGET_SPANS_BLOCKS", http.StatusBadRequest, err.Error())
+		return
+	}
+	var crossed *docs.ErrFindCrossesSpan
+	if errors.As(err, &crossed) {
+		writeError(w, "FIND_CROSSES_SPAN", http.StatusBadRequest, crossed.Error())
+		return
+	}
+	var doesNotFit *docs.ErrInsertDoesNotFit
+	if errors.As(err, &doesNotFit) {
+		writeError(w, "INSERT_DOES_NOT_FIT", http.StatusBadRequest, doesNotFit.Error())
 		return
 	}
 	if errors.Is(err, pmdoc.ErrTableWidth) {

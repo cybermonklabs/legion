@@ -1,6 +1,7 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
+import { placeInView } from "../doc/readers-place";
 import { buildInboxPath, type InboxRoute } from "../refs/routes";
 import { answerDraft } from "./answer-drafts";
 import { ROW_ATTRIBUTE } from "./inbox-row";
@@ -486,12 +487,20 @@ export function usePaneSelection({
 
   // The selected row is kept on screen as the reader walks the list: the column beside it shows
   // the row they cannot see otherwise. Below the column's width the reading view stands in the
-  // list's place, so there is no list to keep it in.
+  // list's place, so there is no list to keep it in. The move is the page placing what it draws,
+  // so it goes through the one call that records it (`placeInView`,
+  // `features/doc/readers-place.ts`), which measures what the browser's own
+  // `scrollIntoView({ block: "nearest" })` would do and writes it through `moveTheBox`: the
+  // browser's own call tells nobody, and a landing correction watching the same box would read
+  // it as the reader taking the list over (`refocus-when-settled.ts`).
   useEffect(() => {
     if (!columns || selectedId === undefined) {
       return;
     }
-    selectedRow()?.scrollIntoView?.({ block: "nearest" });
+    const row = selectedRow();
+    if (row !== null) {
+      placeInView(row, { block: "nearest" });
+    }
   }, [columns, selectedId, selectedRow]);
 
   // Below the column's width, the commit that closes a row's reading view brings the list back
@@ -499,7 +508,8 @@ export function usePaneSelection({
   // of the screen. A layout effect, so the row is placed in the commit that shows the list
   // again rather than one frame after the list painted at its top. Only a row a reading view was
   // drawn for is remembered: the column's own row, dropped as the window narrows, never had
-  // one, so the focus stays where the reader has it - in the search box, say.
+  // one, so the focus stays where the reader has it - in the search box, say. The scroll is the
+  // page placing what it draws, so it goes through `placeInView` as the walk's does above.
   const lastSelected = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     const left = lastSelected.current;
@@ -510,8 +520,11 @@ export function usePaneSelection({
     const back = returnTo.current;
     returnTo.current = undefined;
     const row = rowElement(left) ?? (back === undefined ? null : rowElement(back));
-    row?.focus({ preventScroll: true });
-    row?.scrollIntoView?.({ block: "center" });
+    if (row === null) {
+      return;
+    }
+    row.focus({ preventScroll: true });
+    placeInView(row, { block: "center" });
   });
 
   return {

@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   focusBorder,
   focusVisibleRing,
@@ -142,7 +143,8 @@ export function FormActions({
  *  inside a field and passes over one already `defaultPrevented` (`keymap.ts`); unmarked, one
  *  Escape would close the editor and the whole sheet with it. A press stopped here reaches no
  *  listener above the form either. A press that ends an IME composition gives up what the reader
- *  was composing, not the editor: the form leaves it alone, unmarked, as the registry does. */
+ *  was composing, not the editor: the form leaves it alone, unmarked, as the registry does
+ *  (`inputMethodKey`). */
 function EditorForm({
   cancel,
   children,
@@ -156,7 +158,7 @@ function EditorForm({
     <form
       className="flex w-full min-w-0 flex-wrap items-center gap-2"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        if (event.key !== "Escape" || inputMethodKey(event)) return;
         event.preventDefault();
         event.stopPropagation();
         cancel();

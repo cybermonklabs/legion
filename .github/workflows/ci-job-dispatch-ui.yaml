@@ -42,20 +42,17 @@ jobs:
       # (every job of dispatch-browser.yaml that runs the suite needs contracts built for the
       # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
       # file's shard job explains).
-      # `build:dispatch` bundles only the contracts entries Dispatch imports, five of them: the
-      # package itself, ./dispatch-snippet, ./dispatch-tools and ./http-status
-      # (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
-      # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`,
-      # `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` and
-      # `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four), and
-      # ./legion-api. The SPA's sources import ./legion-api as types only
+      # `build:dispatch` bundles only the contracts entries Dispatch imports, fourteen of them: the
+      # package itself, the twelve subpaths `packages/dispatch/web/vite.config.ts#alias` names one
+      # alias each, the dashboard's own list of them, and ./legion-api. The SPA's sources import
+      # ./legion-api as types only
       # (`packages/dispatch/web/src/features/dashboard/phase-track.ts#LegionPhase` and
       # `packages/dispatch/web/src/features/dashboard/role-words.ts#LegionClaimState`), so the
       # SPA build removes the import and vite needs no alias for it. The e2e seed imports
       # `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` as a value, which
       # Playwright's Node run reads from dist/legion-api.js, and that is why the script builds
-      # this fifth entry; packages/dispatch/e2e/__tests__/contracts-build-entries.test.ts holds
-      # the script to every contracts subpath the dashboard and the proof editor import. The
+      # this fourteenth entry; packages/dispatch/e2e/__tests__/contracts-build-entries.test.ts
+      # holds the script to every contracts subpath the dashboard and the proof editor import. The
       # dashboard's tsc program compiles ./legion-api through those imports, so the build
       # compiles no module outside the set the dashboard's tsc programs compile, which is what
       # this job's filter lists. package.json allows no comment, so this is where the list is
@@ -120,6 +117,17 @@ jobs:
       # asset to its database at boot), which would stall a roll; refuse the build here instead.
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
+        working-directory: packages/dispatch
+      # The entry chunk is the first screen's download, and what it may hold is a list
+      # (web/src/entry-chunk-contents.ts): a deferred part pulled back into it, or a preload the
+      # page no longer writes, costs every first paint and nothing else fails. The second check
+      # holds the entry chunk to carrying no zod, the validator the SPA keeps out of its first
+      # download. Both read the build the step above produced, so they run here, after it.
+      - name: Check dispatch dashboard entry chunk
+        run: bun run check:entry-chunk
+        working-directory: packages/dispatch
+      - name: Check zod stays out of the dispatch dashboard entry chunk
+        run: bun run check:no-zod
         working-directory: packages/dispatch
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -17,7 +17,7 @@ You end a child that you own with your own status write in Dispatch. The daemon 
 
 1. Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work is done, folded into another issue or no longer needed.
 2. For a fold, name in the reason the issue that carries the work: the carrier.
-3. Before a fold's `done`, make each issue that is `blocked_by` the child `blocked_by` the carrier instead, because `done` starts those issues. The child's `Referenced by:` list in `dispatch read` names each of them as `blocked_by`.
+3. Before a fold's `done`, make each issue that is `blocked_by` the child `blocked_by` the carrier instead, because `done` starts those issues. The child's `Referenced by:` list in `dispatch read` names each of them as `blocks`, or as `blocked_by` in an older `dispatch`.
 4. Before `done` on a running child, have its worker push the work that the carrier needs. A `done` ends the worker's turn and the pod at once.
 5. Unless the work of the child's open pull request should land, close that pull request (`gh pr close`) with your own App, which holds `pull_requests: write`. When the pull request is in the merge queue, first take it out with GraphQL `dequeuePullRequest`, as the merger does: `gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position}}}' -f pr="$(gh pr view <n> -R <o>/<r> --json id -q .id)"`. Do this before `done`, or at once after a `done` that you wrote first.
 6. Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`). Say why in a `dispatch comment`, because `--reason` goes only with `done` (`dispatch issue-update --help`).

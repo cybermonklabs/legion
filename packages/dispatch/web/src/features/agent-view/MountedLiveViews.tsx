@@ -20,7 +20,7 @@
  */
 import { lazy, type ReactNode, Suspense, useLayoutEffect } from "react";
 
-import { ErrorBoundary } from "../shell/ErrorBoundary";
+import { ErrorBoundary } from "../../components/ErrorBoundary";
 import { useLiveViews, useMountedLiveViews } from "./live-views";
 
 const AgentConversationPage = lazy(() =>

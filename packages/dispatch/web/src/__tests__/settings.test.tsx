@@ -1,5 +1,5 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { PROJECT_NAME_MAX } from "@legion/contracts";
+import { PROJECT_NAME_MAX } from "@legion/contracts/dispatch-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -10,8 +10,10 @@ import { ApiError, api } from "../api/client";
 import type { CreatedProject, Project, ProjectDefaultAssignee } from "../api/types";
 import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// for, so the module is loaded here, with the test file, and no wait measures that load; the
+// app's lazy parts beyond its pages load through `app-chunks.ts` the same way.
 import "../features/settings/SettingsPage";
+import "./app-chunks";
 import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { keyedAttempt } from "./keyed-attempt";
 

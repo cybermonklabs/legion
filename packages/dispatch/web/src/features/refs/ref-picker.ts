@@ -185,6 +185,10 @@ export interface RefPickerRow {
   /** The line under the label: where the row is, or what it is. Empty for a row with nothing to
    *  add. */
   readonly detail: string;
+  /** For a party's row, when the session it names was last seen, ISO: the list draws it after
+   *  `detail` as a relative `<Timestamp>`, the exact time on its `title` (`RefRowDetail`). It is
+   *  no search term (`matchesQuery`): a reader finds a session by its name or its folder. */
+  readonly seen?: string;
   /** The `dispatch://` address the row names. */
   readonly reference: string;
   readonly parts?: RefPickerParts;
@@ -436,18 +440,6 @@ export type RefPickerKeyResult =
   | { readonly action: "opened-parts" }
   | { readonly action: "took"; readonly insertion: RefPickerInsertion };
 
-/** Whether a key belongs to an input method's composition - the Enter that confirms a Japanese,
- *  Chinese or Korean word, the Escape that cancels it, the arrows that move between its
- *  segments - which a host leaves to the input method and never hands the picker.
- *  `isComposing` marks a key of a composition where the browser keeps the UI Events order.
- *  Safari on macOS ends the composition before the keydown that confirms it, so that keydown
- *  carries `isComposing` false and the IME key code 229 (WebKit bug 165004), which is why the
- *  code is read too. `keyCode` is deprecated in the DOM types, and that is accepted here: it is
- *  the only signal Safari gives. */
-export function isCompositionKey(event: globalThis.KeyboardEvent): boolean {
-  return event.isComposing || event.keyCode === 229;
-}
-
 /** What the list is, while it is not a list of rows. A host draws the words below. */
 export type RefPickerState = "rows" | "loading" | "empty" | "unreachable";
 
@@ -506,8 +498,10 @@ const SEARCHED_WORDS = REF_PICKER_SEARCHED_KINDS.map((kind) => SEARCHED_KIND_WOR
  */
 export const REF_PICKER_INSTRUCTION = `Type two characters to search ${SEARCHED_WORDS.slice(0, -1).join(", ")} and ${SEARCHED_WORDS.at(-1)}.`;
 
-/** What a role's row says after its role where no running session holds it: a mention of it is
- *  refused rather than kept for its next session, so it is not told. */
+/** What a role's row says after its role where no running session holds it, in the picker's own
+ *  words. It is true of every box but the ask card's answer box (`REF_PICKER_ASK_ANSWER_WORDS`):
+ *  a comment's mention of such a role is refused rather than kept for its next session
+ *  (`DISPATCH_WRITING_HINT_DELIVERED`), and every other write tells nobody it names. */
 const REF_PICKER_STOPPED_ROLE = "not running, not told";
 
 /**
@@ -515,9 +509,10 @@ const REF_PICKER_STOPPED_ROLE = "not running, not told";
  * heading over each kind's rows, the instruction row, each kind of parts' control and the line
  * under an opened row that holds none, the line of each listing state with no rows, the line of
  * each state of the agent and role rows' own source, and what a role's row says of a role no
- * running session holds (`stoppedRole`). A host that draws the picker in words of its own - the
- * issue page's box, through its look (`OutlineLook.picker`) - hands the field a table of its own;
- * every other host draws `REF_PICKER_DEFAULT_WORDS`.
+ * running session holds (`stoppedRole`). A host that draws the picker in words of its own hands
+ * the field a table of its own: the issue page's box, through its look (`OutlineLook.picker`),
+ * and the ask card's answer box (`REF_PICKER_ASK_ANSWER_WORDS`). Every other host draws
+ * `REF_PICKER_DEFAULT_WORDS`.
  */
 export interface RefPickerWords {
   readonly label: string;
@@ -540,8 +535,9 @@ export interface RefPickerWords {
   readonly sessionNames?: "shown";
 }
 
-/** The picker's own words, which every host but the issue page's box draws: the constants above,
- *  and the refilling notice every view of the agent list says (`AGENT_LIST_REFILLING`). */
+/** The picker's own words: the constants above, and the refilling notice every view of the agent
+ *  list says (`AGENT_LIST_REFILLING`). Every host draws them but the issue page's box, which has
+ *  its own, and the ask card's answer box, which says its own of a stopped role. */
 export const REF_PICKER_DEFAULT_WORDS: RefPickerWords = {
   headings: REF_PICKER_HEADINGS,
   instruction: REF_PICKER_INSTRUCTION,
@@ -550,4 +546,15 @@ export const REF_PICKER_DEFAULT_WORDS: RefPickerWords = {
   parts: REF_PICKER_PARTS_WORDS,
   states: REF_PICKER_WORDS,
   stoppedRole: REF_PICKER_STOPPED_ROLE,
+};
+
+/** The picker's own words in the ask card's answer box, but for what a role's row says of a role
+ *  no running session holds. That box makes two writes, which treat such a role apart, as the
+ *  box's line says (`DISPATCH_WRITING_HINT_ASK`): Answer goes to each agent and role its text
+ *  names, and keeps the answer for a role nobody holds, so a session that claims the role within
+ *  three hours is handed it; Ask back is a comment, whose mention of such a role is refused at
+ *  once and kept for no later holder. So `not told` would be false of the answer. */
+export const REF_PICKER_ASK_ANSWER_WORDS: RefPickerWords = {
+  ...REF_PICKER_DEFAULT_WORDS,
+  stoppedRole: "not running: an answer waits for it, Ask back does not tell it",
 };

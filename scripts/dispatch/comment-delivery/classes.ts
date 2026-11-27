@@ -2,7 +2,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_HOURS,
   RECEIPT_TIMEOUT_CAUSE,
   SETTLED_DELIVERY_STATES,
-} from "../../../packages/contracts/src/dispatch-api";
+} from "../../../packages/contracts/src/dispatch-constants";
 import {
   COUNT_KEYS,
   type Comment,

@@ -19,6 +19,7 @@ import {
   badgeSelectPageWrapper,
   badgeSelectWrapper,
 } from "./badge-select";
+import { priorityBadgeWords } from "./issue-header-words";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
@@ -93,7 +94,10 @@ export function PriorityEditor({
       : priority === null
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
-  const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
+  const label =
+    priority === null && page !== null
+      ? page.PROPERTY_LABELS.priority
+      : priorityBadgeWords(priority);
   const mark = priority === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
   // and its wrapper narrows to the line rather than keep its width. The header variant is the

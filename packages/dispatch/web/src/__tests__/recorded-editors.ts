@@ -2,33 +2,59 @@ import { TextSelection } from "@milkdown/kit/prose/state";
 import { within } from "@testing-library/react";
 
 import { loadDocumentTransport } from "../features/doc/connection";
-import { type CreateEditor, createEditor, type EditorHandle } from "../features/doc/editor";
+import { type ConstructEditor, constructEditor, type EditorHandle } from "../features/doc/editor";
 import type { DocumentRuntimeValue } from "../features/doc/runtime";
+import { changingEachHandle } from "./document-runtime";
 
-/** The documents' own editor, each handle it built, and the lookup of one by its name. */
+/** The documents' own editor, each handle it bound, and the lookup of one by its name. */
 export interface RecordedEditors {
-  /** Every handle the editor built, in the order it built them. */
+  /** Every handle the editor bound, in the order it bound them. */
   readonly handles: EditorHandle[];
+  /** Whether an editor it built is still binding: built or being built, and neither bound,
+   *  refused nor torn down yet. The bind ends tasks after a page drew the editor
+   *  (`@legion/proof-editor`'s `bind`), and the page takes its handle then, so the row itself
+   *  waits, inside `act`, until this is false before it ends (`PriorityPage.test.tsx`'s
+   *  `endingBound`). A wait in a teardown comes too late: the handle has landed outside `act`
+   *  by then. */
+  binding(): boolean;
   /** The editor named `name` once it holds its text, among the elements of `scope` (the whole
-   *  document where none is given), with the handle that built it. */
+   *  document where none is given), with its handle. */
   named(name: string, scope?: HTMLElement): Promise<{ box: HTMLElement; handle: EditorHandle }>;
   /** The runtime a test provides (`DocumentRuntime`) in place of the page's own. */
   readonly runtime: DocumentRuntimeValue;
 }
 
 /**
- * The documents' own editor (`features/doc/editor.ts`'s `createEditor`), keeping each handle it
- * builds: for a test of a field drawn in the real editor, which it drives through the editor's
+ * The documents' own editor (`features/doc/editor.ts`'s `constructEditor`), keeping each handle
+ * it binds: for a test of a field drawn in the real editor, which it drives through the editor's
  * own transactions, since happy-dom delivers no keystroke to ProseMirror.
  */
 export function recordedEditors(): RecordedEditors {
   const handles: EditorHandle[] = [];
-  const recording: CreateEditor = async (root, options) => {
-    const handle = await createEditor(root, options);
-    handles.push(handle);
-    return handle;
+  let binding = 0;
+  const counting: ConstructEditor = async (root, options) => {
+    binding += 1;
+    let open = true;
+    const close = () => {
+      if (open) binding -= 1;
+      open = false;
+    };
+    const construction = await constructEditor(root, options).catch((error: unknown) => {
+      close();
+      throw error;
+    });
+    return {
+      ...construction,
+      bind: () => construction.bind().finally(close),
+      destroy: () => {
+        close();
+        return construction.destroy();
+      },
+    };
   };
+  const recording = changingEachHandle(counting, (handle) => handles.push(handle));
   return {
+    binding: () => binding > 0,
     handles,
     async named(name, scope = document.body) {
       const box = await within(scope).findByRole("textbox", { name });
@@ -36,7 +62,7 @@ export function recordedEditors(): RecordedEditors {
       if (handle === undefined) throw new Error(`no editor of this test is named ${name}`);
       return { box, handle };
     },
-    runtime: { createEditor: recording, loadTransport: loadDocumentTransport },
+    runtime: { constructEditor: recording, loadTransport: loadDocumentTransport },
   };
 }
 

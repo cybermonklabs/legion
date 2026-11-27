@@ -50,18 +50,20 @@ import { type Item, type TreeKind, type Walked, walkUp } from "./walk";
  *
  * A composer's mounts are followed up to the routes. The two ask fields' are followed up to the
  * component that holds each and not past it: the answer field's to the ask body (`ASK_BODY`),
- * the reply composer's to the ask card (`ASK_CARD`), whose thread holds it. Every host draws an
- * ask in one card, which draws one body, and their drafts are the ask's, by its id, in stores
- * that outlive every body and card (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the
- * body or the card that hides, ends or keys it, or draws it for another ask, does to its field
- * what the body's or the card's own conditionals do to it, and the body or the card drawn for
- * that ask again holds the ask's drafts. A field drawn outside them is followed up to the
+ * the reply composer's to the ask card (`ASK_CARD`), whose thread holds it, and to the Inbox
+ * reading pane's approval request too (`APPROVAL_EXCHANGE`), which draws the ask's inline thread
+ * alone (`AskThread`), with no card around it. Every host draws an ask in one card, which draws
+ * one body, or its thread in that one box, and their drafts are the ask's, by its id, in stores
+ * that outlive every body, card and box (`answer-drafts.ts`, `reply-drafts.ts`). So a place
+ * above the body, the card or the box that hides, ends or keys it, or draws it for another ask,
+ * does to its field what its own conditionals do to it, and the body, the card or the box drawn
+ * for that ask again holds the ask's drafts. A field drawn outside them is followed up to the
  * routes.
  */
 interface FieldBase {
   readonly homes: ReadonlySet<string>;
-  /** The component the census follows the field's mounts up to and not past. */
-  readonly upTo?: string;
+  /** The components the census follows the field's mounts up to and not past. */
+  readonly upTo?: ReadonlySet<string>;
 }
 
 type DraftField =
@@ -84,6 +86,10 @@ const ASK_BODY = "features/ask-body/AskBody.tsx#AskBody";
 /** The ask card, whose thread holds an ask's reply composer. */
 const ASK_CARD = "features/inbox/AskCard.tsx#AskCard";
 
+/** The Inbox reading pane's approval request, which holds an ask's reply composer, in the
+ *  inline thread it draws with no card (`AskThread`). */
+const APPROVAL_EXCHANGE = "features/inbox/ReadingPane.tsx#ApprovalExchange";
+
 const DRAFT_FIELDS: readonly DraftField[] = [
   {
     component: "features/conversation/MentionComposer.tsx#MentionComposer",
@@ -93,14 +99,14 @@ const DRAFT_FIELDS: readonly DraftField[] = [
   {
     component: "features/inbox/AskThread.tsx#AskReplyComposer",
     homes: new Set(["useReplyDraft"]),
-    upTo: ASK_CARD,
+    upTo: new Set([ASK_CARD, APPROVAL_EXCHANGE]),
   },
   {
     formProp: "form",
     handle: "askAnswer",
     homes: new Set(["useAnswerDraft"]),
     hook: "features/inbox/useAskAnswerForm.ts#useAskAnswerForm",
-    upTo: ASK_BODY,
+    upTo: new Set([ASK_BODY]),
   },
 ];
 
@@ -116,8 +122,8 @@ export interface Mount {
   readonly name: string;
   /** The lines that say where its draft lives as its host draws it. */
   readonly address: readonly Item[];
-  /** The component its field is followed up to and not past (`DraftField.upTo`). */
-  readonly upTo: string | undefined;
+  /** The components its field is followed up to and not past (`DraftField.upTo`). */
+  readonly upTo: ReadonlySet<string> | undefined;
   /** The walk up from it in its host, which the trees and the forms both read. */
   readonly walked: Walked;
 }
@@ -329,14 +335,21 @@ function atTopLevel(node: ts.Node): boolean {
   return true;
 }
 
-/** Every element of the program under `handle`, a plain element's attribute that marks a field. */
+/** Every element of the program under `handle`: a plain element's attribute that marks a field,
+ *  or a `handle` prop naming it, which a field component writes as that attribute on the
+ *  textarea it draws (`MentionField`'s `handle`, which `AskAnswerArea` hands on). The element
+ *  that names the handle is the mount, since it is the one its host draws. */
 function handled(program: Program, handle: string): ts.Node[] {
   const found: ts.Node[] = [];
+  const named = (node: ts.Node) => {
+    const prop = attribute(node, "handle")?.initializer;
+    return prop !== undefined && ts.isStringLiteral(prop) && prop.text === handle;
+  };
   for (const mod of program.mods.values()) {
     const visit = (node: ts.Node) => {
       if (
         (ts.isJsxSelfClosingElement(node) || ts.isJsxElement(node)) &&
-        attribute(node, handle) !== undefined
+        (attribute(node, handle) !== undefined || named(node))
       ) {
         found.push(node);
       }
@@ -367,11 +380,11 @@ export function readTrees(program: Program): Trees {
     startId: string,
     props: ReadonlySet<string>,
     host: string,
-    upTo: string | undefined
+    upTo: ReadonlySet<string> | undefined
   ) => {
     const queue: { id: string; props: Set<string> }[] = [{ id: startId, props: new Set(props) }];
     for (let step = queue.shift(); step !== undefined; step = queue.shift()) {
-      if (step.id === upTo) continue;
+      if (upTo?.has(step.id) === true) continue;
       const labels = hostsOf.get(step.id) ?? new Set<string>();
       const newHost = !labels.has(host);
       labels.add(host);

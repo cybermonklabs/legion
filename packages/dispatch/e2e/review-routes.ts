@@ -120,13 +120,38 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // alone caught the head without that control in one run of the drift probe and with it in
     // the next. The column shows from the wide layout's width and nowhere narrower
     // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`): below it the Inbox lists
-    // short rows and opens none by itself, so the phone row has nothing there to wait for.
+    // short rows and opens none by itself, so the phone row has no column to wait for.
+    //
+    // And the last words this corpus fills the list with, because THE HEADING IS NOT THE PAGE.
+    // `app.tsx` draws it outside the `Suspense` that holds `InboxList`, whose fallback is
+    // `null`, so between the heading's commit and that chunk's the page is the header and the
+    // heading alone - 390 by 664 against a 390 by 3,965 baseline, which is what
+    // `visual-phone`'s `inbox` shot was in run 42815937548, and what a build of this tree three
+    // commits earlier gave twice in three runs: the race is older than that run and the
+    // baseline simply won it. The list's own first commit is not enough either: when the phone's
+    // Inbox was a list of cards it stood at 2,295 px of 3,988 with three of its six rows, its
+    // thread rows arriving on their own reads, and one measured run shot the page mid-fill. So
+    // this names something from the last of those reads - the Tester's thread on CORE-3
+    // (`e2e/workspace.ts`), the @-mention the Tester replied to. The card drew the reply itself;
+    // the short row draws the thread's subject, the mention's own words, so that is what the
+    // row waits for. It is the NARROW row's wait alone. The wide row needs none: its own
+    // control cannot draw before the list, since the column reads the document the selected
+    // row names. A narrow Inbox shows one thing at a time, so where a row is already open there
+    // the list is hidden under it and the open row's own control is what drew last, as at the
+    // wide widths: the wait takes whichever of the two is visible (run 45990322275, shard 1,
+    // where the stub layer's narrow Inbox held a row open and the hidden list's words failed it).
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
-      const wideEnoughForPane = wideLayout(page);
-      return wideEnoughForPane
-        ? [heading, page.getByRole("button", { name: "Skip to the answer" })]
-        : [heading];
+      const skipToTheAnswer = page.getByRole("button", { name: "Skip to the answer" });
+      return wideLayout(page)
+        ? [heading, skipToTheAnswer]
+        : [
+            heading,
+            page
+              .getByText("@Tester please re-run the broadcast spec")
+              .or(skipToTheAnswer)
+              .filter({ visible: true }),
+          ];
     },
   },
   {
@@ -312,16 +337,22 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-artifact",
     path: (seed) => `/issues/${seed.issue}/artifacts/${seed.issueArtifactSlug}`,
     pattern: "/issues/:key/*",
-    // Two facts. The document's connection dot, as the issue-spec row reads it and for the same
-    // reason: `artifact-header` is drawn while the editor still says "Connecting to the
-    // document…", and `ArtifactHeader.tsx` draws the dot inside that header. And the header with
-    // its arrival ring gone: `ArtifactRoutePanel.tsx` opens every document of this route
-    // highlighted, and the ring (`highlightRing`) stays for 2 s after the header mounts, so a page
-    // that connected inside those 2 s was shot with the ring and one that connected later
-    // without it (CI run 44032912332, dark: the header's border drawn as the ring's sky blue).
+    // The document's connection dot, as the issue-spec row reads it and for the same reason:
+    // the header is drawn while the editor still says "Connecting to the document…", and
+    // `ArtifactHeader.tsx` draws the dot inside that header.
+    //
+    // And `artifact-header` itself, which that dot no longer proves. The chrome is held until
+    // the editor's first batch, and the space it is held in draws the same dot
+    // (`web/src/features/doc/AfterTheFirstBatch.tsx`, `ArtifactHeader.tsx`), so a page read on
+    // the dot alone can be a page read before its chrome is on it. The test id is on the
+    // chrome and on nothing else. It is also what the landing ring hangs on, so the page-wide
+    // wait for that ring to be gone (`waitForRouteSettled`) says nothing about this page until
+    // this locator is in: before the chrome there is no ring to have ended. CI run 44032912332
+    // shot this row with that ring on (dark: the header's border drawn as the ring's sky blue),
+    // which the page-wide wait for `data-landing-ring` now rules out.
     ready: (page) => [
       page.getByRole("status", { name: "connected" }),
-      page.locator('[data-testid="artifact-header"]:not([data-highlighted])'),
+      page.getByTestId("artifact-header"),
     ],
   },
   // `/priorities` draws one table at a time, on one of three tabs the address names (`?tab=`,
@@ -421,7 +452,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // same `ArtifactHeader` over the same editor. It did not drift in the probe's two runs,
     // which says its socket was up both times, not that it must be - the race is the one the
     // other two rows lost, so the row is held to the same proof rather than to its luck.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    //
+    // And `artifact-header`, for the reason the issue-artifact row gives: the chrome is held
+    // behind the editor's first batch and the space it waits in draws the same dot, so the dot
+    // alone cannot say the chrome is on the page. Both of this page's baselines were taken with
+    // the chrome drawn - each shows the version picker and `Name version`, which the held space
+    // does not - so this changes no pixel of them and takes away the run where it would.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.getByTestId("artifact-header"),
+    ],
   },
   {
     kind: "reviewed",
@@ -624,20 +664,59 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  names everything its page draws only once its data is in, which is the half of this wait
  *  that is a route's own.
  *
- *  The other half is page-wide and belongs to no row, and it is three waits. No element may be
- *  left carrying `data-markdown-pending`, the mark a body wears while the parse worker owes its
- *  formatting (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that
- *  long holds its own literal text until the answer lands, so a page read in between is a page
- *  of unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold. No artifact header may still wear the ring it
- *  draws for 2 s after a link lands on its artifact (`ArtifactHeader.tsx`'s `highlighted`): a
- *  shot inside those 2 s draws it and one after does not, so a scheme shot after a slower settle
- *  lost it while the other kept it (CI runs 44308307388 and 44323538727 read the dark
- *  `issue-artifact` row without it and with it). It is counted, as the pending mark is, because
- *  most pages draw no artifact header: an assertion on the header itself waits for one to exist,
- *  and timed out every row of a page without one (run 44326108595). And the shell's one Inbox
- *  number must have stopped moving (`waitForInboxCountSettled` below), which every page draws
- *  and no row names.
+ *  The other half is page-wide and belongs to no row: no element may be left carrying
+ *  `data-markdown-pending`, the mark a body wears while the parse worker owes its formatting
+ *  (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that long holds
+ *  its own literal text until the answer lands, so a page read in between is a page of
+ *  unformatted source, and it is cheap to rule out for every row at once rather than to argue
+ *  per row about which bodies cross the threshold. `data-margin-pending` is the second of that
+ *  kind and reads the same way: the shell holds the margin's column open at the margin's own
+ *  width from the first frame and marks it while the margin's chunk is still on its way
+ *  (`web/src/features/margin/MarginColumn.tsx`), so a page still carrying it is a page whose
+ *  margin is an empty box. The column's width does not move when the margin lands in it - that
+ *  is what the reservation is for - but what is inside it does, and both layers want the real
+ *  margin rather than the box kept for it.
+ *
+ *  The issue page's chrome is the third. Its header and its tab strip are chunks of their own,
+ *  each behind a `Suspense` whose fallback is that part's skeleton, and on a document address
+ *  the page holds both as the same skeletons until the editor's first batch
+ *  (`web/src/features/issue/IssuePage.tsx`, `issue-page-skeleton.tsx`,
+ *  `features/doc/AfterTheFirstBatch.tsx`). The skeletons carry the test ids `issue-header-box`
+ *  and `issue-tabs-box` and the parts they stand in for carry neither. No row's own locator
+ *  proves the chrome, because each names something in its tab panel, and the panel can commit
+ *  before the chrome does. Nor does `toHaveScreenshot`'s stabilisation catch it: its two
+ *  identical captures are 100 ms apart, and React holds a boundary's retry back for up to
+ *  300 ms after the last fallback any boundary on the page showed or hid (react-dom's
+ *  `FALLBACK_THROTTLE_MS`). Run 43579010512 shot `issue-artifacts` in that state: the artifact
+ *  list drawn, the header and the strip still skeletons, and 46,079 pixels off - every glyph of
+ *  the main column, and the list 2 px higher, because the strip's skeleton stands 2 px short of
+ *  that page's strip. Its trace has both skeletons in the DOM when the light shot began, and
+ *  the reads the header made as it mounted going out about 285 ms into the shot and about
+ *  310 ms after the first frame that shows the skeleton; the header's mount now reads who is
+ *  subscribed to the issue and the project's architecture sources
+ *  (`web/src/features/issue/IssueHeader.tsx` and the `IssueComponentsLine.tsx` its Details
+ *  row draws). So this waits for both skeletons to be gone, after the row's own
+ *  locators: before those the page may still be drawing "Loading issue…", which has neither
+ *  box.
+ *
+ *  The landing highlight is the fourth of that page-wide half, and the only one of these that
+ *  ends on a clock rather than on an answer: an address that names an artifact rings that
+ *  artifact's header for two seconds, to tell the reader which thing on the page they
+ *  navigated to, and then the page drops the ring by itself
+ *  (`web/src/features/artifacts/ArtifactHeader.tsx`, which marks the header
+ *  `data-landing-ring` for exactly as long as the ring is painted). So a page still carrying
+ *  that attribute is a page still changing: a scheme shot inside those two seconds draws the
+ *  ring and one shot after them does not (CI runs 44308307388 and 44323538727 read the dark
+ *  `issue-artifact` row without it and with it). Both layers wait it out here rather than in a
+ *  row: it belongs to no row, it is the artifact pages' alone to carry, and it costs every
+ *  other page one locator that matches nothing. It is counted, as the pending marks are,
+ *  because an assertion on the header itself waits for one to exist, and timed out every row
+ *  of a page without one (run 44326108595). The wait is for the mark itself and never for two
+ *  seconds of wall clock - a duration would be the same race run against a stopwatch.
+ *
+ *  And the shell's one Inbox number must have stopped moving (`waitForInboxCountSettled`
+ *  below), which every page draws and no row names. It is waited for last, once everything
+ *  above has let the page draw what it draws.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -658,7 +737,10 @@ export async function waitForRouteSettled(
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
-  await expect(page.locator('[data-testid="artifact-header"].ring-2')).toHaveCount(0);
+  await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
+  await expect(page.getByTestId("issue-header-box")).toHaveCount(0);
+  await expect(page.getByTestId("issue-tabs-box")).toHaveCount(0);
   await waitForInboxCountSettled(page, inFlight);
 }
 

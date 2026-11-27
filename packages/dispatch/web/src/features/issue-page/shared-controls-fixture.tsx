@@ -1,5 +1,5 @@
-import { act, type RenderResult } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { act, type RenderResult, waitFor } from "@testing-library/react";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -12,15 +12,20 @@ import type {
   ArtifactApproval,
   Ask,
   AskRead,
+  IssueDetails,
   Priorities,
   PriorityRow,
+  UserIssueState,
 } from "../../api/types";
 import { PAGE_COLORS } from "../../theme/classes";
 import { ProofDocument } from "../doc/ProofDocument";
 import { DocumentRuntime } from "../doc/runtime";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { MarginProvider } from "../margin/margin-context";
+import { issue as marginIssue } from "../margin/margin-fixture";
+import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { NoTooltips } from "./NoTooltips";
+import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /** What `shared-controls.options.test.tsx` and `shared-controls.tooltips.test.tsx` both draw the
  *  shared controls with, and read them by. */
@@ -375,25 +380,51 @@ export function threadOf(ask: Ask): AskRead {
 /** The ProofDocument suites' page (`__tests__/proof-document.tsx`'s `renderProofDocument`): the
  *  issue's spec with a fake document runtime and the margin, on its own page. */
 export function proofDocument(): ReactNode {
+  return proofDocumentPage().node;
+}
+
+/** A ProofDocument page a case drives: what it draws, and the server's sync of its socket. */
+export interface ProofDocumentPage {
+  readonly node: ReactNode;
+  /** The server's sync of the page's socket, once it is open. */
+  sync(): Promise<void>;
+}
+
+/** `proofDocument`, with the server's sync of its socket, which the page draws its editor on
+ *  (`ProofDocument`'s `onSynced`, dispatch://INFRA-341): until then it shows the document's own
+ *  draw, and what waits for the editor - the blocks' reference badges among it - is not read. */
+export function proofDocumentPage(): ProofDocumentPage {
   const fake = fakeDocumentRuntime({ text: "The live document" });
-  return (
-    <DocumentRuntime.Provider value={fake.runtime}>
-      <MarginProvider>
-        <ProofDocument
-          artifact={specDocument}
-          highlight={undefined}
-          isClosed={false}
-          onToolbarChange={() => undefined}
-          onVersionChange={() => undefined}
-          owner={{ key: "CORE-1", kind: "issue" }}
-          showDiff={false}
-          surface="page"
-          user={{ event_head: "0", kind: "user", login: "alice" }}
-          version={undefined}
-        />
-      </MarginProvider>
-    </DocumentRuntime.Provider>
-  );
+  return {
+    node: (
+      <DocumentRuntime.Provider value={fake.runtime}>
+        <MarginProvider>
+          <ProofDocument
+            artifact={specDocument}
+            highlight={undefined}
+            isClosed={false}
+            onToolbarChange={() => undefined}
+            onVersionChange={() => undefined}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            showDiff={false}
+            surface="page"
+            user={{ event_head: "0", kind: "user", login: "alice" }}
+            version={undefined}
+          />
+        </MarginProvider>
+      </DocumentRuntime.Provider>
+    ),
+    // The sync can only follow the connection, which exists once the lazy transport has
+    // resolved.
+    async sync() {
+      await waitFor(() => {
+        if (fake.connections.length !== 1) throw new Error("the document's socket is not open");
+      });
+      await act(async () => {
+        fake.sync();
+      });
+    },
+  };
 }
 
 /** The header's priority write, which no case presses. It draws no priority; a case that draws
@@ -406,6 +437,45 @@ export const idlePriorityWrite: IssuePriorityWrite = {
   stopped: undefined,
   submit: () => undefined,
 };
+
+/** The issue the identity block's typed editors are open on: the margin fixture's issue, with no
+ *  documents, as `shared-writes.test.ts` builds its own. */
+const ISSUE: IssueDetails = {
+  ...marginIssue,
+  artifacts: [],
+  last_seq: 250,
+  primary_artifact_id: "",
+  status: "todo",
+};
+
+/** The reader's own state of `ISSUE`. */
+const STATE: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
+
+/** The identity block's editor of `field` (`IssueFieldForms`), open as the page opens it: on the
+ *  drafts of the page's `useIssueHeaderWrites`, and closed as the page closes it, which `onClose`,
+ *  where a case gives one, is told of. */
+export function OpenFieldForm({
+  field,
+  onClose,
+}: {
+  field: IssueField;
+  onClose?: () => void;
+}): ReactNode {
+  const writes = useIssueHeaderWrites(ISSUE, STATE);
+  const [open, setOpen] = useState<IssueField | null>(field);
+  return (
+    <IssueFieldForms
+      field={open}
+      isClosed={false}
+      issue={ISSUE}
+      onClose={() => {
+        onClose?.();
+        setOpen(null);
+      }}
+      writes={writes}
+    />
+  );
+}
 
 export const minutesFromNow = (minutes: number) =>
   new Date(Date.now() + minutes * 60_000).toISOString();

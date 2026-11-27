@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   borderTransparent,
   focusVisibleRing,
@@ -150,9 +151,11 @@ export function IssuePresets({
     // takes the press wherever the focus is: on the dialog itself in its first frame, on its
     // field, or gone to the page after a press on its text. Whether one is open is `useDialog`'s
     // registry's answer (`dialogOpen()`), which also decides which dialog the key closes, as
-    // Details' drawer asks it.
+    // Details' drawer asks it. An input method's Escape (`inputMethodKey`) is the input method's,
+    // and the menu stays open: the focus can be in a field while it is, as `e` opens the title's
+    // editor without closing it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || inDialog(event.target)) return;
+      if (event.key !== "Escape" || inputMethodKey(event) || inDialog(event.target)) return;
       if (dialogOpen()) return;
       event.preventDefault();
       setOpen(undefined);
@@ -419,7 +422,10 @@ function MenuMark(): ReactNode {
 type OpenMenu = "presets" | undefined;
 
 /** The widths the row is one control at: below 1280 px, from which R2 has the views one row.
- *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */
+ *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. It is
+ *  paired with neither the 44 px floor nor the shell's `xl`: the row's controls take the view
+ *  row's 24 px target below `xl` in either shape, and the one control's menu keeps the floor
+ *  below `xl` as every menu does (`styles.css`), so no floor changes with the shape. */
 const ONE_CONTROL_QUERY = "(max-width: 1279px)";
 
 /** Where a roving focus goes from `at` of `count` controls on `key`: `back` and `forward` step

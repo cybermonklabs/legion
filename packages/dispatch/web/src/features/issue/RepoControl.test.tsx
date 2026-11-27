@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
@@ -9,10 +9,13 @@ import {
   holdNotifications,
   recordCommits,
 } from "../../__tests__/commits";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, Project } from "../../api/types";
+import { CONTROL_LABELS } from "../issue-page/page-words";
+import { draw, settleReads, undraw } from "../issue-page/shared-controls-fixture";
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
@@ -512,6 +515,62 @@ test("RepoControl restores the issue's repository on Escape", async () => {
   }
 });
 
+// The Escape that ends an IME composition gives up what the reader was composing, not the
+// repository they typed: an Escape that is the input method's, marked `isComposing`, or sent
+// unmarked with keyCode 229 after the composition's end, as Safari sends it (WebKit bug 165004),
+// restores nothing on `main`'s page. A plain Escape after it restores the issue's repository.
+test("RepoControl restores nothing on an input method's Escape, and restores on a plain Escape", async () => {
+  const patchIssue = answerIssuePatches();
+  const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
+  try {
+    await user.click(box());
+    await user.paste("-typo");
+    pressAsInputMethod(box(), "Escape", {
+      beforePlain: () => expect(box().value).toBe("acme/gadgets-typo"),
+    });
+    expect(box().value).toBe("acme/gadgets");
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// Inside `NoTooltips` the box's place takes Escape (`RepoControl.tsx`), and an input method's
+// Escape, marked or sent with keyCode 229 as above, leaves the box open with what was typed in
+// it. A plain Escape after it closes the box.
+test("inside NoTooltips an input method's Escape leaves the repository box open, and a plain Escape closes it", async () => {
+  const user = userEvent.setup();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
+  const view = draw(
+    <RepoControl inRow issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />,
+    "inside"
+  );
+  const scope = within(view.container);
+  const field = () => scope.queryByRole("combobox", { name: "Repository of CORE-1" });
+  try {
+    await user.click(
+      scope.getByRole("button", { name: `${CONTROL_LABELS.none}, Repository of CORE-1` })
+    );
+    const typed = field();
+    if (!(typed instanceof HTMLInputElement)) throw new Error("the none control opened no box");
+    // The project list's read, which the control starts as it mounts, lands before what follows.
+    await settleReads();
+    await user.keyboard("acme/web");
+    expect(
+      pressAsInputMethod(typed, "Escape", {
+        beforePlain: () => {
+          expect(field()).toBe(typed);
+          expect(typed.value).toBe("acme/web");
+        },
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
+    expect(field()).toBeNull();
+  } finally {
+    undraw(view);
+    listProjects.mockRestore();
+  }
+});
+
 // The placeholder is for sighted readers; the box's description says the same in words, so a
 // screen reader hears the target and whether it is the issue's own.
 test("RepoControl describes the repository the issue resolves to", async () => {
@@ -644,6 +703,35 @@ test("RepoControl draws the pick, and the repository it resolves to, in every co
     );
   } finally {
     notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It writes nothing; a plain Enter after it writes the box.
+test("RepoControl writes nothing on the Enter that confirms an input method's word, and writes on a plain Enter", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/gadgets",
+    resolved_repo: "acme/gadgets",
+    last_seq: 2,
+  });
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    await user.click(box());
+    await user.paste("acme/gadgets");
+    expect(pressAsInputMethod(box(), "Enter")).toEqual({
+      composing: true,
+      plain: false,
+      safari: true,
+    });
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
     unmount();
     patchIssue.mockRestore();
   }

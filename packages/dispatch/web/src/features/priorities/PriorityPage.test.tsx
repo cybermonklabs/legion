@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, test as bunTest, expect, jest, spyOn } from "bun:test";
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the click below leaves the page with the focus still in the title's field, which user-event has no form for: its click moves the focus first, and the field's blur would write before the page goes.
@@ -9,7 +9,12 @@ import { BeforeEffectsOfRead, stepBeforeEffects } from "../../__tests__/before-e
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
-import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
+import {
+  type RecordedEditors,
+  recordedEditors,
+  selectText,
+  writeAtEnd,
+} from "../../__tests__/recorded-editors";
 import {
   answerPriorityPatches,
   PRIORITY_DESCRIPTION_CHANGED,
@@ -148,6 +153,101 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** The description editors of every page the row in progress drew. */
+const drawnEditors: RecordedEditors[] = [];
+
+/** How long a row waits, once its body has run, for the description editors it drew to bind. A
+ *  bind took at most 2 turns of the event loop, 7 ms, in a run of this file in the pod. */
+const BIND_WAIT_MS = 10_000;
+
+/**
+ * `body`, as a row of this file runs it. Once the body has run, the row waits until each
+ * description editor it drew has bound, been refused or gone, and fails by name when one is
+ * still binding after `waitMs`; a body that failed fails with its own error. That editor binds
+ * tasks after the page drew it (`@legion/proof-editor`'s `bind`), and the page takes its handle
+ * then, so a row that ended first would leave that update to land outside `act`, after the row
+ * and before any teardown of this file runs.
+ *
+ * The wait is in `act`, a turn at a time. `onRealTurns` (`fake-clock.ts`) takes each turn in an
+ * `act` of its own, and the handle landed between two of them in 6 of 6 runs of this file, so
+ * each `act` here takes every turn until no editor is binding. A turn is a zero-delay timer, as
+ * the bind's own tasks are: with `setImmediate`, which `onRealTurns` takes, 1,000 turns passed
+ * before a bind's timers did, and a row failed at the bound. A row that left Bun's fake clock
+ * on, which holds that timer, fails at Bun's own limit on a row rather than passing; no row of
+ * this file does.
+ */
+function endingBound<A extends unknown[]>(
+  body: (...args: A) => Promise<void>,
+  waitMs = BIND_WAIT_MS
+) {
+  return async (...args: A): Promise<void> => {
+    const ran = await body(...args).then(
+      () => null,
+      (error: unknown) => ({ error })
+    );
+    // React's `act` answers a thenable whose `then` chains nothing, so its failure is caught here
+    // rather than mapped as the body's is.
+    let waited: { error: unknown } | null = null;
+    const until = performance.now() + waitMs;
+    const binding = () => drawnEditors.some((one) => one.binding());
+    try {
+      // A turn at least, in an `act`: the page builds an editor a task after it draws one, once
+      // its Yjs document is made, so an editor about to be built is not binding yet. An `act`
+      // flushes what the page does with the handle as it ends, and that can draw an editor
+      // again, so the wait goes on while an editor is binding after the `act`.
+      do {
+        await act(async () => {
+          do {
+            const { promise, resolve } = Promise.withResolvers<void>();
+            setTimeout(resolve, 0);
+            await promise;
+          } while (binding() && performance.now() < until);
+        });
+      } while (binding() && performance.now() < until);
+    } catch (error) {
+      waited = { error };
+    }
+    const stillBinding = binding();
+    drawnEditors.length = 0;
+    if (ran !== null) throw ran.error;
+    if (waited !== null) throw waited.error;
+    if (stillBinding) {
+      throw new Error(`a description editor of this row was still binding after ${waitMs} ms`);
+    }
+  };
+}
+
+// The bound fails its row by name: a row whose description editor is still binding at the bound
+// fails, and a row whose own body failed fails with its own error and not the bound's. Each
+// leaves no editor of its for the next row to wait on.
+bunTest("a row whose description editor is still binding at the bound fails by name", async () => {
+  const stuck = { binding: () => true } as unknown as RecordedEditors;
+  drawnEditors.push(stuck);
+  await expect(endingBound(async () => {}, 50)()).rejects.toThrow(
+    "a description editor of this row was still binding after 50 ms"
+  );
+  expect(drawnEditors).toEqual([]);
+  const own = new Error("the row's own failure");
+  drawnEditors.push(stuck);
+  await expect(
+    endingBound(async () => {
+      throw own;
+    }, 50)()
+  ).rejects.toBe(own);
+  expect(drawnEditors).toEqual([]);
+});
+
+const test = Object.assign(
+  (name: string, body: () => Promise<void>) => bunTest(name, endingBound(body)),
+  {
+    each:
+      <T extends Readonly<[unknown, ...unknown[]]>>(table: readonly T[]) =>
+      (name: string, body: (...row: [...T]) => Promise<void>) =>
+        // Bun's `each` types a row's callback with a `done` it may take; these rows take none.
+        bunTest.each(table)(name, endingBound(body) as never),
+  }
+);
+
 function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(BODY);
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
@@ -184,6 +284,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   };
   // The description is drawn in the documents' own editor, whose handles a test edits through.
   const editors = recordedEditors();
+  drawnEditors.push(editors);
   // What runs in the commit the next read the page takes draws, before the page's effects: after
   // the page's render of it, before the page's effects take it in (`beforeEffects`).
   const { beforeEffects, step } = stepBeforeEffects();

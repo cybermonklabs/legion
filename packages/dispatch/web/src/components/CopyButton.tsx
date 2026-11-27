@@ -12,6 +12,7 @@ import {
   pageStatusDoneText,
   successText,
 } from "../theme/classes";
+import { copyBoxClassName, copyIconBoxClassName } from "./copy-button-classes";
 import { useTooltips } from "./tooltips";
 
 /** Copies `value` to the clipboard and confirms inline for 1.5 s ("Copied") or reports the
@@ -66,22 +67,21 @@ export function CopyButton({
   }, [status]);
   useEffect(() => () => trail.current?.stop(), []);
   const name = label ?? (typeof value === "string" ? `Copy ${what} ${value}` : `Copy ${what}`);
-  const shape =
-    children === undefined
-      ? "min-w-11 justify-center md:min-w-8"
-      : "max-w-full gap-1 px-1 font-mono text-xs font-medium select-text";
   // Inside `NoTooltips` what the button draws can be a value (an ask card's tmux target), and so
   // is what a failed copy prints: each breaks anywhere, and a button that draws one narrows to
   // its line rather than keep its width. A button that draws only its icon holds no value and
-  // keeps its size.
-  const width = tooltips || children === undefined ? "shrink-0" : "min-w-0";
+  // keeps its size (`copyIconBoxClassName`).
+  const box =
+    children === undefined
+      ? copyIconBoxClassName
+      : `${copyBoxClassName} ${tooltips ? "shrink-0" : "min-w-0"} max-w-full gap-1 px-1 font-mono text-xs font-medium select-text`;
 
   return (
     <>
       <button
         aria-disabled={copyOut || undefined}
         aria-label={name}
-        className={`inline-flex min-h-11 ${width} items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
+        className={`${box} ${look} ${className ?? ""}`}
         onClick={(event) => {
           if (!tooltips && trail.current !== null) return;
           const text = typeof value === "string" ? value : value(event);

@@ -34,6 +34,7 @@ import {
   pageStateText,
   pageWordsText,
 } from "../../theme/classes";
+import { moveTheScroll } from "../doc/readers-place";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { EditedMark } from "../refs/PostMarks";
@@ -43,7 +44,7 @@ import { ReferenceHostIs } from "../refs/reference-host";
 import { namesBlockByLine, useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, clampPainted, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
@@ -377,6 +378,12 @@ export function NodeRow({
                 <RowText
                   focused={focused}
                   markdown={node.text}
+                  // The reading is painted once the Markdown engine has loaded, which can be
+                  // after this row's commit measured its words with none: the measurer forgets
+                  // that measure and measures the row as it mounts (`useClamp`).
+                  onLatePaint={() => {
+                    if (cuttable && words.current !== null) clampPainted(words.current);
+                  }}
                   onRedrawn={redrawn}
                   source={node.source}
                   tabStops={tabStops}
@@ -592,7 +599,7 @@ function belowWhatStays(element: HTMLElement, below: number): void {
   const stays = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
   if (!Number.isFinite(stays)) return;
   const top = element.getBoundingClientRect().top;
-  if (top < stays) window.scrollBy({ top: top - stays - below });
+  if (top < stays) moveTheScroll(element, top - stays - below);
 }
 
 /** The kinds of node the page draws no tag for: what somebody said, which is the conversation's
@@ -1568,9 +1575,15 @@ export function MoreWords({
  * a read (`api/queries.ts`): a later read answers the same words in objects of its own - a names
  * read under a new key, which a new comment on the issue starts, shares none with the last - and
  * a row drawn from them draws nothing new, so it keeps its length. A caller that cannot say what
- * its words are drawn from passes nothing. Undefined where the words are drawn whole, or not
- * measured yet; a row the reader scrolled away from keeps the cut it last had, save one measured
- * on the fallback face, which is measured again once the typeface arrives.
+ * its words are drawn from passes nothing. A row drawn from its reading can mount before the
+ * Markdown engine has loaded, and a reading of more nodes than one task attaches is painted a
+ * batch a task: either way its paint ends in a task after its commit, which measured its words
+ * with none or with part of them (`RowText`'s `onLatePaint`). In that task the row is measured as
+ * one that mounts, and where it stands outside the view, left to the batches as one never
+ * measured, save a row a batch cut on part of its words, which keeps that cut (`clampPainted`).
+ * Undefined where the words are drawn whole, or not measured yet; a row the reader scrolled away
+ * from keeps the cut it last had, save one measured on the fallback face, which is measured again
+ * once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,

@@ -92,7 +92,7 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
 	"For a fold, name the carrier in the reason: the issue that carries the work. " +
 	"Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
-	"Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+	"Done starts those issues, and the Referenced by list of dispatch read names each of them as blocks, or as blocked_by in an older dispatch. " +
 	"Before done on a running child, have its worker push the work that the carrier needs. " +
 	"Done ends the worker's turn and the pod at once. " +
 	"Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +

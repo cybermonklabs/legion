@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useLayoutEffect, useRef } from "react";
+import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -30,8 +30,9 @@ import {
   MarginComposerSlot,
   MarginKeptDrafts,
 } from "./CommentsTab";
-import { marginReplySendKey } from "./margin-context";
+import { marginReplySendKey, useDetailsDrawsConversation, useMargin } from "./margin-context";
 import { PinnedTab } from "./PinnedTab";
+import { publishReviewSheetSlots } from "./review-sheet-slots";
 import { ThreadCard } from "./ThreadCard";
 import type { CommentActionFailure } from "./useCommentActionQueue";
 import type {
@@ -244,8 +245,54 @@ export function MarginSheet({
     onClose: sheet.closeThread,
     open: isPhoneViewport && phoneThread !== undefined,
   });
-  // What the margin's own tabs give way to: the rail it collapses to, or a phone margin thread.
-  const covered = collapsed || (isPhoneViewport && phoneThread !== undefined);
+  // What the margin's own tabs give way to: the rail it collapses to, a compact sheet nothing
+  // has named a card in and the reader has not opened, or a phone margin thread.
+  //
+  // A shut compact sheet is what a reader opening a document meets. Its tabs are
+  // `display: none` there - the sheet is 64 px of `Review (N)`, 44 on a phone, until it is
+  // dragged up - and
+  // the cards behind them cost what a card costs: a read of every ask's thread
+  // (`GET /asks/{id}`, one each), and every ask and comment body drawn through the headless
+  // engine, on the thread the document beside them is waiting for. On a phone opening a
+  // document of five decision blocks that was five reads and about a second of main thread in
+  // front of the document's own first draw (dispatch://INFRA-341, R11). None of it is on
+  // screen, so none of it is drawn until the reader opens the sheet; the count beside `Review`
+  // is the margin's own asks query, which is read either way, and the composer below keeps its
+  // draft as it does under the rail.
+  //
+  // A card the route named is the exception, and is drawn in the shut sheet as it always was:
+  // the landing selects it, places it and scrolls the sheet to it before the reader opens the
+  // sheet over it (`useMarginListeners`, `e2e/deep-links.e2e.ts`, "an iPhone secondary-document
+  // link scrolls its selected card after opening the review sheet"), and a card that is not
+  // there yet is a landing that cannot happen.
+  //
+  // The new issue page's Details drawer is no shut sheet: the sheet is its body at every width,
+  // so the rule is the compact sheet's alone (`compactSheet`).
+  const unnamedShutSheet =
+    compactSheet && !sheet.expanded && selection.selectedItemId === undefined;
+  const covered = collapsed || unnamedShutSheet || (isPhoneViewport && phoneThread !== undefined);
+  // Whether a reader sees the margin: the desktop column up, a compact sheet they have opened, or
+  // Details open and drawing the conversation, which Details draws only once the document's editor
+  // is bound (`useDetailsDrawsConversation` in `margin-context.tsx`, which `DetailsFill` in
+  // `issue-page/slots/details.tsx` draws by: the margin's `documentBridge`, which
+  // `ProofDocument`'s `bindEditor` sets after the build). While a reader sees it, its comments and
+  // its answered asks are read before the document's first batch (`useMarginItems`,
+  // `features/doc/first-batch.ts`), and the open document places the margin's cards against its
+  // blocks and marks (`features/doc/ProofDocument.tsx`'s `placed`, dispatch://INFRA-341
+  // requirement R11). Details open during the first load's build draws none of the margin's cards,
+  // so the reads wait for the first batch there. The composer below reads `seen` for its
+  // `onScreen`.
+  const { setPlacesItems } = useMargin();
+  const detailsDrawsConversation = useDetailsDrawsConversation();
+  const seen = drawer
+    ? drawerOpen && detailsDrawsConversation
+    : sheet.expanded || !isCompactViewport;
+  // A margin with no owner shows nothing, and a covered one has given its room away.
+  const placesItems = owner !== undefined && !covered && seen;
+  useEffect(() => {
+    setPlacesItems(placesItems);
+    return () => setPlacesItems(false);
+  }, [placesItems, setPlacesItems]);
   // Collapsed below `xl`, the sheet is a bar fixed at the foot of the screen, in the foot's page
   // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook
   // holds its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
@@ -276,6 +323,53 @@ export function MarginSheet({
       root.style.removeProperty("--margin-sheet-height");
     };
   }, [dialog.containerRef, modalSheet]);
+  // A phone's sheet on an issue's page holds the document's own chrome (`review-sheet-slots.ts`):
+  // the toolbar's controls and the open-decisions bar in its body, and the version the page shows
+  // and the count of open decisions in its collapsed bar. Only there: the issue's header and tab
+  // strip stand above the document there, and the first block stood under the sheet. A project
+  // document's page has neither above its document, and keeps its toolbar and bar where they are.
+  const phoneSheet = compactSheet && isPhoneViewport && owner?.kind === "issue";
+  const versionSlot = useRef<HTMLSpanElement>(null);
+  const countSlot = useRef<HTMLSpanElement>(null);
+  const controlsSlot = useRef<HTMLDivElement>(null);
+  const decisionsSlot = useRef<HTMLDivElement>(null);
+  // A control in the sheet that takes the reader into the document (`leave`): its move waits for
+  // the sheet to shut. The dialog gives the focus back to the toggle in its passive cleanup
+  // (`useDialog`), which runs before this effect of the same commit, so the move's own scroll
+  // and focus are the last the reader is given rather than the toggle's.
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+  const pendingMove = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => {
+    if (sheet.expanded) return;
+    const move = pendingMove.current;
+    pendingMove.current = undefined;
+    move?.();
+  }, [sheet.expanded]);
+  useLayoutEffect(() => {
+    const version = versionSlot.current;
+    const count = countSlot.current;
+    const controls = controlsSlot.current;
+    const decisions = decisionsSlot.current;
+    if (
+      !phoneSheet ||
+      version === null ||
+      count === null ||
+      controls === null ||
+      decisions === null
+    ) {
+      return;
+    }
+    const leave = (move: () => void) => {
+      if (!sheetRef.current.expanded) {
+        move();
+        return;
+      }
+      pendingMove.current = move;
+      sheetRef.current.toggle(false);
+    };
+    return publishReviewSheetSlots({ controls, count, decisions, leave, version });
+  }, [phoneSheet]);
 
   return (
     <>
@@ -298,7 +392,10 @@ export function MarginSheet({
                   ? "hidden"
                   : sheet.expanded
                     ? "max-h-[85dvh] overflow-y-auto p-4"
-                    : "h-16 overflow-hidden"
+                    : // 64 px, and 44 px on a phone: a touch target's floor, which leaves the
+                      // document's first block whole above the sheet at 390 by 664 px
+                      // (`review-sheet-slots.ts`).
+                      "h-16 overflow-hidden max-md:h-11"
               } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`
         }
         data-expanded={sheet.expanded ? "true" : "false"}
@@ -312,14 +409,20 @@ export function MarginSheet({
       >
         {compactSheet ? (
           <>
+            {/* On a phone the collapsed bar is the toggle's 44 px alone, so the handle stands
+                over the top of the toggle rather than above it. */}
             <div
               aria-hidden="true"
-              className={`mx-auto mb-1 h-1 w-10 rounded-full ${dragHandleBg}`}
+              className={`mx-auto mb-1 h-1 w-10 rounded-full ${dragHandleBg} ${
+                sheet.expanded
+                  ? ""
+                  : "max-md:pointer-events-none max-md:absolute max-md:inset-x-0 max-md:top-1 max-md:mb-0"
+              }`}
             />
             <button
               aria-expanded={sheet.expanded}
               aria-label={reviewToggleLabel}
-              className={`flex h-16 w-full items-center justify-between px-4 text-left text-sm font-semibold ${textPrimaryOnSurface}`}
+              className={`flex h-16 w-full items-center justify-between gap-3 px-4 text-left text-sm font-semibold max-md:h-11 ${textPrimaryOnSurface}`}
               onClick={() => {
                 if (sheetDragMoved.current) {
                   sheetDragMoved.current = false;
@@ -341,8 +444,25 @@ export function MarginSheet({
               }}
               type="button"
             >
-              <span>Review ({openAskCount})</span>
+              <span className="shrink-0">Review ({openAskCount})</span>
+              {/* The version the page shows and the count of open decisions, which the document
+                  draws here on a phone (`review-sheet-slots.ts`): words of the bar, which a cut
+                  version name ends in an ellipsis of. */}
+              {phoneSheet ? (
+                <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
+                  <span className="min-w-0 truncate" ref={versionSlot} />
+                  <span className="shrink-0" ref={countSlot} />
+                </span>
+              ) : null}
             </button>
+            {/* The document's toolbar controls and its open-decisions bar, on a phone, in the
+                order the page draws them beside the document at every other width. */}
+            {phoneSheet ? (
+              <div className="space-y-3 px-4 pb-3" hidden={!sheet.expanded}>
+                <div ref={controlsSlot} />
+                <div ref={decisionsSlot} />
+              </div>
+            ) : null}
           </>
         ) : null}
         {/* The tabs and what they show. Mounted under a phone margin thread and under the
@@ -437,11 +557,7 @@ export function MarginSheet({
               key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}
               onClose={actions.closeComposer}
               onKindChange={actions.onComposerKindChange}
-              onScreen={
-                !covered &&
-                tab.value === "comments" &&
-                (drawer ? drawerOpen : sheet.expanded || !isCompactViewport)
-              }
+              onScreen={!covered && tab.value === "comments" && seen}
             />
           )}
           {/* With no compose open on the document, what the margin's compose kept for its words

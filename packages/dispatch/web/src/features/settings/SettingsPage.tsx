@@ -7,6 +7,7 @@ import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
+import { placeInView, whereTheReaderIs } from "../doc/readers-place";
 import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { AgentTokensSection } from "./AgentTokensSection";
@@ -53,23 +54,26 @@ export function SettingsPage(): ReactNode {
   // and Sign-ins are drawn above the later sections once the broker's read settles, which moves
   // the section the address names, so the page scrolls to it once more then - unless the reader
   // has scrolled since, by wheel, touch or keys or by the scroll position moving from where the
-  // first scroll left it: where the reader has gone is theirs.
+  // first scroll left it: where the reader has gone is theirs. Each scroll is the page placing
+  // what it draws, so it goes through the one call that records it (`placeInView`,
+  // `features/doc/readers-place.ts`), and where it left the reader is read there too: Settings
+  // scrolls as one document, so the box is the page (`whereTheReaderIs(null)`).
   const { hash } = useLocation();
   const brokerSettled = !credentialsAvailable.isPending;
-  const correction = useRef<{ id: string; readerMoved: boolean; scrollY: number } | null>(null);
+  const correction = useRef<{ id: string; leftAt: number; readerMoved: boolean } | null>(null);
   useEffect(() => {
     correction.current = null;
     const id = fragmentId(hash);
     const target = id === undefined ? null : document.getElementById(id);
     if (id === undefined || target === null) return;
-    target.scrollIntoView();
-    const pending = { id, readerMoved: false, scrollY: window.scrollY };
+    placeInView(target);
+    const pending = { id, leftAt: whereTheReaderIs(null), readerMoved: false };
     correction.current = pending;
     const moved = () => {
       pending.readerMoved = true;
     };
     const scrolled = () => {
-      if (Math.abs(window.scrollY - pending.scrollY) > 1) pending.readerMoved = true;
+      if (Math.abs(whereTheReaderIs(null) - pending.leftAt) > 1) pending.readerMoved = true;
     };
     window.addEventListener("wheel", moved, { passive: true });
     window.addEventListener("touchmove", moved, { passive: true });
@@ -86,7 +90,9 @@ export function SettingsPage(): ReactNode {
     const pending = correction.current;
     if (!brokerSettled || pending === null) return;
     correction.current = null;
-    if (!pending.readerMoved) document.getElementById(pending.id)?.scrollIntoView();
+    if (pending.readerMoved) return;
+    const target = document.getElementById(pending.id);
+    if (target !== null) placeInView(target);
   }, [brokerSettled]);
 
   return (

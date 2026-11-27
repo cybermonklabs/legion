@@ -3,13 +3,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
 import { nextFrame as oneFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
+import { theFirstBatchIsAwaited } from "../doc/first-batch";
 import { useDrawerPage } from "../issue-page/drawer-page";
 import {
   type MarginDrawer,
@@ -24,7 +25,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { type KeyBindingDescription, useKeymap } from "../shell/keymap";
 import { ShortcutHelp } from "../shell/ShortcutHelp";
 import { Margin } from "./Margin";
-import { MarginProvider } from "./margin-context";
+import { MarginProvider, useDetailsDrawsConversation, useMargin } from "./margin-context";
 import {
   anchoredAsk,
   CommentLink,
@@ -37,6 +38,8 @@ import {
   ReportEmptyLayoutButton,
   SameCommentLink,
   SelectedItemLabel,
+  specArtifact,
+  stubDocumentBridge,
   stubViewport,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
@@ -123,6 +126,15 @@ function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
   return queryClient;
 }
 
+/** The page's client before the margin has read anything of its own: the issue's comments and
+ *  its asks, which the margin reads itself (`useMarginItems`, `useAnsweredAsks`), are not in it. */
+function unreadClient(): QueryClient {
+  const queryClient = landingClient([]);
+  queryClient.removeQueries({ exact: true, queryKey: ["comments", issue.key] });
+  queryClient.removeQueries({ exact: true, queryKey: ["asks", issue.key] });
+  return queryClient;
+}
+
 function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] = []): RenderResult {
   return render(
     <MemoryRouter
@@ -206,15 +218,30 @@ test("a phone comment deep link highlights its card without expanding it or open
   }
 });
 
-/** The new page's fill of the margin's slot, at its plainest: the margin's own content. */
-const passThrough: MarginFill = (content) => content;
-
 /** What the new issue page's root does for Details while it is mounted: it sets the drawer's
- *  words and its address rule (`drawer-page.ts`), and, where `fills`, fills the margin's slot so
- *  the margin's cards are drawn in Details. */
+ *  words and its address rule (`drawer-page.ts`), and, where `fills`, fills the margin's slot as
+ *  `DetailsFill` does: with the margin's own content while Details draws the conversation, which
+ *  is while a document's editor is bound (`useDetailsDrawsConversation`, which `DetailsFill` and
+ *  `MarginSheet`'s `seen` read too), and with nothing before. */
 function NewPageRoot({ fills }: { fills: boolean }): null {
   useDrawerPage(issue);
-  useFillMarginSlot(fills ? passThrough : undefined);
+  const drawsConversation = useDetailsDrawsConversation();
+  const fill = useCallback<MarginFill>(
+    (content) => (drawsConversation ? content : null),
+    [drawsConversation]
+  );
+  useFillMarginSlot(fills ? fill : undefined);
+  return null;
+}
+
+/** Stands in for the page's document with its editor bound: it registers a bridge with the
+ *  margin as `ProofDocument`'s `bindEditor` does after the build, and takes it back as it goes. */
+function BoundDocument(): null {
+  const { registerDocument } = useMargin();
+  useEffect(() => {
+    registerDocument(stubDocumentBridge(specArtifact.id));
+    return () => registerDocument(undefined);
+  }, [registerDocument]);
   return null;
 }
 
@@ -260,6 +287,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
           <QueryClientProvider client={landingClient([comment])}>
             <MarginProvider>
               <Details fills open>
+                <BoundDocument />
                 <SelectedItemLabel />
                 <Margin />
               </Details>
@@ -339,6 +367,117 @@ test("a link to a card beside its document opens Details on it, and a link to a 
     scrollTo.mockRestore();
   }
 });
+
+// Below `xl` a margin outside Details is a compact sheet, which draws no card while it is shut and
+// the address names none (`MarginSheet`'s `unnamedShutSheet`). That rule is the compact sheet's
+// alone: in this fixture, an open Details drawer whose document is bound - the fixture's fill
+// draws the margin's content only then, as `DetailsFill` does - draws the margin's card at a width
+// under `xl` that is no phone's, with no card named. It is the fixture's drawer, and says nothing
+// of what the new issue page's Details draws in a browser.
+test("below xl, the shut-sheet rule is the compact sheet's alone: it hides no card of a margin in an open Details drawer with its document bound", async () => {
+  const tabletWidth = 1024;
+  const restoreMatchMedia = stubViewport(tabletWidth);
+  const scrollTo = stubScrollTo();
+  try {
+    const view = render(
+      <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "spec" })]}>
+        <QueryClientProvider client={landingClient([comment])}>
+          <MarginProvider>
+            <Details fills open>
+              <BoundDocument />
+              <Margin />
+            </Details>
+          </MarginProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId(`margin-comment-${comment.id}`),
+          `the open Details drawer draws no card at ${tabletWidth} px`
+        ).not.toBeNull()
+      );
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    restoreMatchMedia();
+    scrollTo.mockRestore();
+  }
+});
+
+// The margin's reads - its comments and its answered asks - wait for the document's first batch
+// unless a reader sees the margin (`MarginSheet`'s `seen`). In Details a reader sees the margin
+// only while Details is open and draws the margin's cards, which it does once the document's
+// editor is bound (`useDetailsDrawsConversation`); on the page that is after the build the first
+// batch comes out of. So Details open with no editor bound waits for the batch, below `xl` and at
+// `xl` and above, where a margin outside Details is the desktop column, which reads at once; so
+// does Details closed at `xl` and above, with no editor bound and with the editor bound, where
+// Details draws the conversation but no reader sees it; and Details open with the editor bound
+// reads before the batch, below `xl` and at `xl` and above. The bound rows bind the editor with
+// the batch still held, which the page does not do, so that their reads show what `seen` says for
+// Details alone: with `seen` false in Details, they wait for the batch.
+test.each([
+  [1024, "open", "unbound", "after"],
+  [1440, "open", "unbound", "after"],
+  [1440, "closed", "unbound", "after"],
+  [1440, "closed", "bound", "after"],
+  [1024, "open", "bound", "before"],
+  [1440, "open", "bound", "before"],
+] as const)(
+  "at %i px with Details %s and the document's editor %s, the margin reads its comments and answered asks %s the document's first batch",
+  async (width, drawer, editor, when) => {
+    const restoreMatchMedia = stubViewport(width);
+    const row = `Details ${drawer} at ${width} px with the editor ${editor}`;
+    const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
+    const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+    // How many times each of the margin's two reads has gone out.
+    const reads = () => ({
+      answeredAsks: listIssueAsks.mock.calls.length,
+      comments: listComments.mock.calls.length,
+    });
+    act(() => theFirstBatchIsAwaited(true));
+    const view = render(
+      <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "spec" })]}>
+        <QueryClientProvider client={unreadClient()}>
+          <MarginProvider>
+            <Details fills open={drawer === "open"}>
+              {editor === "bound" ? <BoundDocument /> : null}
+              <Margin />
+            </Details>
+          </MarginProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      // Both reads are out by the end of `settled()` where a reader sees the margin, so it waits
+      // long enough for a read to go out; and under a rule that lets the reads go before the batch
+      // where no reader sees the margin, both have gone out by here. It runs inside `act`: where
+      // the reads go out, their answers land during it and draw the margin's cards.
+      await act(settled);
+      expect(
+        reads(),
+        `${row} ${when === "before" ? "did not make" : "made"} the margin's reads before the first batch`
+      ).toEqual(
+        when === "before" ? { answeredAsks: 1, comments: 1 } : { answeredAsks: 0, comments: 0 }
+      );
+      act(() => theFirstBatchIsAwaited(false));
+      await waitFor(() =>
+        expect(
+          reads(),
+          `${row} did not make the margin's reads once each by the first batch`
+        ).toEqual({ answeredAsks: 1, comments: 1 })
+      );
+    } finally {
+      view.unmount();
+      act(() => theFirstBatchIsAwaited(false));
+      listComments.mockRestore();
+      listIssueAsks.mockRestore();
+      restoreMatchMedia();
+    }
+  }
+);
 
 // R14: on a phone Details is a sheet over the whole page, so a link followed inside
 // it closes the sheet. The page draws its panels into the drawer through a portal, outside the
@@ -441,7 +580,13 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
 function ListOfKeys(): ReactNode {
   const [snapshot, setSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
   useKeymap("global", [
-    { id: "help", keys: "?", label: "Keyboard shortcuts", run: () => setSnapshot([]) },
+    {
+      effect: "moves the reader",
+      id: "help",
+      keys: "?",
+      label: "Keyboard shortcuts",
+      run: () => setSnapshot([]),
+    },
   ]);
   return <ShortcutHelp onClose={() => setSnapshot(null)} snapshot={snapshot} />;
 }

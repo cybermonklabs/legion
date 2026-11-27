@@ -1,0 +1,5 @@
+kind: Changed
+body: '`DISPATCH_WRITING_BOXES`'' row of the ask card''s `ask-answer` write has `delivers: true`, since an answer goes to each agent and role its text names, so the box lists the parties a draft names. `DISPATCH_WRITING_HINT_ASK`, the line under that box, says who gets each write: an answer goes to whoever asked and to each agent or role picked, and a picked role that is not running gets it if a session claims the role within three hours; Ask back tells a picked agent or role while a session holds it, and a role that is not running gets a link and is not told; a picked person shows as a name without a link and is not told.'
+time: 2026-11-27T11:38:57.000000000Z
+custom:
+    Issue: pr2697

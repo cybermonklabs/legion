@@ -4,6 +4,7 @@ import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, type RefObject } from "react";
 
+import { thePageLeftItThere } from "../doc/readers-place";
 import { type AnchorRow, ViewportAnchor } from "./ViewportAnchor";
 
 const ROW_HEIGHT = 50;
@@ -323,6 +324,53 @@ test("rows scrolling in an element are pinned by that element's scrollTop, and t
     expect(viewportTop("r7")).toBe(before);
     expect(scroller.scrollTop).toBe(200);
     expect(window.scrollY).toBe(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the compensation in a scroller is the page's own move, and the reader's scroll is not", () => {
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    // The reader's own scroll: nothing of the page's left the box here.
+    scroller.scrollTop = 100;
+    expect(thePageLeftItThere(scroller)).toBe(false);
+
+    // Rows arriving above the hand's row push it down, and this anchor puts it back. That is
+    // the page moving what it draws, written through the one call that records it (`moveTheBox`,
+    // `features/doc/readers-place.ts`), so a landing correction watching the same box goes on
+    // watching rather than reading the compensation as the reader taking the list over
+    // (`refocus-when-settled.ts`).
+    view.rerender(<List rows={["new-a", "new-b", ...ids(12)]} scroller={scrollerRef} />);
+
+    expect(scroller.scrollTop).toBe(200);
+    expect(thePageLeftItThere(scroller)).toBe(true);
+
+    // The reader scrolls on: the box stands somewhere the page did not leave it.
+    scroller.scrollTop = 420;
+    expect(thePageLeftItThere(scroller)).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the compensation in the page itself is the page's own move", () => {
+  const view = render(<List rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    expect(thePageLeftItThere(null)).toBe(false);
+
+    // The same compensation where the rows scroll in the document rather than in a box of
+    // their own: the page is what moves, and the page is what the record is kept against.
+    view.rerender(<List rows={["new-a", "new-b", ...ids(12)]} />);
+
+    expect(window.scrollY).toBe(200);
+    expect(thePageLeftItThere(null)).toBe(true);
+
+    setScrollY(640);
+    expect(thePageLeftItThere(null)).toBe(false);
   } finally {
     view.unmount();
   }

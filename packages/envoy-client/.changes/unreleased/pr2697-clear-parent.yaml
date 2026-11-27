@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch issue-update --clear-parent` takes an issue out from under its parent: it sends `parent: null` and reports `parent cleared`, and the command refuses it beside `--parent`.'
+time: 2026-11-15T00:21:53Z
+custom:
+    Issue: pr2697

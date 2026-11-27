@@ -56,6 +56,7 @@ export function useRowKeymap<TData>({
     focusedRow()?.querySelector<HTMLElement>("[data-issue-link]")?.click();
   useKeymap("project", [
     {
+      effect: "moves the reader",
       id: "list-next",
       keys: "j",
       label: "Next issue",
@@ -64,6 +65,7 @@ export function useRowKeymap<TData>({
       when: () => displayRows.some(({ row }) => !row.getIsGrouped()),
     },
     {
+      effect: "moves the reader",
       id: "list-previous",
       keys: "k",
       label: "Previous issue",
@@ -72,6 +74,7 @@ export function useRowKeymap<TData>({
       when: () => displayRows.some(({ row }) => !row.getIsGrouped()),
     },
     {
+      effect: "moves the reader",
       id: "list-open",
       keys: "o",
       label: "Open issue",
@@ -79,6 +82,7 @@ export function useRowKeymap<TData>({
       when: () => focusedRow() !== null,
     },
     {
+      effect: "moves the reader",
       id: "list-open-enter",
       keys: "Enter",
       label: "Open the focused issue",
@@ -88,6 +92,8 @@ export function useRowKeymap<TData>({
     },
     {
       // Selecting walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
+      // It ticks the row where the focus already is.
+      effect: "moves nothing",
       id: "list-select",
       keys: "x",
       label: "Select or deselect the focused issue",

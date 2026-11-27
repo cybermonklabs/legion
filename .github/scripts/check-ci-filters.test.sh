@@ -4812,8 +4812,8 @@ check "names the job, the key and what to save under instead" \
   "$(contains "$out" "job fill saves under .*hashFiles('mod/go.mod').*, which holds hashFiles(): the save evaluates it after the build.*save under the key the lookup computed")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
-# real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
-# embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
+# real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess and
+# embedder jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
 # reads ci.yaml's own, and names the file that holds them. Read over ci.yaml alone, the fill below
 # would be a family nothing restores.
 #

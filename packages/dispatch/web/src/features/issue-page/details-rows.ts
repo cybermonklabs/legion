@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 
+import { placeInView } from "../doc/readers-place";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { freeze } from "./page-structure";
 import { firstUsable, firstUsableIn } from "./usable-control";
@@ -78,7 +79,7 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
             `${drawer === undefined ? "" : `aside[${DETAILS_ATTRIBUTE}] `}[${DETAILS_ROW_ATTRIBUTE}="${row}"]`
           );
           if (found === null) return;
-          found.scrollIntoView({ block: "nearest" });
+          placeInView(found, { block: "nearest" });
           if (!press) {
             firstUsableIn(found)?.focus({ preventScroll: true });
             return;

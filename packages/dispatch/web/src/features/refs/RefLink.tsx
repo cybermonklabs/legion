@@ -69,6 +69,12 @@ export interface ReferenceLinking {
   readonly cited: ReadonlySet<string>;
 }
 
+/** Nothing to link, for a surface whose text is nobody's record to read: the link pass leaves
+ *  such a body alone (`linkifyDispatchRefs` answers at once on an empty `cited`). It is one
+ *  value rather than one per render, so the pass it is a dependency of never re-runs for a
+ *  fresh empty object. */
+export const NOTHING_TO_LINK: ReferenceLinking = { cited: new Set(), facts: {} };
+
 /** Portal content for an inline reference anchor.
  *
  * One rule says what it reads as, the same rule in a document, a comment, an ask, a message and

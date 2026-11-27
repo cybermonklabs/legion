@@ -1,0 +1,55 @@
+kind: Fixed
+body: |-
+  `dispatch doc-edit`'s `replace` and an accepted suggestion keep the bold, italic, strikethrough,
+  link or code span the replaced text lies wholly inside: replacing `said` in `**Sami said bold**`
+  gives `**Sami answered bold**`, where the span was split and its edges written as character
+  references (`**Sami&#32;**&#97;nswered`), and replacing a span's whole text keeps its mark, where
+  it was dropped. A `find` that spells the span's own markup over all of the span's text it covers
+  lets `with` decide that formatting over that text, whether it covers the whole span
+  (`**Sami bold**`) or runs past its edge (`**old** now` over `**Sami said bold** now`,
+  `wrote [one](https://a.example/1)` over `wrote [one two](https://a.example/1)`), the rest of the
+  span keeping its mark, a link its URL and title - unless the part of a bold or italic span it
+  keeps would end or start on a space beside the written text, which markdown cannot write
+  (`**bold** now` there leaves `Sami said `), and that `find` is refused; one that spells it over
+  part of that text (`a **b** c` over `**a b c**`) keeps the span; one that matched the text as
+  written spells none, so `2*3*4` in `*a 2\*3\*4 b*` stays in the italic. A `replace` whose `find`
+  crosses a span's edge without that spelling, covering text inside it and text outside it
+  (`wrote this`, where only `this` is a link), is refused with `400 FIND_CROSSES_SPAN` naming the
+  span, and nothing is written, where the link went with its URL and a span cut to end on a space
+  was written with character references. Each span is weighed alone, so a `find` that spells one
+  link's markup and covers a second link (`wrote [this](https://a.example/1) and that`) is refused
+  naming `that`.
+
+  A link the edit removes whole must be spelled as it is wherever the `find` spells it, since the
+  edit would remove a link another writer may have changed since the `find` was read, its URL and
+  title with it. So a `replace`'s or a `delete`'s `find` that spells such a link with another URL
+  or title is refused with `400 FIND_CROSSES_SPAN` naming the link, where each was taken with no
+  word that the link had changed: one over the link's whole text
+  (`wrote [this](https://wrong.example/9) today`, or that link alone,
+  `[this](https://wrong.example/9)`), however much of that text it spells so, a bare link's
+  included; a `delete`'s whose list marker selects the item holding the link, which the delete
+  removes whole (`- [one](https://wrong.example/9)` over
+  `- [one two](https://a.example/1) and more`); and a `replace`'s over part of a link whose rest is
+  whitespace beside the `find`, which a `with` of blocks drops. An edit that removes only part of a
+  link changes only the text the `find` names, and the rest of the link keeps the document's URL
+  and title.
+
+  Each refusal names the `find` that covers the very text the `find` named, selects as it does and
+  is taken there, to send in its place, with the `occurrence` at which it matches that text: the
+  same text with each span written with its markup, a link under its own URL and title
+  (`wrote [this](https://example.com/Sami)` for `wrote this`), after the same list marker where a
+  marker selected the item (`- [one](https://a.example/1)`), so the edit removes what the refused
+  one would have. Where none is taken, it gives the advice of the span that stops every such
+  `find`, naming that span where the `find` written from the document's text crosses it too: to
+  move the space out of a bold or italic span, for a struck span to replace the text inside it and
+  the text outside it in two operations, and otherwise to read the document again. A bare URL or a
+  bare `www.` link is its own markup, so a `find` that covers the whole of it spells it
+  (`docs at https://example.com/x`).
+
+  The rule has two limits. No `find` spells strikethrough's markup, so the text inside a struck
+  span and the text outside it are replaced in two operations. A span is kept only by a `with` of
+  one paragraph: a `with` that parses to blocks keeps the ask and comment anchors the match lies
+  inside, and none of its spans.
+time: 2026-11-16T20:55:00Z
+custom:
+    Issue: pr2697

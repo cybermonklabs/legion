@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { CredentialPendingResponse } from "../../api/types";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { ADD_SOURCE_PATH } from "../issue/IssueComponentsLine";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ARCHITECTURE_SOURCES_HEADING_ID } from "./ArchitectureSourcesSection";
@@ -66,18 +67,61 @@ test("hides the Live grants section on a Dispatch with no secrets broker", async
   }
 });
 
+/** Where the section the address names stands down the page: first, and once the broker's read
+ *  has drawn Live grants and Sign-ins above it. */
+const SECTION_TOP = 900;
+const SECTION_TOP_UNDER_GRANTS = 1300;
+
+/** The page's layout and its own scroll. happy-dom lays nothing out and scrolls nothing, so the
+ *  rectangle the placement measures and the page's scroll are stated here: Settings brings the
+ *  section into view through `placeInView` (`features/doc/readers-place.ts`), which measures
+ *  what the browser's own `scrollIntoView()` would do and writes it through the page's
+ *  `scrollBy`. `placements` is where each of those writes left the page. */
+function installPageLayout(): { placements: number[]; restore: () => void } {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const scrollBy = window.scrollBy;
+  let scrolled = 0;
+  const placements: number[] = [];
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrolled });
+  window.scrollBy = ((_x: number, y: number) => {
+    scrolled += y;
+    placements.push(scrolled);
+  }) as typeof window.scrollBy;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const grantsDrawn = [...document.querySelectorAll("h1, h2, h3")].some(
+      (heading) => heading.textContent === "Live grants"
+    );
+    const top =
+      this.id === ARCHITECTURE_SOURCES_HEADING_ID
+        ? (grantsDrawn ? SECTION_TOP_UNDER_GRANTS : SECTION_TOP) - scrolled
+        : 0;
+    return { bottom: top, height: 0, top } as DOMRect;
+  });
+  return {
+    placements,
+    restore: () => {
+      rect.mockRestore();
+      window.scrollBy = scrollBy;
+      if (scrollY === undefined) {
+        Reflect.deleteProperty(window, "scrollY");
+      } else {
+        Object.defineProperty(window, "scrollY", scrollY);
+      }
+    },
+  };
+}
+
 // An issue whose project has no architecture source links to Settings at its Architecture
 // sources section (`IssueComponentsLine`'s ADD_SOURCE_PATH); the page opens there, since the app
 // routes in the page and the browser's own scroll to a hash never runs (dispatch://INFRA-5200).
+// Bringing the section into view is the page's own move, so a landing correction watching the
+// page reads it as such (`thePageLeftItThere`).
 test("an address naming a section opens Settings at that section", async () => {
   const unrelated = stubUnrelatedQueries();
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
-  const scrolled: string[] = [];
-  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element
-  ) {
-    scrolled.push(this.id);
-  });
+  const layout = installPageLayout();
   try {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -87,13 +131,14 @@ test("an address naming a section opens Settings at that section", async () => {
         </QueryClientProvider>
       </MemoryRouter>
     );
-    await waitFor(() => expect(scrolled.at(-1)).toBe(ARCHITECTURE_SOURCES_HEADING_ID));
+    await waitFor(() => expect(window.scrollY).toBe(SECTION_TOP));
+    expect(thePageLeftItThere(null)).toBe(true);
     expect(screen.getByRole("heading", { name: "Architecture sources" }).id).toBe(
       ARCHITECTURE_SOURCES_HEADING_ID
     );
   } finally {
     cleanup();
-    scrollIntoView.mockRestore();
+    layout.restore();
     getCredentialPending.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
@@ -112,12 +157,7 @@ test("Settings scrolls to the section again once the broker's read has drawn the
     () => pending.promise
   );
   const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
-  const scrolled: string[] = [];
-  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element
-  ) {
-    scrolled.push(this.id);
-  });
+  const layout = installPageLayout();
   try {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -127,17 +167,16 @@ test("Settings scrolls to the section again once the broker's read has drawn the
         </QueryClientProvider>
       </MemoryRouter>
     );
-    await waitFor(() => expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]));
+    await waitFor(() => expect(layout.placements).toEqual([SECTION_TOP]));
     expect(screen.queryByRole("heading", { name: "Live grants" })).not.toBeInTheDocument();
 
     pending.resolve({ pending: [] });
     expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
-    await waitFor(() =>
-      expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID, ARCHITECTURE_SOURCES_HEADING_ID])
-    );
+    await waitFor(() => expect(layout.placements).toEqual([SECTION_TOP, SECTION_TOP_UNDER_GRANTS]));
+    expect(thePageLeftItThere(null)).toBe(true);
   } finally {
     cleanup();
-    scrollIntoView.mockRestore();
+    layout.restore();
     getCredentialGrants.mockRestore();
     getCredentialPending.mockRestore();
     for (const spy of Object.values(unrelated)) {
@@ -168,13 +207,8 @@ test.each([
       () => pending.promise
     );
     const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
-    const scrolled: string[] = [];
-    const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-      this: Element
-    ) {
-      scrolled.push(this.id);
-    });
-    const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+    // Its restore puts back the page's own `scrollY`, which the second way overwrites.
+    const layout = installPageLayout();
     try {
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(
@@ -184,22 +218,17 @@ test.each([
           </QueryClientProvider>
         </MemoryRouter>
       );
-      await waitFor(() => expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]));
+      await waitFor(() => expect(layout.placements).toEqual([SECTION_TOP]));
       readerScrolls();
 
       pending.resolve({ pending: [] });
       expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
       // The settled read's render has run its effects by the time its heading is drawn.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]);
+      expect(layout.placements).toEqual([SECTION_TOP]);
     } finally {
       cleanup();
-      if (scrollY === undefined) {
-        Reflect.deleteProperty(window, "scrollY");
-      } else {
-        Object.defineProperty(window, "scrollY", scrollY);
-      }
-      scrollIntoView.mockRestore();
+      layout.restore();
       getCredentialGrants.mockRestore();
       getCredentialPending.mockRestore();
       for (const spy of Object.values(unrelated)) {
@@ -214,7 +243,7 @@ test.each([
 test("an address whose # part cannot be decoded opens Settings at its top", async () => {
   const unrelated = stubUnrelatedQueries();
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
-  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+  const layout = installPageLayout();
   try {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -227,10 +256,10 @@ test("an address whose # part cannot be decoded opens Settings at its top", asyn
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Architecture sources" })).toBeDefined();
-    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(layout.placements).toEqual([]);
   } finally {
     cleanup();
-    scrollIntoView.mockRestore();
+    layout.restore();
     getCredentialPending.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over this leg's quarter of their row time, the row count the merge job reads,
+# Playwright run over this leg's fifth of their row time, the row count the merge job reads,
 # and the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
 #
 #   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections>
 #
-# <shard> is this leg's number out of the job's four, the shard job's `${{ matrix.shard }}`: it
+# <shard> is this leg's number out of the job's five, the shard job's `${{ matrix.shard }}`: it
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
 # workflow's own `lane` input, `pull-request`, `full` or `references`: it decides which projects
@@ -32,7 +32,7 @@
 # Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
 #   ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Browser-test dispatch dashboard
-# (shard ${{ matrix.shard }} of 4)".
+# (shard ${{ matrix.shard }} of 5)".
 set -euo pipefail
 
 usage() {
@@ -83,7 +83,7 @@ export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
 export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
 # Where e2e/shard-reporter.ts writes this leg's two row lists, shard-<N>.selection.jsonl and
 # shard-<N>.ran.jsonl: the rows/ directory the upload carries beside the blob report, as it
-# carries the row count written below. The merge job's reading one holds the four legs' lists
+# carries the row count written below. The merge job's reading one holds the five legs' lists
 # against each other (packages/dispatch/e2e/tools/leg-rows.ts), which is what sees a row of the
 # selection that no leg ran or that two ran; the row count cannot, since it counts only what the
 # legs ran.
@@ -168,16 +168,16 @@ case "$lane" in
 esac
 # Why the projects are named at all: a shard splits the rows of every project the run
 # selects, so a project this leg does not name is a project it would spread over these
-# four machines. `visual` and `visual-phone` are in the default selection, and their
+# five machines. `visual` and `visual-phone` are in the default selection, and their
 # image comparisons belong to the `visual` job, which runs them one row at a time, so
-# naming the projects above is what keeps them off these machines. The three `-alone`
+# naming the projects above is what keeps them off these machines. The six `-alone`
 # projects stay out because this list does not name them, and for no other reason:
 # `filterProjects` reads `default` only where the command line named no project
 # (`projects.filter((project) => includeNonDefault || project.default)` at
 # Playwright 1.64.1's runner, lib/runner/index.js in its package, under its
 # `if (!projectNames)`), and every lane above names its own: four in
 # the pull-request lane, ten in the full one and one in the references one. The
-# `default: false` each `-alone` project carries (the three entries of
+# `default: false` each `-alone` project carries (the six entries of
 # `packages/dispatch/e2e/playwright.config.ts#aloneProjects`) is what keeps them out of a run
 # that names no project, which this is not. The alone job names them, one machine each.
 #
@@ -195,13 +195,22 @@ esac
 # root (lib/cli/testActions.js:204-211).
 #
 # `./e2e/shard-reporter.ts` beside them, named here for the same reason: it is what makes
-# `--shard=$shard/4` this leg's quarter of the lane's row TIME rather than Playwright's quarter of
+# `--shard=$shard/5` this leg's fifth of the lane's row TIME rather than Playwright's fifth of
 # its row count. Each leg places every file of every project the lane selects by the row times
 # main measured (e2e/shard-weights.json) and keeps its own; e2e/shard-split.ts says why the count
-# split left one leg a fifth heavier than the others and how all four legs compute one placement.
+# split left one leg a fifth heavier than the others and how every leg computes one placement.
 # Without it here the legs would split by count again, every row still run once, and nothing red.
 # It prints one line to the log before the first row: this leg's rows, the row time it expects
 # of this leg and of the run, and how many of its rows it placed by an estimate.
+#
+# No row of the six `-alone` projects is in that placement. The reporter places the selection
+# this command makes, which holds none of those projects (the paragraph on why the projects
+# are named, above), and every project it does name leaves their files out: `chromium`,
+# `iphone`, `webkit` and `firefox` ignore every wall-clock file through `clockSpecPattern`,
+# `iphone` ignores the phone half of large-documents-long-build.e2e.ts through
+# `phoneAloneSpecPattern` (both in e2e/configurations.ts), and the rest select files of their
+# own by `testMatch`. So the five legs split only rows they run, and the alone job's rows weigh
+# on none of them.
 #
 # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
 # the run is piped into `tee`, and without the `||` a failing suite would end this script
@@ -210,7 +219,7 @@ esac
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep $lane_files --shard=$shard/4 --workers 4 \
+{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep $lane_files --shard=$shard/5 --workers 4 \
     --reporter=list,blob,./e2e/failure-reporter.ts,./e2e/shard-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0

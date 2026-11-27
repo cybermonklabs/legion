@@ -30,6 +30,7 @@ EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references 
     'packages/dispatch/e2e/reference-surfaces.ts',
     'packages/dispatch/e2e/search.ts',
     'packages/dispatch/e2e/writing-boxes.ts',
+    'packages/dispatch/e2e/writing-drivers.ts',
     'packages/dispatch/web/src/features/refs/**',
     'packages/dispatch/web/src/features/conversation/MentionField.tsx',
     'packages/dispatch/web/src/features/conversation/MentionComposer.tsx',

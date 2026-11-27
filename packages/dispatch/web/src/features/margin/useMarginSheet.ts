@@ -1,4 +1,4 @@
-import { itemFromSearch } from "@legion/contracts";
+import { itemFromSearch } from "@legion/contracts/dispatch-href";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
@@ -86,6 +86,7 @@ export function useMarginSheet(): MarginSheetModel {
     hoveredMarkId,
     markPlacements,
     placementsReported,
+    placesItems,
     retypeCompose,
     revealCompose,
     selectItem,
@@ -259,6 +260,10 @@ export function useMarginSheet(): MarginSheetModel {
     decisionsDocumentId,
     documentShown: placementsPublished,
     held: heldReplyKeys,
+    // `MarginSheet`'s `placesItems`, whose `seen` says when a reader sees the margin: until a
+    // reader does, the two per-owner reads wait for the editor's first batch
+    // (`features/doc/first-batch.ts`).
+    reached: placesItems,
   });
   const onEdit = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {

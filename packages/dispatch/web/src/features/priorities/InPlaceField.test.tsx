@@ -1,6 +1,5 @@
 import { expect, jest, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the Enter that ends an input method's composition below, which user-event cannot mark as one
-import { act, fireEvent, render, within } from "@testing-library/react";
+import { act, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import {
@@ -9,6 +8,7 @@ import {
   stepBeforeEffects,
 } from "../../__tests__/before-effects";
 import { jump, onFakeClock, realClock, settle } from "../../__tests__/fake-clock";
+import { COMPOSING, KEY_CODE_229, pressInputMethodKey } from "../../__tests__/input-method-keys";
 import { userOnFakeClock } from "../../__tests__/user";
 import { createApiClient, priorityPatchRequest } from "../../api/client";
 import { InPlaceField, SAVE_AFTER_MS } from "./InPlaceField";
@@ -365,17 +365,16 @@ test("the write the page going makes is let finish as the page goes, and one mad
 // field. Chromium and Firefox mark it `isComposing`; Safari sends it after the composition's end,
 // unmarked, with keyCode 229 (`inputMethodKey`). A plain Enter does both.
 test.each([
-  ["isComposing", { isComposing: true, key: "Enter" }],
-  ["keyCode 229", { isComposing: false, key: "Enter", keyCode: 229 }],
+  ["isComposing", COMPOSING],
+  ["keyCode 229", KEY_CODE_229],
 ] as const)(
   "the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both",
-  async (_mark, composing) => {
+  async (_mark, form) => {
     const user = userEvent.setup({ delay: null });
     const { field, view, writes } = heldField();
     await onFakeClock(async () => {
       await user.type(field, ", mine");
-      // user-event has no form for this: it cannot mark a key as an IME composition.
-      fireEvent.keyDown(field, composing);
+      pressInputMethodKey(field, "Enter", form);
       expect(writes).toEqual([]);
       expect(document.activeElement).toBe(field);
       await user.keyboard("{Enter}");

@@ -25,6 +25,7 @@ import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
+import { architectureTree } from "./search-fixture";
 import { userOnFakeClock } from "./user";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -152,6 +153,12 @@ function nextTabStop(from: Element): HTMLElement | undefined {
 function controlledBy(control: HTMLElement): HTMLElement | null {
   const id = control.getAttribute("aria-controls");
   return id === null ? null : document.getElementById(id);
+}
+
+/** The compact card's note disclosures inside `card`, by the handle the Inbox's Enter finds the
+ *  control by (`data-ask-note-disclosure`). */
+function noteDisclosures(card: HTMLElement): Element[] {
+  return Array.from(card.querySelectorAll("[data-ask-note-disclosure]"));
 }
 
 /** The reply bodies a thread shows, in the order it shows them. */
@@ -591,9 +598,10 @@ test("two AskCard instances for the same ask keep independently labeled answer f
     const fields = view.getAllByLabelText("Your answer");
     expect(fields).toHaveLength(2);
     expect(fields[0]).not.toBe(fields[1]);
-    // Each box is named by the label it sits inside (the shared text field's), so two cards on
-    // one page cannot share a name or a box, whatever ids the page holds.
+    // Each box is named by the label it stands inside (`MentionField`), not by an id another
+    // card could hold too, so no label on this page reaches the other card's box.
     expect(fields[0]?.closest("label")).not.toBe(fields[1]?.closest("label"));
+    expect(fields.every((field) => field.closest("label") !== null)).toBe(true);
   } finally {
     view.unmount();
   }
@@ -670,11 +678,14 @@ test("AskCard submits the selected single option with the revision the human rev
       "Answer in your own words, or ask a question back"
     );
     const submit = view.getByRole("button", { name: "Answer" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    // A refused Answer stays in the tab order and says why (`RefusableButton`), so it is
+    // `aria-disabled` rather than `disabled` (INFRA-341, R3).
+    expect(submit.getAttribute("aria-disabled")).toBe("true");
+    expect(submit.getAttribute("title")).toBe("Pick an option or write an answer.");
 
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     expect(answer).toHaveAttribute("placeholder", "Add a note (optional)");
-    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("aria-disabled");
     await user.click(submit);
 
     await waitFor(() =>
@@ -898,10 +909,10 @@ test("AskCard submits a selected Other option with free text", async () => {
     const submit = view.getByRole("button", { name: "Answer" });
     const other = await view.findByRole("radio", { name: "Other" });
     await user.click(other);
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("aria-disabled", "true");
     await user.click(view.getByLabelText("Your answer"));
     await user.paste("Try a hybrid");
-    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("aria-disabled");
     await user.click(submit);
 
     await waitFor(() =>
@@ -1008,6 +1019,81 @@ test("AskCard dismisses the question-shaped guard when the response becomes an a
     expect(view.getByRole("button", { name: "Answer" })).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// The pair a question-shaped answer offers - Ask back instead, Answer with it anyway - is two
+// more sends of this card, and a picture pasted while that pair stands is not in the draft yet:
+// both wait for it, as Answer and Ask back do. The upload landing is an edit of the draft, so
+// the card is back to its own buttons by then, and the answer it sends carries the picture.
+test("the question-shaped pair waits for a picture still uploading", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const replyCalls: CreateCommentInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const input = ask();
+  const { view } = renderCard(
+    <AskCard
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      ask={input}
+      createReply={async (_issueKey, replyInput) => {
+        replyCalls.push(replyInput);
+        return reply({ ask_id: replyInput.ask_id, body: replyInput.body });
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const field = view.getByLabelText("Your answer") as HTMLTextAreaElement;
+    await user.click(field);
+    await user.paste("How does this fit the release?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const choice = await view.findByRole("group", { name: "Your answer reads as a question" });
+    expect(submitted).toEqual([]);
+
+    // user-event's paste carries text, never the file this row uploads.
+    fireEvent.paste(field, { clipboardData: { files: [png("shot.png")] } });
+    await view.findByText("Uploading file…");
+    const anyway = within(choice).getByRole("button", { name: "Answer with it anyway" });
+    const askBack = within(choice).getByRole("button", { name: "Ask back instead" });
+    expect(anyway.hasAttribute("disabled")).toBe(true);
+    expect(askBack.hasAttribute("disabled")).toBe(true);
+    await user.click(anyway);
+    await user.click(askBack);
+    await Bun.sleep(20);
+    expect(submitted).toEqual([]);
+    expect(replyCalls).toEqual([]);
+
+    land();
+    const text =
+      "How does this fit the release? ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
+    await waitFor(() => expect(field.value).toBe(text));
+    // The landed text is an edit of the draft, so the card is answering again rather than
+    // offering the pair; the words are still a question, so Answer offers it once more - this
+    // time with nothing holding it, and the answer it sends is the one the picture is in.
+    expect(view.queryByRole("button", { name: "Answer with it anyway" })).not.toBeInTheDocument();
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const choiceAgain = await view.findByRole("group", { name: "Your answer reads as a question" });
+    const anywayAgain = within(choiceAgain).getByRole("button", { name: "Answer with it anyway" });
+    expect(anywayAgain.hasAttribute("disabled")).toBe(false);
+    expect(
+      within(choiceAgain).getByRole("button", { name: "Ask back instead" }).hasAttribute("disabled")
+    ).toBe(false);
+    await user.click(anywayAgain);
+    await waitFor(() =>
+      expect(submitted).toEqual([{ expected_edited_at: null, selected: [], text }])
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
   }
 });
 
@@ -1181,13 +1267,13 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
     const reasonField = view.getByLabelText("Reason (required)");
     expect(reasonField).toHaveFocus();
     const submit = view.getByRole("button", { name: "Answer" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("aria-disabled", "true");
     expect(submit).toHaveAttribute("title", "Add a reason to send Request changes");
     expect(view.getByText("Add a reason to send Request changes")).toBeTruthy();
 
     await user.click(reasonField);
     await user.paste("Needs another pass");
-    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("aria-disabled");
     expect(submit).not.toHaveAttribute("title");
     expect(view.queryByText("Add a reason to send Request changes")).not.toBeInTheDocument();
     await user.click(submit);
@@ -1227,7 +1313,7 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
     expect(within(card).getByRole("radio", { name: "Other" })).toBeTruthy();
     expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
     const answer = within(card).getByRole("button", { name: "Answer" });
-    expect(answer).not.toHaveAttribute("disabled");
+    expect(answer).not.toHaveAttribute("aria-disabled");
     expect(answer).not.toHaveAttribute("title");
     await user.click(answer);
     await waitFor(() =>
@@ -1238,7 +1324,11 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
   }
 });
 
-test("the compact card focuses the reason field when Request changes is picked, again when it is picked again", async () => {
+// The row this replaced closed the disclosure over a typed Request changes reason and expected the
+// field to go: that was the dead end of dispatch://INFRA-969 on an approval, where the reason is
+// what Request changes cannot be sent without. The box now stands in place on every card
+// (dispatch://INFRA-5702 R15), so nothing can hide it.
+test("the compact approval card shows the reason box while Request changes is chosen, focuses it, again when it is picked again, and offers nothing that hides it", async () => {
   const user = userEvent.setup();
   const input = ask({
     kind: "approval",
@@ -1253,22 +1343,37 @@ test("the compact card focuses the reason field when Request changes is picked, 
     await user.click(await within(card).findByRole("radio", { name: "Approve" }));
     // The answer box stands in place, and picking Approve leaves the reader on the option.
     expect(within(card).getByLabelText("Reason")).not.toHaveFocus();
-    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
+    const sendable = within(card).getByRole("button", { name: "Answer" });
+    expect(sendable).not.toHaveAttribute("aria-disabled");
+    expect(sendable).not.toHaveAttribute("disabled");
+    // No control offers to open or fold the box: no surface draws the note disclosure.
+    expect(noteDisclosures(card)).toHaveLength(0);
 
-    await user.click(within(card).getByRole("radio", { name: "Request changes" }));
+    const requestChanges = within(card).getByRole("radio", { name: "Request changes" });
+    await user.click(requestChanges);
+    expect((requestChanges as HTMLInputElement).checked).toBe(true);
     const reason = within(card).getByLabelText("Reason (required)");
     expect(reason).toHaveFocus();
+    // The reason is what Request changes is sent with, so no control on the card can fold it.
+    expect(noteDisclosures(card)).toHaveLength(0);
     const answer = within(card).getByRole("button", { name: "Answer" });
-    expect(answer.hasAttribute("disabled")).toBe(true);
+    expect(answer.getAttribute("aria-disabled")).toBe("true");
     expect(within(card).getByText("Add a reason to send Request changes")).toBeTruthy();
     await user.click(reason);
     await user.paste("Needs another pass.");
-    expect(answer).not.toHaveAttribute("disabled");
+    expect(answer).not.toHaveAttribute("aria-disabled");
+    expect(noteDisclosures(card)).toHaveLength(0);
 
-    // The field stands in place under the options: picking Approve makes it a note again, and
-    // picking Request changes again makes it the reason, which must take the focus again.
+    // Approve needs no reason, but the words are what Answer would send beside it, so the box
+    // stays over them as a note again, with one Answer under it.
     await user.click(within(card).getByRole("radio", { name: "Approve" }));
+    expect((within(card).getByLabelText("Reason") as HTMLTextAreaElement).value).toBe(
+      "Needs another pass."
+    );
     expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
+    expect(noteDisclosures(card)).toHaveLength(0);
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+    // Picking Request changes again makes the box the reason, which must take the focus again.
     await user.click(within(card).getByRole("radio", { name: "Request changes" }));
     const reopened = within(card).getByLabelText("Reason (required)");
     expect(reopened).toHaveFocus();
@@ -1327,10 +1432,10 @@ test("AskCard requires text when Other is selected with real multiple options", 
     await user.click(await view.findByRole("checkbox", { name: "Docs" }));
     await user.click(view.getByRole("checkbox", { name: "Other" }));
     const answer = view.getByRole("button", { name: "Answer" });
-    expect(answer.hasAttribute("disabled")).toBe(true);
+    expect(answer).toHaveAttribute("aria-disabled", "true");
     await user.click(view.getByLabelText("Your answer"));
     await user.paste("Also update the guide.");
-    expect(answer).not.toHaveAttribute("disabled");
+    expect(answer).not.toHaveAttribute("aria-disabled");
     await user.click(answer);
 
     await waitFor(() =>
@@ -1462,7 +1567,7 @@ test("AskCard reloads a changed question, requires the human to reconfirm, and a
     await view.findByText(/This question changed while you were answering/);
     expect(view.getByText("Should we hold this release?")).toBeTruthy();
     expect(view.getByRole("radio", { name: "Hold" })).not.toHaveAttribute("checked");
-    expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
+    expect(view.getByRole("button", { name: "Answer" })).toHaveAttribute("aria-disabled", "true");
     expect(
       within(view.getByRole("alert")).queryByRole("button", { name: "Retry" })
     ).not.toBeInTheDocument();
@@ -2341,6 +2446,141 @@ test("a document ask links its project and document page", async () => {
   }
 });
 
+// R1: the same copy-link target everywhere. In the Inbox and the reading pane the document is
+// the row's own and the host passes no owner, and the ask read the answer leaves behind carries
+// none either, so the answered card drew no copy control at all (dispatch://INFRA-341).
+test("an answered project-document ask keeps its copy-link control", async () => {
+  const user = userEvent.setup();
+  const input = ask({
+    artifact_id: "artifact-1",
+    document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+    issue_key: null,
+    options: [{ label: "Ship" }],
+  });
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => answered(input, submission.selected)}
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const reference = "dispatch://CORE/artifact/design-notes/ask/ask-1";
+    expect(view.container.querySelector(`[data-ask-copy="${reference}"]`)).not.toBeNull();
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(view.getByText(/Answered by/)).toBeTruthy());
+
+    expect(view.container.querySelector(`[data-ask-copy="${reference}"]`)).not.toBeNull();
+    expect(view.getByRole("button", { name: `Copy reference ${reference}` })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2: the ask's `@` lists the same sessions the Conversation tab's composer lists, by the same
+// rules. It read no collaborators, so the issue's Legion roles nobody is running were missing
+// from it while the composer under it on the same tab offered them (dispatch://INFRA-341).
+test("the ask's @ picker offers the issue's Not running roles", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const architecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [
+      {
+        kind: "session",
+        last_at: null,
+        legion: {
+          replaced_at: null,
+          replaced_by: null,
+          role: "reviewer",
+          role_token: "legion-p-core-1-reviewer",
+          started_at: "2026-10-26T02:00:00Z",
+        },
+        reasons: [],
+        session_id: "new-reviewer",
+        title: "New reviewer",
+      },
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const input = ask();
+  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+
+  try {
+    const field = await view.findByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "References" });
+    const roles = await within(listbox).findByRole("group", { name: "Roles" });
+    expect(collaborators).toHaveBeenCalledWith("CORE-1");
+    const options = within(roles).getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]?.textContent).toContain("legion-p-core-1-reviewer");
+    expect(options[0]?.textContent).toContain("not running");
+  } finally {
+    view.unmount();
+    architecture.mockRestore();
+    collaborators.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
+// The answer box makes two writes that treat a role nobody runs apart
+// (`DISPATCH_WRITING_HINT_ASK`): Answer keeps its copy for a session that claims the role within
+// three hours, and Ask back, a comment, does not tell it. So the picker's `not told`, true of a
+// comment's mention, is false here: the role's row says what each write does
+// (`REF_PICKER_ASK_ANSWER_WORDS`).
+test("the ask's @ picker says an answer waits for a Not running role and Ask back does not tell it", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const architecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [
+      {
+        kind: "session",
+        last_at: null,
+        legion: {
+          replaced_at: null,
+          replaced_by: null,
+          role: "reviewer",
+          role_token: "legion-p-core-1-reviewer",
+          started_at: "2026-10-26T02:00:00Z",
+        },
+        reasons: [],
+        session_id: "new-reviewer",
+        title: "New reviewer",
+      },
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const input = ask();
+  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+
+  try {
+    const field = await view.findByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "References" });
+    const roles = await within(listbox).findByRole("group", { name: "Roles" });
+    const options = within(roles).getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]?.textContent).toContain(
+      "reviewer · not running: an answer waits for it, Ask back does not tell it"
+    );
+  } finally {
+    view.unmount();
+    architecture.mockRestore();
+    collaborators.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
 test("answering a document ask invalidates the document and projects, not an issue", async () => {
   const user = userEvent.setup();
   const input = ask({
@@ -2487,20 +2727,25 @@ test("AskCard compact variant renders long options as the same wrapping choice r
     expect(
       options.querySelectorAll('[class*="whitespace-nowrap"], [class*="rounded-full"]')
     ).toHaveLength(0);
-    // The answer box and Answer stand in place, and Answer has nothing to send until a pick.
-    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
-      true
-    );
+    // The answer box and Answer stand in place, and Answer refuses with its reason until a pick
+    // (dispatch://INFRA-341 R3): it stays focusable and says why.
+    const refused = within(card).getByRole("button", { name: "Answer" });
+    expect(refused).toHaveAttribute("aria-disabled", "true");
+    expect(refused).not.toHaveAttribute("disabled");
+    expect(refused).toHaveAccessibleDescription("Pick an option or write an answer.");
 
     await user.click(first);
     expect((first as HTMLInputElement).checked).toBe(true);
+    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute(
+      "aria-disabled"
+    );
     expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
     expect(within(card).getByLabelText("Your answer")).toBeInTheDocument();
 
     await user.click(within(options).getByRole("radio", { name: "Other" }));
     expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
-    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
-      true
+    expect(within(card).getByRole("button", { name: "Answer" }).getAttribute("aria-disabled")).toBe(
+      "true"
     );
   } finally {
     view.unmount();
@@ -2545,6 +2790,239 @@ test("AskCard compact variant keeps an open note visible when a real option is p
   }
 });
 
+// dispatch://INFRA-969. On a compact card the box for a person's own words stays shown while the
+// answer needs it - Other ticked, a reason the chosen option needs, words in the answer text - and
+// no control hides it then. dispatch://INFRA-5702 R15 then stood the box in place on every card
+// and took the disclosure away, so each row reads that the box stands and that no disclosure is
+// drawn. Each row finds the card, the option it ticked and the box before it reads that no
+// disclosure is drawn, so no absence is read off a card that never drew.
+
+// The spec's own measure, on an ask that takes several answers: ticking a real option once Other
+// is ticked hid the box with Other still ticked, and Answer then refused the ask for want of the
+// words that box was for.
+test("a compact card on an ask that takes several answers keeps the box while Other is ticked, whatever else is ticked or unticked", async () => {
+  const user = userEvent.setup();
+  const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    const other = (await within(card).findByRole("checkbox", {
+      name: "Other",
+    })) as HTMLInputElement;
+    await user.click(other);
+    expect(other.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+
+    const docs = within(card).getByRole("checkbox", { name: "Docs" }) as HTMLInputElement;
+    await user.click(docs);
+    expect(docs.checked).toBe(true);
+    expect(other.checked).toBe(true);
+    const box = within(card).getByLabelText("Your answer") as HTMLTextAreaElement;
+    expect(noteDisclosures(card)).toHaveLength(0);
+    // The card draws one Answer, the box's own: the lone one is for a box that is folded.
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+
+    await user.click(box);
+    await user.paste("And the release notes.");
+    await user.click(docs);
+    expect(docs.checked).toBe(false);
+    expect(box.value).toBe("And the release notes.");
+    await user.click(docs);
+    expect(docs.checked).toBe(true);
+    expect(other.checked).toBe(true);
+    expect((within(card).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe(
+      "And the release notes."
+    );
+    expect(noteDisclosures(card)).toHaveLength(0);
+
+    // Unticking Other drops its words on an ask that takes several answers (`toggleOther`), and
+    // the box stands in place, empty, with no disclosure drawn (dispatch://INFRA-5702 R15).
+    await user.click(other);
+    expect(other.checked).toBe(false);
+    expect((within(card).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe("");
+    expect(noteDisclosures(card)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same measure on an ask that takes one answer: a real option unticks Other there, and the
+// box Other held open stands in place (dispatch://INFRA-5702 R15).
+test("on a compact card for an ask that takes one answer, a real option unticks Other and the box stays in place", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    const other = (await within(card).findByRole("radio", { name: "Other" })) as HTMLInputElement;
+    await user.click(other);
+    expect(other.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+    expect(noteDisclosures(card)).toHaveLength(0);
+
+    const ship = within(card).getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    await user.click(ship);
+    expect(ship.checked).toBe(true);
+    expect(other.checked).toBe(false);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+    expect(noteDisclosures(card)).toHaveLength(0);
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The box is the person's to write in: no option they choose takes it away, on either kind of ask.
+test("a compact card's box stays in place through the person's choice of an option", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
+
+    const ship = within(card).getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    await user.click(ship);
+    expect(ship.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+    expect(noteDisclosures(card)).toHaveLength(0);
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Words in the box are words Answer would send, so while it holds any the card offers no control
+// that would fold them away, and the box keeps the focus.
+test("while a compact card's answer text holds words, it draws no control that hides the box", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    const box = (await within(card).findByLabelText("Your answer")) as HTMLTextAreaElement;
+    await user.click(box);
+    expect(box).toHaveFocus();
+    await user.paste("Ship it after the freeze.");
+    expect(box.value).toBe("Ship it after the freeze.");
+    expect(box).toHaveFocus();
+    expect(noteDisclosures(card)).toHaveLength(0);
+
+    // An empty box stands in place too, and no disclosure is drawn (dispatch://INFRA-5702 R15).
+    await user.clear(box);
+    expect(within(card).getByLabelText("Your answer")).toBe(box);
+    expect(noteDisclosures(card)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A box its words alone held - Other unticked by a real option, with words still in it - is the
+// box the person is writing in. Emptying it is their own act, and it stays where they are, with
+// the focus, rather than folding away under the caret; no disclosure is drawn
+// (dispatch://INFRA-5702 R15). That no control hides the box while the words are there is the
+// row above's.
+test("a compact box held open by its words alone stays open when the person empties it", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Other" }));
+    const box = within(card).getByLabelText("Your answer") as HTMLTextAreaElement;
+    await user.click(box);
+    await user.paste("Only after the freeze.");
+    const ship = within(card).getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    await user.click(ship);
+    expect(ship.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBe(box);
+
+    await user.clear(box);
+    expect(within(card).getByLabelText("Your answer")).toBe(box);
+    expect(box).toHaveFocus();
+    expect(noteDisclosures(card)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The words are the ask's draft, not one card's (`answer-drafts.ts`): a page that hosts the ask
+// twice shows them in both, and a card drawn where the draft already holds words shows its box.
+test("a compact card shows the box over words the ask's draft already holds, beside the card they were typed in and after it", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const both = renderCard(
+    <>
+      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+    </>
+  );
+
+  try {
+    const [first, second] = both.view.getAllByTestId("ask-ask-1");
+    if (first === undefined || second === undefined) throw new Error("two cards were not drawn");
+    // Each card shows its box before any words are typed, as `main` draws it.
+    expect((within(second).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe("");
+    await user.click(await within(first).findByLabelText("Your answer"));
+    await user.paste("Ship it after the freeze.");
+    expect((within(second).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe(
+      "Ship it after the freeze."
+    );
+    expect(noteDisclosures(second)).toHaveLength(0);
+  } finally {
+    both.view.unmount();
+  }
+
+  const later = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+  try {
+    const card = later.view.getByTestId("ask-ask-1");
+    expect((within(card).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe(
+      "Ship it after the freeze."
+    );
+    expect(noteDisclosures(card)).toHaveLength(0);
+  } finally {
+    later.view.unmount();
+  }
+});
+
+test("a full card shows the box while it draws the answer form, whatever is ticked, with no disclosure", async () => {
+  const user = userEvent.setup();
+  const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
+  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
+    await user.click(within(card).getByRole("checkbox", { name: "Other" }));
+    await user.click(within(card).getByRole("checkbox", { name: "Docs" }));
+    await user.click(within(card).getByRole("checkbox", { name: "Other" }));
+    expect((within(card).getByRole("checkbox", { name: "Docs" }) as HTMLInputElement).checked).toBe(
+      true
+    );
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+    expect(noteDisclosures(card)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("AskCard compact variant hands focus to the row when Answer disables under it", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
@@ -2577,5 +3055,72 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     await view.findByRole("img", { name: "Selected" });
   } finally {
     view.unmount();
+  }
+});
+
+// The Answer a compact card draws under its box, which stands in place (dispatch://INFRA-5702 R15),
+// is held by the picture that box is still taking: the upload is the ask's form's own, so a pick
+// made while the picture is out cannot leave that send ungated, and the card draws exactly one
+// Answer. The picture's link, once it lands, is words Answer sends, and Answer carries it.
+test("the compact card's Answer waits for a picture its box is still taking, with exactly one Answer", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      ask={input}
+      getAskThread={emptyThread(input)}
+      variant="compact"
+    />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    const note = await within(card).findByLabelText("Your answer");
+    // user-event's paste carries text, never the file this row uploads.
+    fireEvent.paste(note, { clipboardData: { files: [png("shot.png")] } });
+    await within(card).findByText("Uploading file…");
+
+    // The box stands in place through the pick, and no disclosure is drawn to fold it.
+    await user.click(within(card).getByRole("radio", { name: "Ship" }));
+    expect(within(card).getByLabelText("Your answer")).toBe(note);
+    expect(noteDisclosures(card)).toHaveLength(0);
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+    const answer = within(card).getByRole("button", { name: "Answer" });
+    expect(answer.hasAttribute("disabled")).toBe(true);
+    // What holds it is on screen, under the box it was pasted into.
+    expect(within(card).getByText("Uploading file…")).toBeTruthy();
+    await user.click(answer);
+    await Bun.sleep(20);
+    expect(submitted).toEqual([]);
+
+    land();
+    const shown = (await within(card).findByLabelText("Your answer")) as HTMLTextAreaElement;
+    expect(shown.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)");
+    expect(noteDisclosures(card)).toHaveLength(0);
+    const send = within(card).getByRole("button", { name: "Answer" });
+    await waitFor(() => expect(send.hasAttribute("disabled")).toBe(false));
+    await user.click(send);
+    await waitFor(() =>
+      expect(submitted).toEqual([
+        {
+          expected_edited_at: null,
+          selected: ["Ship"],
+          text: "![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
+        },
+      ])
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
   }
 });

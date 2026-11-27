@@ -400,7 +400,9 @@ function referenceSections(
   // structural edges in are its own.
   const referencedBy = [
     ...sections.referencedBy.map((row) => referenceLinkLine(row, "to")),
-    ...(typeof incoming === "string" ? [`- ${incoming}`] : structural.map(edgeLine)),
+    ...(typeof incoming === "string"
+      ? [`- ${incoming}`]
+      : structural.map((edge) => edgeLine(edge, "in"))),
   ];
   return {
     references: referencesLines.length === 0 ? ["- none"] : referencesLines,

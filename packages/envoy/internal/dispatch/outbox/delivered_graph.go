@@ -91,10 +91,11 @@ type resolvedRole struct {
 // addressed (graphcensus's addressedRoles). A node is history and never goes, so each event's
 // own roles are written beside the routes the batch resolved (addressedRoles): the route an
 // issue event records, which an agent's write wakes nobody for and a re-route read in the same
-// batch would leave unrouted, the target of a targeted message, which no route reaches, and the
-// role a comment's mention names on an issue routed elsewhere. Nothing read such a role's claim,
-// so it is written with its page and the page's part_of and no held_by; a role a destination of
-// the batch resolved keeps that resolution.
+// batch would leave unrouted, the target of a targeted message, which no route reaches, the
+// role a comment's mention names on an issue routed elsewhere, and each role an answer's text
+// names, which the answer's own batch routes to (addAnswerParties). Nothing read the claim of a
+// role no destination names, so it is written with its page and the page's part_of and no
+// held_by; a role a destination of the batch resolved keeps that resolution.
 //
 // at dates every row the record states but two: a role's held_by and its holder's part_of the
 // role are dated by when the batch resolved the role's holder (resolvedRole.resolvedAt), because
@@ -238,8 +239,9 @@ func resolvedHolder(forward *roleForward) (string, bool) {
 
 // addressedRoles are the roles an event addresses by its payload, whether or not the batch routes
 // it to them: the route an issue event records the issue under (model.IssueEventPayload), the
-// target of a message event (model.MessageEventPayload), and the target of each mention a new
-// comment names (model.CommentEventPayload). graphcensus's addressedRoles reads the same fields
+// target of a message event (model.MessageEventPayload), the target of each mention a new
+// comment names (model.CommentEventPayload), and each role an answer's text names
+// (model.AskAnsweredEventPayload.NamedTargets). graphcensus's addressedRoles reads the same fields
 // of the same events as a role's row side, so the census holds a role to a node exactly where
 // this writes one.
 func addressedRoles(event model.Event) []string {
@@ -259,6 +261,10 @@ func addressedRoles(event model.Event) []string {
 		mentions, _ := values["mentions"].([]any)
 		for _, mention := range mentions {
 			add(payloadString(mention, "target"))
+		}
+	case "ask.answered":
+		for _, target := range payloadStrings(event.Payload, "named_targets") {
+			add(target)
 		}
 	}
 	return roles

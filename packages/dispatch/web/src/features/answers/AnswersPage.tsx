@@ -1,3 +1,4 @@
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
@@ -23,7 +24,7 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { PostBody } from "../refs/PostBody";
+import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
@@ -96,6 +97,9 @@ function AnswerRow({
         <AskOwnerLink owner={row.owner} />
         {row.kind === "answer" && !row.current ? <LabelPill>Changed since</LabelPill> : null}
       </div>
+      {/* The question is Markdown its asker wrote, so it is formatted and then cut to two lines,
+          as the reply below is to three; the note the person answered with is drawn whole
+          (`MarkdownBody`). */}
       <MarkdownPreview
         className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}
         fullTitle
@@ -107,12 +111,12 @@ function AnswerRow({
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          {(row.answer.selected ?? []).length === 0 ? null : (
+          {answerSelected(row.answer).length === 0 ? null : (
             // One chip per option picked. An option's label can be a whole sentence, so a chip is
             // never wider than the row: its words wrap inside it, an unbroken run breaking
             // anywhere, where a label pill keeps its words on one line.
             <CappedGroup className="flex flex-wrap gap-1.5" label="options" name="options">
-              {(row.answer.selected ?? []).map((label, index) => (
+              {answerSelected(row.answer).map((label, index) => (
                 <Pill className="max-w-full" key={label} tone="selected-label">
                   <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
                     {/* Each label is drawn from its own tree, beside it at the same index. Only
@@ -143,22 +147,23 @@ function AnswerRow({
           )}
         </div>
       ) : null}
+      {/* Draw the reply as a three-line quote with live links, without block reference cards. */}
       {row.kind === "reply" && row.reply !== undefined ? (
-        <p className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          {/* The reply's own edit, on its label: the row has no byline of the reply's. */}
-          <span className={`font-medium ${textMutedOnCanvas}`}>
+        <div className={`mt-2 flex items-baseline gap-1 text-sm ${textPrimaryOnCanvas}`}>
+          <span className={`shrink-0 font-medium ${textMutedOnCanvas}`}>
             Replied
             <EditedMark at={row.reply.edited_at} deleted={postDeletion(row.reply)} />:
           </span>{" "}
-          <PostBody
+          <PostPreview
+            className="min-w-0 flex-1"
             deleted={postDeletion(row.reply)}
+            lines={3}
             markdown={row.reply.body}
             source={source}
             surface="answers-reply"
             tree={row.reply.body_tree}
-            variant="inline"
           />
-        </p>
+        </div>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
         {/* The server's `ref` is the ask's own item route: an issue ask's lands an anchored ask on

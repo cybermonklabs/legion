@@ -1,0 +1,5 @@
+kind: Added
+body: The page a reader opens a Dispatch document at carries the document's opening blocks, drawn by the server into the page it sends and kept by nothing (`private, no-store`), so the text is on screen before the editor has been downloaded and connected; and a room answers a browser's first sync in frames of at most 64 KiB, one task each, rather than in one update of seconds (the `sjawhar/ygo v1.55.1-sami.7` pin).
+time: 2026-11-11T06:18:36.492829817Z
+custom:
+    Issue: pr2697

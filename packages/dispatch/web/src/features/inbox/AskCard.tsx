@@ -15,33 +15,26 @@ import { useTooltips } from "../../components/tooltips";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
-  badgeBlocking,
-  badgeHigh,
-  badgeLow,
-  badgeMed,
   card,
-  pageFailedText,
   pageHairBorder,
   pagePaperBg,
   pageQuietText,
-  pageStateText,
-  surfaceBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
 } from "../../theme/classes";
-import { AskBody, askUploadOwner } from "../ask-body/AskBody";
+import { AskBody } from "../ask-body/AskBody";
 import { AskEditHistory, type AskFrame } from "../ask-body/AskCompletionCard";
+import { AskUrgencyNotch, hasUrgencyNotch } from "../ask-body/AskHeader";
 import { ASK_CARD_WORDS, ASK_SHARED_WORDS } from "../ask-body/ask-body-words";
 import { markdownText } from "../ask-body/ask-text";
 import { answerAsk, createReply, declineAsk, getAskThread } from "../ask-body/ask-writes";
-import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
-import { buildDispatchReference, itemRoute } from "../refs/routes";
+import { buildDispatchReference, type DocumentOwner, itemRoute } from "../refs/routes";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskRecipients } from "./AskRecipients";
-import { AskThread } from "./AskThread";
+import { AskThread, askUploadOwner } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
@@ -52,7 +45,7 @@ export interface AskCardProps {
   ask: OwnedAsk;
   /** The project document that owns an ask whose read lacks `document` (only Inbox rows carry
    *  it), so the card can still name the ask's `dispatch://` reference. */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
   thread?: "inline" | "collapsed";
   /** `compact` (the margin, a decision block and the Conversation) takes tighter padding
    *  (`px-3 pt-4 pb-3` against `px-4 pt-5 pb-4`). Nothing else depends on the variant: the
@@ -101,20 +94,12 @@ export interface AskCardProps {
   currentReplyId?: string;
 }
 
-/** The urgency notch's text colour, matching the urgency badge of the same level. */
-const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
-  blocking: badgeBlocking.text,
-  high: badgeHigh.text,
-  low: badgeLow.text,
-  med: badgeMed.text,
-};
-
 /**
  * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's, by the
  * role `main`'s colour has: the card is the page's paper inside its hairline rule, the line of
  * its copy handles is the quiet grey, and the asker's control, which opens the copy handles, is
- * the quiet grey a reader acts on. What the card's children draw - the ask body, the recipients,
- * the thread - is theirs.
+ * the quiet grey a reader acts on. What the card's children draw - the ask body, its header and
+ * the urgency notch (`ask-body/AskHeader.tsx`), the recipients, the thread - is theirs.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -125,7 +110,6 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
 const ON_PAGE = {
   frame: `${pageHairBorder} ${pagePaperBg}`,
   line: pageQuietText,
-  notch: pagePaperBg,
   quietAct: `${pageQuietText} hover:text-page-muted`,
 } as const;
 
@@ -138,23 +122,15 @@ const PAGE_URGENCY_ACCENT: Record<AskUrgency, string> = {
   med: "border-l-page-question",
 };
 
-/** The urgency notch's words inside `NoTooltips`, matching `PAGE_URGENCY_ACCENT` on the page's
- *  paper. */
-const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
-  blocking: pageFailedText,
-  high: pageStateText.waiting,
-  low: pageQuietText,
-  med: "text-page-question",
-};
-
 /**
  * One ask on every surface: the ask body (`ask-body/AskBody.tsx`), which draws the ask's
- * question, options and answer parts and its settled record, inside the card's own frame. The
- * card holds what its surfaces alone draw - the urgency notch, the recipients, the copy handles,
- * the edit history, the references and the ask's thread - and draws each above the body or
- * below it, never between its parts: the thread above it where the reader's thread order puts
- * the answer box at the foot (Oldest first), else below it. It also holds the form that holds
- * the ask's state (`useAskAnswerForm`), which reads the ask's thread.
+ * question, options and answer parts and its settled record, and the ask's one header on their
+ * first line (`ask-body/AskHeader.tsx`), inside the card's own frame. The card holds what its
+ * surfaces alone draw - the urgency notch (the header's `AskUrgencyNotch`), the recipients, the
+ * session's copy handles, the edit history, the references and the ask's thread - and draws each
+ * above the body or below it, never between its parts: the thread above it where the reader's
+ * thread order puts the answer box at the foot (Oldest first), else below it. It also holds the
+ * form that holds the ask's state (`useAskAnswerForm`), which reads the ask's thread.
  */
 export function AskCard({
   artifactSlug,
@@ -193,17 +169,21 @@ export function AskCard({
   // panel each control names is this instance's.
   const referencesPanelId = useId();
   const inBlock = frame === "block";
-  // `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
-  // cannot name it and this card's own row is where it is read.
-  const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
-  const uploadOwner = askUploadOwner(ask, displayedAsk, owner);
+  /** The project document this ask belongs to: the one it was asked on, else the one the host
+   *  is showing it under. It names the ask's own reference, the replies' references, and where
+   *  a file dropped into the box goes. `document` is the Inbox row's: the ask read carries no
+   *  owner, so the fresher `displayedAsk` cannot name it and this card's own row is where it
+   *  is read. */
+  const askOwner = ask.document ?? owner;
+  const reference = itemRoute("ask", displayedAsk, askOwner);
+  const uploadOwner = askUploadOwner(displayedAsk, askOwner);
   const tooltips = useTooltips();
   // The copy handles' values: the title the session stamped, as the clipboard has always had it.
   const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
   const urgency = askUrgency(displayedAsk.urgency);
-  const hasUrgencyNotch = !inBlock && (urgency === "blocking" || urgency === "high");
+  const notched = hasUrgencyNotch(displayedAsk, inBlock);
   // The thread's own "still open?" wording must track the post-answer ask, not the possibly
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
@@ -263,6 +243,7 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        owner={askOwner}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
@@ -275,41 +256,36 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        owner={askOwner}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
       />
     );
-  // The ask's own reference, and the session's handles - its ID, its title, its tmux target -
-  // folded behind the asker's control, which opens them onto their own row: one line under the
-  // body.
-  const handlesNode =
-    reference === undefined && !handlesOpen ? null : (
-      <div
-        className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.line}`}
-      >
-        {reference === undefined ? null : <CopyRefButton route={reference} />}
-        {!handlesOpen ? null : (
-          <span className="flex basis-full flex-wrap items-center gap-x-1.5">
-            {sessionAuthor === undefined ? null : (
-              <CopyButton value={sessionAuthor.id} what={ASK_CARD_WORDS.copy_id_what}>
-                {ASK_CARD_WORDS.copy_id}
-              </CopyButton>
-            )}
-            {sessionTitle === undefined || sessionTitle === "" ? null : (
-              <CopyButton value={sessionTitle} what={ASK_CARD_WORDS.copy_title_what}>
-                {ASK_CARD_WORDS.copy_title}
-              </CopyButton>
-            )}
-            {tmuxTarget === undefined ? null : (
-              <CopyButton value={tmuxTarget} what={ASK_CARD_WORDS.copy_tmux_what}>
-                {tmuxTarget}
-              </CopyButton>
-            )}
-          </span>
-        )}
-      </div>
-    );
+  // The session's handles - its ID, its title, its tmux target - folded behind the asker's
+  // control, which opens them onto their own row under the body. The ask's own reference is the
+  // header's copy control, at the end of the body's first line (`AskHeader`).
+  const handlesNode = !handlesOpen ? null : (
+    <div
+      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.line}`}
+    >
+      {sessionAuthor === undefined ? null : (
+        <CopyButton value={sessionAuthor.id} what={ASK_CARD_WORDS.copy_id_what}>
+          {ASK_CARD_WORDS.copy_id}
+        </CopyButton>
+      )}
+      {sessionTitle === undefined || sessionTitle === "" ? null : (
+        <CopyButton value={sessionTitle} what={ASK_CARD_WORDS.copy_title_what}>
+          {ASK_CARD_WORDS.copy_title}
+        </CopyButton>
+      )}
+      {tmuxTarget === undefined ? null : (
+        <CopyButton value={tmuxTarget} what={ASK_CARD_WORDS.copy_tmux_what}>
+          {tmuxTarget}
+        </CopyButton>
+      )}
+    </div>
+  );
   const body = (
     <AskBody
       agentNames="live"
@@ -332,7 +308,7 @@ export function AskCard({
       frame={frame}
       markRecord={answerIsNewest ? markNewest : undefined}
       onAnswered={onAnswered}
-      owner={owner}
+      owner={askOwner}
       renderText={markdownText}
       urgencyWord={false}
     />
@@ -356,7 +332,7 @@ export function AskCard({
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${variant === "compact" ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${tooltips ? `${card} ${askUrgencyAccent[urgency]}` : `${ON_PAGE.frame} ${PAGE_URGENCY_ACCENT[urgency]}`}`
+          : `relative rounded-xl border-l-4 shadow-sm ${variant === "compact" ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${notched ? "mt-3" : ""} ${tooltips ? `${card} ${askUrgencyAccent[urgency]}` : `${ON_PAGE.frame} ${PAGE_URGENCY_ACCENT[urgency]}`}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -367,14 +343,7 @@ export function AskCard({
       data-testid={`ask-${displayedAsk.id}`}
     >
       {questionReads}
-      {hasUrgencyNotch ? (
-        <span
-          aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${tooltips ? `${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}` : `${ON_PAGE.notch} ${PAGE_URGENCY_NOTCH_TEXT[urgency]}`}`}
-        >
-          {ASK_SHARED_WORDS.urgency[urgency].toUpperCase()}
-        </span>
-      ) : null}
+      <AskUrgencyNotch ask={displayedAsk} inBlock={inBlock} />
       {answerFirst ? null : threadNode}
       {body}
       {handlesNode}

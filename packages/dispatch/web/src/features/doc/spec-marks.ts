@@ -7,6 +7,7 @@ import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
+import { useAfterTheFirstBatch } from "./first-batch";
 
 /** What a stale block says when the reader rests on it. */
 export const STALE_BLOCK_TITLE = "A decision that shaped this block changed after it.";
@@ -145,8 +146,12 @@ export function useSpecMarks({
   }
   const readVersion = readAtOpen?.version ?? null;
   const specReference = `dispatch://${issueKey}/spec`;
+  // The graph read waits for the editor's first batch: what it draws is a mark on a block the
+  // build has to have made first, and read before it the answer is parsed on the thread the
+  // reader's own first block is waiting for (dispatch://INFRA-341, R11).
+  const afterTheFirstBatch = useAfterTheFirstBatch();
   const parts = useQuery({
-    enabled: enabled && readVersion !== null,
+    enabled: enabled && readVersion !== null && afterTheFirstBatch,
     queryFn: () => api.getReferences(specReference, { kind: "part_of" }),
     queryKey: ["references", "to", specReference, "part_of"],
   });

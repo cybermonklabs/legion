@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { type RefetchOptions, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { isAgentListRefilling } from "../../api/client";
@@ -26,7 +26,7 @@ export function useAgents(
   error: string | undefined;
   isError: boolean;
   isPending: boolean;
-  refetch: () => Promise<unknown>;
+  refetch: (options?: RefetchOptions) => Promise<unknown>;
   refilling: boolean;
 } {
   useRegistryPolling(enabled && refreshWhileOpen);
