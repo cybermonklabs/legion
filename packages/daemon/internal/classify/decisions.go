@@ -1712,6 +1712,10 @@ const (
 	DesignGateApproved         DesignGateEventKind = "approved"
 	DesignGateChangesRequested DesignGateEventKind = "changes_requested"
 	DesignGateVersion          DesignGateEventKind = "version"
+	// DesignGateDigest is Dispatch's verdict on one version of the document (artifact.digest,
+	// dispatch://INFRA-6065): whether the approval of the document stands for that version. Only
+	// ApplyGateFact takes it; ApplyDesignGateEvent is the rule of a Dispatch that sends none.
+	DesignGateDigest DesignGateEventKind = "digest"
 )
 
 // ApplyDesignGateEvent updates a registered gate from one artifact observation, at mark: where
@@ -1736,6 +1740,11 @@ const (
 // version the basis opened; a changes request closes it and clears that approval too; and a
 // person's approval opens the step on that approval and leaves no basis behind. A review of an
 // earlier version, delivered late or twice, and a version the step already holds change nothing.
+//
+// This is the rule of a Dispatch that sends no verdict (version mode). A fact that may carry
+// Dispatch's verdict (dispatch://INFRA-6065) goes through ApplyGateFact, which applies this rule
+// unchanged to a row in version mode for a fact with no digest field, and as today's rules for a
+// review in hash mode.
 func ApplyDesignGateEvent(gate record.DesignGate, kind DesignGateEventKind, version int, mark record.EventMark) record.DesignGate {
 	registered := gate.LatestVersion
 	if version > gate.LatestVersion {
