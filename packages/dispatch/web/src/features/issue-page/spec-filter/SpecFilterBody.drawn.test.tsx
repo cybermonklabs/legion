@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, type NavigateFunction, useLocation } from "react-router-dom";
 
 import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
-import { displayTree } from "../../../__tests__/display-trees";
+import { displayTree, displayTreeWithStandIns } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { installResizeObserver } from "../../../__tests__/scroll-box";
@@ -40,7 +40,7 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { KEY } from "../../decision-card/decision-fixture";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
-import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { loadedEngine, warmMarkdownRenderer } from "../../refs/markdown-engine";
 import {
   type PublishedReferences,
   ReferenceNamesProvider,
@@ -57,6 +57,7 @@ import type { BriefCounts } from "../IssueThreeThings";
 import type { OutlineRequest } from "../IssueTree";
 import { presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
+import { type CaretAt, caretInBlock, confineKey } from "../node-caret";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
 import { NO_FAILED_READS } from "../outline-reads";
@@ -2249,6 +2250,121 @@ test("a press on a statement's words puts the caret in them, and a press on a li
   }
 });
 
+/**
+ * Draws the body over statement r1 alone for a press on its words: `text`, drawn from `tree`, the
+ * reading the server sends, where one is given, and as stored where none is, with `names` as the
+ * page's batched read named its references. The stage's editable holds the statement's block,
+ * `block` in it, and the editing a press opens is handed a ProseMirror view: of the editor's own
+ * parse of `parsed` (`editorStateOf`), drawn in the block, where `parsed` is given, and else of an
+ * empty document of `text*`, drawn nowhere. `restore` takes the body off the page, destroys the
+ * view and gives the reads back.
+ */
+function stageStatement({
+  block,
+  names,
+  parsed,
+  text,
+  tree,
+}: {
+  block: ReactNode;
+  names?: ReadonlyMap<string, string>;
+  parsed?: string;
+  text: string;
+  tree?: TreeNode["tree"];
+}): { restore: () => void; view: RenderResult } {
+  const editorView = new EditorView(null, {
+    state:
+      parsed === undefined
+        ? EditorState.create({
+            schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+          })
+        : editorStateOf(parsed),
+  });
+  const onEditing: OnEditing = (artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  };
+  // The view's own editable, which ProseMirror draws the parsed paragraph in, goes in the block.
+  const mountView = (section: HTMLElement | null) => {
+    if (section !== null && parsed !== undefined) section.append(editorView.dom);
+  };
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r1" ref={mountView}>
+          {block}
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, view } = drawBody(issueTree([statement("r1", { text, tree })]), [], {
+    editor,
+    names,
+    onEditing,
+  });
+  return {
+    restore: () => {
+      view.unmount();
+      editorView.destroy();
+      read.mockRestore();
+    },
+    view,
+  };
+}
+
+/** Answers `document.caretPositionFromPoint` with `point`, as the browser answers the point of a
+ *  press, until the restore it returns, which leaves the document's own property as it was. */
+function stubCaretPositionFromPoint(point: (x: number, y: number) => unknown): () => void {
+  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+  return () => {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+  };
+}
+
+test("a press on a statement's words passes its point to the outline's editing", async () => {
+  const user = userEvent.setup();
+  // The hold goes on a ProseMirror view; a plain editable on the stage stands in for its drawing.
+  const { restore, view } = stageStatement({
+    block: (
+      <>
+        <header contentEditable={false}>Requirement</header>
+        <p>The page draws r1.</p>
+      </>
+    ),
+    text: "The page draws r1.",
+  });
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = within(row).getByText("The page draws r1.");
+    const point = mock(() => ({ offsetNode: words.firstChild, offset: 6 }));
+    const unstub = stubCaretPositionFromPoint(point);
+    try {
+      const caretIsAt = (offset: number) =>
+        waitFor(() => {
+          const text = row.querySelector('[data-block-id="r1"] p')?.firstChild;
+          expect(text).toBeDefined();
+          expect(window.getSelection()?.anchorNode).toBe(text);
+          expect(window.getSelection()?.anchorOffset).toBe(offset);
+        });
+      await user.pointer({ keys: "[MouseLeft]", target: words, coords: { x: 72, y: 153 } });
+      await caretIsAt(6);
+      expect(point).toHaveBeenCalledWith(72, 153);
+
+      await user.keyboard("{Escape}");
+      expect(row).toHaveFocus();
+      point.mockClear();
+      await user.keyboard("{Enter}");
+      await caretIsAt(0);
+      expect(point).not.toHaveBeenCalled();
+    } finally {
+      unstub();
+    }
+  } finally {
+    restore();
+  }
+});
+
 // The reader's own edit in a statement's editor never passes through the page's store of writes:
 // it comes back as the spec's blocks read again. Under a filter by words, an edit that takes the
 // filter's words out of the statement drops its row once that read draws the view, and the row
@@ -2378,6 +2494,859 @@ test("a drag that selects a statement's words keeps the selection and opens no e
   } finally {
     view.unmount();
     read.mockRestore();
+  }
+});
+
+// R8: a press is counted in the editor's text. The view draws a reference to an issue by the
+// issue's key and title, while the editor holds the reference as it is written, hidden under a
+// title of its own that takes no caret (`@legion/proof-editor`'s `reference-decorations.ts`), so a
+// press after the reference counts it as written. A plain editable on the stage stands in for
+// the editor's drawing of the statement: its title out of the editable text, the reference as
+// written hidden in it. Counted as drawn, the press on "first" would put the caret 8 characters
+// into the words after the reference rather than 3.
+test("a press after a reference counts the reference as the editor holds it", async () => {
+  const cited = "dispatch://CORE-2";
+  const after = " first, then the rest.";
+  const text = `Read ${cited}${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const link = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(link?.textContent).toBe("CORE-2 The other issue");
+      expect(link?.nextSibling?.textContent).toBe(after);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>CORE-2 The other issue</span>
+        <span hidden>{cited}</span>
+        {after}
+      </>
+    ),
+    into: 3,
+    names: new Map([[cited, "The other issue"]]),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+/**
+ * Presses statement r1's drawn text `pressed`, `into` characters into it, and waits for the caret
+ * to stand `at` characters into `lands`, the last text of the statement's paragraph in its
+ * editor; both default to the press's own, for words the two draw alike after the kind a case
+ * reads. The statement's words are `text`, drawn from `tree`, the reading the server sends,
+ * where one is given, and as stored where none is, with `names` as the page's batched read named
+ * its references. The stage's editable holds the statement's block, and in it the statement's
+ * paragraph as the editor draws it: `held`, a plain paragraph standing in for the editor's
+ * drawing, each kind drawn as the editor draws it; or, from `parsed`, the markdown of the
+ * document the statement stands in, a ProseMirror view of the engine's schema drawing the first
+ * paragraph of the editor's own parse of it (`editorStateOf`), each atom `contenteditable="false"`
+ * and each text as text. `drawn` reads the statement's drawn words before the press.
+ */
+async function pressAfterKind({
+  at,
+  drawn,
+  held,
+  into,
+  lands,
+  names,
+  parsed,
+  pressed,
+  text,
+  tree,
+}: {
+  at?: number;
+  drawn: (words: HTMLElement) => void;
+  into: number;
+  lands?: string;
+  names?: ReadonlyMap<string, string>;
+  pressed: string;
+  text: string;
+  tree?: TreeNode["tree"];
+} & (
+  | { held: ReactNode; parsed?: undefined }
+  | { held?: undefined; parsed: string }
+)): Promise<void> {
+  const user = userEvent.setup();
+  const { restore, view } = stageStatement({
+    block: parsed === undefined ? <p>{held}</p> : null,
+    names,
+    parsed,
+    text,
+    tree,
+  });
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = await waitFor(() => {
+      const found = row.querySelector<HTMLElement>("[data-node-words]");
+      if (found === null) throw new Error("the statement draws no words");
+      drawn(found);
+      return found;
+    });
+    const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node !== null && node.textContent !== pressed) node = walker.nextNode();
+    if (node === null || node.parentElement === null) {
+      throw new Error(`the statement draws no text "${pressed}"`);
+    }
+    const point = mock(() => ({ offsetNode: node, offset: into }));
+    const unstub = stubCaretPositionFromPoint(point);
+    try {
+      await user.pointer({ keys: "[MouseLeft]", target: node.parentElement });
+      await waitFor(() => {
+        const last = row.querySelector('[data-block-id="r1"] p')?.lastChild;
+        expect(last?.textContent).toBe(lands ?? pressed);
+        expect(window.getSelection()?.anchorNode).toBe(last);
+        expect(window.getSelection()?.anchorOffset).toBe(at ?? into);
+      });
+    } finally {
+      unstub();
+    }
+  } finally {
+    restore();
+  }
+}
+
+/** The editor's state of statement r1 where `markdown` is the document it stands in: the first
+ *  paragraph of the editor's own parse of it (`MarkdownEngine.parse`, which `beforeAll` loads),
+ *  alone in a document of the engine's schema. */
+function editorStateOf(markdown: string): EditorState {
+  const parsed = loadedEngine()?.parse(markdown);
+  const paragraph = parsed?.firstChild;
+  if (parsed === undefined || paragraph == null || paragraph.type.name !== "paragraph") {
+    throw new Error(`the editor's parse of ${JSON.stringify(markdown)} opens with no paragraph`);
+  }
+  return EditorState.create({ doc: parsed.type.create(parsed.attrs, paragraph) });
+}
+
+/** Statement r1's words for `pressAfterKind`: a placeholder in inline HTML, `<name>`, and the
+ *  words after it, drawn from the server's reading and held by the editor as an atom. */
+function withInlineHtml() {
+  const after = " first, then the rest.";
+  const text = `Kept by <name>${after}`;
+  return {
+    drawn: (words: HTMLElement) => {
+      expect(words.querySelector('[data-type="html"]')?.textContent).toBe("<name>");
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        {after}
+      </>
+    ),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  };
+}
+
+// Inline HTML, such as a placeholder `<name>`, is drawn as its characters, while the editor holds
+// it as an atom the caret cannot enter, so a press after it counts it as nothing. Counted as
+// drawn, the press on "first," would put the caret 6 characters on, in "then": the word before
+// it is `<name>` in the view and "by" in the editor, so the word pressed is found nowhere to set
+// the count right.
+test("a press after inline html lands in the word pressed", async () => {
+  await pressAfterKind({ ...withInlineHtml(), into: 3 });
+});
+
+// The atom holds no text, so the end of the text before it and the start of the text after it
+// have one count. A press at the start of the text after it - on the left half of its first
+// character - puts the caret there, after the atom, and not before it.
+test("a press at the start of the text after inline html lands after it", async () => {
+  await pressAfterKind({ ...withInlineHtml(), into: 0 });
+});
+
+// A mention of a block is drawn as a chip by the block's words, while the editor holds the
+// mention as it is written, hidden under a title of its own that takes no caret, so a press after
+// it counts it as written, as a reference to an issue counts.
+test("a press after a mention lands in the word pressed", async () => {
+  const cited = `dispatch://${KEY}/spec#b-r2`;
+  const after = " first, then the rest.";
+  const text = `Read ${cited}${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const chip = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(chip).toHaveAttribute("data-row-chip");
+      expect(chip?.textContent).not.toBe(cited);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>The other statement</span>
+        <span hidden>{cited}</span>
+        {after}
+      </>
+    ),
+    into: 3,
+    names: new Map([[cited, "The other statement"]]),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A picture of an artifact is drawn by its caption's link until its picture loads, while the
+// editor holds it as an atom the caret cannot enter, its own fallback link inside it, so a press
+// after it counts it as nothing. The summary that names its picture never answers here.
+test("a press after an image lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const text = `See ![shot.png](dispatch://${KEY}/artifact/shot-png)${after}`;
+  const summary = spyOn(api, "getIssueSummary").mockReturnValue(new Promise(() => {}));
+  try {
+    await pressAfterKind({
+      drawn: (words) => {
+        expect(words.querySelector("[data-dispatch-picture]")?.textContent).toBe("shot.png");
+      },
+      held: (
+        <>
+          {"See "}
+          <span contentEditable={false} data-dispatch-doc-picture="">
+            <a href="/">{`${KEY}/artifact/shot-png`}</a>
+          </span>
+          {after}
+        </>
+      ),
+      into: 3,
+      pressed: after,
+      text,
+      tree: displayTree(text),
+    });
+  } finally {
+    summary.mockRestore();
+  }
+});
+
+/** The issue summary every rendered body's link to CORE-2 reads its title from: "The other
+ *  issue". */
+function readsOtherIssue() {
+  return spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "The other issue",
+  });
+}
+
+// An autolink to a reference, `<dispatch://CORE-2>`, is a link whose words are its address: the
+// editor holds those words as the link's editable text, while the view draws the target's key
+// and title in their place (`refs/RefLink.tsx`), so a press after it counts it as its address.
+// Counted as drawn, the press on "first," would put the caret 8 characters into the words after
+// the link rather than 3.
+test("a press after an autolink drawn by its target's name lands in the word pressed", async () => {
+  const cited = "dispatch://CORE-2";
+  const after = " first, then the rest.";
+  const text = `Read <${cited}>${after}`;
+  const summary = readsOtherIssue();
+  try {
+    await pressAfterKind({
+      drawn: (words) => {
+        const link = words.querySelector(`[data-dispatch-ref="${cited}"]`);
+        expect(link?.textContent).toBe("CORE-2 The other issue");
+        expect(link?.nextSibling?.textContent).toBe(after);
+      },
+      held: (
+        <>
+          {"Read "}
+          <a href={cited}>{cited}</a>
+          {after}
+        </>
+      ),
+      into: 3,
+      pressed: after,
+      text,
+      tree: displayTree(text),
+    });
+  } finally {
+    summary.mockRestore();
+  }
+});
+
+/** Statement r1's words for `pressAfterKind` with a hard break between two lines, drawn from the
+ *  server's reading and held by the editor as a line break. */
+function withHardBreak() {
+  const after = "Line two, then the rest.";
+  const text = `Line one.\\\n${after}`;
+  return {
+    drawn: (words: HTMLElement) => {
+      expect(words.querySelector("br")).not.toBeNull();
+    },
+    held: (
+      <>
+        {"Line one."}
+        <br />
+        {after}
+      </>
+    ),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  };
+}
+
+// A hard break is a line break in both, which holds no text, and each reading counts it as one
+// character, "\n", so a press after it counts that one character for it.
+test("a press after a hard break lands in the word pressed", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 6 });
+});
+
+// The break counts as one character, so the end of the line before it and the start of the line
+// after it have counts of their own. A press at the start of the line after it - on the left half
+// of its first character - puts the caret there, after the break, and not at the end of the line
+// before.
+test("a press at the start of the text after a hard break lands after the break", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 0 });
+});
+
+// A footnote's reference is drawn as its label, while the editor holds it as an atom the caret
+// cannot enter, so a press after it counts it as nothing.
+test("a press after a footnote reference lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const text = `Read the note[^1]${after}\n\n[^1]: The note.`;
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector('[data-type="footnote_reference"]')?.textContent).toBe("1");
+    },
+    held: (
+      <>
+        {"Read the note"}
+        <sup contentEditable={false} data-type="footnote_reference">
+          1
+        </sup>
+        {after}
+      </>
+    ),
+    into: 3,
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A footnote's call whose note the document defines nowhere is text in the document: the server's
+// reading draws it as the characters its author wrote, with no mark, and the editor holds those
+// characters as text, so a press after the call counts them as written.
+test("a press after a footnote call the document defines no note for lands in the word pressed", async () => {
+  const text = "Read the note[^zz] first, then the rest.";
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector("[data-row-written]")).toBeNull();
+      expect(words.textContent).toContain(text);
+    },
+    into: text.indexOf("first,") + 3,
+    parsed: text,
+    pressed: text,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// An escaped call, `\[^k1]`, is text in the document though the document defines `k1`: the server
+// stands in no note for it, so its reading draws `[^k1]` as text, with no mark, and the editor
+// holds those characters as text, so a press after the call counts them as written.
+test("a press after an escaped footnote call lands in the word pressed", async () => {
+  const written = "Read the note\\[^k1] first, then the rest.";
+  const text = "Read the note[^k1] first, then the rest.";
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector("[data-row-written]")).toBeNull();
+      expect(words.textContent).toContain(text);
+    },
+    into: text.indexOf("first,") + 3,
+    parsed: `${written}\n\n[^k1]: The note.`,
+    pressed: text,
+    text,
+    tree: displayTree(written),
+  });
+});
+
+// A footnote's call written in a link's text, `[note[^k1]](https://example.com)`, the document
+// stores after the link, unmarked, since the renderer closes every mark before a reference. The
+// server's reading of the stored words, with a stand-in note for `k1`, draws the link's words and
+// then the reference by the schema's `sup`, which the editor holds as the link's words as text
+// and the reference as an atom the caret cannot enter, so a press after the reference counts the
+// link's words and nothing for the reference. The statement's plain words leave a link's text out.
+test("a press after a footnote call in a link's text lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const written = `[note](https://example.com)[^k1]${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const reference = words.querySelector('[data-type="footnote_reference"]');
+      expect(reference?.textContent).toBe("k1");
+      expect(reference?.previousSibling?.textContent).toBe("note");
+      expect(reference?.nextSibling?.textContent).toBe(after);
+    },
+    into: 3,
+    parsed: `${written}\n\n[^k1]: The note.`,
+    pressed: after,
+    text: "first, then the rest.",
+    tree: displayTreeWithStandIns(written, ["k1"]),
+  });
+});
+
+// A statement whose reading draws a token as plain characters, with no mark of what the editor
+// holds there, is an inline kind the count leaves uncounted: the editor holds `[atom]` as an atom
+// the caret cannot enter, so the count of the press runs on by its 6 characters, to the end of
+// "the". The word pressed is found with the words beside it where the editor holds them, and the
+// caret goes as far into it.
+test("an uncounted inline kind still puts the caret in the pressed word", async () => {
+  const after = " and then the rest.";
+  const text = `Kept by [atom]${after}`;
+  await pressAfterKind({
+    at: 7,
+    drawn: (words) => {
+      expect(words.querySelector("[data-row-written]")).toBeNull();
+      expect(words.textContent).toContain(text);
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false}>{"[atom]"}</span>
+        {after}
+      </>
+    ),
+    into: 21,
+    lands: after,
+    pressed: text,
+    text,
+    tree: {
+      content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
+  });
+});
+
+// An atom that ends a statement's block holds no text, so the editor's text ends before it. A
+// press past the atom (`pressInWords`'s `pastAtom`) puts the caret after it, in its paragraph,
+// where the block ends, and a press inside it puts the caret before it, at the end of the text
+// before it. A plain editable stands in for the editor: each atom drawn `contenteditable="false"`,
+// then the separator and the break ProseMirror draws after an atom that ends a paragraph. The
+// picture has loaded, so it holds no text.
+test("a press past an atom that ends a statement's block puts the caret after it, and one inside it before it", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const at: CaretAt = { x: 1, y: 2, offset: "Read the note".length, word: ["the ", "note", "", 4] };
+  try {
+    for (const atom of [
+      '<span contenteditable="false" data-type="html">&lt;name&gt;</span>',
+      '<sup contenteditable="false" data-type="footnote_reference">1</sup>',
+      '<span contenteditable="false" data-dispatch-doc-picture=""><img alt="shot.png"></span>',
+    ]) {
+      host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>Read the note${atom}<img class="ProseMirror-separator" alt=""><br class="ProseMirror-trailingBreak"></p></section></div>`;
+      const paragraph = host.querySelector("p");
+      expect(caretInBlock(host, "r1", { ...at, pastAtom: true }), atom).toBe(true);
+      expect(window.getSelection()?.anchorNode, atom).toBe(paragraph);
+      expect(window.getSelection()?.anchorOffset, atom).toBe(2);
+      expect(caretInBlock(host, "r1", at), atom).toBe(true);
+      expect(window.getSelection()?.anchorNode, atom).toBe(paragraph?.firstChild);
+      expect(window.getSelection()?.anchorOffset, atom).toBe("Read the note".length);
+    }
+  } finally {
+    host.remove();
+  }
+});
+
+/**
+ * Presses statement r1's words in the blank space past the end of the line that the element
+ * `marked` finds in them ends, and waits for the caret to stand in the run of places `caret` sets
+ * `between` to in the editor's paragraph, which holds no text. The words are `text`, drawn from
+ * the server's reading with `names` as the page's batched read named its references, and the
+ * stage's editable holds `held`, a plain paragraph standing in for the editor's drawing. The
+ * browser answers the point with the end of the element's last text, as Chromium answers a point
+ * past the end of the line a marked element ends, or, where the element holds no text - a
+ * picture, a link drawn with no words - with the place right after it in its parent, as Chromium
+ * answers a point past a picture that ends a line; happy-dom lays nothing out, so the element is
+ * given one box, on the press's line, that the press stands right of.
+ */
+async function pressPastLineEnd({
+  caret,
+  held,
+  marked,
+  names,
+  text,
+}: {
+  caret: (paragraph: HTMLElement, between: Range) => void;
+  held: ReactNode;
+  marked: (words: HTMLElement) => Element | null;
+  names?: ReadonlyMap<string, string>;
+  text: string;
+}): Promise<void> {
+  const user = userEvent.setup();
+  const { restore, view } = stageStatement({
+    block: <p>{held}</p>,
+    names,
+    text,
+    tree: displayTree(text),
+  });
+  const ownRects = HTMLElement.prototype.getClientRects;
+  // The element's one line, 40 to 200 px across and 140 to 160 px down: the press at (260, 150)
+  // stands on it, 60 px past its end.
+  const line = new DOMRect(40, 140, 160, 20);
+  let element: Element | null = null;
+  const rects = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this === element ? ([line] as unknown as DOMRectList) : ownRects.call(this);
+  });
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const found = await waitFor(() => {
+      const words = row.querySelector<HTMLElement>("[data-node-words]");
+      const mark = words === null ? null : marked(words);
+      if (mark === null) throw new Error("the statement draws no element the line ends with");
+      return mark;
+    });
+    element = found;
+    const parent = found.parentElement;
+    if (parent === null) throw new Error("the element the line ends with stands in no element");
+    const walker = document.createTreeWalker(found, NodeFilter.SHOW_TEXT);
+    let last: Node | null = null;
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) last = node;
+    const answer =
+      last === null
+        ? { offsetNode: parent, offset: [...parent.childNodes].indexOf(found) + 1 }
+        : { offsetNode: last, offset: last.textContent?.length ?? 0 };
+    const point = mock(() => answer);
+    const unstub = stubCaretPositionFromPoint(point);
+    try {
+      await user.pointer({
+        keys: "[MouseLeft]",
+        target: parent,
+        coords: { x: 260, y: 150 },
+      });
+      await waitFor(() => {
+        const paragraph = row.querySelector<HTMLElement>('[data-block-id="r1"] p');
+        const anchor = window.getSelection()?.anchorNode;
+        if (paragraph == null || anchor == null) {
+          throw new Error("the editor's paragraph holds no caret");
+        }
+        const between = document.createRange();
+        caret(paragraph, between);
+        expect(
+          between.comparePoint(anchor, window.getSelection()?.anchorOffset ?? 0),
+          "the caret stands off the place past the element, on its line"
+        ).toBe(0);
+      });
+      expect(point).toHaveBeenCalledWith(260, 150);
+    } finally {
+      unstub();
+    }
+  } finally {
+    rects.mockRestore();
+    restore();
+  }
+}
+
+// A press in the blank space past the end of a line that a reference ends, with a hard break
+// after it, is a press at the end of that line. The browser answers the point with a place inside
+// the reference's link, read as right after the reference (`pressInWords`' `pastAtomEnd`); the
+// editor holds the reference as written, as text, so the caret goes to the end of that text, on
+// the reference's line, before the break. Counted on to the text after the break, the press
+// would put the caret at the start of the line after it.
+test("a press past a reference that a hard break follows puts the caret after the reference, before the break", async () => {
+  const cited = "dispatch://CORE-2";
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const written = paragraph.querySelector("span[hidden]")?.firstChild;
+      const br = paragraph.querySelector("br");
+      if (written == null || br === null) {
+        throw new Error("the editor holds no reference as written and no break");
+      }
+      between.setStart(written, cited.length);
+      between.setEndBefore(br);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>CORE-2 The other issue</span>
+        <span hidden>{cited}</span>
+        <br />
+        {"Second line."}
+      </>
+    ),
+    // The link pass leaves a text with no characters after the link, before the break.
+    marked: (words) => {
+      const link = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(link?.textContent).toBe("CORE-2 The other issue");
+      expect(link?.nextElementSibling?.nodeName).toBe("BR");
+      expect(link?.parentElement?.textContent).toBe("Read CORE-2 The other issueSecond line.");
+      return link;
+    },
+    names: new Map([[cited, "The other issue"]]),
+    text: `Read ${cited}\\\nSecond line.`,
+  });
+});
+
+// The same press past inline HTML that a hard break follows: the editor holds the HTML as an atom
+// with no text, so the count after it is also the count before it, and the press says it fell
+// past an atom; the caret goes after the atom, on its line, before the break.
+test("a press past inline HTML that a hard break follows puts the caret after it, before the break", async () => {
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const atom = paragraph.querySelector('[data-type="html"]');
+      const br = paragraph.querySelector("br");
+      if (atom === null || br === null) {
+        throw new Error("the editor holds no inline HTML and no break");
+      }
+      between.setStartAfter(atom);
+      between.setEndBefore(br);
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        <br />
+        {"Second line."}
+      </>
+    ),
+    marked: (words) => {
+      const atom = words.querySelector('[data-type="html"]');
+      expect(atom?.textContent).toBe("<name>");
+      expect(atom?.nextElementSibling?.nodeName).toBe("BR");
+      expect(atom?.parentElement?.textContent).toBe("Kept by <name>Second line.");
+      return atom;
+    },
+    text: "Kept by <name>\\\nSecond line.",
+  });
+});
+
+// A press past the end of the words, whose last line, after a hard break, is inline HTML alone,
+// says it fell past an atom, and the caret goes after that last atom, where the block ends: before
+// only the separator and the break ProseMirror draws after an atom that ends a paragraph. The hard
+// break counts as one character in both readings, so the count after the last atom is not the
+// count after the atom that ends the line before the break, and the caret goes on the last line.
+test("a press past an atom that ends the last line, after a hard break, puts the caret after it", async () => {
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const atoms = paragraph.querySelectorAll('[data-type="html"]');
+      const last = atoms[atoms.length - 1];
+      const separator = paragraph.querySelector(".ProseMirror-separator");
+      if (atoms.length !== 2 || last === undefined || separator === null) {
+        throw new Error("the editor holds no two atoms and no separator after them");
+      }
+      between.setStartAfter(last);
+      between.setEndBefore(separator);
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        <br />
+        <span contentEditable={false} data-type="html">
+          {"<role>"}
+        </span>
+        <img alt="" className="ProseMirror-separator" />
+        <br className="ProseMirror-trailingBreak" />
+      </>
+    ),
+    marked: (words) => {
+      const atoms = words.querySelectorAll('[data-type="html"]');
+      const last = atoms[atoms.length - 1];
+      expect([...atoms].map((atom) => atom.textContent)).toEqual(["<name>", "<role>"]);
+      expect(last?.previousElementSibling?.nodeName).toBe("BR");
+      expect(last?.parentElement?.textContent).toBe("Kept by <name><role>");
+      return last ?? null;
+    },
+    text: "Kept by <name>\\\n<role>",
+  });
+});
+
+// A press past the end of the words, which an image from another website ends, says it fell past
+// an atom: the view draws the picture itself (`refs/markdown-serializer.ts`), and the editor holds
+// it as an atom the caret cannot enter, so the caret goes after it, where the block ends, before
+// only the separator and the break ProseMirror draws after an atom that ends a paragraph. Read as
+// no atom, the press counts the text before the picture alone and puts the caret before it.
+test("a press past an image from another website that ends the words puts the caret after it", async () => {
+  const source = "https://example.com/chart.png";
+  await pressPastLineEnd({
+    caret: (paragraph, between) => {
+      const image = paragraph.querySelector('img[alt="chart"]');
+      const separator = paragraph.querySelector(".ProseMirror-separator");
+      if (image === null || separator === null) {
+        throw new Error("the editor holds no picture and no separator after it");
+      }
+      between.setStartAfter(image);
+      between.setEndBefore(separator);
+    },
+    held: (
+      <>
+        {"See "}
+        <img alt="chart" contentEditable={false} />
+        <img alt="" className="ProseMirror-separator" />
+        <br className="ProseMirror-trailingBreak" />
+      </>
+    ),
+    marked: (words) => {
+      const image = words.querySelector(`img[src="${source}"]`);
+      expect(image?.getAttribute("alt")).toBe("chart");
+      expect(image?.parentElement?.lastChild).toBe(image);
+      expect(image?.parentElement?.textContent).toBe("See ");
+      return image;
+    },
+    text: `See ![chart](${source})`,
+  });
+});
+
+// The same press past a picture whose reference names no artifact, `![shot](dispatch://CORE-2)`:
+// the view draws it as a link with no words (`refs/markdown-serializer.ts`'s `pictureSerializer`),
+// which the link pass hands to `RefLink`, and a link whose words are its author's own - here none -
+// draws those words, so the link holds none once its target is named. The editor holds the
+// picture as an atom the caret cannot enter, its fallback link inside it, so the caret goes after
+// it, where the block ends.
+test("a press past a picture that names no artifact, which ends the words, puts the caret after it", async () => {
+  const cited = "dispatch://CORE-2";
+  const summary = readsOtherIssue();
+  try {
+    await pressPastLineEnd({
+      caret: (paragraph, between) => {
+        const picture = paragraph.querySelector("[data-dispatch-doc-picture]");
+        const separator = paragraph.querySelector(".ProseMirror-separator");
+        if (picture === null || separator === null) {
+          throw new Error("the editor holds no picture and no separator after it");
+        }
+        between.setStartAfter(picture);
+        between.setEndBefore(separator);
+      },
+      held: (
+        <>
+          {"See "}
+          <span contentEditable={false} data-dispatch-doc-picture="">
+            <a href="/CORE-2">CORE-2</a>
+          </span>
+          <img alt="" className="ProseMirror-separator" />
+          <br className="ProseMirror-trailingBreak" />
+        </>
+      ),
+      marked: (words) => {
+        expect(summary).toHaveBeenCalledWith("CORE-2");
+        const link = words.querySelector(`[data-dispatch-ref="${cited}"]`);
+        expect(link?.textContent).toBe("");
+        expect(link?.parentElement?.lastChild).toBe(link);
+        expect(link?.parentElement?.textContent).toBe("See ");
+        return link;
+      },
+      text: `See ![shot](${cited})`,
+    });
+  } finally {
+    summary.mockRestore();
+  }
+});
+
+// The caret after an atom that ends a statement's last line stands at a place between two
+// elements, where the browser draws a collapsed range no box, so the line it is read on is the
+// atom's last line: Down there is refused, as at the end of the block's text, and the caret stays
+// in the block, while Up goes on to the editor. Read as the middle of its whole paragraph, the
+// place stood on the line above the last, and Down went on to the editor, out of the block.
+// happy-dom lays nothing out, so the boxes are given: the paragraph's three lines of 20 px from
+// 100 px down, ten characters of its text on each, and the atom at the end of the last.
+test("Down from the caret after an atom that ends a statement's last line stays in the block", () => {
+  const host = document.createElement("div");
+  host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>One line, two lines, the note<span contenteditable="false" data-type="html">&lt;name&gt;</span><img class="ProseMirror-separator" alt=""><br class="ProseMirror-trailingBreak"></p></section></div>`;
+  document.body.append(host);
+  const editable = host.firstElementChild;
+  const paragraph = host.querySelector("p");
+  const atom = host.querySelector("span");
+  const lineAt = (line: number) => new DOMRect(0, 100 + 20 * line, 0, 20);
+  const ranges = spyOn(Range.prototype, "getClientRects").mockImplementation(function (
+    this: Range
+  ) {
+    const line = Math.min(2, Math.floor(this.startOffset / 10));
+    return (this.startContainer instanceof Text ? [lineAt(line)] : []) as unknown as DOMRectList;
+  });
+  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return (this === atom ? [lineAt(2)] : []) as unknown as DOMRectList;
+  });
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this === paragraph ? new DOMRect(0, 100, 600, 60) : new DOMRect();
+  });
+  const confine = (event: KeyboardEvent) => confineKey(host, "r1", event, undefined);
+  host.addEventListener("keydown", confine, true);
+  const pressed = (key: string) =>
+    editable?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }));
+  try {
+    const at: CaretAt = {
+      x: 1,
+      y: 2,
+      offset: "One line, two lines, the note".length,
+      pastAtom: true,
+    };
+    expect(caretInBlock(host, "r1", at)).toBe(true);
+    expect(window.getSelection()?.anchorNode).toBe(paragraph);
+    expect(window.getSelection()?.anchorOffset).toBe(2);
+    expect(pressed("ArrowDown"), "Down after the atom on the last line was not refused").toBe(
+      false
+    );
+    expect(pressed("ArrowUp"), "Up after the atom on the last line was refused").toBe(true);
+  } finally {
+    host.removeEventListener("keydown", confine, true);
+    ranges.mockRestore();
+    lines.mockRestore();
+    boxes.mockRestore();
+    host.remove();
+  }
+});
+
+// The caret at the start of the line after a hard break stands right after the `<br>`, between
+// two nodes, where the browser draws a collapsed range no box. A `<br>` is no atom: the caret
+// stands on the line under it, so its box, on the line the break ends, is not the caret's line,
+// and Up from there goes on to the editor, which moves the caret to the line above. Read by the
+// box of the `<br>`, the place stood on the first line, and Up was refused there. happy-dom lays
+// nothing out, so the boxes are given as Chromium drew `first<br>second`: the text `first` and
+// the `<br>` at 3 to 21 px, the text `second` at 27 to 45 px, and no box for the place itself.
+test("Up from the start of the line after a hard break moves to the line above", () => {
+  const host = document.createElement("div");
+  host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>first<br>second</p></section></div>`;
+  document.body.append(host);
+  const editable = host.firstElementChild;
+  const paragraph = host.querySelector("p");
+  const first = new DOMRect(0, 3, 0, 18);
+  const second = new DOMRect(0, 27, 0, 18);
+  const ranges = spyOn(Range.prototype, "getClientRects").mockImplementation(function (
+    this: Range
+  ) {
+    const text = this.startContainer;
+    if (!(text instanceof Text)) return [] as unknown as DOMRectList;
+    return [text.data === "first" ? first : second] as unknown as DOMRectList;
+  });
+  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return (this.tagName === "BR" ? [first] : []) as unknown as DOMRectList;
+  });
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this === paragraph ? new DOMRect(0, 3, 600, 42) : new DOMRect();
+  });
+  const confine = (event: KeyboardEvent) => confineKey(host, "r1", event, undefined);
+  host.addEventListener("keydown", confine, true);
+  try {
+    expect(caretInBlock(host, "r1")).toBe(true);
+    if (paragraph !== null) window.getSelection()?.collapse(paragraph, 2);
+    expect(window.getSelection()?.anchorNode).toBe(paragraph);
+    expect(window.getSelection()?.anchorOffset).toBe(2);
+    const up = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowUp" });
+    expect(
+      editable?.dispatchEvent(up),
+      "Up from the start of the line after a hard break was refused"
+    ).toBe(true);
+  } finally {
+    host.removeEventListener("keydown", confine, true);
+    ranges.mockRestore();
+    lines.mockRestore();
+    boxes.mockRestore();
+    host.remove();
   }
 });
 

@@ -87,7 +87,7 @@ import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import { treeItemOf, useAddressActed, useAddressLanding } from "./address-landing";
 import { holdWhereItStands } from "./hold-where-it-stands";
-import { focusedTreeItem, statementWordsAt } from "./pressed-words";
+import { focusedTreeItem, pressInWords, statementWordsAt } from "./pressed-words";
 import {
   type SpecDecision,
   type SpecGroup,
@@ -786,9 +786,8 @@ export function SpecFilterBody({
             return;
           }
           const rowKey = item.dataset.rowKey;
-          // A press on the focused statement's words opens its editor as Enter does, with the
-          // caret at the start of its words; a drag that selected words opens none, and the
-          // selection stays.
+          // A press on the focused statement's words opens the editor where it was; a drag that
+          // selected words opens none, and the selection stays.
           if (
             event.detail > 0 &&
             words !== null &&
@@ -800,12 +799,13 @@ export function SpecFilterBody({
           ) {
             const node = rows.find((row) => row.node.id === item.dataset.nodeId)?.node;
             if (node === undefined) return;
+            const at = pressInWords(words, event.clientX, event.clientY);
             // Run after the press focus settles and the outline releases any edit the press
             // left. A link or control never supplies a words box here.
             window.setTimeout(() => {
               if (document.activeElement !== item || !item.contains(words)) return;
               reportHere("");
-              edit(rowKey, node);
+              edit(rowKey, node, at);
             }, 0);
             return;
           }

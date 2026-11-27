@@ -26,6 +26,7 @@ import { CONTROL_LABELS } from "./page-words";
 import {
   knownIssueKeys,
   linkRowReferences,
+  markDrawnAtoms,
   rowReferenceNames,
   rowReferences,
   rowReferenceWords,
@@ -538,6 +539,7 @@ function DrawnText({
     if (element === null) return;
     dropDirectiveLines(element);
     linkRowReferences(element, names, issues, issue, ambiguous, edited);
+    markDrawnAtoms(element);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
       const route = parseNodeReference(reference);
