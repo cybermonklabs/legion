@@ -24,6 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
@@ -1399,10 +1401,11 @@ func transientCloneFailure(result Result) bool {
 	return containsAny(cause[1], curlNetworkFailures)
 }
 
-// transientStatus is whether an HTTP status is one a server may not answer again: 408, 429, 5xx.
+// transientStatus is whether an HTTP status in git's output is one a server may not answer again:
+// an outage (httpoutage.Is: a 408, a 429, a 5xx) no greater than 599, since git prints any number.
 func transientStatus(status string) bool {
 	code, err := strconv.Atoi(status)
-	return err == nil && (code == 408 || code == 429 || code >= 500 && code <= 599)
+	return err == nil && code <= 599 && httpoutage.Is(code)
 }
 
 // gitHubRefusals are GitHub's own words, in git's output, for a credential it refused and for a

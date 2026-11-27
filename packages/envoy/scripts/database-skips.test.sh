@@ -2,7 +2,7 @@
 # packages/envoy/scripts/database-skips.test.sh
 #
 # Tests database-skips.sh, the skip counter of the envoy module's database-backed packages, with
-# six controls. Each control must fail as it states, or this test fails; each beside it a run
+# seven controls. Each control must fail as it states, or this test fails; each beside it a run
 # the counter must pass, so a counter that fails everything fails here too:
 #
 #   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/, ./internal/holdrecord/
@@ -40,6 +40,11 @@
 #      counter; a failure planted in internal/fold fails the counter, which prints it; a run of
 #      internal/fold alone prints database_skips=NONE and passes, and fails on that planted
 #      failure; and the option is refused beside --report and with no package.
+#   7. -run, as a leg of envoy-go-race-api pipes it in: a run of the API package under a -run that
+#      leaves most of its EXPECTED_SKIPS tests out passes, those lines being other legs'; a copy of
+#      the counter with a line for a test the package does not have reads UNKNOWN under a -run and
+#      names that line alone; a name with a non-ASCII letter is taken; a -run that is no list of
+#      whole test names is refused before any test runs; and the option is refused beside --report.
 #
 # Every run narrows its packages to the tests it is about with
 # GOFLAGS=-run=..., which go test reads as its own -run (and go list ignores): what the counter
@@ -404,6 +409,49 @@ judge "$([ "$(code table-report)" = 1 ] && said table-report 'refused beside it'
 count table-bare bash "$COUNTER" --count-table
 judge "$([ "$(code table-bare)" = 1 ] && said table-bare 'needs a PACKAGE' && echo 0 || echo 1)" \
   "control 6: --count-table with no package is refused" "$(seen table-bare)"
+
+echo "database-skips.test.sh: control 7, -run (a leg's group)" >&2
+# A leg of envoy-go-race-api pipes `-run=^(Name|...)$` and the package into the counter. Each run
+# here names the counter's own -run, not GOFLAGS', and runs the API package.
+leg_run="-run=^($API_ANCHOR|TestSearchLatencyOnCorpus)\$"
+count leg bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+  "$leg_run" ./internal/dispatch/api/
+judge "$([ "$(code leg)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/leg.out" && echo 0 || echo 1)" \
+  "control 7: under a -run, an EXPECTED_SKIPS line whose test the package has and the pattern leaves out is another leg's, and the run passes" \
+  "$(seen leg)"
+# A line whose test the package does not have is held in every leg: no pattern selects it, and a
+# counter that dropped every line the pattern leaves out would let it go stale in all of them.
+stale="$tree_envoy/scripts/database-skips-stale.sh"
+sed "s|^\($API TestSearchLatencyOnCorpus .*\)|\1\n$API TestNoSuchTestAnywhere is planted here, a test the package does not have|" \
+  "$COUNTER" >"$stale"
+judge "$([ "$(($(wc -l <"$stale") - $(wc -l <"$COUNTER")))" = 1 ] && echo 0 || echo 1)" \
+  "control 7: the stale copy differs from the counter by exactly the planted line" \
+  "$(($(wc -l <"$stale") - $(wc -l <"$COUNTER"))) lines more"
+count leg-stale bash "$stale" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+  "-run=^($API_ANCHOR)\$" ./internal/dispatch/api/
+judge "$([ "$(code leg-stale)" = 1 ] && grep -qxF 'database_skips=UNKNOWN' "$WORK/leg-stale.out" &&
+  said leg-stale "TestNoSuchTestAnywhere" && echo 0 || echo 1)" \
+  "control 7: under a -run, an EXPECTED_SKIPS line whose test the package does not have still reads UNKNOWN and fails" \
+  "$(seen leg-stale)"
+judge "$( ! said leg-stale "TestSearchLatencyOnCorpus" && echo 0 || echo 1)" \
+  "control 7: and it names only that line, not the lines whose tests the package has and the pattern leaves out" \
+  "$(seen leg-stale)"
+for shape in '-run=^(.*)$' '-run=^(TestA)|(TestB)$' '-run=TestA'; do
+  count leg-shape bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+    "$shape" ./internal/dispatch/api/
+  judge "$([ "$(code leg-shape)" = 1 ] && said leg-shape 'usage:' && echo 0 || echo 1)" \
+    "control 7: $shape, no list of whole test names, is refused before any test runs" "$(seen leg-shape)"
+done
+# A name with a non-ASCII letter is a whole test name: go_legs.py lists and places one, so the
+# counter must take it too. It matches no test here, and the anchor still runs.
+count leg-unicode bash "$COUNTER" --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL \
+  "-run=^($API_ANCHOR|TestÄnderungGibtEsNicht)\$" ./internal/dispatch/api/
+judge "$([ "$(code leg-unicode)" = 0 ] && ! said leg-unicode 'usage:' && grep -qxF 'database_skips=0' "$WORK/leg-unicode.out" &&
+  echo 0 || echo 1)" \
+  "control 7: a -run name holding a non-ASCII letter is taken, as go_legs.py takes it" "$(seen leg-unicode)"
+count leg-report bash "$COUNTER" --report "$WORK/quiet.json" "-run=^($API_ANCHOR)\$" "${QUIET[@]}"
+judge "$([ "$(code leg-report)" = 1 ] && said leg-report 'refused beside it' && echo 0 || echo 1)" \
+  "control 7: -run is refused beside --report" "$(seen leg-report)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "database-skips.test.sh: failed ($FAILED of $((PASSED + FAILED)))"

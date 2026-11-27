@@ -142,6 +142,7 @@ func (s *edgeLBSender) send(token, peer string, forwarded ...string) *httptest.R
 // addresses, and an IPv4 address written as IPv6 is that IPv4 address, the proxy's and the
 // caller's alike.
 func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
+	t.Parallel()
 	sender := newEdgeLBSender(t, nil)
 	for _, step := range []struct {
 		what        string
@@ -175,6 +176,7 @@ func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
 // address does not give it a fresh one, and two lines or one entry are not refused, since nothing
 // is read from them.
 func TestEdgeForwardedAddressFromAnyOtherPeerChoosesNothing(t *testing.T) {
+	t.Parallel()
 	sender := newEdgeLBSender(t, nil)
 	for _, step := range []struct {
 		what        string
@@ -200,6 +202,7 @@ func TestEdgeForwardedAddressFromAnyOtherPeerChoosesNothing(t *testing.T) {
 // it is judged: the broker is asked nothing and no bucket is spent, since such a request names no
 // caller to charge, and reading the wrong entry would hand the choice of a bucket to the caller.
 func TestEdgeForwardedAddressRefusesWhatGoogleDidNotForward(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
 	sender := newEdgeLBSender(t, &logged)
 	for _, tc := range []struct {
@@ -236,6 +239,7 @@ func TestEdgeForwardedAddressRefusesWhatGoogleDidNotForward(t *testing.T) {
 // Google's ranges is keyed on its connection, its X-Forwarded-For chooses nothing, and a header of
 // two lines is no refusal.
 func TestEdgeForwardedAddressIsReadByTheEdgeAlone(t *testing.T) {
+	t.Parallel()
 	sender := newEdgeLBSender(t, nil)
 	sender.handler = apiAuth(listenerAPIAuth{brokers: edgeLBTokens(t, sender.broker.Server.URL, &spentProofsInMemory{}),
 		logger: logging.NewWithWriter("test-machine", io.Discard)}, noContent)
