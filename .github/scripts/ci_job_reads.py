@@ -2137,19 +2137,23 @@ def by_name_job(path: Path) -> str:
 
 # The priorities read's tests over its corpus of production's counts (internal/dispatch/api,
 # INFRA-5791), keyed by path as TEXT_CHECK_TESTS is. Each carries `//go:build !race`, so the walk
-# below puts them in the plain run the race build cannot make, and race_impossible_alone() puts
-# them in its rows that run alone, in envoy-go-alone (RACE_IMPOSSIBLE_ALONE_STEP), where they stay.
-# The bound's test reads each statement's database time from pg_stat_statements and stops where
-# the server does not preload it, and the four are checks whose server is a Postgres of the image
-# CI pins started with shared_preload_libraries=pg_stat_statements and max_connections=200
-# (INFRA-5791's verification). A server loads that module only at its start, and a service
-# container takes no arguments for its server, so the job's service cannot be that server. So that
-# step runs these tests in a go test of their own on PG_STAT_STATEMENTS_URL, a Postgres of the
-# service's own image that the step before it starts so (PG_STAT_STATEMENTS_STEP), and the
-# package's other rows there on the service. They are held to the files they are about as
-# TEXT_CHECK_TESTS' are: a file named here that does not carry the tag, or whose tests are not
-# exactly the names here, is refused (race_impossible_tests_of), and so is a row whose file the
-# lane's walk never reads (race_impossible_tests).
+# below puts them in the plain run the race build cannot make. They assert no time: the bound's test
+# holds the answers of the reads it times and their shape under each plan (the statements, the round
+# trips and the event probes) and prints their times, which c-both-forms' step, outside CI, holds to
+# the bound, and the other three hold answers, walks and buffer ratios. So they stay in that run's
+# rows that measure no time, in envoy-go-race-impossible (RACE_IMPOSSIBLE_STEP). The bound's test
+# reads each statement's database time from pg_stat_statements and stops where the server does not
+# preload it, and the four are checks whose server is a Postgres of the image CI pins started with
+# shared_preload_libraries=pg_stat_statements and max_connections=200 (INFRA-5791's verification). A
+# server loads that module only at its start, and every Postgres service starts on the one command
+# line postgres-service-settings.sh --command prints (check-workflow-files.sh's rule 7), which
+# preloads nothing, so the job's service cannot be that server. So that step runs these tests in a
+# go test of their own on PG_STAT_STATEMENTS_URL, a Postgres of the service's own image that the
+# job's step before it starts so (PG_STAT_STATEMENTS_STEP), and any other row of their package it
+# holds on the service. They are held to the files they are about as TEXT_CHECK_TESTS' are: a file
+# named here that does not carry the tag, or whose tests are not exactly the names here, is refused
+# (race_impossible_tests_of), and so is a row whose file the lane's walk never reads
+# (race_impossible_tests).
 PG_STAT_STATEMENTS_TESTS = {
     f"{ENVOY}/internal/dispatch/api/priority_read_bound_test.go": {
         "TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan"},
@@ -2311,13 +2315,11 @@ def race_impossible_script(packages, preloaded=None) -> str:
 # (RACE_IMPOSSIBLE_ALONE_*): every xid window test, which judges the statement-free gaps of a
 # window against a bound; the xid rig's own tests (internal/dispatch/store/storetest), which read
 # the thread clocks those gaps come from; the API's 200 ms bound on the issue list
-# (TestAPriorityListAnswersWithinItsBoundOnEveryPlan); the priorities read's four tests
-# (PG_STAT_STATEMENTS_TESTS), whose bound's test times its reads with a wall clock and whose other
-# three read the corpus that test's go test builds, on the Postgres that only envoy-go-alone starts
-# (PG_STAT_STATEMENTS_STEP); and the auth service's restart storm, whose five hundred connections
-# must all be admitted within the callout's deadline. The rest, the bus's allocation count and the
-# documents package's memory bounds and render storms, measure no time and run in
-# envoy-go-race-impossible.
+# (TestAPriorityListAnswersWithinItsBoundOnEveryPlan); and the auth service's restart storm, whose
+# five hundred connections must all be admitted within the callout's deadline. The rest, the bus's
+# allocation count, the priorities read's four tests (PG_STAT_STATEMENTS_TESTS) and the documents
+# package's memory bounds and render storms, measure no time and run in envoy-go-race-impossible,
+# the four on the Postgres that job's step before this one starts (PG_STAT_STATEMENTS_STEP).
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_ALONE_STEP = "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone"
 RACE_IMPOSSIBLE_ALONE_PREFIX = "TestXidWindow"
@@ -2326,14 +2328,13 @@ RACE_IMPOSSIBLE_ALONE_TESTS = {
     "internal/dispatch/api": {"TestAPriorityListAnswersWithinItsBoundOnEveryPlan"},
     "internal/cipher/natscallout": {"TestACalloutStormAfterAServerRestartAdmitsEveryConnection"},
 }
-_preloaded = pg_stat_statements_packages()
 
 
 def race_impossible_alone(under, name):
     """Whether a test of the plain run the race build cannot make runs alone (the step's comment
     above says which and why)."""
     return (name.startswith(RACE_IMPOSSIBLE_ALONE_PREFIX) or under in RACE_IMPOSSIBLE_ALONE_PACKAGES
-            or name in RACE_IMPOSSIBLE_ALONE_TESTS.get(under, ()) or name in _preloaded.get(under, ()))
+            or name in RACE_IMPOSSIBLE_ALONE_TESTS.get(under, ()))
 
 
 RACE_IMPOSSIBLE_ALL = race_impossible_tests(ENVOY)
@@ -2351,8 +2352,8 @@ RACE_IMPOSSIBLE_ALONE_RUN = {under: {n for n in names if race_impossible_alone(u
 RACE_IMPOSSIBLE_PACKAGES = {under: {n for n in names if not race_impossible_alone(under, n)}
                             for under, names in RACE_IMPOSSIBLE_ALL.items()
                             if any(not race_impossible_alone(under, n) for n in names)}
-RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
-RACE_IMPOSSIBLE_ALONE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_ALONE_RUN, _preloaded)
+RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES, pg_stat_statements_packages())
+RACE_IMPOSSIBLE_ALONE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_ALONE_RUN)
 
 
 def daemon_race_packages() -> list:

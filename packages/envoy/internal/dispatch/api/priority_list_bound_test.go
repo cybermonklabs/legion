@@ -14,8 +14,9 @@ import (
 
 // What a priority's issue list is held to, from R1 of dispatch://INFRA-5609: 9 of 10 reads within
 // 200 ms, read 200 times on one connection after ten reads that warm it. The bound is a time, which
-// the race detector stretches, so this file is out of the race build and envoy-go's plain step runs
-// it (ci_job_reads.py derives that step's list from this tag).
+// the race detector stretches, so this file is out of the race build, and envoy-go-alone's step
+// "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" runs
+// it (ci_job_reads.py's RACE_IMPOSSIBLE_ALONE_TESTS names it there).
 const (
 	priorityListBound    = 200 * time.Millisecond
 	priorityListReads    = 200

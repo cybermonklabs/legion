@@ -14,9 +14,10 @@ import (
 // What R1 of dispatch://INFRA-5791 reads the priorities read at: 200 reads of each form on one
 // connection, after the reads that warm it (prioritiesReadWarmReads), and the 90th percentile of
 // them, which the bound of 200 ms is on. The bound is a time, which the race detector stretches,
-// so this file is out of the race build and envoy-go's plain step runs it (ci_job_reads.py derives
-// that step's list from this tag). The test holds no time: c-both-forms' step holds the bound, on
-// the median of three build Jobs' readings.
+// so this file is out of the race build, and envoy-go-race-impossible's step "Test what the race
+// build cannot run at all or at full size" runs it, on the Postgres the job's step before it starts
+// (ci_job_reads.py derives that step's list from this tag). The test holds no time: c-both-forms'
+// step holds the bound, on the median of three build Jobs' readings.
 const (
 	prioritiesReadReads    = 200
 	prioritiesReadQuantile = 0.9

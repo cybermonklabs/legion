@@ -18,19 +18,20 @@ GATE = gate("envoy_go", "envoy-go", runs=[
 ], exact=[
     # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
     # each selecting that package's own tests with -run: the rows that measure no time here, and
-    # those that do alone, in envoy-go-alone, with one more for the tests of a package that run on
-    # the Postgres the step before that one starts (PG_STAT_STATEMENTS_TESTS).
+    # those that do alone, in envoy-go-alone. A package's tests that run on the Postgres the step
+    # before this one starts (PG_STAT_STATEMENTS_TESTS) are a go test of their own, as
+    # race_impossible_script writes them, so a package all of whose rows run there has only that one.
     pinned_step(ENVOY_RACE_IMPOSSIBLE_JOB, RACE_IMPOSSIBLE_STEP, ENVOY, RACE_IMPOSSIBLE_SCRIPT, [
         (ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
-        for under in RACE_IMPOSSIBLE_PACKAGES
+        for under, names in RACE_IMPOSSIBLE_PACKAGES.items() if names - pg_stat_statements_packages().get(under, set())
+    ] + [
+        (ENVOY, [f"./{under}"], f"go test -run of the tests of ./{under} that run on the Postgres "
+                                f"{at(ENVOY_RACE_IMPOSSIBLE_JOB, PG_STAT_STATEMENTS_STEP, ENVOY_GO_FILE)} starts", {})
+        for under in pg_stat_statements_packages()
     ], workflow=ENVOY_GO_FILE),
     pinned_step(ENVOY_ALONE_JOB, RACE_IMPOSSIBLE_ALONE_STEP, ENVOY, RACE_IMPOSSIBLE_ALONE_SCRIPT, [
         (ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}, alone", {})
         for under in RACE_IMPOSSIBLE_ALONE_RUN
-    ] + [
-        (ENVOY, [f"./{under}"], f"go test -run of the tests of ./{under} that run on the Postgres "
-                                f"{at(ENVOY_ALONE_JOB, PG_STAT_STATEMENTS_STEP, ENVOY_GO_FILE)} starts", {})
-        for under in pg_stat_statements_packages()
     ], workflow=ENVOY_GO_FILE),
     # The unit packages' rows whose bound is on time (UNIT_ALONE_TESTS), one go test -run per
     # package: the whole package compiles whichever tests the -run selects, so each Run is the

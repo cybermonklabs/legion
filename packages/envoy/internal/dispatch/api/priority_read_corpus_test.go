@@ -31,7 +31,9 @@ import (
 // other row by testdata/priorities-read-corpus.sql, the port of INFRA-1098's R32 corpus to the
 // tables this tree reads, whose header says what it holds and why. Nothing is drawn at random, so
 // every run builds the same database. The seed is some 680,000 events, heavy work for a pod, so
-// these tests carry `//go:build !race` and run in build Jobs and in envoy-go's plain step.
+// these tests carry `//go:build !race` and run in build Jobs and in envoy-go-race-impossible's
+// step "Test what the race build cannot run at all or at full size", on the Postgres the job's
+// step before it starts.
 
 //go:embed testdata/priorities-read-corpus.sql
 var prioritiesReadCorpusSQL string
