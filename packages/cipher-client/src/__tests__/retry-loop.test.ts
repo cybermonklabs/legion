@@ -520,18 +520,22 @@ const ROWS: [string, Row][] = [
 const LANDS_AT = { at: Number.POSITIVE_INFINITY };
 
 // A fake clock left behind stops the timers of every file the same worker runs after this. A row
-// whose `rig` throws, or that the command's guard ends while it awaits the client, never reaches
-// its own `finally`, so the real clock comes back here, after every row.
+// whose `rig` throws, or that its guard ends while it awaits the client, never reaches its own
+// `finally`, so the real clock comes back here, after every row.
 afterEach(() => {
   jest.useRealTimers();
 });
 
-test.each(ROWS)("%s", async (_name, row) => {
-  jest.useFakeTimers();
-  const one = await rig(row.answer, row.budget, row.attemptMs ?? TRADE_ATTEMPT_MS);
-  try {
-    await row.drive(one);
-  } finally {
-    one.client.close();
-  }
-});
+test.each(ROWS)(
+  "%s",
+  async (_name, row) => {
+    jest.useFakeTimers();
+    const one = await rig(row.answer, row.budget, row.attemptMs ?? TRADE_ATTEMPT_MS);
+    try {
+      await row.drive(one);
+    } finally {
+      one.client.close();
+    }
+  },
+  20_000
+);

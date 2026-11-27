@@ -3,8 +3,8 @@
 // What the client does between trades: it holds a token while that token is live, trades again
 // before it lapses with nothing of the caller's restarting, at the moment the corpus the Go client
 // replays too names (`testdata/renewal.json`), keeps writing through a broker or an issuer that is
-// merely down while its retry loop trades again, tells a caller whose deadline ends what that
-// loop's last trade came to rather than handing out no identity, stops with a plain error on one
+// merely down while its retry loop trades again, tells a fail-fast caller what that loop's last
+// trade came to rather than handing out no identity, stops with a plain error on one
 // that has been ended, and trades afresh when a caller is told the token in hand is dead. The
 // loop's whole table of answers is `retry-loop.test.ts`.
 
