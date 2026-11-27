@@ -290,7 +290,8 @@ func unreadCause(issue record.Issue, view closeView) string {
 // askCloseRead queues the read of issue's checks (record.CloseRead) where none waits to run: one
 // row waits for an issue at a time, and the read it makes when it runs answers every event before
 // it. A row that runs already may have read Dispatch before this event, and the read it carries
-// back is applied while its row is claimed, so only a row no runner has claimed counts
+// back is applied while its row is claimed, so only a row no runner has claimed counts, and that
+// row is held until tx ends, so no runner claims it before this event commits
 // (record.Store.OutboxWaiting).
 func (e *Engine) askCloseRead(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	return e.askCloseReadAt(ctx, tx, issue, e.now())
@@ -313,13 +314,21 @@ func (e *Engine) askCloseReadAt(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return e.enqueueAt(ctx, tx, issue.Key, record.CloseRead{Generation: issue.Generation}, at)
 }
 
-// publishWait queues the row that writes issue's stored wait onto close-wait.md where none waits to
-// run: the row renders the wait the record holds when it runs, so one waiting row stands for every
-// change before it runs. A row that runs already may have rendered the wait before this change, so
-// it does not count (record.Store.OutboxWaiting).
+// publishWait makes the row that writes issue's stored wait onto close-wait.md due now: the row of
+// the issue that waits to run is made due now where it was due later (record.Store.ExpediteOutbox),
+// and one is queued where none waits, so the issue keeps one row. The row renders the wait the
+// record holds when it runs, so one waiting row stands for every change before it runs, once it is
+// due: a row on the backoff of a failed attempt would carry this change to Dispatch only when the
+// backoff ran out (D11). A row that runs already may have rendered the wait before this change, so
+// it does not count, and the waiting row is held until tx ends, so no lane claims it before this
+// change commits (record.Store.OutboxWaiting).
 func (e *Engine) publishWait(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	_, waiting, err := e.store.OutboxWaiting(ctx, tx, issue.Key, record.OutboxKindCloseWaitPublish)
-	if err != nil || waiting {
+	waiting, found, err := e.store.OutboxWaiting(ctx, tx, issue.Key, record.OutboxKindCloseWaitPublish)
+	if err != nil {
+		return err
+	}
+	if found {
+		_, err := e.store.ExpediteOutbox(ctx, tx, waiting, e.now())
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.CloseWaitPublish{Generation: issue.Generation})
@@ -652,7 +661,7 @@ func (e *Engine) askAncestorsRead(ctx context.Context, tx pgx.Tx, issue record.I
 // merged issue reaches it, and so does every event that changes an input of the predicate. It
 // acts on issue as the store holds it in verifying, and on no other issue. Where the close waits
 // for nothing it closes the issue (closeOnChecks). Otherwise it writes the stored wait where an
-// item came, went or changed its state, queues one row for close-wait.md where none stands, tells
+// item came, went or changed its state, makes its one close-wait.md row due (publishWait), tells
 // the owning architect at once of a check newly failed, newly unknown for a pass and a fail at one
 // commit, or newly changed without approval, and reads again later a read that did not decide: a
 // basis named no merge commit of the newest merge, or Dispatch could not place or read a check.
@@ -814,14 +823,17 @@ func checkFailedReason(issue record.Issue, check string, wait record.CloseWait) 
 }
 
 // closeOnChecks closes issue, which waits in verifying for nothing any more (judgeClose): the
-// stored wait says that it closed and when, and its row is queued before the status write of done,
-// so close-wait.md says it while the issue is still open in Dispatch, which refuses an upload to a
-// closed issue. The issue is marked closed on its checks (issues.closed_on_checks_at). In a tree
-// that does not linger the table's row out of verifying writes done and the issue leaves the
-// workflow (leave), which suspends a merged child's pod where its production check closed while
-// it stood in verifying. In a lingering tree no transition runs, so the close writes the member's
-// done directly, as a merge in a lingering tree did before the wait. withdrawn is what
-// judgeCloseNoting names once: the withdrawal that left the close waiting for nothing.
+// stored wait says that it closed and when, and its row is made due, or queued, before the status
+// write of done (publishWait). The done write waits behind every older publish row of its issue
+// (record's outboxInOrder), so a row the close left on its backoff would hold the done write for
+// the backoff, and a row older than the done write is what lets close-wait.md say the close while
+// the issue is still open in Dispatch, which refuses an upload to a closed issue. The issue is
+// marked closed on its checks (issues.closed_on_checks_at). In a tree that does not linger the
+// table's row out of verifying writes done and the issue leaves the workflow (leave), which
+// suspends a merged child's pod where its production check closed while it stood in verifying. In
+// a lingering tree no transition runs, so the close writes the member's done directly, as a merge
+// in a lingering tree did before the wait. withdrawn is what judgeCloseNoting names once: the
+// withdrawal that left the close waiting for nothing.
 func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView, withdrawn []record.WaitWithdrawal) error {
 	now := e.now()
 	old, err := storedWaitOf(issue)
@@ -836,7 +848,7 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	closedAt := now
 	issue.ClosedOnChecksAt = &closedAt
-	if err := e.enqueue(ctx, tx, issue.Key, record.CloseWaitPublish{Generation: issue.Generation}); err != nil {
+	if err := e.publishWait(ctx, tx, issue); err != nil {
 		return err
 	}
 	w, err := e.walk(ctx, tx, issue)

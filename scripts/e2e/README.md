@@ -3175,7 +3175,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `re-admission`
 
-  tree 1 set todo again: its architect comes back in a pod of its own, on that pod's own disk, Bound and owned by it, resumed from the session the database kept.
+  tree 1, whose work merged, set todo again, which starts one next change of it, not a new run of its tree: its architect comes back in a pod of its own, on that pod's own disk, Bound and owned by it, resumed from the session the database kept.
   Nothing reports a lost volume — the daemon's log holds no `volume was lost` line anywhere in the run, that verdict having gone with the lost-disk machinery
   — and the architect's workspace holds no `.legion/<tree 1>/workspace-recovered.json`, the marker having gone with it;
   what tells the agent its workspace is new is the launcher's own `LEGION_WORKSPACE_RECREATED`

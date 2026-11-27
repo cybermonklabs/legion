@@ -945,7 +945,10 @@ func TestAnOldProductionReportCannotFinishTheNewAssessment(t *testing.T) {
 
 // A change whose pull request is open: a read of its generation in which each check passes, the
 // production check of its generation recorded at the newest merge, nothing beneath, and the
-// change's own check reason answered by its passing check. The issue stays in the change.
+// change's own check reason answered by its passing check. The issue stays in the change, and the
+// stored wait names the open change as the one term that holds the close. A read of an issue whose
+// change is open never judges its close (closeChecksRead routes it to judgeOpenChange), so the
+// stored wait is where the predicate's OpenChange term shows (record.CloseWaitOf).
 func TestAPassWhileTheNextChangeIsOpenClosesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
@@ -969,6 +972,15 @@ func TestAPassWhileTheNextChangeIsOpenClosesNothing(t *testing.T) {
 	}
 	if got := rig.statusWrites(waitRoot, "done"); got != 0 {
 		t.Fatalf("done status writes = %d, want none while the change is open", got)
+	}
+	stored := rig.stored(waitRoot)
+	if change := stored.NextChange; change == nil || change.Generation != changeGeneration || len(change.Reasons) != 1 ||
+		change.Reasons[0].Kind != record.DefectKindCheck {
+		t.Fatalf("the stored wait's open change = %+v, want change %d carrying its one check reason", change, changeGeneration)
+	}
+	if len(stored.Checks) != 0 || stored.Production != nil || len(stored.Defects) != 0 || len(stored.Beneath) != 0 ||
+		len(stored.OpenChildren) != 0 || stored.Unread != nil || stored.Unapproved != nil {
+		t.Fatalf("the stored wait = %+v, want the open change alone: each other term of the close is met", stored)
 	}
 }
 

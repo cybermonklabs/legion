@@ -3221,7 +3221,7 @@ Block A first prints the list that a person keeps, as two `NOTICE`s: the issues 
 psql writes a notice to its standard error, not to its output, so keep that stream: save block A as `block-a-<PROJECT>.sql` and run `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -f block-a-<PROJECT>.sql 2>&1 | tee list-<PROJECT>.txt` in a shell with `set -o pipefail`, so that a failure still exits non-zero.
 Block A then moves each issue of the project that stands in `verifying` to `merging`, with the status `retro`.
 The earlier release's boot sweep closes each of them at its merged pull request (`sweepMerged` in `workflow/resume.go`), which is the close at the merge that this release ends.
-So after the roll forward to this release, a person reads the kept list and sets each listed issue whose checks still do not pass to `todo`, which runs it again.
+So after the roll forward to this release, a person reads the kept list and sets each listed issue whose checks still do not pass to `todo`, which starts one next change of it.
 `dispatch results --issue <KEY>` shows the state of each check of an issue.
 The open defects go with the table `defects`: the kept list, and the last version of each issue's `close-wait.md` in Dispatch, are where they are read after the way back.
 Block A deletes the rows of the project that the earlier release cannot decode: the `close_read` and `close_wait_publish` rows, the notices and controller notices of the eleven kinds this release adds, the `issue_branch` rows whose payload holds `from`, and the `supervise` rows whose payload holds `startAt`.
@@ -3313,6 +3313,13 @@ So mark a check `production` or `graph` only for a program whose deploys the dep
 A deployment whose delivery settings read `null` (`GET /api/v1/settings/delivery`) has set no deploy repository in Dispatch.
 A check marked for a program whose deploys nobody records reads `unknown` with the reason `no_deploy`, so the close waits for it, and the owning architect is told once a day.
 A check with no `subject` reads as `code`: a pass recorded at a commit of the merge's branch that holds the merge decides it, and no deploy does.
+
+**A next change's branch.**
+Before a next change's first task, the daemon moves the issue's branch to the head of the base its last pull request merged into, as the implement App.
+It reads the repository's node id over REST and moves the branch with GitHub's GraphQL mutation `updateRefs`, at `https://api.github.com/graphql`.
+Where the App's token cannot make that call, the `issue_branch` row logs `outbox row failed` with an error that begins `move the branch of <KEY> to <base> for its next change, which its roles' starts wait for:`, followed by GitHub's answer.
+The row runs again on its backoff, and the change's roles do not start until the move succeeds.
+Let the daemon reach GitHub's GraphQL endpoint, and give the implement App `Contents: Read and write` on the repository, which its write set already asks for.
 
 #### Rolling back the release that names the variant on each step record
 

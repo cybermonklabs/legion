@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `legion-api.ts`: from the defect-request-of-a-person entry on, `LegionDefectWithdrawRequest` documents the refusal `DEFECT_REQUEST_OF_A_PERSON`: a request for new work that a person made ends with no pull request only when that person sets the issue to `done`.
+time: 2026-11-27T20:23:06Z
+custom:
+    Issue: pr5558

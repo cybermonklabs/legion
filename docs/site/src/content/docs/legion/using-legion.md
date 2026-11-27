@@ -194,7 +194,9 @@ a re-admission makes them afresh.
   parent, and the issue moves to `todo` itself; an approval that Dispatch carries in your name from
   an earlier one does not queue it. An approval that Legion applies after the issue's status
   changed again (it reached Legion late, or the operator replayed it) does not queue the issue
-  either: set it to `todo`. The tree starts over as a new generation, from its architect.
+  either: set it to `todo`. Where the issue's work never merged, the tree starts over as a new
+  generation, from its architect. Where its work merged, `todo` starts one next change of the issue,
+  and its tree does not run again ([The close](/legion/legion/concepts/#the-close)).
 - **To close it without a change**, tell the architect at the design gate that no change is needed;
   it closes the issue with that reason. You can also close the issue yourself from the dashboard.
 
@@ -211,8 +213,9 @@ a running tree out, and the controller moves a root whose work is folded into an
 longer needed to `backlog` or `icebox`, because it cannot close a running root `done`. When a
 session outside the tree writes a status on a running root, the daemon sets it back and tells the
 root's architect who wrote it. A move of your own between the workflow's own statuses —
-`in_progress`, `testing`, `needs_review`, `retro`, and `todo` on a root (on a child, `todo` reruns
-it) — on a running issue does not stay either: the daemon's status repair writes back the status
+`in_progress`, `testing`, `needs_review`, `retro`, and `todo` on a root not in `verifying` (on a
+child, or on an issue in `verifying`, `todo` runs the issue again: as one next change where its work
+merged) — on a running issue does not stay either: the daemon's status repair writes back the status
 of the phase the issue stands in, at each boot and then every `controller_wake_interval_seconds`
 (an hour by default). `backlog` or `icebox` is how you stop the work.
 
