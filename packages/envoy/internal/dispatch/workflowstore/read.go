@@ -64,6 +64,46 @@ func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error
 	return steps, nil
 }
 
+// NewestPlan answers the plan of one issue's newest run: the plan node of the issue of the highest
+// generation, as ProjectPlans picks it (MadePlan.newerThan), nil where the issue has none. It reads
+// the `part_of` tuples into the issue as IssueSteps does, so it costs the issue's own plans alone.
+func NewestPlan(ctx context.Context, q Queryer, issue string) (*Plan, error) {
+	rows, err := q.Query(ctx, `
+		select n.id, n.attributes, n.made_at
+		from workflow_tuples t
+		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
+			and t.from_kind = '`+KindPlan+`' and t.asserted
+	`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the plan of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	var newest *MadePlan
+	for rows.Next() {
+		var id string
+		var attributes []byte
+		var made time.Time
+		if err := rows.Scan(&id, &attributes, &made); err != nil {
+			return nil, fmt.Errorf("read the plan of %s: %w", issue, err)
+		}
+		plan, err := planFrom(id, attributes)
+		if err != nil {
+			return nil, err
+		}
+		if candidate := (MadePlan{Plan: plan, Made: made}); candidate.newerThan(newest) {
+			newest = &candidate
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the plan of %s: %w", issue, err)
+	}
+	if newest == nil {
+		return nil, nil
+	}
+	return &newest.Plan, nil
+}
+
 // compareRuns is the order the runs of an issue happened in: by generation, then by start, a run
 // whose start never arrived first, then by id.
 func compareRuns(left, right Step) int {
@@ -232,31 +272,28 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	return finished, nil
 }
 
-// MadePlan is a plan with the moment its node was made, which is when the run's work started and
-// which picks between two plans of one generation.
+// MadePlan is a plan with a moment: when its node was made in ProjectPlans, and when its version
+// was written in IssuesPlans. The moment picks between two plans of one generation (compare).
 type MadePlan struct {
 	Plan Plan
 	Made time.Time
 }
 
-// newerThan answers whether candidate is newer than held (nil for none): of a higher generation,
-// or of the same generation and made later, or made at the same moment with the greater id, so the
-// read picks one plan whatever order the rows came in.
+// newerThan answers whether candidate is newer than held (nil for none), in compare's order.
 func (candidate MadePlan) newerThan(held *MadePlan) bool {
-	if held == nil {
-		return true
-	}
-	if order := cmp.Compare(candidate.Plan.Generation, held.Plan.Generation); order != 0 {
-		return order > 0
-	}
-	if order := candidate.Made.Compare(held.Made); order != 0 {
-		return order > 0
-	}
-	return candidate.Plan.ID > held.Plan.ID
+	return held == nil || candidate.compare(*held) > 0
+}
+
+// compare orders candidate before other when it is older: of a lower generation, or of the same
+// generation and made earlier, or made at the same moment with the smaller id, so a read picks
+// one plan whatever order the rows came in.
+func (candidate MadePlan) compare(other MadePlan) int {
+	return cmp.Or(cmp.Compare(candidate.Plan.Generation, other.Plan.Generation), candidate.Made.Compare(other.Made),
+		cmp.Compare(candidate.Plan.ID, other.Plan.ID))
 }
 
 // IssuesPlans answers, by issue, each version of the plan of each run of each issue of keys, with
-// the moment that version's write made it, oldest first in newerThan's order. One run keeps one
+// the moment that version's write made it, oldest first in compare's order. One run keeps one
 // plan node, whose made_at is its first write's, and a later version replaces the node's tasks
 // whole (planFact); every write of the tasks appends a value tuple of them, stamped with the
 // write's moment (putNode). So each version is read from its tuple, with its document version from
@@ -301,15 +338,7 @@ func IssuesPlans(ctx context.Context, q Queryer, keys []string) (map[string][]Ma
 		return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
 	}
 	for _, held := range plans {
-		slices.SortFunc(held, func(a, b MadePlan) int {
-			switch {
-			case b.newerThan(&a):
-				return -1
-			case a.newerThan(&b):
-				return 1
-			}
-			return 0
-		})
+		slices.SortFunc(held, MadePlan.compare)
 	}
 	return plans, nil
 }

@@ -10,7 +10,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPost,
 	Pattern:     "/api/v1/comments/{id}/reply",
 	Auth:        authBearer,
-	Description: "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:<name>), the role's live holder may reply too, as the Envoy listener names it; for a mention of a session (session:<id>), so may a session the listener names as having replaced the attempt's session, which it handed that session's unread messages. A listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal.",
+	Description: "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:<name>), the role's live holder may reply too, as the Envoy listener names it; for a mention of a session (session:<id>), so may a session the listener names as having replaced the attempt's session, which it handed that session's unread messages. A listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal. A reply names one block of comment {id} in reply_to_block. " + replyQuoteDescription("reply_to_block", "INVALID_COMMENT"),
 	Handler:     (*server).replyComment,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Kind: "comment", NotFound: "COMMENT_NOT_FOUND"},

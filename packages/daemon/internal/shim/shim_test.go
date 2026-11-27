@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -1846,7 +1847,8 @@ func TestTheShimLogsAnExtensionError(t *testing.T) {
 // any (redact.Runes), and the URL rule runs on them before the cut: a cut inside a userinfo, before
 // its "@", would leave a start of the user name that no rule after it reads as a userinfo. Wherever
 // the cut of the arguments as written falls, inside the userinfo or inside the query, the summary
-// holds no part of either: it is the cut of the arguments the rule left.
+// holds no part of either: it is the cut of what the rule leaves of the arguments
+// (redact.URLCredentials, read from the rule, never written out here).
 func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 	const url = "https://legion-reader@github.com/o/r.git?token=planted-query-token-4463"
 	for _, tc := range []struct {
@@ -1871,7 +1873,7 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 					t.Fatalf("the summary %q holds a part of the URL's user name or of its query", line)
 				}
 			}
-			left := []rune(head + `https://[a URL with credentials]/o/r.git"}`)
+			left := []rune(redact.URLCredentials(head + url + `"}`))
 			summary := string(left)
 			if len(left) > 80 {
 				summary = string(left[:79]) + "…"
