@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -17,7 +18,7 @@ import (
 // as the 0 the subquery answered. It is named here rather than written inside the handler so
 // the plan test explains the statement the route runs.
 const projectListQuery = `
-		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.created_at
+		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.proven_sessions, p.created_at
 		from projects p
 		left join (
 			select coalesce(i.project_key, ar.project_key) as project_key, count(*) as total
@@ -31,6 +32,19 @@ const projectListQuery = `
 		order by p.key
 	`
 
+// projectRowQuery reads one project as GET /api/v1/projects lists it (projectListQuery), so the
+// answer of the proven-sessions routes carries the open-ask count the list shows, not a zero.
+const projectRowQuery = `select * from (` + projectListQuery + `) listed where listed.key = $1`
+
+// scanListedProject reads one row of projectListQuery or projectRowQuery.
+func scanListedProject(row pgx.Row) (model.Project, error) {
+	var project model.Project
+	if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions, &project.CreatedAt); err != nil {
+		return model.Project{}, err
+	}
+	return project, nil
+}
+
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -43,8 +57,8 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	projects := []model.Project{}
 	for rows.Next() {
-		var project model.Project
-		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.CreatedAt); err != nil {
+		project, err := scanListedProject(rows)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -88,7 +102,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	input.Key = strings.TrimSpace(input.Key)
+	input.Key = input.bodyProject()
 	input.Name = strings.TrimSpace(input.Name)
 	if !contracts.ValidProjectKey(input.Key) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", input.Key))
@@ -135,7 +149,12 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 				"the person a project's unowned work lands on")
 		return
 	}
-	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
+	// The person is held to the creating credential's sight as well as to having signed in.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	projectDefault, err := s.allowedLogin(r.Context(), who, projectDefault)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -149,9 +168,9 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name, default_assignee) values ($1, $2, $3)
-		returning key, name, gated_steps, default_repo, default_assignee, created_at
+		returning key, name, gated_steps, default_repo, proven_sessions, default_assignee, created_at
 	`, input.Key, input.Name, projectDefault).Scan(
-		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultRepo, &created.DefaultAssignee, &created.CreatedAt); err != nil {
+		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultRepo, &created.ProvenSessions, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")
 			return

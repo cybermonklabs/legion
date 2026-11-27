@@ -50,21 +50,21 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_ASK", http.StatusBadRequest, "asked_of must be a person's email")
 		return
 	}
-	// Who the ask is handed to, canonicalised and held to having signed in
-	// (400 ASSIGNEE_NOT_ALLOWED), resolved before the transaction opens: allowedLogin reads the
-	// shared pool, which refuses a second connection to a caller already holding one
+	// What the writer sees, resolved before the transaction opens: the ask is loaded as the
+	// writer may read it (loadAsk), and the person it is handed to is one the writer may see.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	// Who the ask is handed to, canonicalised and held to having signed in and to the writer's
+	// sight (400 ASSIGNEE_NOT_ALLOWED), resolved before the transaction opens too: allowedLogin
+	// reads the shared pool, which refuses a second connection to a caller already holding one
 	// (store.ErrNestedAcquire), so it cannot run under the transaction below - the reason
 	// editAsk resolves its acting person before it begins. A caller naming nobody who has
 	// signed in is therefore told so before the ask is read.
-	askedOf, err := s.allowedLogin(r.Context(), input.AskedOf)
+	askedOf, err := s.allowedLogin(r.Context(), who, input.AskedOf)
 	if err != nil {
 		s.writeHandlerError(w, err)
-		return
-	}
-	// What the writer sees, resolved before the transaction for the same reason: the ask is
-	// loaded as the writer may read it (loadAsk).
-	who, ok := s.readerOf(w, r)
-	if !ok {
 		return
 	}
 
@@ -87,7 +87,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask, err := s.readAskForTransition(r.Context(), tx, who, askID)
+	ask, err := s.readAskForTransition(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -1,7 +1,6 @@
 // Command routeprobes prints api.RouteProbes as one JSON array: every row of Dispatch's route
-// table with the Probe a driver fills its wildcards from. packages/dispatch/e2e/acceptance/
-// project-access.sh (c-private-unseen) runs it, so the rows it walks and the objects it fills
-// them with are the server's own tables, never a list in the driver.
+// table with the Probe a driver fills its wildcards from, so the rows a driver walks and the
+// objects it fills them with are the server's own tables, never a list in the driver.
 package main
 
 import (

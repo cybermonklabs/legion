@@ -24,9 +24,13 @@ const Prefix = "/api/github/rest/"
 
 // readable are the GitHub API paths the web app reads, and the only ones the proxy forwards: a
 // pull request, an issue (which also answers for a pull request), the check runs of a commit, and
-// the workflow runs whose query names one commit, held to workflowRunsQuery. The App can read more
-// of a repository than that, and none of the rest is shown anywhere.
-var readable = regexp.MustCompile(`^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|actions/runs)$`)
+// the workflow runs (`actions/runs`, the group named runs) whose query names one commit, held to
+// workflowRunsQuery. The App can read more of a repository than that, and none of the rest is
+// shown anywhere.
+var readable = regexp.MustCompile(`^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|(?<runs>actions/runs))$`)
+
+// runsGroup is the index of readable's group that a workflow-runs read fills.
+var runsGroup = readable.SubexpIndex("runs")
 
 // workflowRunsPath ends every workflow-runs read readable takes, and no other path it takes.
 const workflowRunsPath = "/actions/runs"
@@ -43,8 +47,20 @@ func Repository(path string) (owner, repo string, ok bool) {
 }
 
 // workflowRunsQuery is each parameter a workflow-runs read may carry, as sent: the commit's full
-// sha and the page. The read must name head_sha, and no parameter may repeat.
+// sha and the page. The read must name workflowRunsCommit, and no parameter may repeat.
 var workflowRunsQuery = regexp.MustCompile(`^(head_sha)=[0-9A-Fa-f]{40}$|^(per_page|page)=[0-9]+$`)
+
+// workflowRunsCommit is the parameter that names the commit, which a workflow-runs read must carry.
+const workflowRunsCommit = "head_sha"
+
+// The codes of the proxy's own refusals; any other answer is GitHub's, passed through.
+const (
+	codeMethodNotAllowed = "METHOD_NOT_ALLOWED"
+	codePathRefused      = "GITHUB_PATH_REFUSED"
+	codeTokenUnavailable = "GITHUB_TOKEN_UNAVAILABLE"
+	codeUpstream         = "GITHUB_UPSTREAM"
+	codeRateLimited      = "GITHUB_RATE_LIMITED"
+)
 
 // workflowRunsResponseLimit bounds GitHub's workflow-runs answer, which the proxy trims to three
 // fields per run before forwarding. GitHub writes each run's repository, head repository and head
@@ -80,7 +96,7 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 		}
 		seen[name] = true
 	}
-	return seen["head_sha"]
+	return seen[workflowRunsCommit]
 }
 
 // Gate is the proxy's gate's answer for one read of a repository: Hidden, whether the person
@@ -117,14 +133,14 @@ type Gate struct {
 func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client, gate func(owner, repo string) (Gate, error)) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		api.WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "the GitHub proxy reads only: use GET", "code": "METHOD_NOT_ALLOWED"})
+		api.WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "the GitHub proxy reads only: use GET", "code": codeMethodNotAllowed})
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, Prefix)
 	owner, repo, ok := Repository(path)
 	runsRead := strings.HasSuffix(path, workflowRunsPath)
 	if !ok || (runsRead && !workflowRunsOfOneCommit(r.URL.RawQuery)) {
-		api.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "the GitHub proxy reads a pull request, an issue, a commit's check runs or a commit's workflow runs only", "code": "GITHUB_PATH_REFUSED"})
+		api.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "the GitHub proxy reads a pull request, an issue, a commit's check runs or a commit's workflow runs only", "code": codePathRefused})
 		return
 	}
 	// A nil client is the deployment with no App key (githubapp.ErrNoAppKey), which answers every
@@ -167,7 +183,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		return
 	case err != nil:
 		slog.Warn("dispatch: GitHub proxy could not mint an installation token", "repository", owner+"/"+repo, "error", err)
-		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub installation token: " + err.Error(), "code": "GITHUB_UPSTREAM"})
+		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub installation token: " + err.Error(), "code": codeUpstream})
 		return
 	}
 	target := "/" + path
@@ -193,10 +209,10 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		slog.Warn("dispatch: GitHub proxy read failed", "path", target, "error", err)
 		var tooLarge *githubapp.ResponseTooLargeError
 		if errors.As(err, &tooLarge) {
-			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": tooLarge.Error(), "code": "GITHUB_UPSTREAM"})
+			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": tooLarge.Error(), "code": codeUpstream})
 			return
 		}
-		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub read failed", "code": "GITHUB_UPSTREAM"})
+		api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub read failed", "code": codeUpstream})
 		return
 	}
 	if limited := githubapp.RateLimit(status, header, body); limited != nil {
@@ -207,7 +223,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		var runs workflowRuns
 		if err := json.Unmarshal(body, &runs); err != nil {
 			slog.Warn("dispatch: GitHub proxy could not decode the workflow runs", "path", target, "error", err)
-			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub answered the workflow runs with a body that does not decode", "code": "GITHUB_UPSTREAM"})
+			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub answered the workflow runs with a body that does not decode", "code": codeUpstream})
 			return
 		}
 		api.WriteJSON(w, http.StatusOK, runs)
@@ -221,7 +237,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 }
 
 func unavailable(w http.ResponseWriter, message string) {
-	api.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": message, "code": "GITHUB_TOKEN_UNAVAILABLE"})
+	api.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": message, "code": codeTokenUnavailable})
 }
 
 // rateLimited answers a GitHub rate limit: 503 GITHUB_RATE_LIMITED, Retry-After the whole seconds
@@ -232,6 +248,6 @@ func rateLimited(w http.ResponseWriter, limited *githubapp.RateLimitError) {
 	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 	api.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
 		"error": "GitHub rate-limited the App; retry after " + (time.Duration(seconds) * time.Second).String(),
-		"code":  "GITHUB_RATE_LIMITED",
+		"code":  codeRateLimited,
 	})
 }

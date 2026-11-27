@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -277,7 +278,7 @@ const userAgentStatesQuery = `
 // not nil. The read mark, the pin and the viewer's own direct messages are matched on the
 // canonical login, so one person is one viewer however their identity source spells them; the
 // Clear (user_agent_state, migration 0033) is keyed on the raw actor id.
-func (s *server) loadUserAgentStates(ctx context.Context, who model.Actor, login string, sessionID *string) (userAgentStates, error) {
+func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionID *string) (userAgentStates, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, userAgentStatesQuery, unreadDirectRepliesArgs(login, sessionID)...)
 	if err != nil {
 		return nil, err
@@ -304,11 +305,7 @@ func (s *server) getUserAgentState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
-	states, err := s.loadUserAgentStates(r.Context(), who, actor.ID, nil)
+	states, err := s.loadUserAgentStates(r.Context(), actor.ID, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -363,10 +360,6 @@ func userAgentStateEvent(actor model.Actor, sessionID string) model.Event {
 // session's whole state.
 func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
-	if !ok {
-		return
-	}
-	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -557,7 +550,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		}
 		s.publish(r.Context(), event)
 	}
-	states, err := s.loadUserAgentStates(r.Context(), who, actor.ID, &sessionID)
+	states, err := s.loadUserAgentStates(r.Context(), actor.ID, &sessionID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

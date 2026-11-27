@@ -113,20 +113,23 @@ func (s *server) queueNewAskReferences(ctx context.Context, tx pgx.Tx, ledger *d
 	if err := queueReplacement(ledger, replacement); err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	return s.queueAskParts(ctx, ledger, ask, document, ask.CreatedAt, changes)
+	// The question's reconciliation is queued before the parts, so the parts' statements settle
+	// the ask's row of the forms queue (questionReconciled).
+	return s.queueAskParts(ctx, ledger, ask, document, ask.CreatedAt, true, changes)
 }
 
 // queueEditedReferences reconciles fromKind/fromID's references in the route's two phases for an
 // edit of an ask's question or a comment's body from previous to body, whose short ids resolve
 // for writer, the author the source's row records (refs.NewReader): the counted targets also
 // name every target the source still cites when the edit moves the head of its text, which each
-// of its edges shows (refs.EditedTargets). The source's row is stored - an edit changes a row an
-// earlier transaction wrote - so the document its `#id`s resolve against is the one that row
-// answers (refs.ScopeOf), read only if the body names a question block.
+// of its edges shows, cut against this server's deployment (refs.EditedTargets). The source's row
+// is stored - an edit changes a row an earlier transaction wrote - so the document its `#id`s
+// resolve against is the one that row answers (refs.ScopeOf), read only if the body names a
+// question block.
 func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, fromKind, fromID, previous, body string) (model.ReferenceChanges, error) {
 	ctx = ledger.ReadContext(ctx)
 	found := text.Refs(refs.NewReader(ctx, tx, writer, fromKind, fromID, s.deps.Origins).Mentions(body))
-	replacement, changes, err := planFoundReferences(ctx, tx, fromKind, fromID, found, refs.EditedTargets(previous, body, found))
+	replacement, changes, err := planFoundReferences(ctx, tx, fromKind, fromID, found, refs.EditedTargets(previous, body, s.deps.Origins.Canonical(), found))
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -187,15 +190,16 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // (clearDeletedPostBody). writer is the author the item's row records, whom its short ids
 // resolve for (refs.NewReader). Both kinds it rewrites cite what they mention, and the counted
 // targets also name every target the item still cites when the rewrite moves the head of its
-// text, which each of its edges shows (refs.EditedTargets). It is the one plan of every such
-// rewrite, which its caller queues where it makes the write: on a comment's ledger
-// (queueEditedItemReferences, and deleteComment's through clearDeletedPostBody) or on the batch
-// a message's route runs itself (editMessage, and deleteMessage's through clearDeletedPostBody).
+// text, which each of its edges shows (refs.EditedTargets, which reads both texts with the shared
+// grammar against this server's deployment). It is the one plan of every such rewrite, which its
+// caller queues where it makes the write: on a comment's ledger (queueEditedItemReferences, and
+// deleteComment's through clearDeletedPostBody) or on the batch a message's route runs itself
+// (editMessage, and deleteMessage's through clearDeletedPostBody).
 func (s *server) planEditedItem(
 	ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit,
 ) (model.ReferenceChanges, docs.WriteStep, error) {
 	return s.planItemWrite(ctx, tx, writer, kind, itemID, body, nil, at, true, carried, func(found []text.Ref) []refs.Target {
-		return refs.EditedTargets(previous, body, found)
+		return refs.EditedTargets(previous, body, s.deps.Origins.Canonical(), found)
 	})
 }
 
@@ -205,7 +209,10 @@ func (s *server) planEditedItem(
 // both, for the route to run where it makes the write: queued on its ledger
 // (queueItemReferences), on the batch of a transaction that runs its write phase itself
 // (createStoredMessage), or as a batch of its own beside the statements of a route that writes
-// as it goes (store.RunWrite, the two delivery replies).
+// as it goes (store.RunWrite, the two delivery replies). The reconciliation is queued after the
+// index, so it settles the item's row of the forms queue after both deletes
+// (refs.Replacement.SettlingForms), and the excerpt of each block is cut in the plan, against this
+// server's deployment (refs.PlanItemIndex).
 //
 // Every read it makes runs under the context it is given, which its caller derives from the
 // ledger the write queues on (queueItemReferences, docs.Ledger.ReadContext), so a mention of a
@@ -242,7 +249,7 @@ func (s *server) planItemWrite(
 	if cites {
 		located = refs.NewReaderInScope(ctx, tx, writer, string(kind), itemID, s.deps.Origins, document).Mentions(body)
 	}
-	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, at, located, carried)
+	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, s.deps.Origins.Canonical(), at, located, carried)
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err
 	}
@@ -257,6 +264,7 @@ func (s *server) planItemWrite(
 		if replacement, changes, err = planFoundReferences(ctx, tx, string(kind), itemID, found, moved); err != nil {
 			return model.ReferenceChanges{}, nil, err
 		}
+		replacement = replacement.SettlingForms()
 	}
 	return changes, func(b *store.WriteBatch) error {
 		indexing.Queue(b)

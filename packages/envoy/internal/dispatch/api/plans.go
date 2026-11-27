@@ -11,12 +11,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
-// The plan each run of an issue ran from, which the Legion daemon of the issue's project writes
+// The plan each run of an issue ran from, which a Legion daemon writes (isIssueDaemon: the
+// daemon of the issue's project, or the daemon of another project whose broker token proves it)
 // when the run's work starts and again at each later version of the owner's plan that Legion takes
 // (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's finished issues
 // (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro gave it with the
-// reason, the time from the first start of its step records to the last end, and its count of
-// failed steps. Both live in internal/dispatch/workflowstore, the one writer of the nodes and
+// reason, the time from the first start of its step records to the last end, its count of failed
+// steps, and the experiment and the variant the step records of its newest run name, null where
+// they name none. Both live in internal/dispatch/workflowstore, the one writer of the nodes and
 // tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
@@ -76,7 +78,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a plan")
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}
@@ -161,6 +163,10 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		if issue.Plan != nil {
 			plan := planRecord(*issue.Plan)
 			listed.Plan = &plan
+		}
+		if issue.Experiment != nil {
+			drawn := *issue.Experiment
+			listed.Experiment, listed.Variant = &drawn.Experiment, &drawn.Variant
 		}
 		for place, rating := range issue.Ratings {
 			listed.Ratings[place] = model.PlanRating(rating)

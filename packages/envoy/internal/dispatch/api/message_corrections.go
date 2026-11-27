@@ -323,7 +323,7 @@ func (s *server) messageCorrectionEvent(
 	if err := hydrateMessageReplyBlocks(ctx, tx, everyReader, message); err != nil {
 		return model.Event{}, nil, err
 	}
-	thread, err := loadMessageReplyThread(ctx, tx, everyReader, *message)
+	thread, err := loadMessageReplyThread(ctx, tx, *message)
 	if err != nil {
 		return model.Event{}, nil, err
 	}

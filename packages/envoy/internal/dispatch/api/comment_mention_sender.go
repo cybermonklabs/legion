@@ -85,9 +85,11 @@ type mentionSend struct {
 	// settle the attempt failed with no try again.
 	takeover takeoverRetry
 	// reader is the reader the comment was written under, which enqueue takes from the request's
-	// context: the send resolves a role's holder under it (mentionSendContext), as the request
+	// context, or everyReader for a send the delivery sweep hands over (resumeOwedDelivery): the
+	// send resolves a session or a role's holder under it (mentionSendContext), as the request
 	// itself would have, so a mention reaches no session its author may not see. nil is a send
-	// queued with no reader in its context, which resolves as one does (resolveDeliveryTarget).
+	// queued with no reader in its context, which resolves as the closed viewer: a session route
+	// reaches no session (resolveDeliveryTarget).
 	reader *model.Actor
 	// fromHeldLane is that the lane this send was last taken from is a held lane (next), so its
 	// whole delivery starts its take-over window again (takeover).
@@ -672,7 +674,8 @@ func (m *mentionSender) wait() {
 // owner, or whose read of that rule failed (mentionHeldForOrder), answers the send to take up
 // again, which its lane parks (park) on a held lane: the same attempt, under the claim that send
 // renewed. A send taken from a held lane starts its take-over window when its whole delivery
-// starts (mentionSend.takeover), since its wait there has no bound.
+// starts (mentionSend.takeover), since its wait there has no bound. Every resolve the send makes
+// reads as the reader its comment was written under (mentionSendContext).
 //
 // A send that waited before - behind an earlier event, or behind none because its read of the rule
 // failed - reads the rule alone first, for the session it waited to reach (mentionCopyHolderFor),
@@ -685,7 +688,7 @@ func (m *mentionSender) wait() {
 // the owner's later comments to the session stay behind it. Only a send the rule lets go makes the
 // whole delivery, which claims, resolves and asks the rule once more.
 func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (mentionSend, bool) {
-	ctx = store.WithTransactionTracking(ctx)
+	ctx = store.WithTransactionTracking(mentionSendContext(ctx, item))
 	if item.heldFor != "" {
 		by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor)
 		switch {
@@ -720,6 +723,7 @@ func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (ment
 
 // mentionSendContext is ctx, the sender's own, holding the reader item's comment was written under
 // (mentionSend.reader) where it carries one, so every resolve the send makes reads as its author.
+// A send that carries none resolves as the closed viewer (resolveDeliveryTarget).
 func mentionSendContext(ctx context.Context, item mentionSend) context.Context {
 	if item.reader == nil {
 		return ctx

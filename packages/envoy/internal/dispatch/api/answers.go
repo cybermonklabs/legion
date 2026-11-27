@@ -57,7 +57,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		       null::timestamptz as reply_edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by`,
 		// The canonical login on both halves: a row a build stored under a login before sign-in
 		// lower-cased it is the same person's (user_threads_login, as the replies half reads).
-		`user_threads_login(e.actor->>'id') = $1`, "")+`
+		`user_threads_login(e.actor->>'id') = $1`)+`
 		), mine as (
 			select * from answered
 			union all
@@ -153,14 +153,15 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Each row's texts are registered once the page is whole: the question the answer was given
-	// to, the text written with it and the body of a reply, all of them stored texts the table
-	// holds the trees of. A row of a slice still being appended to is a row the reader must not
-	// hold the address of.
+	// to, the text written with it and each label it chose, and the body of a reply, all of them
+	// stored texts the table holds the trees of. A row of a slice still being appended to is a row
+	// the reader must not hold the address of.
 	for index := range response.Rows {
 		row := &response.Rows[index]
 		reader.text(&row.QuestionTree, row.Question)
 		if row.Answer != nil {
 			reader.textOf(&row.Answer.TextTree, row.Answer.Text)
+			registerChosenLabels(reader, row.Answer)
 		}
 		if row.Reply != nil {
 			reader.text(&row.Reply.BodyTree, row.Reply.Body)

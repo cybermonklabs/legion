@@ -70,7 +70,8 @@ func (r callResult) errorCode() string {
 }
 
 // landed says the keyed write this answers ran and Dispatch gives no copy of its answer: a 409
-// KEY_COMMITTED (it landed before its answer was lost) or a replayed 2xx whose body reads
+// KEY_COMMITTED (it landed, and its answer was lost or names an object hidden from the caller or
+// deleted since) or a replayed 2xx whose body reads
 // ANSWER_NOT_KEPT (contracts.IdempotencyKeyCommitted, IdempotencyAnswerNotKept). What it made is
 // there, and is read back for anything its caller needs of it; it is no refusal.
 func (r callResult) landed() bool {

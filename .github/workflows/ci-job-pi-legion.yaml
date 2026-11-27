@@ -1,6 +1,6 @@
 name: CI job pi-legion
 
-# The steps of ci.yaml's `pi-legion` and `pi-legion-build` jobs, in a file of their own.
+# The steps of `.github/workflows/ci.yaml#pi-legion` and `.github/workflows/ci.yaml#pi-legion-build` jobs, in a file of their own.
 # ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
 # file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
 # whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
@@ -21,7 +21,7 @@ name: CI job pi-legion
 #
 # Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -33,7 +33,7 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -59,8 +59,9 @@ jobs:
     # (300), the pack, the upload and the ci-ok report (4), the post steps with the containers
     # stopped (5), and the seconds the job's own clock holds over the sum of its steps (5). That
     # is 396 s, 6 m 36 s, a floor this job, without the typecheck and the pack, stays under.
-    # The test step runs the package's files in one worker per CPU (`bun test --parallel`,
-    # package.json), so it lasts as long as its slowest worker, which runs
+    # The test step runs the package's files in four workers (`bun test --parallel=4`,
+    # package.json; README.md, "Development", says why the count is fixed), one per CPU of this
+    # runner, so it lasts as long as its slowest worker, which runs
     # legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s
     # of the step's 241.4 s, 281.8 s and 296.7 s in jobs 137348443705, 137353258170 and
     # 137361573250 (2026-11-22), the 300 above being the slowest rounded up. Three runs are no
@@ -107,6 +108,7 @@ jobs:
           token: ''
           cache: false
       # go-daemon, shared with typecheck and daemon-go.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -172,12 +174,18 @@ jobs:
       # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
       # license cannot be determined) and stages this plugin's six skills. The listing shows the
       # tarball ships those, its agents/, and nothing of the Envoy plugin's: no envoy.js, none of
-      # its skills.
+      # its skills. The manifest declares this tree's daemon API contract as
+      # `legion.daemonApiVersion` (scripts/daemon-contract.sh), as every pack writes it: the
+      # committed manifest names none, and the daemon built from this tree requires it.
       - name: Pack pi-legion
         run: |
-          jq '.omp.extensions = ["dist/legion.js"]' package.json > "$RUNNER_TEMP/package.json"
+          contract=$(bash ../../scripts/daemon-contract.sh)
+          jq --argjson contract "$contract" '.omp.extensions = ["dist/legion.js"] | .legion.daemonApiVersion = $contract' package.json > "$RUNNER_TEMP/package.json"
           mv "$RUNNER_TEMP/package.json" package.json
           bun pm pack --destination ../../out/pr-artifacts
+          tar -xzOf ../../out/pr-artifacts/*.tgz package/package.json \
+            | jq -e --argjson contract "$contract" '.legion.daemonApiVersion == $contract' > /dev/null \
+            || { echo "::error::the pi-legion tarball's package.json does not declare legion.daemonApiVersion $contract"; exit 1; }
           listing=$RUNNER_TEMP/pi-legion-listing
           tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
           for shipped in package/dist/legion.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/legion-worker/SKILL.md package/agents/deep-worker.md; do

@@ -35,6 +35,7 @@ func readMapsDisagree(classes map[string]readEntry, sources map[string]readSourc
 // Its controls show the comparison can fail: each map with one entry removed, in turn, is named
 // as missing that entry, and the two maps as they stand are named as disagreeing nowhere.
 func TestTheTwoReadMapsClassTheSameGETRows(t *testing.T) {
+	t.Parallel()
 	if disagree := readMapsDisagree(readClasses, readSources); len(disagree) > 0 {
 		t.Fatalf("the two read maps class different GET rows:\n%v", disagree)
 	}

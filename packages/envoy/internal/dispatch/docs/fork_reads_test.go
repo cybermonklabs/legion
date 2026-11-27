@@ -151,13 +151,13 @@ type forkReadsSection struct {
 // forkReadsSections are the sections the cases here quote, each case taking a section of its own
 // so no two touch the same text: 0 the room's seeded browser edit; 3 to 10 the anchor placements
 // (a list item, a table cell, a callout, and a quote across a paragraph and the list after it),
-// warm and cold; 11 to 22 the refusals; 41 to 44 the warm flows and 51 and 52 the cold ones; and
+// warm and cold; 11 to 22 the refusals; 41 to 45 the warm flows and 51 and 52 the cold ones; and
 // 61 to 73 the panicked writes (panicked_fork_test.go).
 var forkReadsSections = []forkReadsSection{
 	{number: 0},
 	{number: 3}, {number: 4}, {number: 5, callout: true}, {number: 6}, {number: 8}, {number: 10, callout: true},
 	{number: 11}, {number: 12}, {number: 21}, {number: 22},
-	{number: 41}, {number: 42}, {number: 43}, {number: 44}, {number: 51}, {number: 52},
+	{number: 41}, {number: 42}, {number: 43}, {number: 44}, {number: 45}, {number: 51}, {number: 52},
 	{number: 61}, {number: 62}, {number: 63}, {number: 71}, {number: 72}, {number: 73},
 }
 
@@ -192,10 +192,12 @@ func forkReadsDocument() string {
 }
 
 // newForkReadsRoom is a service whose settlement waits an hour, holding forkReadsDocument in a
-// room one browser edit has written to, durable.
+// room one browser edit has written to, durable. Its test hooks are on, so a case can hold a
+// write at a pause point (ArmLiveWritePause); a hook nothing arms changes nothing.
 func newForkReadsRoom(t *testing.T) (*Service, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
+	service.hooks = newTestHooks()
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, forkReadsDocument())
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "carol"}, replaceRun("Paragraph 0 opens", "Paragraph 0 first opens"))
@@ -204,7 +206,9 @@ func newForkReadsRoom(t *testing.T) (*Service, string) {
 }
 
 // forkReadsMode is a write that forks a room (warm), or the store with no room holding the
-// document (cold). A cold case closes the room first; its publish loads it again.
+// document (cold). A cold case closes the room first, and its publish loads none: it arms the
+// document's settlement, whose warm-up would load the room as a browser's open would, and this
+// service's settlement waits an hour (newForkReadsRoom).
 type forkReadsMode struct {
 	name string
 	cold bool
@@ -527,8 +531,8 @@ type forkStep struct {
 }
 
 // runForkSteps runs steps as one committed transaction in mode, asserting each step's fork reads
-// and checkRendering sites, then that the commit's publish checked the rendering once, and that no
-// check found a rendering its fork disagrees with.
+// and checkRendering sites, then that the commit checked the rendering once, as it hands the fork
+// to the room's shadow, and that no check found a rendering its fork disagrees with.
 func runForkSteps(t *testing.T, service *Service, artifactID string, checks *renderingChecks, mode forkReadsMode, steps ...forkStep) {
 	t.Helper()
 	mode.prepare(t, service, artifactID)
@@ -556,7 +560,7 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 	}
 	calls, found := checks.take()
 	failures = append(failures, found...)
-	if want := map[string]int{"publish": 1}; !maps.Equal(calls, want) {
+	if want := map[string]int{"commit": 1}; !maps.Equal(calls, want) {
 		t.Errorf("the commit checked the rendering at %v, want %v", calls, want)
 	}
 	for _, failure := range failures {
@@ -565,11 +569,13 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 }
 
 // Every rendering a write hands on - to a margin write (applyMargin), to a read joined to its
-// transaction (docTree), to a version (capture), and at each fork read and its publish - is a
-// fresh read and render of its fork, in each transaction the API runs: an anchored comment, a
-// suggestion, an edit and its version, an accept, and a transaction a browser commits under,
-// whose fork stands where its one read left it, so every rendering after that commit is still
-// reused. Each version records the state its own transaction wrote.
+// transaction (docTree), to a version (capture), at each fork read, and at its commit, which
+// hands the fork to the room's shadow - is a fresh read and render of its fork, in each
+// transaction the API runs: an anchored comment, a suggestion, an edit and its version, an
+// accept, and a transaction a browser commits under, whose fork stands where its one read left
+// it, so every rendering after that commit is still reused, whether the room stores the browser's
+// commit before the write's publish or after it. Each version records the state its own
+// transaction wrote.
 func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newForkReadsRoom(t)
@@ -724,16 +730,18 @@ func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 	// room once, and its fork stands at that read, so the rendering the first operation left still
 	// describes it and the reads after the commit take it. The version is the write's own state,
 	// which the browser's edit is not in - it is stored after the write and versioned by the
-	// settlement that follows - while the committed document holds both.
-	t.Run("warm/a browser commit between operations", func(t *testing.T) {
-		const id = "s-moved"
+	// settlement that follows - while the committed document holds both. section is the section
+	// the row quotes and edits, id its suggestion's.
+	browserCommitBetweenOperations := func(t *testing.T, section int, id string) {
+		t.Helper()
+		edited, editedTo := fmt.Sprintf("Paragraph %d opens", section), fmt.Sprintf("Paragraph %d then opens", section)
 		var number int
 		runForkSteps(t, service, artifactID, checks, forkReadsModes[0],
-			markQuote(MarkSuggestion, id, "Step 44 one is taken first"),
+			markQuote(MarkSuggestion, id, fmt.Sprintf("Step %d one is taken first", section)),
 			forkStep{
 				name: "a browser's edit",
 				run: func(context.Context) error {
-					editAsConnectedPeer(t, service, artifactID, 2, reuseBob, replaceRun("Paragraph 44 opens", "Paragraph 44 then opens"))
+					editAsConnectedPeer(t, service, artifactID, 2, reuseBob, replaceRun(edited, editedTo))
 					return nil
 				},
 				sites: map[string]int{},
@@ -746,13 +754,76 @@ func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 		if err != nil {
 			t.Fatalf("render the committed document: %v", err)
 		}
-		if !strings.Contains(fresh, "Paragraph 44 then opens") {
+		if !strings.Contains(fresh, editedTo) {
 			t.Error("the committed document does not hold the browser's edit")
 		}
 		// The write's own state is the committed document with the browser's edit taken back out.
-		want := strings.Replace(fresh, "Paragraph 44 then opens", "Paragraph 44 opens", 1)
+		want := strings.Replace(fresh, editedTo, edited, 1)
 		if stored := versionMarkdown(t, service.store, artifactID, number); stored != want {
 			t.Errorf("version %d records %d bytes of markdown, not the %d bytes the write's own state renders to", number, len(stored), len(want))
 		}
+	}
+	t.Run("warm/a browser commit between operations", func(t *testing.T) {
+		browserCommitBetweenOperations(t, 44, "s-moved")
 	})
+	// The room stores the browser's commit only once the write's commit drops the document's
+	// advisory lock, which the transaction holds from its read to its end, and it measures that
+	// commit on the room's shadow, whose document is the write's fork (roomShadow.measure): from
+	// the write's commit on, the fork can come to hold more than the write. Here the publish is
+	// held after the commit (PauseAfterCommit) until the room has stored the browser's commit and
+	// the fork holds its text, the order envoy-go-race-docs job 138988277423 met by chance; the
+	// write's rendering, checked as the commit hands the fork on, still describes the write's own
+	// state, as its version does.
+	t.Run("warm/a browser commit the room stores before the publish", func(t *testing.T) {
+		const section = 45
+		if err := service.ArmLiveWritePause(artifactID, PauseAfterCommit); err != nil {
+			t.Fatalf("arm the pause after the commit: %v", err)
+		}
+		stored := make(chan error, 1)
+		go func(wait time.Duration) {
+			stored <- storeBeforePublish(service, artifactID, fmt.Sprintf("Paragraph %d then opens", section), wait)
+		}(roomWait(t))
+		browserCommitBetweenOperations(t, section, "s-stored")
+		if err := <-stored; err != nil {
+			t.Fatalf("the room did not store the browser's update before the write's publish, so nothing here is tested: %v", err)
+		}
+	})
+}
+
+// storeBeforePublish holds the write of artifactID that parks after its commit
+// (PauseAfterCommit) until the room has stored every update it took - the browser's commit the
+// transaction's advisory lock held back - and lets it go on. It fails unless the write parked,
+// the room's appends landed meanwhile, and the room's shadow, the write's fork, holds text by then
+// (roomShadow.measure): the order the caller exists to make.
+func storeBeforePublish(service *Service, artifactID, text string, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	err := service.AwaitLiveWriteParked(ctx, artifactID, PauseAfterCommit)
+	if err == nil {
+		err = service.waitForPendingUpdates(ctx, artifactID)
+	}
+	if err == nil {
+		err = service.waitForDurableAppends(ctx, artifactID)
+	}
+	if err == nil {
+		err = shadowHolds(service, artifactID, text)
+	}
+	if _, releaseErr := service.ReleaseLiveWritePause(artifactID, PauseAfterCommit); err == nil {
+		err = releaseErr
+	}
+	return err
+}
+
+// shadowHolds fails unless artifactID's room holds a shadow whose rendering holds text.
+func shadowHolds(service *Service, artifactID, text string) error {
+	shadow := residentShadow(service, artifactID)
+	if shadow == nil {
+		return errors.New("the room holds no shadow")
+	}
+	shadow.mu.Lock()
+	defer shadow.mu.Unlock()
+	if shadow.markdown == nil || !strings.Contains(*shadow.markdown, text) {
+		return fmt.Errorf("the room's shadow does not hold %q", text)
+	}
+	return nil
 }

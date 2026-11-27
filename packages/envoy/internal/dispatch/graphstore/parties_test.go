@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -26,10 +27,11 @@ import (
 // knows, at the end and inside, and the empty party.
 var badParties = []string{"session:a b", "session:a\tb", "session:a\u00a0b", " session:a", ""}
 
-// TestPartiesValueRefusesAPartyThatHoldsWhiteSpace is the join itself and the caller that binds
-// nothing: the publisher's arms, which build their statement without a database. A node write
-// queued on a batch (QueueWrite, QueueNodes) answers nothing when it is queued and refuses such a
-// party when its batch is sent, which TestAWriteBetweenAPartyThatHoldsWhiteSpaceWritesNothing holds.
+// TestPartiesValueRefusesAPartyThatHoldsWhiteSpace is the join itself and the one caller that
+// binds nothing: the publisher's arms, which build their statement without a database. QueueWrite
+// builds its statements' arguments as the write phase sends them (store.WriteBatch's QueueBuilt),
+// so its refusal is the batch's, which TestAWriteBetweenAPartyThatHoldsWhiteSpaceWritesNothing
+// holds through Write.
 func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}

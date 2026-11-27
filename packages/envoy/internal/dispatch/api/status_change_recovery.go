@@ -67,6 +67,33 @@ type statusChangeRecovery struct {
 	Issue *model.Issue `json:"issue,omitempty"`
 }
 
+// statusChangePointIssues is the keys of every issue a status change's recovery point names, which
+// its refusal (refuseStatusChangeKey) and its replay (replayStatusChange) answer: the issue of each
+// step's entry and of each move, and the answer's issue, each once, in the order the point holds
+// them (keyedRoute.pointIssues).
+func statusChangePointIssues(recovery json.RawMessage) ([]string, error) {
+	var point statusChangeRecovery
+	if err := json.Unmarshal(recovery, &point); err != nil {
+		return nil, fmt.Errorf("read the recovery point of a status change: %w", err)
+	}
+	keys := make([]string, 0, len(point.Changed)+len(point.Moved)+1)
+	add := func(key string) {
+		if key != "" && !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	for _, entry := range point.Changed {
+		add(entry.Key)
+	}
+	for _, move := range point.Moved {
+		add(move.Key)
+	}
+	if point.Issue != nil {
+		add(point.Issue.Key)
+	}
+	return keys, nil
+}
+
 // holds reports whether the point holds the entry of key's step, which counts that step as made.
 // A nil point holds none.
 func (point *statusChangeRecovery) holds(key string) bool {

@@ -28,11 +28,13 @@ import (
 // token, never as a session, because a session's own credential is the broker's
 // (stubBrokerTokens, S7).
 //
-// So privateCaller.sees() is the rule of the whole seed, which holds from S2. At this head every
-// caller is answered both projects by GET /api/v1/projects, PRIV included, with bob and carol
-// both on PRIV's list: the read binds an open viewer while the deployment holds no restricted
-// member, which is this slice's own premise. A scratch probe read all eight callers that way
-// (BuildS3a-evidence/seed-probe-with-list.log).
+// The seed's rule (access.CredentialCovers, access.Credential.Sees): a credential that lists no
+// projects sees every project that is not private; one that lists projects sees those alone among
+// the private ones. A browser lists nothing and is its person, so it sees what its person sees. A
+// token that lists no projects does not see a private project. At this head every caller is
+// answered both projects by GET /api/v1/projects, PRIV included, with bob and carol both on
+// PRIV's list: the read binds an open viewer while the deployment holds no restricted member,
+// which is this slice's own premise.
 const (
 	seedPublic  = "PUB"
 	seedPrivate = "PRIV"
@@ -40,21 +42,6 @@ const (
 	seedBob     = "bob@outside.example"
 	seedCarol   = "carol@example.com"
 )
-
-// storeRepoMapping writes one repo_projects row as the last release that wrote the mapping left
-// it: no route writes the mapping now (`PUT /api/v1/settings/repo-projects/{owner}/{repo}` is
-// gone), but the read-only list still answers its rows, by the projects its caller sees. isDefault
-// is the row's own flag; a project's default repository is projects.default_repo, which
-// PUT /api/v1/projects/{key}/default-repository writes.
-func storeRepoMapping(t *testing.T, database *store.Store, repo, project string, isDefault bool) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into repo_projects (repo, project_key, is_default) values ($1, $2, $3)
-		on conflict (repo) do update set project_key = excluded.project_key, is_default = excluded.is_default
-	`, repo, project, isDefault); err != nil {
-		t.Fatalf("store the mapping of %s to %s: %v", repo, project, err)
-	}
-}
 
 // privateCaller is one caller of verification v16, by the name a failure prints.
 type privateCaller string
@@ -233,22 +220,6 @@ func (caller privateCaller) login() string {
 		return seedCarol
 	}
 	return ""
-}
-
-// sees is the projects caller sees by the rule, sorted: carol and carol's token that lists PRIV
-// both, since a full member's list decides only which private projects it sees; bob and bob's token
-// that lists PRIV PRIV alone; and alice, alice's token that lists PRIV, carol's token that lists
-// none and the shared token PUB alone, since alice does not see PRIV.
-func (caller privateCaller) sees() []string {
-	switch caller {
-	case callerCarol, callerCarolPrivToken:
-		return []string{seedPrivate, seedPublic}
-	case callerBob, callerBobPrivToken:
-		return []string{seedPrivate}
-	case callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken:
-		return []string{seedPublic}
-	}
-	return []string{}
 }
 
 // request makes one request to the seeded server as caller: a person at a browser by the test

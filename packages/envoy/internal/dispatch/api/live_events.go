@@ -248,16 +248,6 @@ func sendReplayedEvents(ctx context.Context, stream liveStreamer, sub string, ev
 	return true
 }
 
-// eventsReader is who an events subscription sends the log to: the caller as last resolved
-// (reader), and through, the log's newest id as it stood just after the subscription last resolved
-// the caller where no event asked it to (feedEvents, resumeAfterOverflow). An access change that
-// resolution can hold committed before it and so stands at or below through; one above through
-// committed after it and is not in it.
-type eventsReader struct {
-	reader  model.Actor
-	through int64
-}
-
 // eventReplay is what one events subscription is replayed before its live events, or after an
 // overflow (resumeAfterOverflow): the events to send, whether they are everything the page lacks
 // (complete), the id its events_start names (start), and the id at or below which the live loop

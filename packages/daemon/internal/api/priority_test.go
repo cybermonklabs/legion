@@ -23,7 +23,7 @@ func TestTheStateServedBelowThePriorityContractCarriesNoPriority(t *testing.T) {
 		priority bool
 	}{
 		{name: "a caller stating the contract below the priority", claims: podClaims(0), stated: priorityContract - 1},
-		{name: "a caller stating this contract", claims: podClaims(0), stated: DaemonAPIVersion, priority: true},
+		{name: "a caller stating this contract", claims: podClaims(0), stated: DaemonAPIVersion(), priority: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			views := issueViews(t, stateStating(t, stateServer(t, state, tc.claims), statePodAddr+":41000", tc.stated))
@@ -61,7 +61,7 @@ func TestThePriorityContractIsTheContractThatAddedTheKeys(t *testing.T) {
 	if priorityContract != addedPriority {
 		t.Fatalf("priorityContract = %d, want %d, the contract whose entry in version.go added each issue's priority", priorityContract, addedPriority)
 	}
-	if priorityContract > DaemonAPIVersion {
-		t.Fatalf("priorityContract = %d, above DaemonAPIVersion %d: no caller would ever be served the keys", priorityContract, DaemonAPIVersion)
+	if priorityContract > DaemonAPIVersion() {
+		t.Fatalf("priorityContract = %d, above DaemonAPIVersion %d: no caller would ever be served the keys", priorityContract, DaemonAPIVersion())
 	}
 }

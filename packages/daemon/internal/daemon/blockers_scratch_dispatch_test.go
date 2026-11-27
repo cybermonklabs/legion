@@ -930,6 +930,13 @@ func childStatusNotices(t *testing.T, pool *store.Pool, issue string) []string {
 func architectGrants(t *testing.T, d *daemon, launch runtime.SpawnSpec, tree string) func() string {
 	t.Helper()
 	session, secret := registerLaunch(t, d, launch)
+	return sessionGrants(t, d, session, secret, tree)
+}
+
+// sessionGrants answers a fresh grant on tree for the registered session and its secret on every
+// call, as the architect's plugin mints one per command.
+func sessionGrants(t *testing.T, d *daemon, session, secret, tree string) func() string {
+	t.Helper()
 	return func() string {
 		t.Helper()
 		status, body := d.request(http.MethodPost, "/legion/v1/grants", api.GrantRequest{
@@ -953,7 +960,7 @@ func registerLaunch(t *testing.T, d *daemon, launch runtime.SpawnSpec) (string, 
 	session := "ses_" + string(launch.Claim)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the session of %s = %d; body %s", launch.Claim, status, body)
@@ -1056,19 +1063,25 @@ func dispatchCall(t *testing.T, baseURL, method, path string, body, into any) {
 
 // createBlockersIssue creates one issue of project through Dispatch's own API, carrying the legion
 // label that hands it to Legion, optionally under parent, and waiting on waits. It is created in
-// triage, where every Dispatch issue starts, by a session (createDispatchIssue): the label is a
-// session's, so the root is the controller's triage wake and never a person's handover the daemon
-// would queue as todo itself (LEGION-755) ahead of the test's own write, which moves it on.
+// triage, where every Dispatch issue starts. A root is created by a session (createDispatchIssue):
+// the label is a session's, so the root is the controller's triage wake and never a person's
+// handover the daemon would queue as todo itself (LEGION-755) ahead of the test's own write, which
+// moves it on. A child is created by the person, as a person files the issue that the tree's
+// architect then releases: Dispatch refuses a session that is no architect a create under a parent
+// Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT), and a person's label hands over a root alone
+// (intake's LabelledTriageRoot).
 func createBlockersIssue(t *testing.T, baseURL, project, title, parent string, waits []string) string {
 	t.Helper()
 	body := map[string]any{"project": project, "title": title, "labels": []string{"legion"}}
+	identity := asSession
 	if parent != "" {
 		body["parent"] = parent
+		identity = asPerson
 	}
 	if len(waits) > 0 {
 		body["blocked_by"] = waits
 	}
-	return createDispatchIssue(t, baseURL, title, body, asSession)
+	return createDispatchIssue(t, baseURL, title, body, identity)
 }
 
 // createUnhandedIssue creates one issue of project through Dispatch's own API without the legion

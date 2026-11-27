@@ -6,19 +6,23 @@
 // checks: the request object `machine.Service.verifyPersonLogin` verifies, the poll and every later
 // request proved with the login's own key, the login kept in a 0600 file, a refresh under the
 // login's lock that keeps the rotated refresh token, and the trade of the login's access token
-// with no actor. The two-process row lives in envoy-client's device-login.test.ts, and the least
+// with no actor. The two-process row lives in envoy-client's device-login.test.ts, the least
 // life a kept access token must have left for a trade to spend it in
-// device-login-least-life.test.ts.
+// device-login-least-life.test.ts, and the poll's interval and wait, and the refusal of a code no
+// poll reaches, in device-login-reach.test.ts.
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { holdSecret, scrub } from "@legion/contracts/held-secrets";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, compactVerify, EmbeddedJWK, type JWK } from "jose";
 import {
+  advancingWaits,
+  recordedWaits,
   STAND_IN_ACCESS_SECONDS,
   STAND_IN_CREDENTIAL,
   STAND_IN_UNKNOWN_CODE,
@@ -226,6 +230,285 @@ test("a poll the broker answers with its 429 or a 5xx is polled again", async ()
   expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
 });
 
+// The status decides first: a 408 (the broker did not take the poll) and a 429 (it will not take
+// one yet) are an outage, as Go's `oauthrefusal.Outage` reads them, so whatever code their body
+// names is no person's decision and no lapse of the code, and the poll goes on.
+test.each([
+  ["429 naming access_denied", "deny", 429],
+  ["429 naming expired_token", "expired", 429],
+  ["429 naming invalid_grant", "invalid_grant", 429],
+  ["408 naming access_denied", "deny", 408],
+  ["408 with no body", "empty-408", undefined],
+] as const)("a poll answered %s is polled again, and the login completes", async (_, answer, status) => {
+  const stub = broker({ polls: [answer, "approve"], oauthErrorStatus: status });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const outcome = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
+    (login) => login.credentialId,
+    (error: unknown) => (error as Error).message
+  );
+  expect(outcome).toBe(STAND_IN_CREDENTIAL);
+  expect(stub.polls).toHaveLength(2);
+});
+
+test("a poll answered 400 authorization_pending, or 429 with no body, is polled again", async () => {
+  const stub = broker({ polls: ["pending", "empty-429", "approve"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const login = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep });
+  expect(stub.polls).toHaveLength(3);
+  expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+});
+
+// RFC 8628 Section 3.5: each `slow_down` grows the interval by 5 s, at whatever status it comes, as
+// the Go helper's `pollLogin` and `openid-client`'s own poll grow it.
+test.each([429, 408])("a slow_down answered %i polls again 5 s further apart", async (status) => {
+  const stub = broker({ polls: ["slow_down", "approve"], oauthErrorStatus: status });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const waits: number[] = [];
+  await finishDeviceLogin(started, {
+    path: loginPath(),
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  });
+  expect(stub.polls).toHaveLength(2);
+  expect(waits).toEqual([1000, 6000]);
+});
+
+// RFC 8628 Section 3.5 has a client poll less often after a connection timeout: a poll the broker
+// did not answer, or answered with an outage, polls 5 s further apart from then on, as the Go
+// helper's `pollLogin` does. The pending row above is the control: `authorization_pending` keeps
+// the interval.
+test("each poll the broker did not answer or answered with an outage polls 5 s further apart", async () => {
+  const stub = broker({ polls: ["unavailable-503", "approve"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep } = recordedWaits();
+  // The first poll never reaches the broker; the second is answered 503; the third is approved.
+  let sent = 0;
+  const login = await finishDeviceLogin(started, {
+    path: loginPath(),
+    sleep,
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      sent += 1;
+      if (sent === 1) throw new TypeError("fetch failed");
+      return await fetch(input, init);
+    }) as typeof fetch,
+  });
+  expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+  expect(stub.polls).toHaveLength(2);
+  expect(waits).toEqual([1000, 6000, 11000]);
+});
+
+test("a code that lapses after polls the broker did not answer names them", async () => {
+  for (const [polls, says] of [
+    [
+      ["pending", "unavailable-503", "busy-429"],
+      "; the broker was unreachable or busy for the last 2 polls;",
+    ],
+    [
+      ["pending", "pending", "empty-408"],
+      "; the broker was unreachable or busy for the last poll;",
+    ],
+    // Control: an answered poll since the outage, and the lapse names none.
+    [["unavailable-503", "busy-429", "pending"], null],
+  ] as const) {
+    const stub = broker({ polls });
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    // The code's lifetime passes on the poll's clock during the wait after the third poll.
+    let now = 0;
+    let waited = 0;
+    const refusal = await finishDeviceLogin(started, {
+      path: loginPath(),
+      clock: () => now,
+      sleep: async () => {
+        waited += 1;
+        if (waited === 4) now += 3_600_000;
+      },
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(stub.polls, polls.join()).toHaveLength(3);
+    expect(refusal?.message, polls.join()).toContain(
+      `the code ${STAND_IN_USER_CODE} expired before ${PERSON} approved this machine`
+    );
+    expect(refusal?.message, polls.join()).toContain(DEVICE_LOGIN_COMMAND);
+    if (says === null) expect(refusal?.message, polls.join()).not.toContain("unreachable");
+    else expect(refusal?.message, polls.join()).toContain(says);
+  }
+});
+
+// A wait never passes the code's lifetime: with 2 s of it left, a 503 that grows the interval to
+// 6 s waits what is left, and a code that lapses during that wait is not polled again, and names
+// the outage before it. Each wait passes on the poll's clock.
+test("a poll's wait ends at the code's lifetime, and a lapse in it names the outages before", async () => {
+  const stub = broker({ polls: ["unavailable-503", "approve"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep, clock } = advancingWaits();
+  const refusal = await finishDeviceLogin(
+    { ...started, expiresAt: new Date(Date.now() + 2000) },
+    { path: loginPath(), clock, sleep }
+  ).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(waits[0]).toBe(1000);
+  expect(waits[1] ?? 0).toBeLessThanOrEqual(1000);
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain("; the broker was unreachable or busy for the last poll;");
+});
+
+// An outage's `Retry-After` is waited before the next poll where it asks longer than the interval.
+// The broker's own 429 on its token endpoint asks 1 s (`handlers_oauth.go`: its token limit refills
+// one request every 500 ms, which `Retry-After` rounds up); a proxy before it may ask longer, and
+// 30 s is such a value.
+test("a poll answered 429 with Retry-After: 30 waits 30 s before the next poll", async () => {
+  const stub = broker({ polls: ["busy-429", "approve"], retryAfter: "30" });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep } = recordedWaits();
+  await finishDeviceLogin(started, { path: loginPath(), sleep });
+  expect(stub.polls).toHaveLength(2);
+  expect(waits).toEqual([1000, 30_000]);
+});
+
+test("a poll answered 429 with a Retry-After date waits until that date", async () => {
+  // A date in whole seconds, as an HTTP date names it.
+  const at = Math.ceil((Date.now() + 30_000) / 1000) * 1000;
+  const stub = broker({ polls: ["busy-429", "approve"], retryAfter: new Date(at).toUTCString() });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep } = recordedWaits();
+  // The wait is read between the poll's start and its end, so no clock decides the row.
+  const began = Date.now();
+  await finishDeviceLogin(started, { path: loginPath(), sleep });
+  const ended = Date.now();
+  expect(waits).toHaveLength(2);
+  expect(waits[0]).toBe(1000);
+  expect(waits[1] ?? 0).toBeLessThanOrEqual(at - began);
+  expect(waits[1] ?? 0).toBeGreaterThanOrEqual(at - ended);
+});
+
+// The poll's clock moves by each wait, so the second wait, the 429's day cut at the code's end,
+// lapses the code, and no poll goes out after it.
+test("a Retry-After past the code's lifetime is waited until the code lapses, and polls no more", async () => {
+  const stub = broker({ polls: ["busy-429", "approve"], retryAfter: "86400" });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep, clock } = advancingWaits();
+  const began = Date.now();
+  const refusal = await finishDeviceLogin(started, { path: loginPath(), clock, sleep }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  const ended = Date.now();
+  // The code's end is what was left of it as the poll began, read between `began` and `ended`.
+  expect(waits).toHaveLength(2);
+  expect(waits[0]).toBe(1000);
+  expect(waits[1] ?? 0).toBeLessThanOrEqual(started.expiresAt.getTime() - began - 1000);
+  expect(waits[1] ?? 0).toBeGreaterThanOrEqual(started.expiresAt.getTime() - ended - 1000);
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain("; the broker was unreachable or busy for the last poll;");
+});
+
+// The code's end is the hour at most, whatever `started` names: a step back of the wall clock
+// between `startDeviceLogin` and the poll, or a caller's own `started`, cannot make a wait pass it.
+test("a code the poll is handed past the hour is waited an hour at most", async () => {
+  const stub = broker({ polls: ["busy-429", "approve"], retryAfter: "86400" });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep, clock } = advancingWaits();
+  const refusal = await finishDeviceLogin(
+    { ...started, expiresAt: new Date(Date.now() + 2 * 3_600_000) },
+    { path: loginPath(), clock, sleep }
+  ).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(waits).toEqual([1000, 3_599_000]);
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain(`the code ${STAND_IN_USER_CODE} expired before ${PERSON}`);
+});
+
+// The device code is held for the scrub until an hour past the poll's end, read again on the wall
+// clock at each poll: a step of that clock past the code's life and the hour, and another holder's
+// hold, which forgets every value whose time has come, leave it held while it is still polled.
+test("the device code is held for the scrub while it is polled, whatever the wall clock reads", async () => {
+  const stub = broker({ polls: ["pending", "approve"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const scrubbed: string[] = [];
+  let waited = 0;
+  try {
+    await finishDeviceLogin(started, {
+      path: loginPath(),
+      sleep: async () => {
+        waited += 1;
+        if (waited !== 2) return;
+        setSystemTime(new Date(Date.now() + 3 * 3_600_000));
+        holdSecret(fixtureSecret("other"));
+      },
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+        scrubbed.push(scrub(started.deviceCode));
+        // Put back before the stand-in answers, since its answer and the login are dated.
+        setSystemTime();
+        return await fetch(input, init);
+      }) as typeof fetch,
+    });
+  } finally {
+    setSystemTime();
+  }
+  expect(stub.polls).toHaveLength(2);
+  for (const text of scrubbed) expect(text).not.toContain(started.deviceCode);
+});
+
+// The code's end is kept on the monotonic clock (`performance.now()`): a step of the wall clock
+// past the code's lifetime, as NTP or a person setting the clock makes, neither ends the poll early
+// nor, back, keeps it going past the code. The wall clock is put back before the save, which dates
+// the login. `performance.now()` is spied on, not waited out, so the second row's wait passes on it
+// at once.
+test("a step of the wall clock neither ends the poll early nor keeps it past the code", async () => {
+  const twoHours = 2 * 3_600_000;
+  const monotonic = performance.now.bind(performance);
+  let ahead = 0;
+  const spied = spyOn(performance, "now").mockImplementation(() => monotonic() + ahead);
+  try {
+    const forward = broker({ polls: ["pending", "approve"] });
+    const started = await startDeviceLogin({ brokerUrl: forward.url, person: PERSON, host: HOST });
+    let waited = 0;
+    const login = await finishDeviceLogin(started, {
+      path: loginPath(),
+      sleep: async () => {
+        waited += 1;
+        if (waited === 1) setSystemTime(new Date(Date.now() + twoHours));
+        else setSystemTime();
+      },
+    });
+    expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+    expect(forward.polls).toHaveLength(2);
+
+    // A code with 10 s left, polled every second, lapses on the monotonic clock in its tenth wait,
+    // though the wall clock stepped back two hours in each wait; the stand-in would approve the
+    // twenty-first poll.
+    const back = broker({ polls: [...Array<"pending">(20).fill("pending"), "approve"] });
+    const backStarted = await startDeviceLogin({ brokerUrl: back.url, person: PERSON, host: HOST });
+    const refusal = await finishDeviceLogin(
+      { ...backStarted, expiresAt: new Date(Date.now() + 10_000) },
+      {
+        path: loginPath(),
+        sleep: async (ms) => {
+          setSystemTime(new Date(Date.now() - twoHours));
+          ahead += ms;
+        },
+      }
+    ).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    // The tenth wait lapses the code, so nine polls at most; ten would be a poll after the lapse.
+    expect(ahead).toBeGreaterThan(0);
+    expect(back.polls.length).toBeLessThanOrEqual(9);
+    expect(refusal?.message).toContain(`the code ${STAND_IN_USER_CODE} expired before ${PERSON}`);
+  } finally {
+    setSystemTime();
+    spied.mockRestore();
+  }
+});
+
 test("a poll the broker did not answer is polled again", async () => {
   const stub = broker();
   const path = loginPath();
@@ -280,24 +563,85 @@ test("a broker refusal shows its OAuth code only where the clients know it", asy
   expect(unstarted?.message).not.toContain("the stand-in answered");
 });
 
-test("a code is polled once a second to once a minute, every 5 s where the broker names no interval", async () => {
-  for (const [interval, wait] of [
-    [0.001, 1_000],
-    [null, 5_000],
-    // An interval past a timer's range would fire at once.
-    [3_000_000, 60_000],
-  ] as const) {
-    const stub = broker({ interval });
+// A `started` handed to the poll is checked again: one a caller made, or one the time since the
+// start, or a step of the wall clock, has brought nearer its end, may lapse no later than its first
+// poll, or have lapsed. It is refused at once, naming the code, not waited out and said to have
+// expired before the person approved it; asking again starts a code `startDeviceLogin` checks.
+test("a code handed to the poll that lapses no later than its first poll is refused at once", async () => {
+  const stub = broker();
+  // The wall clock stands still, so each row's time left is what the row set, to the millisecond.
+  const now = Date.now();
+  const still = spyOn(Date, "now").mockReturnValue(now);
+  try {
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-    const waits: number[] = [];
-    await finishDeviceLogin(started, {
-      path: loginPath(),
-      sleep: async (ms) => {
-        waits.push(ms);
-      },
-    });
-    expect(waits, String(interval)).toEqual([wait]);
+    for (const [handed, says] of [
+      [
+        { ...started, intervalSeconds: 1_800 },
+        /^lapses in 600 s, no later than its first poll, 1800 s on/,
+      ],
+      // A fraction of a second is printed as it is, so the time left reads shorter than the wait.
+      [
+        { ...started, intervalSeconds: 4.5, expiresAt: new Date(now + 4_200) },
+        /^lapses in 4\.2 s, no later than its first poll, 4\.5 s on/,
+      ],
+      // The first poll is named by the wait the test decided on: 4.9997 s waits 5 s, which a code
+      // that lapses in 5 s does not outlast. An interval with no digits past the millisecond is
+      // printed in its own digits, however long, not as milliseconds a number cannot hold.
+      [
+        { ...started, intervalSeconds: 4.9997, expiresAt: new Date(now + 5_000) },
+        /^lapses in 5 s, no later than its first poll, 5 s on/,
+      ],
+      [
+        { ...started, intervalSeconds: Number.MAX_VALUE },
+        /^lapses in 600 s, no later than its first poll, 17976931348623157\d{292} s on/,
+      ],
+      [
+        { ...started, expiresAt: new Date(now - 1_000) },
+        /^had lapsed before its first poll, 1 s on/,
+      ],
+      [
+        { ...started, intervalSeconds: 5_000, expiresAt: new Date(now + 7_200_000) },
+        /^would lapse here before its first poll, 5000 s on, as this machine polls a device code for an hour at most/,
+      ],
+    ] as const) {
+      const { waits, sleep } = recordedWaits();
+      const refusal = await finishDeviceLogin(handed, { path: loginPath(), sleep }).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      const message = refusal?.message ?? "";
+      expect(message, String(says)).toStartWith(`the code ${STAND_IN_USER_CODE} `);
+      expect(message.slice(`the code ${STAND_IN_USER_CODE} `.length), String(says)).toMatch(says);
+      expect(message, String(says)).toEndWith(
+        `, so no poll could reach it; ask again with: ${DEVICE_LOGIN_COMMAND}`
+      );
+      expect(waits, String(says)).toHaveLength(0);
+    }
+  } finally {
+    still.mockRestore();
   }
+  expect(stub.polls).toHaveLength(0);
+});
+
+// A `started` a caller made whose end is no date, or whose interval is no number of seconds, 1 or
+// more, would poll the broker as fast as it answers: it is refused before any poll.
+test("a code handed to the poll with no date or no interval of a second or more is refused", async () => {
+  const stub = broker();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  for (const handed of [
+    { ...started, intervalSeconds: Number.NaN },
+    { ...started, intervalSeconds: 0 },
+    { ...started, expiresAt: new Date(Number.NaN) },
+  ]) {
+    const { waits, sleep } = recordedWaits();
+    const refusal = await finishDeviceLogin(handed, { path: loginPath(), sleep }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(refusal).toBeInstanceOf(TypeError);
+    expect(waits).toHaveLength(0);
+  }
+  expect(stub.polls).toHaveLength(0);
 });
 
 test("a code and an access token are taken to live an hour at most, whatever the broker says", async () => {
@@ -376,7 +720,9 @@ test("what the broker answers for a person to read is refused where it holds a c
 });
 
 test("a login nobody approves is refused, and writes no file", async () => {
-  // Denied, expired, and a code the broker no longer knows (`invalid_grant`), which is an expiry.
+  // Denied, expired, and a code the broker no longer knows (`invalid_grant`), which is an expiry,
+  // each at the broker's own status: `access_denied` 403, as its OAuth library answers it, and
+  // the others 400.
   for (const answer of ["deny", "expired", "invalid_grant"] as const) {
     const stub = broker({ polls: [answer] });
     const path = loginPath();
@@ -386,22 +732,33 @@ test("a login nobody approves is refused, and writes no file", async () => {
       (error: unknown) => error as Error
     );
     expect(stub.polls, answer).toHaveLength(1);
-    expect(refusal?.message, answer).toContain(answer === "deny" ? "denied" : "expired");
+    // The denial's own words: a refusal naming `HTTP 403 access_denied` holds "denied" too.
+    expect(refusal?.message, answer).toContain(
+      answer === "deny" ? `denied, not approved as ${PERSON}` : "expired before"
+    );
     expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
     expect(await stat(path).catch(() => null)).toBeNull();
   }
-  // A code whose lifetime has passed is not polled at all.
-  const stub = broker();
+});
+
+// Go's `oauthrefusal.Refusal`, which the helper's `pollLogin` reads: RFC 6749 Section 5.2 has an
+// error answer be 400 unless specified otherwise, and an OAuth library may specify otherwise.
+test.each([
+  ["access_denied at 400", "deny", 400],
+  ["access_denied at 401", "deny", 401],
+  ["expired_token at 403", "expired", 403],
+  ["invalid_grant at 403", "invalid_grant", 403],
+] as const)("a poll's OAuth error counts at any refusal status: %s", async (_, answer, status) => {
+  const stub = broker({ polls: [answer], oauthErrorStatus: status });
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  const lapsed = await finishDeviceLogin(
-    { ...started, expiresAt: new Date(Date.now() - 1) },
-    { path: loginPath(), sleep: noSleep }
-  ).then(
+  const refusal = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
     () => null,
     (error: unknown) => error as Error
   );
-  expect(stub.polls).toHaveLength(0);
-  expect(lapsed?.message).toContain("expired");
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain(
+    answer === "deny" ? `denied, not approved as ${PERSON}` : "expired before"
+  );
 });
 
 test("the identity trades the login's access token with no actor, proved with the login's key", async () => {
@@ -700,10 +1057,12 @@ test("a trade refused for its session or its projects is not refreshed and trade
         "belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last 30 days. Ask under a name of your own."
       ),
     ],
+    // A restricted member's machine login naming no project or several, which the broker's
+    // exchange policy holds to exactly one (`exchange.ErrRestrictedOneProject`).
     [
       "invalid_request",
       sentAs(
-        "is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on."
+        "is a restricted member, who sees only the projects that name them, and the trade asked for 2; set AGENT_SECRETS_PROJECTS to the one project this session works on."
       ),
     ],
     // A pod session no registration names yet, which a later trade cures, not a refresh.
@@ -792,6 +1151,41 @@ test("a refresh refused other than invalid_grant is that refusal, and one unansw
   );
   expect(unanswered).toBeInstanceOf(BrokerTradeFailedError);
   expect(unanswered?.message).toContain("refresh this machine's device login at");
+});
+
+// Only a 400 or a 401 `invalid_grant` ends a grant (Go's `oauthrefusal.EndsGrant`). At a 403 it is
+// the broker's refusal, worded as every other is; at a 429 it is the broker's rate limit, which a
+// later refresh gets past.
+test.each([
+  [400, true],
+  [401, true],
+  [403, false],
+  [429, false],
+  [408, false],
+] as const)("a refresh answered %i invalid_grant ends the login: %p", async (status, ends) => {
+  const stub = broker({ refuseRefresh: true, oauthErrorStatus: status });
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const refused = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+    describe: "this machine's device login",
+    held: async () => true,
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.refreshes).toHaveLength(1);
+  if (ends) {
+    expect(refused).toBeInstanceOf(DeviceLoginEndedError);
+    expect(refused?.message).toContain(DEVICE_LOGIN_COMMAND);
+    expect(isFinalRefusal(refused)).toBe(true);
+    return;
+  }
+  expect(refused).not.toBeInstanceOf(DeviceLoginEndedError);
+  expect(refused).toBeInstanceOf(BrokerRefusedError);
+  expect(refused?.message).toContain(
+    `the secrets broker refused this machine's device login: HTTP ${status} invalid_grant`
+  );
+  expect(isFinalRefusal(refused)).toBe(status === 403);
 });
 
 test("a trade refused after its holder lost the lock is one a later trade cures, refreshed or not", async () => {

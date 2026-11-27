@@ -126,14 +126,17 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errRelatedAllowanceEnded as its cause so that a check whose context
+// is done can tell its own deadline from the request that ran it going away (runRelatedCheck's
+// callerGone), on the real clock and a test's fake alike. Every site that bounds a check uses it,
+// so a decision block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers. An allowance already spent ends the
+// context before this returns, on either clock, which is what a case setting suggestionTimeout
+// relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
@@ -456,7 +459,7 @@ func (s *server) runRelatedCheck(
 			// keyword matches anything, so there is no query to run.
 			stage.response = model.SearchResponse{Results: []model.SearchResult{}, Limit: suggestionSearchDepth}
 		default:
-			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, relatedKeywordStatement, project, pick.terms, excluded)
+			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, input.who, relatedKeywordStatement, project, pick.terms, excluded)
 		}
 		stage.took = time.Since(stagesStarted)
 		keyword <- stage
@@ -516,7 +519,7 @@ func (s *server) runRelatedCheck(
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, input.who, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -655,8 +658,11 @@ func (s *server) runRelatedCheck(
 // still registers with it is a data race. Its own reader is written by that one goroutine
 // alone, and resolved there before the results are handed over, so an answer that reaches the
 // check carries its trees filled and one the grace left behind is read by nobody.
+//
+// who is the check's reader (relatedInput.who), whose viewer both the meaning query and the
+// cross-project leg bind (relatedViewer).
 func (s *server) relatedMeaningStage(
-	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
+	ctx, crossRead context.Context, who model.Actor, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil || meaningStatementEnded(err) {
@@ -679,7 +685,7 @@ func (s *server) relatedMeaningStage(
 		cross = make(chan []model.SearchResult, 1)
 		go func() {
 			reader := s.readDisplayTrees(crossRead, trees)
-			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
+			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), who, reader)
 			if err != nil {
 				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
 			}
@@ -698,7 +704,7 @@ func (s *server) relatedMeaningStage(
 		// The check answers not made without reading this.
 		return failed(relatedReasonMeaningFailed, nil)
 	}
-	response, err := s.relatedMeaningSearch(ctx, project, pick.terms, vector, excluded)
+	response, err := s.relatedMeaningSearch(ctx, who, project, pick.terms, vector, excluded)
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
@@ -738,7 +744,7 @@ func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []mo
 // server holds on the statement included, which its caller reports as the meaning search not
 // answering (relatedMeaningStage).
 func (s *server) relatedMeaningSearch(
-	ctx context.Context, project string, picked relatedTerms, vector []float32, excluded []string,
+	ctx context.Context, who model.Actor, project string, picked relatedTerms, vector []float32, excluded []string,
 ) (model.SearchResponse, error) {
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
@@ -748,7 +754,7 @@ func (s *server) relatedMeaningSearch(
 	// The flag is read only where it can change the statement, as search reads it
 	// (runMeaningSearch): a check naming no project runs the unscoped one either way.
 	filled := project != "" && embeddingProjectKeysFilled(ctx, tx)
-	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project, filled), project, picked, excluded,
+	return s.relatedSearch(ctx, tx, who, relatedMeaningStatementFor(project, filled), project, picked, excluded,
 		embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
 }
 
@@ -787,8 +793,11 @@ func relatedMeaningStatementFor(project string, filled bool) relatedStatement {
 // is the one whose kinds CTE filters them (relatedStatement.excluding) and they are its last
 // parameter, which is why that filter reads $11 of the keyword statement and $14 of the meaning
 // one; with none, the statement is the one without the filter.
+//
+// who is the check's reader (relatedInput.who), whose viewer the statement binds last
+// (relatedViewer).
 func (s *server) relatedSearch(
-	ctx context.Context, q queryer, statement relatedStatement, project string, picked relatedTerms,
+	ctx context.Context, q queryer, who model.Actor, statement relatedStatement, project string, picked relatedTerms,
 	excluded []string, meaning ...any,
 ) (model.SearchResponse, error) {
 	snippetTerm := ""
@@ -807,13 +816,8 @@ func (s *server) relatedSearch(
 	if len(excluded) > 0 {
 		query, args = statement.excluding, append(args, excluded)
 	}
-	// The acting credential, last of the parameters each statement declares. The check runs off
-	// the write that triggered it, on a context of its own and with no credential of that
-	// writer's to hand, so it reads as the server's own reader (everyReader), which proves no
-	// author: a node reserved for its author is suggested to nobody, which is the answer that can
-	// mislead no reader. The reader of the write the check runs off is not carried this far, and
-	// until a project can be private the server's reader sees what every caller sees.
-	args = append(args, refs.VisibilityArg(everyReader))
+	// The visibility argument, last of the parameters each statement declares (relatedViewer).
+	args = append(args, relatedViewer(who))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err
@@ -823,6 +827,16 @@ func (s *server) relatedSearch(
 	// A write's related-item check shows no snippet tree: nothing reads one, and the trees are
 	// the dashboard's to ask for.
 	return scanSearchRows(rows, relatedSearchQuery(picked.Terms), suggestionSearchDepth, 0, false)
+}
+
+// relatedViewer is the visibility argument every search of a check binds: the viewer of who, the
+// writer whose write triggered it or the caller of the no-write route (relatedInput.who), so the
+// check offers nothing of a project or a conversation that reader may not read, and no author, so
+// a node reserved for its author is suggested to nobody, which is the answer that can mislead no
+// reader: the check's answer is recorded (write_suggestions) as well as handed to the writer. A
+// reader with no viewer binds the closed viewer, which is offered nothing.
+func relatedViewer(who model.Actor) any {
+	return refs.VisibilityArg(model.Actor{Viewer: who.Viewer})
 }
 
 // relatedSearchQuery is Suggestions.SearchQuery: the best relatedSearchQueryTerms chosen terms,
@@ -881,15 +895,10 @@ func (s *server) fillRelatedItems(
 	// The answers are read as the check's reader (input.who): the writer whose write ran it, with the
 	// viewer its handler resolved from the request's credential (readerOf), so a token's list holds
 	// here as on every read. The writer's recorded actor carries no credential to resolve
-	// (access.ErrUnresolvedActor), and the zero reader is the closed viewer, which reads no answer.
+	// (access.ErrUnresolvedActor), and a check with no reader reads as the closed viewer, which reads
+	// no answer: a check run for no request names everyReader as its reader.
 	who := input.source.actor.Reader()
 	who.Viewer = input.who.Viewer
-	if who.Viewer == nil {
-		// The check runs off a write whose handler resolved no reader (a queue worker, a test's
-		// direct call), and the zero reader is the closed viewer, which reads no answer. Until a
-		// project can be private the server's reader sees what that writer sees.
-		who.Viewer = everyReader.Viewer
-	}
 	if err := s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.

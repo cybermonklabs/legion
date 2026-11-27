@@ -242,8 +242,9 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 			t.Fatalf("claim %s's attempt %s ago: %v", sessionID, ago, err)
 		}
 	}
-	// The planner's frame landed before the process stopped.
-	if _, err := direct.deliverMessageResuming(ctx, recipient("planner"), "btw", actor, nil, 1); err != nil {
+	// The planner's frame landed before the process stopped. The direct send has no request's
+	// reader, so it names the server's own (a session route resolves for no context without one).
+	if _, err := direct.deliverMessageResuming(withReader(ctx, everyReader), recipient("planner"), "btw", actor, nil, 1); err != nil {
 		t.Fatalf("deliver the one recipient the process reached: %v", err)
 	}
 	// The tester's sender claimed its attempt and died inside the send: the claim has lapsed.

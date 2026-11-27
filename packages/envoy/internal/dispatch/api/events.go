@@ -247,11 +247,11 @@ func keptViewOf(who model.Actor) string {
 // for the old one. That is what the browser harness does between scenarios - it empties `issues`
 // and restarts each project's numbering, so every scenario's issues take the keys of the last
 // one's (packages/dispatch/e2e/seed.ts) - and it is the reading a restored database gives a
-// process that outlived the restore. The comment list is held to the same rule by a counter that
-// never comes back with the key (migration 20261106020619); the feed's column does come back, so
-// the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
-// tells the event relay an event log that was reset under its cursor from one that merely went
-// quiet (events.EventLogWasReset).
+// process that outlived the restore. So the row's birth stamp is hashed in beside the column, as
+// the comment list's validator hashes it beside its own counters, which a new issue under the key
+// reaches again too (commentListETag). It is the same fact, read the same way, that tells the
+// event relay an event log that was reset under its cursor from one that merely went quiet
+// (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
@@ -287,8 +287,8 @@ func (s *server) issueEventSequence(ctx context.Context, who model.Actor, key st
 
 // listEventLog pages the whole event log by id, whatever owns each event: an issue, a document,
 // a project or nothing. It answers the events after ?after= (default 0) in ascending id order,
-// at most ?limit= of them, of those the caller may read (eventReadableSQL): an event of a project
-// it does not see, or of a conversation it may not read, is not in the log it pages.
+// at most ?limit= of them. Any authenticated caller may read it, as the events view on a page's
+// live socket carries every event to them; slice S3c-issues holds each event to its reader.
 //
 // Ids are not commit order (events.Broker.Append), so a caller that pages by the id of the last
 // row it was answered would step over a lower id still open and never see it. The page is

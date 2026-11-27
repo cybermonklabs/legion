@@ -2,18 +2,18 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // personNodeTitleRunes is how much of a row's text the page shows: its first line, cut here so
-// the answer carries a title and not a whole comment.
+// the answer carries a title and not a whole comment, by refs.FirstLineWithin, which moves the cut
+// back before a reference that crosses it, except where text.HeadRefs says the cut by length
+// stands.
 const personNodeTitleRunes = 240
 
 // personNode is one thing on a person's page: a node they are tied to, which of the two ties it
@@ -252,8 +252,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		first, _, _ := strings.Cut(body, "\n")
-		row.Title = text.HeadRunes(first, personNodeTitleRunes)
+		row.Title = refs.FirstLineWithin(body, s.deps.Origins.Canonical(), personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
 		if editedAt != nil {
 			edited := editedAt.UTC()

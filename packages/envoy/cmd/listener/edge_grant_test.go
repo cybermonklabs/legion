@@ -104,7 +104,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		t.Fatalf("role %s's drain cursor after the handover of the edge's claim is %+v (%v), want none written", role, cursor, err)
 	}
 	select {
-	case <-startKeptRoleSweep(ctx, edge, time.Hour):
+	case <-startKeptRoleSweep(ctx, edge, time.Hour, 0):
 	default:
 		t.Fatal("the edge started a sweep of the kept role lanes")
 	}
@@ -122,7 +122,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		if key != roleForwardDedupePrefix+item.DedupeKey {
 			t.Fatalf("the shared listener handed over %s, want the kept copy %s", key, roleForwardDedupePrefix+item.DedupeKey)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the shared listener's handover forwarded nothing, so the rig cannot see a handover:\n%s", harness.logs.String())
 	}
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence == 0 {

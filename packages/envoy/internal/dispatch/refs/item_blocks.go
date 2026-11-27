@@ -209,12 +209,13 @@ type CarriedEdit struct {
 // owed_at.
 //
 // It returns the targets of the block mentions it inserted or deleted, which the caller's event
-// counts (ItemIndexing.Moved).
+// counts (ItemIndexing.Moved). serverURL is the deployment whose dashboard URLs each block's
+// excerpt is cut around (BlockExcerpt).
 func IndexItem(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind ItemKind,
-	itemID, body string,
+	itemID, body, serverURL string,
 	at time.Time,
 	located []text.Located,
 	carried *CarriedEdit,
@@ -223,7 +224,7 @@ func IndexItem(
 	if err != nil {
 		return nil, err
 	}
-	indexing, err := planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, located, carried))
+	indexing, err := planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, serverURL, located, carried))
 	if err != nil {
 		return nil, err
 	}
@@ -237,28 +238,31 @@ func IndexItem(
 }
 
 // itemBlockSource is one reading of an item's blocks, which the index writes: the blocks in
-// order, the sum of the text they were read from (the state row's body_sha256), how each takes
-// its id against the blocks the item holds, the maker each records (made_by, for a kind whose
-// blocks have one: nil, or an entry per block, null where the item's own author made it), and the
-// links the blocks hold once their ids are known. The context the blocks are embedded with is
-// not read here: the index records the blocks alone, and the window arm reads that context for
-// itself when it writes the windows (itemWindowText).
+// order, the sum of the text they were read from (the state row's body_sha256), the deployment
+// whose dashboard URLs each block's excerpt is cut around, how each takes its id against the
+// blocks the item holds, the maker each records (made_by, for a kind whose blocks have one: nil,
+// or an entry per block, null where the item's own author made it), and the links the blocks hold
+// once their ids are known. The context the blocks are embedded with is not read here: the index
+// records the blocks alone, and the window arm reads that context for itself when it writes the
+// windows (itemWindowText).
 type itemBlockSource struct {
-	blocks  []itemblocks.Block
-	bodySum string
-	ids     func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
-	madeBy  []*string
-	pairs   func(next []itemblocks.Block, ids []string) []blockPair
+	blocks    []itemblocks.Block
+	bodySum   string
+	serverURL string
+	ids       func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
+	madeBy    []*string
+	pairs     func(next []itemblocks.Block, ids []string) []blockPair
 }
 
 // itemBodySource is the reading of an item's blocks that a body makes, which IndexItem writes and
 // PlanItemIndex plans: the blocks body splits into, the sum its state row records, the ids the
 // carried spans or the text give them, and the links the mentions of located write. A comment's
 // and a message's blocks record no maker of their own, so the source names none.
-func itemBodySource(kind ItemKind, body string, located []text.Located, carried *CarriedEdit) itemBlockSource {
+func itemBodySource(kind ItemKind, body, serverURL string, located []text.Located, carried *CarriedEdit) itemBlockSource {
 	return itemBlockSource{
-		blocks:  itemblocks.Split(body),
-		bodySum: itemblocks.BodySHA256(body),
+		blocks:    itemblocks.Split(body),
+		bodySum:   itemblocks.BodySHA256(body),
+		serverURL: serverURL,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error) {
 			if carried != nil && kind == ItemComment && carried.BaseRevision == revision {
 				spans, err := itemblocks.ReadCarried(stored, body, carried.Blocks)
@@ -328,12 +332,15 @@ func TombstoneItem(b *store.WriteBatch, kind ItemKind, itemID string) error {
 
 // ItemIndex is what a comment's, a message's or an ask's block index holds: its state row, every
 // block the item ever held with the stored excerpt of each current one, and the block mentions
-// those blocks hold.
+// those blocks hold; for an ask, also the targets of its own references, read beside them
+// (HeldRefs).
 type ItemIndex struct {
 	state    itemState
 	stored   []itemblocks.Stored
 	excerpts map[string]string
 	held     []itemBlockLink
+	refs     []Target
+	refsRead bool
 }
 
 // itemBlockLink is one stored block mention of an item: the block holding it, the edge kind and
@@ -366,10 +373,21 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 	if index.stored, index.excerpts, err = storedItemBlocks(ctx, q, kind, tables, itemID); err != nil {
 		return ItemIndex{}, err
 	}
-	if index.held, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
+	if index.held, index.refs, index.refsRead, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
 		return ItemIndex{}, err
 	}
 	return index, nil
+}
+
+// HeldRefs is the targets of the item's own references as the read of its index found them,
+// with HeldTargets' predicate, and whether that read made them: the read of an indexed ask's
+// index makes them in the statement that reads its parts' links (heldItemBlockLinks), so a write
+// of the ask's parts alone plans its question's reconciliation against them (PlanReplaceFrom)
+// with no read of its own. An index that did not read them - another kind's, an ask's no
+// block-aware build indexed, one planned rather than read (ItemIndexing.Held) - answers false,
+// and its caller reads them (HeldTargets).
+func (i ItemIndex) HeldRefs() ([]Target, bool) {
+	return i.refs, i.refsRead
 }
 
 // Edited is the index with the item marked edited, which an edit's own read of the item does not
@@ -409,22 +427,27 @@ type ItemIndexing struct {
 	// index is what the item's block index held when this one was planned against it, which Held
 	// carries forward into what it leaves.
 	index ItemIndex
+	// settleForms says the statement that records the item indexed settles what the forms queue
+	// holds for the item too (SettlingForms).
+	settleForms bool
 }
 
 // PlanItemIndex plans the index of body, written at `at`, of comment or message itemID against
 // index, what its block index holds (ReadItemIndex): the blocks, their ids, the links their
-// mentions write and the targets they move. It reads nothing. A carried id it refuses returns a
-// *itemblocks.CarriedError. An ask's parts are planned from their own reading of its blocks
-// through the same core (PlanAskParts, planItemBlocks).
+// mentions write, the excerpt each block stores, cut around the dashboard URLs of the deployment
+// at serverURL (BlockExcerpt), and the targets they move. It reads nothing, and it is where the
+// excerpts are cut: a writer plans in its read phase, before its write phase holds a transaction
+// id. A carried id it refuses returns a *itemblocks.CarriedError. An ask's parts are planned from
+// their own reading of its blocks through the same core (PlanAskParts, planItemBlocks).
 func PlanItemIndex(
 	index ItemIndex,
 	kind ItemKind,
-	itemID, body string,
+	itemID, body, serverURL string,
 	at time.Time,
 	located []text.Located,
 	carried *CarriedEdit,
 ) (ItemIndexing, error) {
-	return planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, located, carried))
+	return planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, serverURL, located, carried))
 }
 
 // planItemBlocks plans the index of source, read at `at`, of item itemID against index, what its
@@ -469,7 +492,7 @@ func planItemBlocks(
 	for position, block := range next {
 		row := itemBlockRow{
 			id: ids[position], position: position, nodeType: block.Type, sum: block.Hash,
-			excerpt: text.HeadRunes(block.Text, BlockExcerptRunes), text: block.Text,
+			excerpt: BlockExcerpt(block.Text, source.serverURL), text: block.Text,
 		}
 		if position < len(source.madeBy) {
 			row.madeBy = source.madeBy[position]
@@ -613,6 +636,19 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
 }
 
+// SettlingForms is the index settling what the forms queue holds for the item (RefsFormsOwed)
+// in the statement that records it indexed (queueRecordIndexed), so the settle costs the write no
+// statement of its own. A writer asks for it where this index is the last of the writes that index
+// the item's whole text, queued after the reconciliation of the item's own references: an ask's
+// parts after its question's (Replacement.SettlingForms is the other order). That statement is
+// the index's last, so the settle follows every delete of its block edges and the references'
+// delete before it, each of which owes that queue the item (migrations
+// 20261117025906-20261117025910).
+func (i ItemIndexing) SettlingForms() ItemIndexing {
+	i.settleForms = true
+	return i
+}
+
 // Queue queues the index's writes on a write phase's batch: the item's state row taken first,
 // the blocks the body changed and removed, the block texts of a kind that records them, the
 // links its blocks hold, and last the statement that records the item indexed
@@ -628,7 +664,10 @@ func (i ItemIndexing) Queue(b *store.WriteBatch) {
 
 // queueRecordIndexed queues the statement that records the item indexed from the text whose sum
 // is bodySHA256, at the revision with nextBlock as the next block number for a kind that counts
-// revisions, clears the block index's marker and leaves the window arm's standing.
+// revisions, clears the block index's marker and leaves the window arm's standing. With
+// settleForms it also deletes the item's row of refs_forms_owed, in the same statement
+// (SettlingForms): the statement is the index's last, so the delete follows every delete of its
+// block edges.
 //
 // The windows of these blocks are not written by this index. The block-index tick's window arm
 // writes them in a transaction of its own (docs.windowItem, WriteItemWindows), so a write holds
@@ -665,17 +704,23 @@ func (i ItemIndexing) Queue(b *store.WriteBatch) {
 func (i ItemIndexing) queueRecordIndexed(b *store.WriteBatch) {
 	const owed = `owed_at = null, windows_owed_at = coalesce(windows_owed_at, now())`
 	what := fmt.Sprintf("record the blocks of %s %s indexed", i.kind, i.itemID)
+	statement := `
+		update ` + i.tables.state + ` set body_sha256 = $2, ` + owed + `
+		where ` + i.tables.item + ` = $1::uuid
+	`
+	args := []any{i.itemID, i.bodySHA256}
 	if i.tables.revisions() {
-		b.Queue(what, `
-			update `+i.tables.state+` set revision = $2, next_block = $3, body_sha256 = $4, `+owed+`
-			where `+i.tables.item+` = $1::uuid
-		`, i.itemID, i.revision, i.nextBlock, i.bodySHA256)
-		return
+		statement = `
+			update ` + i.tables.state + ` set revision = $2, next_block = $3, body_sha256 = $4, ` + owed + `
+			where ` + i.tables.item + ` = $1::uuid
+		`
+		args = []any{i.itemID, i.revision, i.nextBlock, i.bodySHA256}
 	}
-	b.Queue(what, `
-		update `+i.tables.state+` set body_sha256 = $2, `+owed+`
-		where `+i.tables.item+` = $1::uuid
-	`, i.itemID, i.bodySHA256)
+	if i.settleForms {
+		args = append(args, string(i.kind))
+		statement = fmt.Sprintf(`with settled as (delete from refs_forms_owed where kind = $%d and id = $1::uuid) `, len(args)) + statement
+	}
+	b.Queue(what, statement, args...)
 }
 
 // itemWindowBlocks is the item's blocks as the windows that embed them hold them: each block's
@@ -765,27 +810,45 @@ func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTab
 }
 
 // heldItemBlockLinks is the block mentions the item's blocks hold, read with the predicate the
-// reconciling delete visits them by, so the index knows what it moves before it writes.
-func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) ([]itemBlockLink, error) {
-	rows, err := q.Query(ctx, `
+// reconciling delete visits them by, so the index knows what it moves before it writes. For an ask
+// the same statement reads the targets of the ask's own refs rows too, with the predicate
+// HeldTargets reads them by (refs, read true): a write of an ask's parts alone reconciles its
+// question's references after them (PlanAskParts), and plans that against these rows rather than
+// a read of its own (ItemIndex.HeldRefs).
+func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, refs []Target, read bool, err error) {
+	query, args := `
 		select block_id, kind, to_kind, to_id from `+tables.refs+` where `+tables.item+` = $1::uuid
-	`, itemID)
+	`, []any{itemID}
+	if kind == ItemAsk {
+		query = `
+			select block_id, kind, to_kind, to_id from ask_block_refs where ask_id = $1::uuid
+			union all
+			select null, null, to_kind, to_id from refs where from_kind = 'ask' and from_id = $2 and to_kind = any($3)
+		`
+		args, read = []any{itemID, itemID, nodeKinds}, true
+	}
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return nil, nil, false, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
 	defer rows.Close()
-	held := []itemBlockLink{}
+	held, refs = []itemBlockLink{}, []Target{}
 	for rows.Next() {
-		var link itemBlockLink
-		if err := rows.Scan(&link.blockID, &link.kind, &link.target.Kind, &link.target.ID); err != nil {
-			return nil, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
+		var blockID, linkKind *string
+		var target Target
+		if err := rows.Scan(&blockID, &linkKind, &target.Kind, &target.ID); err != nil {
+			return nil, nil, false, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
 		}
-		held = append(held, link)
+		if blockID == nil || linkKind == nil {
+			refs = append(refs, target)
+			continue
+		}
+		held = append(held, itemBlockLink{blockID: *blockID, kind: *linkKind, target: target})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return nil, nil, false, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
-	return held, nil
+	return held, refs, read, nil
 }
 
 // queueStateLock queues the item's state row, the first statements of the index's write phase:
@@ -1066,7 +1129,10 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // mention it records is of text an earlier write already appended an event for. A block mention
 // takes the source_seq of the item's own refs row for its target at the item's first indexing
 // (PlanItemIndex) and none otherwise, and no ?since= read lists a row with none until a later
-// write of the item stamps it (Stamp).
+// write of the item stamps it (Stamp). Its index is the item's whole text - the blocks, then the
+// item's own references, an ask's question's after its parts - so it settles what the forms queue
+// holds for the item after every delete it made (RefsFormsOwed), which rebuild-refs leaves owed
+// until this index runs.
 func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, origins text.Origins) (bool, error) {
 	tables, err := item.Kind.tables()
 	if err != nil {

@@ -40,7 +40,7 @@ var approvalAskOptions = []model.AskOption{
 }
 
 // latestVersionNumber is the newest version an artifact has, nil when it has none.
-func latestVersionNumber(ctx context.Context, q queryer, who model.Actor, artifactID string) (*int, error) {
+func latestVersionNumber(ctx context.Context, q queryer, artifactID string) (*int, error) {
 	var latest *int
 	if err := q.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&latest); err != nil {
 		return nil, fmt.Errorf("latest artifact version: %w", err)
@@ -49,8 +49,8 @@ func latestVersionNumber(ctx context.Context, q queryer, who model.Actor, artifa
 }
 
 // settledVersionNumber is latestVersionNumber for the callers that read a missing version as 0.
-func settledVersionNumber(ctx context.Context, q queryer, who model.Actor, artifactID string) (int, error) {
-	latest, err := latestVersionNumber(ctx, q, who, artifactID)
+func settledVersionNumber(ctx context.Context, q queryer, artifactID string) (int, error) {
+	latest, err := latestVersionNumber(ctx, q, artifactID)
 	if err != nil || latest == nil {
 		return 0, err
 	}
@@ -59,7 +59,7 @@ func settledVersionNumber(ctx context.Context, q queryer, who model.Actor, artif
 
 // loadReviews is every review of the document, newest first in the order its events committed
 // (docs.ReviewOrder).
-func (s *server) loadReviews(ctx context.Context, q queryer, who model.Actor, artifactID string) ([]model.ArtifactReview, error) {
+func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) ([]model.ArtifactReview, error) {
 	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder, artifactID)
 	if err != nil {
 		return nil, err
@@ -225,7 +225,7 @@ func applyApprovals(
 // The apply reads each document's Versions (applyApprovals), so a caller that queues those too
 // applies them first (queueArtifactDetails). No document queues nothing and its apply fills
 // nothing.
-func queueApprovals(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) func() {
+func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 	ids, byID := approvalTargets(artifacts)
 	if len(ids) == 0 {
 		return func() {}
@@ -245,9 +245,9 @@ func queueApprovals(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) 
 // statements as a batch of their own on q (as loadArtifactDetails sends the whole detail batch),
 // so a read that wants the approval alone costs one round trip. A list holding no document
 // queues nothing and reads nothing.
-func (s *server) attachApprovals(ctx context.Context, q queryer, who model.Actor, artifacts []*model.Artifact) error {
+func (s *server) attachApprovals(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueApprovals(batch, who, artifacts)
+	apply := queueApprovals(batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -258,8 +258,8 @@ func (s *server) attachApprovals(ctx context.Context, q queryer, who model.Actor
 	return nil
 }
 
-func (s *server) attachApproval(ctx context.Context, q queryer, who model.Actor, artifact *model.Artifact) error {
-	return s.attachApprovals(ctx, q, who, []*model.Artifact{artifact})
+func (s *server) attachApproval(ctx context.Context, q queryer, artifact *model.Artifact) error {
+	return s.attachApprovals(ctx, q, []*model.Artifact{artifact})
 }
 
 // reviewFromAnswer maps an approval ask's answer to a review state and reason.
@@ -296,7 +296,7 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reviews, err := s.loadReviews(r.Context(), s.deps.Store.Pool, who, artifact.ID)
+	reviews, err := s.loadReviews(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -410,7 +410,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		s.writeHandlerError(w, err)
 		return
 	}
-	version, err := settledVersionNumber(r.Context(), tx, who, artifact.ID)
+	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -645,7 +645,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 			"include_verification asks for the issue's spec and its Verification document together, and this document is not the issue's spec: request approval of it alone")
 		return
 	}
-	version, err := settledVersionNumber(r.Context(), tx, who, artifact.ID)
+	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -672,7 +672,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	if err := s.attachApproval(r.Context(), tx, who, &artifact); err != nil {
+	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -866,6 +866,19 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
+	// The request's node goes in before its row, in the project of the document it is asked on,
+	// which the issue that owns the request is in too (an issue's document carries its issue's
+	// project); its write is queued before the row's insert, and what it states waits for the
+	// ask.opened event below. The document is read already, so its project costs no round trip
+	// of its own.
+	project, parties := graphstore.SessionScope(artifact.Project, deref(artifact.SessionID))
+	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, ask.CreatedAt)}, nil)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
 	if err := queueExec(ledger, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, created_at)
 		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8)
@@ -888,12 +901,13 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
-	// The requester follows the request it opened, right after the ask.opened that records it,
-	// so a session requester's node is caused by that event in the follow's own statement and
-	// the request pays no second statement to move it there. Nothing before the event reads the
-	// follower row: its payload's logins are the thread's (events.ThreadLogins), and the outbox
-	// reads the followers after the commit.
+	// The request's node learns the ask.opened that records it, and the requester follows the
+	// request it opened, both right after that event, so a session requester's node is caused by
+	// that event in the follow's own statement and the request pays no second statement to move
+	// it there. Nothing before the event reads the follower row: its payload's logins are the
+	// thread's (events.ThreadLogins), and the outbox reads the followers after the commit.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		_, err := asks.QueueFollowAuthor(b, ask.ID, actor, ask.CreatedAt, graphstore.LatestEvent)
 		return err
 	}); err != nil {
@@ -1126,7 +1140,7 @@ func (s *server) verificationDocumentFor(ctx context.Context, q queryer, who mod
 	if !held {
 		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERIFICATION_DOCUMENT", "%s", noVerification)
 	}
-	version, err := settledVersionNumber(ctx, q, who, verification.ID)
+	version, err := settledVersionNumber(ctx, q, verification.ID)
 	if err != nil {
 		return model.AskApprovalDocument{}, err
 	}
@@ -1189,7 +1203,7 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	latest, err := settledVersionNumber(r.Context(), tx, who, artifact.ID)
+	latest, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

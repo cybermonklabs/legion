@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -39,6 +42,60 @@ func TestTheObjectBatchDistinguishesReplacedRowsWithTheSameCreationTime(t *testi
 	}
 }
 
+// A comment batch reads its rows again under the comment's owner lock (CommentsNamingNoNode), so a
+// second run's cached batch writes nothing for a comment whose row, node and tuples went after the
+// first run wrote them. No path of the tree deletes a comment's row or a node, so the test takes
+// them out itself, under the issue's owner lock.
+func TestAStaleCommentBatchDoesNotRestoreARemovedComment(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	seedIdentityIssue(t, database, at, model.Actor{Kind: "user", ID: "alice"})
+	const id = "11111111-1111-4111-8111-111111111111"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into comments (id, issue_key, author, body, created_at)
+		values ($1, 'IDEN-1', '{}', 'A remark.', $2)
+	`, id, at); err != nil {
+		t.Fatal(err)
+	}
+	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID, backfillBatch)
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("read the unmarked comment: %d row(s), %v; want 1", len(ids), err)
+	}
+	first, _, _, err := writeCommentBatch(ctx, database, ids, causes)
+	if err != nil {
+		t.Fatalf("write the first run's batch: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("the first run's batch counts %d row(s) written, want 1: the comment stood unmarked", first)
+	}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := store.LockOwners(ctx, tx, store.IssueOwner("IDEN-1")); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `delete from comments where id = $1`, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			with tuples as (delete from graph_tuples where (from_kind = 'comment' and from_id = $1) or (to_kind = 'comment' and to_id = $1))
+			delete from graph_nodes where kind = 'comment' and id = $1
+		`, id)
+		return err
+	}); err != nil {
+		t.Fatalf("take the first run's comment away: %v", err)
+	}
+	written, _, _, err := writeCommentBatch(ctx, database, ids, causes)
+	if err != nil {
+		t.Fatalf("write the second run's cached batch: %v", err)
+	}
+	if written != 0 {
+		t.Errorf("the stale batch counts %d row(s) written, want 0: the comment it read went before it wrote", written)
+	}
+	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, id); err != nil || held {
+		t.Errorf("the stale batch restored node %+v (held %t, %v) without its comment row; want no node", node, held, err)
+	}
+}
+
 // writeCommentBatch reads its batch again under the owner lock (CommentsNamingNoNode) into a write
 // of its own, and leaves the caller's batch as it read it: a caller that reads its batch after the
 // write reads the rows it passed. Two comments are read, the first is removed, and the write gives
@@ -57,30 +114,31 @@ func TestTheCommentBatchLeavesTheCallersBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	batch, err := readCommentRows(ctx, database, zeroUUID, backfillBatch)
-	if err != nil || len(batch) != 2 || batch[0].id != removed || batch[1].id != standing {
-		t.Fatalf("read the two unmarked comments: %+v, %v; want %s then %s", batch, err, removed, standing)
+	ids, causes, _, err := readCommentRows(ctx, database, zeroUUID, backfillBatch)
+	if err != nil || len(ids) != 2 || ids[0] != removed || ids[1] != standing {
+		t.Fatalf("read the two unmarked comments: %v, %v; want %s then %s", ids, err, removed, standing)
 	}
 	if _, err := database.Pool.Exec(ctx, `delete from comments where id = $1`, removed); err != nil {
 		t.Fatal(err)
 	}
-	written, _, _, err := writeCommentBatch(ctx, database, batch)
+	written, _, _, err := writeCommentBatch(ctx, database, ids, causes)
 	if err != nil || written != 1 {
 		t.Fatalf("the batch counts %d row(s) written (%v), want the standing comment alone", written, err)
 	}
 	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, standing); err != nil || !held {
 		t.Errorf("the standing comment holds no node (held %t, %v)", held, err)
 	}
-	if batch[0].id != removed || batch[1].id != standing {
+	if ids[0] != removed || ids[1] != standing {
 		t.Errorf("after the write the caller's batch lists %s then %s, want %s then %s, as it read them",
-			batch[0].id, batch[1].id, removed, standing)
+			ids[0], ids[1], removed, standing)
 	}
 }
 
 // ObjectRowStands answers whether an issue's, a document's, an ask's or a message's row stands at
-// an id. An ask's and a message's row is keyed by a uuid, so an id that is no uuid names no row and
-// answers false with no error, rather than abort the caller's transaction on the cast; a uuid names
-// its row when one stands there, and none when none does.
+// an id, which the sweep of an orphaned document's node reads under the node's lock
+// (StateOrphanedGone). An ask's and a message's row is keyed by a uuid, so an id that is no uuid
+// names no row and answers false with no error, rather than abort its caller's transaction on the
+// cast; a uuid names its row when one stands there, and none when none does.
 //
 // Its control is the uuid test taken out: the id that is no uuid then fails the read.
 func TestObjectRowStandsReadsTheRowsOfAnAskAndAMessage(t *testing.T) {

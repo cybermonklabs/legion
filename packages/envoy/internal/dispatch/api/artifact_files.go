@@ -28,23 +28,23 @@ import (
 //
 // The object goes first: the bytes (up to maxArtifactBlobSize) cross the network to a store whose
 // wait nothing here bounds, and the transaction takes a pooled connection and the owner's lock,
-// which every other writer of that issue queues behind. So the refusals that transaction makes
-// are made first, from the pool and locking nothing (refuseUploadBeforeItsObject, and
-// refuseFileBase for a token the upload names, against the version newestFileVersion reads; an issue that
-// is closed or missing is refused before the body is read, refuseUploadToAClosedIssue): nothing
-// deletes an object, and one a refused upload left would be named by no row. Deleting it on
-// refusal instead is not safe, since the store is keyed by the bytes' hash and another version,
-// or another upload in flight, can name the same object. The transaction's own checks still
-// decide: an upload this check passes that a concurrent write then makes refusable (another
-// upload taking its name with another kind, the issue closing), or whose insert fails, leaves an
-// object no row names, which a later upload of the same bytes reuses. The row records the hash
-// the object is keyed by, and the bytes too only while a live server process has no bucket
-// (fleetServesFilesFromRows).
-func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who model.Actor, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
+// which every other writer of that issue queues behind. So the refusals that transaction makes are
+// made first, from the pool and locking nothing (refuseUploadBeforeItsObject, the writer's check of
+// who writes an issue's Verification document among them, and refuseFileBase for a token the upload
+// names, against the version newestFileVersion reads; an issue that is closed or missing is refused
+// before the body is read, refuseUploadToAClosedIssue): nothing deletes an object, and one a
+// refused upload left would be named by no row. Deleting it on refusal instead is not safe, since
+// the store is keyed by the bytes' hash and another version, or another upload in flight, can name
+// the same object. The transaction's own checks still decide: an upload this check passes that a
+// concurrent write then makes refusable (another upload taking its name with another kind, the
+// issue closing, a role-holder publication), or whose insert fails, leaves an object no row names,
+// which a later upload of the same bytes reuses. The row records the hash the object is keyed by,
+// and the bytes too only while a live server process has no bucket (fleetServesFilesFromRows).
+func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who model.Actor, writer specWriter, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
 	if kind == "doc" || s.deps.Files == nil {
 		return true
 	}
-	artifactID, err := s.refuseUploadBeforeItsObject(r.Context(), who, target, input.name, kind, input.precondition != nil)
+	artifactID, err := s.refuseUploadBeforeItsObject(r.Context(), who, target, writer, input.name, kind, input.precondition != nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return false
@@ -68,14 +68,24 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who mod
 }
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
-// storeArtifact's transaction would make of a file or image upload to target under name: a
-// project that does not exist, an artifact the name or slug finds whose kind is not kind, a new
-// artifact whose name or reference key is past its bound, or a first upload naming a token
-// (namesToken), which storeArtifact's one statement of that rule refuses (uploadNoTokenRefusal).
-// It reads as that transaction reads, so the two refuse alike whenever nothing writes the owner's
-// artifacts between them. With no refusal it answers the id of the artifact the upload writes a
-// version of, "" for a new one, for the check of the token the upload names (refuseFileBase).
-func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Actor, target artifactTarget, name, kind string, namesToken bool) (string, error) {
+// storeArtifact's transaction would make of a file or image upload by writer to target under, read
+// as who reads the issue and its documents,
+// name, in that transaction's order: a project that does not exist, an artifact the name or slug
+// finds whose kind is not kind, a new artifact whose name or reference key is past its bound, the
+// check of who writes an issue's spec or Verification document (refuseSpecWriterOfDocument), which
+// passes a row of no issue without a read, and last a first upload naming a token (namesToken),
+// which storeArtifact's one statement of that rule refuses (uploadNoTokenRefusal). The writer
+// check judges the row the upload would store or replace as the transaction does: the row the
+// name or slug finds, or a new row with the slug nextArtifactSlug gives it and no role, since only
+// a document takes a role (documentRole) and a document writes no object (putUploadedFile). A file
+// is the issue's Verification document only by its slug (specWriterDocumentName), so a file named
+// verification.md, whose slug reads as that document's, is refused here before its object is
+// written. It reads as that transaction reads, so the two refuse alike whenever nothing writes the
+// owner's artifacts, or the issue's chain and its role holders, between them; the transaction's
+// checks still decide, under the owner's lock. With no refusal it answers the id of the artifact
+// the upload writes a version of, "" for a new one, for the check of the token the upload names
+// (refuseFileBase).
+func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Actor, target artifactTarget, writer specWriter, name, kind string, namesToken bool) (string, error) {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
 		if _, err := s.loadProject(ctx, pool, who, target.Project); err != nil {
@@ -83,24 +93,33 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Acto
 		}
 	}
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
-	if err == nil {
+	created := false
+	switch {
+	case err == nil:
 		if artifact.Kind != kind {
 			return "", artifactKindMismatch(name, artifact, kind)
 		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		return "", err
+	default:
+		if refusal := newArtifactNameRefusal(name); refusal != nil {
+			return "", refusal
+		}
+		slug, err := s.nextArtifactSlug(ctx, pool, target, name)
+		if err != nil {
+			return "", err
+		}
+		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
+			return "", refusal
+		}
+		artifact = model.Artifact{IssueKey: target.IssueKey, Slug: slug, Name: name, Kind: kind}
+		created = true
+	}
+	if err := refuseSpecWriterOfDocument(ctx, pool, writer, artifact); err != nil {
+		return "", err
+	}
+	if !created {
 		return artifact.ID, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return "", err
-	}
-	if refusal := newArtifactNameRefusal(name); refusal != nil {
-		return "", refusal
-	}
-	slug, err := s.nextArtifactSlug(ctx, pool, target, name)
-	if err != nil {
-		return "", err
-	}
-	if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
-		return "", refusal
 	}
 	if namesToken {
 		return "", uploadNoTokenRefusal(name)

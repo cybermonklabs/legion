@@ -479,6 +479,8 @@ print("probe: done", flush=True)
 // LEGION_MEMORY_GUARD_LIVE=1 the test fails, and never skips, where it is not PID 1, finds no
 // python3, or cannot read the cgroup's files or meminfo.
 func TestControllerPodMemoryGuardLiveSandbox(t *testing.T) {
+	// Not parallel: the gated live test runs the guard on the whole machine's memory as the
+	// container's first process.
 	if os.Getenv(memoryGuardLiveEnv) != "1" {
 		t.Skip("the live test runs only where " + memoryGuardLiveEnv + "=1: it runs the controller pod's guard on this machine's own memory, as the container's first process")
 	}
@@ -702,6 +704,9 @@ func controllerLiveBandStart(limit uint64, act int) uint64 {
 // (controllerLiveWatch), and keeps the guard's trace in a scenario that prints it
 // (controllerLiveTraced).
 func (r *controllerLiveRun) startGeneration() string {
+	if err := helperCopyRefusal(); err != nil {
+		return err.Error()
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err.Error()

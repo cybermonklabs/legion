@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -42,28 +41,6 @@ func (s *server) mayQueueForUnknownSession(
 	}
 	route, err := model.ParseRoute(messageTarget(message.Target))
 	return err == nil && route.Kind == "session" && route.ID == pending.resolved.attemptSessionID
-}
-
-// attemptWriter is the writer of a delivery attempt as a read binds it: the request's reader where
-// one is in ctx (withReader), and otherwise actor, the person the attempt records asking for it,
-// with what that person sees now (access.RecordedViewer), which is all the delivery sweep, resuming
-// an attempt with no request behind it, knows of who wrote it. A server with no database answers
-// the closed viewer (closedViewer), failing closed.
-func (s *server) attemptWriter(ctx context.Context, actor model.Actor) (model.Actor, error) {
-	if reader, ok := readerFromContext(ctx); ok {
-		return reader, nil
-	}
-	writer := actor.Reader()
-	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		writer.Viewer = closedViewer()
-		return writer, nil
-	}
-	viewer, err := access.RecordedViewer(ctx, s.deps.Store.Pool, actor)
-	if err != nil {
-		return model.Actor{}, err
-	}
-	writer.Viewer = &viewer
-	return writer, nil
 }
 
 // queueForUnknownSession queues a targeted message for a session no store of the listener's holds:

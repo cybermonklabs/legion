@@ -1,6 +1,8 @@
 GET /api/v1 public
 GET /api/v1/agents any
+GET /api/v1/agents/known any
 GET /api/v1/agents/{session_id}/answers any
+GET /api/v1/agents/{session_id}/artifacts any
 POST /api/v1/agents/{session_id}/artifacts any
 GET /api/v1/agents/{session_id}/artifacts/{slug} any
 GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number} any
@@ -122,6 +124,7 @@ PUT /api/v1/issues/{key}/role-holders any
 POST /api/v1/issues/{key}/status-change any
 GET /api/v1/issues/{key}/steps any
 PUT /api/v1/issues/{key}/steps/{id} any
+PUT /api/v1/issues/{key}/steps/{id}/experiment any
 PUT /api/v1/issues/{key}/steps/{id}/rating any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
@@ -129,6 +132,7 @@ GET /api/v1/issues/{key}/summary any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any
 POST /api/v1/machine-logins/{id}/revoke any
+POST /api/v1/markdown/file-round-trip any
 POST /api/v1/markdown/round-trip any
 GET /api/v1/me/agent-tokens any
 POST /api/v1/me/agent-tokens any
@@ -190,6 +194,8 @@ DELETE /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/legion/daemon any
 PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/plans any
+DELETE /api/v1/projects/{key}/proven-sessions any
+PUT /api/v1/projects/{key}/proven-sessions any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/reference-targets any

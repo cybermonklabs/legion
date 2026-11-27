@@ -260,7 +260,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		by    supervise.SuspendSource
 		why   string
 	}{
-		{rig.op, supervise.SuspendedByOperator, "O's merger: the operator suspended it, and that suspension holds until the operator resumes the claim"},
+		{rig.op, supervise.SuspendedByOperator, "O's merger: the operator suspended it, and that suspension holds until the operator resumes the agent"},
 		{rig.b, supervise.SuspendedByReleased, "B's merger: its release armed a backstop, which wakes it"},
 		{rig.n, supervise.SuspendedByReleased, "N's merger: its phase row holds no READY head, so the old build never moved N to awaiting_merge"},
 		{rig.c, supervise.SuspendedByReleased, "C's merger: its pull request is closed without a merge, and the merger merges only an open one"},
@@ -876,7 +876,7 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 	})
 	held := r.daemon.claim(issue.merger)
 	status, body := r.daemon.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{BootToken: launch.BootToken,
-		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion}, false)
+		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion()}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s's merger = %d; body %s", issue.key, status, body)
 	}

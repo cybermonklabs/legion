@@ -109,9 +109,11 @@ var readSources = map[string]readSource{
 	"GET /api/v1/me/agents/state": reads("the caller's own state of each agent session it talks to", nil, readclass.Caller, readclass.Agents),
 
 	// Agent sessions, and what reached them.
-	"GET /api/v1/agents":                       reads("the live sessions of the listener's roster", nil, readclass.Agents),
-	"GET /api/v1/agents/{session_id}/answers":  reads("what reached one session: answers, comments and messages of projects or of its own conversations", bySession, readclass.Agents, readclass.Project),
-	"GET /api/v1/agents/{session_id}/messages": reads("one session's targeted messages, on issues of projects or in its own conversations", bySession, readclass.Agents, readclass.Project),
+	"GET /api/v1/agents":                        reads("the live sessions of the listener's roster", nil, readclass.Agents),
+	"GET /api/v1/agents/known":                  reads("every session the deployment has recorded, live or not", nil, readclass.Agents),
+	"GET /api/v1/agents/{session_id}/answers":   reads("what reached one session: answers, comments and messages of projects or of its own conversations", bySession, readclass.Agents, readclass.Project),
+	"GET /api/v1/agents/{session_id}/messages":  reads("one session's targeted messages, on issues of projects or in its own conversations", bySession, readclass.Agents, readclass.Project),
+	"GET /api/v1/agents/{session_id}/artifacts": reads("the files of one conversation, which a party of it reads", bySession, readclass.Agents),
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": reads("a file of one agent conversation, which belongs to no project and is held to its parties",
 		readProbe{"session_id": probeSession, "slug": probeDocumentSlug}, readclass.Project),
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": reads("a version of a file of one agent conversation, held to its parties",
@@ -290,24 +292,9 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 	}
 }
 
-// readRefusal is how a read refuses its caller before anything is read: its code and message,
-// and, for a scope the credential does not hold, that scope.
+// readRefusal is how a read refuses its caller before anything is read: its code and message.
 type readRefusal struct {
-	code, message, scope string
-}
-
-// scopeReadRefusal is the refusal of the first of scopes, a row's OAuth scopes in the order it
-// declares them (routeScopes), that a credential does not hold, or nil: 403 OAUTH_SCOPE_REQUIRED,
-// as gateRouteScopes answers it over HTTP and the live socket answers it as a view's error frame
-// (liveReadRefusal). holds nil holds no scope.
-func scopeReadRefusal(scopes []string, holds func(string) bool) *readRefusal {
-	for _, scope := range scopes {
-		if holds == nil || !holds(scope) {
-			return &readRefusal{code: codeScopeRequired, scope: scope, message: fmt.Sprintf(
-				"this request's credential does not hold the %s scope, which this route requires", scope)}
-		}
-	}
-	return nil
+	code, message string
 }
 
 // codeDeploymentReadRefused refuses a read of a row of the deployment to a viewer that is not open
@@ -316,7 +303,7 @@ const codeDeploymentReadRefused = "DEPLOYMENT_READ_REFUSED"
 
 // deploymentReadRefusal is the refusal of a read of a row of the deployment (readclass.Deployment
 // among classes) to a viewer that is not open, or nil: 403 DEPLOYMENT_READ_REFUSED, naming the
-// row, which withinReadScope answers over HTTP and the live socket as a view's error frame. A nil
+// row, which withinReadScope answers over HTTP. A nil
 // viewer is the closed one, which is not open.
 func deploymentReadRefusal(method, pattern string, classes []readclass.Class, viewer *model.Viewer) *readRefusal {
 	if !slices.Contains(classes, readclass.Deployment) || (viewer != nil && viewer.Open) {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -55,13 +56,13 @@ const standingReviewReasonLimit = 500
 // because a failed statement aborts the transaction it ran in and this must never fail the write
 // it describes. It writes nothing, so the savepoint is always rolled back, which also restores
 // the statement_timeout it set.
-func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, who model.Actor, route, issueKey string) *standingReview {
+func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, route, issueKey string) *standingReview {
 	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "standing_review")
 	if !ok {
 		return nil
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
-	review, err := standingSpecReview(ctx, adviceTx, ledger, who, issueKey)
+	review, err := standingSpecReview(ctx, adviceTx, ledger, issueKey)
 	if err != nil {
 		s.logAdviceError(route, issueKey, "standing_review", err)
 		return nil
@@ -81,7 +82,7 @@ func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *do
 // not yet written: a review it queued is newer than every stored one
 // (docs.Ledger.PendingReview), and a version it queued is the document's newest
 // (docs.Ledger.PendingVersionNumber), so each answers for the table where it is there.
-func standingSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, who model.Actor, issueKey string) (*standingReview, error) {
+func standingSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, issueKey string) (*standingReview, error) {
 	var artifactID string
 	if err := q.QueryRow(ctx, `
 		select id::text from artifacts where issue_key = $1 and is_primary and kind = 'doc'
@@ -104,7 +105,7 @@ func standingSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, who
 	if review.Actor.Kind != "user" || review.Actor.Act != nil {
 		return nil, nil
 	}
-	latest, err := newestSpecVersion(ctx, q, ledger, who, artifactID)
+	latest, err := newestSpecVersion(ctx, q, ledger, artifactID)
 	if err != nil || latest == nil || review.Version != *latest {
 		return nil, err
 	}
@@ -139,11 +140,11 @@ func newestSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, artif
 // newestSpecVersion is the newest version of artifactID as the caller's queued writes leave it:
 // the version its transaction queued where it queued one, else the newest stored one, nil when
 // the document has none.
-func newestSpecVersion(ctx context.Context, q queryer, ledger *docs.Ledger, who model.Actor, artifactID string) (*int, error) {
+func newestSpecVersion(ctx context.Context, q queryer, ledger *docs.Ledger, artifactID string) (*int, error) {
 	if number, queued := ledger.PendingVersionNumber(artifactID); queued {
 		return &number, nil
 	}
-	return latestVersionNumber(ctx, q, who, artifactID)
+	return latestVersionNumber(ctx, q, artifactID)
 }
 
 // firstCharacters is text cut to the first count characters, whole: a cut between two bytes of

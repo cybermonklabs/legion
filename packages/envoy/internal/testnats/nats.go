@@ -97,7 +97,7 @@ func Accounts(n int) MainOption { return func() { startAccounts = n } }
 // operator's NATS_NKEY_SEED or NATS_NKEY_SEED_FILE never reaches the tests' clients. A test that
 // means to pass a seed sets it itself.
 func init() {
-	os.Unsetenv("NATS_NKEY_SEED")
+	os.Unsetenv(seedVariable)
 	os.Unsetenv("NATS_NKEY_SEED_FILE")
 }
 
@@ -439,8 +439,9 @@ func (s *Server) Freeze(t testing.TB) func() {
 //
 // The server reloads with no client message in flight. nats-server (2.15.1 and 2.15.3) writes each
 // service import's account on every authorization reload (configureAccounts, server.go:1398) under
-// the importing account's lock, and a client's request through a service import - every JetStream
-// API request - reads that field without the lock as the server sets up the response
+// the importing account's lock, and a client's request through a service import - most JetStream
+// API requests, all but a direct get and a consumer's next through the system account's export
+// (client.go:4944-4971) - reads that field without the lock as the server sets up the response
 // (setupResponseServiceImport and addRespServiceImport, client.go:4643 and accounts.go:2671 in
 // 2.15.1): a reload while a client's request is being processed is a data race in nats-server,
 // which the race detector reports in this process. Holding the clients' bytes is not enough on its
@@ -450,7 +451,9 @@ func (s *Server) Freeze(t testing.TB) func() {
 // only once it has processed everything the client sent before it, the server reloads, and the
 // relay lets the clients' bytes through. Each client keeps its connection and sees its messages
 // delayed by the reload; what the server sends reaches the clients throughout, less the relay's
-// own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails.
+// own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails. The
+// relay's two waits each end within connectTimeout, or at the test's deadline (testDeadline) when
+// that comes first, so a Reload whose waits reach that deadline fails its test by name.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	s.mu.Lock()
@@ -475,9 +478,10 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	// server's as well: a reload can neither move the one nor turn the other on or off.
 	opts.ConfigFile = s.configPath
 	opts.JetStream = jetStream
-	release, err := s.relay.hold()
+	bound := boundOf(t)
+	release, err := s.relay.hold(bound)
 	if err == nil {
-		err = s.relay.barrier()
+		err = s.relay.barrier(bound)
 	}
 	if err != nil {
 		release()
@@ -759,6 +763,34 @@ func (b waitEnd) pause() { time.Sleep(b.step(retryInterval)) }
 
 // String is the end, as a wait's failure names it.
 func (b waitEnd) String() string { return b.end.Format(time.RFC3339Nano) }
+
+// awaitSignal waits for a receive from signal, which its close also gives, until bound, the end of
+// the caller's wait, and reports false when that end came first: the caller fails its test naming
+// what it waited for and bound. The caller computes bound once (boundOf), before the first of its
+// rounds: testDeadline is halfway to the binary's deadline when less than twice startMargin is left,
+// so an end computed again each round moves later each round and is never reached. A signal already
+// given is taken even at the end; with no deadline (bounded false) the wait lasts a day (noDeadline).
+func awaitSignal(bound waitEnd, signal <-chan struct{}) bool {
+	select {
+	case <-signal:
+		return true
+	default:
+	}
+	wait := noDeadline
+	if bound.bounded {
+		if wait = time.Until(bound.end); wait <= 0 {
+			return false
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-signal:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 // dial is the options of one connect of the wait, and what its caller runs once the connect has
 // returned a connection (retire). Each server's handshake is bounded by dialTimeout cut to what

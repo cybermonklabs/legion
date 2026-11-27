@@ -843,7 +843,8 @@ func (r *StoreReport) Write(w io.Writer) {
 	case r.ProjectFindings() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or node(s) no row stands behind;"+
 			" run envoy-dispatch backfill-graph-store for the missing, gone and unscoped ones but those naming a party the store"+
-			" refuses, let this build's block-index tick state gone each orphaned one whose line names it, and compare each differs row with its node)\n",
+			" refuses, and compare each differs row with its node; an orphaned node has no in-band cure, unless an older build's removal made it during a two-build roll,"+
+			" which this build's block-index tick then states gone)\n",
 			pgmigrate.Thousands(r.ProjectFindings()))
 	case len(empty) > 0:
 		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",

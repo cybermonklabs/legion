@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  type SchemaApi,
   SLACK_POST_TEXT_MAX,
   zodSchemaApi,
 } from "@legion/contracts";
@@ -145,6 +146,19 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).toContain(
       "A notifications. topic no stream subject captures is refused by name: nothing would store it."
     );
+  });
+
+  // The listener's 503 that says the message was not sent (`MESSAGE_NOT_SENT_PREFIX`): the bus
+  // refused it before anything went out, so it is temporary and a resend stores it once. Both
+  // tools say so, so an agent neither waits on it as a send that may have arrived nor gives up on
+  // the message.
+  test("tells an agent that a message the listener did not send may be sent again later", () => {
+    for (const name of ["envoy_send", "envoy_publish"]) {
+      const spec = envoyToolSpecs.find((candidate) => candidate.name === name);
+      expect(spec?.description).toContain(
+        "An error that says the message was not sent means nothing was stored, so the same message may be sent again later."
+      );
+    }
   });
 
   test("tells an agent the three answers a role message has, the kept one as a success", () => {
@@ -532,6 +546,46 @@ describe("message metadata", () => {
 
     expect(shown).toContain("how soon the recipient should act");
     expect(shown).toContain("does not deliver the message sooner or ahead of others");
+  });
+
+  // Oh My Pi's `pi.zod` facade drops a description attached before `.optional()` on an enum or
+  // on a field widened to `unknown`, which real Zod renders identically, so only the call order
+  // shows it: on that host `expects_reply` and `urgency` lost the only text that names their
+  // values and their meaning.
+  test("every described Envoy tool field describes last, the one order the OMP facade keeps", () => {
+    type Recorder = {
+      readonly calls: readonly string[];
+      optional(): Recorder;
+      nullable(): Recorder;
+      describe(text: string): Recorder;
+    };
+    const node = (calls: readonly string[]): Recorder => ({
+      calls,
+      optional: () => node([...calls, "optional"]),
+      nullable: () => node([...calls, "nullable"]),
+      describe: () => node([...calls, "describe"]),
+    });
+    const leaf = () => node([]);
+    const api: SchemaApi<Recorder> = {
+      string: leaf,
+      number: leaf,
+      boolean: leaf,
+      enum: leaf,
+      literal: leaf,
+      array: leaf,
+      unknown: leaf,
+      object: leaf,
+      refineObject: leaf,
+    };
+
+    const described = envoyToolSpecs.flatMap((spec) =>
+      Object.entries(spec.arguments(api) as Record<string, Recorder>)
+        .filter(([, field]) => field.calls.includes("describe"))
+        .map(([name, field]) => [`${spec.name}.${name}`, field.calls.at(-1)] as const)
+    );
+
+    expect(described.map(([name]) => name)).toContain("envoy_send.expects_reply");
+    expect(described.filter(([, last]) => last !== "describe")).toEqual([]);
   });
 
   test("refuses an Envoy tool call once with every problem named", () => {
