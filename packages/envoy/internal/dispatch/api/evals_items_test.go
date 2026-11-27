@@ -344,8 +344,9 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 // legionItemSource). The table is the evals the fixture serves over the histories
 // TestEveryCatalogueSourceAnswersItsRows reads, so it holds every source kind: each computed eval
 // (a Legion eval's issues and legion-splitting's filings, a delivery eval's pull requests and
-// deploy runs, a CI eval's runs and pr-ci's jobs, unowned-p0's issues, and each eval's day rows),
-// pr-ci sorted by failures and by median (the failing jobs and the slowest jobs), and a logged eval
+// deploy runs, a failure measure's deploys and failures of the failure history, a CI eval's runs
+// and pr-ci's jobs, unowned-p0's issues, and each eval's day rows), pr-ci sorted by failures and by
+// median (the failing jobs, one row a repository's job, and the slowest jobs), and a logged eval
 // of two series (its readings and their day rows), with a reading logged under pr-ci's slug. Each
 // read answers rows with no series named, and none (total 0) for a series no row holds, alone and
 // with a cut; and for each series its rows name (a day row's or a reading's, a job's job series),
@@ -356,12 +357,16 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 func TestEveryItemsSourceNarrowsToTheNamedSeries(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
+	// The record is written before the histories' one refresh, which builds every project's rows.
+	seedFailureHistory(t, database)
 	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
-	legion := windows[0].Spec.Project
+	legion, failures := windows[0].Spec.Project, "FAIL"
 	ranges := map[string][2]time.Time{
 		fixture.Project: {fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)},
 		legion:          {windows[0].Window.From, windows[0].Window.To},
+		failures:        {failuresDay, failuresDay.AddDate(0, 0, 2)},
 	}
+	failureSources := []string{evals.SourceFoldChangeFailRate, evals.SourceFoldRecovery, evals.SourceFoldReworkRate}
 	const logged = "items-series"
 	at := ranges[fixture.Project][0].Add(time.Hour)
 	for slug, rows := range map[string][]any{
@@ -381,14 +386,22 @@ func TestEveryItemsSourceNarrowsToTheNamedSeries(t *testing.T) {
 		sort       string
 	}
 	var reads []itemsRead
-	for _, project := range []string{fixture.Project, legion} {
+	for _, project := range []string{fixture.Project, legion, failures} {
 		for _, item := range evalGet[evalListResponse](t, handler, "/api/v1/projects/"+project+"/evals?limit=200").Items {
 			definition := item.Definition
 			if definition.Computed() {
-				if (definition.Kind == evals.KindLegion) != (project == legion) {
+				// Each eval is read over the history that holds its input.
+				history := fixture.Project
+				switch {
+				case definition.Kind == evals.KindLegion:
+					history = legion
+				case slices.Contains(failureSources, definition.Source):
+					history = failures
+				}
+				if history != project {
 					continue
 				}
-			} else if definition.Slug != logged {
+			} else if definition.Slug != logged || project != fixture.Project {
 				continue
 			}
 			// Each series a kind stands behind is one its eval holds, so no kind stands behind a
@@ -411,14 +424,15 @@ func TestEveryItemsSourceNarrowsToTheNamedSeries(t *testing.T) {
 	}
 
 	// seriesOf is the series a row is of where it names one: a day row's and a reading's own, and
-	// a job's job series.
+	// a job's job series, by the job's name (a failing job's row is keyed by its repository too).
 	seriesOf := func(row evalItemRow) string {
 		switch row.RowKind {
 		case evalRowDay, "sample":
 			series, _ := row.Cols["series"].(string)
 			return series
 		case evalRowJob:
-			return measures.JobSeriesPrefix + row.RowKey
+			name, _ := row.Cols["name"].(string)
+			return measures.JobSeriesPrefix + name
 		}
 		return ""
 	}
