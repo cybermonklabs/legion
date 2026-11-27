@@ -8,4 +8,4 @@ body: |-
   a confirm was made with it. The other `behaviour` commands refuse the option.
 time: 2026-11-26T13:02:18Z
 custom:
-    Issue: INFRA-4676
+    Issue: pr4571

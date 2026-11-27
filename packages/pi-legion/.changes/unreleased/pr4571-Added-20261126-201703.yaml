@@ -10,4 +10,4 @@ body: |-
   Without `--merged`, the report does not change. The other `behaviour` commands refuse the option.
 time: 2026-11-26T20:17:03Z
 custom:
-    Issue: INFRA-4676
+    Issue: pr4571

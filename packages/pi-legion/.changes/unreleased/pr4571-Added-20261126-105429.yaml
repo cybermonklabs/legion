@@ -7,4 +7,4 @@ body: |-
   line. `load` refuses labelled tasks without the matching option.
 time: 2026-11-26T10:54:29Z
 custom:
-    Issue: INFRA-4676
+    Issue: pr4571

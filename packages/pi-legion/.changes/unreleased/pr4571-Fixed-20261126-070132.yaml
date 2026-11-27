@@ -17,4 +17,4 @@ body: |-
   they find to `audit-mixed.json`.
 time: 2026-11-26T07:01:32Z
 custom:
-    Issue: INFRA-4676
+    Issue: pr4571
