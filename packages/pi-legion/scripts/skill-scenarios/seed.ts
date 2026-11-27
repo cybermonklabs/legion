@@ -90,8 +90,7 @@
 //                                          its records in case time order, its other issues and
 //                                          its step runs, the runs' times among the records' stamps
 //                                          where its runs hold its records (seedCaseDispatch), and
-//                                          read each back; writes dispatch-ids.json and
-//                                          dispatch-fixture.json there
+//                                          read each back; writes dispatch-fixture.json there
 //   seed.ts case-readback <run dir>         capture the issue, documents, handoffs, comments,
 //                                          asks, results, step runs and complete event log (with
 //                                          seed cursor)
@@ -138,6 +137,7 @@ import {
 import { caseClaim } from "./daemon-standin-world";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { type StepRun, World } from "./heldout-case";
+import { writtenVersion } from "./outcome";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { instantText, parseInstant, type Sleep } from "./production-dispatch";
 import { APPROVE, agentGet, handoffsOf, PERSON } from "./seed-dispatch";
@@ -1340,9 +1340,12 @@ async function caseDispatchFaults(world: World, written: readonly RunTimes[]): P
  * run's time Dispatch lists otherwise than the seed wrote it, fails the seed. The id the scratch
  * Dispatch gives the document of each step of the claim tree's design gate (`world.daemon.gate`,
  * the document of the claim's tree root by its file name) goes in dispatch-fixture.json (`gate`,
- * by step), and the prompt names it wherever it names the world's id of that document. Writes
- * dispatch-ids.json (each seeded handoff's and comment's Dispatch id by its case id) and
- * dispatch-fixture.json. */
+ * by step), and the prompt names it wherever it names the world's id of that document.
+ * dispatch-fixture.json's `ids` holds each id Dispatch gave a record the world names by an id of
+ * its own, under `<kind>/<the world's id>` (`handoff/hnd-acme-12-plan-1`, `comment/c-1`, `ask/a1`,
+ * `artifact/<a gate's artifactId>`), absent where there is none: the prompt names each comment,
+ * ask and gate document by Dispatch's id, the run reads each handoff by it, and outcome.ts writes
+ * each back as the world's. */
 export async function seedCaseDispatch(
   runDir: string,
   sleep: Sleep = (ms) => Bun.sleep(ms)
@@ -1435,29 +1438,24 @@ export async function seedCaseDispatch(
   const place = (prefix: string) => (prefix === project ? 2 : prefix === parent?.[0] ? 0 : 1);
   for (const prefix of [...through.keys()].sort((a, b) => place(a) - place(b)))
     await createThrough(prefix, through.get(prefix) ?? 0);
-  // The case names its documents by name and its records by its own ids; Dispatch gives each one
-  // its own id.
-  const ids = new Map<string, string>();
+  // The case names its documents by name; Dispatch gives each one its own id.
+  const documentIds = new Map<string, string>();
   for (const { name, body } of documents) {
     const uploaded = await createIssueArtifact(
       issue.key,
       { name, content: dispatchBlockRefs(body, issue.key, documentSlug(name)) },
       seed
     );
-    ids.set(`document/${name}`, uploaded.artifact.id);
+    documentIds.set(name, uploaded.artifact.id);
   }
+  // The case names its handoffs, comments and asks by its own ids; Dispatch gives each one its own
+  // id.
+  const ids = new Map<string, string>();
   /** The id Dispatch gave the world's `kind` named `id`, which the seed wrote before it. */
   const dispatchId = (kind: "document" | "comment", id: string): string => {
-    const given = ids.get(`${kind}/${id}`);
+    const given = kind === "document" ? documentIds.get(id) : ids.get(`comment/${id}`);
     if (given === undefined) throw new Error(`${id}: no ${kind} of the world was seeded so named`);
     return given;
-  };
-  /** What dispatch-ids.json holds: each seeded handoff's and comment's Dispatch id by case id. */
-  const seededIds = new Map<string, string>();
-  const remember = (id: string, given: string) => {
-    if (seededIds.has(id))
-      throw new Error(`${id}: the world names two of its handoffs and comments by this id`);
-    seededIds.set(id, given);
   };
   /** Each record of the world: its case id and time, whether it is a handoff, and its write,
    * which answers Dispatch's stamp of the record. */
@@ -1477,7 +1475,7 @@ export async function seedCaseDispatch(
           throw new Error(
             `${record.id}: got ${record.phase} v${saved.version}, wanted v${record.version}`
           );
-        remember(record.id, saved.id);
+        ids.set(`handoff/${record.id}`, saved.id);
         return saved.created_at;
       },
     })),
@@ -1502,7 +1500,6 @@ export async function seedCaseDispatch(
           },
           author(by)
         );
-        remember(id, created.id);
         ids.set(`comment/${id}`, created.id);
         return created.created_at;
       },
@@ -1569,10 +1566,6 @@ export async function seedCaseDispatch(
     stamped.push({ at: record.at, stamp });
     previous = record;
   }
-  writeFileSync(
-    path.join(runDir, "dispatch-ids.json"),
-    `${JSON.stringify(Object.fromEntries(seededIds))}\n`
-  );
   // A closed issue refuses a document upload. Finish seeding the evidence before closing it.
   if (issue.status !== "triage") {
     await changeIssueStatus(issue.key, { status: issue.status, include_parent: true }, seed);
@@ -1665,16 +1658,23 @@ export async function seedCaseDispatch(
     writeFileSync(prompt, text);
   }
   const seeded = await caseEvents(issue.key);
+  // Each id the world names a handoff, a comment, an ask or a gate's document by, with the id
+  // Dispatch gave it, which outcome.ts writes back as the world's wherever the run's records name
+  // it.
+  const given = [...ids, ...[...artifacts].map(([stated, id]) => [`artifact/${stated}`, id])];
   const fixture = {
     issue: issue.key,
     seedThrough: seeded.at(-1)?.seq ?? 0,
     ...(rows.length === 0 ? {} : { gate }),
+    ...(given.length === 0 ? {} : { ids: Object.fromEntries(given) }),
   };
   writeFileSync(path.join(runDir, "dispatch-fixture.json"), `${JSON.stringify(fixture)}\n`);
 }
 
 /** Keep the native API envelopes and original timestamps; outcome.ts selects run writes and
- * reshapes them to the machine-independent schema. Each handoff carries its immutable body. */
+ * reshapes them to the machine-independent schema. Each handoff carries its immutable body, and
+ * each version of a document of the issue that an event after the seed wrote (outcome.ts
+ * writtenVersion) carries its text, read through Dispatch's own version route (`versions`). */
 export async function captureCaseDispatch(runDir: string): Promise<void> {
   const { issue: key, seedThrough } = CaseDispatchFixture.parse(
     JSON.parse(readFileSync(path.join(runDir, "dispatch-fixture.json"), "utf8"))
@@ -1690,16 +1690,32 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
     }))
   );
   const handoffs = await handoffsOf(key);
+  const comments = await listComments(key, undefined, reader);
+  const asks = await listIssueAsks(key, reader);
+  const results = await getIssueResults(key, reader);
+  const steps = await agentGet(`/api/v1/issues/${encodeURIComponent(key)}/steps`);
+  const events = await caseEvents(key);
+  const texts = new Set(documents.filter(({ kind }) => kind === "doc").map(({ id }) => id));
+  const versions: { artifact_id: string; number: number; markdown: string }[] = [];
+  for (const event of events) {
+    const written = event.seq > seedThrough ? writtenVersion(event) : undefined;
+    if (written === undefined || !texts.has(written.id)) continue;
+    const { id, version } = written;
+    if (versions.some((each) => each.artifact_id === id && each.number === version)) continue;
+    const { markdown } = await getArtifactVersion(id, version, reader);
+    versions.push({ artifact_id: id, number: version, markdown });
+  }
   const captured = {
     issue,
     seedThrough,
     documents,
+    versions,
     handoffs,
-    comments: await listComments(key, undefined, reader),
-    asks: await listIssueAsks(key, reader),
-    results: await getIssueResults(key, reader),
-    steps: await agentGet(`/api/v1/issues/${encodeURIComponent(key)}/steps`),
-    events: await caseEvents(key),
+    comments,
+    asks,
+    results,
+    steps,
+    events,
   };
   writeFileSync(path.join(runDir, "dispatch-readback.json"), `${JSON.stringify(captured)}\n`);
 }

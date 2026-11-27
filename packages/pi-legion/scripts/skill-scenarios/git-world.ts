@@ -313,34 +313,29 @@ done
   return mapping;
 }
 
-/** `value` with each string it holds, at any depth of its arrays and objects, as `fn` writes it. */
-export function mapStrings<T>(value: T, fn: (text: string) => string): T {
+/** `value` with each text in it, at any depth of its arrays and objects, written as `rewrite` writes
+ * it; every other value, and each object's keys, as they are. */
+export function rewriteTexts<T>(value: T, rewrite: (text: string) => string): T {
   const walk = (item: unknown): unknown => {
-    if (typeof item === "string") return fn(item);
+    if (typeof item === "string") return rewrite(item);
     if (Array.isArray(item)) return item.map(walk);
-    if (item !== null && typeof item === "object") {
+    if (item !== null && typeof item === "object")
       return Object.fromEntries(Object.entries(item).map(([key, field]) => [key, walk(field)]));
-    }
     return item;
   };
   return walk(value) as T;
 }
 
-/** A string with the full ids and unambiguous abbreviated ids of `mapping`'s commits translated,
- * including those embedded in prose. */
-export function commitTranslator(mapping: CommitMap): (text: string) => string {
-  const ids = Object.entries(mapping);
-  return (text) =>
-    text.replace(/[0-9a-f]{7,}/g, (word, offset: number) => {
-      if (/[0-9a-f]/.test(text[offset - 1] ?? "")) return word;
-      const matches = ids.filter(([id]) => id.startsWith(word));
-      return matches.length === 1 ? matches[0]?.[1].slice(0, word.length) : word;
-    });
-}
-
 /** Translate full ids and unambiguous abbreviated ids, including those embedded in prose. */
 export function translateCommits<T>(value: T, mapping: CommitMap): T {
-  return mapStrings(value, commitTranslator(mapping));
+  const ids = Object.entries(mapping);
+  return rewriteTexts(value, (item) =>
+    item.replace(/[0-9a-f]{7,}/g, (word, offset: number) => {
+      if (/[0-9a-f]/.test(item[offset - 1] ?? "")) return word;
+      const matches = ids.filter(([id]) => id.startsWith(word));
+      return matches.length === 1 ? matches[0]?.[1].slice(0, word.length) : word;
+    })
+  );
 }
 
 /** The directory variables the role is given for the run's own directories, each with its
@@ -352,10 +347,27 @@ const RUN_DIRECTORIES = [
   ["HOME", "home"],
 ] as const;
 
+/** `file`'s real path: the real path of the deepest directory that holds it and exists, followed
+ * by the rest of it as written, so a path nothing has made yet (the report a Job would write) is
+ * named by the directory that would hold it. A relative path is taken from the working directory. */
+export function realPath(file: string): string {
+  const rest: string[] = [];
+  for (let at = path.resolve(file); ; at = path.dirname(at)) {
+    try {
+      return path.join(realpathSync(at), ...rest);
+    } catch {
+      if (path.dirname(at) === at) return path.resolve(file);
+      rest.unshift(path.basename(at));
+    }
+  }
+}
+
 /** `root` with the run's own directory that holds it written by the name the role was given for
  * it: the deepest directory one of RUN_DIRECTORIES names in `env` or under `runDir`
- * (`$TMPDIR/stage-a`, `$LEGION_WORKSPACE`), each compared by its real path, as `root` is one. A
- * root already named that way, or one none of them holds, is written as it is. */
+ * (`$TMPDIR/stage-a`, `$LEGION_WORKSPACE`), each compared by its real path, as `root` is one (a
+ * path that does not exist yet by the real path of the directory that would hold it; a relative
+ * path from the working directory). A root already named that way is written as it is, and one
+ * none of them holds as its absolute path. */
 export function namedSource(
   root: string,
   runDir?: string,
@@ -369,7 +381,7 @@ export function namedSource(
       return undefined;
     }
   };
-  const target = real(root) ?? root;
+  const target = realPath(root);
   let named: { name: string; dir: string } | undefined;
   for (const [name, sub] of RUN_DIRECTORIES) {
     const candidates = [env[name], runDir === undefined ? undefined : path.join(runDir, sub)];
@@ -382,16 +394,23 @@ export function namedSource(
       if (holds && dir.length > (named?.dir.length ?? -1)) named = { name, dir };
     }
   }
-  if (named === undefined) return root;
+  if (named === undefined) return path.resolve(root);
   const rest = target.slice(named.dir.length).replace(/^\/*/, "");
   return rest === "" ? `$${named.name}` : `$${named.name}/${rest}`;
 }
 
 /** stage-job records the current checked-out files (tracked and non-ignored untracked files),
  * not HEAD. Both the index and new objects go into a disposable repository, not the source. The
- * record names the job and the checkout root it was taken from, written by the name the role was
- * given for the run's directory that holds it (namedSource). */
-export function stageJob(dir: string, job: string, source = process.cwd()) {
+ * record names the job and the checkout root it was taken from, and the input bundle and the report
+ * path the role gave it (`paths.bundle`, `paths.report`, each absent where it gave none), each
+ * written by the name the role was given for the run's directory that holds it (namedSource). It
+ * runs no Job. */
+export function stageJob(
+  dir: string,
+  job: string,
+  source = process.cwd(),
+  paths: { readonly bundle?: string; readonly report?: string } = {}
+) {
   if (!job.trim()) throw new Error("stage-job needs a job name");
   const root = realpathSync(source);
   const env = gitEnv();
@@ -443,6 +462,8 @@ export function stageJob(dir: string, job: string, source = process.cwd()) {
       tree,
       files: staged,
       source: namedSource(root, dir),
+      ...(paths.bundle === undefined ? {} : { bundle: namedSource(paths.bundle, dir) }),
+      ...(paths.report === undefined ? {} : { report: namedSource(paths.report, dir) }),
     };
     appendFileSync(path.join(dir, "staging.jsonl"), `${JSON.stringify(record)}\n`);
     return record;

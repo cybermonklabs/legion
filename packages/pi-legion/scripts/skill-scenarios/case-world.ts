@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -8,8 +9,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { parseArgs } from "node:util";
 import { isLegionRole } from "@legion/contracts";
 import { workerPane } from "./daemon-pane";
+import { recorderScript } from "./diff-recorder";
 import { buildGitWorld, defaultBranch, stageJob, translateCommits } from "./git-world";
 import { caseFileGaps, parseHeldoutFile, parseSkillUseFile, type World } from "./heldout-case";
 
@@ -354,7 +357,7 @@ export function prepareCase(dir: string, file: string, set: string, id: string):
   const task = translateCommits(scenario.task, commitMap);
   const clock = `The simulated clock at the start of this run is ${world.clock}. Use it for dates in this task.`;
   const staged = stage
-    ? `\nThe two scratch copies are $TMPDIR/stage-a and $TMPDIR/stage-b. To stage a Job, run stage-job NAME [CHECKOUT] (default: current checkout). No Job runs.`
+    ? `\nThe two scratch copies are $TMPDIR/stage-a and $TMPDIR/stage-b. To stage a Job, run stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>] (CHECKOUT defaults to the current checkout; --bundle names the Job's input bundle and --report the path the Job writes its report to). No Job runs.`
     : "";
   const production = launch.production ? `\nProduction probe: ${launch.production.probe}` : "";
   text(
@@ -381,14 +384,54 @@ export function prepareCase(dir: string, file: string, set: string, id: string):
       `#!/bin/sh\nexec ${sh(process.execPath)} ${sh(import.meta.path)} stage ${sh(dir)} "$@"\n`,
       { mode: 0o755 }
     );
+  // Each `jj` and `git` the role runs reaches the real program through diff-recorder.ts, which
+  // records a diff read; any other call goes to the real program at once. A world with a workspace
+  // and no real program to record in front of would record no diff read, which a grade would read
+  // as none made, so it fails the setup.
+  const bin = path.resolve(dir, "bin");
+  const searched = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .filter((entry) => entry !== "" && path.resolve(entry) !== bin)
+    .join(path.delimiter);
+  for (const program of ["jj", "git"] as const) {
+    const real = Bun.which(program, { PATH: searched });
+    if (real === null) {
+      if (world.git !== null)
+        throw new Error(
+          `no ${program} on PATH: the case world has a workspace, and a run's diff reads are recorded in front of the real ${program}`
+        );
+      continue;
+    }
+    writeFileSync(path.join(bin, program), recorderScript(dir, program, real, process.execPath), {
+      mode: 0o755,
+    });
+  }
   if (launch.production !== null) {
     const probe = launch.production.probe;
     // A URL or the curl command in the case addresses only the frozen revision, not production.
     const url = /https?:\/\/[^\s"']+/.exec(probe)?.[0];
     if (!url) throw new Error(`production probe must name its HTTP URL: ${probe}`);
+    // A call that names the probe's address is answered by this script's `probe` mode, which
+    // records the probe before it answers; a call that is no probe records nothing.
+    const answer = [
+      process.execPath,
+      import.meta.path,
+      "probe",
+      dir,
+      url,
+      launch.production.revision,
+    ];
     writeFileSync(
-      path.join(dir, "bin", "curl"),
-      `#!/bin/sh\nfor arg do\n  if [ "$arg" = ${sh(url)} ]; then printf '%s\\n' ${sh(launch.production.revision)}; exit 0; fi\ndone\necho 'curl: no route in the case world' >&2\nexit 22\n`,
+      path.join(bin, "curl"),
+      [
+        "#!/bin/sh",
+        "for arg do",
+        `  if [ "$arg" = ${sh(url)} ]; then exec ${answer.map(sh).join(" ")} "$@"; fi`,
+        "done",
+        "echo 'curl: no route in the case world' >&2",
+        "exit 22",
+        "",
+      ].join("\n"),
       { mode: 0o755 }
     );
   }
@@ -463,9 +506,29 @@ if (import.meta.main) {
       console.error(`${a}: the ${b} batch does not start while the file has a gap`);
       process.exit(1);
     }
-  } else if (mode === "stage" && a && b && args.length <= 3)
-    console.log(JSON.stringify(stageJob(a, b, c)));
-  else if (mode === "order" && a && b && c) console.log(armOrder(a, b, args.slice(2)).join("\n"));
+  } else if (mode === "stage" && a) {
+    // stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>], after the run directory.
+    const { values, positionals } = parseArgs({
+      args: args.slice(1),
+      options: { bundle: { type: "string" }, report: { type: "string" } },
+      allowPositionals: true,
+    });
+    const [job, checkout, ...extra] = positionals;
+    if (job === undefined || extra.length > 0)
+      throw new Error(
+        "usage: stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]: one name, and one checkout at most"
+      );
+    console.log(JSON.stringify(stageJob(a, job, checkout, values)));
+  } else if (mode === "probe" && a && b && c) {
+    // The `curl` stand-in's answer to a probe: one line of calls.jsonl, as rig.sh's other
+    // stand-ins write theirs, written before the revision is printed, so a probe answered is a
+    // probe recorded, and one whose line cannot be written fails with no answer.
+    appendFileSync(
+      path.join(a, "calls.jsonl"),
+      `${JSON.stringify({ at: new Date().toISOString(), as: "curl", argv: args.slice(3), exit: 0, target: b, revision: c })}\n`
+    );
+    console.log(c);
+  } else if (mode === "order" && a && b && c) console.log(armOrder(a, b, args.slice(2)).join("\n"));
   else if (mode === "pane" && args.length === 10 && a && b && c && d) {
     const [, , , , project, role, issue, tree, repository, branch] = args;
     if (!project || !role || !issue || !tree || !repository || !branch)
@@ -473,6 +536,6 @@ if (import.meta.main) {
     await casePane(a, b, c, d, project, role, issue, tree, repository, branch);
   } else
     throw new Error(
-      "usage: case-world.ts prepare <run dir> <case file> <set> <id> | check <case file> <set> <id> | stage <run dir> <job> [checkout] | order <seed> <pair> <labels...> | pane <run dir> <checkout> <port> <profile> <project> <claim role> <issue> <tree> <repository> <default branch>"
+      "usage: case-world.ts prepare <run dir> <case file> <set> <id> | check <case file> <set> <id> | stage <run dir> <job> [checkout] [--bundle <path>] [--report <path>] | probe <run dir> <address> <revision> [curl argv...] | order <seed> <pair> <labels...> | pane <run dir> <checkout> <port> <profile> <project> <claim role> <issue> <tree> <repository> <default branch>"
     );
 }

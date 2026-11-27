@@ -140,7 +140,9 @@ func (e teardownEffectsEvent) documentID() string {
 	return teardownEffectsString(artifact, "id")
 }
 
-type teardownEffectsDocument struct {
+// teardownEffectsReadbackDocument is one entry of dispatch-readback.json's `documents`: a document
+// of the issue, by its id, file name and kind, with its text.
+type teardownEffectsReadbackDocument struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Kind string `json:"kind"`
@@ -150,9 +152,9 @@ type teardownEffectsDocument struct {
 // teardownEffectsReadback is the part of dispatch-readback.json the replay reads: the event log
 // with its seed cursor, and the records whose bodies the events do not carry.
 type teardownEffectsReadback struct {
-	SeedThrough int64                     `json:"seedThrough"`
-	Events      []teardownEffectsEvent    `json:"events"`
-	Documents   []teardownEffectsDocument `json:"documents"`
+	SeedThrough int64                             `json:"seedThrough"`
+	Events      []teardownEffectsEvent            `json:"events"`
+	Documents   []teardownEffectsReadbackDocument `json:"documents"`
 	Handoffs    []struct {
 		ID      string               `json:"id"`
 		Phase   string               `json:"phase"`
@@ -173,13 +175,13 @@ type teardownEffectsReadback struct {
 	} `json:"results"`
 }
 
-func (b *teardownEffectsReadback) document(id string) (teardownEffectsDocument, bool) {
+func (b *teardownEffectsReadback) document(id string) (teardownEffectsReadbackDocument, bool) {
 	for _, doc := range b.Documents {
 		if id != "" && doc.ID == id {
 			return doc, true
 		}
 	}
-	return teardownEffectsDocument{}, false
+	return teardownEffectsReadbackDocument{}, false
 }
 
 // handoffBody is the stored body of the handoff record id: Dispatch keeps it as a string, and an
@@ -1422,11 +1424,12 @@ func teardownEffectsTraceRead(a teardownEffectsTraceAction) bool {
 }
 
 // teardownEffectsCarriedKinds are the kinds of outcome action that lane D carries into its receipt
-// as the run or the trace recorded them, and never replays: an Envoy message, a Dispatch read and
-// a task agent's start (heldout-case.ts CARRIED_KINDS). The replay makes none of them again and
-// --controls counts none as a control it must execute, whatever the actions around them are, and
-// each action of another kind keeps its own seq and case time among them.
-var teardownEffectsCarriedKinds = []string{"envoy", "dispatch-read", "agent"}
+// as the run or the trace recorded them, and never replays: an Envoy message, a Dispatch read, a
+// task agent's start, a probe of production and a diff read (heldout-case.ts CARRIED_KINDS). The
+// replay makes none of them again and --controls counts none as a control it must execute,
+// whatever the actions around them are, and each action of another kind keeps its own seq and case
+// time among them.
+var teardownEffectsCarriedKinds = []string{"envoy", "dispatch-read", "agent", "probe", "diff-read"}
 
 // teardownEffectsMakesNothing reports whether the replay makes a trace's action a again at all, as
 // traceScript reads it: a staging action, a GitHub call that changes no pull request
@@ -2618,10 +2621,11 @@ func TestTeardownEffectsOnlyATakenCompletionQueuesTheDaemonsRead(t *testing.T) {
 }
 
 // A run that took actions of the carried kinds (an Envoy message, a Dispatch read, a task agent's
-// start) among the actions the replay makes again, logged `dispatch` commands in calls.jsonl, and
-// kept the workspace's operations in outcome.json, is placed as the run without them: each change
-// before the same call, each stand-in answer joined to the same action, and each action of another
-// kind at its own seq (the carried ones move it) and its own case time.
+// start, a probe of production, a diff read) among the actions the replay makes again, logged
+// `dispatch` commands, probes and diff reads in calls.jsonl, and kept the workspace's operations in
+// outcome.json, is placed as the run without them: each change before the same call, each stand-in
+// answer joined to the same action, and each action of another kind at its own seq (the carried
+// ones move it) and its own case time.
 func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
 	t.Parallel()
 	base, err := teardownEffectsOrderOf(t, teardownEffectsLocalOnlyHead)
@@ -2638,8 +2642,8 @@ func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
 	if err := json.Unmarshal(data, &outcome); err != nil {
 		t.Fatal(err)
 	}
-	// The run's five actions with a carried action before the first, one after the first, and one
-	// after the third: the old seqs 1..5 become 2, 4, 5, 7 and 8.
+	// The run's five actions with a carried action before the first and one after each of the first
+	// four: the old seqs 1..5 become 2, 4, 6, 8 and 10.
 	moved := map[int]int{}
 	var actions []any
 	add := func(action map[string]any) {
@@ -2647,7 +2651,8 @@ func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
 		actions = append(actions, action)
 	}
 	carried := func(kind, at string, fields map[string]any) map[string]any {
-		return map[string]any{"kind": kind, "at": at, "fields": map[string]any{}, "target": "ACME-12", "command": "read", "tool": "publish", "agent": "task", "name": "ReviewDiff"}
+		return map[string]any{"kind": kind, "at": at, "fields": map[string]any{}, "target": "ACME-12", "command": "read", "tool": "publish", "agent": "task", "name": "ReviewDiff",
+			"revision": "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c", "source": "$LEGION_WORKSPACE", "paths": []any{"internal/api/doc.go"}}
 	}
 	add(carried("envoy", "2030-01-07T15:00:05Z", nil))
 	for i, each := range outcome["actions"].([]any) {
@@ -2657,8 +2662,12 @@ func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
 		switch i {
 		case 0:
 			add(carried("dispatch-read", "2030-01-07T15:00:14Z", nil))
+		case 1:
+			add(carried("probe", "2030-01-07T15:00:20Z", nil))
 		case 2:
 			add(carried("agent", "2030-01-07T15:00:36Z", nil))
+		case 3:
+			add(carried("diff-read", "2030-01-07T15:00:40Z", nil))
 		}
 	}
 	outcome["actions"] = actions
@@ -2670,7 +2679,8 @@ func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
 	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// calls.jsonl holds the recorder's line of a `dispatch` command beside gh-standin's own.
+	// calls.jsonl holds the recorder's line of a `dispatch` command, the curl stand-in's of a probe
+	// and diff-recorder.ts's of a diff read beside gh-standin's own.
 	log, err := os.OpenFile(filepath.Join(dir, "calls.jsonl"), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
@@ -2678,6 +2688,8 @@ func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
 	if _, err := log.WriteString(`
 {"at":"2026-11-27T00:07:00.100Z","done":"2026-11-27T00:07:00.300Z","as":"dispatch","argv":["read","--issue","ACME-12"],"exit":0,"requests":[{"method":"GET","path":"/api/v1/issues/ACME-12"}],"call":{"command":"read","flags":{"issue":"ACME-12"},"dryRun":false}}
 {"at":"2026-11-27T00:07:01.000Z","as":"envoy","route":"POST /v1/messages/send","target":"ses-other","status":200,"exit":0,"by":"stand-in"}
+{"at":"2026-11-27T00:07:02.000Z","as":"curl","argv":["-s","https://service.example/version"],"exit":0,"target":"https://service.example/version","revision":"3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c"}
+{"at":"2026-11-27T00:07:03.000Z","done":"2026-11-27T00:07:03.200Z","as":"jj","argv":["diff","internal/api/doc.go"],"exit":0,"command":"jj diff","source":"$LEGION_WORKSPACE","paths":["internal/api/doc.go"]}
 `); err != nil {
 		t.Fatal(err)
 	}
@@ -2716,7 +2728,7 @@ func TestTeardownEffectsOrderCarriesTheCarriedKinds(t *testing.T) {
 			}
 		}
 	}
-	if got := plan.Steps[1].Standin[0].OutcomeSeq; got != 8 {
-		t.Fatalf("the completion is action %d, want 8", got)
+	if got := plan.Steps[1].Standin[0].OutcomeSeq; got != 10 {
+		t.Fatalf("the completion is action %d, want 10", got)
 	}
 }

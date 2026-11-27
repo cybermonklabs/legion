@@ -1655,6 +1655,59 @@ describe("case-world Dispatch", () => {
     expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(
       `From the tester: dispatch://${key}/comment/${comment?.id}. See dispatch://${key}/ask/${ask?.id} and dispatch://ACME-1/comment/c-1.\n`
     );
+    // The fixture keeps each id it gave, under the world's, for outcome.ts to write back.
+    expect(
+      JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8")).ids
+    ).toMatchObject({ "comment/c-1": comment?.id, "ask/a1": ask?.id });
+  });
+
+  // Catches: a document the run wrote whose text no readback holds, so the outcome could carry no
+  // body for it. The readback reads the text of each version of a document of the issue that an
+  // event after the seed wrote, through Dispatch's own version route, and of no other.
+  test("the readback holds the text of each document version written after the seed", async () => {
+    const p09 = parseSkillUseFile(example("skilluse")).cases.find(({ id }) => id === "P09");
+    if (!p09) throw new Error("missing P09");
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(p09.world));
+    const at = "2030-01-09T09:15:00Z";
+    dispatch.events.push({ seq: 1, type: "issue.created", created_at: at });
+    await seed.seedCaseDispatch(dir);
+    const seeded = dispatch.artifacts.find(({ name }) => name === "verification.md");
+    if (seeded === undefined) throw new Error("P09's verification.md was not seeded");
+    const version = (number: number, markdown: string) => ({
+      number,
+      created_at: at,
+      authors: [runSession],
+      markdown,
+    });
+    seeded.versions = [version(1, "seeded"), version(2, "the run's second"), version(3, "third")];
+    dispatch.events.push(
+      {
+        seq: 2,
+        type: "artifact.version",
+        created_at: at,
+        ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 2 } } },
+      },
+      {
+        seq: 3,
+        type: "artifact.version",
+        created_at: at,
+        ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 3 } } },
+      },
+      { seq: 4, type: "comment.created", created_at: at }
+    );
+    await seed.captureCaseDispatch(dir);
+    const data = JSON.parse(readFileSync(path.join(dir, "dispatch-readback.json"), "utf8"));
+    expect(data.seedThrough).toBe(1);
+    expect(data.versions).toEqual([
+      { artifact_id: seeded.id, number: 2, markdown: "the run's second" },
+      { artifact_id: seeded.id, number: 3, markdown: "third" },
+    ]);
+    expect(
+      dispatch.calls.filter(({ path }) =>
+        path.startsWith(`/api/v1/artifacts/${seeded.id}/versions/`)
+      )
+    ).toHaveLength(2);
   });
 
   const at = (time: string) => `2030-01-07T${time}Z`;
@@ -1764,19 +1817,19 @@ describe("case-world Dispatch", () => {
     const runs: { role: string; started_at: string | null; ended_at: string | null }[] =
       readback.steps.tasks[0].steps;
 
-    const ids = JSON.parse(readFileSync(path.join(dir, "dispatch-ids.json"), "utf8"));
+    const { ids } = JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8"));
     const stampOf = (rows: { id: string; created_at: string }[], id: string) =>
       rows.find((row) => row.id === id)?.created_at ?? "";
     const records = [
       ...world.dispatch.handoffs.map(({ id, at }) => ({
         id,
         at,
-        stamp: stampOf(readback.handoffs, ids[id]),
+        stamp: stampOf(readback.handoffs, ids[`handoff/${id}`]),
       })),
       ...world.dispatch.comments.map(({ id, at }) => ({
         id,
         at,
-        stamp: stampOf(readback.comments, ids[id]),
+        stamp: stampOf(readback.comments, ids[`comment/${id}`]),
       })),
       ...world.dispatch.asks.map(({ id, at, question }) => ({
         id,
@@ -1934,18 +1987,22 @@ describe("case-world Dispatch", () => {
     ]);
   });
 
-  test("writes dispatch-ids.json with every seeded handoff and comment", async () => {
+  // Catches: a seed that keeps no handoff's id, so that the outcome names a handoff by the id
+  // Dispatch gave it where the rubric names it by the world's.
+  test("writes the id of every seeded handoff, comment and ask to the fixture's ids", async () => {
     const dir = await seeded(steppedWorld());
     const comment = (body: string) => dispatch.comments.find((row) => row.body === body)?.id;
-    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-ids.json"), "utf8"))).toEqual({
-      "hnd-acme-12-plan-1": handoffId("plan", 1),
-      "hnd-acme-12-implement-1": handoffId("implement", 1),
-      "hnd-acme-12-test-1": handoffId("test", 1),
-      "hnd-acme-12-test-2": handoffId("test", 2),
-      "cmt-acme-12-departure": comment(
+    const ask = dispatch.asks.find(({ question }) => question === "Which default?")?.id;
+    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8")).ids).toEqual({
+      "handoff/hnd-acme-12-plan-1": handoffId("plan", 1),
+      "handoff/hnd-acme-12-implement-1": handoffId("implement", 1),
+      "handoff/hnd-acme-12-test-1": handoffId("test", 1),
+      "handoff/hnd-acme-12-test-2": handoffId("test", 2),
+      "comment/cmt-acme-12-departure": comment(
         "For the architect: the default is 1, not the 3 the plan asks for."
       ),
-      "cmt-acme-12-decision": comment("Take it."),
+      "comment/cmt-acme-12-decision": comment("Take it."),
+      "ask/ask-acme-12-default": ask,
     });
   });
 
@@ -2069,6 +2126,7 @@ describe("case-world Dispatch", () => {
     expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8"))).toEqual({
       issue: "ACME-12",
       seedThrough: 0,
+      ids: { "handoff/hnd-acme-12-plan-1": handoffId("plan", 1) },
     });
   });
 
@@ -2118,6 +2176,10 @@ describe("case-world Dispatch", () => {
       spec: given,
     });
     expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(`The spec is ${given}.\n`);
+    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8")).ids).toEqual({
+      [`artifact/${stated}`]: given,
+      "handoff/hnd-acme-12-plan-1": handoffId("plan", 1),
+    });
   });
 
   test("a gate step whose document the claim tree's root does not hold fails the seed, naming it", async () => {

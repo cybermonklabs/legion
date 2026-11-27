@@ -687,7 +687,9 @@ const Actor = z.strictObject({ kind: Name, id: Text });
  * - staging: a staged build Job, its snapshot's tree hash and its files, the name given to
  *   `stage-job` (`job`) and the checkout root the snapshot was taken from, the run's own
  *   directories written by the names the role was given for them (`source`: `$TMPDIR/stage-a`,
- *   `$LEGION_WORKSPACE`); both absent from a record written before outcome.ts kept them;
+ *   `$LEGION_WORKSPACE`); both absent from a record written before outcome.ts kept them; and the
+ *   input bundle path and the report path the role gave `stage-job` (`bundle`, `report`, from
+ *   `--bundle` and `--report`), named the same way, each absent where the role gave none;
  * - envoy: an Envoy message the role sent with its Envoy tool and the tool answered without error,
  *   `publish` (envoy_publish) or `send` (envoy_send), by the tool's name or as a `write` to its
  *   `xd://` device: the topic it published to or the session it sent to (`target`), and the call's
@@ -701,7 +703,15 @@ const Actor = z.strictObject({ kind: Name, id: Text });
  * - agent: one task agent the role started with its `task` tool, one for each item of the call's
  *   `tasks`: the item's agent (`task` where it names none), its name, its other members
  *   (`fields`: `task`, `solutionSpace`), and the time of the last entry of that agent's own
- *   transcript (`endedAt`, absent where it wrote none). */
+ *   transcript (`endedAt`, absent where it wrote none);
+ * - probe: one read of production's revision through the world's probe (`world.production.probe`):
+ *   the address the probe names (`target`) and the revision that read answered (`revision`, the
+ *   world's commit id where the world names that commit);
+ * - diff-read: one read of a diff in the run's workspace or one of its scratch copies, a `jj diff`,
+ *   `jj show`, `jj interdiff`, `git diff` or `git show` that exited 0: the program and its
+ *   subcommand (`command`: `jj diff`), the checkout root it read, named as a staging action's
+ *   `source` names one (`source`), and the path arguments it named, relative to that root
+ *   (`paths`, empty where it named none). */
 const DETAILS = {
   daemon: {
     op: Name,
@@ -722,17 +732,21 @@ const DETAILS = {
     files: z.array(Text).min(1),
     job: Text.optional(),
     source: Text.optional(),
+    bundle: Text.optional(),
+    report: Text.optional(),
   },
   envoy: { tool: z.enum(["publish", "send"]), target: Text, fields: Fields },
   "dispatch-read": { command: Name, target: Text, fields: Fields },
   agent: { agent: Name, name: Text, fields: Fields, endedAt: Instant.optional() },
+  probe: { target: Text, revision: Commit },
+  "diff-read": { command: Text, source: Text, paths: z.array(Text) },
 };
 /** The kinds of the T0 schema: a skill read's `beforeFirstAction` is relative to the first action
  * of one of these. */
 export const T0_ACTION_KINDS = ["daemon", "dispatch", "github", "push", "staging"] as const;
 /** The kinds lane D carries into its receipt as the run or the trace recorded them, and never
  * replays. */
-export const CARRIED_KINDS = ["envoy", "dispatch-read", "agent"] as const;
+export const CARRIED_KINDS = ["envoy", "dispatch-read", "agent", "probe", "diff-read"] as const;
 /** Every kind of action: the T0 kinds, then the carried ones. */
 export const ACTION_KINDS = [...T0_ACTION_KINDS, ...CARRIED_KINDS] as const;
 const SCORED = { seq: z.number().int().nonnegative(), at: Instant };
@@ -757,12 +771,15 @@ const OutcomeAction = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("envoy"), ...SCORED, ...DETAILS.envoy }),
   z.strictObject({ kind: z.literal("dispatch-read"), ...SCORED, ...DETAILS["dispatch-read"] }),
   z.strictObject({ kind: z.literal("agent"), ...SCORED, ...DETAILS.agent }),
+  z.strictObject({ kind: z.literal("probe"), ...SCORED, ...DETAILS.probe }),
+  z.strictObject({ kind: z.literal("diff-read"), ...SCORED, ...DETAILS["diff-read"] }),
 ]);
 
 /** One `skill://` read: the skill, the file the read named (`SKILL.md` for `skill://<name>`),
  * whether it resolved, the bytes it returned, and whether it came before the first scored action
- * of a T0 kind (T0_ACTION_KINDS): an Envoy message, a Dispatch read or a task agent's start before
- * it does not move that point. */
+ * of a T0 kind (T0_ACTION_KINDS): an action of a carried kind before it (an Envoy message, a
+ * Dispatch read, a task agent's start, a probe of production, a diff read) does not move that
+ * point. */
 const SkillRead = z.strictObject({
   skill: Name,
   path: Text,
@@ -780,6 +797,10 @@ const WorkspaceOperation = z.strictObject({
   standingOn: z.array(Commit),
 });
 
+/** One document of the case's issue that the run wrote, from Dispatch's own record after the run:
+ * its file name, the last version the run wrote and that version's text. */
+const WrittenDocument = z.strictObject({ name: Text, version: Count, body: z.string() });
+
 /** What a run did, as outcome.json records it, and the shape of every trace. `id` is a fresh UUID
  * that names neither the case nor the arm; no field holds prompt text, an arm, a route or a token
  * count. `seq` rises strictly along `actions`, across every kind, in time order. `agentReport` is
@@ -787,7 +808,10 @@ const WorkspaceOperation = z.strictObject({
  * other than the role made (Dispatch itself, a seeded person, another session), each in the shape
  * of a dispatch action with its writer: no action of the role's, so none is scored, and each is
  * kept, in time order. `workspace` is each jj operation of the run's workspace, in time order: the
- * workspace's commit order, absent from a record written before outcome.ts kept it. */
+ * workspace's commit order, absent from a record written before outcome.ts kept it. `documents` is
+ * each document of the case's issue that the run wrote (each name once), absent where it wrote none
+ * and from a record written before outcome.ts kept it; a trace states the body its recorded edits
+ * leave. */
 export const OutcomeRecord = z
   .strictObject({
     id: z.uuid(),
@@ -800,6 +824,7 @@ export const OutcomeRecord = z
     dispatchFirstInjected: z.boolean(),
     lastText: z.string(),
     workspace: z.array(WorkspaceOperation).optional(),
+    documents: z.array(WrittenDocument).optional(),
   })
   .superRefine((outcome, context) => {
     outcome.actions.forEach((action, index) => {
@@ -820,6 +845,11 @@ export const OutcomeRecord = z
           `${operation.at} is before ${before.at}, the end of the operation before it`
         );
     });
+    refuseRepeats(
+      context,
+      (outcome.documents ?? []).map(({ name }) => name),
+      (index) => ["documents", index, "name"]
+    );
   });
 export type OutcomeRecord = z.infer<typeof OutcomeRecord>;
 

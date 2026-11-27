@@ -579,7 +579,17 @@ describe("the carried kinds, the workspace and staging's job and source", () => 
       file.cases.flatMap((each) => each.traces.good.actions.map((a) => a.kind))
     );
     expect([...kinds].sort()).toEqual(
-      ["agent", "daemon", "dispatch", "dispatch-read", "envoy", "github", "push"].sort()
+      [
+        "agent",
+        "daemon",
+        "diff-read",
+        "dispatch",
+        "dispatch-read",
+        "envoy",
+        "github",
+        "probe",
+        "push",
+      ].sort()
     );
     // The same daemon actions as the example's, moved in seq and not in time or answer.
     const daemon = (cases: typeof file.cases) =>
@@ -589,6 +599,103 @@ describe("the carried kinds, the workspace and staging's job and source", () => 
         )
       );
     expect(daemon(file.cases)).toEqual(daemon(example.cases));
+  });
+
+  const probe = (seq: number) => ({
+    kind: "probe",
+    seq,
+    at: "2030-01-07T15:05:30Z",
+    target: "https://service.example/version",
+    revision: "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c",
+  });
+  const diffRead = (seq: number) => ({
+    kind: "diff-read",
+    seq,
+    at: "2030-01-07T15:05:40Z",
+    command: "jj diff",
+    source: "$LEGION_WORKSPACE",
+    paths: ["internal/api/doc.go"],
+  });
+
+  test("a probe and a diff read parse with the fields the contract names, and keep their seq among the others", () => {
+    const file = heldoutJson();
+    good(file).actions.push(probe(6), diffRead(7));
+    expect(
+      parseHeldoutFile(JSON.stringify(file)).cases[0]?.traces.good.actions.slice(5)
+    ).toMatchObject([{ kind: "probe" }, { kind: "diff-read", paths: ["internal/api/doc.go"] }]);
+    good(file).actions[6].paths = [];
+    expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+  });
+
+  const refusedNew: [string, Record<string, unknown>, string][] = [
+    ["a probe whose revision is no commit", { ...probe(6), revision: "3b5d7f9a" }, "a commit"],
+    ["a probe with no target", (({ target: _t, ...rest }) => rest)(probe(6)), "target"],
+    ["a diff read with a blank path", { ...diffRead(6), paths: [" "] }, "paths"],
+    ["a diff read with no source", (({ source: _s, ...rest }) => rest)(diffRead(6)), "source"],
+    [
+      "a diff read with a field the kind does not name",
+      { ...diffRead(6), cwd: "/x" },
+      'Unrecognized key: "cwd"',
+    ],
+  ];
+  for (const [what, action, message] of refusedNew)
+    test(`${what} is refused at its part`, () => {
+      const file = heldoutJson();
+      good(file).actions.push(action);
+      expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(message);
+    });
+
+  test("a route names a probe's and a diff read's fields, and refuses a field the kind lacks", () => {
+    const file = heldoutJson();
+    const routes = file.cases[0].actions[0].routes;
+    routes.push(
+      { kind: "probe", match: { target: "https://service.example/version" } },
+      { kind: "diff-read", match: { command: "jj diff", paths: [] } }
+    );
+    expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+    routes.push({ kind: "diff-read", match: { cwd: "x" } });
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(
+      "a diff-read action has no field cwd; its fields are command, source, paths"
+    );
+  });
+
+  test("a staging action's bundle and report are optional, and each a text", () => {
+    const staging = (extra: Record<string, unknown>) => ({
+      kind: "staging",
+      seq: 6,
+      at: "2030-01-07T15:05:00Z",
+      tree: "a".repeat(40),
+      files: ["app.ts"],
+      ...extra,
+    });
+    for (const extra of [{ bundle: "$TMPDIR/b.tar" }, { report: "$TMPDIR/r.json" }]) {
+      const file = heldoutJson();
+      good(file).actions.push(staging(extra));
+      expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+    }
+    const blank = heldoutJson();
+    good(blank).actions.push(staging({ report: "" }));
+    expect(() => parseHeldoutFile(JSON.stringify(blank))).toThrow("report");
+  });
+
+  test("the documents are an optional list of a name, a version and a body, each name once", () => {
+    const file = heldoutJson();
+    good(file).documents = [{ name: "plan.md", version: 2, body: "The plan.\n" }];
+    expect(parseHeldoutFile(JSON.stringify(file)).cases[0]?.traces.good.documents).toEqual([
+      { name: "plan.md", version: 2, body: "The plan.\n" },
+    ]);
+    good(file).documents.push({ name: "plan.md", version: 3, body: "" });
+    expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(
+      "case P05: traces.good.documents[1].name: plan.md is named twice"
+    );
+    for (const document of [
+      { name: "plan.md", version: 0, body: "" },
+      { name: " ", version: 1, body: "" },
+      { name: "plan.md", version: 1, body: "", artifact: "x" },
+    ]) {
+      good(file).documents = [document];
+      expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow("traces.good.documents[0]");
+    }
   });
 });
 

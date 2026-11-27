@@ -1698,6 +1698,10 @@ type teardownEffectsTurn struct {
 type teardownEffectsScript struct {
 	turns []teardownEffectsTurn
 	end   []teardownEffectsApplied
+	// check holds the replay to what the trace states of the state its last write left, once each
+	// change after the last call is made (the trace's documents: documentFaults); nil where the
+	// trace states nothing of it.
+	check func() error
 }
 
 // applied is the change of s that a trace's action seq makes, nil where none does.
@@ -1820,6 +1824,10 @@ func (r *teardownEffectsRun) play(script teardownEffectsScript, record *teardown
 		record.End = append(record.End, end...)
 		if err != nil {
 			harness(err)
+		} else if script.check != nil {
+			if err := script.check(); err != nil {
+				harness(err)
+			}
 		}
 	}
 	return answers, differences, names, turned
@@ -1868,10 +1876,11 @@ func (r *teardownEffectsRun) runScript(plan teardownEffectsPlan, clock, launched
 // (applyTraceAction), a request-approval among them, which the replay makes as a refused write and
 // records its refusal under the action's own seq and case time. A staging action, a GitHub call
 // that changes no pull request (a read: teardownEffectsTraceRead) and an action of a carried kind
-// (an Envoy message, a Dispatch read, a task agent's start: teardownEffectsCarriedKinds) change
-// nothing the replay holds, and are not made; each action that is made keeps its own seq and case
-// time however many of them stand between. It also answers the seq of each call's action, in the
-// order of the calls.
+// (an Envoy message, a Dispatch read, a task agent's start, a probe of production, a diff read:
+// teardownEffectsCarriedKinds) change nothing the replay holds, and are not made; each action that
+// is made keeps its own seq and case time however many of them stand between. Where the trace
+// states its documents, the script's check holds the real Dispatch to them after the trace's last
+// write (documentFaults). It also answers the seq of each call's action, in the order of the calls.
 func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffectsTrace) (teardownEffectsScript, []int) {
 	var script teardownEffectsScript
 	var seqs []int
@@ -1905,7 +1914,68 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 		}
 	}
 	script.end = pending
+	if len(trace.Documents) > 0 {
+		script.check = func() error { return r.documentFaults(caseID, name, trace.Documents) }
+	}
 	return script, seqs
+}
+
+// documentFaults holds each document the trace `name` of case caseID states to the document of the
+// issue the replay's Dispatch holds by its file name, after the trace's last write: its latest
+// version and that version's text, read through Dispatch's own routes, with each id the replay's
+// Dispatch gave a document the world names by an id of its own written as the world's (artifacts,
+// turned round). A document not held as stated is an error, the replay's HARNESS verdict.
+func (r *teardownEffectsRun) documentFaults(caseID, name string, stated []teardownEffectsDocument) error {
+	get := func(path string, into any) error {
+		request, err := http.NewRequest(http.MethodGet, r.dispatch.base+path, nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
+		status, answer := r.dispatch.do(request)
+		if status != http.StatusOK {
+			return fmt.Errorf("Dispatch GET %s = %d %s", path, status, answer)
+		}
+		return json.Unmarshal(answer, into)
+	}
+	var issue teardownEffectsIssueRead
+	if err := get("/api/v1/issues/"+r.key, &issue); err != nil {
+		return err
+	}
+	held := map[string]teardownEffectsDocument{}
+	for _, artifact := range issue.Artifacts {
+		var read struct {
+			Kind     string `json:"kind"`
+			Versions []struct {
+				Number int `json:"number"`
+			} `json:"versions"`
+		}
+		if err := get("/api/v1/artifacts/"+artifact.ID, &read); err != nil {
+			return err
+		}
+		latest := 0
+		for _, version := range read.Versions {
+			latest = max(latest, version.Number)
+		}
+		if read.Kind != "doc" || latest == 0 {
+			continue
+		}
+		var text struct {
+			Markdown string `json:"markdown"`
+		}
+		if err := get(fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", artifact.ID, latest), &text); err != nil {
+			return err
+		}
+		held[artifact.Name] = teardownEffectsDocument{Name: artifact.Name, Version: latest, Body: text.Markdown}
+	}
+	ids := map[string]string{}
+	for stated, given := range r.artifacts {
+		ids[given] = stated
+	}
+	if faults := teardownEffectsDocumentFaults(stated, held, ids); len(faults) > 0 {
+		return fmt.Errorf("%s %s trace: the replay's Dispatch does not hold the documents the trace states: %s", caseID, name, strings.Join(faults, "; "))
+	}
+	return nil
 }
 
 // applyTraceAction makes a trace's push, GitHub change or Dispatch write again at its case time, with
