@@ -286,10 +286,18 @@ func (e *Engine) askCloseRead(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return e.askCloseReadAt(ctx, tx, issue, e.now())
 }
 
-// askCloseReadAt is askCloseRead due at at, the backoff of a read that did not count.
+// askCloseReadAt is askCloseRead due at at: now for an event that asks for a read, later for the
+// backoff of a read that did not count. A row of the issue that waits is made due at the earlier
+// of its own time and at (record.Store.ExpediteOutbox) rather than left where it stands, since a
+// backoff can have left it an hour out and an event's read would wait that hour for it. So a
+// later ask moves no nearer row out, and no ask queues a second row: the issue keeps one read.
 func (e *Engine) askCloseReadAt(ctx context.Context, tx pgx.Tx, issue record.Issue, at time.Time) error {
-	waiting, err := e.store.OutboxWaiting(ctx, tx, issue.Key, record.OutboxKindCloseRead)
-	if err != nil || waiting {
+	waiting, found, err := e.store.OutboxWaiting(ctx, tx, issue.Key, record.OutboxKindCloseRead)
+	if err != nil {
+		return err
+	}
+	if found {
+		_, err := e.store.ExpediteOutbox(ctx, tx, waiting, at)
 		return err
 	}
 	return e.enqueueAt(ctx, tx, issue.Key, record.CloseRead{Generation: issue.Generation}, at)
@@ -300,7 +308,7 @@ func (e *Engine) askCloseReadAt(ctx context.Context, tx pgx.Tx, issue record.Iss
 // change before it runs. A row that runs already may have rendered the wait before this change, so
 // it does not count (record.Store.OutboxWaiting).
 func (e *Engine) publishWait(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	waiting, err := e.store.OutboxWaiting(ctx, tx, issue.Key, record.OutboxKindCloseWaitPublish)
+	_, waiting, err := e.store.OutboxWaiting(ctx, tx, issue.Key, record.OutboxKindCloseWaitPublish)
 	if err != nil || waiting {
 		return err
 	}
