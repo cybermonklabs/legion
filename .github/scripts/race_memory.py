@@ -52,6 +52,8 @@ SAMPLE_SECONDS = 5.0
 # parallel test reports "pause" at its t.Parallel call and "cont" when go test lets it go on, running
 # nothing in between. In a package whose tests are parallel most of them sit paused while a few
 # run, so a paused test is not named as running. "output" carries the text and changes nothing.
+# "Running" is what the events say: a test that started or went on and has not paused or ended
+# since. A parent waiting for its parallel subtests stays named, since no event says it waits.
 NOT_RUNNING_ACTIONS = frozenset({"pass", "fail", "skip", "pause"})
 RUN_ACTIONS = frozenset({"run", "cont"})
 
@@ -224,18 +226,31 @@ def named(tests: list[str]) -> str:
 
 
 class Log:
-    """stdout, written by the reader thread and the sampler both, one whole write at a time."""
+    """stdout, written by the reader thread and the sampler both, one whole write at a time.
+
+    A line of the script's own starts a line of the log: the command's output can end a write
+    mid-line (a -json Output fragment, a print with no newline), and a sample written straight
+    after it would make one line of both, as long as the two together.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._mid_line = False
 
     def write(self, text: str) -> None:
         with self._lock:
-            sys.stdout.write(text)
-            sys.stdout.flush()
+            self._write(text)
 
     def line(self, text: str) -> None:
-        self.write(text + "\n")
+        with self._lock:
+            self._write(("\n" if self._mid_line else "") + text + "\n")
+
+    def _write(self, text: str) -> None:
+        if not text:
+            return
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        self._mid_line = not text.endswith("\n")
 
 
 def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
@@ -266,8 +281,8 @@ def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
 def limit_from_env(environ: Mapping[str, str]) -> tuple[int, str]:
     """The limit in kB and where it came from, for the first line of the log.
 
-    A value that is not a number of kB raises ValueError naming that value, which is the message
-    the caller prints.
+    A value that is not a number of kB raises ValueError naming that value, at most its first 64
+    characters as every line of this script is bounded, which is the message the caller prints.
     """
     raw = environ.get("RACE_MEM_LIMIT_KB", "")
     if not raw.strip():
@@ -275,7 +290,8 @@ def limit_from_env(environ: Mapping[str, str]) -> tuple[int, str]:
     try:
         return int(raw), "RACE_MEM_LIMIT_KB"
     except ValueError:
-        raise ValueError(f"RACE_MEM_LIMIT_KB is {raw!r}, not a number of kB") from None
+        shown = repr(raw[:64]) + (f" and {len(raw) - 64} more characters" if len(raw) > 64 else "")
+        raise ValueError(f"RACE_MEM_LIMIT_KB is {shown}, not a number of kB") from None
 
 
 def decision_line(peak_kb: int, field: str, limit_kb: int, highest: Sample | None) -> str:
