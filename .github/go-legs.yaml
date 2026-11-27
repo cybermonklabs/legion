@@ -321,7 +321,6 @@ packages/envoy:
       - internal/dispatch/graphcensus/censustest
       - internal/dispatch/graphstore/graphstoretest
       - internal/dispatch/pmdoc/pmdoctest
-      - internal/dispatch/pmdoc/schemanodes/schemanodestest
       - internal/dispatch/refs/refstest
       - internal/dispatch/textversions/textversionstest
     # Everything else: the NATS rig, the migrations both stores apply, the Postgres helpers, the
