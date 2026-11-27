@@ -534,40 +534,10 @@ func TestAWaitForChecksIsAWaitByDesign(t *testing.T) {
 // a child stopped in implementing, it is told as well: the phase silences its own issue and never
 // the tree, so a stopped issue beneath a merged root still names that tree.
 func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
-	bound := deploymentBound(t, "")
-	const root, child = "LEGION-960", "LEGION-961"
-	// onlyTree is a project whose one tree is root, standing in standing at that phase's own
-	// Dispatch status, with the slot its phase keeps (seedQuietRoot), its pull request in pr and
-	// its architect idle, measured an hour past the bound. Where beneath names a phase, the tree
-	// also holds child, standing there with the slot that phase keeps and its implementer idle.
-	onlyTree := func(t *testing.T, standing phase.Phase, pr record.PullRequestState, beneath phase.Phase) (*pgxpool.Pool, *Admission) {
-		t.Helper()
-		pool := migratedPool(t)
-		admission := quiet(t, 4)
-		admission.UseStalledTreeNotice(bound)
-		registerController(t, pool)
-		records := claimStore(t, pool)
-		seeded := seedQuietRoot(t, pool, root, "A", standing)
-		seeded.Status, seeded.DispatchStatus = workflow.PhaseStatus(standing), workflow.PhaseStatus(standing)
-		putIssue(t, pool, seeded)
-		seedPullRequest(t, pool, root, 96, pr)
-		seedClaim(t, records, root, root, claim.RoleArchitect, supervise.StateIdle)
-		members := []string{root}
-		if beneath != "" {
-			under := seedQuietChild(t, pool, root, child, "A1", beneath, workflow.PhaseStatus(beneath))
-			if record.KeepsSlot(under) {
-				takeSlot(t, pool, child)
-			}
-			seedClaim(t, records, root, child, claim.RoleImplementer, supervise.StateIdle)
-			members = append(members, child)
-		}
-		settled := settleMovements(t, pool, members...)
-		admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
-		return pool, admission
-	}
+	const root, child = loneRoot, loneChild
 
 	t.Run("verifying", func(t *testing.T) {
-		pool, admission := onlyTree(t, phase.Verifying, record.PullRequestMerged, "")
+		pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, "")
 		// The fixture's own premise, read as the pass reads it: nothing of this project can move
 		// by itself, so the ladder's waits silence nothing here and only a reading of the phase
 		// that ignores the line can keep the root out of the notice.
@@ -588,7 +558,7 @@ func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
 	})
 
 	t.Run("control-implementing", func(t *testing.T) {
-		pool, admission := onlyTree(t, phase.Implementing, record.PullRequestOpen, "")
+		pool, admission := loneTree(t, phase.Implementing, record.PullRequestOpen, "")
 
 		tick(t, pool, admission, "implementing-alone")
 
@@ -599,7 +569,7 @@ func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
 	})
 
 	t.Run("control-stopped-child", func(t *testing.T) {
-		pool, admission := onlyTree(t, phase.Verifying, record.PullRequestMerged, phase.Implementing)
+		pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, phase.Implementing)
 
 		tick(t, pool, admission, "stopped-child")
 
@@ -608,6 +578,71 @@ func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
 				got, want, child)
 		}
 	})
+}
+
+// A merged root that waits in verifying for its child, which waits in verifying too, is no stall
+// on any pass. Neither issue holds a slot and no claim of the tree is at work, so the project's
+// line cannot move, and each member's phase silences that member. The control beside it is the
+// stopped child of TestAWaitForChecksIsNeverToldWhateverTheLineDoes, whose tree is told.
+func TestAQuietTreeWhoseRootWaitsForItsChildIsNoStall(t *testing.T) {
+	bound := deploymentBound(t, "")
+	pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, phase.Verifying)
+	if lineMoves(t, pool, admission) {
+		t.Fatalf("the project's line can move, want it stopped: this case is a merged root over a merged child with nothing else in its project")
+	}
+	first := admission.now()
+	for pass := range 3 {
+		at := first.Add(time.Duration(pass) * bound)
+		admission.now = func() time.Time { return at }
+
+		tick(t, pool, admission, fmt.Sprintf("waits-for-its-child-%d", pass))
+
+		if got := stalledRoots(t, pool); got != nil {
+			t.Fatalf("pass %d told the controller of %v, want nothing: a root and its child that both wait in verifying wait by design",
+				pass, got)
+		}
+	}
+	for _, key := range []string{loneRoot, loneChild} {
+		if got := issue(t, pool, key); got.Phase != phase.Verifying || !record.InWorkflow(got) {
+			t.Fatalf("%s stands at %s/%s after the passes, want it still waiting in verifying: an issue the pass took out of the workflow is told to nobody for another reason",
+				key, got.Phase, got.Status)
+		}
+	}
+}
+
+// The tree of the stall tests over a project's only tree: loneRoot, and loneChild beneath it.
+const loneRoot, loneChild = "LEGION-960", "LEGION-961"
+
+// loneTree is a project whose one tree is loneRoot, standing in standing at that phase's own
+// Dispatch status, with the slot its phase keeps (seedQuietRoot), its pull request in pr and its
+// architect idle, measured an hour past the deployment's default bound. Where beneath names a
+// phase, the tree also holds loneChild, standing there at that phase's status with the slot the
+// phase keeps and its implementer idle.
+func loneTree(t *testing.T, standing phase.Phase, pr record.PullRequestState, beneath phase.Phase) (*pgxpool.Pool, *Admission) {
+	t.Helper()
+	bound := deploymentBound(t, "")
+	pool := migratedPool(t)
+	admission := quiet(t, 4)
+	admission.UseStalledTreeNotice(bound)
+	registerController(t, pool)
+	records := claimStore(t, pool)
+	seeded := seedQuietRoot(t, pool, loneRoot, "A", standing)
+	seeded.Status, seeded.DispatchStatus = workflow.PhaseStatus(standing), workflow.PhaseStatus(standing)
+	putIssue(t, pool, seeded)
+	seedPullRequest(t, pool, loneRoot, 96, pr)
+	seedClaim(t, records, loneRoot, loneRoot, claim.RoleArchitect, supervise.StateIdle)
+	members := []string{loneRoot}
+	if beneath != "" {
+		under := seedQuietChild(t, pool, loneRoot, loneChild, "A1", beneath, workflow.PhaseStatus(beneath))
+		if record.KeepsSlot(under) {
+			takeSlot(t, pool, loneChild)
+		}
+		seedClaim(t, records, loneRoot, loneChild, claim.RoleImplementer, supervise.StateIdle)
+		members = append(members, loneChild)
+	}
+	settled := settleMovements(t, pool, members...)
+	admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
+	return pool, admission
 }
 
 // lineMoves is the stall measure's liveness clause (lineCanMove) for the project, read as the
