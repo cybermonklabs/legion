@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   createIssue,
   createIssueArtifact,
@@ -31,14 +33,32 @@ const repository = "acme/widgets";
 // leave the second one refused its read-through and reading rows the reset took away — no head
 // stored for the pull request it seeded, and a check whose pass stands `unknown`. A row that
 // moves a head reads `heads()` once and uses both of its commits.
-let rowsSoFar = 0;
 
-/** The two commits of the next row: its pull request's first head and the head a push moves it
- *  to. Each is forty hex characters, and the row's own number keeps them its own. */
+/** How many pairs each attempt of each row has taken, so a row that asks twice — one pair for the
+ *  repository the issue resolves to and one for a repository it links — reads four commits and
+ *  not two. A row is keyed by its id and its attempt, so the count restarting with a new worker
+ *  changes nothing. */
+const pairsTaken = new Map<string, number>();
+
+/** The next two commits of the row that calls it: its pull request's first head and the head a
+ *  push moves it to, each forty hex characters, and each a commit no other row and no other
+ *  attempt reads.
+ *
+ *  They are the digest of the row's own id, its attempt and the pair's place in the row
+ *  (`testInfo.testId`, `testInfo.retry`, `pairsTaken`), not of a counter of the rows: such a
+ *  counter lives in the worker process, and the one retry CI takes starts a new worker on the
+ *  same stack and server, where the module loads again and counts from the start — so a retried
+ *  row would read the first row's commits, still inside the five-minute bound, and fail as it
+ *  did. The attempt is in the digest for the same reason: a retry must not read the commits its
+ *  own first attempt left behind. */
 function heads(): { first: string; second: string } {
-  rowsSoFar++;
-  const of = (part: number) => (rowsSoFar * 2 + part).toString(16).padStart(40, "0");
-  return { first: of(0), second: of(1) };
+  const { retry, testId } = test.info();
+  const row = `${testId} ${retry}`;
+  const pair = (pairsTaken.get(row) ?? 0) + 1;
+  pairsTaken.set(row, pair);
+  const of = (part: string) =>
+    createHash("sha256").update(`${row} ${pair} ${part}`).digest("hex").slice(0, 40);
+  return { first: of("first"), second: of("second") };
 }
 
 /** The spec the checks serve. A `serves` pointer is refused unless it names a block that
