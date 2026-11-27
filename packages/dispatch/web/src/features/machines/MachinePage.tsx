@@ -120,9 +120,9 @@ function MachineView({ host }: { host: string }): ReactNode {
     age === undefined
       ? undefined
       : (relativeTimeLabel(new Date(age.oldestSeen), now) ?? "just now");
-  // No link where the Agents page's address cannot carry the host's name whole
-  // (`agentsAddress`): a cut name would open another machine's sessions, or none. The heading
-  // still names the host.
+  // The Agents page narrowed to this host, written by that page's own address grammar
+  // (`agentsAddress`), which carries a host's name whole at any length. It answers no link only
+  // for a narrowing it cannot carry, an empty name among them, and then none is drawn.
   const agentsLink = agentsAddress({ machines: [host] });
 
   return (

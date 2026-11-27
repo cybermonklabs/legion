@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { artifactVersionPath } from "../../api/client";
+import { agentsAddress } from "../agents/agent-search";
 import type { DispatchReferenceRoute, PagedReferenceRoute } from "./routes";
 import {
   buildDispatchReference,
@@ -884,6 +885,21 @@ test("an agent, a role and a person are the three parties a reference names", ()
   expect(referenceHref(person)).toBeUndefined();
   expect(referenceTargetKind(person)).toBe("person");
   expect(shortForm(person)).toBe("person/alice@example.com");
+});
+
+// A role's reference opens the Agents page narrowed to the role through that page's own address
+// grammar (`agentsAddress`), and the address is the one this builder wrote by hand before, so a
+// reader sees no change. A role token is `[a-z0-9-]+`, which the grammar writes as it is at any
+// length: the longest a reference can name (2,048 bytes, the bound of its target) is whole too.
+test("a role opens the Agents page at the address the page's own grammar writes", () => {
+  const longest = "a-".repeat(1024);
+  for (const role of ["reviewer", "legion-infra-controller", "a".repeat(300), longest]) {
+    expect(parseDispatchReference(`dispatch://role/${role}`)).toEqual({ kind: "role", role });
+    const path = buildReferencePath({ kind: "role", role });
+    expect(path).toBe(agentsAddress({ roles: [role] }) ?? "no address");
+    expect(path).toBe(`/agents?${new URLSearchParams({ role })}`);
+  }
+  expect(buildReferencePath({ kind: "role", role: longest })).toBe(`/agents?role=${longest}`);
 });
 
 // A party is named as it is stored: a session id as written, a role token in the charset a

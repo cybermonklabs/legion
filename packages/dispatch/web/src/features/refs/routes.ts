@@ -14,6 +14,7 @@ import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { addressPath } from "../../lib/page-address";
+import { agentsAddress } from "../agents/agent-search";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import {
   type BlockTarget,
@@ -566,11 +567,6 @@ export function buildMachinePath(host: string): string {
   return `/machines/${encodeURIComponent(host)}`;
 }
 
-/** The `?role=` the Agents page narrows to, the page a `dispatch://role/<token>` reference
- *  opens (`buildReferencePath`), named here so this file and the page's own spelling of it
- *  (`features/agents/agent-search.ts`) cannot drift apart. */
-export const AGENTS_ROLE_PARAM = "role";
-
 /** The `?component=` the Architecture pane holds its selected component in, the page a
  *  `dispatch://<PROJECT>/component/<id>` reference opens (`buildReferencePath`), named once
  *  here so the pane reading it (`features/architecture/ArchitecturePage.tsx`) and the link
@@ -1066,13 +1062,22 @@ export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string
   switch (route.kind) {
     case "agent-artifact": {
       const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
+      // The version a document opens at is the document's own parameter, which R5 leaves as it
+      // is rather than moving into `lib/page-address.ts`.
       return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
     }
     case "agent-session":
       return `/agents/${encodeURIComponent(route.session)}/live`;
     case "role":
-      return `/agents?${new URLSearchParams({ [AGENTS_ROLE_PARAM]: route.role })}`;
+      // The Agents page narrowed to the role, written by that page's own address grammar
+      // (`agentsAddress`), so the link is the address its role picker writes. A role token is
+      // `[a-z0-9-]+` (`roleTokenOnlyPattern`), which that grammar carries whole at any length:
+      // a token the reference grammar reads never reaches the plain page, which is here only
+      // because `agentsAddress` answers `null` for a list it cannot carry.
+      return agentsAddress({ roles: [route.role] }) ?? "/agents";
     case "component": {
+      // The Architecture page is outside the six directories whose addresses R5 moves into
+      // `lib/page-address.ts`, so its `?component=` is built here as that page reads it.
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
       return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
     }
