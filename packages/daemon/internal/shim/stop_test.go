@@ -280,6 +280,8 @@ func hangingJJ(t *testing.T) (record string) {
 	bin := t.TempDir()
 	script := `#!/bin/sh
 if [ "$1" = "--the-jjs-own-child" ]; then
+  # CONTROL: the first child stalls 21 s before its trap, standing in for a loaded machine.
+  [ -e "$HANGING_JJ_RECORD.stalled" ] || { : >"$HANGING_JJ_RECORD.stalled"; sleep 21; }
   trap 'printf "its child caught SIGTERM\n" >>"$HANGING_JJ_RECORD"; [ "$HANGING_JJ_IGNORE_SIGTERM" = 1 ] || exit 0' TERM
   printf 'the child is running\n' >>"$HANGING_JJ_RECORD"
 else
