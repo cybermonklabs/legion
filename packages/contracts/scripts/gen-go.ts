@@ -34,6 +34,7 @@ import {
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  KEPT_FORWARD_UNCONFIRMED_CAUSE,
   KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
@@ -403,6 +404,13 @@ const DeletedPostDeliveryError = ${JSON.stringify(DELETED_POST_DELIVERY_ERROR)}
 // from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
 // the dashboard keys its retry wording on cannot drift apart.
 const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
+
+// KeptForwardUnconfirmedCause is what a delivery attempt of a post to a role records when the copy
+// the listener kept for the role ended after a forward of it to the role's holder began and was
+// never confirmed (bus.KeptCopyExpiry.ForwardUnconfirmed). Generated from
+// KEPT_FORWARD_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the
+// string the dashboard keys its retry wording on cannot drift apart.
+const KeptForwardUnconfirmedCause = ${JSON.stringify(KEPT_FORWARD_UNCONFIRMED_CAUSE)}
 
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's

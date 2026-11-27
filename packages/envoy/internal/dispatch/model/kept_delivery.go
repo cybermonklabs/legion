@@ -1,14 +1,19 @@
 package model
 
+import "github.com/sjawhar/envoy/internal/contracts"
+
 // keptDeliveryExpiredText and keptDeliveryMayHaveReachedText are the two errors an attempt of
 // Dispatch's delivery of a post to a role's first holder is settled failed with when the copy the
 // listener kept of it ended with no session taking it (KeptDeliveryExpiredError): the copy's hour
 // ended, or the role's live holder does not take its delivery mode. The second is the error of a
 // copy whose forward the listener began and never confirmed, which the stream may hold, so the
-// role's holder may already have the message and a second delivery of it can follow a Retry.
+// role's holder may already have the message. It is the CAUSE only,
+// contracts.KeptForwardUnconfirmedCause: the dashboard gives it the receipt timeout's
+// possible-second-delivery wording (POSSIBLY_DELIVERED_CAUSES), keyed on this exact string, so
+// both sides read one literal.
 const (
 	keptDeliveryExpiredText        = "The Envoy listener kept this message for the role, and no session took it before the listener dropped it."
-	keptDeliveryMayHaveReachedText = "The Envoy listener kept this message for the role, and a forward to its holder was not confirmed before the listener dropped it; the holder may already have it, so Retry can deliver a second copy."
+	keptDeliveryMayHaveReachedText = contracts.KeptForwardUnconfirmedCause
 )
 
 // KeptDeliveryExpiredError is the error an attempt of Dispatch's delivery of a post is settled

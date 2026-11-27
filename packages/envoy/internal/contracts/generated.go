@@ -148,6 +148,13 @@ const DeletedPostDeliveryError = "ended by the post's delete"
 // the dashboard keys its retry wording on cannot drift apart.
 const StoreUnconfirmedCause = "The listener sent the message but could not confirm it was stored; the message may already have been delivered."
 
+// KeptForwardUnconfirmedCause is what a delivery attempt of a post to a role records when the copy
+// the listener kept for the role ended after a forward of it to the role's holder began and was
+// never confirmed (bus.KeptCopyExpiry.ForwardUnconfirmed). Generated from
+// KEPT_FORWARD_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the
+// string the dashboard keys its retry wording on cannot drift apart.
+const KeptForwardUnconfirmedCause = "The Envoy listener kept this message for the role, and a forward to its holder was not confirmed before the listener dropped it; the message may already have been delivered."
+
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.

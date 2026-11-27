@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  KEPT_FORWARD_UNCONFIRMED_CAUSE,
   NO_LIVE_SESSION,
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
@@ -195,6 +196,27 @@ test("a send whose store the listener could not confirm is named as such and tol
     ).not.toBeInTheDocument();
   } finally {
     control.unmount();
+  }
+});
+
+// A copy the listener kept for a role and dropped after a forward of it to the role's holder began
+// and was never confirmed may have been delivered too (the expiry notice's forward_unconfirmed).
+// Its card names that cause in its own words and gives it the same mode-change warning, beside the
+// Retry the attempt is still offered.
+test("a kept copy whose forward to the role's holder was not confirmed is warned what a mode change would do, beside Retry", () => {
+  const view = render(card({ attempts: [attempt({ error: KEPT_FORWARD_UNCONFIRMED_CAUSE })] }));
+  try {
+    expect(
+      screen.getByText(
+        `Failed: ${KEPT_FORWARD_UNCONFIRMED_CAUSE} ${safeRetryGuidance("card", KEPT_FORWARD_UNCONFIRMED_CAUSE)}`
+      )
+    ).toBeTruthy();
+    expect(screen.getByText(/a forward to its holder was not confirmed/)).toBeTruthy();
+    expect(screen.getByText(/sending in a different mode delivers it again/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use BTW instead" })).toBeTruthy();
+  } finally {
+    view.unmount();
   }
 });
 

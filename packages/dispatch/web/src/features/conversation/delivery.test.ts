@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   DELIVERY_DUPLICATE_WINDOW_MS,
+  KEPT_FORWARD_UNCONFIRMED_CAUSE,
   NO_LIVE_SESSION,
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
@@ -175,10 +176,12 @@ test("the mode-change clause is offered only for a send that may have landed, an
   const modeChange = "sending in a different mode delivers it again";
   expect(safeRetryGuidance("card", RECEIPT_TIMEOUT_CAUSE)).toContain(modeChange);
   expect(safeRetryGuidance("card", STORE_UNCONFIRMED_CAUSE)).toContain(modeChange);
+  expect(safeRetryGuidance("card", KEPT_FORWARD_UNCONFIRMED_CAUSE)).toContain(modeChange);
   expect(safeRetryGuidance("card", `${NO_LIVE_SESSION} s1`)).not.toContain(modeChange);
   expect(safeRetryGuidance("card", null)).not.toContain(modeChange);
   expect(safeRetryGuidance("mention", RECEIPT_TIMEOUT_CAUSE)).not.toContain(modeChange);
   expect(safeRetryGuidance("mention", STORE_UNCONFIRMED_CAUSE)).not.toContain(modeChange);
+  expect(safeRetryGuidance("mention", KEPT_FORWARD_UNCONFIRMED_CAUSE)).not.toContain(modeChange);
 });
 
 // A host holds the keys it was handed in memory, so a session that restarted after the first

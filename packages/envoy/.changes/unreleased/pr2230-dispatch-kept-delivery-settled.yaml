@@ -17,11 +17,13 @@ body: |-
   actor. A copy whose forward the listener began and never confirmed may have reached the role's
   holder, which its notice says (`forward_unconfirmed`): the attempt is then settled with the
   error "The Envoy listener kept this message for the role, and a forward to its holder was not
-  confirmed before the listener dropped it; the holder may already have it, so Retry can deliver a
-  second copy." An attempt a session already answered is left as it is, a repeated notice settles
-  nothing twice, and a notice naming a post the store holds no delivery of to its role is passed
-  over with one Error line: a notice stored for one role settles no attempt of another role's, and
-  blocks none of its notices.
+  confirmed before the listener dropped it; the message may already have been delivered."
+  (`KEPT_FORWARD_UNCONFIRMED_CAUSE`, generated into Go as `contracts.KeptForwardUnconfirmedCause`),
+  one of the causes the dashboard warns of a second delivery on (`POSSIBLY_DELIVERED_CAUSES`): its
+  card says beside Retry that sending it in a different mode delivers it again. An attempt a
+  session already answered is left as it is, a repeated notice settles nothing twice, and a notice
+  naming a post the store holds no delivery of to its role is passed over with one Error line: a
+  notice stored for one role settles no attempt of another role's, and blocks none of its notices.
 
   A notice can be read before the API has recorded the attempt `queued`, while the attempt is
   still `pending`. The outbox then settles nothing and moves its cursor past the notice, and

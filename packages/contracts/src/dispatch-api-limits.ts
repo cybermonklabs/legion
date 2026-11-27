@@ -532,11 +532,27 @@ export const DELETED_POST_DELIVERY_ERROR = "ended by the post's delete";
 export const STORE_UNCONFIRMED_CAUSE =
   "The listener sent the message but could not confirm it was stored; the message may already have been delivered.";
 
+/**
+ * The cause a delivery attempt of a post to a role records when the copy the Envoy listener kept
+ * for the role ended after a forward of it to the role's holder began and was never confirmed
+ * (the expiry notice's `forward_unconfirmed`): the stream may hold that forward, so the holder may
+ * already have the message, as a receipt timeout's recipient may. Dispatch settles such an
+ * attempt `failed` with it (`model.KeptDeliveryExpiredError` in
+ * packages/envoy/internal/dispatch/model), and the dashboard gives it the receipt timeout's
+ * possible-second-delivery warning (`POSSIBLY_DELIVERED_CAUSES`). Generated into Go as
+ * `contracts.KeptForwardUnconfirmedCause`.
+ *
+ * It is the CAUSE only, as `RECEIPT_TIMEOUT_CAUSE` is.
+ */
+export const KEPT_FORWARD_UNCONFIRMED_CAUSE =
+  "The Envoy listener kept this message for the role, and a forward to its holder was not confirmed before the listener dropped it; the message may already have been delivered.";
+
 /** The causes whose send may already have reached the recipient, so that re-sending it in another
  * mode delivers it a second time: the one list the dashboard keys that warning on. */
 export const POSSIBLY_DELIVERED_CAUSES: readonly string[] = [
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
+  KEPT_FORWARD_UNCONFIRMED_CAUSE,
 ];
 
 /** `SearchResponse.degraded`'s one value today: meaning search could not run for this request (no

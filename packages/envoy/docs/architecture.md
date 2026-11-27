@@ -832,8 +832,10 @@ with `forward_unconfirmed`), and settles every attempt of the post to that role 
 the copy's envelope, reads `queued` and names no session and no reply: `failed`, with one of two
 fixed errors (`model.KeptDeliveryExpiredError`): that the listener kept the message for the role
 and no session took it before the listener dropped it, or, when the notice's forward is
-unconfirmed, that a forward to its holder was not confirmed and the holder may already have it, so
-Retry can deliver a second copy; and no envelope, so the dashboard offers Retry. Each settled
+unconfirmed, that a forward to its holder was not confirmed and the message may already have been
+delivered (`contracts.KeptForwardUnconfirmedCause`, one of `POSSIBLY_DELIVERED_CAUSES`, so the
+dashboard warns beside Retry that sending it in another mode delivers it again); and no envelope,
+so the dashboard offers Retry. Each settled
 attempt gets the `comment.delivery` or `message.delivery` receipt a failed attempt gets, written by
 the outbox's own system actor and published once the transaction commits; an attempt a session
 answered, one already failed and a repeated notice settle nothing, and a notice naming a post the

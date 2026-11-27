@@ -298,10 +298,10 @@ export function keptForRoleParts(role: AgentPart): AgentPart[] {
  * "Retry won't deliver it twice" holds for any in-window failure but a restarted session's: if
  * the send landed, its repeat is recognised and dropped, and if it never landed there is nothing
  * to duplicate. The second clause does not. "Sending in a different mode delivers it again" is
- * only true of a send that may already have reached the recipient — a receipt timeout, or a send
- * whose store the listener could not confirm (`POSSIBLY_DELIVERED_CAUSES`) — so it is keyed on
- * those causes. It is also withheld on the mention surface, which has no mode-change button to
- * name.
+ * only true of a send that may already have reached the recipient — a receipt timeout, a send
+ * whose store the listener could not confirm, or a copy kept for a role whose forward to the
+ * role's holder was never confirmed (`POSSIBLY_DELIVERED_CAUSES`) — so it is keyed on those
+ * causes. It is also withheld on the mention surface, which has no mode-change button to name.
  */
 export function safeRetryGuidance(surface: "card" | "mention", cause?: string | null): string {
   const safe = `Retry won't deliver it twice ${unlessRestarted}`;
