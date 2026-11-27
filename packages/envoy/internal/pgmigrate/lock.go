@@ -330,23 +330,22 @@ func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut fun
 			return nil
 		}
 		if !timedOut(err) {
-			// A context error (the caller's deadline or cancellation) that cut an attempt short. Once a
-			// lock timeout has already happened (hadTimeout), the give-up joins that last lock timeout,
-			// so it still names the lock even when the context cut a later, longer attempt before that
-			// attempt could time out: the give-up stays actionable (errors.As finds the *LockTimeoutError)
-			// and errors.Is still finds the context error. Before any lock timeout, a deadline-mode
-			// context error comes back in the named "after N attempts" form with nothing to name, and
-			// under the production default it comes back unchanged — a SIGTERM'd boot keeps its own error.
+			// A context error (the caller's deadline or cancellation) that cut an attempt short is
+			// wrapped in the runner's "after N attempts" form ONLY in deadline mode. Once a lock timeout
+			// has happened there (hadTimeout), the give-up wraps both the last lock timeout and the
+			// context error (two %w), so it names the lock even when the context cut a later, longer
+			// attempt before it could time out: errors.As finds the *LockTimeoutError and errors.Is finds
+			// the context error. Before any lock timeout in deadline mode it wraps the context error
+			// alone, with nothing to name. Under the production default the error comes back UNCHANGED —
+			// a boot stopped by SIGTERM keeps its own error whether or not an earlier attempt timed out.
 			// Test the error itself, not ctx.Err(), so a real migration error that merely arrives while
 			// the context is done is not misread as the deadline's; any other non-timeout error is the
 			// migration's and comes back as is.
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if deadlineMode && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				if hadTimeout {
-					return fmt.Errorf("after %d attempts: %w", n, errors.Join(lastTimeout, err))
+					return fmt.Errorf("after %d attempts: %w; %w", n, lastTimeout, err)
 				}
-				if deadlineMode {
-					return fmt.Errorf("after %d attempts: %w", n, err)
-				}
+				return fmt.Errorf("after %d attempts: %w", n, err)
 			}
 			return err
 		}
