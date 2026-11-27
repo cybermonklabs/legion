@@ -42,6 +42,7 @@ import (
 // The control is the same repeat to a role nobody claims: its 202 kept answer is the copy the
 // role's kept lane holds, which the route already answered before this change (roleSend.kept).
 func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	rig.limit(600, 20)
 
@@ -205,6 +206,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 // and recorded through the stream's confirmation, as a forward always was: the echo answers the
 // same stored forward.
 func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 
 	t.Run("control: a holder's first publish to its own role answers its own envelope with no duplicate", func(t *testing.T) {

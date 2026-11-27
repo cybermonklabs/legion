@@ -902,6 +902,7 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 // The negative control is artifact.renamed and artifact.removed back in mergeHoldsChangeTypes:
 // their two rows then decode to a MergeHoldsChanged.
 func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
+	t.Parallel()
 	change := MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"}
 	for _, tc := range []struct {
 		name, project, slug, eventType string
@@ -957,6 +958,7 @@ func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
 // and keeps the consumer's position: the backlog the consumer had stays pending, and the
 // document's event published after the boot is pending beside it.
 func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -993,6 +995,7 @@ func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
 // A merge holds change is a workflow fact: the consumer applies it through ApplyFact under the
 // Dispatch event's id, so the same event delivered again applies nothing a second time.
 func TestConsumeAppliesAMergeHoldsChangeOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)

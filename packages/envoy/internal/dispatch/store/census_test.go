@@ -1579,12 +1579,26 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 // still prints its report rather than exiting without one. Here the read waits on an ACCESS
 // EXCLUSIVE holder under a statement timeout shorter than the lock timeout, so Postgres cancels it
 // as a statement timeout (57014), as it cancels a slow count of a large table.
+//
+// The held read never ends while the holder holds its lock, so it outlasts TableReadTimeout
+// however long that is, and at 1 s, under the census's 5 s lock_timeout, it ends as 57014 however
+// loaded the machine is: the statement timeout starts with the statement, lock_timeout only once
+// the read waits, and Postgres reports the one due first when both have run out. That 1 s bounds
+// the held read alone: the read fails, which aborts its savepoint, and Postgres gives the
+// transaction back CensusStatementTimeout, a minute, for every other statement of the census. The
+// migration's census shows it: it answers 0 only when the statement timeout it runs under is that
+// minute. So a short bound that reached the census's other statements again adds a refusal on
+// every machine, and not only on one too loaded to read pg_event_trigger within a second, as CI's
+// was. LongTransaction is an hour, so the holder, opened just before the census, is never old
+// enough to refuse.
 func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access exclusive")), 10)
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{StatementTimeout: time.Second})
+	underTheCensusBound := "select case when current_setting('statement_timeout')::interval = interval '" +
+		strconv.FormatInt(pgmigrate.CensusStatementTimeout.Milliseconds(), 10) + " milliseconds' then 0 else 1 end"
+	report, err := census(ctx, url, withCheck(underTheCensusBound), pgmigrate.CensusOptions{TableReadTimeout: time.Second, LongTransaction: time.Hour})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}

@@ -1,0 +1,615 @@
+package outbox
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/retry"
+)
+
+// maxRoleKeeps is how many times the outbox keeps one event's copy for one role on that role's
+// kept lane, each for the copy's hour (cmd/listener/role_keep.go, roleKeepWindow): the keep its
+// batch made, and two more after a copy's hour ended with no session taking it. So a role routed
+// an event gets three hours for a session to claim it - room for a launch, a project's pause or a
+// wake held back for an hour or two, each of which has held a role's next holder off past one hour
+// - and a role nobody will hold again, such as one whose work was abandoned, costs three copies of
+// each event and no more: the expiry of the last one is recorded undelivered and nothing keeps the
+// event again (recordExpiry).
+const maxRoleKeeps = 3
+
+// keptExpiryReadEvery is how often the publisher hold's holder reads the expiry notices when
+// nothing else wakes it (Outbox.serve): the notices come from the listeners over NATS, which wakes
+// no scan, and the outbox reads them from the stream with the stored-message read its grant
+// already holds rather than a subscription of its own. The copy a notice names has waited an hour
+// already, so half a minute more before it is kept again costs its next holder nothing a person
+// could see, and one read of the stream every half minute costs the stream nothing.
+const keptExpiryReadEvery = 30 * time.Second
+
+// The outcomes an outbox_role_copy_expiries row is settled with: the copy kept again on the role's
+// kept lane, forwarded to the session that held the role by then, reached with nothing sent (the
+// holder is the event's own actor), carried - the copy cannot be kept again, but another copy of
+// the event still carries its delivery to the role (recordCannotKeep) - or recorded undelivered
+// (role.undelivered). A copy cannot be kept again when the stream no longer holds it, or holds at
+// its sequence a message no read can decode or another event's copy (readExpiredCopy), and when
+// NATS refused its keep or its forward for good.
+const (
+	expiryKept        = "kept"
+	expiryForwarded   = "forwarded"
+	expirySkipped     = "skipped"
+	expiryCarried     = "carried"
+	expiryUndelivered = "undelivered"
+)
+
+// passKeptExpiries is the outbox's work on the copies it kept for roles whose hour ended with no
+// session taking them: it reads the listeners' expiry notices into outbox_role_copy_expiries
+// (readKeptExpiries), keeps each event again whose expiry owes it a keep, or forwards it to the
+// session that holds the role by now (keepExpiredCopiesAgain), and posts the message about each
+// window of events recorded undelivered that has ended (postUndeliveredNotes). It runs on the
+// publisher hold's holder, after the fallback pass of each scan and every keptExpiryReadEvery
+// besides (Outbox.serve), and reports what the holder does next as that pass does: full, there is
+// more to read, keep or post now; failed, a read or a claim failed and the holder backs off.
+//
+// A Deps with no kept-lane reader reads no notice and keeps nothing again: the outbox has no
+// stream to read the notices or the copies from, as it makes no keep's handover then
+// (Deps.KeptLanes).
+func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
+	readFull, readFailed := readKeptExpiries(ctx, o.deps, hold, o.instance, &o.keptStream)
+	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, o.deps, hold, o.instance)
+	postFull, postFailed := postUndeliveredNotes(ctx, o.deps, hold, o.instance)
+	return readFull || keepFull || postFull, readFailed || keepFailed || postFailed
+}
+
+// errNotTheHolder is a holder transaction's answer when the publisher hold's row does not name the
+// process that would write it (inHolderTransaction).
+var errNotTheHolder = errors.New("the publisher hold is not this process's")
+
+// holdsPublisherHold reports, in tx, whether the publisher hold's row names instance live on the
+// database's clock, reading it with no lock. It is a holder transaction's first statement, so a
+// process the hold has already left does no work, and lockPublisherHold decides at commit.
+func holdsPublisherHold(ctx context.Context, tx pgx.Tx, instance uuid.UUID) (bool, error) {
+	var mine bool
+	err := tx.QueryRow(ctx, `
+		select exists (select 1 from duty_holds where name = $1 and holder = $2 and expires_at > now())
+	`, publisherHold, instance).Scan(&mine)
+	return mine, err
+}
+
+// lockPublisherHold reports, in tx, whether the publisher hold's row names instance live on the
+// database's clock, and locks that row for share until tx ends. It is a holder transaction's last
+// statement before its commit. A takeover of the hold writes that row (duty's takeHold), so it
+// waits for the commit: a transaction that found the hold its own at its end has written
+// everything it writes before another process can hold the hold, and so before that process
+// reads, posts or claims anything those writes touch. Under READ COMMITTED a takeover that
+// committed before this statement is seen here, and the transaction rolls back. The lock is held
+// only across the commit, never while the transaction waits on anything else - an event owner's
+// lock that appendUndelivered takes, say - so the hold's renewal, which writes the same row, never
+// waits behind such a wait: the hold is lost after its TTL less its margin (4 s) with no renewal,
+// which is shorter than recordTimeout.
+func lockPublisherHold(ctx context.Context, tx pgx.Tx, instance uuid.UUID) (bool, error) {
+	var mine bool
+	err := tx.QueryRow(ctx, `
+		select holder = $2 and expires_at > now() from duty_holds where name = $1 for share
+	`, publisherHold, instance).Scan(&mine)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return mine, err
+}
+
+// inHolderTransaction runs write in one transaction the publisher hold fences, and publishes the
+// event write appended, if any, once the transaction has committed. It covers every write of the
+// expiry work that may append a role.undelivered record: a notice's record (recordKeptExpiry) and
+// a record of a copy that cannot be kept again (recordCannotKeep). The pass's other writes to
+// outbox_role_copy_expiries are single statements that check the hold themselves
+// (expiryClaimQuery, expiryRecordQuery). The transaction reads the hold's row first with no lock
+// (holdsPublisherHold), runs write, and locks the hold's row for share as its last statement
+// before the commit (lockPublisherHold); when the row does not name instance at either read it
+// writes nothing and answers errNotTheHolder. For a test, Deps.holdRead runs once the first read
+// found the hold this process's, and Deps.holdLocked once the final lock found it so.
+func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, write func(pgx.Tx) (*model.Event, error)) error {
+	tx, err := deps.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if mine, err := holdsPublisherHold(ctx, tx, instance); err != nil {
+		return err
+	} else if !mine {
+		return errNotTheHolder
+	}
+	if deps.holdRead != nil {
+		deps.holdRead()
+	}
+	appended, err := write(tx)
+	if err != nil {
+		return err
+	}
+	if mine, err := lockPublisherHold(ctx, tx, instance); err != nil {
+		return err
+	} else if !mine {
+		return errNotTheHolder
+	}
+	if deps.holdLocked != nil {
+		deps.holdLocked()
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if appended != nil {
+		deps.Broker.Publish(*appended)
+	}
+	return nil
+}
+
+// endRoleDelivery is the one way an event's delivery to a role ends, in tx, for both reasons it
+// ends - its last keep expired (recordExpiry) or no copy of it can be kept again (recordCannotKeep):
+// every row of the pair still owed a keep is settled undelivered, and the event's role.undelivered
+// record is appended (appendUndelivered) unless the pair had ended already, so the pair has one
+// record however many of its rows end, and no row of it is left owed. record is that record's
+// payload but for its EventType, which appendUndelivered reads: the pair (EventID, Role), the
+// caller's own row's attempt as Keeps, that copy's keep and drop times, and the reason. The caller
+// has written its own row, the Keeps'th, settled undelivered; ended reads whether any other row of
+// the pair was undelivered before it.
+func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, record model.RoleUndeliveredEventPayload) (*model.Event, error) {
+	var ended bool
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from outbox_role_copy_expiries where event_id = $1 and role = $2 and outcome = $3 and keep_attempt <> $4)
+	`, record.EventID, record.Role, expiryUndelivered, record.Keeps).Scan(&ended); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		update outbox_role_copy_expiries set settled_at = now(), outcome = $3
+		where event_id = $1 and role = $2 and settled_at is null
+	`, record.EventID, record.Role, expiryUndelivered); err != nil {
+		return nil, err
+	}
+	if ended {
+		slog.Info("dispatch outbox: an event already recorded undelivered to a role ended again; it keeps its one record",
+			"event_id", record.EventID, "role", record.Role, "keeps", record.Keeps, "reason", record.Reason)
+		return nil, nil
+	}
+	return appendUndelivered(ctx, deps, tx, record)
+}
+
+// appendUndelivered appends, in tx, the role.undelivered record whose payload is record, with the
+// event's own type as its EventType, on that event's own owner - its issue, its document or its
+// project - written by the outbox's own system actor (graphWriter), which notifies nobody
+// (events.Broker.Notify), so the record wakes no route and reaches no role: it is published to its
+// owner's topic alone, where a person reads it in the owner's history and a session that follows
+// that topic is sent it. It also notes the event for the message a person is sent about it
+// (noteUndelivered). It logs the record at Warn and returns it for the caller to publish once tx
+// has committed.
+//
+// An event the log does not hold records nothing but an Error line, and so does one that names no
+// owner. Every event the outbox keeps a copy of for a role is of an issue or of an issue's
+// document: a role destination is the route (addRoute), which is read from the event's issue or
+// from the issue of its document (readBatchSQL, coalesce(i.route, ai.route)), and a role topic's
+// fallback row holds that route's copy (fallbackCopy.ofASessionsOwnTopic). So no write makes an
+// expiry of a project's own event or of a project document's, and none of those owners has a
+// place to post a message on (TestAProjectDocumentsEventReachesNoRole).
+func appendUndelivered(ctx context.Context, deps Deps, tx pgx.Tx, record model.RoleUndeliveredEventPayload) (*model.Event, error) {
+	event := model.Event{Type: model.RoleUndeliveredEventType, Actor: graphWriter}
+	var about undeliveredEvent
+	err := tx.QueryRow(ctx, `
+		select e.issue_key, e.artifact_id::text, e.project_key, e.type, coalesce(e.payload ->> 'id', ''),
+		       ar.id::text, ar.issue_key, coalesce(ar.project_key, ''), ar.session_id, coalesce(ar.slug, ''),
+		       coalesce(ar.kind, ''), coalesce(ar.is_primary, false)
+		from events e
+		left join artifacts ar on ar.id::text = coalesce(e.artifact_id::text, e.payload ->> 'artifact_id')
+		where e.id = $1
+	`, record.EventID).Scan(&event.IssueKey, &event.ArtifactID, &event.ProjectKey, &record.EventType, &about.postID,
+		&about.documentID, &about.documentIssue, &about.documentProject, &about.documentSession, &about.documentSlug,
+		&about.documentKind, &about.documentPrimary)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && event.IssueKey == nil && event.ArtifactID == nil && event.ProjectKey == nil {
+		slog.Error("dispatch outbox: an event's copy for a role reached no session, and the event names no owner to record it on",
+			"event_id", record.EventID, "role", record.Role, "keeps", record.Keeps, "reason", record.Reason)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	event.Payload = record
+	appended, err := deps.Broker.Append(ctx, tx, event)
+	if err != nil {
+		return nil, fmt.Errorf("append the role.undelivered record of event %d: %w", record.EventID, err)
+	}
+	slog.Warn("dispatch outbox: an event's copy for a role reached no session; it is recorded undelivered",
+		"event_id", record.EventID, "event_type", record.EventType, "role", record.Role, "keeps", record.Keeps,
+		"reason", record.Reason, "record_id", appended.ID)
+	about.issueKey = event.IssueKey
+	if err := noteUndelivered(ctx, tx, record, about); err != nil {
+		return nil, err
+	}
+	return &appended, nil
+}
+
+// expiredCopy is one outbox_role_copy_expiries row the expiry pass claimed: the copy of eventID
+// kept for role for the attempt'th time under dedupeKey, which the stream holds at sequence on
+// role's kept lane, the keep and drop times its notice named, how many of the pass's sends of it
+// failed so far (attempt_count), and claim, the next_attempt_at the pass's claim set, which every
+// write of the pass's record is guarded on.
+type expiredCopy struct {
+	eventID   int64
+	role      string
+	attempt   int
+	sequence  uint64
+	dedupeKey string
+	keptAt    time.Time
+	droppedAt time.Time
+	failures  int
+	claim     time.Time
+}
+
+// expiryRecord is what the expiry pass came to for one row: outcome when it settled it, failed
+// when its send failed, which counts an attempt and backs the row off (retry.Delay), and otherwise
+// a release of its claim for delay, counting nothing.
+type expiryRecord struct {
+	held    expiredCopy
+	outcome string
+	failed  bool
+	delay   time.Duration
+}
+
+// keepExpiredCopiesAgain is the expiry pass. It claims, under the publisher hold, the expiries that
+// owe a keep (expiryClaimQuery), reads the copy each names back from the role's kept lane, resolves
+// the role's holder as a batch's role route does (resolveRole, forwardOf) and sends it:
+//
+//   - a role no live holder can take keeps the copy again, for the next attempt
+//     (roleForward.keepAttempt, bus.KeptAttemptMsgID), with the settled mentions it carried, and
+//     the handover behind that keep hands it to a holder that claimed the role meanwhile
+//     (roleForward.keep, handOverKept); the row settles kept once the stream acknowledged it;
+//   - a live holder is forwarded the copy, keyed by the one rule every forwarder of a role message
+//     follows (roleForward.forward), and the row settles forwarded;
+//   - a holder that is the event's own actor is reached with nothing sent, and the row settles
+//     skipped;
+//   - a holder that is not answering, or a resolution that failed, sends nothing: the row counts an
+//     attempt and backs off, as a batch's pending forward does, and is decided again when due.
+//
+// A send's answer is read, counted and logged by the rule the fallback pass reads its own by
+// (awaitAnswer, judgeSend): a keep or a forward NATS refuses for good means the copy cannot be
+// kept again (recordCannotKeep, reason expired); a send the hold's deadline refused is released
+// due at once; a send that found NATS unavailable is counted and released after retry.BaseDelay;
+// and every other failure is counted as a failed attempt, logged at the dead-letter threshold
+// (failedAttempt).
+//
+// It sends exactly the copy that expired - its envelope, dedupe key and mentions as the stream
+// holds them - and writes nothing of the event's own row: its published_at and
+// published_destinations stay as its batch left them, and no destination but the role is reached
+// again, whoever the event's route, followers or authors name by now. A copy the stream no longer
+// holds, or that it holds a message no read can decode or another event's copy in place of
+// (readExpiredCopy), cannot be kept again either (recordCannotKeep, reason copy_gone).
+//
+// The pass is fenced by the publisher hold as the fallback pass is (publishFallbackCopies): it
+// claims nothing once the hold's deadline has passed, its sends go through the hold's window, and
+// its record is written only while the hold is still this process's, on the database's clock
+// (recordExpiredCopies). A pass that lost the hold records nothing: each row keeps its claim,
+// falls due once that lapses, and the holder's next pass keeps the copy again under the same
+// message id, which the stream holds once, or forwards it under the same one, which the stream
+// and the holder each take once. It reports what the holder does next, as the fallback pass does.
+func keepExpiredCopiesAgain(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed bool) {
+	if deps.KeptLanes == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
+		return false, false
+	}
+	claimed, err := claimExpiredCopies(ctx, deps, instance)
+	if err != nil {
+		slog.Error("dispatch outbox: claim the expired copies owed a keep", "error", err)
+		return false, true
+	}
+	if len(claimed) == 0 {
+		return false, false
+	}
+	full = len(claimed) == batchSize
+	var records []expiryRecord
+	// cannot is every claimed row whose copy cannot be kept again, with the reason its pair ends
+	// for if no other copy carries it (recordCannotKeep).
+	var cannot []cannotKeep
+	// Written even when ctx has ended, as the fallback pass's record is: what NATS accepted is
+	// recorded and what the pass did not decide is released.
+	defer func() {
+		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+		defer cancel()
+		switch recorded, err := recordExpiredCopies(record, deps, instance, records); {
+		case err != nil:
+			slog.Error("dispatch outbox: record the expired copies' keeps", "error", err)
+		case !recorded:
+			slog.Warn("dispatch outbox: the publisher hold is no longer this process's, so the expiry pass was not recorded and the rows it claimed are left to the hold's next pass",
+				"copies", len(records))
+		}
+		for _, row := range cannot {
+			switch err := recordCannotKeep(record, deps, instance, row); {
+			case errors.Is(err, errNotTheHolder):
+				slog.Warn("dispatch outbox: the publisher hold is no longer this process's, so a copy that cannot be kept again is left to the hold's next pass",
+					"event_id", row.held.eventID, "role", row.held.role, "reason", row.reason)
+			case err != nil:
+				slog.Error("dispatch outbox: record an expired copy that cannot be kept again", "event_id", row.held.eventID, "role", row.held.role, "reason", row.reason, "error", err)
+			}
+		}
+	}()
+	release := func(held expiredCopy, delay time.Duration) {
+		records = append(records, expiryRecord{held: held, delay: delay})
+	}
+	fail := func(held expiredCopy) {
+		if ctx.Err() != nil {
+			release(held, 0)
+			return
+		}
+		failedAttempt(held.failures+1, "expired copy", "event_id", held.eventID, "role", held.role, "keep_attempt", held.attempt)
+		records = append(records, expiryRecord{held: held, failed: true})
+	}
+	type sentKeep struct {
+		held    expiredCopy
+		forward *roleForward
+		answer  <-chan error
+	}
+	sender := deps.Publisher.WindowUntil(hold.Deadline)
+	handed := newKeptHandovers()
+	var sent []sentKeep
+	for _, held := range claimed {
+		if ctx.Err() != nil {
+			release(held, 0)
+			continue
+		}
+		item, ok, err := readExpiredCopy(ctx, deps, held)
+		switch {
+		case err != nil:
+			if !lostToContextEnd(ctx, err) {
+				slog.Error("dispatch outbox: read an expired copy back", "event_id", held.eventID, "role", held.role, "sequence", held.sequence, "error", err)
+			}
+			fail(held)
+			continue
+		case !ok:
+			cannot = append(cannot, cannotKeep{held: held, reason: model.RoleUndeliveredCopyGone})
+			continue
+		}
+		resolution, err := resolveRole(ctx, deps, held.role)
+		forward := forwardOf(held.role, item, resolution, err, time.Now())
+		forward.settledKeys, forward.keepAttempt = item.MentionDedupeKeys, held.attempt+1
+		switch {
+		case forward.skip != "":
+			records = append(records, expiryRecord{held: held, outcome: expirySkipped})
+		case forward.err != nil:
+			deps.countRoleForwardHeld(forward.heldState)
+			slog.Info("dispatch outbox: an expired copy waits for its role's holder",
+				"event_id", held.eventID, "role", held.role, "holder", forward.holder, "holder_state", forward.heldState, "error", forward.err)
+			fail(held)
+		default:
+			sent = append(sent, sentKeep{held: held, forward: forward, answer: forward.send(ctx, deps, sender, item, handed)})
+		}
+	}
+	for _, item := range sent {
+		err := awaitAnswer(ctx, item.answer)
+		verdict := judgeSend(ctx, deps, err, item.forward, "expired copy",
+			"event_id", item.held.eventID, "role", item.held.role, "next_attempt", item.held.attempt+1)
+		switch verdict.outcome {
+		case sendReached:
+			if item.forward.keptFor != "" {
+				records = append(records, expiryRecord{held: item.held, outcome: expiryKept})
+			} else {
+				records = append(records, expiryRecord{held: item.held, outcome: expiryForwarded})
+			}
+		case sendRefused:
+			// No later send of this copy would be taken, so it cannot be kept again.
+			cannot = append(cannot, cannotKeep{held: item.held, reason: model.RoleUndeliveredExpired})
+		case sendReleased:
+			release(item.held, verdict.delay)
+		default:
+			fail(item.held)
+		}
+	}
+	return full, false
+}
+
+// cannotKeep is a claimed expiry whose copy cannot be kept again, and the reason its pair ends for
+// if no other copy carries it (recordCannotKeep): copy_gone when the stream no longer holds the
+// copy, or holds at its sequence a message no read can decode or another event's copy - a stream
+// created again since the notice was recorded (readExpiredCopy); expired when NATS refused its
+// keep or its forward for good, after each keep stored so far ended its hour with no session
+// taking it.
+type cannotKeep struct {
+	held   expiredCopy
+	reason string
+}
+
+// readExpiredCopy reads held's copy back from its role's kept lane, at the stream sequence its
+// notice named (laneCopyAt). It reports false with no error when the stream no longer holds a copy
+// there - the stream's retention passed it - or holds a message no read can decode, or one that is
+// not Dispatch's copy of held's event under held's dedupe key, any of which the pass cannot keep
+// again. The notice's record read held's copy there (noticedCopy), so either of the last two is a
+// message a stream created again since then stored: held's copy is gone with the stream before it,
+// and keeping or forwarding the other one would send another event under held's.
+func readExpiredCopy(ctx context.Context, deps Deps, held expiredCopy) (contracts.Envelope, bool, error) {
+	read, err := laneCopyAt(ctx, deps.KeptLanes, held.role, held.sequence, strconv.FormatInt(held.eventID, 10), held.dedupeKey)
+	if err != nil {
+		return contracts.Envelope{}, false, err
+	}
+	switch read.state {
+	case laneCopyUndecodable:
+		slog.Error("dispatch outbox: the stream holds a message no read can decode at the expired copy's sequence, which only a stream created again since the notice's record holds there; the expired copy is gone",
+			"event_id", held.eventID, "role", held.role, "sequence", held.sequence, "error", read.decodeErr)
+	case laneCopyOther:
+		slog.Error("dispatch outbox: the stream holds another copy than the expired one at its sequence; the expired copy is gone",
+			"event_id", held.eventID, "role", held.role, "sequence", held.sequence, "dedupe_key", held.dedupeKey,
+			"held_source", read.item.Source, "held_event_id", read.item.SourceEventID, "held_dedupe_key", read.item.DedupeKey)
+	}
+	return read.item, read.state == laneCopyOfEvent, nil
+}
+
+// expiryClaimQuery is claimExpiredCopies's one statement: the due unsettled rows, oldest first,
+// claimed for fallbackClaim under for update skip locked, as the fallback pass claims its rows
+// (fallbackClaimQuery). It claims nothing while the publisher hold's row does not name the
+// claiming process, on the database's clock, and no row of an event already recorded undelivered
+// to its role (recordExpiry settles those, and this keeps any it missed from being kept again).
+const expiryClaimQuery = `
+		with claimed as (
+			update outbox_role_copy_expiries set next_attempt_at = now() + $2
+			where (event_id, role, keep_attempt) in (
+				select pending.event_id, pending.role, pending.keep_attempt from outbox_role_copy_expiries pending
+				where pending.settled_at is null and (pending.next_attempt_at is null or pending.next_attempt_at <= now())
+				  and exists (select 1 from duty_holds where name = $3 and holder = $4 and expires_at > now())
+				  and not exists (
+					select 1 from outbox_role_copy_expiries ended
+					where ended.event_id = pending.event_id and ended.role = pending.role and ended.outcome = $5
+				  )
+				order by pending.received_at
+				limit $1
+				for update of pending skip locked
+			)
+			returning event_id, role, keep_attempt, copy_sequence, dedupe_key, kept_at, dropped_at, attempt_count, next_attempt_at
+		)
+		select event_id, role, keep_attempt, copy_sequence, dedupe_key, kept_at, dropped_at, attempt_count, next_attempt_at
+		from claimed
+	`
+
+// claimExpiredCopies claims at most batchSize unsettled expiry rows that are due, for instance, in
+// one statement run outside the pass's context under claimTimeout, as the fallback pass's claim is
+// (claimFallbackCopies): a context that ended once the claim committed would lose the rows it
+// claimed.
+func claimExpiredCopies(ctx context.Context, deps Deps, instance uuid.UUID) ([]expiredCopy, error) {
+	claim, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimTimeout)
+	defer cancel()
+	rows, err := deps.Store.Pool.Query(claim, expiryClaimQuery, batchSize, fallbackClaim, publisherHold, instance, expiryUndelivered)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (expiredCopy, error) {
+		var held expiredCopy
+		var sequence int64
+		if err := row.Scan(&held.eventID, &held.role, &held.attempt, &sequence, &held.dedupeKey, &held.keptAt, &held.droppedAt,
+			&held.failures, &held.claim); err != nil {
+			return expiredCopy{}, err
+		}
+		held.sequence = uint64(sequence)
+		return held, nil
+	})
+}
+
+// expiryRecordQuery is recordExpiredCopies's one statement, fenced on the publisher hold and on
+// each row's claim as fallbackRecordQuery is.
+const expiryRecordQuery = `
+		with hold as (
+			select exists (
+				select 1 from duty_holds where name = $9 and holder = $8 and expires_at > now()
+			) as mine
+		), outcome as (
+			select * from unnest($1::bigint[], $2::text[], $3::int[], $4::timestamptz[], $5::text[], $6::interval[], $7::bool[])
+				as o(event_id, role, keep_attempt, claim, outcome, retry_after, counted)
+		), recorded as (
+			update outbox_role_copy_expiries x set
+				settled_at = case when o.outcome is not null then now() end,
+				outcome = o.outcome,
+				attempt_count = x.attempt_count + case when o.counted then 1 else 0 end,
+				next_attempt_at = case when o.outcome is null then now() + o.retry_after end
+			from outcome o
+			cross join hold h
+			where x.event_id = o.event_id and x.role = o.role and x.keep_attempt = o.keep_attempt
+				and x.settled_at is null and x.next_attempt_at = o.claim and h.mine
+		)
+		select mine from hold
+	`
+
+// recordExpiredCopies writes what an expiry pass came to, in one statement: each settled row with
+// its outcome, each failed row with one more attempt and a wait of retry.Delay of its new count,
+// and each released row with its claim replaced by the wait it was released with, or cleared when
+// that wait is none. It reports whether instance holds the publisher hold still, and writes no row
+// when it does not, as recordFallbackCopies writes none.
+func recordExpiredCopies(ctx context.Context, deps Deps, instance uuid.UUID, records []expiryRecord) (bool, error) {
+	if len(records) == 0 {
+		return true, nil
+	}
+	eventIDs := make([]int64, 0, len(records))
+	roles := make([]string, 0, len(records))
+	attempts := make([]int, 0, len(records))
+	claims := make([]time.Time, 0, len(records))
+	outcomes := make([]*string, 0, len(records))
+	retryAfter := make([]*time.Duration, 0, len(records))
+	counted := make([]bool, 0, len(records))
+	for _, record := range records {
+		eventIDs = append(eventIDs, record.held.eventID)
+		roles = append(roles, record.held.role)
+		attempts = append(attempts, record.held.attempt)
+		claims = append(claims, record.held.claim)
+		counted = append(counted, record.failed)
+		if record.outcome != "" {
+			outcomes = append(outcomes, new(record.outcome))
+		} else {
+			outcomes = append(outcomes, nil)
+		}
+		switch {
+		case record.failed:
+			retryAfter = append(retryAfter, new(retry.Delay(record.held.failures+1)))
+		case record.delay > 0:
+			retryAfter = append(retryAfter, new(record.delay))
+		default:
+			retryAfter = append(retryAfter, nil)
+		}
+	}
+	var holds bool
+	if err := deps.Store.Pool.QueryRow(ctx, expiryRecordQuery,
+		eventIDs, roles, attempts, claims, outcomes, retryAfter, counted, instance, publisherHold).Scan(&holds); err != nil {
+		return false, err
+	}
+	return holds, nil
+}
+
+// recordCannotKeep settles row, a claimed expiry whose copy cannot be kept again (cannotKeep: the
+// stream no longer holds it, or holds in its place a message no read can decode or another event's
+// copy, or NATS refused its keep or its forward for good), and ends its event's delivery to its
+// role only when no other copy of the event carries that delivery on. Another copy carries it
+// when another row of the pair is still owed a keep - claimed in this pass or not, since its copy
+// may still be read - or was settled kept, forwarded
+// or skipped after row's expiry was recorded, which made a new copy or reached a session after
+// row's copy had ended. Then row is settled carried and nothing else is written: the delivery goes
+// on through that copy, which ends in its own expiry or in a session. Otherwise row is settled
+// undelivered and the pair ends as the bound ends it (endRoleDelivery, with row's reason): its
+// other owed rows are settled and its role.undelivered record is appended once. The pass records
+// its kept and forwarded rows before it records any of these (keepExpiredCopiesAgain), so a
+// sibling this pass delivered is read here.
+//
+// It is one holder transaction (inHolderTransaction), fenced as well on row's claim as the pass's
+// record is: a process the hold has left writes nothing and answers errNotTheHolder, and a row a
+// later pass claimed is not written. The caller runs it under recordTimeout.
+func recordCannotKeep(ctx context.Context, deps Deps, instance uuid.UUID, row cannotKeep) error {
+	held := row.held
+	return inHolderTransaction(ctx, deps, instance, func(tx pgx.Tx) (*model.Event, error) {
+		var carried bool
+		if err := tx.QueryRow(ctx, `
+			select exists (
+				select 1 from outbox_role_copy_expiries other, outbox_role_copy_expiries ending
+				where ending.event_id = $1 and ending.role = $2 and ending.keep_attempt = $3
+				  and other.event_id = $1 and other.role = $2 and other.keep_attempt <> $3
+				  and (other.settled_at is null
+				       or (other.outcome = any($4) and other.settled_at >= ending.received_at))
+			)
+		`, held.eventID, held.role, held.attempt, []string{expiryKept, expiryForwarded, expirySkipped}).Scan(&carried); err != nil {
+			return nil, err
+		}
+		outcome := expiryUndelivered
+		if carried {
+			outcome = expiryCarried
+		}
+		tag, err := tx.Exec(ctx, `
+			update outbox_role_copy_expiries set settled_at = now(), outcome = $5
+			where event_id = $1 and role = $2 and keep_attempt = $3 and settled_at is null and next_attempt_at = $4
+		`, held.eventID, held.role, held.attempt, held.claim, outcome)
+		if err != nil || tag.RowsAffected() == 0 {
+			return nil, err
+		}
+		if carried {
+			slog.Info("dispatch outbox: an expired copy that cannot be kept again is settled carried; another copy of the event carries its delivery to the role",
+				"event_id", held.eventID, "role", held.role, "attempt", held.attempt, "sequence", held.sequence, "reason", row.reason)
+			return nil, nil
+		}
+		return endRoleDelivery(ctx, deps, tx, model.RoleUndeliveredEventPayload{
+			EventID: held.eventID, Role: held.role, Keeps: held.attempt, KeptAt: held.keptAt, DroppedAt: held.droppedAt, Reason: row.reason,
+		})
+	})
+}

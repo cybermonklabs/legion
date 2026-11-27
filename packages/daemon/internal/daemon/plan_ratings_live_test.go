@@ -46,6 +46,7 @@ type planRatingsLive struct {
 // its retro, whose completion is refused until it rates the plan. The fourth goes no further than
 // merging, so the read by project lists the three alone.
 func TestPlanRatingsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newStepRecordsLive).
 	l := &planRatingsLive{newStepRecordsLive(t, "scripts/e2e/plan-ratings.sh", 4, "plans-reader")}
 	keys := make([]string, 0, len(l.issues))
 	for _, issue := range l.issues {
