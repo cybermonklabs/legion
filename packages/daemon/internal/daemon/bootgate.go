@@ -985,7 +985,9 @@ func (g pluginGate) budget(ctx context.Context) (context.Context, context.Cancel
 	if g.expire != nil {
 		return g.expire(ctx)
 	}
-	return context.WithTimeout(ctx, g.timeout)
+	// CONTROL ONLY: the attempt is detached from ctx, so the daemon's stop leaves the probe running
+	// until the attempt's own budget ends it.
+	return context.WithTimeout(context.WithoutCancel(ctx), g.timeout)
 }
 
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and
