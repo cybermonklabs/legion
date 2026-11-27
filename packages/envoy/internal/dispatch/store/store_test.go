@@ -924,7 +924,7 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 			ctx, cancel := context.WithTimeout(setup, bound+10*time.Second)
 			defer cancel()
 			started := time.Now()
-			err := store.prepareVersionTable(ctx, tc.set)
+			_, err := store.prepareVersionTable(ctx, tc.set)
 			elapsed := time.Since(started)
 			if tc.release {
 				if err != nil {
@@ -1043,7 +1043,7 @@ func migrateAbove(t *testing.T, store *Store, after, maxVersion int) {
 	// The runner's own table (prepareVersionTable), bigint and identity columns included: a test
 	// that created the table as an integer would make the runner widen it, which is not what these
 	// tests are about.
-	if err := store.prepareVersionTable(ctx, migrations); err != nil {
+	if _, err := store.prepareVersionTable(ctx, migrations); err != nil {
 		t.Fatalf("prepare schema migrations table: %v", err)
 	}
 	for _, migration := range migrations {
