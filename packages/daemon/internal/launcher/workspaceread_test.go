@@ -220,13 +220,15 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixed := read("fix-copy")
+	// The file is read first: the fixture's own jj below would migrate it, as a role's would, and
+	// print jj's warning of that beside the commit.
+	if _, err := os.Lstat(fixLegacy); err == nil {
+		t.Fatalf("the fix copy's legacy configuration file %s is still there after the read %+v, want it removed before jj ran", fixLegacy, fixed)
+	}
 	fixAt := run.Run(fixDir, "jj", "log", "-R", fixDir, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
 	if fixed.Count != 2 || !slices.Contains(fixed.Commits, fixAt) || !fixed.Changed {
 		t.Fatalf("the read of a workspace beside a fix's copy holding an edit no jj command recorded = %+v, want the workspace's change and the fix's working copy %s counted",
 			fixed, fixAt)
-	}
-	if _, err := os.Lstat(fixLegacy); err == nil {
-		t.Fatalf("the fix copy's legacy configuration file %s is still there after the read, want it removed before jj ran", fixLegacy)
 	}
 
 	// A workspace the guards refuse: its .jj/repo names another repository than the shared clone
