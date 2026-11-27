@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The plugin's `legion-architect` skill tells an architect to answer a worker's `provider-errors`
+  notice for a refusal of the content with `stop_task` and a later version of the plan that
+  narrows the step. It said to move the issue back with `request_backward_move`, which the daemon
+  refuses from an architect while the issue stands in the worker's phase.
+time: 2026-11-27T16:02:01Z
+custom:
+    Issue: pr5564
