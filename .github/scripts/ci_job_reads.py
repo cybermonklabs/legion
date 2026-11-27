@@ -38,11 +38,6 @@ hand-kept facts from beside their owners (ci_filter_sources.py says how):
             whose untagged run of that package that -run leans on, whose filter must therefore
             cover every file the tag step reads (the read set of the gate on its filter, and that
             filter's listed block).
-  VERSION_ARGS one entry per release whose version argument list names the paths its build
-            compiles from: the workflow and its `env:` key, the job that builds, the build's
-            script and the whole text it is pinned to, and the go commands, one per target, that
-            stand for what that text compiles. Rule 25 holds the list, as git reads it, to their
-            closure.
   READ_SETS the sets a //ci:reads-set line names, each computed when the table is read.
 
 A Read's glob is expanded over the repository's files; a why cites the step (at()) or the
@@ -76,7 +71,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run, version_args
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import compiled, go_skips_dir, tag_sets
@@ -632,71 +627,6 @@ def go_notices_runs():
                               started_by, INFRA, ["./cmd/..."], mode="build",
                               env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
     return out
-
-
-# release.yaml's legion_build job cuts legion's version from the commits since the newest legion-v*
-# tag that touch the paths after `--` in LEGION_VERSION_ARGS. Its version step runs before setup-go
-# (.github/ci-notes/release.md#why-legion_build-reads-the-tags-before-setup-go), so no go command
-# can compute those paths there, and the list is written out. Rule 25 holds it to what the build
-# compiles from. The build is release-build-legion.sh, pinned whole to LEGION_RELEASE_TEXT as an
-# Exact entry pins a step, so a change to the script fails the rule until this text changes with
-# it. That text builds ./cmd/legion once per legion target of GO_TARGETS, with CGO_ENABLED=0 and
-# no tags, which the Runs say. Those are the listings of ./cmd/legion lint's notices step asks for
-# already (go_notices_runs), so the rule starts no go command of its own.
-LEGION_RELEASE_SCRIPT = ".github/scripts/release-build-legion.sh"
-LEGION_RELEASE_JOB = "legion_build"
-LEGION_RELEASE_TEXT = r"""#!/usr/bin/env bash
-# The release archives of the Go `legion`: one per target .github/go-release-targets.json lists,
-# each holding that target's static binary and its THIRD_PARTY_NOTICES, packed into
-# assets/legion-<os>-<arch>.tar.gz for the publish job to upload.
-#
-# Who runs it, and what it takes:
-#
-#   .github/scripts/release-build-legion.sh
-#
-# No arguments. It reads six variables of the step's environment: $VERSION, the version this run
-# releases, $PI_LEGION_VERSION and $PI_ENVOY_VERSION, the plugin pair this binary links, and
-# $LEGION_CONTRACT_ORDER, the stamp of this commit's contract entries in main's merge order
-# (scripts/daemon-contract-order.sh --stamp), which the step's `env:` carries from the version,
-# plugin_versions and contract_order steps, and $GITHUB_SHA and $GITHUB_WORKSPACE, which the
-# runner sets. It reads .github/go-release-targets.json and writes out/ and assets/ of the
-# checkout, so the working directory is the repository root.
-#
-# The stamp is linked in as api.contractOrder, from which the daemon numbers each entry by its
-# rank, so a released daemon gives each entry the number every older build of main gave it. It
-# refuses to build without one: an unstamped binary numbers its entries by id instead, and the
-# stamp of a commit of no entry is `v1:`, never an empty value.
-#
-# Run from the repository root: .github/scripts/release-build-legion.sh
-# CI runs it in release.yaml's legion_build job, at the step "Build legion".
-#
-# .github/scripts/ci_job_reads.py's VERSION_ARGS pins this file whole: rule 25 of
-# .github/scripts/check-ci-filters.sh holds release.yaml's LEGION_VERSION_ARGS to what it compiles,
-# so any change here fails that check until the pinned text there changes with it.
-set -euo pipefail
-
-: "${LEGION_CONTRACT_ORDER:?is unset or empty: set it to the stamp scripts/daemon-contract-order.sh --stamp prints for this commit}"
-
-mkdir -p out assets
-for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
-  os=${target%/*}
-  arch=${target#*/}
-  dir="legion-$os-$arch"
-  mkdir -p "out/$dir"
-  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go -C packages/daemon build -buildvcs=false \
-    -ldflags "-X main.revision=$GITHUB_SHA -X main.release=v$VERSION -X main.piLegionVersion=$PI_LEGION_VERSION -X main.piEnvoyVersion=$PI_ENVOY_VERSION -X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$LEGION_CONTRACT_ORDER" \
-    -o "$GITHUB_WORKSPACE/out/$dir/legion" ./cmd/legion
-  (cd packages/daemon && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-    ../../scripts/go-third-party-notices.sh "$GITHUB_WORKSPACE/out/$dir/THIRD_PARTY_NOTICES" ./cmd/legion)
-  tar czf "assets/$dir.tar.gz" -C out "$dir"
-done
-"""
-VERSION_ARGS = [version_args(".github/workflows/release.yaml", "LEGION_VERSION_ARGS", LEGION_RELEASE_JOB,
-                             LEGION_RELEASE_SCRIPT, LEGION_RELEASE_TEXT, [
-    run(DAEMON, [LEGION_BUILD], f"{LEGION_RELEASE_SCRIPT}, run by "
-        f"{at(LEGION_RELEASE_JOB, 'Build legion', '.github/workflows/release.yaml')}, for {target}", mode="build",
-        env={"CGO_ENABLED": "0", "GOOS": target.split("/")[0], "GOARCH": target.split("/")[1]})
-    for target in targets(GO_TARGETS, "legion")])]
 
 
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's

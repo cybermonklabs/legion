@@ -101,7 +101,7 @@ env:
     -- packages/claude-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
     packages/cipher-client/ packages/pi-legion/agents/ skills/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
-  # why: .github/ci-notes/release.md#the-go-legions-version-arguments-and-the-check-that-holds-them-to-the-build
+  # why: .github/ci-notes/release.md#the-go-legions-version-arguments-and-the-command-that-prints-its-envoy-packages
   LEGION_VERSION_ARGS: >-
     --patch-path packages/daemon/internal/prompts/roles/ --patch-path packages/daemon/internal/prompts/go/
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh

@@ -22,10 +22,6 @@
 #
 # Run from the repository root: .github/scripts/release-build-legion.sh
 # CI runs it in release.yaml's legion_build job, at the step "Build legion".
-#
-# .github/scripts/ci_job_reads.py's VERSION_ARGS pins this file whole: rule 25 of
-# .github/scripts/check-ci-filters.sh holds release.yaml's LEGION_VERSION_ARGS to what it compiles,
-# so any change here fails that check until the pinned text there changes with it.
 set -euo pipefail
 
 : "${LEGION_CONTRACT_ORDER:?is unset or empty: set it to the stamp scripts/daemon-contract-order.sh --stamp prints for this commit}"
