@@ -67,6 +67,7 @@ import {
   routeHasMargin,
   routeIsInbox,
   routeProjectOf,
+  unknownToShell,
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
@@ -746,7 +747,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // `?` does.
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
-  const routeProject = routeProjectOf(location.pathname);
+  // An address of the new issue page alone is none the shell knows where the reader draws
+  // today's page, as on `main` (`unknownToShell`): it names no project and no issue here.
+  const unknownRoute = unknownToShell(location.pathname, issuePageChoice === "outline");
+  const routeProject = unknownRoute ? undefined : routeProjectOf(location.pathname);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -888,7 +892,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // genuine page change — a different issue, or a different top-level route —
   // should move focus to the main region.
   const pageIdentity =
-    parseIssuePath(location.pathname)?.key ??
+    (unknownRoute ? undefined : parseIssuePath(location.pathname)?.key) ??
     parseProjectPath(location.pathname)?.project ??
     location.pathname;
 
@@ -1182,7 +1186,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
+        {createOpen ? (
+          <CreateIssueDialog
+            newPage={issuePageChoice === "outline"}
+            onClose={() => setCreateOpen(false)}
+          />
+        ) : null}
         <RefPreviewHost surface="reference-hover-card" />
       </div>
     </ShellProviders>

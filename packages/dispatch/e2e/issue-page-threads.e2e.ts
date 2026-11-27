@@ -17,7 +17,15 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { compareTimestamps } from "../web/src/lib/timestamps";
-import { createComment, createMessage, getAsk, getComment, getMessage, listComments } from "./api";
+import {
+  createComment,
+  createIssue,
+  createMessage,
+  getAsk,
+  getComment,
+  getMessage,
+  listComments,
+} from "./api";
 import { literal } from "./dashboard-support";
 import { nextFrames } from "./frames";
 import { replyRowId } from "./inbox-threads";
@@ -2161,17 +2169,30 @@ test("opening Threads sends six reads and none for each row", async ({ browser }
 // Row 14
 // =============================================================================================
 
-// SLOW(>=2s): the whole seed, then two loads of /threads addresses and one of today's Dashboard,
-// every item drawn.
+// SLOW(>=2s): the whole seed and one more issue opened on today's page, then two loads of
+// /threads addresses, each read until it settles and the search bar opened over it, and one of
+// today's Dashboard, every item drawn.
 test("with the setting off, today's page draws for /threads what main draws", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   const seed = await seedThreads();
+  // The one item the reader opens before the /threads loads: another issue, on today's page. The
+  // context is new, so Recents holds that issue alone, and the seeded issue is opened at no
+  // address of today's page before the Dashboard below: a recent item naming it is one a
+  // /threads load added.
+  const earlier = await createIssue({ project: seed.project, title: "An issue opened before" });
   const context = await asUser(browser, READER);
   try {
     const page = await context.newPage();
     await page.setViewportSize(viewportAt(DESKTOP_WIDTH));
+    await page.goto(`/issues/${earlier.key}`);
+    const margin = page.getByTestId("margin-sheet");
+    await expect(margin, "the earlier issue's page draws no review column").toBeVisible();
+    const bar = page.getByRole("dialog", { name: "Search" });
+    // A recent item's row reads its issue's key, and then the title once the issue is read.
+    const recent = bar.getByRole("group", { name: "Recent" });
+    const traffic = watchApiRequests(page);
     for (const path of [threadsPath(seed.key), threadsPath(seed.key, seed.messages.first)]) {
       await page.goto(path);
       await expect(
@@ -2179,6 +2200,30 @@ test("with the setting off, today's page draws for /threads what main draws", as
         `today's page draws for ${path} other than main's page not found`
       ).toHaveText("Page not found");
       await expect(page.locator("[data-issue-page]"), `${path} draws the new page`).toHaveCount(0);
+      // The shell around it is main's too. Once the load has settled - the margin's code fetched
+      // and every read the page sends answered - no margin column stands at 1440 px, and the
+      // search bar opened over the page lists the earlier issue among the reader's recent items
+      // but not this one, and acts on no issue.
+      await expectLoadSettled(traffic);
+      await expect(
+        margin,
+        "the shell draws the margin column beside the not-found page of a /threads address"
+      ).toHaveCount(0);
+      await page.keyboard.press("Control+k");
+      await expect(
+        recent.getByRole("option", { name: new RegExp(`^${earlier.key}(?:\\s|$)`) }),
+        `the bar over ${path} lists no earlier recent item`
+      ).toHaveCount(1);
+      await expect(
+        recent.getByRole("option", { name: new RegExp(`^${seed.key}(?:\\s|$)`) }),
+        `${path} adds ${seed.key} to Recents`
+      ).toHaveCount(0);
+      await expect(
+        bar.getByTestId("search-scope"),
+        `the search bar opened over ${path} acts on an issue`
+      ).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await expect(bar, "Escape leaves the search bar open").toHaveCount(0);
     }
 
     // Today's Dashboard links each thread item to the thread's own address.

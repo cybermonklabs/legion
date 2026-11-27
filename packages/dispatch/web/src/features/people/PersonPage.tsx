@@ -20,7 +20,7 @@ import {
 import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
-import { parseIssuePath } from "../refs/routes";
+import { parseIssuePath, unknownToShell } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -108,7 +108,9 @@ export function PersonPage(): ReactNode {
                     row.id,
                     // The row carries no issue key; a comment on an issue links to that issue's
                     // conversation, so a role reference in its line is read by that issue.
-                    parseIssuePath(row.href)?.key
+                    // An address of the new issue page alone, which no row's link is, names no
+                    // issue here, as on `main` (`unknownToShell`).
+                    unknownToShell(row.href) ? undefined : parseIssuePath(row.href)?.key
                   )}
                   surface="person-node-title"
                 />

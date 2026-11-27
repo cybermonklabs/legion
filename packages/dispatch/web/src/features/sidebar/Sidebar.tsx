@@ -30,6 +30,7 @@ import { useLiveViewState } from "../agent-view/live-views";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "../agents/unread";
 import { useInboxCount } from "../inbox/useInboxCount";
+import { useIssuePageChoice } from "../issue-page/choice";
 import { PRIORITIES_PATH } from "../priorities/priority-routes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import {
@@ -39,6 +40,7 @@ import {
   parseIssuePath,
   parseProjectPath,
   routeIsInbox,
+  unknownToShell,
 } from "../refs/routes";
 
 /** The rows the Agents heading folds, named so the heading's chevron can say what it controls. */
@@ -185,7 +187,12 @@ export function Sidebar({
   // The live view the reader is in, which its row marks as the page and which makes a move to
   // another pinned agent a replacement rather than a step of its own.
   const currentLiveView = liveViewSessionOf(location.pathname);
-  const currentIssue = parseIssuePath(location.pathname)?.key;
+  // Where the reader draws today's page, an address of the new issue page alone is no issue's,
+  // so no row is the page there, as on `main` (`unknownToShell`).
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const currentIssue = unknownToShell(location.pathname, newPage)
+    ? undefined
+    : parseIssuePath(location.pathname)?.key;
   const currentProject = parseProjectPath(location.pathname)?.project;
 
   const hideControl =

@@ -15,8 +15,14 @@ import { composerNameOf, keptForOtherWords, stoppedOfferOf } from "../conversati
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
+import { useIssuePageChoice } from "../issue-page/choice";
 import { useMarginDrawer } from "../issue-page/margin-slot";
-import { DECISIONS_DOCUMENT_SLUG, parseIssuePath, parseProjectPath } from "../refs/routes";
+import {
+  DECISIONS_DOCUMENT_SLUG,
+  parseIssuePath,
+  parseProjectPath,
+  unknownToShell,
+} from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
@@ -97,7 +103,11 @@ export function useMarginSheet(): MarginSheetModel {
   const store = useHeldSends();
   const queryClient = useQueryClient();
   const { hash, key: locationKey, pathname, search } = useLocation();
-  const issueRoute = parseIssuePath(pathname, search);
+  // The owner's rule (`useMarginOwner`): today's page knows no address of the new page alone.
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const issueRoute = unknownToShell(pathname, newPage)
+    ? undefined
+    : parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
   const documentRoute = projectRoute?.kind === "document" ? projectRoute : undefined;
   const owner = useMarginOwner();

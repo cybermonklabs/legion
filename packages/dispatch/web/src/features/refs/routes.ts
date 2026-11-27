@@ -545,6 +545,22 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   };
 }
 
+/**
+ * Whether the shell takes `pathname` for an address it does not know, as `main` does: an address
+ * of the new issue page alone - Threads' list and each record of it (R12), with any query - for
+ * a reader who draws today's page (`newPage` false, the default). `parseIssuePath` answers these
+ * addresses for every reader, and today's page draws its not-found page at them
+ * (`features/issue/IssuePage.tsx`), so each reader of the shell outside the new page asks this
+ * before it reads the address as an issue's or a project's. With the new page off the shell then
+ * draws no margin there, adds no issue to Recents, scopes the search bar and a new issue to no
+ * issue or project, and names no issue as the page or in the sidebar
+ * (dispatch://INFRA-5704/spec#b-r-today-unchanged). This is the one list of the new page's own
+ * addresses: another of them joins it here.
+ */
+export function unknownToShell(pathname: string, newPage = false): boolean {
+  return !newPage && parseIssuePath(pathname)?.kind === "threads";
+}
+
 export function parseProjectPath(pathname: string, search = ""): ProjectRoute | undefined {
   const match = pathname.match(projectPathPattern);
   if (match === null) {
@@ -1367,6 +1383,10 @@ export function buildInboxPath(route: InboxRoute = {}): string {
  * owner, whose document form only appears once the artifact query lands.
  */
 export function routeHasMargin(pathname: string, search = ""): boolean {
+  // An address of the new issue page alone has no margin column: today's page draws its
+  // not-found page there, and the new page's margin is Details, a drawer its frame draws
+  // whatever this answers (`Margin.tsx`).
+  if (unknownToShell(pathname)) return false;
   return (
     parseIssuePath(pathname, search) !== undefined ||
     parseProjectPath(pathname, search)?.kind === "document"

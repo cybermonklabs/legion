@@ -19,7 +19,8 @@ import { useLocation } from "react-router-dom";
 
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import { useProjectArtifact } from "../document/useProjectArtifact";
-import { buildIssuePath, buildProjectPath, parseIssuePath } from "../refs/routes";
+import { useIssuePageChoice } from "../issue-page/choice";
+import { buildIssuePath, buildProjectPath, parseIssuePath, unknownToShell } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { documentRouteOf } from "./bar-scope";
 
@@ -98,7 +99,12 @@ export function recordRecent(login: string | undefined, item: RecentItem): void 
 export function useRecordRecents(): void {
   const login = useQuery(whoAmIQuery()).data?.login;
   const location = useLocation();
-  const issueRoute = parseIssuePath(location.pathname, location.search);
+  // Where the reader draws today's page, an address of the new issue page alone is no issue's,
+  // so a visit there records nothing, as on `main` (`unknownToShell`).
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const issueRoute = unknownToShell(location.pathname, newPage)
+    ? undefined
+    : parseIssuePath(location.pathname, location.search);
   const issueKey = issueRoute?.key;
   const documentRoute = documentRouteOf(location.pathname, location.search);
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
