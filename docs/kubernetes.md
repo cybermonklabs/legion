@@ -31,7 +31,7 @@ It carries:
   the merger's are `roles/mechanics/headless.md` and `roles/merger.md`, then `go/merger.md` and `go/worker-common.md`;
   an architect's are `roles/architect-root.md` or `roles/architect.md`, then the `go/` part of the same name and `go/architect-common.md`;
   the controller's are `roles/controller-root.md`, then `go/controller-headless.md` or `go/controller-interactive.md`.
-  A part can be empty, as the two `core` parts are: the composer still reads it, so its path stays.
+  A part can be empty, as `go/planner.md` is: the composer still reads it, so its path stays.
   The daemon snapshots its own into its state directory before a pane can read them and inlines that snapshot into each pod it runs, and `legion probe-image`, given no `--role-references`, resolves the task agents and skills named by the prompts the image's own `legion` embeds (`packages/daemon/cmd/legion/probe_image.go`);
 
 - `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` packed from that commit's `packages/pi-envoy` and `packages/pi-legion` (the exact `bun pm pack` steps `release.yaml`'s `pi_envoy_build` and `pi_legion_build` jobs run), unpacked at `/opt/legion/pi-envoy` and `/opt/legion/pi-legion`, the two roots a pod names as Oh My Pi's explicit extensions
@@ -60,7 +60,7 @@ It carries:
 - `@bopstack/pi-codegraph`, installed at `/opt/omp-plugins` from the committed lockfile at `packages/daemon/docker/omp-plugins` (its `package.json` is the pin;
   the build resolves nothing from npm), the one plugin linked into the OMP profile `legion` (`OMP_PROFILE=legion`;
   plugins resolve to `/home/legion/.omp/profiles/legion/plugins/node_modules`), backed by the CodeGraph CLI (`@colbymchenry/codegraph`, installed at `/opt/codegraph` from the committed lockfile at `packages/daemon/docker/codegraph`) at `/opt/codegraph/bin` (`PATH`)
-  — the `codegraph` tool.
+  — the `codegraph` tool each role's prompt says when to query: the architects before the spec names what a change touches (`packages/daemon/internal/prompts/roles/architect.md`, `architect-root.md`), the planner, the implementer, the tester and the reviewer at their own step (`roles/core/planner.md`, `implementer.md`, `tester.md`, `reviewer.md`), with what a missing tool or an empty, stale or partial answer asks of them in `roles/core/common.md`, and the merger where the base changed code the change uses (`roles/merger.md`).
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
 - OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest):
@@ -6455,7 +6455,7 @@ the disk is the pod's own, or a kept volume that one pod mounts at a time, and n
 Each role's shim is started with `--warm-codegraph`:
 once its Oh My Pi has written its first frame
 — its extensions loaded, its RPC loop serving
-— the shim builds the workspace's CodeGraph index in the background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial, as `codegraph status --json` decides).
+— the shim builds the workspace's CodeGraph index in the background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial or one another CLI version built, as `codegraph status --json` decides from `index.state` and from `index.builtWithVersion` against the CLI's own `version`).
 Nothing waits on it: not the launch, not the role's registration, not a prompt.
 Six role shims share one workspace, so the warm-up holds a lease at `.codegraph/legion-warm.lock` for its run
 — an exclusive create whose holder refreshes its mtime every 10 s, taken over once it is 60 s stale, the takeover itself under a second exclusive create beside it so two shims that both read one stale lease never both build
@@ -6469,8 +6469,11 @@ it waits for that release at least 3 s and at most what the pod's `terminationGr
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
-The tester's `affected` and the reviewer's `impact`/`callers` queries answer once `codegraph status --json` reports `index.state: "complete"`;
-before that a role falls back to grep, as its prompt says.
+An index that another CLI version built on a kept volume is rebuilt once, by the first warm-up that finds a version in its `index.builtWithVersion` other than the CLI's own `version`, and by no later one; an index with no version there, which a build that indexed no file leaves, counts as current.
+The roles' CodeGraph queries (`impact`, `callers`, `affected`, `explore`) answer once `codegraph status --json` reports `index.state: "complete"`;
+before that, or when an answer is empty, a role reads the source itself, as its prompt says.
+Before its first query and before each `status`, a role checks the lease with `find <workspace>/.codegraph/legion-warm.lock -mmin -1 2>/dev/null`, and while that prints the path it reads the source and makes no `codegraph` call: a `status` during a whole-repository `init` or `index` made that build fail with `database is locked` (measured on CodeGraph 1.6.4).
+A role runs no `init`, `index`, `sync` or `unlock` itself: only the warm-up builds the index, under its lease, so the lease check sees every build.
 The init container never calls `codegraph`.
 
 Every pod runs:

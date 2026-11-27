@@ -1,0 +1,1 @@
+For each changed exported symbol, ask the `codegraph` tool for its blast radius, and grep only for what it does not answer: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, and the same with `"action":"callers"`.
