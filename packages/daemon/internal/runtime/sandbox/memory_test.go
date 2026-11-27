@@ -181,9 +181,11 @@ func TestAKeptPodHoldingTheMemoryOverlaysTellsALaunchInNoMemoryGroupNone(t *test
 // Moving a memory overlay's mount is drift for every issue pod of the deployment, the pod of a
 // tree in no memory group among them: any tree may be drawn into the group, so one update round
 // over the whole pod replaces it rather than a later launch replacing it under the roles working
-// in it. The drift names the key and the file. The controller's own pod is not drifted by it: the
-// controller runs in no tree, so no memory group ever names it those files. Restarting on the
-// same configuration is no move.
+// in it. The drift names the key and the file. The file does not move the controller's pod: the
+// controller runs in no tree, so no memory group names it those files (movedRoleOverlays, which
+// this test reads), while the changed mount still drifts that pod's shape, which
+// TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted holds. Restarting on the same
+// configuration is no move.
 func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.T) {
 	t.Parallel()
 	at := func(dir string) func(*Options) {

@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -48,11 +47,14 @@ func suspensionHeldRoundRig(t *testing.T, suspendedBy supervise.SuspendSource) *
 
 // stallDelivery runs every notice and controller-notice row the sweep wrote through the outbox's
 // own executors, each row leased as the outbox leases it: a notice is routed by the owner walk
-// over the rig's machines (deliverNotice), and a controller notice is published to the project's
-// controller topic (controllerNotice). It answers the update-stalled notices published, by topic.
+// over the rig's machines (deliverNotice), and a controller notice is published to the
+// controller's role topic (controllerNotice), whose live holder is the project's registered
+// controller session. It answers the update-stalled notices published, by topic.
 func (r *podUpdateRig) stallDelivery() map[string][]record.Notice {
 	r.t.Helper()
+	registerProjectControllerAs(r.t, r.pool.Config().ConnString(), podUpdateProject, "ses_controller")
 	listener := &holderPublisher{}
+	listener.holds(legionController, "ses_controller")
 	runner := &outbox{log: quietLogger(), pool: r.pool, records: r.records, notices: listener, supervisor: r.sup,
 		project: podUpdateProject, dispatchProject: "LEGION", now: time.Now}
 	for _, kind := range []record.OutboxKind{record.OutboxKindNotice, record.OutboxKindControllerNotice} {
@@ -105,7 +107,7 @@ func TestPodUpdateTellsTheControllerAloneOfItsOwnOrTheOperatorsHold(t *testing.T
 			if rows := rig.rows(record.OutboxKindNotice); len(rows) != 0 {
 				t.Fatalf("the sweep wrote %d architect notices, want none: the round's one hold is the %s's", len(rows), tc.by)
 			}
-			notice := toldOn(t, rig.stallDelivery(), notify.ControllerTopic(podUpdateProject))
+			notice := toldOn(t, rig.stallDelivery(), controllerRoleTopic)
 			if !strings.Contains(notice.Reason, tc.words) {
 				t.Errorf("the controller's notice says %q, want it to say %q", notice.Reason, tc.words)
 			}

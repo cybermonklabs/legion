@@ -9,6 +9,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
+import { callOf } from "@legion/envoy-client/test/fake-dispatch";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
+import { leastAnswerFor } from "@legion/envoy-client/test/route-answers";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { ErrorCode, NatsError, connect as realConnect } from "nats";
 
@@ -61,16 +64,21 @@ function relayCarries(subject: string): boolean {
 
 /**
  * Records every registration whatever `fetch` a row installs, so the followed topics are known
- * centrally. A row's own fetch is kept behind this one; reading `globalThis.fetch` answers this
- * wrapper, so a row that wraps the fetch it found takes it from `rowFetch()`, never from
- * `globalThis.fetch`, which would call the row's own wrapper forever. That mistake fails at once,
- * by name: a call nested past `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once,
- * it grew one row's process to 118 GiB before anything stopped it.
+ * centrally, and puts the row's fetch behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
+ * gives a Dispatch write names the write's key back, as Dispatch's own answers do. A row's own
+ * fetch is kept behind this one; reading `globalThis.fetch` answers this wrapper, so a row that
+ * wraps the fetch it found takes it from `rowFetch()`, never from `globalThis.fetch`, which would
+ * call the row's own wrapper forever. That mistake fails at once, by name: a call nested past
+ * `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once, it grew one row's process to
+ * 118 GiB before anything stopped it.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this module found it: what a row restores (`tearDownRow` in
  *  `./extension-harness`) and what the live stack uses. */
 export const originalFetch: typeof globalThis.fetch = installedFetch;
+const keyedFetch = keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+  installedFetch(input, init)
+);
 /** How deep the calls of `recordingFetch` are nested in the current call's async context. */
 const fetchDepth = new AsyncLocalStorage<number>();
 /** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
@@ -93,7 +101,7 @@ const recordingFetch = (async (input, init) => {
   } catch {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
-  return fetchDepth.run(depth, () => installedFetch(input, init));
+  return fetchDepth.run(depth, () => keyedFetch(input, init));
 }) as typeof globalThis.fetch;
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 export const rowFetch = (): typeof globalThis.fetch => installedFetch;
@@ -505,12 +513,32 @@ export function busOutageAnswer(status: number): Response {
   );
 }
 
+/**
+ * The listener's answer to a registration, a keyed write's answer to a Dispatch write, and
+ * `fallback` to anything else. A Dispatch write (a POST or PATCH under `/api/v1/`) these tests do
+ * not answer themselves gets its route's least answer, which the keyed layer every row's fetch
+ * passes (`recordingFetch`) names the request's key back on, so the session's client reads it as
+ * Dispatch's answer.
+ */
 export function responseWithRegistration(
   input: string | URL | Request,
   init: RequestInit | undefined,
   fallback: unknown
 ): Response {
-  const path = new URL(input.toString()).pathname;
+  // What the call asked for, read as envoy-client's fake Dispatch reads it (callOf): a Request
+  // names its own URL and method, and a string or a URL carries the method in `init` alone.
+  const { url, method } = callOf(input, init);
+  const path = url.pathname;
+  const written =
+    (method === "POST" || method === "PATCH") && path.startsWith("/api/v1/")
+      ? leastAnswerFor(method, path)
+      : undefined;
+  if (written !== undefined) {
+    return new Response(JSON.stringify(written.body), {
+      headers: { "Content-Type": "application/json" },
+      status: written.status,
+    });
+  }
   if (path !== "/v1/interests/subscribe") return response(fallback);
   const body = JSON.parse(init?.body?.toString() ?? "{}") as {
     readonly session_id: string;

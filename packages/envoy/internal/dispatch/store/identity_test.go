@@ -78,7 +78,7 @@ func TestMigrateAppliesNothingWhileAnotherBootRecordsAConflictingVersion(t *test
 				if err != nil {
 					t.Fatalf("load the set: %v", err)
 				}
-				if err := store.prepareVersionTable(ctx, migrations); err != nil {
+				if _, err := store.prepareVersionTable(ctx, migrations); err != nil {
 					t.Fatalf("prepare: %v", err)
 				}
 				if conflicting {

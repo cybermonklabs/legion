@@ -14,8 +14,10 @@ import {
   RelayHeader,
   type RelayReply,
 } from "@legion/envoy-client/consumer-delivery";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
@@ -71,7 +73,11 @@ export async function ompRoot(
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
  * body, empty for a GET, and the request itself, whose `signal` aborts when the client gives the
- * request up. Returns the recorded requests and the server's base URL.
+ * request up. Returns the recorded requests and the server's base URL. The server answers behind
+ * Dispatch's keyed layer (`keyedLayer`), so each 2xx to a request that carries an
+ * `Idempotency-Key` names that key back, as Dispatch's own answers do: the client takes no 2xx
+ * that names no key as its write's answer, so a stand-in of a keyed write (a delivery's accept,
+ * a reply) whose answer left it out would never be accepted.
  */
 export function serveStandin(
   cleanup: Cleanup,
@@ -87,7 +93,7 @@ export function serveStandin(
     // An address of its own, out of reach of a client of another test that still dials this port
     // at 127.0.0.1 (`loopbackHost`); the clients' URLs are built from `base` below.
     hostname: loopbackHost(),
-    async fetch(request) {
+    fetch: keyedLayer(async (request: globalThis.Request) => {
       const url = new URL(request.url);
       // A body that is no JSON object is refused by name, and is neither recorded nor handed to
       // `answer` (`readStandinBody`).
@@ -95,7 +101,7 @@ export function serveStandin(
       if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
       return answer(url, body, request);
-    },
+    }),
   });
   cleanup.push(async () => {
     await server.stop(true);
@@ -606,7 +612,9 @@ function ompFlags(options: {
 const OMP_POOL_THREADS = "4";
 
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH, and each of omp's thread pools at `OMP_POOL_THREADS`. Left to itself, omp sizes each
+ * on PATH, Bun's transpiler cache off, since omp transpiles each extension it loads and would
+ * otherwise keep every one under `home` (408 files in one run of `dispatch-first-omp.test.ts`),
+ * and each of omp's thread pools at `OMP_POOL_THREADS`. Left to itself, omp sizes each
  * pool to the machine's CPU count: its natives' Tokio runtime (`TOKIO_WORKER_THREADS`), Rayon's
  * global pool (`RAYON_NUM_THREADS`), the directory walker's workers (`PI_WALK_WORKERS`) and Bun's
  * work pool (`UV_THREADPOOL_SIZE`). One omp on a 288-CPU machine held 1,333 threads, so a suite
@@ -614,6 +622,7 @@ const OMP_POOL_THREADS = "4";
  * fixed, the threads a test's omp starts are the same on every machine. */
 function ompEnv(options: { readonly home: string; readonly bin?: string }): Record<string, string> {
   return {
+    ...bunCacheOff,
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
     TOKIO_WORKER_THREADS: OMP_POOL_THREADS,
