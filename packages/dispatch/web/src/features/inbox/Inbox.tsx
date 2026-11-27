@@ -707,10 +707,13 @@ export function Inbox({
   // place of the list; the drawer is the list of cards at every width.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
   const columns = pane && wideEnoughForPane;
+  const whoAmI = useQuery(whoAmIQuery());
+  // The reader's asks and credential requests are read under the `person` scope, which an agent
+  // viewer's bearer may not hold: for one the Inbox asks for neither, and lists nothing.
+  const person = whoAmI.data?.kind !== "agent";
   // One inbox query, shared with the nav badge, the sidebar, the agents page and the margin; the
   // list below is a client-side partition of it, so an answered row leaves every surface at once.
-  const inbox = useQuery(inboxQuery());
-  const whoAmI = useQuery(whoAmIQuery());
+  const inbox = useQuery({ ...inboxQuery(), enabled: person });
   /** Which of the reader's two lists is showing: their Inbox, or what they have dismissed out of
    *  it. A thread stays in the Inbox, read or not, until it is dismissed. */
   const show: InboxShow = filter.show ?? "inbox";
@@ -730,7 +733,7 @@ export function Inbox({
   const adoptedInbox = useMotionHold(inbox.data, listRef);
   // The credential requests the Inbox lists above its asks: the section, the banner and the empty
   // state all read this one answer.
-  const credentials = useCredentialRequests();
+  const credentials = useCredentialRequests(person);
   const viewer = whoAmI.data?.login;
   // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
   // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
@@ -1693,6 +1696,14 @@ export function Inbox({
     },
   ]);
 
+  if (!person) {
+    return (
+      <p className={textMutedOnCanvas}>
+        The Inbox lists the asks, threads and credential requests that wait on a person, so an agent
+        has none.
+      </p>
+    );
+  }
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }

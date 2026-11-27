@@ -25,6 +25,7 @@ import "./features/document/DocumentPage";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
 import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
+import { COMPACT_VIEWPORT_QUERY } from "./features/shell/useDialog";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -1116,14 +1117,17 @@ test("a live socket refused once the person is signed out takes the page to sign
   }
 });
 
-test("an agent's whoami draws the shell for its label, with no sign-out, and asks nothing that is a person's own", async () => {
+/** The shell drawn for an agent's whoami, opened at `path`: at a wide width, or below the compact
+ *  width with `compact`. Each read of a person's own, and the sign-out, is answered, so a call is
+ *  counted rather than refused. `restore` unmounts it and puts back what it replaced. */
+function renderAgentShell(path: string, { compact = false }: { compact?: boolean } = {}) {
   const originalMatchMedia = window.matchMedia;
-  window.matchMedia = (() =>
+  window.matchMedia = ((query: string) =>
     ({
       addEventListener: () => {},
       addListener: () => {},
       dispatchEvent: () => true,
-      matches: false,
+      matches: compact && query === COMPACT_VIEWPORT_QUERY,
       media: "",
       onchange: null,
       removeEventListener: () => {},
@@ -1149,7 +1153,6 @@ test("an agent's whoami draws the shell for its label, with no sign-out, and ask
       []
     ),
     getProjectDeliverySettings: spyOn(api, "getProjectDeliverySettings").mockResolvedValue(null),
-    // The person's own reads and the sign-out: answered, so a call is counted rather than refused.
     getInbox: spyOn(api, "getInbox").mockResolvedValue([]),
     listIssues: spyOn(api, "listIssues").mockResolvedValue([]),
     getMyState: spyOn(api, "getMyState").mockResolvedValue({}),
@@ -1166,12 +1169,29 @@ test("an agent's whoami draws the shell for its label, with no sign-out, and ask
   };
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
-    <MemoryRouter initialEntries={["/projects/ACME/settings"]}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <AuthGate />
       </QueryClientProvider>
     </MemoryRouter>
   );
+  return {
+    restore: () => {
+      view.unmount();
+      liveSocketFor(queryClient).close();
+      for (const spy of Object.values(spies)) spy.mockRestore();
+      window.matchMedia = originalMatchMedia;
+    },
+    spies,
+  };
+}
+
+/** The control that opens the Inbox's drawer over the page, in the sidebar and the compact
+ *  header alike. */
+const PEEK = "Peek at the inbox without leaving this page";
+
+test("an agent's whoami draws the shell for its label, with no sign-out, and asks nothing that is a person's own", async () => {
+  const { restore, spies } = renderAgentShell("/projects/ACME/settings");
 
   try {
     // The shell is drawn for the label, not the sign-in page, with the settings tab it opened on.
@@ -1181,10 +1201,12 @@ test("an agent's whoami draws the shell for its label, with no sign-out, and ask
       within(await screen.findByRole("navigation", { name: "Navigation" })).getByText("ACME")
     ).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Sign in with Google" })).not.toBeInTheDocument();
-    // No sign-out, which has no session of this browser's to end, and no Settings page, whose
-    // sections are a person's.
+    // No sign-out, which has no session of this browser's to end, no Settings page, whose
+    // sections are a person's, and no Inbox or Peek, whose lists are a person's.
     expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Inbox/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: PEEK })).not.toBeInTheDocument();
     expect(screen.queryByText("Could not load navigation.")).not.toBeInTheDocument();
     // Nothing that is a person's own is asked: the Inbox's asks and threads, the credential
     // requests waiting on them, the pinned issues, the per-issue and per-agent state, and the
@@ -1197,9 +1219,37 @@ test("an agent's whoami draws the shell for its label, with no sign-out, and ask
     expect(spies.getCredentialPending).not.toHaveBeenCalled();
     expect(spies.logout).not.toHaveBeenCalled();
   } finally {
-    view.unmount();
-    liveSocketFor(queryClient).close();
-    for (const spy of Object.values(spies)) spy.mockRestore();
-    window.matchMedia = originalMatchMedia;
+    restore();
+  }
+});
+
+// The Inbox lists what waits on a person, each read under the `person` scope, which an agent's
+// bearer may not hold: a read refused that way would be asked again on every refresh, the
+// credential requests every 15 seconds. So the compact header offers an agent no Inbox and no
+// Peek, and the Inbox page, where the dashboard opens, asks for none of those lists.
+test("an agent viewer's compact header offers no Inbox and no Peek, and its Inbox page asks for none of a person's lists", async () => {
+  const compact = renderAgentShell("/projects/ACME/settings", { compact: true });
+  try {
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Open navigation" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Inbox/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: PEEK })).not.toBeInTheDocument();
+  } finally {
+    compact.restore();
+  }
+
+  const home = renderAgentShell("/");
+  try {
+    expect(
+      await screen.findByText(
+        "The Inbox lists the asks, threads and credential requests that wait on a person, so an agent has none."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Inbox/ })).not.toBeInTheDocument();
+    expect(home.spies.getInbox).not.toHaveBeenCalled();
+    expect(home.spies.getCredentialPending).not.toHaveBeenCalled();
+    expect(home.spies.listMyReplies).not.toHaveBeenCalled();
+  } finally {
+    home.restore();
   }
 });

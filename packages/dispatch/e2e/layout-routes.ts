@@ -289,7 +289,6 @@ const additions: Readonly<
   "project-documents": { minElements: shortPage(40) },
   // The Labels cell of the stress issue's row: its 13 labels, a list of R3.
   "project-issues": { requiredGroups: ["labels"], states: [twoRowsSelected] },
-  "project-settings": { minElements: shortPage(32) },
 };
 
 const reviewed: readonly LayoutRoute[] = reviewRoutes

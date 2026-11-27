@@ -862,6 +862,8 @@ Each page is read once it is drawn.
 
   return {
     broadcast: workspace.broadcast.id,
+    // The project `seedDeliveryFixture()` above gives delivery settings with delivery on.
+    deliveryProject: "ACME",
     deliveryQuery: TIMELINE_FIXTURE_QUERY,
     issue,
     issueArtifactSlug: requirements.artifact.slug,

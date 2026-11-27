@@ -51,11 +51,14 @@ export function IconRail({
       >
         <i aria-hidden="true" className={`block size-3 rounded-full ${iconRailAccentBg}`} />
       </Link>
-      <RailLink
-        icon={INBOX_ICON}
-        label={inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`}
-        to="/"
-      />
+      {/* An agent viewer has no Inbox: its asks and threads are a person's. */}
+      {user.kind === "user" ? (
+        <RailLink
+          icon={INBOX_ICON}
+          label={inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`}
+          to="/"
+        />
+      ) : null}
       <RailLink icon={AGENTS_ICON} label="Agents" to="/agents" />
       <RailLink icon={PRIORITIES_ICON} label="Priorities" to={PRIORITIES_PATH} />
       <RailLink icon={DELIVERY_ICON} label="Delivery" to="/delivery" />

@@ -36,7 +36,7 @@ They are:
   Dispatch stores a pull request once, so it admits a pull request whose author any delivery-on project names, unless its repository is one that any delivery-on project excludes.
 
 - **Failure sources** (`failure_sources`): any of `check_results`, `reverts`, `incident_label` and `events`, the signals the project's failure measures count (The failure measures, below).
-  `failures_measured_since` is the first UTC day they count, and a save that names a failure source must name it.
+  `failures_measured_since` is the first UTC day they count, and a save whose settings hold a failure source must hold that day too, named in its body or kept from the stored settings.
 
 - **Targets** (`targets`): the target of each of the project's evals `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`, `deploy-run-success`, `failed-deploy-recovery` and `unowned-p0`, a number or `"off"`.
   No settings column holds a target.
@@ -48,7 +48,7 @@ The save checks this under a lock of each repository involved, taken in name ord
 A move of the default repository of a delivery-on project whose `github_workflow` source names no repository, and so reads the default, is held to the same rule: `PUT /api/v1/projects/{key}/default-repository` refuses a move onto a repository that another delivery-on project's source reads or that another source of the project names (`409 DELIVERY_REPOSITORY_SHARED`), and refuses to clear it (`409 DELIVERY_NEEDS_REPOSITORY`).
 Any other project moves its default repository freely.
 
-A save replaces the project's sources.
+A save that names `sources` replaces the project's sources with that list, and a save that leaves `sources` out keeps them.
 A source whose repository and rule are both unchanged keeps its id, its bookkeeping and its repository's reconcile progress.
 Every other source's repository has its progress cleared, so the next reconcile imports that repository's runs of the last 28 days again.
 The answer, like `GET`, adds to each source its `id`, its `resolved_repo` (the repository it reads, null where it names none and the project has no default repository) and its `reconciled_through`.
@@ -56,28 +56,34 @@ The answer, like `GET`, adds to each source its `id`, its `resolved_repo` (the r
 A reader that wants a source's numbers after a save waits until its `reconciled_through` is later than the save.
 
 `GET` answers every reader of the project, a read-only token included, and answers `null` for a project that has saved no settings.
-`PUT` replaces the settings and answers them as `GET` does.
+`PUT` writes each top-level field its body names and keeps the stored value of each one it leaves out, as the settings stand when the save is written, so a save that waited for another save of the project keeps what that one wrote.
+`null` clears a field that may be empty.
+`PUT` answers the settings as `GET` does.
 The settings belong to the deployment rather than to one project, so a credential the broker scoped to one project is refused `403 PROJECT_SCOPE_DEPLOYMENT`, the project its path names included.
 A person saves them, and so does an agent token that no broker scoped to a project; a broker token that acts for a service and no person is refused `403 SIGN_IN_REQUIRED`, as it is refused every write.
 A refused save writes nothing, and its body is `{code, error, field?, source?, project?}`:
 
 - `400 DELIVERY_SETTINGS_INPUT`: a field no reader could read, named in `field`, with the source's index in `source` for a field of a source.
-  Delivery on with no source, more than 50 sources, a kind that is neither `github_workflow` nor `events`, a `github_workflow` source with no deploy workflow, no production job, an empty production job name or no pull-request checks workflow, a repository that is not `owner/name`, a second `events` source or one that names a repository or a workflow field, two sources that read one repository, a failure source that is not one of the four or is named twice, a failure source with no `failures_measured_since` or a day that is not `YYYY-MM-DD`, and a target of another eval, of an eval the project does not hold, or that is neither a number nor `"off"` are each refused this way.
+  Delivery on with no source, more than 50 sources, a kind that is neither `github_workflow` nor `events`, a `github_workflow` source with no deploy workflow, no production job, an empty production job name, a production job named twice or no pull-request checks workflow, a repository that is not `owner/name`, a second `events` source or one that names a repository or a workflow field, two sources that read one repository, a failure source that is not one of the four or is named twice, a failure source with no `failures_measured_since` or a day that is not `YYYY-MM-DD`, and a target of another eval, of an eval the project does not hold, or that is neither a number nor `"off"` are each refused this way.
 
 - `409 DELIVERY_SETTINGS_ACCESS`: with delivery on, a `github_workflow` source whose repository Dispatch's GitHub App cannot read, named in `source`.
-  Dispatch asks GitHub before it writes anything, and a save that turns delivery off asks nothing, so a project whose repository the App can no longer read can still turn delivery off.
+  Dispatch asks GitHub before it writes anything, and a save whose settings have delivery off asks nothing, so a project whose repository the App can no longer read can still turn delivery off.
 
 - `409 DELIVERY_NO_DEFAULT_REPOSITORY`: with delivery on, a `github_workflow` source that names no repository, of a project with no default repository.
   The message says to name the source's repository or to set the project's default repository in **Settings → Projects**.
 
 - `409 DELIVERY_REPOSITORY_SHARED`: with delivery on, a repository that a source of another delivery-on project reads, that project named in `project`.
 
+- `409 DELIVERY_SETTINGS_CHANGED`: another write moved what the save rests on under each of its two attempts: the repository a source reads, which the save has then not proved the App can read, or a target the save names.
+  Read the settings again and save again.
+
 - `404 PROJECT_NOT_FOUND`: no project has the key.
 
 An agent may save them on the tab itself, in a headless browser that sends its agent bearer on every request to Dispatch and has no sign-in: `GET /auth/whoami` answers such a bearer as an agent, and the dashboard draws its shell for it.
 An agent whose credential proves no session opens the tab at `/projects/<KEY>/settings?session=<its session>`, and its save names that session as the writer (`actor`), as a bearer's write must; a broker-issued token's own session is named without the parameter.
 Opened with neither, the tab sends no save: **Save delivery settings** says to open the page with `?session=<your session>`, since Dispatch would refuse the save `400 ACTOR_KIND`.
-The agent's shell has no **Sign out** and no **Settings** link, and shows none of a person's own lists (the Inbox's asks and threads, pinned issues and pinned agents), since each needs a person's sign-in or the `person` scope.
+The agent's shell has no **Inbox** link, no **Peek**, no **Sign out** and no **Settings** link, and shows none of a person's own lists (the Inbox's asks, threads and credential requests, pinned issues and pinned agents) and asks for none of them, since each needs a person's sign-in or the `person` scope.
+Its Inbox page, `/`, says that an agent has no Inbox.
 
 The deployment-wide delivery record of the release before this one, `GET` and `PUT /api/v1/settings/delivery`, still answers for one release, because a route is removed only in the release after the one that stops calling it; nothing in the web app calls it, this release reads that record nowhere else, and the next release removes the route.
 
@@ -341,12 +347,15 @@ The record has three routes, each of a project:
 
 - `POST /api/v1/projects/{key}/production-events` writes one deploy or failure, `{kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, note?, actor?}`, and takes OpenTelemetry's `deployment.environment.name`, `deployment.status` and `cicd.pipeline.run.url.full` for `environment`, `status` and `url` (one name of a field, or both alike) and `cicd.pipeline.run.id` for a failure's GitHub run.
   It answers `201` with the new row, or `200` with the row the project already holds under that `source_ref`, writing nothing.
+  `note` is what the writer says of the event, kept as sent, at most 4,096 bytes.
   A deploy needs `finished_at`, and only an agent or service token posts one: a credential that holds the `person` scope is refused `403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN`.
   A failure names the deploy it blames, a deploy row of any project, one way, by `deploy_id`, by `cicd.pipeline.run.id` with `repo`, or by `commit_sha`, and one no deploy row matches is `409 PRODUCTION_EVENT_NO_DEPLOY`.
-  A system's post needs `source_ref`, and a field no row can hold is `400 PRODUCTION_EVENT_INPUT`, naming it.
+  A system's post needs `source_ref`, its own key for the event, and one that starts with a prefix an automatic source keys its own rows under (`github:`, `person:`, `check:`, `revert:` or `incident:`) is refused, since that source's own write under the key would then write nothing.
+  A person's flag takes the server's `source_ref`, and a person's post that names another is refused.
+  Each of these refusals, and a field no row can hold, is `400 PRODUCTION_EVENT_INPUT`, naming the field.
 
 - `PUT /api/v1/projects/{key}/production-events/{id}/state` rejects, counts again or restores one failure, `{state, reason, restored_by_deploy?}` (The record of deploys and failed changes, above), and answers the row.
-  A row the project does not hold is `404 PRODUCTION_EVENT_NOT_FOUND`, a deploy's row or a reject without a reason `400 PRODUCTION_EVENT_STATE_INPUT`, and a `restored_by_deploy` that is no deploy row `409 PRODUCTION_EVENT_NO_DEPLOY`.
+  A row the project does not hold is `404 PRODUCTION_EVENT_NOT_FOUND`; a deploy's row, a state that is none of the three, a reject or a re-count without a reason, and a `restored_by_deploy` beside another state are `400 PRODUCTION_EVENT_STATE_INPUT`; and a `restored_by_deploy` that is no deploy row is `409 PRODUCTION_EVENT_NO_DEPLOY`.
 
 Each of the three answers `404 PROJECT_NOT_FOUND` for no such project, and a credential the broker scoped to another project is refused either write with `403 PROJECT_SCOPE`.
 

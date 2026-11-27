@@ -33,6 +33,10 @@ export interface ReviewSeed {
    *  writes, which carries work in flight under it and work in backlog under it, so both pages
    *  draw rows rather than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
+  /** The project `/projects/:key/settings` is opened on: the one the delivery fixtures give
+   *  delivery settings with delivery on (`e2e/delivery-seed.ts`), so the tab draws its whole
+   *  form rather than the switch alone. */
+  readonly deliveryProject: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
   /** The `?at=` value the Pipeline page pins its seven days to. */
@@ -415,11 +419,15 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // project's stored settings, and its scan reads the DOM, which needs no baseline image.
     layers: ["scan"],
     name: "project-settings",
-    path: (seed) => `/projects/${seed.project}/settings`,
+    path: (seed) => `/projects/${seed.deliveryProject}/settings`,
     pattern: "/projects/:key/settings",
-    // The switch is drawn only once the project's settings have answered
-    // (`DeliverySettingsSection.tsx`, "Loading delivery settings…" until then).
-    ready: (page) => [page.locator("#project-settings-panel").getByRole("switch")],
+    // The first deploy source's fields, which the tab draws only once the project's settings have
+    // answered (`DeliverySettingsSection.tsx`, "Loading delivery settings…" until then) and only
+    // while they have delivery on: a project with none draws the switch alone, which is not the
+    // form this row is for.
+    ready: (page) => [
+      page.locator("#project-settings-panel").getByRole("group", { name: "Deploy source 1" }),
+    ],
   },
   {
     kind: "reviewed",

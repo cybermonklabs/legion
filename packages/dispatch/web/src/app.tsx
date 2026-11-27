@@ -678,11 +678,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
   // is the one thing about the live view the router still decides.
   const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
+  // Whether the viewer is a person. An agent viewer's bearer may hold no `person` scope, so the
+  // shell reads none of a person's own lists for it and draws no Inbox or Peek
+  // (`AuthenticatedUser.kind`).
+  const person = user.kind === "user";
   // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
   // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
   // on the page while the sidebar is collapsed or its sheet is closed. An agent viewer has none.
   const liveViews = useLiveViews();
-  const pinnedAgents = usePinnedAgents(user.kind === "user");
+  const pinnedAgents = usePinnedAgents(person);
   useEffect(() => {
     liveViews.setPinned(pinnedAgents);
   }, [liveViews, pinnedAgents]);
@@ -703,7 +707,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const writePin = useAgentPinWrite();
   const migrated = useRef<string | null>(null);
   useEffect(() => {
-    if (user.kind !== "user") return;
+    if (!person) return;
     const key = legacyPinnedAgentsKey(user.login);
     if (migrated.current === key) return;
     const kept = window.localStorage.getItem(key);
@@ -715,15 +719,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       }
       window.localStorage.removeItem(key);
     })();
-  }, [user.kind, user.login, writePin]);
+  }, [person, user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
   const inboxCount = useInboxCount();
   // The person's conversations with sessions, read under the `person` scope: an agent viewer has
-  // none, and asks for none (`useIsHuman`).
+  // none, and asks for none.
   const unreadReplies = totalUnreadReplies(
-    useQuery({ ...userAgentStateQuery(), enabled: user.kind === "user" }).data
+    useQuery({ ...userAgentStateQuery(), enabled: person }).data
   );
 
   const mainRef = useRef<HTMLElement | null>(null);
@@ -1025,7 +1029,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {routeIsInbox(location.pathname) ? (
+              {/* An agent viewer has no Inbox to count or peek at (`person`). */}
+              {!person ? null : routeIsInbox(location.pathname) ? (
                 <span className={inboxBadgeClass}>{inboxLabel}</span>
               ) : (
                 <>

@@ -156,7 +156,8 @@ export function Sidebar({
   // The person's own reads - the asks waiting on them, the issues they pinned, their pinned
   // agents and their conversations' unread replies - each need the `person` scope, which an agent
   // viewer's bearer may not hold: for one the rail reads none of them and waits on none, so it is
-  // drawn with its projects and pages and none of the person's lists (`AuthenticatedUser.kind`).
+  // drawn with its projects and pages, and with no Inbox, no Peek and none of the person's lists
+  // (`AuthenticatedUser.kind`).
   const person = user.kind === "user";
   const inbox = useQuery({ ...inboxQuery(), enabled: person });
   const pinned = useQuery({
@@ -229,33 +230,35 @@ export function Sidebar({
     <>
       {hideControl}
       <nav aria-label="Navigation" className="mt-8 space-y-5">
-        <section className="flex items-center gap-1">
-          <Link
-            className={`mt-1 flex flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
-            onClick={onNavigate}
-            to="/"
-          >
-            <span>Inbox</span>
-            {inboxCount === 0 ? null : (
-              <span
-                className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-              >
-                {inboxCount}
-              </span>
-            )}
-          </Link>
-          {/* The Inbox page is the Inbox already, so there is nothing to peek at from it. */}
-          {onOpenInboxDrawer === undefined || routeIsInbox(location.pathname) ? null : (
-            <button
-              aria-label="Peek at the inbox without leaving this page"
-              className={`mt-1 shrink-0 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
-              onClick={onOpenInboxDrawer}
-              type="button"
+        {person ? (
+          <section className="flex items-center gap-1">
+            <Link
+              className={`mt-1 flex flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+              onClick={onNavigate}
+              to="/"
             >
-              Peek
-            </button>
-          )}
-        </section>
+              <span>Inbox</span>
+              {inboxCount === 0 ? null : (
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                >
+                  {inboxCount}
+                </span>
+              )}
+            </Link>
+            {/* The Inbox page is the Inbox already, so there is nothing to peek at from it. */}
+            {onOpenInboxDrawer === undefined || routeIsInbox(location.pathname) ? null : (
+              <button
+                aria-label="Peek at the inbox without leaving this page"
+                className={`mt-1 shrink-0 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+                onClick={onOpenInboxDrawer}
+                type="button"
+              >
+                Peek
+              </button>
+            )}
+          </section>
+        ) : null}
         <section>
           <div className="flex items-center gap-1">
             <Link
@@ -387,7 +390,7 @@ export function Sidebar({
             ))}
           </ul>
         </section>
-        {user.kind === "user" ? (
+        {person ? (
           <div className={`border-t pt-4 ${railBorder}`}>
             <Link
               className={`block rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
