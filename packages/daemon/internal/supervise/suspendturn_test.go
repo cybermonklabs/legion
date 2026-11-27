@@ -429,10 +429,10 @@ type gatedAdoption struct {
 	release chan struct{}
 }
 
-func (g *gatedAdoption) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+func (g *gatedAdoption) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity, branch string) error {
 	g.entered <- string(loc.Claim)
 	<-g.release
-	return g.Runtime.AdoptWorkingCopy(ctx, loc, id)
+	return g.Runtime.AdoptWorkingCopy(ctx, loc, id, branch)
 }
 
 // Only a held suspension lets a row end in suspended without naming that state. A row that

@@ -163,7 +163,7 @@ func TestEachRefusalFrameCarriesTheOutcomeItsCodeMints(t *testing.T) {
 		p := h.connect(testToken)
 		conn := h.conn()
 		identity := runtime.GitIdentity{Name: "legion-bot", Email: "bot@legion.dev"}
-		result := async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second) })
+		result := async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, "", 3*time.Second) })
 		request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 		p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: ompBusySentence})
 		var refused *RefusedError

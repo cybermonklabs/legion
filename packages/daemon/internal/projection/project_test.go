@@ -138,6 +138,7 @@ func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []st
 func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (record.IntakeGiveUps, error) {
 	return record.IntakeGiveUps{}, nil
 }
+
 // TaskPullRequestRows answers the fake's one pull request of an issue, its merge's, as the issue's
 // only task pull request row: the same row PullRequestsOf answers for it.
 func (s projectionStore) TaskPullRequestRows(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {

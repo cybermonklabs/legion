@@ -515,7 +515,7 @@ func requireTheCensusRefusesATypeMigrationAboveBtreeGin(t *testing.T, ctx contex
 	}
 	if above == 0 || below == 0 {
 		t.Fatalf("the census judged %d type migration(s) numbered above %d and %d below it, and this holds the refusal of the ones above and the admission of the ones below, so each count must be above zero",
-			above, btreeGinVersion, below, btreeGinVersion)
+			above, btreeGinVersion, below)
 	}
 }
 

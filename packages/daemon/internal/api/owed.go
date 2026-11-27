@@ -213,7 +213,7 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token) O
 	nothing := OwedResponse{Architect: owner}
 	if look := c.ServingCheck(); look.Look > 0 {
 		if check := position.check; check != nil && check.Open() && check.LookOpen && check.Looks == look.Look &&
-			check.NamedBy(look.OpenedAt) && check.Role == c.Role {
+			(look.OpenedAt.IsZero() || look.OpenedAt.Equal(check.OpenedAt)) && check.Role == c.Role {
 			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
 	}

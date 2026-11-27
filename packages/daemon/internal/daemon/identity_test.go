@@ -191,7 +191,9 @@ func TestALaunchCarriesTheIdentityOfEachRoleOfTheDeployment(t *testing.T) {
 			{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
 			{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
 		},
-		repository: func(context.Context, string) (launchRepository, error) { return launchRepository{Repo: repository, DefaultBranch: "main"}, nil },
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: repository, DefaultBranch: "main"}, nil
+		},
 		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
 			return appIdentities[appOf(role)], nil
 		}}
