@@ -1,5 +1,5 @@
 import { type InfiniteData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { issueAskThreadsQuery } from "../../api/queries";
@@ -23,6 +23,7 @@ import { commentQuery, EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { treeComments } from "./decision-review";
+import { useListPages } from "./details-leaves";
 import { useMarginDrawer } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, pageChrome } from "./page-structure";
@@ -34,12 +35,12 @@ import { issueMessagesQuery } from "./useIssueTree";
 /**
  * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its
  * first line, a link to its own address, which focuses its row in the outline, with its Unpin
- * beside it. A pin of what the outline draws no row for - a thread agents wrote among
- * themselves - links to its address too, which opens the history at it, and an old pin of a
- * handoff opens the history. Each line of the history the reader pinned
- * (`IssueHistory.tsx`'s Pin, an `event:<id>` pin) is listed under them: who did it and what the
- * line says, with a link that opens the history and its Unpin. The pin of a row itself is the
- * focused row's, in its facts (`FocusedNodeFacts.tsx`).
+ * beside it. A pin of what the outline draws no row for - a thread the history holds - links to
+ * its address too, which opens the history at it, and an old pin of a handoff opens the history.
+ * Each line of the history the reader pinned (`history-entries.tsx`'s Pin, an `event:<id>` pin)
+ * is listed under them: who did it and what the line says, with a link that opens the history
+ * and its Unpin. The pins are one list, drawn 20 at a time with Show more under them. The pin of
+ * a row itself is the focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
  * Pins use the outline's reads for messages and asks with their threads
  * (`issueAskThreadsQuery`), with the same `EVENT_FRESH` options. A pinned comment is drawn from
@@ -136,22 +137,41 @@ export function IssuePins({
           tree: post.body_tree,
         };
   };
-  const list = useRef<HTMLUListElement>(null);
+  // The pins are one list, 20 at a time with Show more under them (`useListPages`): the pins of
+  // asks, comments and messages first, and the history's lines after them.
+  const pages = useListPages<HTMLUListElement>();
+  const drawnPins = pins.slice(0, pages.drawn);
+  const drawnEventPins = eventPins.slice(0, Math.max(0, pages.drawn - pins.length));
   const heading = useRef<HTMLHeadingElement>(null);
-  // An Unpin takes its pin's row away, and the focus with it: the focus goes on to the next
-  // pin's link, else the one before, else the section's heading, rather than falling to the
-  // page. Every row holds its pin's link as a child of its own; an event pin's actor is a link
-  // further in, inside its line.
+  // An Unpin takes its pin's row away, and the focus with it: once the list is drawn without
+  // that row, the focus goes to the pin drawn in its place - the next pin, or the first of the
+  // next page where the row was the last one drawn - else the one before, else the section's
+  // heading, rather than falling to the page. A reader who has put the focus elsewhere by then
+  // keeps it there. Every row holds its pin's link as a child of its own; an event pin's actor is
+  // a link further in, inside its line.
+  const unpinned = useRef<{ readonly at: number; readonly id: string } | null>(null);
   const unpin = (id: string) => {
-    const rows = [...(list.current?.children ?? [])];
-    const at = rows.findIndex((row) => row instanceof HTMLElement && row.dataset.pin === id);
-    const neighbour = rows[at + 1] ?? (at > 0 ? rows[at - 1] : undefined);
+    const rows = [...(pages.list.current?.children ?? [])];
+    unpinned.current = {
+      at: rows.findIndex((row) => row instanceof HTMLElement && row.dataset.pin === id),
+      id,
+    };
+    writePin(queryClient, issueKey, { id, op: "unpin" });
+  };
+  useLayoutEffect(() => {
+    const press = unpinned.current;
+    if (press === null) return;
+    const rows = [...(pages.list.current?.children ?? [])];
+    if (rows.some((row) => row instanceof HTMLElement && row.dataset.pin === press.id)) return;
+    unpinned.current = null;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    const neighbour = rows[press.at] ?? (press.at > 0 ? rows[press.at - 1] : undefined);
     const next = [...(neighbour?.children ?? [])].find(
       (child) => child instanceof HTMLAnchorElement
     );
     (next ?? heading.current)?.focus();
-    writePin(queryClient, issueKey, { id, op: "unpin" });
-  };
+  });
   const link = `dispatch-inline-link ${ROW_LINK} ${pageInkText}`;
   return (
     <section aria-label={CONTROL_LABELS.pinned} data-testid="issue-pins">
@@ -168,68 +188,71 @@ export function IssuePins({
           {CONTROL_LABELS.none}
         </p>
       ) : (
-        <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
-          {pins.map((pin) => {
-            const id = conversationItemId(pin.kind, pin.id);
-            const record = pinRecord(pin.kind, pin.id);
-            return (
-              <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
-                <Link
-                  className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${link}`}
-                  to={
-                    pin.kind === "handoff"
-                      ? buildIssuePath({ key: issueKey, kind: "activity" })
-                      : buildIssuePath({ id: pin.id, key: issueKey, kind: pin.kind })
-                  }
-                >
-                  {/* Where no read holds the record - its read has not answered or has failed,
-                      or it is a handoff, whose words no read here holds - there are no words to
-                      wait on, so the pin is drawn by the page's word for its kind at once. */}
-                  {record?.deleted != null ? (
-                    <DeletedLine deleted={record.deleted} />
-                  ) : record === undefined ? (
-                    <span {...pageChrome}>{NODE_TYPE_NAMES[pin.kind]}</span>
-                  ) : (
-                    <>
-                      <PinLine id={pin.id} issueKey={issueKey} kind={pin.kind} record={record} />
-                      <EditedMark at={record.edited} marks={pageChrome} />
-                    </>
+        <>
+          <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={pages.list}>
+            {drawnPins.map((pin) => {
+              const id = conversationItemId(pin.kind, pin.id);
+              const record = pinRecord(pin.kind, pin.id);
+              return (
+                <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
+                  <Link
+                    className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${link}`}
+                    to={
+                      pin.kind === "handoff"
+                        ? buildIssuePath({ key: issueKey, kind: "activity" })
+                        : buildIssuePath({ id: pin.id, key: issueKey, kind: pin.kind })
+                    }
+                  >
+                    {/* Where no read holds the record - its read has not answered or has failed,
+                        or it is a handoff, whose words no read here holds - there are no words to
+                        wait on, so the pin is drawn by the page's word for its kind at once. */}
+                    {record?.deleted != null ? (
+                      <DeletedLine deleted={record.deleted} />
+                    ) : record === undefined ? (
+                      <span {...pageChrome}>{NODE_TYPE_NAMES[pin.kind]}</span>
+                    ) : (
+                      <>
+                        <PinLine id={pin.id} issueKey={issueKey} kind={pin.kind} record={record} />
+                        <EditedMark at={record.edited} marks={pageChrome} />
+                      </>
+                    )}
+                  </Link>
+                  <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
+                </li>
+              );
+            })}
+            {drawnEventPins.map((eventId) => {
+              const id = eventItemId({ id: Number(eventId) });
+              const event = events.find((one) => String(one.id) === eventId);
+              return (
+                <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
+                  {event === undefined ? null : (
+                    <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}>
+                      <span data-node-words="" {...authorText}>
+                        <SentenceParts
+                          parts={[{ actor: event.actor }, " ", ...eventDescription(event)]}
+                        />
+                      </span>
+                      {/* ` · edited` is the page's own word, as a row's edited mark is. */}
+                      <span {...pageChrome}>
+                        <EventEditedMark event={event} />
+                      </span>
+                    </span>
                   )}
-                </Link>
-                <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
-              </li>
-            );
-          })}
-          {eventPins.map((eventId) => {
-            const id = eventItemId({ id: Number(eventId) });
-            const event = events.find((one) => String(one.id) === eventId);
-            return (
-              <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
-                {event === undefined ? null : (
-                  <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}>
-                    <span {...authorText}>
-                      <SentenceParts
-                        parts={[{ actor: event.actor }, " ", ...eventDescription(event)]}
-                      />
-                    </span>
-                    {/* ` · edited` is the page's own word, as a row's edited mark is. */}
-                    <span {...pageChrome}>
-                      <EventEditedMark event={event} />
-                    </span>
-                  </span>
-                )}
-                <Link
-                  className={`${event === undefined ? "min-w-0 flex-1" : "shrink-0"} ${link}`}
-                  to={buildIssuePath({ key: issueKey, kind: "activity" })}
-                  {...pageChrome}
-                >
-                  {CONTROL_LABELS.history}
-                </Link>
-                <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
-              </li>
-            );
-          })}
-        </ul>
+                  <Link
+                    className={`${event === undefined ? "min-w-0 flex-1" : "shrink-0"} ${link}`}
+                    to={buildIssuePath({ key: issueKey, kind: "activity" })}
+                    {...pageChrome}
+                  >
+                    {CONTROL_LABELS.history}
+                  </Link>
+                  <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
+                </li>
+              );
+            })}
+          </ul>
+          {pages.more(pins.length + eventPins.length, undefined, "mt-1")}
+        </>
       )}
     </section>
   );

@@ -33,8 +33,8 @@ export type AddressTarget =
    *  it (`?ask=`, `?comment=`), and the one its own route names (`/asks/<id>`, `/comments/<id>`,
    *  `/messages/<id>`). It is a node of the tree, which the page unfolds the path to and puts
    *  the focus on, wherever the item is anchored (R20), or, for a comment or message agents
-   *  wrote outside every thread a person wrote in, an entry of the panel's history
-   *  (`agentsOnlyItem`). */
+   *  or a person wrote that is a turn of a thread the history holds (`agents-only.ts`), an entry
+   *  of the panel's history (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** One node, by its id in the tree read, which `?node=` names: the row a store address in a
    *  row's words links to (`lenses/store-link.ts`' `outlineRowPath`). Only the outline reads it,
@@ -245,16 +245,19 @@ export function issueAddress(
 }
 
 /**
- * The id `target` names where it is a comment or a message an agent wrote outside every thread
- * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
- * for every other target, and while the reads that tell are not in (`agents-only.ts`). `asks`
- * is the asks read, which tells a reply under a question the outline draws from one under an
- * approval request, which it does not; a caller that has not read the asks passes `undefined`,
- * and a reply under any ask is then the outline's.
+ * The id `target` names where it is a turn of a thread the panel's history holds, which the page
+ * opens in that history rather than in the outline: a message of a thread the Legion daemon
+ * began, a person's reply in it included, or a comment of a thread tied to no text that no person
+ * wrote in (`agents-only.ts`). Undefined for every other target, and while the reads that tell
+ * are not in. `asks` is the asks read, which tells a reply under a question the outline draws
+ * from one under an approval request, which it does not; a caller that has not read the asks
+ * passes `undefined`, and a reply under any ask is then the outline's.
  */
 export function agentsOnlyItem(
   target: AddressTarget | undefined,
-  comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
+  comments:
+    | readonly Pick<Comment, "anchor" | "ask_id" | "author" | "id" | "reply_to">[]
+    | undefined,
   messages: readonly MessageRead[] | undefined,
   asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): string | undefined {
