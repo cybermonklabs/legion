@@ -17,10 +17,10 @@ import { endWindowScroll, installResizeObserver } from "../../__tests__/scroll-b
 import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
-import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
+import { boardMoveMutationKey, projectIssuesQuery, userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
-import { pressMadeIn } from "../../components/focus-place";
+import { holdHandOff, pressMadeIn } from "../../components/focus-place";
 import { useTableLayout } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
 import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../../hooks/useFootInset";
@@ -4473,6 +4473,76 @@ test.each([
   }
 });
 
+/** The List drawn in the shell's main content with two notices under its toolbar: the interrupted
+ *  action's first, with Finish and Dismiss, and the unanswered epic's after it, with Dismiss. A New
+ *  epic from CORE-1 whose create Dispatch made and lost its answer to draws both, since it leaves
+ *  the action to be finished. */
+async function twoNotices(user: UserEvent) {
+  const create = spyOn(api, "createIssue").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
+  );
+  restores.push(() => create.mockRestore());
+  const named = nameTheEpic(user, "Made once");
+  // On the backlog: the rule needs no epic in work, so the create is the action's first write.
+  const { client } = table([issue("CORE-1", { status: "backlog" })], "", { inMain: true });
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
+  await named;
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  const unanswered = await screen.findByTestId("landed-without-answer");
+  return { client, recovery, unanswered };
+}
+
+// Each notice under the List's toolbar is a container of its own for the List's hand-off: a
+// control a commit takes out of a notice that stays hands the focus on inside that notice, by the
+// place rule, and never to the control of the next notice, which a walk over the notices together
+// finds at the lost control's place. No notice of the List takes one of its controls away while it
+// stays, so the case takes the interrupted action's Dismiss out of the page itself, after the
+// reader's Enter on it armed the hand-off and while what answers that press is held out, and the
+// List then draws again with a new read of the reader's read state, as it would draw a notice that
+// dropped that control. The control left at its place in that notice is none, so the focus goes to
+// the one before it, Finish.
+test("a control taken out of a notice that stays hands the focus to the one before it in that notice, never to the next notice's", async () => {
+  const user = userEvent.setup();
+  const { client, recovery, unanswered } = await twoNotices(user);
+  const dismiss = within(recovery).getByRole("button", { name: "Dismiss" });
+  act(() => dismiss.focus());
+  // The reader's Enter arms the hand-off at the List's section before the button's click would
+  // run; what answers it is held out from there.
+  act(() => {
+    dismiss.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  const answered = holdHandOff();
+  restores.push(answered);
+  act(() => dismiss.remove());
+  await act(async () => {
+    client.setQueryData(userStateQuery().queryKey, { "CORE-1": { last_read_seq: 1 } } as never);
+  });
+  await waitFor(() => expect(focusedName()).toBe("Finish"));
+  expect(recovery.contains(document.activeElement)).toBe(true);
+  expect(unanswered.contains(document.activeElement)).toBe(false);
+  answered();
+});
+
+// The interrupted action's notice goes with the reader's Enter on its Dismiss, while the unanswered
+// epic's notice after it stays. The notice that went holds no control left, so the List's
+// hand-off walks back over the main content from where it stood (`walkBackInRegion`), by the place
+// rule: the control now at that place is the unanswered epic's Dismiss, which stands in no row, as
+// the lost Dismiss stood in none, so it takes the focus, and no control before the place does.
+test("a notice that goes while the next one stays walks the focus back from where it stood, to the next notice's Dismiss now at its place", async () => {
+  const user = userEvent.setup();
+  const { recovery, unanswered } = await twoNotices(user);
+  act(() => within(recovery).getByRole("button", { name: "Dismiss" }).focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(recovery.isConnected).toBe(false));
+  expect(unanswered.isConnected).toBe(true);
+  await waitFor(() => expect(focusedName()).toBe("Dismiss"));
+  expect(unanswered.contains(document.activeElement)).toBe(true);
+  // A frame and two tasks on, the focus is still there.
+  await afterFrameAndTasks();
+  expect(unanswered.contains(document.activeElement)).toBe(true);
+});
+
 // F3: the sentence a merge posted is kept with the record, so a target renamed or closed before
 // Finish cannot make the resume post a second one.
 test.each([
@@ -5742,6 +5812,71 @@ test("Finish of a merge whose source closed since drops its refused move of the 
   await noticeOnceDone("Finished the interrupted action.");
   expect(sent.slice(before)).toEqual([]);
   expect(refusedWrites(client)).toEqual([]);
+});
+
+// An epic group's Merge: the confirmation hands the focus back to the source's Epic actions, and
+// the list read after the merge takes the source's heading line away with them once the epic's
+// last issue has moved out. The confirm armed the hand-off at those actions too, and the table
+// counts a group's heading line as a row for its hand-off, so the focus walks back over the main
+// content from where the Epic actions stood. The source's issue CORE-3 now stands at that place,
+// under the heading line of the epic it merged into, but it never stood in the source's line, so
+// the walk passes over its checkbox to the nearest control before it in sight: the Epic actions of
+// that heading line. So it goes for a source group drawn first, with the target's group after it,
+// and for the last group, with no group after it. Never the page's body.
+test.each([
+  {
+    where: "first, before the target's",
+    rows: () => mergeRows("in_progress"),
+    drawnLast: false,
+    source: "CORE-1",
+    target: "CORE-2",
+  },
+  {
+    where: "last, with no group after it",
+    rows: () => [
+      issue("CORE-1", { labels: ["epic"], status: "in_progress", title: "Target" }),
+      issue("CORE-2", { labels: ["epic"], status: "in_progress", title: "Source" }),
+      issue("CORE-3", { parent: "CORE-2", status: "in_progress" }),
+    ],
+    drawnLast: true,
+    source: "CORE-2",
+    target: "CORE-1",
+  },
+])("an epic group's Merge, its group drawn $where, hands the focus from its Epic actions to the nearest control before their place once its heading line goes, never to the body", async (merge) => {
+  const user = userEvent.setup();
+  const rows = merge.rows();
+  answerOnRows(rows);
+  table(rows, "?group=epic", { inMain: true });
+  await mergeInto(user, merge.source, "Target");
+  const source = screen
+    .getByRole("link", { name: new RegExp(`^${merge.source} · `) })
+    .closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  const trigger = within(source).getByRole("button", { name: "Epic actions ▾" });
+  // Where the source's group is drawn: the last heading line is its, or the target's.
+  const toggles = screen.getAllByRole("button", { name: /^(Collapse|Expand) / });
+  expect(toggles.at(-1)?.closest("tr") === source).toBe(merge.drawnLast);
+  // Each element the focus lands on from the confirm on.
+  const landed: EventTarget[] = [];
+  const note = ({ target }: FocusEvent) => {
+    if (target !== null) landed.push(target);
+  };
+  document.addEventListener("focusin", note);
+  restores.push(() => document.removeEventListener("focusin", note));
+  const question = await screen.findByRole("dialog", { name: "Merge this epic?" });
+  await user.click(within(question).getByRole("button", { name: "Merge" }));
+  await noticeOnceDone("Merged “Source” into “Target”.");
+  await waitFor(() => expect(trigger.isConnected).toBe(false));
+  // The confirmation handed the focus back to the source's Epic actions before their line went.
+  expect(landed.includes(trigger)).toBe(true);
+  const target = screen
+    .getByRole("link", { name: new RegExp(`^${merge.target} · `) })
+    .closest("tr");
+  await waitFor(() => expect(focusedName()).toBe("Epic actions ▾"));
+  expect(target?.contains(document.activeElement)).toBe(true);
+  // A frame and two tasks on, the focus is still there.
+  await afterFrameAndTasks();
+  expect(target?.contains(document.activeElement)).toBe(true);
 });
 
 /** The dry run of a merge's close of its source CORE-1. */

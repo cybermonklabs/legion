@@ -835,8 +835,8 @@ export function useIssueTableActions({
     if (!title) return;
     setNaming(undefined);
     // The duplicate's notice goes in the commit that marks the List busy (`perform`), so Create
-    // anyway's own press never disables it under the focus: its going hands the focus on among
-    // the notices (`IssuesTable`).
+    // anyway's own press never disables it under the focus: its going walks the focus back over
+    // the main content from where the notice stood (`IssuesTable`).
     setDuplicateEpic(undefined);
     const rows = listed(open);
     if (intoWork === undefined && targetMustMove(undefined, rows)) {

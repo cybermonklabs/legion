@@ -58,6 +58,20 @@ const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
 const NONE_UNLOADED: readonly string[] = [];
 
+/** The attribute that marks an element as a container of its own for a component's focus
+ *  hand-off (`useFocusPlace`) where the caller's row attribute names no row: a group's heading
+ *  line (`DataTableGroupRow`), and each notice the project List draws above its table
+ *  (`IssuesTable`). A control a commit takes out of one that stays hands the focus on inside it;
+ *  one that goes walks the focus back over the main content from where it stood
+ *  (`walkBackInRegion`). Only those hand-offs read it: the row keys and `ViewportAnchor` walk the
+ *  caller's row attribute, and the selection selects leaf rows alone, so none of them takes a
+ *  heading line for a row. */
+export const HAND_OFF_CONTAINER_ATTRIBUTE = "data-hand-off-container";
+
+/** The marker as props for such a container's element to spread where it is drawn:
+ *  `<tr {...HAND_OFF_CONTAINER}>`. */
+export const HAND_OFF_CONTAINER = { [HAND_OFF_CONTAINER_ATTRIBUTE]: "" } as const;
+
 /** How a grouped table orders its group headings. */
 export interface GroupOrder<Row> {
   /** The order of two headings of column `columnId`. */
@@ -779,9 +793,11 @@ function TableHeaderCell<TData>({
  * its issue starts next - hands the focus to the control now at its place in that row, else to
  * the one before it, passing over every control that takes typed text, else to the row itself,
  * which takes the focus as the row keys' `focusRow` gives it, each only while the reader can see
- * it, else to the main content's own stop with no scroll (`useFocusPlace`). A row that leaves
- * altogether under the reader's own press walks the focus back from where the row stood in the
- * main content (`walkBackInRegion`).
+ * it, else to the main content's own stop with no scroll (`useFocusPlace`). A group's heading line
+ * is a row to this hand-off too (`HAND_OFF_CONTAINER`), though the row keys never stop on it and it
+ * takes no focus itself. A row or a heading that leaves altogether under the reader's own press -
+ * an epic's heading once a merge has moved its last issue out - walks the focus back from where
+ * it stood in the main content (`walkBackInRegion`).
  * A focused row the box scrolls out of its drawn window is no case of a hand-off: it goes with
  * the focus, which is left on the page rather than pulling the box back to where the row was.
  *
@@ -813,8 +829,10 @@ export function DataTable<Row>({
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, names, table, virtualizer } = model;
+  // A focus is counted in the row around it, or in the group's heading line around it, which the
+  // caller's row attribute never names (`HAND_OFF_CONTAINER`).
   const noteFocus = useFocusPlace(
-    (element) => element.closest(`[${names.rowAttribute}]`),
+    (element) => element.closest(`[${names.rowAttribute}], [${HAND_OFF_CONTAINER_ATTRIBUTE}]`),
     (row) => (row.isConnected && row instanceof HTMLElement ? row : null)
   );
   const [dragColumn, setDragColumn] = useState<string>();
@@ -1057,7 +1075,8 @@ export interface DataTableGroupRowProps {
 /**
  * One group's heading: the line that spans the table's columns, with the toggle that opens and
  * closes the group, the caller's heading beside the chevron and the caller's slot beside that.
- * It stays at the box's left edge while the columns scroll under it.
+ * It stays at the box's left edge while the columns scroll under it. The line carries
+ * `HAND_OFF_CONTAINER`, so the table's hand-off counts it as a row, and no caller's row attribute.
  */
 export function DataTableGroupRow({
   columns,
@@ -1071,7 +1090,7 @@ export function DataTableGroupRow({
   width,
 }: DataTableGroupRowProps): ReactNode {
   return (
-    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
+    <tr {...HAND_OFF_CONTAINER} className={surfaceMutedBg} data-index={index} ref={measure}>
       <td className="px-2 py-2" colSpan={columns}>
         <div
           className="sticky left-0 flex flex-wrap items-center gap-x-4 gap-y-1"
