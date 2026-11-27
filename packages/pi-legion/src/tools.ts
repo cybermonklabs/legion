@@ -907,10 +907,14 @@ export function createLegionTool(deps: {
         "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
         "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
-        "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with a reason for each cause, " +
-        "the first reasons of each kind and one more that counts the rest of that kind " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "work starts: a root's before its design gate opens, a child's before release_children releases it. A later version that changes only " +
+        "the text of a running task is taken: the task goes on at its step, and every later start of it reads the new text. The answer is the " +
+        "plan Legion took, each task with its steps. A task that runs carries `running`, a list of one entry: the act it stands at " +
+        "now, with its place and the role whose agent works it. That agent reads no new start, so send it a message for a decision " +
+        "that is for it now. Legion records nothing when it refuses a " +
+        "plan it does not carry out, with a reason for each cause, the first reasons of each kind and one more that counts the rest of " +
+        "that kind (PLAN_REFUSED, which also refuses a version that removes a running task " +
+        "or changes more of it than its text: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
         "again is answered as taken, and adds you to its givers), another document than the plan " +
@@ -919,8 +923,9 @@ export function createLegionTool(deps: {
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), a plan given for a run of the issue " +
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION), and every plan of a recorded issue whose tree " +
         "lingers after it left the workflow, the plan in force among them (TREE_LINGERING). " +
-        "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
-        "the group): it records nothing, and the same plan given again gets the same answer. " +
+        "An issue whose experiment's group runs the project's default steps takes only a version that changes just the text of its " +
+        "running task default. Legion refuses every other plan of it (PLAN_NOT_TAKEN, naming the group): it records nothing, and " +
+        "the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
@@ -928,8 +933,8 @@ export function createLegionTool(deps: {
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
-        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since Legion " +
-        "takes no plan from its owner (PLAN_NOT_TAKEN), a stop of a root that waits on a person before its first step " +
+        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since its owner " +
+        "stops none of its tasks (PLAN_NOT_TAKEN), a stop of a root that waits on a person before its first step " +
         "(TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once the person has answered) and a stop " +
         "of a parent in awaiting_children (WAITING_ON_CHILDREN, naming its open Dispatch children: act on the children). It also " +
         "refuses, changing nothing, a stop of an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run " +

@@ -3016,6 +3016,8 @@ On a store that cybermonklabs/legion#5310's release or a later one migrated, als
 Each of its statements runs again with no error, so it runs in each project's session as the block below does.
 An earlier release refuses a `legion.yaml` that names `projects.<KEY>.default_steps`, with `Unknown key "projects.<KEY>.default_steps"` (`readProject` in `config/stage3.go`), so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+The drop of `plan_tasks` takes with it `plan_tasks.parent_ref`, which a later migration, `20261124022547_plan_tasks_parent_ref.up.sql`, adds.
+So the block deletes that migration's version row too, and the roll-forward adds the column again to the table it creates.
 That part is owed to the roll-forward, not to the earlier release.
 Left in place, the place a task stands at goes stale while the earlier release moves its issue along today's fixed line, and after the roll-forward the walk would start that issue from the stale place.
 With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and walks today's line.
@@ -3034,6 +3036,7 @@ delete from outbox where kind in ('notice', 'controller_notice') and payload->>'
 delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
 update issues set hold_reason = null where hold_reason in ('task-stopped', 'children') and split_part(key, '-', 1) = '<PROJECT>';
 delete from schema_version where version = 20261117034837;
+delete from schema_version where version = 20261124022547;
 commit;
 ```
 
@@ -3097,7 +3100,9 @@ Take the key out of every arm that names it, or the experiment out of the file, 
 The column needs no statement.
 An earlier image names the columns of `experiment_assignments` in each statement it runs (`assignmentColumns`, `PutAssignments` and `CarryAssignments` in `internal/record/store.go`), so it boots with the column in place, reads no word of it, and every row it inserts takes the default, the empty word.
 What the rollback costs: an issue drawn into an arm whose `plan` is `default` before the rollback has its group read by no code while the earlier release runs, so the plan its owner gives is taken and run.
-Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again, and from then on each later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`, so its owner can neither change nor stop the plan it gave.
+Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again.
+From then on its owner can change only the text of a running task of that plan.
+Each other later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`.
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
@@ -4277,6 +4282,10 @@ Then run that section's update of `parked_decisions`, since a decision the earli
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261124022547_plan_tasks_parent_ref adds `plan_tasks.parent_ref` and touches none of the six.
+So the block holds over it and leaves the column standing, which the earlier release names in no statement.
+A rollback past 20261117034837_issue_plans drops the column with its table.
+That migration's way back deletes this migration's version row too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)).
 20261124033010_plan_earlier_givers adds `issue_plans.earlier_givers`, each owner that gave a version of a plan before the one `given_by` names, at its default, no earlier giver, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; its way back, which drops the column where `issue_plans` still stands and deletes its row, runs only in a rollback past `20261117034837_issue_plans`, before or after that migration's way back, and a rollback onto a release that has the plan tables costs what its header says: the earlier release passes a version over at a first step where the giver it last recorded no longer owns the issue, though an earlier giver still does.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
@@ -11114,8 +11123,10 @@ each issue's pod (every role of it alike) and the image probe's.
   (beside the block's other volumes and mounts).
 
 - **An arm's `plan`: how the issues drawn into it are done.**
-  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps` and take no plan from their owner.
-  Once the daemon records an issue drawn into `default`, its owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
+  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps`.
+  Legion takes from the owner of a `default` issue only a version that changes nothing but the text of its running task `default`.
+  Once the daemon records an issue drawn into `default`, every other `register_plan` and every `stop_task` of its owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at most one experiment of a project sets it;
   the loader refuses an arm that names none beside one that does, such an experiment at `unit: tree`, a second experiment of the project that sets it, a word other than those two, and `owner-alone`, the owner doing the whole issue itself in one step, which this release does not carry out.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life, whatever the file says later.
