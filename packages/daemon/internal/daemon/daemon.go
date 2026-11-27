@@ -3570,17 +3570,18 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // its write names. The boot row goes in through Enqueue (workflowRuntime.queueStateBoot), and its
 // key is the project's own. The rest act on a row by its id under a lease this daemon holds of a
 // row its own scope gave it (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox,
-// RetryOutbox), and need no rule here.
+// RetryOutbox), or on the rows that wait for a key of this daemon's own claims, trees, issues or
+// rows (ExpediteWaits, record.WaitForClaim and the other builders), and need no rule here.
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
-// NameUndeliveredHookPrompt where it opens a message, and ExpediteOutbox — wakes the row's lane
-// (outbox.wake) once the transaction has committed, through the transaction's commit hooks
-// (store.OnCommit), so no lane runs a row it cannot yet read, and no lane polls for one. A state
-// row the store queues itself — the write of an issue, a slot or the admission block that moved
-// what Dispatch observes — wakes the project's state lane the same way, through the call the store
-// makes once it has queued the row (publishRecordStates). wake is nil where there is no workflow
-// to wake, or where the writer wakes its own lanes once it commits: the API-only daemon, the state
-// route's reads, the stranded report and the project's pause (projectPause.stopped).
+// NameUndeliveredHookPrompt where it opens a message, ExpediteOutbox and ExpediteWaits — wakes the
+// row's lane (outbox.wake) once the transaction has committed, through the transaction's commit
+// hooks (store.OnCommit), so no lane runs a row it cannot yet read, and no lane polls for one. A
+// state row the store queues itself — the write of an issue, a slot or the admission block that
+// moved what Dispatch observes — wakes the project's state lane the same way, through the call the
+// store makes once it has queued the row (publishRecordStates). wake is nil where there is no
+// workflow to wake, or where the writer wakes its own lanes once it commits: the API-only daemon,
+// the state route's reads, the stranded report and the project's pause (projectPause.stopped).
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
@@ -3818,6 +3819,28 @@ func (s projectRecords) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row recor
 	return moved, nil
 }
 
+// ExpediteWaits wakes, once the transaction commits, the lane of each row it made due, as
+// ExpediteOutbox does, each lane once however many of its rows the event released. It takes no key
+// of an issue, so it refuses none: every key names a claim, a tree, an issue or an outbox row of
+// the daemon's own project (record.WaitForClaim and the other builders), so the rows it moves are
+// the project's.
+func (s projectRecords) ExpediteWaits(ctx context.Context, tx pgx.Tx, keys []string, now time.Time) ([]record.WaitingRow, error) {
+	moved, err := s.Store.ExpediteWaits(ctx, tx, keys, now)
+	if err != nil {
+		return nil, err
+	}
+	woken := map[record.LaneKey]bool{}
+	for _, row := range moved {
+		lane := record.LaneKey{Issue: row.Issue, Lane: record.LaneOf(row.Kind)}
+		if woken[lane] {
+			continue
+		}
+		woken[lane] = true
+		s.wakeOnCommit(ctx, record.OutboxRow{Issue: row.Issue, Kind: row.Kind})
+	}
+	return moved, nil
+}
+
 // EnqueueDesignGates wakes the issue's board lane as Enqueue does. The enqueue writes its row
 // with a statement of its own rather than through Enqueue (record.Postgres.EnqueueDesignGates),
 // so this is the one place that can tell the lane a gate change left a publication due.
@@ -3841,15 +3864,19 @@ func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publis
 	return s.Store.EnqueueGatedSteps(ctx, tx, publish, nextAt)
 }
 
-func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error) {
+func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]record.WaitingRow, error) {
 	if !s.ownsKey(record.OutboxKindNotice, issue) {
 		return nil, nil
 	}
-	ids, err := s.Store.DropCatchUps(ctx, tx, issue, now)
-	if err == nil && len(ids) != 0 && s.catchUps != nil {
+	dropped, err := s.Store.DropCatchUps(ctx, tx, issue, now)
+	if err == nil && len(dropped) != 0 && s.catchUps != nil {
+		ids := make([]int64, len(dropped))
+		for i, row := range dropped {
+			ids[i] = row.ID
+		}
 		store.OnCommit(ctx, func() { s.catchUps.drop(ids) })
 	}
-	return ids, err
+	return dropped, err
 }
 
 func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {

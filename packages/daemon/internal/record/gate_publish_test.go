@@ -99,7 +99,7 @@ func TestGatePublicationKeepsOnePendingRowPerIssue(t *testing.T) {
 	attempt := claim(now, time.Minute)
 	retried := now.Add(5 * time.Minute)
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.RetryOutbox(ctx, tx, id, attempt.LeaseToken, retried, "Dispatch is down"))
+		must(t, records.RetryOutbox(ctx, tx, id, attempt.LeaseToken, retried, "Dispatch is down", attempt.Wait, now))
 	})
 
 	// A gate change while the row waits replaces what it carries, and leaves the row itself alone:
@@ -138,7 +138,7 @@ func TestGatePublicationKeepsOnePendingRowPerIssue(t *testing.T) {
 		t.Fatalf("the running attempt's finish of %s = %v, want %v: the set it sent is no longer the set the row carries", issue, lost, ErrOutboxLeaseLost)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.RetryOutbox(ctx, tx, id, leased.LeaseToken, retried.Add(time.Hour), "Dispatch is down"))
+		must(t, records.RetryOutbox(ctx, tx, id, leased.LeaseToken, retried.Add(time.Hour), "Dispatch is down", leased.Wait, retried))
 	})
 	survived, carried, rows := gatePublication(t, st, issue)
 	if rows != 1 || survived.ID != id || !reflect.DeepEqual(carried.Gates, spec) {

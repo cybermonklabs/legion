@@ -855,14 +855,16 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 	return r.retryAt(ctx, row, nextAt, cause)
 }
 
-// retryAt returns row to the outbox, due again at nextAt, with cause as its last error. The row
-// keeps cause's text as record.Store.RetryOutbox stores it (storetext.FarSideError). The whole
-// text is logged where the failed attempt is settled (settle), not here: a deferral behind
-// another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt, and
-// the error its cause wraps is the limited row's own, which that row's settle logged.
+// retryAt returns row to the outbox, due again at nextAt, with cause as its last error and the
+// wait the row was read with; a row an event woke while the lane held it is due at once instead
+// (record.Store.RetryOutbox). The row keeps cause's text as RetryOutbox stores it
+// (storetext.FarSideError). The whole text is logged where the failed attempt is settled (settle),
+// not here: a deferral behind another row's GitHub rate limit, the one other caller
+// (outbox_lanes.go), made no attempt, and the error its cause wraps is the limited row's own,
+// which that row's settle logged.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
+		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error(), row.Wait, r.now().UTC())
 	}); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", row.ID, err)
 	}

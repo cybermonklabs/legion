@@ -46,7 +46,7 @@ func TestRetryOutboxStoresAnInvalidFarSideErrorBoundedTo2048Runes(t *testing.T) 
 	nextAt := now.Add(5 * time.Minute)
 
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return records.RetryOutbox(ctx, tx, id, leased.LeaseToken, nextAt, lastErr)
+		return records.RetryOutbox(ctx, tx, id, leased.LeaseToken, nextAt, lastErr, leased.Wait, now)
 	}); err != nil {
 		t.Fatalf("RetryOutbox with the far side's error of %d bytes: %v", len(lastErr), err)
 	}

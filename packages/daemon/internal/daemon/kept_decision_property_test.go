@@ -2330,7 +2330,8 @@ func (r *keptRun) finishRow(row record.OutboxRow) error {
 // again now rather than after the lane's backoff, since the run's time is compressed.
 func (r *keptRun) retryRow(row record.OutboxRow, runErr error) error {
 	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return r.records.RetryOutbox(r.ctx, tx, row.ID, row.LeaseToken, time.Now().UTC(), runErr.Error())
+		now := time.Now().UTC()
+		return r.records.RetryOutbox(r.ctx, tx, row.ID, row.LeaseToken, now, runErr.Error(), row.Wait, now)
 	})
 }
 

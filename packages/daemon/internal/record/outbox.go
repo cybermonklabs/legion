@@ -206,6 +206,26 @@ func OutboxLanes() []OutboxLane {
 	return slices.Sorted(maps.Keys(laneKinds))
 }
 
+// roleWaitKinds is the one list of the kinds that publish a message to one role and wait for that
+// role to be able to take it (WaitsForRole).
+var roleWaitKinds = []OutboxKind{
+	OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged,
+	OutboxKindMergeForward, OutboxKindHookPrompt, OutboxKindPhaseEnded, OutboxKindRoleMessage, OutboxKindUpdateAsk,
+}
+
+// WaitsForRole is whether a row of kind publishes a message to one role's topic and waits for that
+// role to be able to take it: an architect's notice, a controller's notice, the merger's messages
+// that its pull request left the merge queue and that the merge holds changed, a merge forward's
+// message, a hook's words, the end of a phase, a role message and an update round's ask. These are
+// the rows the spec holds to their role's claim and to a backoff capped at five minutes, and never
+// gives up while that claim stands (dispatch://INFRA-4131/spec#b-r-wait-ready, #b-r-capped and
+// #b-r-never-given-up); their retries wait RoleWaitBackoff. Every other kind publishes to no role
+// and answers false. TestEveryOutboxKindIsClassifiedForTheRoleWait names every kind the lanes run
+// with its answer, so a kind added to a lane fails it until somebody decides which it is.
+func (k OutboxKind) WaitsForRole() bool {
+	return slices.Contains(roleWaitKinds, k)
+}
+
 // LaneKey names one lane of one issue.
 type LaneKey struct {
 	Issue string
@@ -2737,6 +2757,71 @@ const RetryBackoffMost = time.Second << retryBackoffDoublings
 func RetryBackoff(attempts int) time.Duration {
 	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
 }
+
+// roleWaitDoublings is how many times a waiting row's backoff doubles at most: one second doubled
+// nine times, at step 9, is 512 s, which RoleWaitBackoffMost cuts, so a later step waits no longer
+// and the shift of a step far past it cannot overflow.
+const roleWaitDoublings = 9
+
+// RoleWaitBackoffMost is the longest a row that waits for its role, or for an event of the daemon's
+// own, waits between two runs: the cap of RoleWaitBackoff (dispatch://INFRA-4131/spec#b-r-capped).
+// It is five minutes because that is the bound the daemon already puts on a delivery row's wait for
+// a launch the wake pacing parked (internal/daemon's parkedWakeBound), for the same two reasons: a
+// row that is never taken runs at most twelve times an hour, where RetryBackoffMost's 64 s would
+// run it about 57 times, and a message is at most five minutes late once its role can take it.
+const RoleWaitBackoffMost = 5 * time.Minute
+
+// RoleWaitBackoff is how long a row that waits for its role, or for an event of the daemon's own,
+// waits to run again at step step of its wait (OutboxWait.WaitStep): one second at step 0, doubled
+// at each step, at most RoleWaitBackoffMost. The waits are 1, 2, 4, 8, 16, 32, 64, 128 and 256 s,
+// then 300 s at every step after. A step below zero, which the outbox never stores, waits as step
+// 0 does. It counts the wait's own steps rather than the row's attempts, so a wait that starts
+// again, at its role's ready or at the event it waits for, starts again from one second.
+func RoleWaitBackoff(step int) time.Duration {
+	return min(time.Second<<min(max(step, 0), roleWaitDoublings), RoleWaitBackoffMost)
+}
+
+// The keys below name what a waiting row waits for (OutboxWait.WaitFor, the outbox's wait_for
+// column): each is one event this daemon records itself (dispatch://INFRA-4131/spec#b-r-wait-event),
+// and the write that records the event makes due the rows whose key names it (Store.ExpediteWaits).
+// Each key is built by its function here and nowhere else. A row keeps its key in the store, so a
+// later release reads the key an earlier one wrote: a key's spelling never changes.
+
+// WaitForClaim is the key of a row that waits for any change of claim token's machine, its ready
+// among them.
+func WaitForClaim(token claim.Token) string { return "claim:" + string(token) }
+
+// WaitForReady is the key of a row that waits for claim token's ready alone: no turn start and no
+// other change of the claim makes it due.
+func WaitForReady(token claim.Token) string { return "ready:" + string(token) }
+
+// WaitForTreeClaims is the key of a row that waits for a change of any claim of tree.
+func WaitForTreeClaims(tree string) string { return "tree-claims:" + tree }
+
+// WaitForGate is the key of a row that waits for tree's design gate to open.
+func WaitForGate(tree string) string { return "gate:" + tree }
+
+// WaitForNews is the key of a row that waits for tree's news of its approved design to be recorded.
+func WaitForNews(tree string) string { return "news:" + tree }
+
+// WaitForRoleStops is the key of a row that waits for the role-stop rows of issue to finish.
+func WaitForRoleStops(issue string) string { return "role-stops:" + issue }
+
+// WaitForWorkspaceCheck is the key of a row that waits for the workspace check of issue, its
+// issue_bundle row, to finish.
+func WaitForWorkspaceCheck(issue string) string { return "workspace-check:" + issue }
+
+// WaitForBranch is the key of a row that waits for the issue_branch row of issue to finish.
+func WaitForBranch(issue string) string { return "branch:" + issue }
+
+// WaitForTreeRuns is the key of a row that waits for tree to run again.
+func WaitForTreeRuns(tree string) string { return "tree-runs:" + tree }
+
+// WaitForEpoch is the key of a row that waits for the next lifecycle epoch of tree to open.
+func WaitForEpoch(tree string) string { return "epoch:" + tree }
+
+// WaitForRow is the key of a row that waits for outbox row id to finish or to be deleted.
+func WaitForRow(id int64) string { return "row:" + strconv.FormatInt(id, 10) }
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {

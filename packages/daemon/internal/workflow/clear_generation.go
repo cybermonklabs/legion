@@ -106,7 +106,8 @@ func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree stri
 	if len(spent) == 0 {
 		return nil
 	}
-	return e.store.DropQueuedChanges(ctx, tx, spent)
+	_, err = e.store.DropQueuedChanges(ctx, tx, spent)
+	return err
 }
 
 // publishEmptied queues in tx, due at now, one publication of the empty set of design-gate

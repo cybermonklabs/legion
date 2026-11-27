@@ -344,7 +344,7 @@ func TestStateEventsTakeTheirSequenceInCommitOrder(t *testing.T) {
 	})
 	// The head fails and waits for its retry: every later row of the lane waits behind it.
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.RetryOutbox(ctx, tx, head.ID, head.LeaseToken, now.Add(time.Minute), "the listener refused the publish"))
+		must(t, records.RetryOutbox(ctx, tx, head.ID, head.LeaseToken, now.Add(time.Minute), "the listener refused the publish", head.Wait, now))
 	})
 	if state, _ := due(project, now); len(state) != 0 {
 		t.Fatalf("LEGION's due state rows while the row at 1 waits for its retry = %v, want none", stateSeqs(state))

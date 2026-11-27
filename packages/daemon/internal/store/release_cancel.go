@@ -33,6 +33,19 @@ type DroppedWake struct {
 	Kind, Detail, Task string
 }
 
+// DroppedStart is one start of a wake that a cancel deleted from the outbox before it ran
+// (dropWakesUnderRelease): the row's id, its kind and issue, its attempts, and WaitSince, the
+// moment the wait it was in started (its wait_since, internal/record's OutboxWait.WaitSince), zero
+// for a start that was not waiting, so that the end of a wait the cancel cut short can be told
+// (dispatch://INFRA-4131/spec#b-r-logged-once).
+type DroppedStart struct {
+	ID        int64
+	Kind      string
+	Issue     string
+	Attempts  int
+	WaitSince time.Time
+}
+
 // ReleaseWokenRow builds the outbox row that brings one claim a cancelled release suspended back,
 // at the generation the cancel read of the issue, told what the cancel dropped of the role's wake
 // (DroppedWake). It is the caller's because the payload is record's to encode, as every row of a
@@ -332,10 +345,11 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 			}
 			return deleteIssueRelease(ctx, tx, project, issue)
 		}
-		dropped, err := dropWakesUnderRelease(ctx, tx, project, issue, stillReleased, wake, last)
+		dropped, starts, err := dropWakesUnderRelease(ctx, tx, project, issue, stillReleased, wake, last)
 		if err != nil {
 			return err
 		}
+		cancelled.DroppedStarts = starts
 		if !standing.live {
 			roles = nil
 		}
@@ -392,7 +406,8 @@ type ReleaseCancelPause struct {
 // project runs, and while it is paused where the cancel found no role to resume. A cancel that
 // met a pause resumes none. Declined is whether a decline found the release's mark and recorded
 // the decline (DeclineIssueRelease), and Told whether it queued the decline's message, which a
-// decline that found the work on record does not; a cancel answers false for both.
+// decline that found the work on record does not; a cancel answers false for both. DroppedStarts
+// are the starts of a wake the cancel deleted from the outbox (dropWakesUnderRelease), each once.
 type ReleaseCancelled struct {
 	Resumed        []claim.Role
 	SuspendsNoRole bool
@@ -400,6 +415,7 @@ type ReleaseCancelled struct {
 	Stopped        []claim.Role
 	Declined       bool
 	Told           bool
+	DroppedStarts  []DroppedStart
 }
 
 // stopReleasedForPause records, for a cancel made while held is open, each role the release had
@@ -672,10 +688,12 @@ func pairUnrecordedWakesWithNoRelease(ctx context.Context, tx pgx.Tx, project, i
 // the zero DroppedWake. So does a role whose resume it deleted with no start, and a role whose
 // deleted start an earlier daemon queued, which carries a task and no detail (retellStarts says
 // why): its resume then carries no task of the wake. The transaction logs why once it commits, and
-// the line carries the deleted task, since the row is gone (logStartWithoutDetail).
-func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, roles []string, wake, last int64) (map[claim.Role]DroppedWake, error) {
+// the line carries the deleted task, since the row is gone (logStartWithoutDetail). It also
+// answers every start it deleted, each once, with the wait the row was in (DroppedStart), since a
+// start the cancel deletes ends that wait without a run of its own.
+func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, roles []string, wake, last int64) (map[claim.Role]DroppedWake, []DroppedStart, error) {
 	if len(roles) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	rows, err := tx.Query(ctx, `with woken as (
 			delete from pod_resumes where project = $1 and issue = $2 and id > $3 and role = any($4) returning id, role),
@@ -683,22 +701,36 @@ func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string
 			delete from outbox where issue = $2 and id > $5 and `+wakeStartRow+`
 				and outbox.payload->>'role' in (select role from woken)
 			returning outbox.id, outbox.payload->>'role' as role, outbox.payload->>'wakeKind' as kind,
-				coalesce(outbox.payload->>'task', '') as task, outbox.payload->>'wakeDetail' as detail)
-		select w.role, coalesce(s.kind, ''), coalesce(s.id, 0), coalesce(s.task, ''), s.detail from woken w left join started s on s.role = w.role
+				coalesce(outbox.payload->>'task', '') as task, outbox.payload->>'wakeDetail' as detail,
+				outbox.kind as row_kind, outbox.attempts, outbox.wait_since)
+		select w.role, coalesce(s.kind, ''), coalesce(s.id, 0), coalesce(s.task, ''), s.detail,
+			coalesce(s.row_kind, ''), coalesce(s.attempts, 0), s.wait_since
+		from woken w left join started s on s.role = w.role
 		order by w.id desc, s.id desc`,
 		project, issue, wake, roles, last)
 	if err != nil {
-		return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+		return nil, nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
 	}
 	defer rows.Close()
 	dropped := map[claim.Role]DroppedWake{}
+	var starts []DroppedStart
 	for rows.Next() {
 		var role string
 		var start int64
 		var detail *string
 		var got DroppedWake
-		if err := rows.Scan(&role, &got.Kind, &start, &got.Task, &detail); err != nil {
-			return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+		deleted := DroppedStart{Issue: issue}
+		var since *time.Time
+		if err := rows.Scan(&role, &got.Kind, &start, &got.Task, &detail, &deleted.Kind, &deleted.Attempts, &since); err != nil {
+			return nil, nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+		}
+		// A start comes once for each resume of its role the delete took, so it is kept once.
+		if start != 0 && !slices.ContainsFunc(starts, func(s DroppedStart) bool { return s.ID == start }) {
+			deleted.ID = start
+			if since != nil {
+				deleted.WaitSince = *since
+			}
+			starts = append(starts, deleted)
 		}
 		if _, seen := dropped[claim.Role(role)]; seen {
 			continue
@@ -713,7 +745,7 @@ func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string
 		dropped[claim.Role(role)] = got
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+		return nil, nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
 	}
-	return dropped, nil
+	return dropped, starts, nil
 }

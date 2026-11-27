@@ -236,7 +236,7 @@ func TestAGiveUpAfterAFailedAttemptOfTheNoticeOpensTheNext(t *testing.T) {
 	leasedAt := now.Add(giveUpNoticeDelay)
 	token := leaseNotice(t, st, first.NoticeID, leasedAt)
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.RetryOutbox(ctx, tx, first.NoticeID, token, leasedAt.Add(time.Second), "the controller's topic timed out"))
+		must(t, records.RetryOutbox(ctx, tx, first.NoticeID, token, leasedAt.Add(time.Second), "the controller's topic timed out", OutboxWait{}, leasedAt))
 	})
 
 	secondAt := leasedAt.Add(time.Minute)

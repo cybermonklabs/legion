@@ -51,7 +51,7 @@ func seedStage3(s *seeding) composition {
 			nextAt = time.Date(2126, 9, 22, 17, 32, 0, 0, time.UTC)
 		}
 		s.in("a failed attempt of LEGION-208's status write", func(ctx context.Context, tx pgx.Tx) error {
-			return s.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, "Dispatch unavailable")
+			return s.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, "Dispatch unavailable", row.Wait, leasedAt)
 		})
 	}
 	stage3At := time.Date(2126, 9, 22, 17, 30, 0, 0, time.UTC)

@@ -455,6 +455,85 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	}
 }
 
+// Every kind the lanes run is decided here as a message to one role that waits for that role to be
+// able to take it, or as no such message (dispatch://INFRA-4131/spec#b-r-wait-ready): the nine
+// kinds whose executor publishes to a role's topic answer WaitsForRole true, and every other kind
+// false. The kinds are read from the outbox's own lanes (OutboxLanes), so a kind added to a lane, a
+// new lane's among them, fails this test until somebody writes it below with its answer, and a kind
+// written below that no lane runs fails it too.
+func TestEveryOutboxKindIsClassifiedForTheRoleWait(t *testing.T) {
+	decided := map[OutboxKind]bool{
+		// The architect's notice, published to the architect that owns the issue.
+		OutboxKindNotice: true,
+		// The controller's notice, published to the controller's topic, which a claim of this
+		// daemon holds under `controller: daemon`.
+		OutboxKindControllerNotice: true,
+		// The merger's messages that its pull request left the merge queue and that the
+		// project's merge holds changed, and a merge forward's messages to the roles it asks.
+		OutboxKindMergeQueueRemoval: true,
+		OutboxKindMergeHoldsChanged: true,
+		OutboxKindMergeForward:      true,
+		// The kept messages to one phase worker: a hook's words, and the end of its phase.
+		OutboxKindHookPrompt: true,
+		OutboxKindPhaseEnded: true,
+		// A message to one claim's role, and an update round's ask to a role in the issue's pod.
+		OutboxKindRoleMessage: true,
+		OutboxKindUpdateAsk:   true,
+		// The reads of GitHub that come before a message on the role-message lane publish to no
+		// role: the message their fact queues is its own row, of a kind above.
+		OutboxKindMergeQueueRead:  false,
+		OutboxKindConflictConfirm: false,
+		// A supervise row starts, stops or tells a claim through its machine, not a role's topic.
+		OutboxKindSupervise:          false,
+		OutboxKindDispatchStatus:     false,
+		OutboxKindDispatchMessage:    false,
+		OutboxKindGateSeed:           false,
+		OutboxKindPendingBasisSeed:   false,
+		OutboxKindReparentSeed:       false,
+		OutboxKindLingerClose:        false,
+		OutboxKindIssueSuspend:       false,
+		OutboxKindWorkspaceRemove:    false,
+		OutboxKindIssueBranch:        false,
+		OutboxKindCheckWake:          false,
+		OutboxKindCheckLook:          false,
+		OutboxKindCheckBound:         false,
+		OutboxKindIssueBundle:        false,
+		OutboxKindIssueRelease:       false,
+		OutboxKindGatedStepsPublish:  false,
+		OutboxKindClaimRelease:       false,
+		OutboxKindDesignGatesPublish: false,
+		OutboxKindRoleHoldersPublish: false,
+		OutboxKindStepRecord:         false,
+		OutboxKindPlanRecord:         false,
+		OutboxKindDesignChanges:      false,
+		OutboxKindStateChange:        false,
+		OutboxKindStateAdmission:     false,
+		OutboxKindStateBoot:          false,
+	}
+	run := map[OutboxKind]bool{}
+	for _, lane := range OutboxLanes() {
+		for _, kind := range LaneKinds(lane) {
+			run[kind] = true
+			want, ok := decided[kind]
+			if !ok {
+				t.Errorf("%s runs on the %s lane and nobody decided whether it waits for its role: write it in this test, with its answer of WaitsForRole", kind, lane)
+				continue
+			}
+			if got := kind.WaitsForRole(); got != want {
+				t.Errorf("%s.WaitsForRole() = %t, want %t", kind, got, want)
+			}
+		}
+	}
+	for kind := range decided {
+		if !run[kind] {
+			t.Errorf("this test decides %s, which no lane runs", kind)
+		}
+	}
+	if OutboxKind("unsupported").WaitsForRole() {
+		t.Error(`OutboxKind("unsupported").WaitsForRole() = true, want false for a kind that is not one`)
+	}
+}
+
 func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 	now := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -1535,6 +1614,31 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 	}
 	if RetryBackoffMost != 64*time.Second {
 		t.Errorf("RetryBackoffMost = %s, want 64s, the backoff of every count past six", RetryBackoffMost)
+	}
+}
+
+// A row that waits for its role, or for an event of the daemon's own, waits one second at its
+// first step, doubled at each step, and stops doubling at five minutes, RoleWaitBackoffMost
+// (dispatch://INFRA-4131/spec#b-r-capped): 1, 2, 4, 8, 16, 32, 64, 128 and 256 seconds, then 300
+// seconds at every step after, so a row that is never taken is published ten times in its first
+// 511 seconds and then twelve times an hour. A step below zero, which the outbox never stores,
+// waits as the first step does, and a step far past the cap waits the cap.
+func TestARoleWaitBacksOffFromOneSecondToFiveMinutes(t *testing.T) {
+	for step, want := range []time.Duration{
+		time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second,
+		64 * time.Second, 128 * time.Second, 256 * time.Second, 300 * time.Second, 300 * time.Second,
+	} {
+		if got := RoleWaitBackoff(step); got != want {
+			t.Errorf("RoleWaitBackoff(%d) = %s, want %s", step, got, want)
+		}
+	}
+	for step, want := range map[int]time.Duration{-1: time.Second, 40: 300 * time.Second, math.MaxInt: 300 * time.Second} {
+		if got := RoleWaitBackoff(step); got != want {
+			t.Errorf("RoleWaitBackoff(%d) = %s, want %s", step, got, want)
+		}
+	}
+	if RoleWaitBackoffMost != 5*time.Minute {
+		t.Errorf("RoleWaitBackoffMost = %s, want 5m0s, the wait of every step from the tenth on", RoleWaitBackoffMost)
 	}
 }
 
