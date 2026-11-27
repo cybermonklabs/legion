@@ -606,6 +606,72 @@ test("the header counts a Change under the decision whose block of the spec hold
   }
 });
 
+// The count pairs a question written as an ask block of the spec with its ask as the outline
+// does, through the issue's open asks and the asks read the outline fills, each ask with its
+// thread, under `["asks", key, "thread"]` (decision 447). The header observes that read and sends
+// none of its own. Once alice answered the question it is no open ask of the issue, so only that
+// read names the block it is written as. Its ask's node is overtaken, so the block is closed, and
+// the open question the tree read hangs under the block does not wait on the reader: the count
+// counts the other open question alone. A header that observed the asks under another key would
+// read no answer there, pair the block with no ask, and count both.
+test("the header counts a waiting question from the outline's asks read and sends no request", async () => {
+  const spec = { artifact_id: issue.primary_artifact_id, slug: "spec" };
+  const answered: Ask = {
+    ...openIssueAsk,
+    answer: { at: "2026-09-11T00:00:00Z", selected: [], text: "At 1280 px.", user: "alice" },
+    block_artifact: { id: issue.primary_artifact_id, primary: true, slug: "spec" },
+    block_id: "q1",
+    id: "ask-in-spec",
+    question: "Which width does it draw at?",
+    state: "answered",
+  };
+  const underBlock = { ...openIssueAsk, last_reply: null };
+  const elsewhere = {
+    ...openIssueAsk,
+    id: "ask-elsewhere",
+    last_reply: null,
+    question: "Who reviews it?",
+  };
+  // Each read of the issue's asks the header sends, with or without each ask's thread.
+  const asksSent: string[] = [];
+  answerRequests(
+    http.get("/api/v1/issues/:key/asks", ({ request }) => {
+      asksSent.push(request.url);
+      return Response.json([]);
+    }),
+    http.get("/api/v1/issues/:key/tree", () =>
+      Response.json(
+        treeAnswer([
+          treeNode("CORE-1", "issue", null),
+          treeNode("q1", "ask", "CORE-1", {
+            document: { ...spec, position: 0 },
+            text: answered.question,
+          }),
+          treeNode(answered.id, "ask", "CORE-1", { state: "overtaken", text: answered.question }),
+          treeNode(underBlock.id, "ask", "q1", { text: underBlock.question }),
+          treeNode(elsewhere.id, "ask", "CORE-1", { text: elsewhere.question }),
+        ])
+      )
+    )
+  );
+  const restore = stubHeader({ ...issue, open_asks: [underBlock, elsewhere] });
+  const queryClient = headerClient();
+  // The outline's asks read as the outline left it, which alone holds the answered question.
+  queryClient.setQueryData(["asks", "CORE-1", "thread"], [answered]);
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on you (1)")
+    );
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(asksSent, "the header sent a read of the issue's asks").toEqual([]);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 // With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
 // `deleted_by`): a decision whose only Change the read answers deleted waits on the reader again,
 // and one whose Change stands waits on its agent, so of two decisions of the review list the count

@@ -31,6 +31,8 @@ import {
   useRowOnScreen,
 } from "../NodeRow";
 import { DeletedLine, lineOrKindWord, NodeParentLine, useNodeLine } from "../node-line";
+import { NodeMarks } from "../node-states/NodeMarks";
+import type { NodeStates } from "../node-states/node-states";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -298,6 +300,12 @@ export function DecisionsRow({
                       {name}
                     </Link>
                   )}
+                  {/* The statement's marks, after its name in the chip's own size: the
+                      statement node's own, which its shape holds, since an answered question's
+                      chips are none of the ties of the decision that restates it. */}
+                  {/* `StatementWords` types the node as its words alone, but the value is the
+                      placed tree node, or a coverage row's words, which carry no mark. */}
+                  <NodeMarks compact marks={shape.node as NodeStates} />
                 </span>
               ))}
             </p>
@@ -460,6 +468,7 @@ function Declined({
  * says ` · edited` after its line (deleted-post R2 and R3). A parent with no words of its own is
  * named by its kind's word once, as plain text with no link, which is the line G gives it
  * (`lineOrKindWord`), and never by its id (R7); an edited one says ` · edited` after that word.
+ * Either line draws the parent's marks after its words, in the line's own size (`NodeMarks`).
  * Nothing follows the word until the projection answers, one pre-paint commit on a page whose
  * engine is loaded.
  */
@@ -481,6 +490,8 @@ function EntryParentLine({ parent }: { parent: ParentLine }): ReactNode {
         <EditedMark at={parent.editedAt} />
       </span>
       {reads}
+      {/* After the parent's words, in the line's own size, as `NodeParentLine` draws them. */}
+      <NodeMarks compact marks={parent} />
     </p>
   );
 }

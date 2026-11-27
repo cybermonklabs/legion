@@ -1,10 +1,12 @@
 import { hashKey, type QueryKey, useQuery } from "@tanstack/react-query";
 import {
+  createContext,
   Fragment,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -55,8 +57,11 @@ import { CLEARANCE } from "../identity-block";
 import { presetPath } from "../issue-address";
 import { artifactsBySlug, documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
+import { LensLines } from "../lenses/LensLines";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
+import { NodeMarks } from "../node-states/NodeMarks";
+import { marksOf, type NodeStates } from "../node-states/node-states";
 import { shortDay } from "../node-time";
 import { useIssueNames } from "../one-line";
 import type { OutlineReads } from "../outline-reads";
@@ -80,6 +85,7 @@ import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
+import { outOfCounts } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import {
   issueTreeQuery,
@@ -263,12 +269,12 @@ export function SpecFilterBody({
   // read is only the fallback where the read carries none, an ask it says is answered that
   // carries `shaped` ties (`decisionNodes`). The view read is watched under the key the page
   // reads it by (`ViewReadProvider`). A change of the issue marks the view stale and reads it
-  // again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep and a Change drop
-  // it (`dropViews`), and the column then draws the answer it last held (`useLastAnswer`) until
-  // the next one lands. That answer is this load's alone: on a return to the issue the page's
-  // tree holds no view of the earlier visit (`useIssueTree.ts`, `loadEnded`), so the column's
-  // first render keeps none of it. A read again that fails keeps its answer, which leaves the
-  // body an answer to draw too.
+  // again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep, a Change, a Settle
+  // and a lens pick that lands drop it (`dropViews`), and the column then draws the answer it
+  // last held (`useLastAnswer`) until the next one lands. That answer is this load's alone: on a
+  // return to the issue the page's tree holds no view of the earlier visit (`useIssueTree.ts`,
+  // `loadEnded`), so the column's first render keeps none of it. A read again that fails keeps
+  // its answer, which leaves the body an answer to draw too.
   const specRead = useQuery(treeRead(specQuery));
   const held = useLastAnswer(root.views?.spec);
   const decisions = useMemo(
@@ -383,6 +389,16 @@ export function SpecFilterBody({
       }),
     [asksHeld, decisions, heldTree, lineNames, nodeIdOf, reader, resultsRead.data, root, view]
   );
+  // The marks of each node of the whole tree that carries any, by its id, which a decision's
+  // cell and each line under a statement naming a decision draw after it (`DecisionMarks`).
+  const decisionMarks = useMemo(() => {
+    const marks = new Map<string, NodeStates>();
+    for (const node of nodesInOrder(root)) {
+      const held = marksOf(node);
+      if (held !== undefined && !marks.has(node.id)) marks.set(node.id, held);
+    }
+    return marks;
+  }, [root]);
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   // From 1024 px up the Contents pane stands beside the view and holds the issue's three
@@ -600,6 +616,20 @@ export function SpecFilterBody({
   const [wordsPressRow, setWordsPressRow] = useState<string | undefined>(undefined);
   const wordsPressActs = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => wordsPressActs.current?.abort(), []);
+  // The statement the body holds focused keeps the focus when its row is drawn anew. A statement
+  // that moves to another run - as each one a decision shaped does once the decisions are read -
+  // is drawn there as a new row: the row that held the focus leaves the page and the focus falls
+  // to the document, while the body still holds that statement as the focused one. So each time
+  // the columns are drawn again, before the page is painted, where the focus is on no element -
+  // the document's body, or an element no longer on the page - it goes back to that statement's
+  // row by `goTo`, which brings the row on screen. A focus on any other element is where the
+  // reader put it, and stays there.
+  useLayoutEffect(() => {
+    if (focused === undefined || !statements.some((node) => node.id === focused)) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && active.isConnected) return;
+    goTo(focused);
+  }, [focused, goTo, statements]);
 
   useTreeKeymap({
     container: tree,
@@ -866,26 +896,28 @@ export function SpecFilterBody({
         role="tree"
         tabIndex={-1}
       >
-        {groups.map((group) => (
-          <Group
-            drawStatement={(statement, decision) => (
-              <Statement
-                {...rowProps(statement.node)}
-                context={context.has(statement.node.id)}
-                decision={decision}
-                key={statement.node.id}
-                marked={marked}
-                statement={statement}
-                wordsPress={wordsPressRow === statement.node.id}
-              />
-            )}
-            group={group}
-            key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
-            known={decidedHeld}
-            onCellFocus={focusCell}
-            openCell={openCell}
-          />
-        ))}
+        <DecisionMarks.Provider value={decisionMarks}>
+          {groups.map((group) => (
+            <Group
+              drawStatement={(statement, decision) => (
+                <Statement
+                  {...rowProps(statement.node)}
+                  context={context.has(statement.node.id)}
+                  decision={decision}
+                  key={statement.node.id}
+                  marked={marked}
+                  statement={statement}
+                  wordsPress={wordsPressRow === statement.node.id}
+                />
+              )}
+              group={group}
+              key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
+              known={decidedHeld}
+              onCellFocus={focusCell}
+              openCell={openCell}
+            />
+          ))}
+        </DecisionMarks.Provider>
         {others.map((node) => (
           <OtherRow {...rowProps(node)} key={node.id} node={node} />
         ))}
@@ -930,6 +962,22 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
   j: 1,
   k: -1,
 };
+
+/** The marks of each node of the whole tree that carries any, by its id: what a decision's cell
+ *  and each line under a statement naming a decision draw after it (`useDecisionMarks`). Empty
+ *  outside the body's groups. */
+const DecisionMarks = createContext<ReadonlyMap<string, NodeStates>>(new Map());
+
+/** No mark, which a decision whose node carries none draws. */
+const NO_MARKS: NodeStates = {};
+
+/** The marks of the node `decision` is drawn as - its own node where the tree holds it, else, for
+ *  a person's decision, the question they answered (`SpecDecision.node`, else its `id`) - or none,
+ *  for no decision too. */
+function useDecisionMarks(decision: SpecDecision | undefined): NodeStates {
+  const marks = useContext(DecisionMarks);
+  return decision === undefined ? NO_MARKS : (marks.get(decision.node ?? decision.id) ?? NO_MARKS);
+}
 
 /**
  * Places the focused statement or cell on screen by the page's one rule (`useRowOnScreen`,
@@ -1179,6 +1227,9 @@ function Group({
   /** The run whose cell has the focus itself, by its first statement. */
   openCell: string | undefined;
 }): ReactNode {
+  // The marks of the node the statements hang under, which its heading's line carries: each of
+  // its statements names it by that line.
+  const parentLine = group.runs[0]?.statements[0]?.node.parentLine;
   return (
     <section
       className="mt-[18px] min-w-0"
@@ -1187,6 +1238,17 @@ function Group({
       role="presentation"
     >
       {group.parent === undefined ? null : <GroupHeading parent={group.parent} />}
+      {/* The marks of the node the statements hang under, compact after its heading's line. */}
+      {group.parent === undefined ||
+      parentLine === undefined ||
+      marksOf(parentLine) === undefined ? null : (
+        <p
+          className="-mt-1 mb-1 ml-[300px] min-w-0 pl-[26px] text-[15px] leading-6 max-[901px]:ml-0 max-[901px]:pl-0"
+          data-spec-group-marks=""
+        >
+          <NodeMarks compact marks={parentLine} />
+        </p>
+      )}
       {group.runs.map((run) => (
         <div
           className="grid min-w-0 grid-cols-[280px_minmax(0,1fr)] gap-x-5 max-[901px]:grid-cols-[minmax(0,1fr)]"
@@ -1282,6 +1344,7 @@ function DecisionCell({
 }): ReactNode {
   const words = useRef<HTMLDivElement | null>(null);
   const press = useOnScreenUnderHeads(words, focused);
+  const marks = useDecisionMarks(decision);
   const agentText = useAgentText();
   // How the decision stands, with the person its state names: its keeper after "Kept by", and
   // whoever asked to change it after "Changed by" (`standingParts`, R2, R3).
@@ -1435,6 +1498,8 @@ function DecisionCell({
                   ) : null,
                 },
               ])}
+              {/* The marks of the node the decision is drawn as, after how it stands. */}
+              <NodeMarks compact marks={marks} />
             </p>
             <WholeOf decision={decision} />
           </>
@@ -1508,6 +1573,10 @@ function Statement({
   statement: SpecStatement;
 }): ReactNode {
   const node = statement.node;
+  // A proposed statement draws no gap, nor does one at or under an overtaken node, so neither
+  // draws the mark "No check": no count reads them, which is why they read as served by no check,
+  // and the row draws no mark in its place.
+  if (outOfCounts(node) && statement.mark === "no_check") marked = false;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);
@@ -1587,7 +1656,17 @@ function Statement({
         {editing !== undefined && trail !== null ? (
           <div className="flex min-w-0 flex-wrap items-baseline">{trail}</div>
         ) : null}
+        {/* Its marks, on a line of their own under its words: the row has no state line, and
+            its words follow its bullet. */}
+        {marksOf(node) === undefined ? null : (
+          <p className="flex min-w-0 items-center leading-5" data-spec-marks="">
+            <NodeMarks marks={node} />
+          </p>
+        )}
         <Because decision={decision} statement={statement} />
+        {/* The constraints the statement names, as the outline draws them: out of the tab
+            order, as the row's other controls are. */}
+        <LensLines node={node} tabStops={false} />
         <RowReport line={report} />
       </div>
       {toChecks === undefined ? null : <CheckCount count={checks} to={toChecks} />}
@@ -1687,6 +1766,8 @@ function OtherRow({
     >
       <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome}>
         {NODE_TYPE_NAMES[node.type]}
+        {/* After the kind's word, in that line's own size. */}
+        <NodeMarks compact marks={node} />
       </p>
       {editing !== undefined ? (
         <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
@@ -1734,6 +1815,7 @@ function Because({
   decision: SpecDecision | undefined;
   statement: SpecStatement;
 }): ReactNode {
+  const marks = useDecisionMarks(decision);
   if (decision === undefined && statement.alsoShapedBy.length === 0) return null;
   const route = routeOf(decision);
   const quoted = decision === undefined ? null : <Quote decision={decision} />;
@@ -1769,6 +1851,8 @@ function Because({
               {quoted}
             </Link>
           )}
+          {/* The marks of the node it names, after its words, as a chip's follow its name. */}
+          <NodeMarks compact marks={marks} />
           {after ? <span {...pageChrome}> — </span> : null}
           {dotted([
             {
@@ -1813,6 +1897,7 @@ function Because({
  *  empty. */
 function Informed({ decision }: { decision: SpecDecision }): ReactNode {
   const route = routeOf(decision);
+  const marks = useDecisionMarks(decision);
   const words = decision.chip;
   const named =
     words === "" ? (
@@ -1834,6 +1919,7 @@ function Informed({ decision }: { decision: SpecDecision }): ReactNode {
           {named}
         </Link>
       )}
+      <NodeMarks compact marks={marks} />
       {decision.at === undefined ? null : (
         <>
           <span {...pageChrome}> · </span>

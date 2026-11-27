@@ -82,6 +82,7 @@ import {
   PROPERTY_LABELS,
 } from "./page-structure";
 import { joinWords, PART_ANSWER_SOURCES, PART_UNASKED_SOURCES } from "./page-words-parts";
+import { ROW_MARK_WORDS, type RowMark } from "./page-words-x";
 
 export * from "./page-words-j";
 export * from "./page-words-l";
@@ -1478,6 +1479,7 @@ export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
   },
 } as const) satisfies {
   readonly authors: Record<AuthorKind, string>;
+  readonly marks: Record<RowMark, string>;
   readonly no_check: string;
   readonly states: {
     readonly ask: Record<AskState, string>;
@@ -1530,6 +1532,10 @@ function glyphNames(): Readonly<Record<string, string>> {
   for (const kind of keysOf(GLYPH_TOKENS.authors)) {
     names[GLYPH_TOKENS.authors[kind]] = `${CONTROL_LABELS.written_by} ${AUTHOR_KIND_WORDS[kind]}`;
   }
+  // A mark's shape is named by the mark's own word, which the row draws beside it.
+  for (const mark of keysOf(GLYPH_TOKENS.marks)) {
+    names[GLYPH_TOKENS.marks[mark]] = ROW_MARK_WORDS[mark];
+  }
   return names;
 }
 
@@ -1561,6 +1567,8 @@ function phrasesIn(value: unknown): readonly string[] {
   }
   return [];
 }
+
+export { phrasesIn };
 
 /**
  * What the page says unasked: every name, state, label and empty line it may draw on load. None

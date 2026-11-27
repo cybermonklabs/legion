@@ -2,6 +2,7 @@ import { createContext, type ReactNode, useContext, useState } from "react";
 
 import type { Actor, DisplayTree } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
+import type { NodeLife } from "./issue-tree";
 import type { NodeType } from "./page-words";
 
 /**
@@ -21,6 +22,10 @@ export interface FocusedNode {
    *  resolve are written to (`outline-writer.ts`'s `conversationItem`); absent for every other
    *  node. */
   readonly item?: { readonly id: string; readonly kind: "ask" | "comment" | "message" };
+  /** The node's life, where it has one (`TreeNode.life`). */
+  readonly life?: NodeLife;
+  /** Whether the node is reserved for its author, who is the reader (`TreeNode.onlyYou`). */
+  readonly onlyYou?: true;
   /** The node's own `dispatch://` address (`TreeNode.reference`), where the model gives it one:
    *  what references it is read under that address, in Details
    *  (`node-references/NodeReferences.tsx`). */

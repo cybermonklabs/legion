@@ -1,3 +1,4 @@
+import { isProposed } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 
 /**
@@ -21,6 +22,9 @@ import type { TreeNode } from "./issue-tree";
  *
  * Every level is drawn. Past `INDENT_LEVELS` levels a row's indent stops growing (`indentOf`), so
  * a node's words keep their width at 390 px.
+ *
+ * A proposed or an overtaken node has no rule of its own here: it is drawn open as every node
+ * is, and folded only when the reader folds it.
  */
 
 /** How many of a node's children one page draws (R15). */
@@ -105,6 +109,21 @@ export type DrawnRow =
 
 /** Nothing folded and no page drawn by hand, which is how the page opens. */
 export const NOTHING_OPENED: OpenedBranches = { closed: new Set(), pages: new Map() };
+
+/**
+ * Whether no count of the page reads the node. No count treats a proposed statement, check or plan
+ * task as done or owed, since it is only put forward until a person settles it; and no count
+ * treats a node at or under an overtaken one as open or unproved, since a later node took its
+ * place (`closed`). A proposed question and a proposed decision are not out of the counts: what
+ * asks the reader stays counted.
+ */
+export function outOfCounts(node: TreeNode): boolean {
+  if (node.closed === true) return true;
+  return (
+    isProposed(node) &&
+    (node.type === "requirement" || node.type === "check" || node.type === "plan_task")
+  );
+}
 
 /**
  * Every row the tree draws over `root`, in reading order. The root is always unfolded, because

@@ -15,6 +15,8 @@ import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import type { LensFacts } from "./lenses/lens-drafts";
+import { closeOvertaken } from "./node-states/node-states";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { storedReading } from "./stored-reading";
@@ -92,6 +94,13 @@ export interface NodeChip {
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
+  /** The life of the node this chip names, where it has one (`TreeNode.life`), which the chip
+   *  draws after its name. Absent for a target that is live or settled, and for one the tree does
+   *  not hold. */
+  readonly life?: NodeLife;
+  /** Whether the node this chip names is reserved for its author, who is the reader
+   *  (`TreeNode.onlyYou`). Absent for every other target. */
+  readonly onlyYou?: true;
   /** How the target is named, by the batched reference read and the issue's own documents
    *  (`treeContext`): the reading the page publishes for it, which the shared reader projects
    *  into the name every surface reads the target by, as a link to it reads it
@@ -185,6 +194,17 @@ export interface ParentLine {
    *  absent for every other parent. */
   readonly editedAt?: string;
   readonly id: string;
+  /** The parent's life, where it has one (`TreeNode.life`), which the line draws after the
+   *  parent's words. Absent for a parent that is live or settled. */
+  readonly life?: NodeLife;
+  /** Whether the parent is reserved for its author, who is the reader (`TreeNode.onlyYou`).
+   *  Absent for every other parent. */
+  readonly onlyYou?: true;
+  /** The read id by which the line takes the parent's states (`node-states.ts`' `stateIdOf`):
+   *  the parent's own (`TreeNode.readId`), its ask's for a question the tree draws from a block
+   *  and its ask, and the id a view's answer names it by where the view holds it only by that
+   *  id. Absent for a parent drawn from another read. */
+  readonly readId?: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */
   readonly reference?: string;
@@ -196,6 +216,14 @@ export interface ParentLine {
   readonly tree?: DisplayTree;
   readonly type: NodeType;
 }
+
+/**
+ * A node's life, where it has one: its `state` in the tree read where that is `proposed` (put
+ * forward and not yet settled by a person) or `overtaken` (a later node took its place); a live
+ * or settled node has none and draws nothing. The page reads it through `isProposed` and
+ * `isOvertaken` (`issue-address.ts`) and draws it in its own words.
+ */
+export type NodeLife = "proposed" | "overtaken";
 
 /** The line a filter's row names `node` by on its child's row (`ParentLine`): its id, its kind,
  *  its address where it has one, the words a row projects its one line from, and a comment's or
@@ -230,6 +258,9 @@ export interface TreeNode {
   readonly author?: Actor;
   readonly children: readonly TreeNode[];
   readonly chips: readonly NodeChip[];
+  /** Whether this node is overtaken or sits under an overtaken one, at any depth: it draws no
+   *  gap, and no count treats it as open or unproved. Absent on every other node. */
+  readonly closed?: true;
   /** What the coverage read counts for a requirement. */
   readonly counts?: NodeCounts;
   /** The coverage read's own lines a requirement draws in its body where its gaps are, each in the
@@ -278,6 +309,12 @@ export interface TreeNode {
   /** The person who kept this decision as it reads now (`DecisionKeep.kept_by`), whose name the
    *  row draws after "Kept by" (R2); absent for every other node. */
   readonly keptBy?: Actor;
+  /** The node's life, where it has one (`NodeLife`): what its row draws in its state line, and
+   *  every chip and parent line naming it after its name. */
+  readonly life?: NodeLife;
+  /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
+   *  a statement a constraint names; absent on every other node. */
+  readonly lens?: LensFacts;
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
@@ -288,6 +325,10 @@ export interface TreeNode {
   readonly moreToRead?: true;
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
+  /** Whether this node is reserved for its author, who is the reader: its `visibility` in the
+   *  tree read is `author`, so every place that draws it says so. No other reader's tree holds
+   *  the node at all. */
+  readonly onlyYou?: true;
   /** Where this plan task stands in the order the Plan view's read answers (`plan.position`),
    *  which the Plan view draws its tasks in (`plan-filter/plan-order.ts`); absent on a task that
    *  order gives no place - one of a cycle, an overtaken one - and on every other node. */
@@ -579,13 +620,15 @@ export function treeWordsOf(reads: IssueTreeReads): TreeWords {
  * (`treeDraftsFrom`), each where the read places it. Until the tree read has answered its first
  * page (`IssueTreeReads.tree`), the tree is the issue alone. While the answer names a next page
  * the issue's node says so (`TreeNode.moreToRead`), so each count over the tree carries "+".
+ * Each node carries the life and visibility the tree read answers for it, and a node at or
+ * under an overtaken one is closed (`node-states.ts`'s `closeOvertaken`).
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const words = treeWordsOf(reads);
   const tree = reads.tree;
   if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
   const drafts = treeDraftsFrom(tree, reads, words);
-  const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
+  const root = closeOvertaken(assemble(reads.issue, [...drafts.values()], words.chipOf), tree);
   return nextTreeCursor(tree) === undefined ? root : { ...root, moreToRead: true };
 }
 
@@ -732,6 +775,7 @@ export function assemble(
       ...(draft.child === undefined ? {} : { child: draft.child }),
       ...(draft.changedBy === undefined ? {} : { changedBy: draft.changedBy }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
+      ...(draft.lens === undefined ? {} : { lens: draft.lens }),
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,

@@ -1,4 +1,5 @@
 import { parseNodeReference } from "../../refs/routes";
+import { isOvertaken } from "../issue-address";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS, PLAN_WORDS } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
@@ -22,9 +23,10 @@ import { blockNodeId } from "../tree-drafts";
  * places. The read places each task that waits on a cycle after everything the cycle waits on, so
  * what a cycle holds up stands after its line and what it waits on stands before.
  *
- * A task the read gives no place and that is in no cycle - one it leaves out of its order, as it
- * does an overtaken task - stands after every task with a place, in the order the view hands it
- * over, as the read sorts it too.
+ * A task the read gives no place and that is in no cycle - one it leaves out of its order -
+ * stands after every task with a place, in the order the view hands it over, as the read sorts it
+ * too. An overtaken task, which the read gives no place either, is no entry of the order and no
+ * task here waits on it: the page draws it after every step (`planOrder`).
  *
  * `needs` is a `block[]` attribute of the plan's own blocks
  * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`), which the tree draws as a chip
@@ -35,7 +37,8 @@ import { blockNodeId } from "../tree-drafts";
  * The module is pure: it holds no React, reads no model of its own and makes no request.
  */
 
-/** One step of the plan: a task the order puts after every task in its `needs`. */
+/** One step of the plan: a task the order puts after every task in its `needs` but an overtaken
+ *  one, which is no step. */
 export interface PlanStep {
   readonly kind: "step";
   readonly task: TreeNode;
@@ -111,16 +114,21 @@ function neededId(task: TreeNode, chip: NodeChip): string | undefined {
  * none, since it keeps the address's node only where it is a task (`slots/view-plan.tsx`). A task
  * the filter drew under two statements is one task here, at its first place: a plan holds each
  * task once, and its second statement is its "Also under" chip, so the task is not drawn twice.
+ *
+ * An overtaken task has no position, since a later task took its place: it is no entry, and the
+ * page draws it as a row after the steps.
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();
   const nodes = drawn.filter((node) => {
+    if (isOvertaken(node)) return false;
     if (seen.has(node.id)) return false;
     seen.add(node.id);
     return true;
   });
   const at = new Map(nodes.map((node, index) => [node.id, index]));
-  // What each node needs, by index. A need naming a task this plan does not hold is no edge.
+  // What each node needs, by index. A need naming a task this plan does not hold, or an
+  // overtaken one, which has no place, is no edge.
   const needs = nodes.map((node) =>
     neededIds(node).flatMap((needed) => {
       const index = at.get(needed);
@@ -252,7 +260,7 @@ export interface PlanBar {
   readonly length: number;
   /** The tasks drawn above it that it needs, steps and tasks of a cycle alike. */
   readonly needs: readonly TreeNode[];
-  /** Where it starts: after every task it needs has ended. */
+  /** Where it starts: after every task it needs but an overtaken one has ended. */
   readonly start: number;
   readonly task: TreeNode;
 }
@@ -301,7 +309,8 @@ function axisStep(minutes: number): number {
 /**
  * The chart's rows over `entries`: each step's bar, starting where every task it needs has ended
  * and as long as `lengthOf` its task, and each cycle `cycleLength` long after whatever its tasks
- * need from outside it, since the order cannot say more of tasks that need each other.
+ * need from outside it, an overtaken task aside, since the order cannot say more of tasks that
+ * need each other.
  */
 function placeBars(
   entries: readonly PlanEntry[],
@@ -339,7 +348,7 @@ function placeBars(
 
 /**
  * The chart of time over the plan's order: one bar per step, starting after every task it
- * needs has ended, and one line per cycle at its place in the order.
+ * needs but an overtaken one has ended, and one line per cycle at its place in the order.
  *
  * Where a bar starts is worked out here from the `needs` its task's chips name (`neededIds`), and
  * how long it is from its task's size (`TreeNode.size`), on one scale for the whole chart
@@ -368,10 +377,11 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  *
  * The chart names each need by this chip's own name, as the tree names it (`buildIssueTree`):
  * the needed task's first line, and the page's word for its kind where that task holds no
- * words. The steps' rows draw the same chip through `NodeRow.tsx`'s `Chip`, so the switch
- * changes the drawing alone and no edge is named twice: the view gives the rows no chips
- * renamed by the chart's line for the task, which would be a second naming of what the tree
- * already names.
+ * words. The steps' rows draw the same chip through `NodeRow.tsx`'s `Chip`, so no edge is named
+ * twice: the view gives the rows no chips renamed by the chart's line for the task, which would
+ * be a second naming of what the tree already names. The switch changes the drawing alone, but
+ * for a need on an overtaken task: the plan's order holds no such task (`planOrder`), so the
+ * chart places none and no bar names a need on one, while the step's row under the steps does.
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
   return task.chips.find((chip) => neededId(task, chip) === needed.id);

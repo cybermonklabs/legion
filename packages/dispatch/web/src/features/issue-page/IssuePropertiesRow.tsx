@@ -2,7 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  projectsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -35,6 +40,7 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
+import { treeRead } from "./spec-filter/tree-read";
 import { coverageStatements } from "./tree-drafts";
 import { useDecisionsView, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -89,6 +95,9 @@ export function IssuePropertiesRow({
   // observer, so each read here takes that rule too, and the count costs no request of its own
   // (`waiting.ts`). A statement is one by the rule the outline's review list reads
   // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
+  // The asks read is observed under the key the outline fills, and sends no request of its own
+  // (`treeRead`): it pairs a question's block with its ask as the outline pairs them, open or
+  // answered (`askOfNode`), so the count closes what the outline does.
   // The decisions, and each Change that read hangs under its decision, are the decisions view
   // read's wherever the page holds it, which holds each of them however many pages of the tree
   // read the page holds, watched under the key the page reads it by and never sent, so the count
@@ -96,6 +105,7 @@ export function IssuePropertiesRow({
   // `useDecisionsView`, so the header's count and the Decisions control count the same answer.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
+  const asks = useQuery(treeRead(issueAskThreadsQuery(issue.key)));
   const tree = useTreeRead(issue).answer;
   const held = useDecisionsView(issue.key).answer;
   const answer = held ?? tree;
@@ -104,8 +114,9 @@ export function IssuePropertiesRow({
     [issue, coverage.data]
   );
   const waiting = useMemo(
-    () => waitingOnReader(issue, viewer, isCoverageStatement, { answer }),
-    [issue, viewer, isCoverageStatement, answer]
+    () =>
+      waitingOnReader(issue, viewer, isCoverageStatement, { answer, asksRead: asks.data, tree }),
+    [issue, viewer, isCoverageStatement, answer, asks.data, tree]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.

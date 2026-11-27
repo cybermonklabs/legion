@@ -29,6 +29,9 @@ import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
+import { NodeStatesProvider } from "./node-states/NodeMarks";
+import { marksOf, statesByReference } from "./node-states/node-states";
+import { SettleIssueProvider } from "./node-states/settle-write";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { type ThreadMark, threadMarks } from "./outline-thread-read";
@@ -1191,6 +1194,9 @@ export function IssueTree({
     };
   }, [landing]);
 
+  // The marks of each node of the tree, by reference, for each place in a row that names a node
+  // by its address alone - an entry of a lens's chain.
+  const nodeStates = useMemo(() => statesByReference(root), [root]);
   const outline = (
     <div className="mb-3 flex min-w-0 flex-col">
       {/* Over the tree and never in it: an alert inside the tree would break its structure of
@@ -1290,27 +1296,31 @@ export function IssueTree({
         {/* A decision's Change and the words typed in it outlive its row, which a read draws
             again under a new key: the drafts are the tree's. */}
         <ChangeDraftsProvider>
-          <TreeRows
-            artifacts={artifacts}
-            context={context}
-            coverageOut={coverageOut}
-            focused={focused}
-            foldedMore={root.moreToRead === true}
-            isClosed={isClosed}
-            {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
-            onFocus={focusRow}
-            {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
-            onPage={(page) => drawPage(page, false)}
-            onToggle={toggleRow}
-            {...(report === undefined
-              ? {}
-              : { report: { line: report.line, row: report.row ?? tabStop } })}
-            rows={rows}
-            tabStop={tabStop}
-            threads={threads}
-            unplaced={unplaced}
-            zoomRoot={zoomRoot}
-          />
+          <NodeStatesProvider value={nodeStates}>
+            <SettleIssueProvider value={root.type === "issue" ? root.id : undefined}>
+              <TreeRows
+                artifacts={artifacts}
+                context={context}
+                coverageOut={coverageOut}
+                focused={focused}
+                foldedMore={root.moreToRead === true}
+                isClosed={isClosed}
+                {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
+                onFocus={focusRow}
+                {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
+                onPage={(page) => drawPage(page, false)}
+                onToggle={toggleRow}
+                {...(report === undefined
+                  ? {}
+                  : { report: { line: report.line, row: report.row ?? tabStop } })}
+                rows={rows}
+                tabStop={tabStop}
+                threads={threads}
+                unplaced={unplaced}
+                zoomRoot={zoomRoot}
+              />
+            </SettleIssueProvider>
+          </NodeStatesProvider>
         </ChangeDraftsProvider>
         <RowEditing
           artifacts={artifacts}
@@ -1560,6 +1570,7 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
+    ...marksOf(node),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
     ...(node.source === undefined ? {} : { source: node.source }),
     ...(standing === undefined ? {} : { state: standing.word }),

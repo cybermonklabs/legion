@@ -90,8 +90,9 @@ import { statementStandings } from "../verification-filter/statement-state";
 export type SpecSaid = "agent" | "person" | "you";
 
 /** The mark at the right of a statement's row: how its checks stand, each at the commit the
- *  server names for it, in the Verification filter's own reading, or that no check serves it
- *  (R10, R17). */
+ *  server names for it, in the Verification filter's own reading, or that no check a count
+ *  reads serves it, as for any statement no count reads, checks or none (`carriesCheck`, R10,
+ *  R17). */
 export type SpecMark = StatementState | "no_check";
 
 /** The decision that shaped a run of statements, as the left column draws it (R5). */
@@ -179,6 +180,8 @@ export interface SpecRun {
    *  decision does until what decided each statement is held (`SpecFilterBody.tsx`'s
    *  `decidedHeld`). */
   readonly decision?: SpecDecision;
+  /** The key the runs are split by: the head tie's `key`; absent where no decision heads it. */
+  readonly key?: string;
   readonly statements: readonly SpecStatement[];
 }
 
@@ -275,10 +278,8 @@ export function specDecidedBy({
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
-    runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
+    runs: { decision?: SpecDecision; key?: string; statements: SpecStatement[] }[];
   }[] = [];
-  // The key of the last run built, which the next statement's head is matched against.
-  let runKey: string | undefined;
   // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
   // A statement is a requirement of the issue's own spec (`isStatement`).
   const rows = nodesInOrder(view).slice(1);
@@ -313,18 +314,18 @@ export function specDecidedBy({
     };
     const fresh = {
       ...(head?.decision === undefined ? {} : { decision: head.decision }),
+      ...(head === undefined ? {} : { key: head.key }),
       statements: [statement],
     };
     const group = groups.at(-1);
     const run = group?.runs.at(-1);
     if (group === undefined || group.parent?.id !== parent?.id) {
       groups.push({ ...(parent === undefined ? {} : { parent }), runs: [fresh] });
-    } else if (run === undefined || runKey !== head?.key) {
+    } else if (run === undefined || run.key !== head?.key) {
       group.runs.push(fresh);
     } else {
       run.statements.push(statement);
     }
-    runKey = head?.key;
   }
   return { groups, others: rows.filter((row) => !isStatement(row)) };
 }

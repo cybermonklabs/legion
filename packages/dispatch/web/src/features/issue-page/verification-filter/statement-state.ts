@@ -2,6 +2,7 @@ import type { CheckBlock, IssueCoverage } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import { type CheckState, coverageNotes, type StatementState } from "../page-words";
 import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
+import { outOfCounts } from "../tree-fold";
 
 /**
  * How each statement of the issue stands, and the one commit the page names for its results.
@@ -27,13 +28,13 @@ import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../t
  * - **Covered.** How many of the issue's statements carry a check. It is covered and never proven
  *   or met: a statement that has a check is not a statement that is true (R17, R22). It is the
  *   coverage read's count (`issueCovered`), which answers every statement of the issue's spec,
- *   and not a count of the statements the view draws: the view read answers its nodes a page at
- *   a time, and the server ends a page at a bound of bytes as well as of nodes, so the statements
- *   on its first page move with every node written before the cut - a check an issue under this
- *   one adds under the first statement pushes the last one onto the next page. While a document
- *   of the issue is still being indexed (`coverageNotes`), the coverage read's counts may not
- *   hold what serves a statement yet, so the summary draws that document's line in place of any
- *   count.
+ *   less the rows `countedCoverage` leaves out. It is not a count of the statements the view
+ *   draws: the view read answers its nodes a page at a time, and the server ends a page at a
+ *   bound of bytes as well as of nodes, so the statements on its first page move with every node
+ *   written before the cut - a check an issue under this one adds under the first statement
+ *   pushes the last one onto the next page. While a document of the issue is still being indexed
+ *   (`coverageNotes`), the coverage read's counts may not hold what serves a statement yet, so
+ *   the summary draws that document's line in place of any count.
  *
  * How one check stands is `tree-drafts.ts`'s `checkStanding`, the page's one reading of it:
  * each of its results read against the commit the server names for that check, the basis it
@@ -185,13 +186,13 @@ export type IssueCovered =
   | { readonly kind: "owed"; readonly notes: readonly string[] };
 
 /**
- * The issue's covered count, from the coverage read alone (`GET /api/v1/issues/{key}/coverage`):
- * every `requirement` block of the issue's spec is one of its rows (`requirements`), and one is
- * covered where a check of the issue or of an issue under it serves it (`checks`). No page of the
- * view read cuts that read, so the count is the same on every read of the same issue, whichever
- * of its statements the view has loaded. While a document of the issue is still being indexed
- * (`coverageNotes`), the coverage read's counts may not hold what serves a statement yet, so this
- * answers those lines in place of any count.
+ * The issue's covered count, from the coverage read it is given
+ * (`GET /api/v1/issues/{key}/coverage`): every `requirement` block of the issue's spec is one of
+ * its rows (`requirements`), and one is covered where a check of the issue or of an issue under
+ * it serves it (`checks`). The summary gives it that read less the rows `countedCoverage` leaves
+ * out, so the count can move as the view loads more statements. While a document of the issue is
+ * still being indexed (`coverageNotes`), the coverage read's counts may not hold what serves a
+ * statement yet, so this answers those lines in place of any count.
  */
 export function issueCovered(coverage: IssueCoverage | undefined): IssueCovered {
   const notes = coverageNotes(coverage);
@@ -205,12 +206,53 @@ export function issueCovered(coverage: IssueCoverage | undefined): IssueCovered 
 }
 
 /**
+ * The coverage read less each row no count reads (R3): a row the read marks `proposed`, a
+ * proposed statement's, or `closed`, the row of a statement at or under a node the read finds
+ * overtaken (`coverage_tuples.go`'s `treeRequirements.closed`); and a row whose statement stands
+ * out of the counts (`outOfCounts`) among `statements`, the statements the view holds at any
+ * depth as its reading holds them (`verificationReading`'s `statements`), paired by the address
+ * the tree gave that statement, which is the row's own `ref` (`tree-read/tree-nodes.ts`'
+ * `keptReference`).
+ *
+ * The view half stands because the coverage read reads the state of block nodes and asks alone,
+ * and none of a comment or a message above a statement (INFRA-1196's decision 557), so it leaves
+ * the row of a statement under an overtaken comment or message unclosed, though the page closes
+ * that statement. That half covers only the statements the view has loaded
+ * (`TreeNode.moreToRead`). The read's `closed` covers the rest where a block or an ask is what is
+ * overtaken; a statement the view has not loaded yet under an overtaken comment or message stays
+ * counted until its page loads. It stands until the read reads the state of every conversation
+ * node that can hold a statement (INFRA-1253). A read none of whose rows is left out is answered
+ * as it came.
+ */
+export function countedCoverage(
+  coverage: IssueCoverage | undefined,
+  statements: readonly StatementReading[]
+): IssueCoverage | undefined {
+  const requirements = coverage?.requirements;
+  if (coverage === undefined || !requirements) return coverage;
+  const outside = new Set(
+    statements.flatMap(({ node }) =>
+      node.reference !== undefined && outOfCounts(node) ? [node.reference] : []
+    )
+  );
+  const counted = requirements.filter(
+    (row) => row.coverage !== "proposed" && row.coverage !== "closed" && !outside.has(row.ref)
+  );
+  return counted.length === requirements.length ? coverage : { ...coverage, requirements: counted };
+}
+
+/**
  * Whether a statement carries a check (R17's covered): a check of this issue drawn under it,
  * or a check the coverage read counts for it that this issue's tree does not hold - a
  * descendant issue's, which R10 counts and this issue's results read does not answer for
  * (`coverage.go`, `TreeNode.counts`).
  */
 function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean {
+  // A proposed statement carries no check, and a proposed check, or one at or under an
+  // overtaken node, covers no statement. The coverage read's count below leaves out a proposed
+  // check as well, since it serves nothing yet (`queueServingBlockCounts` in `coverage.go`).
+  if (outOfCounts(node)) return false;
+  checks = inCounts(checks);
   return checks.length > 0 || (node.counts?.checks ?? 0) > 0;
 }
 
@@ -254,6 +296,9 @@ export function statementStandings(
  * names for it, and where a check stands in any of the other five states.
  */
 export function statementState(checks: readonly CheckReading[]): StatementState {
+  // A proposed check, and one at or under an overtaken node, serves no statement: it is neither
+  // evidence for it nor against it.
+  checks = inCounts(checks);
   if (checks.length === 0) return "unknown";
   if (checks.every((check) => check.state === "passed")) return "met";
   if (checks.some((check) => check.state === "failed")) return "not_met";
@@ -264,9 +309,19 @@ export function statementState(checks: readonly CheckReading[]): StatementState 
 export function statementCounts(
   statements: readonly StatementReading[]
 ): Readonly<Record<StatementState, number>> {
+  // A proposed statement, and one at or under an overtaken node, is in none of the three.
+  statements = inCounts(statements);
   const counts: Record<StatementState, number> = { met: 0, not_met: 0, unknown: 0 };
   for (const statement of statements) counts[statement.state] += 1;
   return counts;
+}
+
+/** What a count reads of `readings`: each one but those whose node is a proposed statement or
+ *  check or sits at or under an overtaken node (`outOfCounts`). */
+export function inCounts<Reading extends { readonly node: TreeNode }>(
+  readings: readonly Reading[]
+): readonly Reading[] {
+  return readings.filter((reading) => !outOfCounts(reading.node));
 }
 
 /** How one check node of the tree reads (`checkReading`): the node is tied to its block by its

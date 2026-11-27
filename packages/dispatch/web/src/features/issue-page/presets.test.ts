@@ -7,6 +7,7 @@ import { deletedLineText } from "../refs/post-marks";
 import type { AddressFallback } from "./address-target";
 import type { AddressTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
+import { type NodeStates, stampStates } from "./node-states/node-states";
 import { NODE_TYPE_NAMES, type NodeType, PRESET_ORDER, type Preset } from "./page-words";
 import {
   answerHolds,
@@ -665,6 +666,151 @@ test("the words filter matches the words a node draws, never its stored source",
   const markup = presetView(root, "conversation", "**");
   expect(markup.matches).toBe(0);
   expect(markup.root.children).toEqual([]);
+});
+
+/** `root` with the tree read's states put on it by the read's own id, as the page puts them
+ *  (`node-states.ts`): an overtaken node and every node under it are `closed`. Each node is read
+ *  as the node of the tree read whose id is its own, where it carries no read id. */
+function stamped(root: TreeNode, states: Readonly<Record<string, NodeStates>>): TreeNode {
+  return stampStates(readAsIds(root), new Map(Object.entries(states)));
+}
+
+/** `root` with every node that carries no read id given its own id as one. */
+function readAsIds(root: TreeNode): TreeNode {
+  return { readId: root.id, ...root, children: root.children.map(readAsIds) };
+}
+
+// A filter control's count counts its query's own nodes, a proposed one and one at or under an
+// overtaken node among them, under a words filter too. Only what asks something of the reader
+// leaves them out (the next row).
+test("a filter's count counts proposed and overtaken query nodes", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      node("ask-1", "ask", [
+        statement("spec#b-r1", [node("verification#b-c1", "check", [], { state: "failed" })]),
+        node("plan#b-t1", "plan_task"),
+      ]),
+      statement("spec#b-r2", [
+        node("verification#b-c2", "check", [], { state: "failed" }),
+        node("plan#b-t2", "plan_task"),
+      ]),
+      node("decision-1", "decision", [], { state: "waiting_review", waiting: true }),
+      node("decision-2", "decision", [], { state: "kept" }),
+    ]),
+    {
+      "ask-1": { life: "overtaken" },
+      "decision-1": { life: "proposed" },
+      "decision-2": { life: "overtaken" },
+      "plan#b-t2": { life: "proposed" },
+      "spec#b-r2": { life: "proposed" },
+      "verification#b-c2": { life: "proposed" },
+    }
+  );
+
+  expect(presetView(root, "spec", "").matches).toBe(2);
+  expect(presetView(root, "verification", "").matches).toBe(2);
+  expect(presetView(root, "plan", "").matches).toBe(2);
+  expect(presetView(root, "decisions", "").matches).toBe(3);
+  const signals = filterSignals(root, "");
+  expect(signals.spec.count).toBe(2);
+  expect(signals.verification.count).toBe(2);
+  expect(signals.plan.count).toBe(2);
+  expect(signals.decisions.count).toBe(3);
+  // The query's own nodes: the proposed statement alone, and the one under the overtaken ask.
+  expect(filterSignals(root, "b-r2").spec.count).toBe(1);
+  expect(filterSignals(root, "b-r1").spec.count).toBe(1);
+  expect(filterSignals(root, "b-t").plan.count).toBe(2);
+});
+
+// No count treats a proposed check as failing, nor a node at or under an overtaken one as open:
+// the failing flag counts neither a proposed failed check nor one under an overtaken statement,
+// and the to-review flag no overtaken decision that waits, nor one under an overtaken comment,
+// which the Decisions filter lifts out from under it. The same tree with no states raises both
+// flags, so the states are what take them away.
+test("no flag counts them", () => {
+  const live = node("CORE-1", "issue", [
+    statement("spec#b-r1", [node("verification#b-c1", "check", [], { state: "failed" })]),
+    statement("spec#b-r2", [node("verification#b-c2", "check", [], { state: "failed" })]),
+    node("decision-1", "decision", [], { state: "waiting_review", waiting: true }),
+    node("comment-1", "comment", [
+      node("decision-2", "decision", [], { state: "waiting_review", waiting: true }),
+    ]),
+  ]);
+  expect(filterSignals(live, "")).toEqual({
+    decisions: { count: 2, flag: { count: 2, word: "to_review" } },
+    plan: { count: 0, unit: "steps" },
+    spec: { count: 2 },
+    verification: { count: 2, flag: { count: 2, word: "failing" } },
+  });
+
+  const root = stamped(live, {
+    "comment-1": { life: "overtaken" },
+    "decision-1": { life: "overtaken" },
+    "spec#b-r2": { life: "overtaken" },
+    "verification#b-c1": { life: "proposed" },
+  });
+  expect(filterSignals(root, "")).toEqual({
+    decisions: { count: 2 },
+    plan: { count: 0, unit: "steps" },
+    spec: { count: 2 },
+    verification: { count: 2 },
+  });
+});
+
+// The failing flag counts the checks the Verification summary counts: a live failed check that
+// serves only a proposed statement, which no count reads, is no failing check of the flag, while
+// one that serves a live statement still is.
+test("the failing flag leaves out a failed check that serves only a proposed statement", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      statement("spec#b-r1", [node("verification#b-c1", "check", [], { state: "failed" })]),
+      statement("spec#b-r2", [node("verification#b-c2", "check", [], { state: "failed" })]),
+    ]),
+    { "spec#b-r1": { life: "proposed" } }
+  );
+  expect(filterSignals(root, "").verification.flag).toEqual({ count: 1, word: "failing" });
+});
+
+// What asks the reader stays. A proposed decision that waits for review is on the review list as
+// today, so the to-review flag counts it.
+test("a proposed decision waiting for review is still on the to-review flag", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      node("decision-1", "decision", [], { state: "waiting_review", waiting: true }),
+      node("decision-2", "decision", [], { state: "waiting_review", waiting: true }),
+    ]),
+    { "decision-1": { life: "proposed" }, "decision-2": { life: "overtaken" } }
+  );
+  expect(filterSignals(root, "").decisions).toEqual({
+    count: 2,
+    flag: { count: 1, word: "to_review" },
+  });
+});
+
+// A filter that draws a node's parent as one line on its row, with no view read held, draws that
+// parent's marks there too, as its own row would carry them. A parent with no mark carries none.
+test("a filter's parent line carries the marks of the parent it names", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      node("ask-1", "ask", [statement("spec#b-r1")]),
+      node("ask-2", "ask", [statement("spec#b-r2")]),
+      node("ask-3", "ask", [statement("spec#b-r3")]),
+    ]),
+    { "ask-1": { life: "proposed" }, "ask-2": { onlyYou: true } }
+  );
+  const lines = new Map<string, TreeNode["parentLine"]>();
+  const walk = (at: TreeNode): void => {
+    if (at.parentLine !== undefined) lines.set(at.id, at.parentLine);
+    for (const child of at.children) walk(child);
+  };
+  walk(presetView(root, "spec", "").root);
+  expect(lines.get("spec#b-r1")?.life).toBe("proposed");
+  expect(lines.get("spec#b-r1")?.onlyYou).toBeUndefined();
+  expect(lines.get("spec#b-r2")?.onlyYou).toBe(true);
+  expect(lines.get("spec#b-r2")?.life).toBeUndefined();
+  expect(lines.get("spec#b-r3")).toBeDefined();
+  expect("life" in (lines.get("spec#b-r3") ?? {})).toBe(false);
+  expect("onlyYou" in (lines.get("spec#b-r3") ?? {})).toBe(false);
 });
 
 /** One node of a view read, the query's or context, under the issue unless the case names

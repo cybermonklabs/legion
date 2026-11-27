@@ -54,6 +54,7 @@ import {
   PROGRESS_NOUNS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
+  ROW_MARK_WORDS,
   SPEC_WORDS,
   STATE_LINES,
   UNASKED_SOURCES,
@@ -268,6 +269,8 @@ test("every glyph token has an accessible name", () => {
     GLYPH_TOKENS.no_check,
     // One shape per kind of author, so a person and an agent never share one (R9).
     ...Object.values(GLYPH_TOKENS.authors),
+    // One shape per mark a row carries, each named by its mark's word.
+    ...Object.values(GLYPH_TOKENS.marks),
   ];
   for (const token of tokens) {
     expect(GLYPH_NAMES[token]).toMatch(/\S/);
@@ -315,6 +318,7 @@ test("every glyph token key is one the page's own tables name, and no other", ()
   const offenders = [
     ...keyOffenders("GLYPH_TOKENS", GLYPH_TOKENS, [
       "authors",
+      "marks",
       "no_check",
       "states",
       "statements",
@@ -322,6 +326,7 @@ test("every glyph token key is one the page's own tables name, and no other", ()
     ]),
     ...keyOffenders("GLYPH_TOKENS.types", GLYPH_TOKENS.types, NODE_TYPES),
     ...keyOffenders("GLYPH_TOKENS.authors", GLYPH_TOKENS.authors, Object.keys(AUTHOR_KIND_WORDS)),
+    ...keyOffenders("GLYPH_TOKENS.marks", GLYPH_TOKENS.marks, Object.keys(ROW_MARK_WORDS)),
     ...keyOffenders(
       "GLYPH_TOKENS.statements",
       GLYPH_TOKENS.statements,

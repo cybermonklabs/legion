@@ -6,6 +6,7 @@ import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { inReviewList } from "../decision-review";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
+import { stampStates } from "../node-states/node-states";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
@@ -46,6 +47,7 @@ import {
   type DecisionsEntry,
   type DecisionsParts,
   decisionsParts,
+  headingCount,
   waitingOrder,
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
@@ -1111,22 +1113,46 @@ test("what waits is each open question of the reader's, then each decision to re
   expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
-// R2: an overtaken decision stands in the part its kind puts it in - here the review list, since
-// it waits and a statement rests on it - and counts in no count of what waits, so the header's
-// count walks past it to the next decision that waits.
-test("an overtaken decision stays in its part and is not in waitingOrder", () => {
+// An overtaken decision waiting for review, and the decision under it, stand in the review part,
+// but neither counts in the part's heading count nor in what waits.
+test("an overtaken decision waiting for review stands in the review part and counts in no waiting count", () => {
+  const tied = { decision: { links: [shaped(specRef("s1"))] } };
+  const old = decisionNode("old", {
+    children: [decisionNode("inner", { closed: true, waiting: false })],
+    closed: true,
+    life: "overtaken",
+    waiting: false,
+  });
+  const children = [statement("s1"), old, decisionNode("review")];
   const parts = partsOf(
-    [statement("s1"), decisionNode("overtaken"), decisionNode("waits")],
-    [
-      decision("overtaken", { decision: { links: [shaped(specRef("s1"))] }, state: "overtaken" }),
-      decision("waits", { decision: { links: [shaped(specRef("s1"))] } }),
-    ]
+    children,
+    [decision("old", tied), decision("inner", tied), decision("review", tied)],
+    [],
+    presetView(issueTree(children), "decisions", "").root
   );
 
-  expect(idsOf(parts).review).toEqual([D("overtaken"), D("waits")]);
-  expect(parts.review[0]).toMatchObject({ overtaken: true, standing: "waiting_review" });
-  expect(parts.review[1]).not.toHaveProperty("overtaken");
-  expect(waitingOrder(parts)).toEqual([D("waits")]);
+  expect(idsOf(parts).review).toEqual([D("old"), D("inner"), D("review")]);
+  expect(parts.review[0]?.node.life).toBe("overtaken");
+  expect(parts.review[0]?.standing).toBe("waiting_review");
+  expect(waitingOrder(parts)).toEqual([D("review")]);
+  expect(headingCount("review", parts.review)).toBe(1);
+});
+
+// The question waits on the reader until the page puts the tree read's states on the tree, where
+// it is overtaken, so it is the stamp that takes the wait away; it stands in its part all the same,
+// and the part's heading count leaves it out.
+test("an overtaken open question stands with the open questions and counts in no waiting count", () => {
+  const tree = stampStates(
+    issueTree([openAsk("q-old", true, { readId: "q-old" }), openAsk("q-mine")]),
+    new Map([["q-old", { life: "overtaken" as const }]])
+  );
+  const parts = partsOf(tree.children, [], [], presetView(tree, "decisions", "").root);
+
+  expect(idsOf(parts).open_questions).toEqual(["q-mine", "q-old"]);
+  expect(parts.open_questions[1]?.node.life).toBe("overtaken");
+  expect(parts.open_questions[1]?.node.waiting).toBe(false);
+  expect(waitingOrder(parts)).toEqual(["q-mine"]);
+  expect(headingCount("open_questions", parts.open_questions)).toBe(1);
 });
 
 /** The reads of a decision `waits` that waits, tied to `s-late`, a statement the coverage read

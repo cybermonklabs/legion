@@ -48,6 +48,9 @@ import {
   treeComments,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
+import { lensChips, lensDrafts } from "../lenses/lens-drafts";
+import { storeWords } from "../lenses/store-words";
+import type { NodeStates } from "../node-states/node-states";
 import {
   blockAttributeLabel,
   coverageNotes,
@@ -193,6 +196,9 @@ export interface TreeDraftContext extends TreeWords {
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
    *  none stands. */
   readonly placeOf: (node: TreeAnswerNode) => string[];
+  /** The node's own `dispatch://` address, as its draft carries it (`referenceOf`), or undefined
+   *  where it has none. */
+  readonly referenceOf: (node: TreeAnswerNode) => string | undefined;
   /** The id the tree draws the node `readId` names by (`treeIdOf`). */
   readonly treeIdOf: (readId: string) => string;
   /** The id the tree draws `node` by, read from the node itself (`treeIdOfNode`). */
@@ -230,6 +236,7 @@ export type TreeDraftMark = (
  * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
+  lensDrafts,
   draftRequirement,
   draftServing,
   draftResult,
@@ -246,6 +253,8 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
  *  This part adds none: a member of its drafts is its own step's. */
 export const treeDraftMarks: readonly TreeDraftMark[] = [
   // A later part adds its mark here, one line each.
+  lensChips,
+  storeWords,
 ];
 
 /**
@@ -331,6 +340,7 @@ export function treeDraftsFrom(
       }
       return [];
     },
+    referenceOf: (node) => referenceOf(node, drafting),
     treeIdOf: idOf,
     treeIdOfNode: idOfNode,
     tuplesFrom: lookup.tuplesFrom,
@@ -476,6 +486,55 @@ function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
     ])
   );
   return (node) => treeIdOfNode(node, reads.issue.key, asks);
+}
+
+/**
+ * What the tree read says of one node beside its kind, in the page's terms: its life where its
+ * `state` is `proposed` or `overtaken`, and `onlyYou` where its `visibility` is `author`, which
+ * the reader's own tree holds only for a node reserved for them. A live, settled or gone node that
+ * every reader may see has neither, and so has a node the read gives neither value for. The read's
+ * own values are read here and nowhere else, so a place that is handed them as the tree read gives
+ * them - a lens line's chips, which carry their target's `state` and `visibility` - draws what the
+ * node's own row draws.
+ */
+export function statesOfRead({
+  state,
+  visibility,
+}: {
+  readonly state?: string | null;
+  readonly visibility?: string | null;
+}): NodeStates {
+  return {
+    ...(state === "proposed" || state === "overtaken" ? { life: state } : {}),
+    ...(visibility === "author" ? { onlyYou: true as const } : {}),
+  };
+}
+
+/**
+ * The marks the tree read gives `node` as a node of its own (`statesOfRead`): none for the block
+ * a question is written as in a document (supertag `ask`, with a `document`). The question is its
+ * ask's node, and the block only its place in the document, so the question's row and every count
+ * read the state of the ask's node alone, and a state the block's node holds draws nothing.
+ */
+export function ownStatesOf(node: TreeAnswerNode): NodeStates {
+  return node.supertag === "ask" && node.document !== undefined ? {} : statesOfRead(node);
+}
+
+/**
+ * The marks the tree read gives each node of `answer` that carries one (`ownStatesOf`), by the
+ * read's own id, which `TreeNode.readId` and `ParentLine.readId` hold, and the row of a question
+ * by the id of its ask (`node-states.ts`' `stateIdOf`):
+ * what `node-states.ts` puts on the tree drawn from `answer`. It reads the answer alone, so the
+ * states cost no read of their own, and a node the answer does not hold has no entry: the read
+ * answers nothing of a node reserved for another reader.
+ */
+export function nodeStatesOf(answer: TreeAnswer): ReadonlyMap<string, NodeStates> {
+  const states = new Map<string, NodeStates>();
+  for (const node of answer.nodes ?? []) {
+    const marks = ownStatesOf(node);
+    if (marks.life !== undefined || marks.onlyYou !== undefined) states.set(node.id, marks);
+  }
+  return states;
 }
 
 /**
@@ -713,8 +772,7 @@ function draftResult(
  * is handed too (`coverageStatements`, `TreeDraftContext.isCoverageStatement`). A decision node
  * that carries no `decision`, or that no document holds, is no decision of `decisionNodes` - the
  * one has no review state, the other no address and no document a Keep could be written against
- * - so it waits on nobody, and is unsure only where the read says so. Nor does one the read
- * answers `overtaken` wait on anybody (R2), as the header's count does not count it.
+ * - so it waits on nobody, and is unsure only where the read says so.
  *
  * A decision whose `decided_by` names a person is that person's decision (`decision-review.ts`'
  * `decidedByPerson`, INFRA-1196's decision 516), so its author is that person, and it is not an
@@ -762,7 +820,6 @@ function draftDecision(
   // A decision the read hangs no Change under may have one on a comment page not read yet.
   markChangeUnread(draft, decision, answer);
   draft.waiting =
-    node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&
     inReviewList(decided, context.isCoverageStatement, changed);
@@ -777,8 +834,6 @@ function draftDecision(
  * node (`stableSourceOf`). An approval request belongs to the document it reviews and is no node
  * of the tree, as in the outline. An ask the asks read has not answered for yet is open, as the
  * outline drew an ask block before that read answered.
- * No reader waits on a question the read answers `overtaken` (R2), as the header's count does
- * not count it.
  *
  * An `ask` block of a document is drawn by its question as the asks read holds it, with that
  * read's reading of it, as the outline drew an ask: the read's reading of the block is of its
@@ -828,7 +883,6 @@ function draftAsk(
   // An open question is what the fold unfolds the path to, whatever its depth (R6).
   draft.question = ask.state === "open";
   draft.waiting =
-    node.state !== "overtaken" &&
     ask.state === "open" &&
     ask.waiting_on === "human" &&
     context.viewer !== undefined &&

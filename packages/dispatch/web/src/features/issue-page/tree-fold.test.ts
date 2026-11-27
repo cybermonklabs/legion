@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 
 import type { TreeNode } from "./issue-tree";
+import { heldBy } from "./issue-tree";
+import { stampStates } from "./node-states/node-states";
 import type { NodeType } from "./page-words";
 import {
   CHILD_PAGE,
@@ -8,6 +10,7 @@ import {
   indentOf,
   NOTHING_OPENED,
   type OpenedBranches,
+  pathTo,
   placeOf,
   treeRows,
   withEveryFoldUndone,
@@ -345,4 +348,118 @@ test("a zoom draws its node's branch under the breadcrumb of its ancestors", () 
   const inside = treeRows(doc, NOTHING_OPENED, ["CORE-1", "doc-1", "doc-2"]);
   expect(idsOf(inside)).toEqual(["doc-3", "doc-4", "question"]);
   expect(rowOf(inside, "question").trail).toEqual(["CORE-1", "doc-1", "doc-2", "doc-3", "doc-4"]);
+});
+
+/** What each row draws but its node's own facts: the node's id, or the paged node's, its level,
+ *  its twisty and its count. */
+function shapeOf(rows: readonly DrawnRow[]): string[] {
+  return rows.map((row) =>
+    row.kind === "node"
+      ? `${row.node.id}@${row.level}:${String(row.expanded)}:${String(row.folded)}`
+      : `page:${row.of.id}@${row.level}:${row.left}`
+  );
+}
+
+/** What the model says of a node a later one took the place of. */
+const OVERTAKEN = { closed: true, life: "overtaken" } as const;
+
+/** An issue whose one document holds a live requirement between two requirements with `life`,
+ *  overtaken unless a case gives another, the second holding a note, and counts what it holds as
+ *  the tree read does (`heldBy`). */
+function withOvertaken(life: Partial<TreeNode> = OVERTAKEN): TreeNode {
+  const children = [
+    node("spec#b-r1", "requirement", [], life),
+    node("spec#b-r2", "requirement"),
+    node("spec#b-r3", "requirement", [node("spec#b-r3-note", "callout")], life),
+  ];
+  return node("CORE-1", "issue", [node("spec", "document", children, { held: heldBy(children) })]);
+}
+
+// An overtaken node is a row at its place among its parent's children, in the tree's order, at
+// their level, and its subtree is drawn open as any branch's is; the reader folds it as any row,
+// to one row counting what it holds. The same tree with nothing overtaken draws the same rows,
+// as the page opens, with the node folded by the reader, and with that fold undone by `z`.
+test("an overtaken node is a row at its place with its subtree open", () => {
+  const root = withOvertaken();
+  const rows = treeRows(root);
+  expect(idsOf(rows)).toEqual([
+    "CORE-1",
+    "spec",
+    "spec#b-r1",
+    "spec#b-r2",
+    "spec#b-r3",
+    "spec#b-r3-note",
+  ]);
+  for (const id of ["spec#b-r1", "spec#b-r3"]) {
+    const row = rowOf(rows, id);
+    expect(row.level, id).toBe(3);
+    expect(row.trail, id).toEqual(["CORE-1", "spec"]);
+  }
+  expect(rowOf(rows, "spec#b-r3")).toMatchObject({ expanded: true });
+  expect(rowOf(rows, "spec#b-r3").folded).toBeUndefined();
+  expect(rowOf(rows, "spec#b-r3-note").level).toBe(4);
+
+  // Folded by the reader, it is one row counting what it holds, as any row is.
+  const shut = withFold(NOTHING_OPENED, "CORE-1>spec>spec#b-r3", false);
+  expect(rowOf(treeRows(root, shut), "spec#b-r3")).toMatchObject({ expanded: false, folded: 1 });
+
+  const live = withOvertaken({});
+  for (const opening of [NOTHING_OPENED, shut, withEveryFoldUndone(shut)]) {
+    expect(shapeOf(treeRows(root, opening))).toEqual(shapeOf(treeRows(live, opening)));
+  }
+});
+
+// A folded branch's count counts an overtaken node and the nodes under it as it counts every node:
+// it is the count of the same tree with nothing overtaken, and the number of rows the branch draws
+// open.
+test("a folded count counts an overtaken node as any node", () => {
+  const root = withOvertaken();
+  const live = withOvertaken({});
+  expect(root.held).toBe(live.held);
+  expect(treeRows(root).slice(2)).toHaveLength(4);
+  const shut = withFold(NOTHING_OPENED, "CORE-1>spec", false);
+  for (const tree of [root, live]) {
+    expect(rowOf(treeRows(tree, shut), "spec")).toMatchObject({ expanded: false, folded: 4 });
+  }
+});
+
+// An overtaken node is drawn open and whole, folded only by the reader (spec R5): as the page
+// opens, with nothing folded, the outline draws an overtaken node and every node under it open,
+// the same rows it draws for the same tree with nothing overtaken, whether the overtaken node
+// stands under a live node or under another overtaken one.
+test("an overtaken node arrives as open on load as its live self", () => {
+  // Each node's read id is its own id, so a case names the nodes the stamp makes overtaken by id.
+  const read = (id: string, type: NodeType, children: readonly TreeNode[] = []): TreeNode =>
+    node(id, type, children, { readId: id });
+  const live = node("CORE-1", "issue", [
+    read("spec", "document", [
+      read("spec#b-r1", "requirement", [
+        read("spec#b-r1-note", "callout", [read("spec#b-r1-ask", "ask")]),
+      ]),
+      read("spec#b-r2", "requirement", [read("spec#b-r2-note", "callout")]),
+    ]),
+  ]);
+  const liveShape = shapeOf(treeRows(live, NOTHING_OPENED));
+  const cases = [["spec#b-r1"], ["spec#b-r1-note"], ["spec#b-r1", "spec#b-r1-note"], ["spec#b-r2"]];
+  for (const overtaken of cases) {
+    const label = `${overtaken.join(" and ")} overtaken`;
+    const states = new Map(overtaken.map((id) => [id, { life: "overtaken" }] as const));
+    const root = stampStates(live, states);
+    const rows = treeRows(root, NOTHING_OPENED);
+    for (const id of overtaken) {
+      // The case reads an overtaken node that holds a branch, which its live self holds too.
+      const placed = pathTo(root, id)?.at(-1);
+      expect(placed?.life, `${label}: ${id}`).toBe("overtaken");
+      expect(pathTo(live, id)?.at(-1)?.life, `${label}: ${id} live`).toBeUndefined();
+      expect(placed?.children.length, `${label}: ${id} holds`).toBeGreaterThan(0);
+      // Its row is open, and every node under it is a row.
+      expect(rowOf(rows, id), `${label}: ${id}`).toMatchObject({ expanded: true });
+      expect(rowOf(rows, id).folded, `${label}: ${id}`).toBeUndefined();
+      for (const under of everyId(placed ?? root).slice(1)) {
+        expect(idsOf(rows), `${label}: ${under} under ${id}`).toContain(under);
+      }
+    }
+    expect(idsOf(rows), label).toEqual(everyId(root));
+    expect(shapeOf(rows), label).toEqual(liveShape);
+  }
 });

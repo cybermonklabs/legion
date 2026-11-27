@@ -13,6 +13,7 @@ import type { TextSource } from "../../refs/text-references";
 import type { DecisionNode } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, decidedByPerson, inReviewList, reviewState } from "../decision-review";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
+import { marksOf } from "../node-states/node-states";
 import { type DecisionState, isReader } from "../page-words";
 import { nodeReading } from "../presets";
 
@@ -47,9 +48,6 @@ import { nodeReading } from "../presets";
  *    which no statement stands on any longer (R5: "A replaced decision draws no line"). A
  *    decision a person decided stands here never: it is that person's, wherever it is tied.
  *
- * An overtaken decision or question, a node the read answers `overtaken`, stands in the part its
- * kind puts it in, and no reader waits on it (`waitingOrder`, R2).
- *
  * Before the five parts stands the node the address names where it is neither an ask nor a
  * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
  * so the view holds it, and the filter draws it as a row of its own kind, which the page focuses.
@@ -77,6 +75,10 @@ import { nodeReading } from "../presets";
  * it (`tree-read/tree-nodes.ts`' `firstDraft`), and `decisions` no decision, so it stands in no
  * part and no count, and an address naming it names the question it restates (`issue-address.ts`'
  * `pathToTarget`).
+ *
+ * An overtaken node stands in the same part as a live node in its state. Nothing at or under
+ * an overtaken node (`TreeNode.closed`) waits on the reader (`waitingOrder`), and neither the open
+ * questions' heading nor the review part's counts it (`headingCount`).
  *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
@@ -214,9 +216,6 @@ export interface DecisionEntry extends EntryBase {
   /** The person who kept it (`DecisionKeep.kept_by`), where it stands kept. */
   readonly keptBy?: Actor;
   readonly kind: "decision";
-  /** Whether the read answers the decision's node `overtaken` (R2): it stands in its part, and
-   *  is no entry of what waits (`waitingOrder`). */
-  readonly overtaken?: true;
   /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`), by the one
    *  rule the outline reads too (`decision-review.ts`' `reviewState`). */
   readonly standing?: DecisionState;
@@ -267,14 +266,26 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
  * is the reader's, then each decision of the review list. It is what the header's count of
  * what waits walks: each press goes to the next of them (R13, the tester's F12).
- * No reader waits on an overtaken one (R2): its question's node does not wait
- * (`tree-read/tree-nodes.ts`' `draftAsk`), and its decision says it is overtaken.
+ * An entry at or under an overtaken node stands in its part, but no reader waits on it, so the
+ * walk leaves it out.
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
+  parts = { ...parts, review: parts.review.filter((entry) => entry.node.closed !== true) };
   return [
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
-    ...parts.review.filter((entry) => entry.overtaken !== true).map((entry) => entry.node.id),
+    ...parts.review.map((entry) => entry.node.id),
   ];
+}
+
+/**
+ * How many entries the heading of `part` counts. In the two parts that wait on the reader, the
+ * open questions and the decisions waiting for review, it is every entry but those at or under
+ * an overtaken node (`TreeNode.closed`), which stand in the part and are drawn there though
+ * nothing waits on them; in every other part, every entry.
+ */
+export function headingCount(part: DecisionsPart, entries: readonly DecisionsEntry[]): number {
+  if (part !== "open_questions" && part !== "review") return entries.length;
+  return entries.filter((entry) => entry.node.closed !== true).length;
 }
 
 /**
@@ -431,7 +442,6 @@ export function decisionsParts({
             },
           }),
       ...(keptBy === undefined ? {} : { keptBy }),
-      ...(row.node.state === "overtaken" ? { overtaken: true as const } : {}),
       kind: "decision",
       shapes,
       ...(standing === undefined ? {} : { standing }),
@@ -500,7 +510,10 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
     if (!placed.has(node.id)) {
       placed.set(node.id, {
         node,
-        ...(above === undefined || above === root ? {} : { parent: parentLineOf(above) }),
+        // The parent's line carries the parent's marks, which it draws after the parent's words.
+        ...(above === undefined || above === root
+          ? {}
+          : { parent: { ...parentLineOf(above), ...marksOf(above) } }),
       });
     }
     for (const child of node.children) walk(child, node);

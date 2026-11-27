@@ -49,13 +49,20 @@ import { useEditedRow } from "./edited-row";
 import { chipName } from "./first-line";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
-import { presetNodePath } from "./issue-address";
+import { isProposed, presetNodePath } from "./issue-address";
 import { isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
+import { LensChain } from "./lenses/LensChain";
+import { LensLines } from "./lenses/LensLines";
+import { LensMenu } from "./lenses/LensMenu";
+import { lensChipWords } from "./lenses/lens-drafts";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { DeletedLine, FirstLine, NodeParentLine } from "./node-line";
 import { documentWord } from "./node-row-chip";
+import { NodeMarks } from "./node-states/NodeMarks";
+import { marksOf } from "./node-states/node-states";
+import { SettleAct, SettleRefusal } from "./node-states/SettleAct";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -68,6 +75,7 @@ import {
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
+  LENS_WORDS,
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
@@ -252,6 +260,8 @@ export const NodeRow = memo(function NodeRow({
   );
 
   const depth = indentOf(level);
+  // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place.
+  const noVerdict = node.type === "lens" && node.text === "";
   const edges = node.alsoUnder.length > 0 || node.chips.length > 0 || node.gaps.length > 0;
   // The node's ties and its gap words, at the end of its words, on their line, as the
   // prototype's `.trail` stands inside its `.body` (ruling 5). Where the words are being edited,
@@ -278,6 +288,7 @@ export const NodeRow = memo(function NodeRow({
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
+      data-node-read-id={node.readId}
       data-node-row=""
       data-node-state={node.state}
       data-node-type={node.type}
@@ -322,12 +333,20 @@ export const NodeRow = memo(function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              {deleted === null ? (
-                <FirstLine node={node} />
-              ) : (
-                <span data-node-first-line="" {...authorText}>
-                  <DeletedLine deleted={deleted} />
+              {noVerdict ? (
+                <span data-node-first-line="" {...pageChrome}>
+                  {LENS_WORDS.no_verdict}
                 </span>
+              ) : (
+                <>
+                  {deleted === null ? (
+                    <FirstLine node={node} />
+                  ) : (
+                    <span data-node-first-line="" {...authorText}>
+                      <DeletedLine deleted={deleted} />
+                    </span>
+                  )}
+                </>
               )}
               {folded === undefined ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>
@@ -359,13 +378,19 @@ export const NodeRow = memo(function NodeRow({
                   <DeletedLine deleted={deleted} />
                 </p>
               ) : node.child === undefined ? (
-                <RowText
-                  focused={focused}
-                  markdown={node.text}
-                  source={node.source}
-                  tabStops={tabStops}
-                  tree={node.tree}
-                />
+                noVerdict ? (
+                  <p className="break-words" {...pageChrome}>
+                    {LENS_WORDS.no_verdict}
+                  </p>
+                ) : (
+                  <RowText
+                    focused={focused}
+                    markdown={node.text}
+                    source={node.source}
+                    tabStops={tabStops}
+                    tree={node.tree}
+                  />
+                )
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
@@ -398,6 +423,7 @@ export const NodeRow = memo(function NodeRow({
           {node.parentLine === undefined ? null : (
             <NodeParentLine line={node.parentLine} tabStops={tabStops} />
           )}
+          {oneLine ? null : <LensLines node={node} tabStops={tabStops} />}
           {oneLine ? null : (
             <NodeFace
               author={author}
@@ -408,11 +434,13 @@ export const NodeRow = memo(function NodeRow({
               tabStops={tabStops}
             />
           )}
+          {oneLine ? null : <LensChain node={node} tabStops={tabStops} />}
           <RowActs
             node={node}
             ownAnswer={ownAnswer}
             ownComment={own && node.type === "comment"}
             replies={!(context && isThreadContext(node))}
+            settles={focused}
             tabStops={tabStops}
             writer={writer}
           />
@@ -653,6 +681,10 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return "statement";
     case "decision":
       return "decision";
+    case "finding":
+    case "lens":
+    case "risk":
+      return "lens";
     // A reading is an agent's reading of a person's answer, inside the ask or the decision it
     // reads, and always an agent's words: it takes an agent's quiet grey, never the colour of the
     // question or the decision it reads, so it never reads as the person's decision itself (R9).
@@ -660,6 +692,10 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return "agent";
     case "plan_task":
       return "step";
+    // A constraint, a standard or a measurement the issue's statements are held to, takes a
+    // statement's colour, though it is no block of the spec and so never `isStatement`.
+    case "constraint":
+      return "statement";
     case "requirement":
       // Only the spec's own requirement is a statement (`isStatement`); one of any other
       // document is a block and nothing more, in a block's colour (decision 246).
@@ -769,6 +805,11 @@ export const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
  * of the margin is ever cut. Where `tagTo` is given, the tag is a link that opens the node in its
  * own view (R9), out of the tab order unless `tabStops` holds: `f` steps to it and Enter follows
  * it. `id` names it in the row's name, after the words (`rowNameIds`).
+ * A lens's tag is its kind's words whole, so it wraps inside that column or line, with its shape
+ * beside its first line (`KindTag`).
+ * After the state, on that line, stand the node's marks - proposed or overtaken, then reserved
+ * for its author - each by a word and a shape (`NodeMarks`), on a line of their own where the
+ * node has no state.
  */
 export function RowMargin({
   author,
@@ -901,6 +942,13 @@ export function RowMargin({
           </span>
         )}
       </div>
+      {/* A node's marks stand where a state stands, on its own line where it has no state, so a
+          proposed statement's mark is never drawn between its bullet and its words. */}
+      {node.state === undefined && node.unsure !== true && marksOf(node) !== undefined ? (
+        <div className={NODE_ROW_LAYOUT.marginState}>
+          <NodeMarks marks={node} />
+        </div>
+      ) : null}
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
           {standing === undefined ? null : (
@@ -938,6 +986,7 @@ export function RowMargin({
               {CONTROL_LABELS.unsure}
             </span>
           ) : null}
+          <NodeMarks marks={node} />
         </div>
       )}
     </div>
@@ -947,6 +996,22 @@ export function RowMargin({
 /** A typed node's kind, as its tag draws it: its type's word and shape, and the word alone for a
  *  `requirement` block of a document other than the spec, which is no statement. */
 function KindTag({ node }: { node: TreeNode }): ReactNode {
+  // A lens's tag is its kind's words, which run as long as the author wrote them: they wrap
+  // inside the margin's column, `whitespace-normal` over the tag's own `whitespace-nowrap`, and
+  // the shape stands at the top, beside their first line.
+  const kindTag = node.lens?.kind === undefined ? undefined : lensChipWords(node.lens.kind).words;
+  if (kindTag !== undefined) {
+    return (
+      <>
+        <span className="flex h-lh shrink-0 items-center self-start">
+          <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
+        </span>
+        <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]" {...authorText}>
+          {kindTag}
+        </span>
+      </>
+    );
+  }
   return node.type === "requirement" && !isStatement(node) ? (
     <span {...pageChrome}>{BLOCK_TYPE_NAMES.requirement}</span>
   ) : (
@@ -1096,7 +1161,18 @@ export function NodeOptions({
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
  * is, and it carries a mark of its own (`data-row-copy`) rather than `data-row-act`, which names
- * the writer's acts alone. Its answer, copied or failed, is said after it in the page's words.
+ * the writer's acts and Settle. Its answer, copied or failed, is said after it in the page's words.
+ * Settle (`SettleAct`), on a proposed row where `settles` holds (R4), carries `data-row-act` but
+ * needs no writer: a cookie proves a person. Where `settles` holds, the sentence of a refused
+ * settle of the node (`SettleRefusal`) stands right after it until the reader's next act, and
+ * stays in that place once a read draws the node settled and the act goes (R4): it says why the
+ * press did nothing.
+ *
+ * After Copy reference and its answer, on every row of Conversation and Graph whose node the
+ * invoke route takes, whatever the focus, the row draws the Lens act and its menu of lens kinds
+ * (`lenses/LensMenu.tsx`), which `LensMenu` reads from the context `TreeRows.tsx` provides (R4).
+ * It writes as the reader, whether or not a writer is, and carries `data-row-lens` rather than
+ * `data-row-act`.
  *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
@@ -1107,6 +1183,7 @@ export function RowActs({
   ownAnswer,
   ownComment = false,
   replies = true,
+  settles = true,
   tabStops = false,
   writer,
 }: {
@@ -1117,6 +1194,10 @@ export function RowActs({
   /** Whether the row carries Reply where its node takes one: not on a message's context row,
    *  whose thread is replied to in Threads (R9, `presets.ts`' `isThreadContext`). */
   replies?: boolean;
+  /** Whether the row offers Settle where it is proposed, and draws a refused settle's sentence:
+   *  every row RowActs is drawn on, but the outline's `NodeRow`, which draws RowActs on every row
+   *  and offers Settle on its focused row alone (R4). */
+  settles?: boolean;
   tabStops?: boolean;
   writer: OutlineWriter | undefined;
 }): ReactNode {
@@ -1165,6 +1246,8 @@ export function RowActs({
           {label}
         </button>
       ))}
+      {settles && isProposed(node) ? <SettleAct node={node} tabStops={tabStops} /> : null}
+      {settles && reference !== undefined ? <SettleRefusal reference={reference} /> : null}
       {reference === undefined ? null : (
         <button
           className={`dispatch-inline-link ${pageRowAct}`}
@@ -1187,6 +1270,7 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
+      <LensMenu node={node} tabStops={tabStops} />
     </p>
   );
 }
@@ -1480,6 +1564,7 @@ function Chip({
           {shown}
         </Link>
       )}
+      <NodeMarks compact marks={chip} />
     </span>
   );
 }
