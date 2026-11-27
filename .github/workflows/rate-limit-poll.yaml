@@ -1,0 +1,35 @@
+name: Rate-limit poll
+
+# Measurement only, on a draft that never merges. Reads this repository's GITHUB_TOKEN core budget
+# every 5 seconds through GET /rate_limit, which GitHub does not count against any budget, so the
+# counter's steps over time show what every job of the repository spends. Each line holds the
+# time and the rate-limit fields alone: used, remaining, limit and reset.
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: rate-limit-poll-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    permissions: {}
+    steps:
+      - name: Read the core budget every 5 s for 55 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          end=$(( $(date +%s) + 55 * 60 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            line=$(printf 'Authorization: Bearer %s\n' "$GH_TOKEN" |
+              curl -sS --max-time 4 -H @- -H 'Accept: application/vnd.github+json' https://api.github.com/rate_limit |
+              jq -r '.resources.core | "\(.used) \(.remaining) \(.limit) \(.reset)"' 2>/dev/null) || line="read-failed"
+            echo "rate-poll: $(date -u +%Y-%m-%dT%H:%M:%SZ) ${line:-read-failed}"
+            sleep 5
+          done
