@@ -968,6 +968,26 @@ func TestReconcileReadmitsALingeringRootSetBackToTodo(t *testing.T) {
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-LINGER", Index: 0, AdmittedAt: fixedNow}})
 }
 
+// A root set back to todo during a next change starts a new generation, and the change it leaves
+// was of the generation before: the re-admission takes NextChange and MergerCompletionOwed with
+// that generation, as it takes the hold and the wait on a person. Left set, the record named a
+// change no merge of the new generation could end, so the close waited on it for good.
+func TestReadmissionDuringANextChangeLeavesNoChangeOpen(t *testing.T) {
+	pool := migratedPool(t)
+	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	until := fixedNow.Add(time.Hour)
+	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until,
+		NextChange: 3, NextChanges: 1, MergerCompletionOwed: true})
+
+	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-LINGER", ResolvedRepo: "acme/widgets", Title: "lingering", Status: "todo", Rank: "A", HandedOver: handed}})
+	readmitted := issue(t, pool, "LEGION-LINGER")
+	if readmitted.Generation != 4 || readmitted.NextChange != 0 || readmitted.MergerCompletionOwed {
+		t.Fatalf("re-admitted root = generation %d, next change %d, merger completion owed %v; want generation 4, no change open and nothing owed",
+			readmitted.Generation, readmitted.NextChange, readmitted.MergerCompletionOwed)
+	}
+}
+
 // A root set back to todo is a new generation of the whole tree. Only the root's own generation
 // facts were cleared, so a child re-entered at the new generation still carried the last one's
 // design gate and recorded handoff — and read them as its own.

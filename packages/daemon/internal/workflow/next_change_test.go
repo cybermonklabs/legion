@@ -176,6 +176,23 @@ func (r *waitRig) noChange(issue string, generation uint64) {
 	}
 }
 
+// A next change is open only while it is of the issue's own generation (record.OnNextChange). A
+// root that stands at a later generation than the change its record names — the record a
+// re-admission during that change left before it cleared the field — merges its re-run and
+// closes on passing checks. Read as `NextChange != 0`, the stale change held the close for good:
+// the wait named an open change no merge could end, and every later change was refused.
+func TestAStaleNextChangeHoldsNoClose(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Merging, "retro")
+	if _, err := rig.pool.Exec(t.Context(), `update issues set next_change = $2, next_changes = 1 where key = $1`, waitRoot, waitGeneration-1); err != nil {
+		t.Fatalf("seed %s's stale next change: %v", waitRoot, err)
+	}
+	rig.mergeRoot()
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	closedOnChecks(t, rig, waitRoot)
+}
+
 // changeMerges stands issue's open change in merging on pull request number at head, its merger
 // done, and merges it at merge.
 func (r *waitRig) changeMerges(key string, number int, merge, head string) {
