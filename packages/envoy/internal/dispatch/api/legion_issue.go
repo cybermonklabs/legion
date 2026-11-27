@@ -1,5 +1,5 @@
 // legion_issue.go serves GET /api/v1/issues/{key}/legion, one issue's Legion state from what the
-// sampler recorded (dispatch://INFRA-4869): whether the issue's project names a daemon, the
+// Legion intake recorded (dispatch://INFRA-4869): whether the issue's project names a daemon, the
 // issue's phase, the claims of its roles, its slot, its place in the daemon's waiting line, what
 // holds it and what it waits on from a person, the newest read of the project's daemon, and the
 // revision of the issue's runs. readLegionIssue computes that body from the key alone, so the

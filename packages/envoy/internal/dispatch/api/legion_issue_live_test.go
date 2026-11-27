@@ -163,8 +163,9 @@ func (p *legionIssuePage) unread(t *testing.T, start int, row string) {
 	}
 }
 
-// announce sends the notification one read of project's daemon sends (legion.StateChannel), as the
-// sampler does after it records the read, and answers the moment a delta of it is due by.
+// announce sends the notification one record of project's daemon's state sends
+// (legion.StateChannel), as the Legion intake does after it records a read or a batch, and answers
+// the moment a delta of it is due by.
 func announce(t *testing.T, rig *hubRig, project string) time.Time {
 	t.Helper()
 	notifyChannel(t, rig.database, legion.StateChannel, project)

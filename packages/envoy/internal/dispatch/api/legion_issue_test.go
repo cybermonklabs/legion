@@ -483,8 +483,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	observe("FULL", "FULL-11", legion.FieldPhase, `"planning"`, hour(1))
 	observe("FULL", "FULL-11", legion.FieldPhase, `null`, hour(2))
 	observe("FULL", "FULL-11", legion.FieldPhase, `"planning"`, hour(3))
-	// FULL-12 left the daemon's state: every field it held is written null, as the sampler
-	// writes a field the newest read no longer carries.
+	// FULL-12 left the daemon's state: every field it held is written null, as the Legion
+	// intake writes a field the newest whole read no longer carries.
 	observe("FULL", "FULL-12", legion.FieldPhase, `"reviewing"`, hour(1))
 	observe("FULL", "FULL-12", claim+"reviewer", `"working"`, hour(1))
 	observe("FULL", "FULL-12", legion.FieldPhase, `null`, hour(2))
@@ -515,8 +515,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 		observe("FULL", key, legion.FieldPhase, `"awaiting_person"`, hour(1))
 		observe("FULL", key, legion.FieldWaitingOn, wait, hour(1))
 	}
-	// FULL-27's wait ended: the sampler writes null for the field the newest read no longer
-	// carries, and the issue is back at work.
+	// FULL-27's wait ended: the Legion intake writes null for the field the newest whole read no
+	// longer carries, and the issue is back at work.
 	observe("FULL", "FULL-27", legion.FieldPhase, `"implementing"`, hour(2))
 	observe("FULL", "FULL-27", legion.FieldWaitingOn, `null`, hour(2))
 	// The blockers in an order that is not their sorted one, so a read that sorted them is told
