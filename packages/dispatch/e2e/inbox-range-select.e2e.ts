@@ -1521,8 +1521,12 @@ test("at 390 px a landing the press leaves cut at the window's foot scrolls by t
       `row 12 stands with its bottom edge at the window's bottom edge; ${sightWords(shown)}`
     ).toBeLessThanOrEqual(EDGE_SLACK_PX);
 
-    // At this width no row is drawn as selected: the row that holds the focus is the item in
-    // hand, so `x` marks it, and no other row.
+    // At this width no row is drawn as selected, so no row carries `aria-current`: the row that
+    // holds the focus is the item in hand, so `x` marks it, and no other row.
+    await expect(
+      inboxList(page).locator("[data-inbox-row][aria-current]"),
+      "a row carries aria-current at 390 px, where no row is drawn as selected"
+    ).toHaveCount(0);
     await page.keyboard.press("x");
     await expectCount(page, 1);
     expect(
