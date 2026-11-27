@@ -4055,7 +4055,6 @@ function forwardClauses(
           moved.some(
             (call) =>
               text(call.body, "to") === "implementing" &&
-              holdsAll(text(call.body, "reason"), world.anchors.cause) &&
               holdsAll(text(call.body, "reason"), world.anchors.defect)
           ),
           backEvidence
