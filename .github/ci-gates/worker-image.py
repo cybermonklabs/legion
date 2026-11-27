@@ -51,6 +51,8 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'packages/envoy/steprecord/**',
     'packages/envoy/testnatsimages/**',
     'packages/envoy/testnatsinprocess/**',
+    'packages/envoy/testexec/**',
+    'packages/envoy/lockwaittest/**',
     '.omp-pin',
     '.bun-version',
     '.dockerignore',
@@ -77,4 +79,5 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'packages/envoy/natsconn/**',
     'packages/envoy/fileerr/**',
     'packages/envoy/pgdsn/**',
+    'packages/envoy/programfile/**',
 ])
