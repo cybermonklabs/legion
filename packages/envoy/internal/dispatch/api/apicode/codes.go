@@ -383,6 +383,7 @@ var (
 	ResultInput                    = both("RESULT_INPUT", http.StatusBadRequest)
 	ResultNotFound                 = both("RESULT_NOT_FOUND", http.StatusNotFound)
 	ResultRetracted                = both("RESULT_RETRACTED", http.StatusConflict)
+	ResultsOnlyToken               = both("RESULTS_ONLY_TOKEN", http.StatusForbidden) // a results token's call of a route that does not state ResultsScope (refuseLimitedToken)
 	RetractionForbidden            = both("RETRACTION_FORBIDDEN", http.StatusForbidden)
 	RetractionInput                = both("RETRACTION_INPUT", http.StatusBadRequest)
 	ReviewVersionMoved             = both("REVIEW_VERSION_MOVED", http.StatusConflict)
@@ -440,10 +441,10 @@ var (
 	SignInRequired = both(contracts.DispatchSignInRequired, http.StatusForbidden)
 	LoginChanged   = both(contracts.DispatchLoginChanged, http.StatusConflict)
 	// ReadOnlyToken is a read-only token's call of a route outside the read class
-	// (refuseReadOnlyToken).
+	// (refuseLimitedToken).
 	ReadOnlyToken = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
 	// ApproveOnlyToken is an approve-only token's call of a route the approve list does not name
-	// (refuseApproveOnlyToken), its send of a state of a route that takes several by state that the
+	// (refuseLimitedToken), its send of a state of a route that takes several by state that the
 	// list does not give it (gateApproveOnlyStates), or its answer of an ask that is no approval
 	// request (approveOnlyAnswerRefusal, gateApproveOnlyAskAnswer).
 	ApproveOnlyToken   = both(contracts.DispatchApproveOnlyToken, http.StatusForbidden)
@@ -670,4 +671,39 @@ var (
 var (
 	// APIV1Ended is every /api/v1 path once the deployment's end of /api/v1 has passed (R3.4).
 	APIV1Ended = v1Only("API_V1_ENDED", http.StatusGone)
+
+	// The refusals of POST /api/v1/projects/{key}/results, a CI job's write of the result of a
+	// check of the spec files (spec_results.go): a route a merge on main added after /api/v2's
+	// freeze, which awaits its /api/v2 route (testdata/v1-awaiting-v2-routes.txt), so only
+	// /api/v1 answers them until that route lands. Its body's refusal is the issue results
+	// write's own RESULT_INPUT (ResultInput).
+	//
+	// ResultsScopeRequired refuses every credential but a CI job's results token.
+	ResultsScopeRequired = v1Only("RESULTS_SCOPE_REQUIRED", http.StatusForbidden)
+	// CommitNotTheRuns refuses a result for another commit than the one the token's run tested.
+	CommitNotTheRuns = v1Only("COMMIT_NOT_THE_RUNS", http.StatusForbidden)
+	// RepositoryNotTheProjects refuses a run of a repository that is not the project's default
+	// repository.
+	RepositoryNotTheProjects = v1Only("REPOSITORY_NOT_THE_PROJECTS", http.StatusForbidden)
+	// CheckRunNotTheRuns refuses a token whose check run GitHub names for another commit.
+	CheckRunNotTheRuns = v1Only("CHECK_RUN_NOT_THE_RUNS", http.StatusForbidden)
+	// CheckRunNotShown refuses a token whose check run GitHub refuses Dispatch for good, with its
+	// 403 or 404: the App cannot see the run, or no such run exists, so the run is not proven.
+	CheckRunNotShown = v1Only("CHECK_RUN_NOT_SHOWN", http.StatusForbidden)
+	// SpecFilesRefused refuses a result at a commit whose spec files the graph logic refuses
+	// (specgraph.Judge): such files hold no check to write a result for.
+	SpecFilesRefused = v1Only("SPEC_FILES_REFUSED", http.StatusConflict)
+	// CheckNotInFiles refuses a check the spec files at the run's commit do not hold.
+	CheckNotInFiles = v1Only("CHECK_NOT_IN_FILES", http.StatusConflict)
+	// CheckNotThisJobs refuses a check whose test part names another job than the run's.
+	CheckNotThisJobs = v1Only("CHECK_NOT_THIS_JOBS", http.StatusConflict)
+	// WorkflowNotShown refuses a check run whose job only the run's workflow file says, where
+	// GitHub refuses Dispatch that file for good, with its 403 or 404.
+	WorkflowNotShown = v1Only("WORKFLOW_NOT_SHOWN", http.StatusConflict)
+	// CheckRunUnreadable, FilesUnreadable and WorkflowUnreadable are GitHub not answering the
+	// read of the check run, the spec files or the workflow file: the result was not judged, and
+	// the job writes it again.
+	CheckRunUnreadable = v1Only("CHECK_RUN_UNREADABLE", http.StatusServiceUnavailable)
+	FilesUnreadable    = v1Only("FILES_UNREADABLE", http.StatusServiceUnavailable)
+	WorkflowUnreadable = v1Only("WORKFLOW_UNREADABLE", http.StatusServiceUnavailable)
 )

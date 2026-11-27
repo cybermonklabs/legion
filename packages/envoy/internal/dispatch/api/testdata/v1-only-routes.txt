@@ -1,9 +1,10 @@
 # The frozen list of the routes /api/v1 alone serves: every route file's declaration that is no
 # test hook (route_api_v1_<path>+<method>.go, declareRoute), one `METHOD path` a line, sorted by
-# path then method as `envoy-dispatch routes` lists them. Each names its
-# /api/v2 route in its Successor; every route added after /api/v2 began is served in both
-# versions by one declaration (a routeRow), so TestAV1OnlyRowOutsideTheFrozenListFails refuses a
-# route /api/v1 alone serves that this list does not hold, and a line no route file declares.
+# path then method as `envoy-dispatch routes` lists them. Each names its /api/v2 route in its
+# Successor, but a route v1-awaiting-v2-routes.txt holds; every route added after /api/v2 began
+# is served in both versions by one declaration (a routeRow), so
+# TestAV1OnlyRowOutsideTheFrozenListFails refuses a route /api/v1 alone serves that this list does
+# not hold, and a line no route file declares.
 #
 # It holds the 184 rows of c8a44f97's testdata/routes.txt that are no rows of the INFRA-979 tree
 # (those five are rows marked OfINFRA979, served in both versions), less the two a pull request merged
@@ -12,7 +13,9 @@
 # merged into main before /api/v2's change merged. Such a row is added here at the forward merge
 # that brings it, with its successor and its route-map entry in the same commit, and ends in a
 # ` # ` note naming that pull request: it is outside the bound of 137 /api/v2 routes for the rows
-# of c8a44f97 (TestEveryV1RowNamesItsV2Route).
+# of c8a44f97 (TestEveryV1RowNamesItsV2Route). A row a pull request merged into main after
+# /api/v2's freeze (67bcd7c7) is added here the same way and to v1-awaiting-v2-routes.txt too: it
+# names no successor until its /api/v2 route lands, and its answers link GET /api/v2.
 GET /api/v1
 GET /api/v1/agents
 GET /api/v1/agents/known # #3125, one reference framework: a page links a dispatch://agent/<session id> reference only where Dispatch holds a record of that session
@@ -208,6 +211,8 @@ DELETE /api/v1/projects/{key}/proven-sessions # #4725, a project's proven-sessio
 PUT /api/v1/projects/{key}/proven-sessions # #4725, a project's proven-sessions setting, which PATCH /api/v2/projects/{key} writes
 GET /api/v1/projects/{key}/related
 POST /api/v1/projects/{key}/related
+GET /api/v1/projects/{key}/results # #4184, a CI run's token writes its project's results and nothing else (post-freeze, awaiting /api/v2)
+POST /api/v1/projects/{key}/results # #4184, a CI run's token writes its project's results and nothing else (post-freeze, awaiting /api/v2)
 GET /api/v1/reference-targets # #4178, the reads the new issue page needs
 GET /api/v1/references
 GET /api/v1/references/questions

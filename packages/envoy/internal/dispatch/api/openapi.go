@@ -983,7 +983,8 @@ var callerCodes = []apicode.Code{
 //     INVALID_OFFSET where the query pages), the parameter check's (NUL_CHARACTER, INVALID_UTF8,
 //     refuseUnstorableParameters), and the server's own fault (INTERNAL);
 //   - a route outside the read class: READ_ONLY_TOKEN; a read that does not report the cut:
-//     AS_OF_TOKEN_NOT_SERVED;
+//     AS_OF_TOKEN_NOT_SERVED; a route that does not state ResultsScope, which is every /api/v2
+//     route: RESULTS_ONLY_TOKEN; a route the approve list does not name whole: APPROVE_ONLY_TOKEN;
 //   - a route that is not public, and one whose scope gate or authority gate resolves the caller:
 //     every code that resolution answers (callerCodes);
 //   - a route that needs a scope, or a value of whose request needs one: OAUTH_SCOPE_REQUIRED;
@@ -1019,6 +1020,11 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 	// every other state (apiRoute.ApproveStates).
 	if !route.ApproveOnly || len(route.ApproveStates) > 0 {
 		codes = append(codes, apicode.ApproveOnlyToken)
+	}
+	// The limited-token gate answers a results token on every route that does not state
+	// ResultsScope (refuseLimitedToken), which no /api/v2 row does.
+	if !route.ResultsScope {
+		codes = append(codes, apicode.ResultsOnlyToken)
 	}
 	if route.Read.Writes != readWritesNothing {
 		codes = append(codes, apicode.ReadOnlyToken)

@@ -517,15 +517,21 @@ type apiRoute struct {
 	Successor successor
 	// Read is the read class of a mounted GET row, or the zero entry on other methods.
 	Read readEntry
+	// ResultsScope is true on the routes a results token may call, the route files whose
+	// declaration states it (routeDecl.ResultsScope), and on no other: no routeRow states it, so
+	// a results token is refused on every /api/v2 route. The limited-token gate reads it
+	// (refuseLimitedToken), so such a token is refused on every other route of both versions
+	// before the route does anything.
+	ResultsScope bool
 	// ApproveOnly is true on the /api/v1 routes the approve list names (approveList) and on
-	// the /api/v2 route each of them has as its Successor, and on no other: the approve-only route
-	// check reads it (refuseApproveOnlyToken), so an approve-only token is refused on every other
-	// route of both versions before the route does anything. applyApprovePolicy stamps it, with
-	// the two fields below, as the table is built.
+	// the /api/v2 route each of them has as its Successor, and on no other: the limited-token gate
+	// reads it (refuseLimitedToken), so an approve-only token is refused on every other route of
+	// both versions before the route does anything. applyApprovePolicy stamps it, with the two
+	// fields below, as the table is built.
 	ApproveOnly bool
 	// ApproveStates is, on an /api/v2 route that takes several operations by the body's `state`,
 	// the states an approve-only token may send it, and nil on every other route: the token gets
-	// past refuseApproveOnlyToken on such a route and is held to these states once the decoder has
+	// past refuseLimitedToken on such a route and is held to these states once the decoder has
 	// read the body (gateApproveOnlyStates), since the list names /api/v1 routes that this route's
 	// other declared states have no counterpart in.
 	ApproveStates []string
@@ -586,7 +592,7 @@ func v1Route(s *server, declaration routeDecl, replays map[string]keyedRoute) ap
 	row.Reread = keyedRereads[name]
 	row.AnswerHoldsSecret = answerHoldsSecret[name]
 	row.DocumentOwner = documentOwnerOf(row.Pattern)
-	return apiRoute{routeRow: row, Version: apiV1, Successor: declaration.Successor, Read: declaration.Read}
+	return apiRoute{routeRow: row, Version: apiV1, Successor: declaration.Successor, Read: declaration.Read, ResultsScope: declaration.ResultsScope}
 }
 
 // documentOwnerOf is whose documents a /api/v1 pattern looks a document up among by its slug or

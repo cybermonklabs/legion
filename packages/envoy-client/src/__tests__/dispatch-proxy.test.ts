@@ -2433,6 +2433,8 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   recordResult: "result",
   dryRunResult: "result",
   retractResult: "result",
+  // A CI job's record of its result of a check of the spec files (`dispatch result --project`).
+  recordSpecCheckResult: "result",
   recordDeploy: "deploy",
   writeHandoff: "handoff-write",
   createProject: "project",

@@ -13,9 +13,9 @@ package api
 // The checks sit at three places in a route's chain (routeHandler), each before the layers that
 // look a key up, claim it or replay what it holds:
 //
-//   - the route, outside every other check of the route, beside the read-only gate and inside
-//     decideBrokerToken, which resolves the credential it reads (refuseApproveOnlyToken): a route
-//     the list does not name is 403 APPROVE_ONLY_TOKEN;
+//   - the route, outside every other check of the route, in the limited-token gate inside
+//     decideBrokerToken, which resolves the credential it reads (refuseLimitedToken): a route the
+//     list does not name is 403 APPROVE_ONLY_TOKEN;
 //   - the state, once the decoder has read the body within the row's bound and before the
 //     authority rules (gateApproveOnlyStates): PUT /api/v2/credential-requests/{id}/state takes
 //     the token for the states approved and denied, PUT /api/v2/asks/{id}/state for answered and
@@ -61,7 +61,7 @@ type approveRoute struct {
 // file whose declaration states ApproveOnly, in the order declared walks them, with what it takes
 // of the /api/v2 route that answers for it (ApproveState, ApproveApprovalAsks). Every other route
 // of the table, and GET /ws/live beside it, answers the token 403 APPROVE_ONLY_TOKEN before anything
-// else the route does (refuseApproveOnlyToken), so a route added later stays closed to it until its
+// else the route does (refuseLimitedToken), so a route added later stays closed to it until its
 // file states ApproveOnly. The token may call, on /api/v2, the route each entry has as its
 // Successor and no other, whole or for the one state its entry names, so the list is written once
 // and the two versions cannot drift.
@@ -179,11 +179,12 @@ func applyApprovePolicy(table []apiRoute, list []approveRoute) []string {
 	return nil
 }
 
-// approveOnlyRefusalFor is the message of every 403 APPROVE_ONLY_TOKEN refuseApproveOnlyToken
-// answers: the approve list in words, the /api/v1 routes it names and the /api/v2 routes each has
-// as its successor, the states of a route that takes several by state beside it. It reads the
-// rows applyApprovePolicy stamped and derives nothing, so it names every route the token may call
-// on the day the table changes, and each is a route a running Dispatch serves.
+// approveOnlyRefusalFor is the message of every 403 APPROVE_ONLY_TOKEN the route check answers
+// (refuseLimitedToken, server.approveRefusal): the approve list in words, the /api/v1 routes it
+// names and the /api/v2 routes each has as its successor, the states of a route that takes
+// several by state beside it. It reads the rows applyApprovePolicy stamped and derives nothing,
+// so it names every route the token may call on the day the table changes, and each is a route a
+// running Dispatch serves.
 func approveOnlyRefusalFor(routes []apiRoute) string {
 	var v1, v2 []string
 	for _, route := range routes {
@@ -204,29 +205,6 @@ func approveOnlyRefusalFor(routes []apiRoute) string {
 	slices.Sort(v2)
 	return "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (on /api/v1: " +
 		strings.Join(v1, ", ") + "; on /api/v2: " + strings.Join(v2, ", ") + "): nothing ran"
-}
-
-// refuseApproveOnlyToken is the route check, the one place an approve-only token is held to the
-// approve list: register wraps every row of the table in it, listed being the row's
-// apiRoute.ApproveOnly, and GET /ws/live with listed false. On a route the list does not name, a
-// caller decideBrokerToken resolved to an approve-only credential is answered 403
-// APPROVE_ONLY_TOKEN, with the table's one message (server.approveRefusal), and next does not run;
-// every other request runs next as it always did. A row the list names is handed back as it is,
-// and the state and ask checks hold the token to less on the rows that need them. It reads the
-// decision decideBrokerToken carried and resolves nothing of its own, for the reason
-// refuseReadOnlyToken gives, and carries no WWW-Authenticate challenge, since no scope makes such
-// a route the token's to call.
-func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
-	if listed {
-		return next
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		if approveOnlyRequest(r) {
-			writeError(w, r, apicode.ApproveOnlyToken, s.approveRefusal)
-			return
-		}
-		next(w, r)
-	}
 }
 
 // gateApproveOnlyStates is the state check of a /api/v2 row the list names by state

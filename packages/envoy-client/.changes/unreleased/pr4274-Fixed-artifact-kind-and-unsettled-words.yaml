@@ -30,6 +30,7 @@ body: |-
   retries: a keyed write whose every attempt failed on the network after it went out, an unkeyed
   `PUT` or `DELETE` or a `dispatch api` write that failed in transport after it went out, whose
   answer's body broke off after its status came, or that its deadline ended in flight, and
-  Dispatch's own JSON `5xx`, which before read as a refusal. A refusal Dispatch decided prints none
-  of those words, and neither does a read or a request that writes nothing (the markdown round
-  trip, the related search).
+  Dispatch's own JSON `5xx`, which before read as a refusal, but for its `503 BROKER_UNAVAILABLE`,
+  which it answers before any handler runs. A refusal Dispatch decided prints none of those words,
+  and neither does a read, a request that writes nothing (the markdown round trip, the related
+  search) or a request whose tunnel the airlock proxy refused (`AIRLOCK_TUNNEL_REFUSED`).

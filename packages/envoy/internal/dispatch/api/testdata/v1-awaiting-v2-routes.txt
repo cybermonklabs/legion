@@ -1,0 +1,14 @@
+# The routes /api/v1 alone serves that await their /api/v2 route: each a route file a pull request
+# merged into main after /api/v2's freeze (67bcd7c7) declares, one `METHOD path` a line, sorted by
+# path then method as v1-only-routes.txt is, each ending in a ` # ` note naming that pull request.
+# Such a route names no Successor, since its /api/v2 route has not landed, and is not served at
+# /api/v2 (dispatch://INFRA-4071/comment/42979845-8100-4685-96b7-062c1094cc45, item 2). Its every
+# answer carries Deprecation, as every /api/v1 answer does, and a Link to GET /api/v2
+# (linkSuccessor). v1-only-routes.txt holds each of these rows too, with the same note.
+#
+# TestAwaitingV2RoutesMatchTheAwaitingList holds this list to the route files that name no
+# Successor, both ways: a route file that names none and is not here fails it, and so does a line
+# here that is no such route. The /api/v2 route that answers one is added with its Successor, and
+# the line is taken out of this list, in the same commit.
+GET /api/v1/projects/{key}/results # #4184, a CI run's token writes its project's results and nothing else (post-freeze, awaiting /api/v2)
+POST /api/v1/projects/{key}/results # #4184, a CI run's token writes its project's results and nothing else (post-freeze, awaiting /api/v2)

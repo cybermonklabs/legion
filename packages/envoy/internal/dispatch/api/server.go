@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -488,6 +489,9 @@ type server struct {
 	// own, rendered once at mount (register).
 	routeIndex   []routeIndexEntry
 	routeIndexV2 []routeIndexV2Entry
+	// specReads keeps the check runs, the spec files and the jobs of the workflow files the
+	// results route reads of GitHub for the life of the process (spec_results.go).
+	specReads specResultReads
 	// going is the action catalogue GET /api/v1/going/catalogue serves, and goingV2 the one GET
 	// /api/v2/going-actions serves: the dispatch tools that write, each held to the rows of its
 	// own version of the table this server mounts (going_catalogue.go).
@@ -776,8 +780,9 @@ type RouteMux interface {
 //
 // Every route outside the read class (routeDecl.Read), GET /ws/live among them, answers a read-only
 // token 403 READ_ONLY_TOKEN before anything else it does, and every read but GET /api/v1/whoami
-// and GET /api/v2/me answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED
-// (refuseReadOnlyToken).
+// and GET /api/v2/me answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED; every route whose
+// declaration does not state ResultsScope (routeDecl.ResultsScope), every /api/v2 route among
+// them, answers a results token 403 RESULTS_ONLY_TOKEN the same way (refuseLimitedToken).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
@@ -1076,8 +1081,8 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 		// job's token names a service and no person too, under the project scope named or public,
 		// and an account entry's token naming no person does under named; each passes this check
 		// to the two inside it, recorded under its service. A read-only token, which may name a
-		// service and no person as well, never reaches here: the read-only gate further out has
-		// answered it on every write (refuseReadOnlyToken).
+		// service and no person as well, never reaches here: the limited-token gate further out
+		// has answered it on every write (refuseLimitedToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
 	}
@@ -1095,7 +1100,7 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 	}
 	if len(route.OAuthScopes) > 0 {
 		// Ahead of the keyed layer and the project and session checks, so the row's own
-		// scopes are the first thing a request is held to once the read-only gate outside it
+		// scopes are the first thing a request is held to once the limited-token gate outside it
 		// has let it through: a credential that holds none is told so rather than told its
 		// write belongs to another project or another session, and its refusal claims no
 		// idempotency key, so the person who ticks the scope back is not answered the stored
@@ -1104,22 +1109,20 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 		handler = s.gateRouteScopes(route.OAuthScopes, handler)
 	}
 	// Outside the scope gate and every layer inside it, so a read-only token on a row outside
-	// the read class, or one that carries a cut on a read that answers no cut, is refused before
-	// anything the row does: before the row's own scopes, which would name a scope to ask for
-	// where no scope makes the row its to call; before the sign-in check, which would tell it to
-	// sign a person in; and before a Dispatch-Login check, an id prefix's lookup, the project and
-	// session checks and the Idempotency-Key, none of which it reaches, so it claims no key. It is
-	// inside the drain, as the scope gate is, so a client that asked to be told to continue is
-	// handled as for every other early answer.
-	handler = s.refuseReadOnlyToken(route.Method+" "+route.Pattern, route.Read, handler)
-	// Beside it, for the same reasons and at the same depth, an approve-only token on a row the
-	// approve list does not name: refused before the row's scopes, which it would otherwise pass
-	// with its person's scopes person and approve, and before anything the row does.
-	handler = s.refuseApproveOnlyToken(route.ApproveOnly, handler)
+	// the read class, or one that carries a cut on a read that answers no cut, a results token on
+	// a row the results list does not name, or an approve-only token on a row the approve list
+	// does not name, is refused before anything the row does: before the row's own scopes, which
+	// would name a scope to ask for where no scope makes the row its to call, or which an
+	// approve-only token would pass with its person's scopes person and approve; before the
+	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
+	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of which
+	// it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a client
+	// that asked to be told to continue is handled as for every other early answer.
+	handler = s.refuseLimitedToken(route, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
-	// read-only gate, so a refusal by either carries the header too. The answer's other Vary,
+	// limited-token gate, so a refusal by either carries the header too. The answer's other Vary,
 	// on Accept-Encoding, is added outside it, where the encoding is chosen (compressAnswers).
 	handler = varyOnDisplayTrees(handler)
 	if route.Method != http.MethodGet {
@@ -1175,21 +1178,21 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 const liveSocketPattern = "/ws/live"
 
 // liveSocketHandler is the chain register mounts GET /ws/live behind, around serve, which is
-// serveLiveSocket there and a stand-in in a test that walks every mount a read-only token can
-// reach (read_only_token_test.go): one place for the order, as routeHandler is for a row.
+// serveLiveSocket there and a stand-in in a test that walks every mount a limited token can
+// reach (results_token_test.go): one place for the order, as routeHandler is for a row.
 //
-// The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
-// the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
-// its views carry, so the gate takes the zero entry, which classes nothing, and a read-only token
-// of every kind is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
-// approve-only gate sits beside it, and the socket is no route that states ApproveOnly, so an
-// approve-only token is answered 403 APPROVE_ONLY_TOKEN there too. The socket is admitted by
+// The limited-token gate sits just inside decideBrokerToken, whose decision it reads, and ahead
+// of the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
+// its views carry, so the gate takes the zero route: it classes nothing as a read and states
+// neither ResultsScope nor ApproveOnly. A read-only token of every kind is
+// answered 403 READ_ONLY_TOKEN, a results token 403 RESULTS_ONLY_TOKEN and an approve-only token
+// 403 APPROVE_ONLY_TOKEN, before a socket is ever opened for it. The socket is admitted by
 // whichever credential optionalActor resolves - a bearer, a broker-issued token or a sign-in
 // cookie - so its heartbeat resolves that same credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
-			s.refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))), s.clock())
+		s.refuseLimitedToken(apiRoute{},
+			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
 
 // trackTransactions marks the request's context for the pool's nested-acquire check
@@ -1804,10 +1807,16 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 	}
 }
 
-// refuseReadOnlyToken is the one place a read-only credential (model.Credential.ReadOnly) is held
-// to the read class: register wraps every route of the table in it, name being the route's
-// "<method> <pattern>" and entry the read class its declaration states (apiRoute.Read), and
-// GET /ws/live with the zero entry, which classes nothing. It reads every credential that can be read-only:
+// refuseLimitedToken is the one place a limited credential is held to what it may call: a
+// read-only credential (model.Credential.ReadOnly) to the read class, a results-only one
+// (model.Credential.ResultsOnly) to the routes that state ResultsScope, and an approve-only one
+// (model.Credential.ApproveOnly) to the routes the approve list names. register wraps every route
+// of the table in it, both versions' alike, with the mounted route, which carries all three: its
+// read class (apiRoute.Read: a route file's routeDecl.Read, a row's v2ReadClasses entry), whether
+// a results token may call it (apiRoute.ResultsScope: a route file's routeDecl.ResultsScope,
+// which no /api/v2 row states) and whether an approve-only token may (apiRoute.ApproveOnly, which
+// applyApprovePolicy stamps); and GET /ws/live with the zero route, which classes nothing as a
+// read and states neither. It reads every credential that can be limited:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -1823,23 +1832,38 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 //     the gate resolves none of them: a cookie request costs it a context read and a look at an
 //     Authorization header it does not carry, and the gate writes no people row.
 //
-// Then a caller whose credential is read-only (readOnlyCredential, which a results read reads the
-// caller by too) is answered 403 READ_ONLY_TOKEN on every row that is not a read
-// (readWritesNothing), every write among them, and on GET /ws/live, and next does not run. On a
-// read, a read-only credential that carries a cut (model.Credential.Cut) is answered 403
-// AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami and GET /api/v2/me
-// (readAnswersCut), since this build answers no read at a past time and must not answer one with
-// the present. Every other request runs next as it always did.
+// A caller whose credential is results-only, which only a broker-issued token's is, is answered
+// 403 RESULTS_ONLY_TOKEN on every route that does not state ResultsScope (apiRoute.ResultsScope),
+// and one whose credential is approve-only, likewise a broker-issued token's alone, 403
+// APPROVE_ONLY_TOKEN on every route the approve list does not name (apiRoute.ApproveOnly), GET
+// /ws/live among them for both, and next does not run. Then a caller whose credential is
+// read-only (readOnlyCredential, which a results read reads the caller by too) is answered 403
+// READ_ONLY_TOKEN on every row that is not a read (readWritesNothing), every write among them,
+// and on GET /ws/live, and next does not run. On a read, a read-only credential that carries a
+// cut (model.Credential.Cut) is answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row
+// but GET /api/v1/whoami and GET /api/v2/me (readAnswersCut), since this build answers no read at
+// a past time and must not answer one with the present. Every other request runs next as it
+// always did. The broker's verifier marks a credential one of the three ways or none, never two
+// (ciphertoken.shapeOf), so a credential is held to one of the three rules.
 //
-// Neither refusal carries a WWW-Authenticate challenge, unlike a missing scope's
+// No refusal carries a WWW-Authenticate challenge, unlike a missing scope's
 // (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs,
 // and no scope makes such a route the token's to call. Their codes are the contract a client
-// reads.
-func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.HandlerFunc) http.HandlerFunc {
-	read := entry.Writes == readWritesNothing
-	answersACut := readAnswersCut(name)
+// reads, and the results and approve refusals' messages are the routes each list names, in words
+// (resultsOnlyRefusal, and server.approveRefusal, which names both versions' routes).
+func (s *server) refuseLimitedToken(route apiRoute, next http.HandlerFunc) http.HandlerFunc {
+	read := route.Read.Writes == readWritesNothing
+	answersACut := readAnswersCut(route.Method + " " + route.Pattern)
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.resolvePersonalToken(r)
+		if !route.ResultsScope && resultsOnlyRequest(r) {
+			writeError(w, r, apicode.ResultsOnlyToken, resultsOnlyRefusal())
+			return
+		}
+		if !route.ApproveOnly && approveOnlyRequest(r) {
+			writeError(w, r, apicode.ApproveOnlyToken, s.approveRefusal)
+			return
+		}
 		credential := readOnlyCredential(r.Context())
 		if credential == nil {
 			next(w, r)
@@ -1862,7 +1886,45 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 	}
 }
 
-// readOnlyRefusal is the message of every 403 READ_ONLY_TOKEN refuseReadOnlyToken answers: one
+// resultsOnlyRequest reports whether decideBrokerToken resolved r's caller to a results
+// credential (model.Credential.ResultsOnly), read as approveOnlyRequest reads an approve-only
+// one. The limited-token gate holds such a caller to the routes that state ResultsScope with it
+// (refuseLimitedToken), and the project check to the one project its run writes the results of
+// (withinProjectScope).
+func resultsOnlyRequest(r *http.Request) bool {
+	credential := resolvedCredential(r.Context())
+	return credential != nil && credential.ResultsOnly
+}
+
+// resultsOnlyRefusal is the message of every 403 RESULTS_ONLY_TOKEN refuseLimitedToken answers:
+// the routes that state ResultsScope, in words, in the order routes() mounts them (by pattern and
+// then method). It is built once, at its first refusal, from the declarations themselves, which
+// are all in routeRegistry before any request: so it names every such route a running Dispatch
+// declares, and no other. Only a route file states ResultsScope, so every route it names is a
+// /api/v1 route, and no /api/v2 route serves a results token.
+var resultsOnlyRefusal = sync.OnceValue(func() string {
+	return "this request's credential is a results token, which may call only the routes Dispatch's results list names (" +
+		strings.Join(declaredRouteNames(func(route routeDecl) bool { return route.ResultsScope }), ", ") + "): nothing ran"
+})
+
+// declaredRouteNames is "<method> <pattern>" of every declared route that states, by pattern and
+// then method (byPatternThenMethod).
+func declaredRouteNames(states func(routeDecl) bool) []string {
+	var listed []routeDecl
+	for _, route := range routeRegistry {
+		if states(route) {
+			listed = append(listed, route)
+		}
+	}
+	slices.SortFunc(listed, byPatternThenMethod)
+	names := make([]string, len(listed))
+	for index, route := range listed {
+		names[index] = route.Method + " " + route.Pattern
+	}
+	return names
+}
+
+// readOnlyRefusal is the message of every 403 READ_ONLY_TOKEN refuseLimitedToken answers: one
 // text that names no route, since the read class is the table's own and a refusal that listed it
 // would be stale the day a row joins it.
 const readOnlyRefusal = "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran"

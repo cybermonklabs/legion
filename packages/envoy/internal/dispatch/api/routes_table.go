@@ -216,8 +216,10 @@ type routeDecl struct {
 	// Successor is the /api/v2 route that answers this /api/v1 route, or that a client moves to
 	// where this route is deleted when /api/v1 ends (successorIs, deletedFor): its Link header
 	// names it (linkSuccessor), and the map tests hold every /api/v1 route to one. Every route
-	// file but a test hook's states one; a test hook's successor is its own /api/v2/_test path
-	// (testHookRoutes). A route added here is served at /api/v1 alone: a route added for both
+	// file but two kinds states one: a test hook's successor is its own /api/v2/_test path
+	// (testHookRoutes), and a route a merge on main added after /api/v2's freeze names none until
+	// its /api/v2 route lands, which testdata/v1-awaiting-v2-routes.txt holds it to, and its Link
+	// names GET /api/v2. A route added here is served at /api/v1 alone: a route added for both
 	// versions is a routeRow in a row file route_api_v2_<path>+<method>.go holding one declareRow
 	// (routes()).
 	Successor successor
@@ -269,37 +271,51 @@ type routeDecl struct {
 	// The scope `read` a read-only token holds is never one of these: a scope here is one the
 	// caller must hold, and no person holds that one. The routes such a credential may call are
 	// the GET routes whose declarations class them as reads (Read), which its own gate reads
-	// (refuseReadOnlyToken).
+	// (refuseLimitedToken). The scope `results` a results token holds is never one of these
+	// either: the routes that token may call are the routes that state ResultsScope, which the
+	// same gate reads.
 	//
 	// A route that takes an id written short needs no scope of its own for it: the prefix layer
 	// (resolveIDPrefixes, ID) runs inside this gate - register wraps the gate around it, so a
 	// credential that holds none of the route's scopes is refused before any id is read, and
 	// the one check a request meets ahead of the route's scopes is whether a read-only token may
-	// call the route at all (refuseReadOnlyToken) - and it only rewrites the path value, so a
-	// short id reaches exactly the scopes the whole id reaches, and a route that needs none with
-	// a whole id needs none with a prefix.
+	// call the route at all, or a results token may call it (refuseLimitedToken) - and it only
+	// rewrites the path value, so a short id reaches exactly the scopes the whole id reaches, and
+	// a route that needs none with a whole id needs none with a prefix.
 	OAuthScopes routeScopeSet
 
 	// Read is the read class of a GET route: what it writes when it serves a request, and the
 	// note that says so (readEntry, read_classes.go). A route a read-only credential may call is
 	// one whose class is readWritesNothing; every other route, and GET /ws/live beside them,
 	// answers such a caller 403 READ_ONLY_TOKEN before anything else the route does
-	// (refuseReadOnlyToken), so a route added later is closed to it until someone has read the
+	// (refuseLimitedToken), so a route added later is closed to it until someone has read the
 	// handler and classed it here.
 	//
 	// Every GET route states a class, and no other route states one: a write is not a read
 	// whatever its handler does, and register refuses to mount a table that breaks either rule
 	// (readClassRefusals). The class is not a scope, so the route index (GET /api/v1), the
 	// OpenAPI document and the reference generated from it do not carry it, and only the
-	// read-only gate reads it.
+	// limited-token gate reads it.
 	Read readEntry
+
+	// ResultsScope is a route a results token may call: a token the secrets broker minted from a
+	// result entry for one CI run, which holds the scope results alone and names a person, one
+	// project and the run (model.Credential.ResultsOnly). Every route that does not state
+	// ResultsScope, and GET /ws/live beside them, answers such a token 403 RESULTS_ONLY_TOKEN
+	// before anything else the route does (refuseLimitedToken), so a route added later stays
+	// closed to it until its file states it. It is no value of OAuthScopes: a scope there is one
+	// the caller must hold, and no person holds results, so ResultsScope says what a credential
+	// that holds results alone may still call rather than what a route requires; for the same
+	// reason the route index (GET /api/v1), the OpenAPI document and the reference generated from
+	// it do not carry it, and only the limited-token gate reads it.
+	ResultsScope bool
 
 	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints
 	// for a person's approve grant, binds to its own pod's key and spends through its proxy, never
 	// released (model.Credential.ApproveOnly). It acts as its person with the scopes person and
 	// approve (brokerApproveOnlyScopes), and every route that does not state ApproveOnly, and GET
 	// /ws/live beside them, answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
-	// (refuseApproveOnlyToken), so a route added later stays closed to it until its file states
+	// (refuseLimitedToken), so a route added later stays closed to it until its file states
 	// it.
 	//
 	// The routes that state it are the routes whose OAuthScopes name approve, the routes that
@@ -309,8 +325,8 @@ type routeDecl struct {
 	// states it. Beside them is the answer of an ask, which checks approve in its handler for an
 	// approval request and refuses an approve-only token the answer of every other ask, 403
 	// APPROVE_ONLY_TOKEN, once the ask's kind is read (ask_transitions.go). Like Read, it is no
-	// scope: the route index and the OpenAPI document do not carry it, and only the approve-only
-	// gate reads it.
+	// scope: the route index and the OpenAPI document do not carry it, and only the
+	// limited-token gate reads it.
 	ApproveOnly bool
 	// ApproveState is, on a route that states ApproveOnly and whose /api/v2 successor takes
 	// several operations by the body's `state`, the one state of that successor that answers
@@ -532,8 +548,8 @@ func patternThenMethod(leftPattern, leftMethod, rightPattern, rightMethod string
 }
 
 // byPatternThenMethod is the one order (patternThenMethod) for the declarations. routes() sorts
-// what it mounts with it, and so does the approve-only refusal, whose message promises the order
-// routes() mounts them in (approveOnlyRefusal).
+// what it mounts with it, and so does the results refusal, whose message promises the order
+// routes() mounts them in (resultsOnlyRefusal).
 func byPatternThenMethod(left, right routeDecl) int {
 	return patternThenMethod(left.Pattern, left.Method, right.Pattern, right.Method)
 }

@@ -916,6 +916,15 @@ such as `admin-tier` for an agent-tier profile of an `admin` source. A source a 
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
 (`github-installations-no-profile`), so every GitHub token the broker hands over is a profile's.
+The profile `DISPATCH_RESULTS_TOKEN`, a name and a proxy block of kind `dpop` and
+nothing else, is served by a CI run's result grant and has no stored secret as its source: the
+policy serves it as nothing, as every dpop profile, with or without a stored secret of its name
+(`profile-minted`, no refusal), and a stored secret of its name is never released, as a value or
+as a placeholder: a session's release of an earlier grant is answered `403 GRANT_NOT_LIVE`, and
+a new request for it `400 UNKNOWN_SECRET`. The release's own check of a dpop binding also refuses
+a stored secret's release, `403 MINTED_ONLY`, behind that policy rule. The profiles file is
+refused when that profile has no proxy block, or when a profile of kind `dpop` sets a `source`,
+`tier`, `requesters`, `maxGrant`, `github`, `google` or `allow` of its own.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
@@ -1849,10 +1858,15 @@ binds. A placeholder is the kind's `placeholder_prefix`, else `agent-secrets-pla
 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
 brokers; `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>]
-[--private-upstream '<host>=<url> ...']` says whether a broker would serve a file, and what that
-file adds and removes against the one in force: the kinds, hosts, headers, variables, ways,
-`max_grant` and `allow` rows of the kinds and of the profiles. With `--against` it also lists,
-under `widens`, each served name whose `allow` the change widens, and each host it adds to a name.
+[--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]` says whether a broker
+would serve a file, and what that file adds and removes against the one in force: the kinds,
+hosts, headers, variables, ways, `max_grant` and `allow` rows of the kinds and of the profiles.
+Given the broker's values of `BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`,
+it also holds each dpop block to those destinations and each destination's address to the rule the
+broker holds it to at start; without `--cluster-ranges` it says which address it did not judge
+against the ranges.
+With `--against` it also lists, under `widens`, each served name whose `allow` the change widens,
+and each host it adds to a name.
 With `--secrets-json` (the list `gcloud secrets list --format='json(name,annotations)'` prints for
 the agent secrets) it reads each secret's `proxy` and `proxy-narrowed` tags and refuses what the
 policy load would refuse, in the load's words (`profile "<NAME>": <reason>: <detail>`): a secret
@@ -1894,7 +1908,10 @@ Each grant records a digest of its block and the destination, and a broker whose
 serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
 and a stored secret of its name is not served through it, so nothing of it can be requested or
 approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
-itself, for a kind it names in code. This release names one, the approve capability, below.
+itself, for a kind it names in code. This release names two: the results capability,
+`DISPATCH_RESULTS_TOKEN`, whose grant a CI run of a result entry is answered, and the approve
+capability, below. Both are asked for with the one placeholder type,
+`urn:envoy:params:oauth:token-type:proxy-placeholder`, and answered under `proxy`.
 
 The approve capability is a person's approvals in Dispatch from a box they signed in on. A dpop
 block named `DISPATCH_APPROVE_TOKEN`, binding Dispatch's host, turns it on, and the broker logs it
@@ -2123,6 +2140,15 @@ What the airlock does not stop is as much of the design as what it does:
   broker whose profiles file declares a kind or a `dpop` block refuses to start without that
   setting, or when no range in it holds that address. A command that needs such a call sets its
   own `NO_PROXY` entry for that name.
+  The one exception is `BROKER_PROXY_PRIVATE_UPSTREAM` (`<host>=<url>` entries, one per bound
+  host): the allowed requests of the dpop blocks that bind a host, such as the profile
+  `DISPATCH_RESULTS_TOKEN`, go to that host's URL.
+  The proxy dials it only at an address in a range a destination may be in — private,
+  `100.64.0.0/10`, or inside `BROKER_AIRLOCK_CLUSTER_RANGES` — and never at a loopback,
+  link-local, unspecified, multicast or IPv4 broadcast address, one in `0.0.0.0/8`, a cloud
+  metadata server's, or an IPv6 address that carries an IPv4 address (NAT64, 6to4, Teredo,
+  IPv4-compatible, IPv4-translated and ISATAP forms); a tunnel or plain-HTTP request to that
+  address stays refused.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

@@ -164,8 +164,14 @@ type successorLink struct {
 // that a binding names is that binding, one the /api/v1 pattern holds is its path value, and any
 // other is the value the handler records; a `{name}` of the query or of a binding is the /api/v1
 // path value of that name, or its query value where the /api/v1 pattern holds no such wildcard.
+// A route that names no Successor, one a merge on main added after /api/v2's freeze that awaits
+// its /api/v2 route (testdata/v1-awaiting-v2-routes.txt), links GET /api/v2 on every answer,
+// where every route /api/v2 serves is listed.
 func newSuccessorLink(route apiRoute) *successorLink {
 	next := route.Successor
+	if next.Method == "" {
+		return &successorLink{unfilled: "</api/v2>" + successorRel}
+	}
 	carried := patternWildcards(route.Pattern)
 	link := &successorLink{unfilled: "</api/v2>" + successorRel + `; title="` + next.Method + " /api/v2" + next.Pattern + `"`}
 	if next.None != "" {

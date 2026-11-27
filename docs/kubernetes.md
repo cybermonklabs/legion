@@ -3016,6 +3016,8 @@ On a store that cybermonklabs/legion#5310's release or a later one migrated, als
 Each of its statements runs again with no error, so it runs in each project's session as the block below does.
 An earlier release refuses a `legion.yaml` that names `projects.<KEY>.default_steps`, with `Unknown key "projects.<KEY>.default_steps"` (`readProject` in `config/stage3.go`), so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+The drop of `plan_tasks` takes with it `plan_tasks.parent_ref`, which a later migration, `20261124022547_plan_tasks_parent_ref.up.sql`, adds.
+So the block deletes that migration's version row too, and the roll-forward adds the column again to the table it creates.
 That part is owed to the roll-forward, not to the earlier release.
 Left in place, the place a task stands at goes stale while the earlier release moves its issue along today's fixed line, and after the roll-forward the walk would start that issue from the stale place.
 With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and walks today's line.
@@ -3034,6 +3036,7 @@ delete from outbox where kind in ('notice', 'controller_notice') and payload->>'
 delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
 update issues set hold_reason = null where hold_reason in ('task-stopped', 'children') and split_part(key, '-', 1) = '<PROJECT>';
 delete from schema_version where version = 20261117034837;
+delete from schema_version where version = 20261124022547;
 commit;
 ```
 
@@ -3097,7 +3100,9 @@ Take the key out of every arm that names it, or the experiment out of the file, 
 The column needs no statement.
 An earlier image names the columns of `experiment_assignments` in each statement it runs (`assignmentColumns`, `PutAssignments` and `CarryAssignments` in `internal/record/store.go`), so it boots with the column in place, reads no word of it, and every row it inserts takes the default, the empty word.
 What the rollback costs: an issue drawn into an arm whose `plan` is `default` before the rollback has its group read by no code while the earlier release runs, so the plan its owner gives is taken and run.
-Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again, and from then on each later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`, so its owner can neither change nor stop the plan it gave.
+Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again.
+From then on its owner can change only the text of a running task of that plan.
+Each other later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`.
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
@@ -4277,6 +4282,10 @@ Then run that section's update of `parked_decisions`, since a decision the earli
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261124022547_plan_tasks_parent_ref adds `plan_tasks.parent_ref` and touches none of the six.
+So the block holds over it and leaves the column standing, which the earlier release names in no statement.
+A rollback past 20261117034837_issue_plans drops the column with its table.
+That migration's way back deletes this migration's version row too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)).
 20261124033010_plan_earlier_givers adds `issue_plans.earlier_givers`, each owner that gave a version of a plan before the one `given_by` names, at its default, no earlier giver, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; its way back, which drops the column where `issue_plans` still stands and deletes its row, runs only in a rollback past `20261117034837_issue_plans`, before or after that migration's way back, and a rollback onto a release that has the plan tables costs what its header says: the earlier release passes a version over at a first step where the giver it last recorded no longer owns the issue, though an earlier giver still does.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
@@ -8751,7 +8760,7 @@ The daemon applies each report once, under the event id `memory-guard-kill:<guar
 It credits the kill to the claim and the pod that the connection authenticated as, and never to anything the report says.
 For a claim that is not the project's controller, the workflow tells nobody and writes a line in the daemon's log.
 For the controller's claim it writes one controller notice of kind `memory-guard-kill` for each kill, under the project key as a `tick` is (`controllerMemoryGuardKill`, `packages/daemon/internal/workflow/engine.go`).
-The outbox publishes the notice to `notifications.legion.<project>.controller` as `memory-guard-kill on <PROJECT>`.
+The outbox publishes the notice to the controller's role topic, `notifications.role.legion-<project>-controller`, as `memory-guard-kill on <PROJECT>`, once the registered controller session holds that role live, as it publishes every controller notice.
 Each kill is a notice of its own, also while the notice of an earlier kill is still unsent.
 The notice names the process as the lines do, by its executable's base name or its `comm`, with its pid, its size, the pod's reading and the limit in binary units, and it prints no argument:
 
@@ -11114,8 +11123,10 @@ each issue's pod (every role of it alike) and the image probe's.
   (beside the block's other volumes and mounts).
 
 - **An arm's `plan`: how the issues drawn into it are done.**
-  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps` and take no plan from their owner.
-  Once the daemon records an issue drawn into `default`, its owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
+  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps`.
+  Legion takes from the owner of a `default` issue only a version that changes nothing but the text of its running task `default`.
+  Once the daemon records an issue drawn into `default`, every other `register_plan` and every `stop_task` of its owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at most one experiment of a project sets it;
   the loader refuses an arm that names none beside one that does, such an experiment at `unit: tree`, a second experiment of the project that sets it, a word other than those two, and `owner-alone`, the owner doing the whole issue itself in one step, which this release does not carry out.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life, whatever the file says later.
@@ -11248,7 +11259,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The daemon sends no clean stop of the Envoy session of a claim that records a name it does not hold, when the boot suspends it or its process dies, since the listener's registration under that session id can be the live process of the claim that holds the name.
 
 - A boot suspension that fails for a reason other than the claim's state, such as a stop the runtime refuses, is logged at Error (`… failed; it is left as it is …`) naming the claim, and the boot goes on, so the steps below can run.
-  The claim is then contained: its hold refuses every relaunch, resume and new enrollment of it; the enrollment its process holds is revoked once the broker confirms the revocation, the claim keeping it recorded and asking again at each observation until then, and, where the broker refuses the revocation for good, recorded no longer and logged at Error while the process renews it until it stops; and the daemon publishes nothing to its Envoy role or, for the daemon's own controller, the controller topic, and sends that process no task and no compaction; the next boot asks again.
+  The claim is then contained: its hold refuses every relaunch, resume and new enrollment of it; the enrollment its process holds is revoked once the broker confirms the revocation, the claim keeping it recorded and asking again at each observation until then, and, where the broker refuses the revocation for good, recorded no longer and logged at Error while the process renews it until it stops; and the daemon publishes nothing to its Envoy role, the controller's role among them for the daemon's own controller, and sends that process no task and no compaction; the next boot asks again.
   A stop the runtime refused leaves the process running; a write the store refused after the stop leaves it stopped, with the claim not yet recorded suspended.
   The daemon withholds its messages from a claim's role whatever the claim's state, a retired or failed claim included, since its unheld session may still be a live process the daemon no longer manages; that stays so until the Envoy listener withholds the role itself, which it does not yet do.
   A process that runs on does so under the session until it is stopped, and the listener still gives it the role its session claimed: the daemon could free the role, but the process claims a free role again at its next heartbeat, so a message another session sends to that role reaches the session's subscriber until the session ends.
@@ -11500,21 +11511,24 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named`, `person`, `none` or `public`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of one of them: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
+- `project_scope` — `named`, `person`, `none`, `public` or `results`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of `named`, `person` or `none`: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
   Only a read entry's token carries `none`, and that token writes nothing.
   A token carrying a narrowed word writes nothing either.
   Only a job's token carries `public`: it reaches every public project, which no list names, and the private projects `projects` lists.
+  Only a result entry's token carries `results`, and that token writes only the results of its project's spec checks.
 
-- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a job's token, its job entry's whole list, whatever its trade named: the one project of a `named` token, or the 0 to 16 private projects of a `public` one.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a job's token, its job entry's whole list, whatever its trade named: the one project of a `named` token, or the 0 to 16 private projects of a `public` one; for a `results` token, the one project key its result entry names, whose results alone it may write.
   A `person` token whose trade named none, a machine's token that names a service and no person, and a read entry's `none` token carry none.
 
 - `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
   Every other token carries none.
 
-- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, `read person` for such a token that carries `read-person` and names a person, and `legion-status` for the token of a `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>`, a Legion daemon's own entry, whose trade did not ask for `read`.
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, `read person` for such a token that carries `read-person` and names a person, `results` for a result entry's token, which holds no other scope, and `legion-status` for the token of a `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>`, a Legion daemon's own entry, whose trade did not ask for `read`.
   Dispatch reads `legion-status` (`DISPATCH_LEGION_STATUS_SCOPE`).
   Every other token carries none, whatever session it carries.
+
+- `ci` — the GitHub Actions run a result entry's token was minted for: its `repository`, `workflow_ref`, `ref`, `sha`, `event_name`, `run_id`, `run_attempt`, `runner_environment` and `check_run_id`, as the run's own GitHub token names them (`CIRun`, `packages/envoy/internal/cipher/oauthwire`).
 
 - `as_of` — the cut a token whose trade asked for `read` reads at, the trade's `as_of` form parameter, in UTC to the microsecond.
   Every other token, and such a token whose trade named no cut, carries none.
@@ -11527,30 +11541,75 @@ The subject token's own kind decides those claims (`packages/envoy/internal/ciph
 A pod's token needs an entry for its service account, which gives the person and the project, or no project for an entry that names none (`<service account>==<person>`), and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
 A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>`) gives a service and a fixed session in their place.
 The token it mints for a trade that asks for no scope holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
-That token reads every read of Dispatch's read class that needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its documents, comments and asks.
+That token reads every read of Dispatch's read class that needs no OAuth scope, for every project:
+each issue, closed and iceboxed ones included, with its documents, comments and asks.
 No setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
 A `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>` mints a token that holds the scope `legion-status` as well (`isLegionDaemon`, `oauthwire.LegionDaemonSessionPrefix`), and no read entry does, whatever session it fixes.
 The broker reads the session the entry fixes, case included, and never a session the request names, so a pod of an entry that fixes no session gets no `legion-status` whatever session it names.
 The entry decides the scope of a trade that asks for none, and a request that names `legion-status` is refused `invalid_scope`, under every entry.
-A trade under any entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes, so a Legion daemon's trade that asks for `read` holds no `legion-status`.
-Such a trade may also name a cut (`as_of`, an RFC 3339 time with at most six fractional digits, no later than the trade); a cut on a trade that does not ask for `read`, a later one, one at the zero time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and one in any other form are refused `invalid_request`.
+A result entry decides its scope whatever the request asks:
+its run's trade that asks for `read`, and a request under any entry that names the scope `results`, are refused `invalid_scope`.
+A trade under any entry but a result entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`):
+its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes.
+A Legion daemon's trade that asks for `read` holds no `legion-status`.
+Such a trade may also name a cut (`as_of`, an RFC 3339 time with at most six fractional digits, no later than the trade);
+a cut on a trade that does not ask for `read`, a later one, one at the zero time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and one in any other form are refused `invalid_request`.
 A token that holds `read` is never the subject of a trade.
-It is never bound to a key a live launcher credential is bound to: a trade whose proof key holds one binds its token to a key made for the token's holder, which it proves in a second DPoP proof in the `DPoP-Holder` header, and a person's sign-in always does.
+It is never bound to a key a live launcher credential is bound to:
+a trade whose proof key holds one binds its token to a key made for the token's holder, which it proves in a second DPoP proof in the `DPoP-Holder` header, and a person's sign-in always does.
 The broker also refuses to mint or move a launcher credential onto a key a live read token is bound to, so no key signs both a read token's proofs and launcher proofs.
-A read trade makes, moves and extends no launcher credential: a person's read trade names the credential the sign-in already holds, so once that credential lapses (with the identity token the sign-in's last ordinary trade presented) read trades are refused `invalid_grant` until one ordinary trade of the sign-in, which `agent-secrets` makes, renews it, and the read tokens it named end with it.
+A read trade makes, moves and extends no launcher credential:
+a person's read trade names the credential the sign-in already holds, so once that credential lapses (with the identity token the sign-in's last ordinary trade presented) read trades are refused `invalid_grant` until one ordinary trade of the sign-in, which `agent-secrets` makes, renews it, and the read tokens it named end with it.
 A driver that renews a copy's read token keeps the sign-in trading ordinarily as well.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
+The path is the token's `workflow_ref` without its repository and without `@` and its `ref` claim (`oauthwire.WorkflowPath`), since a workflow file's name and a branch's name can each hold an `@`, and a `workflow_ref` of any other form is refused.
+A result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`, `<repository>=<workflow path>=<ref pattern>=<project>=<person>`) lists a workflow by its repository, its path and a pattern of refs in its place, such as `refs/heads/*`, where a `*` stands for one segment of the ref.
+Its run asks for `requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`, the one placeholder type of every capability the broker mints and holds, and is answered a proxy placeholder and a result grant, which the broker keeps in its database (`result_grants`) for fifteen minutes, or for `BROKER_ACCESS_TOKEN_SECONDS` when that is shorter, and never an access token:
+the same run asking for an access token is refused `invalid_request`, and no other entry is granted a result grant.
+The grant holds the scope `results` and the project scope `results`, names that person and that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as `ci`.
+Each broker pod mints its own results token for a grant when the airlock proxy first carries one of the grant's writes there (`Provider.MintGrantToken`, `packages/envoy/internal/cipher/oauth/minted.go`):
+the token carries the grant's claims, ends with the grant, and is bound to a DPoP key that the pod makes at start, holds in memory alone and logs by its thumbprint (`broker: the proxy's DPoP key`).
+Only the airlock proxy holds the token: it puts it into each write to Dispatch's host that carries the grant's placeholder as its one `Authorization` header, signs a proof of the pod's key for Dispatch's public origin, and sends the write without the command's forwarding headers (`mintedTransport`, `packages/envoy/internal/cipher/proxy/dpop.go`).
+A stored secret under a proxy block of kind `dpop` is never released: a session's release of it, and the proxy's read of it, are answered `403 MINTED_ONLY`.
+The policy serves no profile of kind `dpop` as a secret (`profile-minted`):
+the result grant alone serves `DISPATCH_RESULTS_TOKEN`, so the profile writes no `agent secret policy refused` line, counts in no `refused=` of the `broker: profiles applied` line and exports no `broker_unservable_secrets` series, and a stored secret of its name is served as nothing too.
+Every broker that reads `BROKER_PROFILES_FILE`, with result entries or not, runs the start check of the proxy blocks of kind `dpop` (`config.ProxyMintedRules`) and of the profile `DISPATCH_RESULTS_TOKEN` (`config.ResultsEntryRules`), since every broker with an airlock port serves every minted grant of its database and mints that grant's token:
+the profile's proxy block is of kind `dpop`, and, as every `dpop` block, it has a non-empty allow list none of whose entries names every path (the path prefix `""` or `/`), is carried in `Authorization` alone, and binds one exact host and no `*.` name, which is a host `BROKER_PROXY_PRIVATE_UPSTREAM` names (the run's token and a proof of the pod's key go to every host the block binds, and the private destination is the one setting that names where Dispatch is);
+no proxy block of another kind binds that host, and each host `BROKER_PROXY_PRIVATE_UPSTREAM` names is a `dpop` block's.
+Result entries need the profile; the broker refuses to start otherwise, naming the setting and the fault.
+`envoy-broker profiles check <file> --private-upstream '<host>=<url> ...' --cluster-ranges <CIDR prefixes>` runs the same check on a profiles file, with the values the broker's `BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES` have, and holds each destination's address to the start's whole rule:
+`localhost`, an address no broker takes as a destination, and an address outside the private ranges and outside every range given exit 2, as a value the setting does not take.
+Without `--cluster-ranges`, an address outside the private ranges, which only the broker's `BROKER_AIRLOCK_CLUSTER_RANGES` can admit, prints one line saying it was not judged against the cluster ranges, so a deployment's check passes both values its broker is given.
+Each result grant records the results entry it was made under (`result_grants.entry_digest`, the SHA-256 of the profile's fingerprint and of the private destination's scheme, host name and port), and a pod whose entry is another answers the grant's writes `407 GRANT_NOT_LIVE` before it mints a token, so pods of the old entry and of the new refuse each other's grants during a roll that changes either, until those grants end.
+The entry binds the destination's text, not the address its name resolves to:
+each pod resolves that name with its own resolver, so brokers that share one database, one profile and one destination text serve each other's grants even where their resolvers answer differently.
+With `BROKER_PROXY_PRIVATE_UPSTREAM` (`<host>=<url>` entries, one per bound host, such as `dispatch.example-tailnet.ts.net=http://dispatch.dispatch.svc.cluster.local:8766`), the proxy sends the allowed writes to that host to the URL's address inside the cluster in place of the host's own address;
+each write keeps the host as its `Host` header, and its proof still names the host's public origin.
+The proxy dials the URL's host only when every address it resolves to is in a range the destination may be in (private, `100.64.0.0/10` or inside `BROKER_AIRLOCK_CLUSTER_RANGES`) and none is loopback, link-local, unspecified, multicast, the IPv4 broadcast address, in `0.0.0.0/8`, a cloud metadata server's IPv6 address (`fd20:ce::254`, `fd00:ec2::254`), or an IPv6 address that carries an IPv4 address (the NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated and ISATAP forms, whatever address they carry, and `64:ff9b:1::/48`);
+the cluster ranges widen the private ranges and nothing else (`netaddr.DestinationRefusal`), and a tunnel or a plain-HTTP request to those addresses stays refused.
+When the proxy refuses the destination or the destination does not answer, the command is told the rule that refused (`ADDRESS_REFUSED`, or `UPSTREAM_UNREACHABLE` for a destination that did not answer) and never the destination's in-cluster name or address, since a CI step's log is public; the broker's own log line names both.
+An informational answer (`1xx`) a bound host's service sends, the destination's among them, reaches the command without `Cipher-Proxy-Forwarded` and `Cipher-Proxy-Code`, as a final answer reaches it with `Cipher-Proxy-Forwarded: true` and no `Cipher-Proxy-Code`.
+The broker refuses to start with the setting unless each entry names its own lower-case host and an `http` or `https` URL with no user, no query, no fragment, no path but `/` and no port outside 1 to 65535, whose host is no address the dial refuses (one outside the destination's ranges, such as a public address outside `BROKER_AIRLOCK_CLUSTER_RANGES`, or one of the forms above that the destination never is;
+`netaddr.DestinationRefusal`) and not `localhost` or a name under `.localhost`, with or without a trailing dot, unless `BROKER_AIRLOCK_TEST_DIAL_ALLOW` names that host and port;
+`BROKER_PROFILES_FILE` is set; and the proxy blocks bind the hosts as the check above says.
+No refusal quotes the URL's user, path, query or fragment.
+The person is the entry's configuration and ran no test, so Dispatch writes that person on no result and in no answer: a result names its run as the recorder.
+The run's token must carry every claim of the run, the `check_run_id` of its job among them, and a run whose ref two patterns match is refused.
+The broker refuses to start on a workflow that both settings list, because one workflow mints one kind of token.
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
-A request under an entry that names a person may name that entry's project or nothing, and is refused when it names any other; a machine's token that names no person is refused any project.
+A request under an entry that names a person may name that entry's project or nothing, and is refused when it names any other;
+a machine's token that names no person is refused any project.
 A job entry gives each of those three kinds a job's list in place of a person and a project (`exchange.JobProjects`):
 `BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod (`<service account>=<projects>[=<session>]`), `BROKER_EXCHANGE_JOB_WORKFLOWS` for a workflow run (`<repository>=<workflow path>=<ref>=<projects>[=<session>]`) and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine (`<service account email>=<projects>[=<session>]`, of an account `BROKER_VM_SERVICES` lists).
 `<projects>` is one project key, or `public` followed by `,<key>` for each of at most 16 private projects; `public` counts toward none.
-The token a job entry mints names the listed identity as its service and no person, holds no OAuth scope, and carries the entry's project scope and whole list, whatever the request names: `named` and its one project, or `public` and its private projects.
+The token a job entry mints names the listed identity as its service and no person, holds no OAuth scope, and carries the entry's project scope and whole list, whatever the request names:
+`named` and its one project, or `public` and its private projects.
 A request under a job entry may name no project or only projects of the list, and is refused when it names any other, a public project's key under a `public` entry included, since the broker cannot tell a public project's key from a key no project holds.
 The broker asks Dispatch nothing for a job's token: the operator's entry chose the list, and it names no person whose sight of a project there is to check.
-A job entry that fixes no session takes the session the trade names, and the broker refuses a trade that names none; a job pod's entry that fixes no session takes a registration as a person's pod entry does, and one that fixes its session refuses a registration `409 SESSION_FIXED`.
+A job entry that fixes no session takes the session the trade names, and the broker refuses a trade that names none;
+a job pod's entry that fixes no session takes a registration as a person's pod entry does, and one that fixes its session refuses a registration `409 SESSION_FIXED`.
 The launcher credential a machine's job trade mints still records the account's `BROKER_VM_SERVICES` service.
 Every machine of a `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` account trades for a job's token and writes to Dispatch as the job, for no person, so list an account there only when every machine that runs as it is the job's.
 The broker refuses to start on an identity that a job setting and the setting of its kind that names a person both list, and on an account that `BROKER_EXCHANGE_JOB_ACCOUNTS` and `BROKER_EXCHANGE_READ_ACCOUNTS` both list, because one identity has one answer.
@@ -11573,7 +11632,7 @@ The grant issues no refresh token, so each renewal is a fresh trade that Dispatc
 A restricted member's token reaches Envoy and Dispatch and no secret: with `BROKER_PROJECT_ACCESS_URL` set, an enrollment under a machine login or a pod login whose person Dispatch calls a restricted member is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, and a session such a person already had is denied every secret `restricted-member` (`packages/envoy/internal/cipher/enroll`, `packages/envoy/internal/cipher/requests`).
 While Dispatch cannot say what kind of member a person is, every enrollment under that person's login and every secret request and release of their sessions is refused `503 MEMBER_KIND_UNCHECKABLE`, and nothing is released.
 
-A session name belongs to one principal — the service account, the workflow, the Google account, or the person
+A session name belongs to one principal — the service account, the workflow, the result entry's workflow whatever its ref, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/cipher/oauth/exchange.go`), but for a service account `BROKER_SESSION_ACCOUNT_PAIRS` pairs with a holding service account:
 that account's claim takes the name, which the broker logs at WARN as `broker: the token exchange took a session name from the account paired with its own` (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
 A claim, a pair's take among them, holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/cipher/oauthstore/exchange.go`).
@@ -11586,7 +11645,7 @@ It authenticates with its own Kubernetes service-account token, or, on a machine
 The answer carries `active` and, for a live token, those claims, `exp`, `client_id` and `jkt` (`Introspection`, `packages/envoy/internal/cipher/oauth/introspect.go`).
 
 A broker that sets none of `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_GOOGLE_OIDC_AUDIENCE` accepts no pod's token, no workflow run's token and no machine's identity token, and says so at boot with the log line `token exchange state=unconfigured`.
-With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`), machine entries (`machines`) and job entries (`job_accounts`, `job_workflows`, and `job_machines`, which `machines` counts too) included (`packages/envoy/cmd/cipherd/main.go`).
+With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`), result entries (`result_workflows`), machine entries (`machines`) and job entries (`job_accounts`, `job_workflows`, and `job_machines`, which `machines` counts too) included (`packages/envoy/cmd/cipherd/main.go`).
 A machine login's access token is exchanged in both cases, because its subject type is always registered (`ExchangeConfig.tokenTypes`, `packages/envoy/internal/cipher/oauth/exchange.go`).
 For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/cipher/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its sections "Exchange a pod's token" and "Exchange a job's token".
 
@@ -11603,6 +11662,8 @@ Dispatch refuses every write of a token that names a service and no person `403 
 It serves a read-only token, one that holds `read`, on the reads of its read class (each `/api/v1` route's `Read`, in its file under `packages/envoy/internal/dispatch/api`, and `v2ReadClasses` in `read_classes.go` for the `/api/v2` routes), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami` and `GET /api/v2/me`, since it serves no read at a past time yet.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
+It serves a result entry's token on the routes whose declaration states `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `packages/envoy/internal/dispatch/api`), today `POST /api/v1/projects/{key}/results` alone, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`.
+The Envoy listener answers a result entry's token `401`, because its verifier does not ask for it (`ciphertoken.Options.ServesResults`).
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### The daemon's own Dispatch credential: `dispatch_token_broker`
@@ -12144,7 +12205,7 @@ remove it before enabling issue pods ([Upgrading a deployment with running trees
 Nobody types into the pod.
 A person reaches the controller through Dispatch (a message to its session on the Agents page, a reply to its ask, a mention) or Envoy, and reads its session with `kubectl -n <namespace> logs legion-<project>-controller -c controller` (its launcher's log, which carries the shim's and Oh My Pi's) or its session in the session database, where every session is a row rather than a file on any volume.
 A Send from the Agents page is answered in the conversation that page shows.
-Wakes reach it as they reach the operator's controller: it subscribes to `notifications.legion.<project>.controller` once it holds the role.
+Wakes reach it as they reach the operator's controller: the daemon publishes each to the controller's role topic, `notifications.role.legion-<project>-controller`, once the controller's registered session holds that role live, and holds it until then.
 
 **Switching back.**
 To hand the controller back to a person, set `controller: operator` (or drop the key), drop `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account`, which the daemon refuses at boot unless `controller: daemon`, and restart the daemon.

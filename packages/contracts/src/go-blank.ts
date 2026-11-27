@@ -18,8 +18,9 @@
  * Dispatch server's blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion`
  * tool's `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's;
  * and `goTrimSpace` below. It trims a role's name as the Envoy listener trims a claim's, in
- * `packages/pi-envoy/extensions/envoy.ts`'s session-role read, and each value Dispatch trims with
- * `strings.TrimSpace` as Dispatch trims it: an upload's name (`uploadStoredName`,
+ * `packages/pi-envoy/extensions/envoy.ts`'s session-role read and the Envoy plugin's
+ * `listenerRoleName` (`packages/pi-envoy/src/listener-role-name.ts`), and each value Dispatch
+ * trims with `strings.TrimSpace` as Dispatch trims it: an upload's name (`uploadStoredName`,
  * `./dispatch-tools.ts`) for its extension (`uploadExtensionOf`), for the held-name check
  * (`artifactUnderName`, `packages/envoy-client/src/dispatch-commands/upload-checks.ts`) and for
  * AskGate's rules check and breaker (`uploadName` and `callKeys`,

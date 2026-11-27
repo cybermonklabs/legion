@@ -105,6 +105,40 @@ func TestAV1AnswerCarriesItsDeprecationSuccessorAndSunset(t *testing.T) {
 	}
 }
 
+// Both of #4184's results routes, which a merge on main added after /api/v2's freeze and which
+// await their /api/v2 route (api/testdata/v1-awaiting-v2-routes.txt), answer as every /api/v1
+// route does - Deprecation, and Sunset while the end is ahead - and link GET /api/v2 on every
+// answer, a refusal the handler writes included: the read without its ?commit= is 400
+// INVALID_QUERY, and a person's write is 403 RESULTS_SCOPE_REQUIRED, since only a CI job's
+// results token writes a result. Neither reaches a store.
+func TestARouteAwaitingItsV2RouteCarriesDeprecationAndLinksV2(t *testing.T) {
+	deprecation := "@" + strconv.FormatInt(apiV1DeprecatedAt.Unix(), 10)
+	now := testAPIV1End.Add(-24 * time.Hour)
+	handler := apiV1EndRouter(t, testAPIV1End, &now)
+	for _, request := range []struct {
+		method string
+		status int
+		code   string
+	}{
+		{http.MethodGet, http.StatusBadRequest, "INVALID_QUERY"},
+		{http.MethodPost, http.StatusForbidden, "RESULTS_SCOPE_REQUIRED"},
+	} {
+		const path = "/api/v1/projects/CORE/results"
+		sent := httptest.NewRequest(request.method, "http://dispatch.test"+path, nil)
+		sent.Header.Set("X-Dispatch-User", "alice")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, sent)
+		requireCodedRefusal(t, request.method+" "+path, response, request.status, request.code)
+		if response.Header().Get("Deprecation") != deprecation ||
+			!slices.Equal(response.Header().Values("Link"), []string{`</api/v2>; rel="successor-version"`}) ||
+			!slices.Equal(response.Header().Values("Sunset"), []string{testSunset}) {
+			t.Errorf("%s %s answered %d with Deprecation %q, Link %q, Sunset %q; want %q, the Link to /api/v2 and %q",
+				request.method, path, response.Code, response.Header().Get("Deprecation"), response.Header().Values("Link"),
+				response.Header().Values("Sunset"), deprecation, testSunset)
+		}
+	}
+}
+
 // A /api/v1 write that a layer answers before reading its body, whose body runs past the route's
 // limit, is answered 413 in place of that layer's answer (the drain, api/body_drain.go), and that
 // 413 is a /api/v1 answer like any other: it carries Deprecation, the Link to its successor and,

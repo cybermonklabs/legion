@@ -17,6 +17,11 @@ import (
 // holds and how a row is added to it).
 const v1OnlyRoutesList = "testdata/v1-only-routes.txt"
 
+// v1AwaitingV2List is the list of the routes /api/v1 alone serves that a merge on main added after
+// /api/v2's freeze, each awaiting its /api/v2 route and naming no Successor until it lands (its
+// header says what it holds).
+const v1AwaitingV2List = "testdata/v1-awaiting-v2-routes.txt"
+
 // v2RouteBound is R2's bound: the /api/v2 routes that answer the 184 rows of c8a44f97 the parent
 // maps - every row of its routes.txt but the INFRA-979 tree's five - number at most 137.
 const v2RouteBound = 137
@@ -114,6 +119,116 @@ func successorBoundFault(rows []routeDecl, frozen map[string]bool) error {
 	return nil
 }
 
+// readAwaitingV2Routes reads the awaiting list: its routes by "<METHOD> <path>", in the order the
+// list holds them, each line ending in a ` # ` note naming the pull request that brought it.
+func readAwaitingV2Routes(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(v1AwaitingV2List)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var awaiting []string
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, note, noted := strings.Cut(line, " # ")
+		if !noted || strings.TrimSpace(note) == "" {
+			t.Fatalf("%s: %q names no pull request in a ` # ` note", v1AwaitingV2List, line)
+		}
+		if slices.Contains(awaiting, name) {
+			t.Fatalf("%s lists %s twice", v1AwaitingV2List, name)
+		}
+		awaiting = append(awaiting, name)
+	}
+	return awaiting
+}
+
+// awaitingV2Mismatches names every row of rows - the routes /api/v1 alone serves - that names no
+// Successor and that awaiting does not hold, and every route awaiting holds that is no such row,
+// sorted: the awaiting list and the successor-less route files, held to each other both ways.
+func awaitingV2Mismatches(rows []routeDecl, awaiting []string) []string {
+	var mismatches []string
+	successorLess := map[string]bool{}
+	for _, row := range rows {
+		if row.Successor.Method != "" {
+			continue
+		}
+		name := row.Method + " " + row.Pattern
+		successorLess[name] = true
+		if !slices.Contains(awaiting, name) {
+			mismatches = append(mismatches, name+": it names no /api/v2 route, and "+v1AwaitingV2List+" does not hold it; name its Successor, or list it there if a merge on main added it after /api/v2's freeze")
+		}
+	}
+	for _, name := range awaiting {
+		if !successorLess[name] {
+			mismatches = append(mismatches, name+": "+v1AwaitingV2List+" holds it, and no route file declares it naming no Successor")
+		}
+	}
+	slices.Sort(mismatches)
+	return mismatches
+}
+
+// TestAwaitingV2RoutesMatchTheAwaitingList: the routes /api/v1 alone serves that name no
+// Successor are exactly the routes the awaiting list holds (testdata/v1-awaiting-v2-routes.txt):
+// the post-freeze /api/v1 routes that await their /api/v2 route (item 2 of
+// dispatch://INFRA-4071/comment/42979845-8100-4685-96b7-062c1094cc45). Each is on the frozen list
+// too, as a row other work added, and the list is sorted by path and then method. A synthetic
+// /api/v1 row that names no Successor and is not on the list is refused, and so is a line of the
+// list that matches no successor-less /api/v1 row: one no route file declares, or one whose route
+// file names a Successor.
+func TestAwaitingV2RoutesMatchTheAwaitingList(t *testing.T) {
+	awaiting := readAwaitingV2Routes(t)
+	rows := v1Declarations()
+	madeUp := routeDecl{Method: http.MethodGet, Pattern: "/api/v1/widgets", Auth: authAny, Description: "A made-up route /api/v1 alone serves."}
+	madeUpName := madeUp.Method + " " + madeUp.Pattern
+
+	t.Run("the-successor-less-rows-are-the-awaiting-list", func(t *testing.T) {
+		if mismatches := awaitingV2Mismatches(rows, awaiting); len(mismatches) > 0 {
+			t.Fatalf("the route files that name no /api/v2 route and %s disagree:\n%s", v1AwaitingV2List, strings.Join(mismatches, "\n"))
+		}
+		frozen := readV1OnlyRoutes(t)
+		for _, name := range awaiting {
+			if later, listed := frozen[name]; !listed || !later {
+				t.Errorf("%s holds %s, which %s does not hold with a note naming the pull request that brought it", v1AwaitingV2List, name, v1OnlyRoutesList)
+			}
+		}
+		if !slices.IsSortedFunc(awaiting, func(left, right string) int {
+			leftMethod, leftPattern, _ := strings.Cut(left, " ")
+			rightMethod, rightPattern, _ := strings.Cut(right, " ")
+			return patternThenMethod(leftPattern, leftMethod, rightPattern, rightMethod)
+		}) {
+			t.Errorf("%s is not sorted by path and then method: %q", v1AwaitingV2List, awaiting)
+		}
+		t.Logf("%d /api/v1 routes await their /api/v2 route: %q", len(awaiting), awaiting)
+	})
+
+	t.Run("a-successor-less-row-off-the-list-is-refused", func(t *testing.T) {
+		mismatches := awaitingV2Mismatches(append(slices.Clone(rows), madeUp), awaiting)
+		if len(mismatches) != 1 || !strings.HasPrefix(mismatches[0], madeUpName+": it names no /api/v2 route") {
+			t.Fatalf("a synthetic /api/v1 row naming no Successor and off the list was answered %q, want it refused alone", mismatches)
+		}
+	})
+
+	t.Run("a-line-matching-no-successor-less-row-is-refused", func(t *testing.T) {
+		listed := append(slices.Clone(awaiting), madeUpName)
+		named := madeUp
+		named.Successor = successorIs(http.MethodGet, "/widgets")
+		for _, test := range []struct {
+			what string
+			rows []routeDecl
+		}{
+			{"a line no route file declares", rows},
+			{"a line whose route file names a Successor", append(slices.Clone(rows), named)},
+		} {
+			mismatches := awaitingV2Mismatches(test.rows, listed)
+			if len(mismatches) != 1 || !strings.HasPrefix(mismatches[0], madeUpName+": "+v1AwaitingV2List+" holds it") {
+				t.Errorf("%s was answered %q, want it refused alone", test.what, mismatches)
+			}
+		}
+	})
+}
+
 // handlerResolvedSuccessors are the rows whose successor's path needs a value the v1 request does
 // not carry, which the v1 handler resolves while it answers (decision 9 of the plan of
 // dispatch://INFRA-4071): rows 6, 17, 89, 91, 92, 161, 164 and 165 of the route map, which need
@@ -143,15 +258,18 @@ func wildcardsOf(pattern string) []string {
 
 // TestEveryV1RowNamesItsV2Route holds the map the table records (R2, c-map): every row /api/v1
 // alone serves names the /api/v2 route that answers it, or its deletion with the route that
-// answers for it; the INFRA-979 tree's rows are served in both versions instead; every value the
-// successor's path needs is one the v1 request or its handler gives; the rows of c8a44f97 name at
-// most 137 distinct /api/v2 routes, which a table that names 138 fails; and every successor is a
-// route /api/v2 serves (successors-are-mounted).
+// answers for it, but a post-freeze row the awaiting list holds, which names none and links GET
+// /api/v2 until its route lands (TestAwaitingV2RoutesMatchTheAwaitingList); the INFRA-979 tree's
+// rows are served in both versions instead; every value the successor's path needs is one the v1
+// request or its handler gives; the rows of c8a44f97 name at most 137 distinct /api/v2 routes,
+// which a table that names 138 fails; and every successor is a route /api/v2 serves, GET /api/v2
+// for an awaiting row (successors-are-mounted).
 func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 	served := &server{}
 	rows := v1Declarations()
 	routes := served.routes()
 	frozen := readV1OnlyRoutes(t)
+	awaiting := readAwaitingV2Routes(t)
 	mounted := map[string]apiRoute{}
 	for _, route := range routes {
 		mounted[route.Method+" "+route.Pattern] = route
@@ -171,8 +289,12 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 			switch {
 			case ofINFRA979[name]:
 				t.Errorf("%s is a row of the INFRA-979 tree, served in both versions by its routeRow, and no route file", name)
+			case slices.Contains(awaiting, name):
+				if next.Method != "" {
+					t.Errorf("%s names %s, and %s still holds it", name, successorRoute(next), v1AwaitingV2List)
+				}
 			case next.Method == "":
-				t.Errorf("%s names no /api/v2 route", name)
+				t.Errorf("%s names no /api/v2 route, and %s does not hold it", name, v1AwaitingV2List)
 			case strings.HasPrefix(next.Pattern, "/api/"):
 				t.Errorf("%s names its successor %s with a version prefix; a successor's pattern is version-free", name, successorRoute(next))
 			case next.Pattern != "" && !strings.HasPrefix(next.Pattern, "/"):
@@ -231,12 +353,14 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 		}
 		every := map[string]bool{}
 		for _, row := range rows {
-			every[successorRoute(row.Successor)] = true
+			if row.Successor.Method != "" {
+				every[successorRoute(row.Successor)] = true
+			}
 		}
-		t.Logf("v1 rows, which /api/v1 alone serves: %d (%d of c8a44f97, %d other work added after it); rows of the INFRA-979 tree, served in both versions: %d",
-			len(rows), ofC8a44f97, later, len(infra979))
+		t.Logf("v1 rows, which /api/v1 alone serves: %d (%d of c8a44f97, %d other work added after it, %d of them awaiting their /api/v2 route); rows of the INFRA-979 tree, served in both versions: %d",
+			len(rows), ofC8a44f97, later, len(awaiting), len(infra979))
 		t.Logf("routes /api/v1 serves: %d; routes /api/v2 serves: %d", len(servedAt(apiV1, routes)), len(servedAt(apiV2, routes)))
-		t.Logf("distinct /api/v2 routes the %d rows of c8a44f97 name: %d (R2's bound: %d); the routes every v1 row names: %d",
+		t.Logf("distinct /api/v2 routes the %d rows of c8a44f97 name: %d (R2's bound: %d); the routes every v1 row that names one names: %d",
 			ofC8a44f97, len(successorsOfC8a44f97(rows, frozen)), v2RouteBound, len(every))
 		// The parent maps c8a44f97Rows rows of c8a44f97, and main took the ones v1RowsMainRemoved
 		// names out of /api/v1: no route file and no line of the frozen list holds them, and every
@@ -289,11 +413,16 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 	})
 
 	// Every successor is a route the table mounts at /api/v2, which only the mount of a routeRow
-	// is: a row of the v1 table is mounted at its /api/v1 pattern alone (v1Route).
+	// is: a row of the v1 table is mounted at its /api/v1 pattern alone (v1Route). A row the
+	// awaiting list holds names none, and its answers link GET /api/v2 (linkSuccessor), which the
+	// table mounts too.
 	t.Run("successors-are-mounted", func(t *testing.T) {
 		var unmounted []string
 		for _, row := range rows {
 			at := row.Successor.Method + " /api/v2" + row.Successor.Pattern
+			if slices.Contains(awaiting, row.Method+" "+row.Pattern) {
+				at = http.MethodGet + " /api/v2"
+			}
 			if _, ok := mounted[at]; !ok {
 				unmounted = append(unmounted, row.Method+" "+row.Pattern+" -> "+at)
 			}

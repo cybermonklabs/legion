@@ -66,6 +66,13 @@ func TestEachLayersRefusalIsAmongItsOperationsCodes(t *testing.T) {
 			},
 		},
 		{
+			layer: "the limited-token gate, a results token", method: http.MethodPatch, pattern: "/issues/{key}", code: "RESULTS_ONLY_TOKEN",
+			request: func(t *testing.T) *http.Request {
+				caller, token := brokerToken(t, func(jkt string) ciphertoken.Introspection { return resultsOnlyToken(jkt, resultsTokenProject) })
+				return caller.presenting(t, http.MethodPatch, "/api/v2/issues/"+tour.issue(t).Key, token, map[string]any{"title": "Retitled"})
+			},
+		},
+		{
 			layer: "the identity layer, a bearer that is no token", method: http.MethodGet, pattern: "/asks", code: "UNAUTHORIZED",
 			request: func(*testing.T) *http.Request {
 				request := httptest.NewRequest(http.MethodGet, "/api/v2/asks", nil)

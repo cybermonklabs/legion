@@ -55,6 +55,36 @@ func TestAV1AnswerLinksTheV2RouteThatAnswersForIt(t *testing.T) {
 	}
 }
 
+// A route a merge on main added after /api/v2's freeze, which awaits its /api/v2 route and names
+// no Successor (testdata/v1-awaiting-v2-routes.txt), links GET /api/v2 on every answer: both of
+// #4184's results routes, the read's 200 and its 400, and the write's 403 RESULTS_SCOPE_REQUIRED
+// to a credential that is no CI job's results token, which the handler writes after the Link's
+// wrapper is in place. The router adds Deprecation to each (routes/api_v1_end_test.go).
+func TestARouteAwaitingItsV2RouteLinksV2(t *testing.T) {
+	handler := newTestHandler(t)
+	createTestIssue(t, handler, "AWAIT", "Awaiting")
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	for _, test := range []struct {
+		what, method, target string
+		body                 any
+		status               int
+		code                 string
+	}{
+		{"the read", http.MethodGet, "/api/v1/projects/AWAIT/results?commit=" + commit, nil, http.StatusOK, ""},
+		{"the read with no commit", http.MethodGet, "/api/v1/projects/AWAIT/results", nil, http.StatusBadRequest, "INVALID_QUERY"},
+		{"the write by a person", http.MethodPost, "/api/v1/projects/AWAIT/results",
+			map[string]string{"commit": commit, "check": "p-1", "verdict": "pass"}, http.StatusForbidden, "RESULTS_SCOPE_REQUIRED"},
+	} {
+		response := dispatchRequest(t, handler, test.method, test.target, test.body, "alice")
+		if refusal := gateRefusalOf(response); response.Code != test.status || refusal.Code != test.code {
+			t.Errorf("%s: %s %s answered %d %s, want %d %s", test.what, test.method, test.target, response.Code, response.Body.String(), test.status, test.code)
+		}
+		if got, want := response.Header().Values("Link"), []string{successorLinkOf("/api/v2")}; !slices.Equal(got, want) {
+			t.Errorf("%s: %s %s answered %d with Link %q, want %q", test.what, test.method, test.target, response.Code, got, want)
+		}
+	}
+}
+
 // A slug row's successor is under the artifact the slug names, or the issue the document belongs
 // to, which the v1 request does not carry: its handler records the value it resolved and the
 // answer links that route, a keyed write's included. A request refused before the handler
