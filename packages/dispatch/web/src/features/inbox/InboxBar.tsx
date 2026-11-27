@@ -237,6 +237,9 @@ export function InboxBar({
             const counts = filterCounts(rows, field, (row) => matchesOthers(row, field), viewer);
             return (
               <MultiSelect
+                // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this
+                // page.
+                chevron={false}
                 emptyMessage={`No matching ${DIMENSION_LABELS[field].toLowerCase()}.`}
                 key={field}
                 label={DIMENSION_LABELS[field]}

@@ -337,8 +337,8 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
       new RegExp(`\\?agent=${planner.session_id}&${selected}assignee=everyone$`, "u")
     );
     const inbox = page.locator("main");
-    const chip = inbox.getByRole("button", { name: "Clear agent filter" });
-    await expect(chip).toHaveText("Asks from Planner×");
+    const chip = inbox.getByRole("link", { name: "Clear agent filter" });
+    await expect(chip).toHaveText("Asks from Planner · clear");
     await expect(inbox.locator('[data-inbox-section="agent"]')).toHaveCount(2);
     await expect(list.getByText("Second", { exact: true })).toBeVisible();
     await expect(list.getByText("Fourth", { exact: true })).toBeVisible();
@@ -350,7 +350,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     // Clearing the agent keeps the filter the pill arrived with, and the row it was reading.
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/\\?${selected}assignee=everyone$`, "u"));
-    await expect(inbox.getByRole("button", { name: "Clear agent filter" })).toHaveCount(0);
+    await expect(inbox.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
   } finally {
     await alice.close();
   }

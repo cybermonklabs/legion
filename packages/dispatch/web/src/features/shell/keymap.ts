@@ -6,11 +6,12 @@ import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
  * (`useKeymapScope`), and a single `window` keydown listener (`KeymapProvider`) resolves each
  * key top-down through the stack: the first scope holding a matching binding wins, and while
  * a `dialog` scope is on the stack it is the only scope consulted. `keys` follows tinykeys' string
- * syntax — `"g i"` is a chord, `"$mod+k"` matches Meta or Control, `"Shift+P"` a shifted
- * letter, `"?"` the character an unshifted or shifted key produces. A combo is matched by the
- * character its key types, so a reader on AZERTY or Dvorak presses the letter a shortcut names
- * wherever it sits; on a Mac, one that holds `Alt` also matches by the key's position (`KeyM` for
- * `m`), because Option changes the character: `$mod+Alt+m` types `µ` there.
+ * syntax — `"g i"` is a chord, `"$mod+k"` matches Cmd+K on a Mac and Ctrl+K elsewhere (a Mac's
+ * text field keeps Control+K), `"Shift+P"` a shifted letter, `"?"` the character an unshifted or
+ * shifted key produces. A combo is matched by the character its key types, so a reader on AZERTY
+ * or Dvorak presses the letter a shortcut names wherever it sits; on a Mac, one that holds `Alt`
+ * also matches by the key's position (`KeyM` for `m`), because Option changes the character:
+ * `$mod+Alt+m` types `µ` there.
  */
 
 export type KeymapScope =
@@ -181,27 +182,42 @@ function matchesCombo(combo: KeyCombo, press: KeyPress, isMac: boolean): boolean
   if (!shiftEncodedInKey && combo.shift !== press.shiftKey) {
     return false;
   }
-  if (combo.mod) {
-    return press.metaKey || press.ctrlKey;
-  }
-  return combo.control === press.ctrlKey && combo.meta === press.metaKey;
+  return press.ctrlKey === holdsControl(combo, isMac) && press.metaKey === holdsMeta(combo, isMac);
 }
 
-/** Whether two combos can be produced by one key press (`$mod+k` overlaps `Control+k`). */
-function sameCombo(a: KeyCombo, b: KeyCombo): boolean {
-  if (a.key.toLowerCase() !== b.key.toLowerCase() || a.alt !== b.alt || a.shift !== b.shift) {
-    return false;
-  }
-  if (a.mod || b.mod) {
-    return (a.mod || a.control || a.meta) && (b.mod || b.control || b.meta);
-  }
-  return a.control === b.control && a.meta === b.meta;
+/** Whether a press of `combo` holds Ctrl on the platform: `$mod` is Ctrl away from a Mac. */
+function holdsControl(combo: KeyCombo, isMac: boolean): boolean {
+  return combo.control || (combo.mod && !isMac);
 }
 
-function isStrictPrefix(shorter: readonly KeyCombo[], longer: readonly KeyCombo[]): boolean {
+/** Whether a press of `combo` holds Cmd (Meta) on the platform: `$mod` is Cmd on a Mac, as
+ *  tinykeys reads it, since a Mac's text field keeps its Control keys (Control+K deletes to the
+ *  end of the line). */
+function holdsMeta(combo: KeyCombo, isMac: boolean): boolean {
+  return combo.meta || (combo.mod && isMac);
+}
+
+/** Whether two combos are one key press on the platform, as `matchesCombo` reads a press: on a
+ *  Mac `$mod+k` is `Meta+k` and not `Control+k`, and elsewhere the other way round. */
+function sameCombo(a: KeyCombo, b: KeyCombo, isMac: boolean): boolean {
+  return (
+    a.key.toLowerCase() === b.key.toLowerCase() &&
+    a.alt === b.alt &&
+    a.shift === b.shift &&
+    holdsControl(a, isMac) === holdsControl(b, isMac) &&
+    holdsMeta(a, isMac) === holdsMeta(b, isMac)
+  );
+}
+
+/** Whether the presses of `shorter` begin `longer` (`g` begins `g i`) on the platform. */
+function isStrictPrefix(
+  shorter: readonly KeyCombo[],
+  longer: readonly KeyCombo[],
+  isMac: boolean
+): boolean {
   return (
     shorter.length < longer.length &&
-    shorter.every((combo, index) => sameCombo(combo, longer[index] as KeyCombo))
+    shorter.every((combo, index) => sameCombo(combo, longer[index] as KeyCombo, isMac))
   );
 }
 
@@ -328,7 +344,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 export interface KeymapOptions {
-  /** Whether Alt combos may match a physical key; production follows the browser's Mac identity. */
+  /** Whether the browser runs on a Mac, where `$mod` is Cmd and an Alt combo may match a physical
+   *  key; production follows the browser's Mac identity. */
   isMac?: boolean;
   /** Timer seam for the chord timeout; tests drive it without real waits. */
   clearTimeout?: (handle: number) => void;
@@ -409,7 +426,10 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         }
         for (const chord of candidate.chords) {
           for (const otherChord of other.chords) {
-            if (isStrictPrefix(chord, otherChord) || isStrictPrefix(otherChord, chord)) {
+            if (
+              isStrictPrefix(chord, otherChord, isMac) ||
+              isStrictPrefix(otherChord, chord, isMac)
+            ) {
               reportConflict(
                 `Keymap: "${candidate.binding.id}" (${candidate.scope}) and "${other.binding.id}" (${other.scope}) conflict — one key sequence is a prefix of the other`
               );

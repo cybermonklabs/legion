@@ -9,7 +9,7 @@ import {
   removedEvenIfGone,
 } from "../../api/client";
 import { waitingForPausedReads } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import { useListReadBound } from "../../api/read-bound";
 import type { Artifact } from "../../api/types";
 import { pressOfWrite, type WritePress } from "../../components/focus-place";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -213,6 +213,12 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  * header, which the issue's page draws for one document after another, keys the control itself
  * (`ArtifactHeader`).
  *
+ * Every removal of an issue's document reads that issue's one document list again, so every
+ * Remove of the issue takes that list's one hold (`useListReadBound`), whichever host draws it: a
+ * later removal forgets why an earlier one's read had not settled, whichever document's it was,
+ * and this control says why that read has not settled only where its own document's removal made
+ * the latest one. A removal is offered for an issue's document alone (`removalIsOffered`).
+ *
  * `onRemoved` is the host's own way back from the page of a document that has gone, handed the
  * document the removal was of. It is called when the removal lands, by when the reader may have
  * left that document's page.
@@ -228,7 +234,7 @@ export function RemoveDocument({
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
-  const [unsettled, holdThrough] = useReadBound();
+  const [unsettledOf, holdThrough] = useListReadBound(["artifacts", artifact.issue_key]);
   const remove = useKeyedWrite({
     inline: true,
     // The press carries the document it removes: the indicator names it, and the route takes its
@@ -245,16 +251,18 @@ export function RemoveDocument({
     // away, so the button keeps the reader's focus until the row goes. That read settles either
     // way, and a failed one lets the button go. A read that has not settled by the request
     // deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets it go
-    // then, and the row says why the list is not read yet (`useReadBound`). The hold is the
-    // press's the removal began under (`pressOfWrite`).
+    // then, and the control says why the list is not read yet (`useListReadBound`) until it
+    // settles or another removal makes the next one. The hold is the press's the removal began
+    // under (`pressOfWrite`).
     onMutate: pressOfWrite,
     onSuccess: (_result, removed, press: WritePress) => {
       // The read waits on a fetch the network had already paused, which that deadline ends too.
       const list = waitingForPausedReads(queryClient, () => refreshArtifact(queryClient, removed));
       onRemoved?.(removed);
-      return holdThrough(list, press);
+      return holdThrough(removed.id, list, press);
     },
   });
+  const unsettled = unsettledOf(artifact.id);
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`). A list
   // read that has not settled is said in the words the Artifacts tab says for one that failed.
   const problem = remove.isError

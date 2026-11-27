@@ -57,7 +57,7 @@ function binding(id: string, keys: KeyBinding["keys"], extra: Partial<KeyBinding
   return { definition, fired: () => fired };
 }
 
-test("? matches the shifted character and $mod matches Meta or Control, never a bare key", () => {
+test("? matches the shifted character and $mod matches the platform's command key, never a bare key", () => {
   const { keymap, press } = harness();
   const help = binding("help", "?");
   const search = binding("search", "$mod+k");
@@ -74,10 +74,10 @@ test("? matches the shifted character and $mod matches Meta or Control, never a 
   expect(press("/")).toBe(false);
   expect(help.fired()).toBe(1);
 
-  press("k", { metaKey: true });
+  // Away from a Mac `$mod` is Control alone; a row below reads both platforms.
   press("k", { ctrlKey: true });
   expect(press("k")).toBe(false);
-  expect(search.fired()).toBe(2);
+  expect(search.fired()).toBe(1);
 
   press("P", { shiftKey: true });
   press("p");
@@ -103,6 +103,31 @@ test("$mod+Alt+m preserves AltGr typing away from a Mac and matches Option's phy
   // Option turns M into µ on a Mac, so the character alone never names the chord there.
   expect(mac.press("µ", { altKey: true, code: "KeyM", metaKey: true })).toBe(true);
   expect(macComment.fired()).toBe(1);
+});
+
+// `$mod` is Cmd on a Mac and Control elsewhere, as tinykeys reads it. A Mac's text field keeps
+// Control+K, which deletes to the end of the line, so there `$mod+k` leaves Control+K to the
+// field, even for a binding that fires while the reader types.
+test("$mod+k fires on Cmd+K and not on Control+K on a Mac, and on Control+K and not on Cmd+K elsewhere", () => {
+  const field = document.createElement("input");
+  document.body.appendChild(field);
+  try {
+    const mac = harness(true);
+    const macSearch = binding("search", "$mod+k", { inEditable: true });
+    mac.keymap.register("global", [macSearch.definition]);
+    expect(mac.press("k", { ctrlKey: true, target: field }), "Control+K on a Mac").toBe(false);
+    expect(mac.press("k", { metaKey: true, target: field }), "Cmd+K on a Mac").toBe(true);
+    expect(macSearch.fired()).toBe(1);
+
+    const other = harness();
+    const otherSearch = binding("search", "$mod+k", { inEditable: true });
+    other.keymap.register("global", [otherSearch.definition]);
+    expect(other.press("k", { metaKey: true, target: field }), "Meta+K elsewhere").toBe(false);
+    expect(other.press("k", { ctrlKey: true, target: field }), "Control+K elsewhere").toBe(true);
+    expect(otherSearch.fired()).toBe(1);
+  } finally {
+    field.remove();
+  }
 });
 
 test("$mod+Alt+m wants both modifiers: Control, Command, Option or Shift alone never runs it", () => {
@@ -189,6 +214,26 @@ test("registering a strict prefix of an existing sequence throws in strict mode"
   expect(() => keymap.register("global", [binding("mod-k-x", "Control+k x").definition])).toThrow(
     /prefix/
   );
+});
+
+// Two keys are one press only as the platform reads `$mod`: on a Mac `$mod+k` is Cmd+K, so
+// `Meta+k x` begins with it and `Control+k x` does not; elsewhere the other way round.
+test("a prefix is read by the platform's $mod: Meta+k x begins $mod+k on a Mac, and Control+k x elsewhere", () => {
+  for (const [isMac, begins, other] of [
+    [true, "Meta+k x", "Control+k x"],
+    [false, "Control+k x", "Meta+k x"],
+  ] as const) {
+    const { keymap } = harness(isMac);
+    keymap.register("global", [binding("search", "$mod+k").definition]);
+    expect(
+      () => keymap.register("global", [binding("other", other).definition]),
+      `${other}, isMac ${isMac}`
+    ).not.toThrow();
+    expect(
+      () => keymap.register("global", [binding("begins", begins).definition]),
+      `${begins}, isMac ${isMac}`
+    ).toThrow(/prefix/);
+  }
 });
 
 test("an open dialog masks every scope beneath it and its own bindings still fire", () => {
