@@ -42,6 +42,10 @@ var deliverySettingsTargetSlugs = []string{
 // deliveryTargetOff is the value a target takes that judges nothing: the eval's target is none.
 const deliveryTargetOff = "off"
 
+// deliveryTargetUnitRatio is the unit of an eval whose value is a share from 0 to 1, as the evals'
+// catalogue names it (unitRatio, evals/catalogue.go).
+const deliveryTargetUnitRatio = "ratio"
+
 // projectDeliverySettings is what GET and PUT /api/v1/projects/{key}/settings/delivery answer: the
 // project's stored settings, each source with its id, the repository it reads (resolved_repo,
 // delivery.SourceRepoOf: the one it names, else the project's default repository, null where it
@@ -77,10 +81,10 @@ type projectDeploySource struct {
 // projectDeliverySettingsInput is the body PUT /api/v1/projects/{key}/settings/delivery takes:
 // every top-level field is optional, and a field the body leaves out keeps its stored value (the
 // two-build rule, store/README.md: a build that does not know a field saves without dropping it).
-// Explicit null clears a field that may be empty; sources, when present, replaces the list;
-// targets is an object of the slugs of deliverySettingsTargetSlugs, each a number or "off", where
-// a slug it leaves out keeps its target and a slug whose target is the eval's already writes no
-// version.
+// Explicit null clears a field that may be empty, and the switch, which is never empty, refuses it;
+// sources, when present, replaces the list; targets is an object of the slugs of
+// deliverySettingsTargetSlugs, each a number or "off", where a slug it leaves out keeps its target
+// and a slug whose target is the eval's already writes no version.
 type projectDeliverySettingsInput struct {
 	Delivery              bool                       `json:"delivery"`
 	Sources               []projectDeploySourceInput `json:"sources"`
@@ -203,8 +207,10 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 // (settingsSave), and answers the stored settings as GET does.
 //
 // It refuses, writing nothing: a field no reader could read, 400 DELIVERY_SETTINGS_INPUT naming the
-// field and, for a source's, the source's index (delivery.ValidateProjectSettings, and the targets
-// and the first day here); a source's repository the GitHub App cannot read, 409
+// field and, for a source's, the source's index (delivery.ValidateProjectSettings; the switch named
+// null, a blank population author, an excluded repository that is no owner/name and the first day
+// here, projectSettingsSave; and the targets, parseDeliveryTargets and deliveryTargetChanges); a
+// source's repository the GitHub App cannot read, 409
 // DELIVERY_SETTINGS_ACCESS naming the source, proved while delivery is on for every repository a
 // github_workflow source of the written settings reads, the default repository a source naming
 // none reads included, before the transaction opens, as the singleton's save proves its one
@@ -241,7 +247,7 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 		s.writeHandlerError(w, err)
 		return
 	}
-	named, refusal := s.projectSettingsSave(key, input)
+	named, refusal := s.projectSettingsSave(key, input, present)
 	if refusal != nil {
 		s.writeSettingsRefusal(w, refusal)
 		return
@@ -430,7 +436,8 @@ func (save *settingsSave) targetsMoved(ctx context.Context, tx pgx.Tx, changes [
 }
 
 // topLevelJSONMembers reads the top-level names independently of their values. In the typed
-// decode both an omitted list and an explicit null list are nil; only the latter clears one.
+// decode both an omitted list and an explicit null list are nil, and a null switch is false; only
+// the null list clears one, and the null switch is refused (projectSettingsSave).
 func topLevelJSONMembers(body []byte) (map[string]jsonMember, error) {
 	var members map[string]jsonMember
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&members); err != nil {
@@ -439,22 +446,26 @@ func topLevelJSONMembers(body []byte) (map[string]jsonMember, error) {
 	return members, nil
 }
 
+// namedMember reports whether present, a body's top-level members (topLevelJSONMembers), names
+// field, matched without case as encoding/json matches a struct field, and whether a member that
+// names it is null.
+func namedMember(present map[string]jsonMember, field string) (named, null bool) {
+	for name, member := range present {
+		if strings.EqualFold(field, name) {
+			named, null = true, null || member.null
+		}
+	}
+	return named, null
+}
+
 // keepStoredDeliverySettings fills each field of save that present, the body's top-level names,
 // leaves out with stored's value, without normalizing those values again. The save reads stored
 // both before its transaction, for its validation and its GitHub access check, which both read the
 // whole save, and under the project's lock, for what it writes (settingsSave).
 func keepStoredDeliverySettings(save *delivery.ProjectSettingsInput, present map[string]jsonMember, stored delivery.ProjectSettings) {
 	has := func(field string) bool {
-		if _, named := present[field]; named {
-			return true
-		}
-		// encoding/json matches struct fields case-insensitively.
-		for name := range present {
-			if strings.EqualFold(field, name) {
-				return true
-			}
-		}
-		return false
+		named, _ := namedMember(present, field)
+		return named
 	}
 	deliveryNamed, sourcesNamed := has("delivery"), has("sources")
 	authorsNamed, excludedNamed := has("population_authors"), has("excluded_repos")
@@ -493,23 +504,40 @@ func keepStoredDeliverySettings(save *delivery.ProjectSettingsInput, present map
 }
 
 // projectSettingsSave is the save input names, its repositories canonical: each source's
-// repository trimmed and lower-cased as GitHub could hold it (parseSourceRepo), and each
-// repository, a source's or an excluded one, under its new name where a rename pair renames it
-// away (refs.Renames.Canonical), so no write stores an old name. A github_workflow source's job
+// repository, and each excluded one, trimmed and lower-cased as GitHub could hold it
+// (parseSourceRepo), under its new name where a rename pair renames it away
+// (refs.Renames.Canonical), so no write stores an old name. A github_workflow source's job
 // names are stored as the singleton's save stores them, since every reader matches a job by its
 // exact name: each production job name trimmed (trimmedProductionJobNames, which refuses a blank
 // name and a name given twice once trimmed; a source naming none is ValidateProjectSettings' to
 // refuse), and each optional job and step name trimmed, or null where it is blank
-// (optionalJobName). A source's repository GitHub could hold no repository of, or a first day that
-// is no YYYY-MM-DD day, is refused, named.
-func (s *server) projectSettingsSave(project string, input projectDeliverySettingsInput) (delivery.ProjectSettingsInput, error) {
+// (optionalJobName). It refuses, named: the switch named null in present, the body's top-level
+// members, which the decode would read as false and so turn delivery off; a population author
+// that is blank; a repository, a source's or an excluded one, GitHub could hold no repository of;
+// and a first day that is no YYYY-MM-DD day.
+func (s *server) projectSettingsSave(project string, input projectDeliverySettingsInput, present map[string]jsonMember) (delivery.ProjectSettingsInput, error) {
+	if _, null := namedMember(present, "delivery"); null {
+		return delivery.ProjectSettingsInput{}, delivery.InputRefusal(nil, "delivery",
+			"the switch is true or false, and null would read as false and turn delivery off")
+	}
+	for i, author := range input.PopulationAuthors {
+		if strings.TrimSpace(author) == "" {
+			return delivery.ProjectSettingsInput{}, delivery.InputRefusal(nil, "population_authors",
+				"author %d is blank: each names a GitHub login", i)
+		}
+	}
 	save := delivery.ProjectSettingsInput{
 		Project: project, Delivery: input.Delivery, Sources: make([]delivery.SourceInput, len(input.Sources)),
 		PopulationAuthors: input.PopulationAuthors, FailureSources: input.FailureSources,
 		ExcludedRepos: make([]string, len(input.ExcludedRepos)),
 	}
 	for i, excluded := range input.ExcludedRepos {
-		save.ExcludedRepos[i] = s.deps.Renames.Canonical(excluded)
+		owner, name, err := parseSourceRepo(excluded)
+		if err != nil {
+			return delivery.ProjectSettingsInput{}, delivery.InputRefusal(nil, "excluded_repos",
+				"excluded repository %d names %q, which is no GitHub repository owner/name", i, excluded)
+		}
+		save.ExcludedRepos[i] = s.deps.Renames.Canonical(owner + "/" + name)
 	}
 	for i, source := range input.Sources {
 		save.Sources[i] = delivery.SourceInput(source)
@@ -623,8 +651,8 @@ func appCannotRead(err error) bool {
 // target already, as actor (Registration.Target alone, so every other field is carried forward
 // from the eval's newest version), in deliverySettingsTargetSlugs' order, read before the save's
 // transaction opens; the transaction reads each target again (settingsSave.targetsMoved). A target
-// of an eval the project holds no version of is refused, named: its evals are seeded when the
-// project is made.
+// of an eval the project holds no version of, and a number its eval's unit cannot hold
+// (deliveryTargetRange), are refused, named: its evals are seeded when the project is made.
 func (s *server) deliveryTargetChanges(ctx context.Context, project string, targets map[string]*float64, actor model.Actor) ([]evals.Registration, *delivery.SettingsError, error) {
 	if len(targets) == 0 {
 		return nil, nil, nil
@@ -643,12 +671,31 @@ func (s *server) deliveryTargetChanges(ctx context.Context, project string, targ
 		if !held {
 			return nil, delivery.InputRefusal(nil, "targets."+slug, "project %s holds no %s eval to set the target of", project, slug), nil
 		}
+		if target != nil {
+			if reason := deliveryTargetRange(entry.Definition.Unit, *target); reason != "" {
+				return nil, delivery.InputRefusal(nil, "targets."+slug, "%s", reason), nil
+			}
+		}
 		if equalPointers(entry.Definition.Target, target) {
 			continue
 		}
 		changes = append(changes, evals.Registration{Project: project, Slug: slug, Caller: actor, Target: evals.Set(target)})
 	}
 	return changes, nil, nil
+}
+
+// deliveryTargetRange is the reason target lies outside what an eval of unit can hold, "" where it
+// lies within: a share (deliveryTargetUnitRatio) is from 0 to 1, and every other eval the settings
+// set counts deploys or issues or times minutes, so its target is 0 or more. unit is the eval's own,
+// which the catalogue seeds, so the range follows the eval rather than a list of slugs.
+func deliveryTargetRange(unit string, target float64) string {
+	if target < 0 {
+		return fmt.Sprintf("%g is below 0, and an eval of unit %s holds no target below 0", target, unit)
+	}
+	if unit == deliveryTargetUnitRatio && target > 1 {
+		return fmt.Sprintf("%g is above 1, and an eval of unit %s is a share from 0 to 1", target, unit)
+	}
+	return ""
 }
 
 // writeSettingsRefusal answers a refused save with its own body (delivery.SettingsError: its code,

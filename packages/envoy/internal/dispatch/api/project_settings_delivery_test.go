@@ -460,6 +460,143 @@ func TestANullDeliverySwitchIsRefused(t *testing.T) {
 	}
 }
 
+// newSavedDeliveryRig is a settings rig whose project ALPHA has saved delivery on, one source
+// reading acme/alpha-deploy, octocat's population and acme/dojo excluded.
+func newSavedDeliveryRig(t *testing.T) *brokerTokenRig {
+	t.Helper()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")},
+		"population_authors": []string{"octocat"}, "excluded_repos": []string{"acme/dojo"},
+	})
+	return rig
+}
+
+// requireInputRefused sends body as project's delivery settings and requires the refusal 400
+// DELIVERY_SETTINGS_INPUT naming field and no source, with nothing written: the settings GET
+// reads, and the version and target of each eval the settings set, as they stood before.
+func requireInputRefused(t *testing.T, rig *brokerTokenRig, project string, body map[string]any, field string) {
+	t.Helper()
+	before := readProjectDelivery(t, rig.handler, project)
+	versions := make(map[string]int, len(deliverySettingsTargetSlugs))
+	targets := make(map[string]*float64, len(deliverySettingsTargetSlugs))
+	for _, slug := range deliverySettingsTargetSlugs {
+		versions[slug], targets[slug] = evalVersion(t, rig, project+"/"+slug)
+	}
+	refused := refusedSettings(t, putProjectDelivery(t, rig.handler, project, body), http.StatusBadRequest, delivery.CodeDeliverySettingsInput)
+	if refused.Field != field || refused.Source != nil {
+		t.Errorf("%v is refused %+v, want %s named and no source", body, refused, field)
+	}
+	if after := readProjectDelivery(t, rig.handler, project); string(after) != string(before) {
+		t.Errorf("the refused save of %v left settings %s, want %s", body, after, before)
+	}
+	for _, slug := range deliverySettingsTargetSlugs {
+		if version, target := evalVersion(t, rig, project+"/"+slug); version != versions[slug] || !equalPointers(target, targets[slug]) {
+			t.Errorf("the refused save of %v left %s at version %d target %v, want version %d target %v",
+				body, slug, version, target, versions[slug], targets[slug])
+		}
+	}
+}
+
+// A negative target is refused naming the target, whatever its eval's unit (deploys a day, minutes
+// or a share), and writes nothing: neither a version of any eval nor the switch turned off and the
+// population the body also names.
+func TestANegativeTargetIsRefused(t *testing.T) {
+	t.Parallel()
+	rig := newSavedDeliveryRig(t)
+	for _, row := range []struct {
+		slug   string
+		target float64
+	}{{"deploy-frequency", -3}, {"merge-to-production", -1}, {"deploy-run-success", -0.1}} {
+		t.Run(row.slug, func(t *testing.T) {
+			requireInputRefused(t, rig, "ALPHA", map[string]any{
+				"delivery": false, "population_authors": []string{"hubot"}, "targets": map[string]any{row.slug: row.target},
+			}, "targets."+row.slug)
+		})
+	}
+}
+
+// A target of an eval whose unit is a share (ratio, from the eval the catalogue seeds) lies from 0
+// to 1: 7 and 90 for deploy-run-success, and 1.5 for change-fail-rate, are each refused naming the
+// target and write nothing, the population the body also names included. 0 and 1 are each saved as
+// a new version of deploy-run-success, and 90, refused there, is a new version of
+// merge-to-production, an eval of minutes.
+func TestARatioTargetOutside0To1IsRefused(t *testing.T) {
+	t.Parallel()
+	rig := newSavedDeliveryRig(t)
+	for _, row := range []struct {
+		name, slug string
+		target     float64
+	}{
+		{"deploy-run-success 7", "deploy-run-success", 7},
+		{"deploy-run-success 90", "deploy-run-success", 90},
+		{"change-fail-rate 1.5", "change-fail-rate", 1.5},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			requireInputRefused(t, rig, "ALPHA", map[string]any{
+				"population_authors": []string{"hubot"}, "targets": map[string]any{row.slug: row.target},
+			}, "targets."+row.slug)
+		})
+	}
+	for _, row := range []struct {
+		slug   string
+		target float64
+	}{{"deploy-run-success", 0}, {"deploy-run-success", 1}, {"merge-to-production", 90}} {
+		evalID := "ALPHA/" + row.slug
+		version, _ := evalVersion(t, rig, evalID)
+		savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"targets": map[string]any{row.slug: row.target}})
+		if after, held := evalVersion(t, rig, evalID); after != version+1 || held == nil || *held != row.target {
+			t.Errorf("a save of %s's target %v left version %d target %v, want version %d target %v",
+				row.slug, row.target, after, held, version+1, row.target)
+		}
+	}
+}
+
+// A population author that is empty, or white space alone, is refused naming population_authors,
+// and writes nothing, the switch the body turns off included.
+func TestABlankPopulationAuthorIsRefused(t *testing.T) {
+	t.Parallel()
+	rig := newSavedDeliveryRig(t)
+	for _, row := range []struct {
+		name    string
+		authors []string
+	}{
+		{"an empty author", []string{""}},
+		{"a blank author after a login", []string{"hubot", "  "}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			requireInputRefused(t, rig, "ALPHA", map[string]any{"delivery": false, "population_authors": row.authors}, "population_authors")
+		})
+	}
+}
+
+// An excluded repository that is no GitHub owner/name, as a source's repository is read
+// (parseSourceRepo), is refused naming excluded_repos and writes nothing, the switch the body turns
+// off included; one that is, in any case, with space around it and a trailing .git, is stored as a
+// source's repository is: trimmed and lower-cased.
+func TestAnExcludedRepositoryThatIsNoOwnerNameIsRefused(t *testing.T) {
+	t.Parallel()
+	rig := newSavedDeliveryRig(t)
+	for _, row := range []struct {
+		name     string
+		excluded []string
+	}{
+		{"no owner", []string{"dojo"}},
+		{"three parts", []string{"acme/dojo/extra"}},
+		{"an empty entry after a repository", []string{"acme/other", ""}},
+		{"a space inside", []string{"acme/do jo"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			requireInputRefused(t, rig, "ALPHA", map[string]any{"delivery": false, "excluded_repos": row.excluded}, "excluded_repos")
+		})
+	}
+	saved := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"excluded_repos": []string{" Acme/Other.git "}})
+	if !slices.Equal(saved.ExcludedRepos, []string{"acme/other"}) || !saved.Delivery || !slices.Equal(saved.PopulationAuthors, []string{"octocat"}) {
+		t.Errorf("a save of the excluded repository \" Acme/Other.git \" holds %+v, want acme/other excluded, and delivery on and octocat kept", saved)
+	}
+}
+
 // A save's job names are stored as the singleton's save stores them, since every reader matches a
 // job by its exact name: each production job name trimmed, and each optional job and step name
 // trimmed, a blank one stored as null. A production job name that is blank or named twice once
