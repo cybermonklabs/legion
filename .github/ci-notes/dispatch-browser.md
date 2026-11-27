@@ -212,8 +212,9 @@ own files. The same two sets put that placement at 1.007 and 1.008 times the mea
 packages/dispatch/e2e/shard-split.ts says why Playwright 1.64.1 has no split by time of its own,
 why the file is the unit, how all four legs compute one placement, and what a file with no
 measured time is placed by; `bun e2e/tools/shard-weights.ts --main <count>` reads the table
-again. Each leg prints its own line before its first row, `shard N of 4, placed by measured row
-time: ...`, with the rows of it that were placed by an estimate.
+again, and `--run <id>` adds a named full-lane run's report. Each leg prints its own line before
+its first row, `shard N of 4, placed by measured row time: ...`, with the rows of it that were
+placed by an estimate.
 
 Each leg also writes two row lists into the rows/ directory its blob upload carries: every row
 of the selection it read, and the rows Playwright gave it to run
@@ -648,8 +649,9 @@ The week is what the guard holds, so each leg says when its table is past it: be
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
 before the run, or when a tenth of its rows sit in files the table has no entry for
 (`packages/dispatch/e2e/shard-split.ts#tableWarnings`). Either one means
-`bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at the count split's 1.21, a
-p90 leg on that runner would end near 1,131 s.
+`bun e2e/tools/shard-weights.ts --main 17` is due (`--run <id>` adds a named full-lane run's
+report); past the week, at the count split's 1.21, a p90 leg on that runner would end near
+1,131 s.
 
 ## Why the file store's address is set on the step and not in the environment
 

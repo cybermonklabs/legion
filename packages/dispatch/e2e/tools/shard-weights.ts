@@ -1,17 +1,30 @@
-/** `bun e2e/tools/shard-weights.ts --main <count> [--cache <dir>]`: reads the newest <count>
- *  merged reports of main's full-lane runs and writes `e2e/shard-weights.json`, the row times
- *  `e2e/shard-split.ts` places a sharded run's files by.
+/** `bun e2e/tools/shard-weights.ts --main <count> [--run <id>]... [--cache <dir>]`: reads the
+ *  newest <count> merged reports of main's full-lane runs, and that of each run `--run` names,
+ *  and writes `e2e/shard-weights.json`, the row times `e2e/shard-split.ts` places a sharded run's
+ *  files by.
  *
  * Run it from packages/dispatch, with `gh` signed in to a token that reads this repository's
  * Actions artifacts. It lists the artifacts named `dispatch-browser-report-1` - the merged report
  * the merge job of .github/workflows/dispatch-browser.yaml uploads on a run's first attempt,
  * whose report.json holds every row of every shard and alone leg with its time - a hundred to a
  * call, until it has <count> of main's, and downloads each report it reads: about <count> + 3
- * calls of the repository's shared hourly budget. It keeps the reports of a merge group's run
- * (branch `gh-readonly-queue/main/...`) and of main's own (the nightly), which run the full lane;
- * a pull request's run is passed over, since its lane holds a few of the rows.
+ * calls of the repository's shared hourly budget, and two more for each run `--run` names. It
+ * keeps the reports of a merge group's run (branch `gh-readonly-queue/main/...`) and of main's
+ * own (the nightly), which run the full lane; a pull request's run is passed over unless `--run`
+ * names it, since it times the pull request's code and not main's.
  * `--cache <dir>` keeps each extracted report as <dir>/<run id>.json and reads it from there next
  * time instead of downloading it again.
+ *
+ * `--run <id>`, which may be given more than once, is for a pull request that adds or grows
+ * files. Main's reports hold none of their new rows until the files land, so until then the split
+ * places those by their project's median row, however long they take. The pull request's own
+ * full-lane run - a run under the `full-ci` label, which uploads the same merged report - has
+ * measured them: named with `--run`, its report joins main's, each row's median is over every
+ * report that holds it, and the new files are placed by their measured time before main's reports
+ * hold them. The next read from main alone replaces those numbers once the files land. A named
+ * run's artifact is found by the run's id (`actions/runs/<id>/artifacts`); a run with none, or
+ * whose artifact has expired, ends the tool, and a run named twice, or one that is also among
+ * main's newest <count>, is read once.
  *
  * What it writes, for each row that ran: the seconds every attempt of it took, summed, since a
  * retry is time its leg spent; the median of that over the reports, so one slow runner, which
@@ -37,8 +50,11 @@ import { parseArgs } from "node:util";
 import { median, type ShardWeights } from "../shard-split";
 
 const usage =
-  "usage: bun e2e/tools/shard-weights.ts --main <count> [--cache <dir>]\n" +
+  "usage: bun e2e/tools/shard-weights.ts --main <count> [--run <id>]... [--cache <dir>]\n" +
   "  --main   how many of the newest merged reports of main's full-lane runs to read\n" +
+  "  --run    the id of a full-lane run whose merged report to read as well, repeatable: a pull\n" +
+  "           request's own, so the files it adds or grows are placed by their measured time\n" +
+  "           before main's reports hold them; a pull request's run is read only when named\n" +
   "  --cache  a directory that keeps each report as <run id>.json between runs";
 
 /** The merged report's artifact on a run's first attempt (dispatch-browser.yaml's merge job). */
@@ -157,11 +173,11 @@ type Artifact = {
  *  on 2026-11-22 the newest hundred held eleven of main's runs. */
 const pagesAtMost = 10;
 
-/** The newest `count` merged reports of main's full-lane runs, read through `cache`. */
-function mainReports(
-  count: number,
-  cache: string
-): { run: number; commit: string; rows: Map<string, number> }[] {
+/** A run's merged report artifact: its id, the run that uploaded it and the commit that run ran. */
+type RunArtifact = { readonly commit: string; readonly id: number; readonly run: number };
+
+/** The artifacts of the newest `count` merged reports of main's full-lane runs. */
+function mainArtifacts(count: number): RunArtifact[] {
   const runs: Artifact[] = [];
   for (let page = 1; page <= pagesAtMost && runs.length < count; page += 1) {
     const listed = JSON.parse(
@@ -190,45 +206,97 @@ function mainReports(
   }
   return runs.slice(0, count).map((artifact) => {
     const run = artifact.workflow_run as NonNullable<Artifact["workflow_run"]>;
-    const file = join(cache, `${run.id}.json`);
-    if (!existsSync(file)) {
-      const zip = join(cache, `${run.id}.zip`);
-      writeFileSync(zip, gh(["api", `repos/{owner}/{repo}/actions/artifacts/${artifact.id}/zip`]));
-      const unzip = spawnSync("unzip", ["-p", zip, "report.json"], { maxBuffer: 1 << 30 });
-      if (unzip.status !== 0) {
-        console.error(`unzip -p ${zip} report.json exited ${unzip.status}:\n${unzip.stderr}`);
-        process.exit(1);
-      }
-      writeFileSync(file, unzip.stdout);
-    }
-    const rows = rowTimes(JSON.parse(readFileSync(file, "utf8")));
-    console.error(`run ${run.id} at ${run.head_sha.slice(0, 10)}: ${rows.size} rows`);
-    return { commit: run.head_sha, rows, run: run.id };
+    return { commit: run.head_sha, id: artifact.id, run: run.id };
   });
+}
+
+/** The artifact of the merged report of run `run`, which `--run` named; a run that has none, or
+ *  whose artifact has expired, ends the tool. */
+function namedArtifact(run: number): RunArtifact {
+  const { artifacts } = JSON.parse(
+    gh([
+      "api",
+      `repos/{owner}/{repo}/actions/runs/${run}/artifacts?name=${artifactName}`,
+    ]).toString()
+  ) as { artifacts: readonly Artifact[] };
+  const artifact = artifacts.find((listed) => !listed.expired);
+  if (artifact === undefined) {
+    console.error(
+      artifacts.length === 0
+        ? `run ${run} has no ${artifactName} artifact: name a full-lane run whose first attempt ` +
+            "uploaded its merged report"
+        : `run ${run}'s ${artifactName} artifact has expired: name a newer full-lane run`
+    );
+    process.exit(1);
+  }
+  if (artifact.workflow_run) {
+    return { commit: artifact.workflow_run.head_sha, id: artifact.id, run };
+  }
+  // The API's `workflow_run` of an artifact is nullable: the run itself names its commit too.
+  const workflowRun = JSON.parse(
+    gh(["api", `repos/{owner}/{repo}/actions/runs/${run}`]).toString()
+  ) as { head_sha: string };
+  return { commit: workflowRun.head_sha, id: artifact.id, run };
+}
+
+/** The rows of the merged report `id` holds, read from `<cache>/<run id>.json` when an earlier
+ *  read left it there, else downloaded and extracted into it. */
+function readReport(
+  { commit, id, run }: RunArtifact,
+  cache: string
+): Parameters<typeof weightsOf>[0][number] {
+  const file = join(cache, `${run}.json`);
+  if (!existsSync(file)) {
+    const zip = join(cache, `${run}.zip`);
+    writeFileSync(zip, gh(["api", `repos/{owner}/{repo}/actions/artifacts/${id}/zip`]));
+    const unzip = spawnSync("unzip", ["-p", zip, "report.json"], { maxBuffer: 1 << 30 });
+    if (unzip.status !== 0) {
+      console.error(`unzip -p ${zip} report.json exited ${unzip.status}:\n${unzip.stderr}`);
+      process.exit(1);
+    }
+    writeFileSync(file, unzip.stdout);
+  }
+  const rows = rowTimes(JSON.parse(readFileSync(file, "utf8")));
+  console.error(`run ${run} at ${commit.slice(0, 10)}: ${rows.size} rows`);
+  return { commit, rows, run };
 }
 
 if (import.meta.main) {
   let count = 0;
+  let runs: number[] = [];
   let cache = "";
   try {
     const { positionals, values } = parseArgs({
       allowPositionals: true,
-      options: { cache: { type: "string" }, main: { type: "string" } },
+      options: {
+        cache: { type: "string" },
+        main: { type: "string" },
+        run: { multiple: true, type: "string" },
+      },
       strict: true,
     });
     count = Number(values.main);
     if (positionals.length > 0 || !Number.isInteger(count) || count < 1) throw new Error(usage);
+    const named = (values.run ?? []).map(Number);
+    if (named.some((run) => !Number.isSafeInteger(run) || run < 1)) throw new Error(usage);
+    // A run named twice is read, and named in the command, once.
+    runs = [...new Set(named)];
     cache = values.cache ?? mkdtempSync(join(tmpdir(), "shard-weights-"));
   } catch {
     console.error(usage);
     process.exit(2);
   }
   mkdirSync(cache, { recursive: true });
-  const reports = mainReports(count, cache);
+  // Every artifact is found before any is downloaded, so a named run the tool refuses costs no
+  // download; a named run that is also among main's newest is read once, as main's.
+  const artifacts = mainArtifacts(count);
+  for (const run of runs) {
+    if (!artifacts.some((artifact) => artifact.run === run)) artifacts.push(namedArtifact(run));
+  }
   const weights = weightsOf(
-    reports,
+    artifacts.map((artifact) => readReport(artifact, cache)),
     new Date().toISOString(),
-    `bun e2e/tools/shard-weights.ts --main ${count}`
+    `bun e2e/tools/shard-weights.ts --main ${count}${runs.map((run) => ` --run ${run}`).join("")}`
   );
   const out = new URL("../shard-weights.json", import.meta.url);
   writeFileSync(out, `${JSON.stringify(weights, null, 2)}\n`);
