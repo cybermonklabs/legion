@@ -18,7 +18,6 @@ import {
   holdEditorAtBlock,
   holdEditsToBlock,
   loadEditsHold,
-  ownCaretInBlock,
   selectInEditor,
   selectionIntoBlock,
   tabStopsFrom,
@@ -104,13 +103,12 @@ export function nodeEditable(
  * press in the tree moves on from the row.
  * The editor's own redrawing can drop that caret before the reader has done anything, and this
  * puts it back until they have. From then on, a focus the editor drops while the reader writes
- * goes back to the caret they had - the one the editor kept, where it has redrawn the text that
- * caret was in - or to the start of the node's block where the editor keeps no caret in that
- * block, and stays where it fell where that block is gone too. Every edit stays inside the node's
- * block while the row holds the editor: the page hands the row its editor as the editor is made
- * (`onEditing`), and the row holds that editor's own edits to the block (`node-caret.ts`'s
- * `holdEditsToBlock`), and its caret (`confineKey`): the editor is the document's whole editor,
- * and free editing of the whole document stays on the document page.
+ * goes back to the caret they had, or to the node's block where the editor has redrawn the text
+ * that caret was in, and stays where it fell where that block is gone too. Every edit stays
+ * inside the node's block while the row holds the editor: the page hands the row its editor as
+ * the editor is made (`onEditing`), and the row holds that editor's own edits to the block
+ * (`node-caret.ts`'s `holdEditsToBlock`), and its caret (`confineKey`): the editor is the
+ * document's whole editor, and free editing of the whole document stays on the document page.
  * That hold is the caret's precondition: no caret goes in, and no key that could edit reaches
  * the editor, until it is on, and the focus stays on the row till then. Where it cannot go on -
  * what it is built of did not load, or the page handed the row no editor - the editing ends, and
@@ -622,33 +620,18 @@ export function useNodeEditing({
     // Milkdown's among them, which takes the editable out of the page and puts it back: the
     // focus falls to the page's body while the reader writes, and the keys they press next go
     // nowhere. So the editable losing the focus to nothing (a `focusout` naming no element)
-    // gets it back on the next frame, where it is still in the row and nothing else has taken
-    // the focus by then, at the first of three carets that stands.
-    //
-    // The caret it held as it lost it, where both its points are still places in the editable,
-    // which the editor takes as its own at once (`selectInEditor`). The caret is kept as its
-    // points, since a range is moved out of a node the page takes out, and they are the page's
-    // latest caret: a move the browser had not yet reported to the editor as the focus fell is
-    // in them, and not in the editor's own selection.
-    //
-    // The editor's own selection, where the points are gone and that selection stands in the
-    // node's block (`ownCaretInBlock`). The same change of plugins draws the editor's text again
-    // while it has no focus - y-prosemirror's view draws the whole document again from the room,
-    // and a collaborator's caret the cursors draw splits the words it stands in - which takes the
-    // words the points stood in out of the page or cuts them short. The editor keeps its
-    // selection through that drawing, so that selection is the reader's caret still. The caret
-    // went to the start of the node's block there, away from where the reader had left it.
-    //
-    // The start of the node's block (`caretInBlock`), where the editor's selection is not in
-    // that block either - the row holds no view of this editable, or that selection has left
-    // the block - which the editor takes as its own at once too. An editable focused with no
-    // caret put in it takes the next key where the browser puts its caret - in Chromium, the
+    // gets it back on the next frame, at the caret it held as it lost it, which the editor takes
+    // as its own at once (`selectInEditor`), where it is still in the row and nothing else has
+    // taken the focus by then. The caret is kept as its points, since a range is moved out of a
+    // node the page takes out. The editor can redraw its text while it has no focus, and the
+    // points are gone then: the caret goes to the start of the node's block instead
+    // (`caretInBlock`), which the editor takes as its own at once too. An editable focused with
+    // no caret put in it takes the next key where the browser puts its caret - in Chromium, the
     // editable's start, outside the node's block - so where that block is gone as well
-    // `caretInBlock` focuses nothing, and the focus stays where it fell.
-    //
-    // A press is the reader's own: one on blank space takes the focus to nothing in the same
-    // task as its `pointerdown` and `mousedown`, and leaves it there. Escape focuses the row, so
-    // it takes nothing back either.
+    // `caretInBlock` focuses nothing, and the focus stays where it fell. A press is the reader's
+    // own: one on blank space takes the focus to nothing in the same task as its `pointerdown`
+    // and `mousedown`, and leaves it there. Escape focuses the row, so it takes nothing back
+    // either.
     const rowSelector = rowSelectorOf(editingRow);
     const listening = new AbortController();
     const options = { capture: true, signal: listening.signal };
@@ -686,7 +669,7 @@ export function useNodeEditing({
         ) {
           editable.focus({ preventScroll: true });
           selectInEditor([anchor, anchorOffset], [focus, focusOffset]);
-        } else if (!ownCaretInBlock(editorView.current, editable, editingBlock)) {
+        } else {
           caretInBlock(row, editingBlock);
         }
       });
