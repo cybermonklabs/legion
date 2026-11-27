@@ -54,6 +54,8 @@ export function useFollowLatest({
   onFirstPlacement?: () => void;
   ownSendCount: number;
 }): {
+  /** For the pill: the reader has not scrolled past the place the page settled on the newest
+   *  card. This includes the issue's header, tabs and filters above that place. */
   atTop: boolean;
   jumpToLatest: () => void;
   /** Some part of the newest card is in the visible band (the screen less the docked composer's
@@ -66,7 +68,6 @@ export function useFollowLatest({
 } {
   const [atTop, setAtTop] = useState(true);
   const [newestCardOnScreen, setNewestCardOnScreen] = useState(false);
-  const atTopRef = useRef(true);
   const previousItemSeq = useRef<number | undefined>(undefined);
   const previousSends = useRef(ownSendCount);
   const followScrollY = useRef<number | undefined>(undefined);
@@ -81,6 +82,13 @@ export function useFollowLatest({
       window.scrollY <= 0 ||
       (followScrollY.current !== undefined &&
         Math.abs(window.scrollY - followScrollY.current) <= FOLLOW_POSITION_TOLERANCE_PX),
+    []
+  );
+  // A reader above the settled place is not following the newest card, but needs no pill.
+  const pastLatest = useCallback(
+    () =>
+      followScrollY.current !== undefined &&
+      window.scrollY > followScrollY.current + FOLLOW_POSITION_TOLERANCE_PX,
     []
   );
 
@@ -108,14 +116,12 @@ export function useFollowLatest({
   }, []);
   useEffect(() => {
     const onScroll = () => {
-      const nextAtTop = followsLatest();
-      atTopRef.current = nextAtTop;
-      setAtTop(nextAtTop);
+      setAtTop(!pastLatest());
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
     return () => window.removeEventListener("scroll", onScroll);
-  }, [followsLatest]);
+  }, [pastLatest]);
 
   // Whether any part of the newest card is in the visible band is read from that card itself,
   // through an IntersectionObserver: the browser reports a crossing of the band's edge off the
@@ -197,15 +203,15 @@ export function useFollowLatest({
     // Measure now rather than trusting the listener's last state, or that arrival can pull a reader
     // back to the newest turn before their scroll was observed.
     const followsLatestNow = first || ownSend || followsLatest();
-    atTopRef.current = followsLatestNow;
-    setAtTop(followsLatestNow);
     if (followsLatestNow) {
       jumpToLatest();
     }
+    // A jump records a new settled position, so read it after the jump.
+    setAtTop(!pastLatest());
     if (first) {
       onFirstPlacementRef.current?.();
     }
-  }, [enabled, followsLatest, jumpToLatest, latestItemSeq, ownSendCount]);
+  }, [enabled, followsLatest, jumpToLatest, latestItemSeq, ownSendCount, pastLatest]);
 
   // A body longer than the parse worker's threshold formats a frame or more after the commit
   // that drew it (`refs/markdown-engine.ts`), which is after the placement above: where the turn

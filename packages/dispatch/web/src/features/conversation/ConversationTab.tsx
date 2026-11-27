@@ -1257,10 +1257,12 @@ export function ConversationTab({
   const agents = agentsCurrent ? listedAgents : undefined;
   const scrolledToFocus = useRef<string | undefined>(undefined);
   // `Jump to latest` is a float of the foot's top layer (`hooks/useFootInset.ts` lists the foot's
-  // layers and the elements in each) while it shows, which is only once the reads have loaded and
-  // while no part of the newest card is in the visible band: a reader who sees the card the pill
-  // carries them to has nothing to jump to, and the pill would cover that card
-  // (dispatch://INFRA-5200).
+  // layers and the elements in each) while it shows, which is only once the reads have loaded,
+  // the reader has scrolled down past the place the page settled on the newest card (`atTop`
+  // clears only there: at or above it they are at that card or reading the issue's header, tabs
+  // and filters, which the pill would sit on), and while no part of the newest card is in the
+  // visible band: a reader who sees the card the pill carries them to has nothing to jump to, and
+  // the pill would cover that card (dispatch://INFRA-5200).
   const jumpShown =
     !loading &&
     !failed &&
@@ -1462,12 +1464,15 @@ export function ConversationTab({
           pill as it scrolls behind any floating control, so a card crossing that foot band passes
           under it: while the card is there the pill covers its Reply and Pin. That cover lasts no
           longer than the passage - scrolling the card on clears it, and so does the pill's own
-          tap, which jumps to the latest and takes the pill off the screen. The newest card is
-          never one of them: the pill is gone while any part of that card is in the visible band
-          (`newestCardOnScreen`), because a reader who can see the card the pill carries them to
-          has nothing to jump to, and a pill over it would cover the one card whose Accept and
-          Reject, or whose Reply and Pin, the reader is looking at - however tall the card is
-          (dispatch://INFRA-5200). A thread opened
+          tap, which jumps to the latest and takes the pill off the screen. The pill stays off at
+          and above the place the page settled on the newest card (`atTop` of `useFollowLatest`):
+          a reader scrolled up to the issue's header, tabs or filters meets none over them, even
+          where a tall phone header settles the newest card below the docked composer and that
+          card reads off screen. The newest card is never covered either: the pill is gone while
+          any part of that card is in the visible band (`newestCardOnScreen`), because a reader
+          who can see the card the pill carries them to has nothing to jump to, and a pill over it
+          would cover the one card whose Accept and Reject, or whose Reply and Pin, the reader is
+          looking at - however tall the card is (dispatch://INFRA-5200). A thread opened
           full-screen covers the Conversation the pill acts on, and its own composer sits at the
           foot, so the pill waits for Back. */}
       {jumpShown ? (

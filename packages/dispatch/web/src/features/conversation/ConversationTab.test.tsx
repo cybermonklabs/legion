@@ -2134,6 +2134,56 @@ test(
   })
 );
 
+// A tall phone header can put the newest card under the docked composer while the reader scrolls
+// up to the issue's tabs and filter. The pill must stay off even though the card is off screen.
+test(
+  "does not show Jump to latest above the place the page settled, with the newest card off screen",
+  withScrollY(async () => {
+    const layout = installScrollLayoutMocks();
+    const viewport = installIntersectionObserver();
+    const stub = stubLists({ messages: [thread(message("message-1", { body: "A message" }))] });
+    const queryClient = newQueryClient();
+    const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+    try {
+      await screen.findByText("A message");
+      await waitFor(() => expect(window.scrollY).toBe(RESTING_SCROLL_Y));
+      // The newest card is the first `data-turn`; the observer reports it off screen, as it does
+      // for a card under the docked composer.
+      const newest = view.container.querySelector("[data-turn]");
+      if (newest === null) throw new Error("expected the newest card");
+      await waitFor(() => expect(viewport.observed()).toContain(newest));
+      act(() => viewport.hide(newest));
+
+      Object.defineProperty(window, "scrollY", {
+        configurable: true,
+        value: RESTING_SCROLL_Y / 2,
+        writable: true,
+      });
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      expect(screen.queryByTestId("jump-to-latest")).not.toBeInTheDocument();
+
+      // Past the settled place into older turns, the same card off screen shows the pill.
+      Object.defineProperty(window, "scrollY", {
+        configurable: true,
+        value: 4_500,
+        writable: true,
+      });
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      expect(screen.getByTestId("jump-to-latest")).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      viewport.restore();
+      layout.restore();
+      stub.restore();
+    }
+  })
+);
+
 test(
   "Jump to latest counts the unread conversations and returns to the newest",
   withScrollY(async () => {
