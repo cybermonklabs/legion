@@ -37,7 +37,8 @@ import { dirname, join, relative } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { libRowBoundMs, rowWaits } from "./row-waits";
-import { controlPlantMark, sourcedLibrariesIn, unreadableSources } from "./script-functions";
+import { controlPlantMark } from "./script-functions";
+import { type SourceScan, scanSources } from "./source-scan";
 
 rowWaits(libRowBoundMs);
 
@@ -275,26 +276,36 @@ function logicalLine(lines: string[], from: number): { text: string; last: numbe
   return { text, last: index };
 }
 
-/** Every script of `tree`'s scripts/e2e, and every library one of them sources, wherever in the
- *  tree that reaches: a start that leaks lives as readily in a sourced library as in the script,
+/** The source scan of `tree` (`./source-scan`), once per tree: every script of its scripts/e2e and
+ *  scripts/e2e/lib, and every file a source in one of them reaches, wherever in the tree, read as
+ *  the shell reads it. A start that leaks lives as readily in a sourced library as in the script,
  *  so the scan reads what the scripts reach and not only the scripts. The tree is the checkout
  *  unless a control names one of its own. */
-function scanned(tree: string = repoRoot): string[] {
-  // The files that are there, not the tracked ones: a script added and not yet committed runs
-  // like any other, so the scan reads it too.
-  const scripts = [join(tree, "scripts", "e2e"), join(tree, "scripts", "e2e", "lib")]
-    .flatMap((dir) => readdirSync(dir).map((name) => join(dir, name)))
-    .filter((path) => path.endsWith(".sh"));
-  return sourcedLibrariesIn(tree, scripts);
+const scans = new Map<string, SourceScan>();
+function scanOf(tree: string): SourceScan {
+  let found = scans.get(tree);
+  if (found === undefined) {
+    // The files that are there, not the tracked ones: a script added and not yet committed runs
+    // like any other, so the scan reads it too.
+    const scripts = [join(tree, "scripts", "e2e"), join(tree, "scripts", "e2e", "lib")]
+      .flatMap((dir) => readdirSync(dir).map((name) => join(dir, name)))
+      .filter((path) => path.endsWith(".sh"));
+    found = scanSources(tree, scripts);
+    scans.set(tree, found);
+  }
+  return found;
 }
 
-/** Every line of a scanned file that sources a library the scan cannot name a file of the tree
- *  for, as `file:line: the line`. Such a file is never read, so a start that leaks inside it is
- *  unseen: the scan refuses these rather than passing over them. A variable in place of a path,
- *  or a directory only the running shell knows, is the shape that would quiet the scan, so it is
- *  a refusal and not a skip. */
+/** Every file the scan read. */
+function scanned(tree: string = repoRoot): string[] {
+  return scanOf(tree).read;
+}
+
+/** Every source command of a scanned file whose file the scan cannot name, with why. Such a file
+ *  is never read, so a start that leaks inside it is unseen: the scan refuses these rather than
+ *  passing over them. */
 function unreadable(tree: string = repoRoot): string[] {
-  return scanned(tree).flatMap((path) => unreadableSources(path, tree));
+  return scanOf(tree).refused;
 }
 
 /** Every start among the scanned files whose own arguments carry a setting named for a secret,
@@ -322,8 +333,12 @@ function startsWithSecretArguments(tree: string = repoRoot): string[] {
  *  directory scan from reading it. */
 const controlTree = temporaryDirectories("start-settings-scan");
 
+/** The checkout, as a script in scripts/e2e binds it. */
+const bindRoot = 'root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)';
+
 /** Writes `files`, each a path under a fresh tree and the text of a script, with the mark every
- *  plant carries, and runs `body` on that tree. */
+ *  plant carries, and runs `body` on that tree. A file directly in scripts/e2e is a script that
+ *  runs, as the tree's are; any other is a library. */
 function inTree(
   files: readonly { readonly path: string; readonly text: string }[],
   body: (tree: string) => void
@@ -332,7 +347,9 @@ function inTree(
   mkdirSync(join(tree, "scripts", "e2e", "lib"), { recursive: true });
   for (const { path, text } of files) {
     mkdirSync(dirname(join(tree, path)), { recursive: true });
-    writeFileSync(join(tree, path), `#!/usr/bin/env bash\n${text}\n${controlPlantMark}\n`);
+    writeFileSync(join(tree, path), `#!/usr/bin/env bash\n${text}\n${controlPlantMark}\n`, {
+      mode: /^scripts\/e2e\/[^/]+\.sh$/.test(path) ? 0o755 : 0o644,
+    });
   }
   body(tree);
 }
@@ -372,8 +389,30 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
     expect(startsWithSecretArguments()).toEqual([]);
   });
 
-  test("every library a script of scripts/e2e sources can be read", () => {
-    expect(unreadable()).toEqual([]);
+  // Three scripts run what no reading of this tree can know, by design, and the scan names each:
+  // stage3-4b13b-acceptance.sh binds root to ACCEPT_ROOT where the environment sets it, so it can
+  // source another checkout's libraries (its require_process_tree names that case);
+  // plan-pointer-drive.sh reads a stand-in's recorded arguments back with eval; and
+  // lib/arg-max-force.sh runs the command it forces with eval. Those refusals are named here by
+  // file and reason, each must still occur, and nothing else may be refused.
+  test("every library a script of scripts/e2e sources can be read, but the ones named by design", () => {
+    const byDesign: readonly [file: string, reason: string][] = [
+      ["scripts/e2e/stage3-4b13b-acceptance.sh", "$ACCEPT_ROOT comes from the environment"],
+      [
+        "scripts/e2e/stage3-4b13b-acceptance.sh",
+        "could not be read (scripts/e2e/stage3-4b13b-acceptance.sh:",
+      ],
+      ["scripts/e2e/plan-pointer-drive.sh", "eval runs text this scan does not parse"],
+      ["scripts/e2e/lib/arg-max-force.sh", "eval runs text this scan does not parse"],
+    ];
+    const named = ([file, reason]: readonly [string, string], refusal: string) =>
+      refusal.startsWith(`${file}:`) && refusal.includes(reason);
+    expect(
+      unreadable().filter((refusal) => !byDesign.some((entry) => named(entry, refusal)))
+    ).toEqual([]);
+    expect(
+      byDesign.filter((entry) => !unreadable().some((refusal) => named(entry, refusal)))
+    ).toEqual([]);
   });
 
   // The first direction: a library sourced by a path the scan resolves is read, so a start that
@@ -387,10 +426,11 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
         },
         {
           path: "scripts/e2e/sourced-scan.sh",
-          text: '. "$root/packages/envoy/scripts/lib/pg-url.sh"',
+          text: `${bindRoot}\n. "$root/packages/envoy/scripts/lib/pg-url.sh"`,
         },
       ],
       (tree) => {
+        expect(unreadable(tree)).toEqual([]);
         expect(startsWithSecretArguments(tree)).toEqual([
           "packages/envoy/scripts/lib/pg-url.sh:2: DATABASE_URL",
         ]);
@@ -399,22 +439,35 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
   });
 
   // The second direction, and the one that would have caught a workaround: a library sourced
-  // through a variable is a refusal naming the file and line, never a silent skip. The leak
-  // planted behind it is unseen, which is why the line itself must fail.
-  test("a library sourced through a variable fails the scan by name, rather than being skipped", () => {
+  // through a variable is read through what the variable holds at the source, and where that is
+  // not known the line is a refusal naming the file and line, never a silent skip. The leak
+  // planted behind an unknown variable is unseen, which is why the line itself must fail.
+  test("a library sourced through a variable is read through its binding, or fails the scan by name", () => {
+    const library = {
+      path: "packages/envoy/scripts/lib/pg-url.sh",
+      text: 'start_process dispatch env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
+    };
     inTree(
       [
-        {
-          path: "packages/envoy/scripts/lib/pg-url.sh",
-          text: 'start_process dispatch env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
-        },
+        library,
         {
           path: "scripts/e2e/sourced-scan.sh",
-          text: 'pg_url_lib=$root/packages/envoy/scripts/lib/pg-url.sh\n. "$pg_url_lib"',
+          text: `${bindRoot}\npg_url_lib=$root/packages/envoy/scripts/lib/pg-url.sh\n. "$pg_url_lib"`,
         },
       ],
       (tree) => {
-        expect(unreadable(tree)).toEqual(['scripts/e2e/sourced-scan.sh:3: . "$pg_url_lib"']);
+        expect(unreadable(tree)).toEqual([]);
+        expect(startsWithSecretArguments(tree)).toEqual([
+          "packages/envoy/scripts/lib/pg-url.sh:2: DATABASE_URL",
+        ]);
+      }
+    );
+    inTree(
+      [library, { path: "scripts/e2e/sourced-scan.sh", text: `${bindRoot}\n. "$pg_url_lib"` }],
+      (tree) => {
+        expect(unreadable(tree)).toEqual([
+          'scripts/e2e/sourced-scan.sh:3: . "$pg_url_lib": $pg_url_lib holds nothing known here',
+        ]);
         expect(startsWithSecretArguments(tree)).toEqual([]);
       }
     );
@@ -432,7 +485,7 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
         },
         {
           path: "scripts/e2e/sourced-scan.sh",
-          text: '. "$root/packages/envoy/scripts/lib"\n. "$root/packages/envoy/scripts/lib/pg-url.sh"',
+          text: `${bindRoot}\n. "$root/packages/envoy/scripts/lib"\n. "$root/packages/envoy/scripts/lib/pg-url.sh"`,
         },
       ],
       (tree) => {
@@ -442,7 +495,7 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
             .sort()
         ).toEqual(["packages/envoy/scripts/lib/pg-url.sh", "scripts/e2e/sourced-scan.sh"]);
         expect(unreadable(tree)).toEqual([
-          'scripts/e2e/sourced-scan.sh:2: . "$root/packages/envoy/scripts/lib"',
+          'scripts/e2e/sourced-scan.sh:3: . "$root/packages/envoy/scripts/lib": names no regular file',
         ]);
         expect(startsWithSecretArguments(tree)).toEqual([
           "packages/envoy/scripts/lib/pg-url.sh:2: DATABASE_URL",

@@ -1306,8 +1306,8 @@ tally() {
   for label in pi cc; do
     while read -r m line; do
       [[ -n "$m" ]] || continue
-      count[$label:$m]=$((${count[$label:$m]:-0} + 1))
-      [[ -n "${first_line[$label:$m]:-}" ]] || first_line[$label:$m]=$line
+      count["$label:$m"]=$((${count["$label:$m"]:-0} + 1))
+      [[ -n "${first_line["$label:$m"]:-}" ]] || first_line["$label:$m"]=$line
     done < <(markers_in "$label")
   done
 }
@@ -1316,7 +1316,7 @@ window_shown() {
   local m s
   tally
   while read -r m s; do
-    ((${count[$s:$m]:-0} >= 1)) || return 1
+    ((${count["$s:$m"]:-0} >= 1)) || return 1
   done < <(jq -r --arg d "$1" 'select(.disruption == $d and .expected == 1) | .marker as $m | .sessions[] | "\($m) \(.)"' "$events")
 }
 # settle D: up to settle_s for window D's events, plus, for window e, the outbox's one-minute claim
@@ -1570,7 +1570,7 @@ table="$work/table.txt"
     row=""
     for label in pi cc; do
       if [[ " $sessions " == *" $label "* ]]; then
-        n=${count[$label:$m]:-0}
+        n=${count["$label:$m"]:-0}
         cell=$n
         if ((n != expected)); then
           cell="${n}!"
@@ -1649,7 +1649,7 @@ compare_issue_order() {
     last=0
     shown=""
     for m in "${published_order[@]}"; do
-      line=${first_line[$label:$m]:-}
+      line=${first_line["$label:$m"]:-}
       if [[ -z "$line" ]]; then
         printf 'issue order in %s: %s (stream seq %s) is in no transcript line\n' "$label" "$m" "${stream_seq[$m]:-?}" | tee -a "$table"
         order_ok=0
@@ -1693,8 +1693,8 @@ if ((bad == 1)); then
   for label in pi cc; do
     while IFS=$'\t' read -r m sessions expected; do
       [[ " $sessions " == *" $label "* ]] || continue
-      ((${count[$label:$m]:-0} == expected)) && continue
-      printf '%s %s: count %s, expected %s; entries:\n' "$label" "$m" "${count[$label:$m]:-0}" "$expected"
+      ((${count["$label:$m"]:-0} == expected)) && continue
+      printf '%s %s: count %s, expected %s; entries:\n' "$label" "$m" "${count["$label:$m"]:-0}" "$expected"
       while IFS= read -r file; do
         [[ -n "$file" && -f "$file" ]] || continue
         grep -Hn -- "$m" "$file" | cut -c1-400 | sed 's/^/   /' || true

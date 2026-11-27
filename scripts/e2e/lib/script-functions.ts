@@ -40,14 +40,15 @@ export function scriptAssignments(path: string): (name: string) => string {
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 // A library a script sources: `.` or `source`, then a word, at the start of a line. The word may
-// be quoted or not and the line may go on (`|| exit 1`, `; f`, a comment), so one matcher reads
-// every such line and both readers below use it: a line only one of them matched would be walked
-// and not refused, or neither, which is a file read by nobody and named by nobody.
+// be quoted or not and the line may go on (`|| exit 1`, `; f`, a comment).
+//
+// This line reader finds the libraries a harness reads a script's functions from, where a library
+// it misses leaves a helper named as missing, not a check passed. The scan for secrets, where a
+// library it missed would read as clean, reads shell as bash parses it instead (source-scan.ts).
 //
 // The word is a shell word, and a path holding `..` names a different file when it is read by its
 // last segments, so it is resolved whole. A word this file cannot resolve without running the
-// shell is no library it can read: `unreadableSources` names those lines, and a scan that walks
-// what a script sources fails on them rather than passing over a file it never read.
+// shell is no library it reads.
 // A quoted word ends at the quote that closes it at the top level, which is what the shell reads,
 // not at the last quote on the line: read to the last one, a trailing comment holding a quoted
 // word named a path that does not exist, and the library behind it was neither read nor refused.
@@ -56,8 +57,8 @@ const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 // where a space, the line's end or one of `;&|<>()` follows it: bash joins a quoted part and
 // whatever touches it into one word, so `"$lib/x.sh"y` is the file x.shy, and read to the quote
 // it would name x.sh, a file the shell never sources. A word no quote closes, or one that goes on
-// past its closing quote, keeps its opening quote, and `resolvedSource` refuses any word that
-// still holds one. An unquoted word runs to the first space, as the shell reads it.
+// past its closing quote, keeps its opening quote, and `resolvedSource` reads no word that still
+// holds one. An unquoted word runs to the first space, as the shell reads it.
 const sourceLine = /^[ \t]*(?:\.|source)[ \t]+(\S.*)$/;
 
 /** The text of the quoted word `rest` starts with, up to the quote that closes it at the top
@@ -142,9 +143,8 @@ const ownDirectoryCase =
  *  built on any other variable is read through that variable's assignment in the same script,
  *  and only there (`assignedDirectory`): a variable the script does not assign, assigns twice or
  *  assigns some other directory names one only the running shell knows, as `. "$drivers/x.sh"`
- *  with `drivers=/elsewhere` does, so the line is refused rather than read as the file of the
- *  same name beside the script. Such a line is named by `unreadableSources`, and the walk reads
- *  only a path this returns. */
+ *  with `drivers=/elsewhere` does, so the line is not read as the file of the same name beside the
+ *  script. The walk reads only a path this returns. */
 function resolvedSource(
   from: string,
   written: string,
@@ -261,20 +261,6 @@ function regularFile(path: string): string | undefined {
   }
 }
 
-/** Every line of the script at `path` that sources a library this file cannot name, as
- *  `<path under tree>:<line>: <the line>`, where `tree` is the checkout the script is read in.
- *  A scan that walks what a script sources must fail on these: the file behind such a line is
- *  never read, so anything in it is unseen. */
-export function unreadableSources(path: string, tree: string = checkout): string[] {
-  const found: string[] = [];
-  const lines = readFileSync(path, "utf8").split("\n");
-  for (const { word, at, line } of sourceWords(lines)) {
-    if (resolvedSource(path, word, lines, tree) !== undefined) continue;
-    found.push(`${relative(tree, path)}:${at}: ${line.trim()}`);
-  }
-  return found;
-}
-
 /**
  * Every script among `paths`, every library one of them sources (`. "<path>"`), wherever in the
  * checkout that path reaches, and the libraries those source in turn, each path once. A harness
@@ -295,9 +281,8 @@ export function sourcedLibrariesIn(tree: string, paths: readonly string[]): stri
     const lines = readFileSync(path, "utf8").split("\n");
     for (const { word } of sourceWords(lines)) {
       const reaches = resolvedSource(path, word, lines, tree);
-      // A line this reader cannot resolve, a path that names no file among them, is named by
-      // unreadableSources, which reads the same lines this walk does, so no line falls between
-      // the two; the walk goes on rather than ending on it.
+      // A line this reader cannot resolve, a path that names no file among them, reaches nothing;
+      // the walk goes on rather than ending on it.
       if (reaches !== undefined) pending.push(reaches);
     }
   }

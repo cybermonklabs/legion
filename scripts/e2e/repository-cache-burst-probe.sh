@@ -383,18 +383,18 @@ compute_verdict() {
     else
       check "enabled: every interval below $enabled_ceiling CPU" fail "largest $max over $n intervals" "below $enabled_ceiling"
     fi
-    check "enabled: the manifest was complete before the release" "$([ "${fact[enabled.packs_complete]:-0}" = 1 ] && echo pass || echo fail)" "${fact[enabled.packs_complete]:-0}" "1"
-    check "enabled: $fetch_count fetches ran inside the budget" "$([ "${fact[enabled.fetches]:-0}" = "$fetch_count" ] && [ "${fact[enabled.timeout]:-1}" = 0 ] && echo pass || echo fail)" \
-      "${fact[enabled.fetches]:-0} results, timeout ${fact[enabled.timeout]:-unset}" "$fetch_count results, no timeout"
-    check "enabled: every fetch exits 0" "$([ "${fact[enabled.ok]:-0}" = "$fetch_count" ] && echo pass || echo fail)" "${fact[enabled.ok]:-0} of $fetch_count" "$fetch_count of $fetch_count"
-    check "enabled: every fetch logs source=bucket" "$([ "${fact[enabled.bucket]:-0}" = "$fetch_count" ] && echo pass || echo fail)" "${fact[enabled.bucket]:-0} of $fetch_count" "$fetch_count of $fetch_count"
-    check "enabled: no fetch logs source=/tar" "$([ "${fact[enabled.tar]:-1}" = 0 ] && echo pass || echo fail)" "${fact[enabled.tar]:-unread}" "0"
-    check "enabled: every fetch verified the manifest's objects, name, size and SHA-256" "$([ "${fact[enabled.objects_match]:-0}" = "$fetch_count" ] && echo pass || echo fail)" \
-      "${fact[enabled.objects_match]:-0} of $fetch_count" "$fetch_count of $fetch_count"
-    if [ "${fact[enabled.streams_reads]:-0}" -ge 1 ] && [ "${fact[enabled.streams_max]:-1}" = 0 ]; then
-      check "enabled: no /tar stream was in flight at any sample" pass "largest ${fact[enabled.streams_max]:-unread} over ${fact[enabled.streams_reads]:-0} /healthz reads" "0, over at least 1 read"
+    check "enabled: the manifest was complete before the release" "$([ "${fact["enabled.packs_complete"]:-0}" = 1 ] && echo pass || echo fail)" "${fact["enabled.packs_complete"]:-0}" "1"
+    check "enabled: $fetch_count fetches ran inside the budget" "$([ "${fact["enabled.fetches"]:-0}" = "$fetch_count" ] && [ "${fact["enabled.timeout"]:-1}" = 0 ] && echo pass || echo fail)" \
+      "${fact["enabled.fetches"]:-0} results, timeout ${fact["enabled.timeout"]:-unset}" "$fetch_count results, no timeout"
+    check "enabled: every fetch exits 0" "$([ "${fact["enabled.ok"]:-0}" = "$fetch_count" ] && echo pass || echo fail)" "${fact["enabled.ok"]:-0} of $fetch_count" "$fetch_count of $fetch_count"
+    check "enabled: every fetch logs source=bucket" "$([ "${fact["enabled.bucket"]:-0}" = "$fetch_count" ] && echo pass || echo fail)" "${fact["enabled.bucket"]:-0} of $fetch_count" "$fetch_count of $fetch_count"
+    check "enabled: no fetch logs source=/tar" "$([ "${fact["enabled.tar"]:-1}" = 0 ] && echo pass || echo fail)" "${fact["enabled.tar"]:-unread}" "0"
+    check "enabled: every fetch verified the manifest's objects, name, size and SHA-256" "$([ "${fact["enabled.objects_match"]:-0}" = "$fetch_count" ] && echo pass || echo fail)" \
+      "${fact["enabled.objects_match"]:-0} of $fetch_count" "$fetch_count of $fetch_count"
+    if [ "${fact["enabled.streams_reads"]:-0}" -ge 1 ] && [ "${fact["enabled.streams_max"]:-1}" = 0 ]; then
+      check "enabled: no /tar stream was in flight at any sample" pass "largest ${fact["enabled.streams_max"]:-unread} over ${fact["enabled.streams_reads"]:-0} /healthz reads" "0, over at least 1 read"
     else
-      check "enabled: no /tar stream was in flight at any sample" fail "largest ${fact[enabled.streams_max]:-unread} over ${fact[enabled.streams_reads]:-0} /healthz reads" "0, over at least 1 read" \
+      check "enabled: no /tar stream was in flight at any sample" fail "largest ${fact["enabled.streams_max"]:-unread} over ${fact["enabled.streams_reads"]:-0} /healthz reads" "0, over at least 1 read" \
         "a sample whose /healthz was never read shows nothing in flight"
     fi
   fi
@@ -403,12 +403,12 @@ compute_verdict() {
     read -r n max full_n full_max bad <<< "$(arm_figures "$table" disabled)"
     check "disabled: the arm was measured" "$([ "$n" -ge 1 ] && echo pass || echo fail)" "$n intervals" "at least 1"
     check "disabled: every interval is readable" "$([ "$bad" -eq 0 ] && echo pass || echo fail)" "$bad unreadable" "0"
-    check "disabled: /packs is not served" "$([ "${fact[disabled.packs_status]:-}" = 404 ] && echo pass || echo fail)" "${fact[disabled.packs_status]:-unread}" "404"
-    check "disabled: $fetch_count fetches ran inside the budget" "$([ "${fact[disabled.fetches]:-0}" = "$fetch_count" ] && [ "${fact[disabled.timeout]:-1}" = 0 ] && echo pass || echo fail)" \
-      "${fact[disabled.fetches]:-0} results, timeout ${fact[disabled.timeout]:-unset}" "$fetch_count results, no timeout"
-    check "disabled: every fetch exits 0" "$([ "${fact[disabled.ok]:-0}" = "$fetch_count" ] && echo pass || echo fail)" "${fact[disabled.ok]:-0} of $fetch_count" "$fetch_count of $fetch_count"
-    check "disabled: every fetch logs source=/tar reason=/packs is not served" "$([ "${fact[disabled.unserved]:-0}" = "$fetch_count" ] && echo pass || echo fail)" \
-      "${fact[disabled.unserved]:-0} of $fetch_count" "$fetch_count of $fetch_count"
+    check "disabled: /packs is not served" "$([ "${fact["disabled.packs_status"]:-}" = 404 ] && echo pass || echo fail)" "${fact["disabled.packs_status"]:-unread}" "404"
+    check "disabled: $fetch_count fetches ran inside the budget" "$([ "${fact["disabled.fetches"]:-0}" = "$fetch_count" ] && [ "${fact["disabled.timeout"]:-1}" = 0 ] && echo pass || echo fail)" \
+      "${fact["disabled.fetches"]:-0} results, timeout ${fact["disabled.timeout"]:-unset}" "$fetch_count results, no timeout"
+    check "disabled: every fetch exits 0" "$([ "${fact["disabled.ok"]:-0}" = "$fetch_count" ] && echo pass || echo fail)" "${fact["disabled.ok"]:-0} of $fetch_count" "$fetch_count of $fetch_count"
+    check "disabled: every fetch logs source=/tar reason=/packs is not served" "$([ "${fact["disabled.unserved"]:-0}" = "$fetch_count" ] && echo pass || echo fail)" \
+      "${fact["disabled.unserved"]:-0} of $fetch_count" "$fetch_count of $fetch_count"
     if [ "$full_n" -ge 1 ] && above "$full_max" "$control_floor"; then
       check "disabled: a full interval above $control_floor CPU (the control)" pass "largest full $full_max over $full_n full of $n intervals" "above $control_floor in at least one full interval"
     else
@@ -503,8 +503,8 @@ mk_facts() {
   local out=$1 k
   shift
   local -A f=([attribution]=pass [leak]=0
-    [enabled.fetches]=20 [enabled.ok]=20 [enabled.timeout]=0 [enabled.streams_reads]=3 [enabled.bucket]=20 [enabled.tar]=0 [enabled.objects_match]=20 [enabled.streams_max]=0 [enabled.packs_complete]=1
-    [disabled.fetches]=20 [disabled.ok]=20 [disabled.timeout]=0 [disabled.streams_reads]=3 [disabled.unserved]=20 [disabled.packs_status]=404)
+    ["enabled.fetches"]=20 ["enabled.ok"]=20 ["enabled.timeout"]=0 ["enabled.streams_reads"]=3 ["enabled.bucket"]=20 ["enabled.tar"]=0 ["enabled.objects_match"]=20 ["enabled.streams_max"]=0 ["enabled.packs_complete"]=1
+    ["disabled.fetches"]=20 ["disabled.ok"]=20 ["disabled.timeout"]=0 ["disabled.streams_reads"]=3 ["disabled.unserved"]=20 ["disabled.packs_status"]=404)
   for k in "$@"; do f[${k%%=*}]=${k#*=}; done
   for k in "${!f[@]}"; do printf '%s=%s\n' "$k" "${f[$k]}"; done > "$out"
 }

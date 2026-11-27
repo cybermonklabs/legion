@@ -349,16 +349,16 @@ for pair in "${labels[@]}"; do
   if ! [[ ${pair#*=} =~ $label_value ]] || [ "${#pair}" -gt $((${#key} + 64)) ]; then
     refuse "the label value of $key is no label value: at most 63 letters, digits, -, _ and ."
   fi
-  [ -z "${seen[label:$key]:-}" ] || refuse "the label $key is given twice"
-  seen[label:$key]=1
+  [ -z "${seen["label:$key"]:-}" ] || refuse "the label $key is given twice"
+  seen["label:$key"]=1
 done
 for pair in "${annotations[@]}"; do
   [[ $pair == *=* ]] || refuse "the annotation $pair is no key=value pair"
   key=${pair%%=*}
   [[ $key =~ $qualified ]] || refuse "the annotation key $key is no annotation key"
   yaml_quote "${pair#*=}" > /dev/null || refuse "the annotation value of $key holds a control character"
-  [ -z "${seen[annotation:$key]:-}" ] || refuse "the annotation $key is given twice"
-  seen[annotation:$key]=1
+  [ -z "${seen["annotation:$key"]:-}" ] || refuse "the annotation $key is given twice"
+  seen["annotation:$key"]=1
 done
 
 command -v kubectl > /dev/null 2>&1 || refuse "no kubectl on PATH"
