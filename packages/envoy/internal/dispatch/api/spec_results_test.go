@@ -919,6 +919,54 @@ func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 	}
 }
 
+// TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg: legOf reads the check run `build (linux) (x64)`
+// as the leg `linux) (x64` of the matrix job build, and the matrix job named `build (linux)` can
+// make that same name for its leg x64; a second matrix job named build can make `build (linux)`
+// for its own leg linux. Dispatch reads no matrix values, so in each case the name does not say
+// which job ran, and the check of the job build is refused 409 CHECK_NOT_THIS_JOBS, saying which
+// other matrix job can make the name. The control is the same name with build the one matrix job
+// that can make it: the leg writes build's check.
+func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
+	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit
+	job := func(id, body string) string {
+		return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
+	}
+	build := job("build", "    strategy:\n      matrix:\n        os: [linux]\n")
+	for _, row := range []struct {
+		name, workflow, checkRun, says string
+	}{
+		{
+			name:     "the matrix job build (linux) beside the matrix job build",
+			workflow: "jobs:\n" + build + job("other", "    name: build (linux)\n    strategy:\n      matrix:\n        arch: [x64]\n"),
+			checkRun: "build (linux) (x64)",
+			says:     `the matrix job "build (linux)"` + at + ` can make a check run of that name for its leg "x64"`,
+		},
+		{
+			name:     "a second matrix job named build",
+			workflow: "jobs:\n" + build + job("other", "    name: build\n    strategy:\n      matrix:\n        arch: [x64]\n"),
+			checkRun: "build (linux)",
+			says:     `the matrix job "build"` + at + ` can make a check run of that name for its leg "linux"`,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = row.workflow
+			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, row.checkRun), passOf(buildCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
+			if !strings.Contains(refusal.Error, row.says) {
+				t.Fatalf("the refusal %q does not say %q", refusal.Error, row.says)
+			}
+		})
+	}
+	t.Run("the control: build is the one matrix job that can make the name", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + build + job("other", "    name: test\n    strategy:\n      matrix:\n        arch: [x64]\n")
+		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, "build (linux) (x64)"), passOf(buildCheck)))
+		if p := result.Attestation.Predicate; p.Job != "build" || p.Leg != "linux) (x64" {
+			t.Fatalf("the result is of job %q, leg %q; want the job build and the leg %q", p.Job, p.Leg, "linux) (x64")
+		}
+	})
+}
+
 // TestACheckRunOfAnotherCommitIsRefused: GitHub names another commit for the token's check run,
 // so the check run is no job of this run.
 func TestACheckRunOfAnotherCommitIsRefused(t *testing.T) {
