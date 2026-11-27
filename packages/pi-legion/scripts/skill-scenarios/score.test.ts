@@ -5061,7 +5061,7 @@ describe("forwardOnly", () => {
   // world naming none would send its pane past a gate that holds nothing.
   test("forwardOnly refuses a world whose passes names no check", () => {
     const worlds = path.join(import.meta.dir, "worlds", "forward-only");
-    const made = temporaryDirectory();
+    const made = temporaryDirectory("forward-world-passes");
     const dir = path.join(made, "retro-defect");
     cpSync(path.join(worlds, "retro-defect"), dir, { recursive: true });
     const file = path.join(dir, "world.json");
