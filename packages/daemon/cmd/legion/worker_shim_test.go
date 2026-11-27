@@ -307,6 +307,7 @@ esac
 // it, so the second shim, run here, takes it over and reads the workspace. Its agent stays up
 // until that warm-up has released the lease after its `status`.
 func TestWorkerShimDoesNotRepairAfterAShimKilledMidBuild(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (PATH, LEGION_WORKSPACE); it runs the second `legion worker-shim` in this process, which points the process's standard logger at that shim's stderr.
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
