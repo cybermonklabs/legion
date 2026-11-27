@@ -410,6 +410,352 @@ The rules a row follows:
   counts do not (`shownAgentRows` and `agentRow` in `e2e/agents.ts`), and `toBeHidden()` passes
   when nothing matches, so put `toHaveCount(1)` beside it where the row must be mounted.
 
+## What a spec costs the browser lane
+
+The table below is a measurement with a date, not a limit. No check reads it, and it goes stale
+as specs change: the commands after it measure the lane again, and measure a new spec before it
+merges.
+
+The full browser lane is the slowest part of the merge queue. Of the 16 newest merge-group runs
+of ci.yaml that passed and ran the lane, read at 19:06Z on 2026-11-27 (runs
+[45990383360](https://github.com/cybermonklabs/legion/actions/runs/45990383360) to
+[46050370857](https://github.com/cybermonklabs/legion/actions/runs/46050370857)), the
+`dispatch-browser` jobs ended after the jobs of every other lane in 15, a median of 20.8 minutes
+after the run was created. The slowest leg's browser step took a median of 804.5 s, 64 % of that
+time. So in most merge groups the slowest leg of this lane decides when the group's checks
+finish.
+
+The figures here are the row time of the lane's four shard legs and three alone legs, which the
+merge job of `.github/workflows/dispatch-browser.yaml` joins into one Playwright report and
+uploads as `dispatch-browser-report-<attempt>`. The multiprocess, embedder and visual jobs write
+no row into that report (`.github/ci-notes/dispatch-browser.md`), so a spec that only they run is
+not in it. A row is one test in one project. Its time is the duration of every attempt it ran,
+summed, since a retry is time its leg spent. An attempt Playwright skipped counts no time, and a
+file whose every row was skipped is not listed. `e2e/tools/shard-weights.ts` reads a row's time
+the same way.
+
+In five days that row time grew 54 %: 1,663 rows took 6,372 row-seconds in merge-group run
+[45048924209](https://github.com/cybermonklabs/legion/actions/runs/45048924209) (2026-11-22), and
+2,253 rows took 9,825 row-seconds in run
+[46047274467](https://github.com/cybermonklabs/legion/actions/runs/46047274467) (2026-11-27). Thirty
+spec files that the first run did not hold take 2,433 of the 3,453 row-seconds added, 70 %.
+
+The table holds every spec of run 46047274467, read on 2026-11-27, the costliest first. The 25
+costliest take 54 % of the row time, and the median spec takes 15 row-seconds. A test runs once
+in each project that takes it: `chromium` by its file, and `iphone`, `webkit` and `firefox` by a
+tag in its title (see "Projects" below). So the Projects column names every project that ran a
+row of the file, and a spec that four projects run can cost up to four times its tests.
+
+<details>
+<summary>Every spec of run 46047274467 (2026-11-27), the costliest first: 246 specs</summary>
+
+| Row-seconds | Rows | Share | Projects | Spec |
+| ---: | ---: | ---: | --- | --- |
+| 856 | 36 | 8.7% | `stub` | `layout-rule.stub.e2e.ts` |
+| 477 | 38 | 4.9% | `chromium`, `iphone` | `issue-page-i.e2e.ts` |
+| 382 | 30 | 3.9% | `chromium` | `foot-sweep.e2e.ts` |
+| 324 | 48 | 3.3% | `chromium`, `iphone` | `issue-page-p.e2e.ts` |
+| 296 | 63 | 3% | `chromium`, `firefox`, `webkit` | `priorities.e2e.ts` |
+| 270 | 29 | 2.7% | `chromium` | `accessibility.e2e.ts` |
+| 237 | 48 | 2.4% | `chromium`, `iphone` | `issues-table.e2e.ts` |
+| 197 | 37 | 2% | `chromium`, `chromium-plain-http-sign-out`, `firefox`, `webkit` | `keyed-writes.e2e.ts` |
+| 188 | 37 | 1.9% | `chromium`, `firefox`, `iphone`, `webkit` | `deep-links.e2e.ts` |
+| 185 | 19 | 1.9% | `chromium`, `iphone` | `issue-page-l.e2e.ts` |
+| 169 | 57 | 1.7% | `chromium`, `iphone`, `webkit-iphone` | `phone-conversation.e2e.ts` |
+| 168 | 228 | 1.7% | `chromium` | `artifact-dry-run.e2e.ts` |
+| 166 | 3 | 1.7% | `chromium` | `bare-references.e2e.ts` |
+| 161 | 22 | 1.6% | `chromium` | `writing-surfaces.e2e.ts` |
+| 153 | 17 | 1.6% | `chromium`, `iphone` | `issue-page-h.e2e.ts` |
+| 132 | 16 | 1.3% | `chromium`, `iphone` | `issue-page-d.e2e.ts` |
+| 121 | 14 | 1.2% | `chromium` | `ask-concurrent-edit.e2e.ts` |
+| 120 | 33 | 1.2% | `chromium` | `ask-blocks.e2e.ts` |
+| 118 | 13 | 1.2% | `chromium` | `ask-body-today.e2e.ts` |
+| 107 | 4 | 1.1% | `chromium` | `agent-list-refilling.e2e.ts` |
+| 106 | 14 | 1.1% | `chromium`, `iphone` | `issue-page-g.e2e.ts` |
+| 106 | 33 | 1.1% | `chromium`, `iphone`, `webkit-iphone` | `agent-view.e2e.ts` |
+| 100 | 33 | 1% | `chromium`, `iphone` | `inbox.e2e.ts` |
+| 97 | 31 | 1% | `chromium`, `iphone` | `agents.e2e.ts` |
+| 95 | 25 | 1% | `chromium`, `iphone` | `issue.e2e.ts` |
+| 93 | 11 | 0.9% | `chromium`, `iphone` | `issue-page-q.e2e.ts` |
+| 92 | 10 | 0.9% | `chromium`, `iphone` | `issue-page-dashboard.e2e.ts` |
+| 90 | 45 | 0.9% | `chromium-alone`, `firefox-alone`, `webkit-alone` | `heavy-bodies.e2e.ts` |
+| 89 | 10 | 0.9% | `chromium`, `iphone` | `issue-page-v.e2e.ts` |
+| 88 | 12 | 0.9% | `chromium`, `firefox`, `webkit` | `offline-edits.e2e.ts` |
+| 86 | 20 | 0.9% | `chromium`, `iphone` | `approval.e2e.ts` |
+| 85 | 15 | 0.9% | `chromium` | `compose-wait.e2e.ts` |
+| 80 | 18 | 0.8% | `chromium`, `firefox`, `webkit` | `download-names.e2e.ts` |
+| 77 | 34 | 0.8% | `chromium`, `firefox`, `webkit` | `keyboard-agents-picker.e2e.ts` |
+| 71 | 14 | 0.7% | `chromium`, `iphone` | `margin.e2e.ts` |
+| 67 | 9 | 0.7% | `chromium`, `iphone` | `issue-page-k.e2e.ts` |
+| 67 | 19 | 0.7% | `chromium`, `iphone` | `conversation.e2e.ts` |
+| 66 | 13 | 0.7% | `chromium`, `firefox`, `iphone`, `webkit` | `keyed-send.e2e.ts` |
+| 63 | 12 | 0.6% | `chromium` | `inbox-pane-scroll.e2e.ts` |
+| 62 | 2 | 0.6% | `chromium` | `parse-count.e2e.ts` |
+| 57 | 5 | 0.6% | `chromium` | `reference-titles.e2e.ts` |
+| 57 | 15 | 0.6% | `chromium`, `iphone` | `board.e2e.ts` |
+| 55 | 20 | 0.6% | `chromium` | `keyboard-agents.e2e.ts` |
+| 51 | 8 | 0.5% | `chromium`, `iphone` | `issue-page-switch.e2e.ts` |
+| 51 | 8 | 0.5% | `chromium` | `project.e2e.ts` |
+| 51 | 11 | 0.5% | `chromium`, `firefox`, `iphone`, `webkit`, `webkit-iphone` | `live-socket.e2e.ts` |
+| 51 | 20 | 0.5% | `chromium` | `issue-dashboard-today.e2e.ts` |
+| 50 | 14 | 0.5% | `chromium`, `iphone`, `webkit-iphone` | `agent-view-settings.e2e.ts` |
+| 49 | 8 | 0.5% | `chromium` | `refetch-budget.e2e.ts` |
+| 48 | 15 | 0.5% | `chromium`, `firefox`, `webkit` | `keyboard-session-pickers.e2e.ts` |
+| 48 | 15 | 0.5% | `chromium`, `iphone` | `threads.e2e.ts` |
+| 48 | 14 | 0.5% | `chromium`, `iphone` | `phone.e2e.ts` |
+| 47 | 17 | 0.5% | `chromium`, `iphone` | `doc.e2e.ts` |
+| 47 | 13 | 0.5% | `chromium`, `iphone` | `artifacts.e2e.ts` |
+| 47 | 7 | 0.5% | `chromium` | `reference-naming.e2e.ts` |
+| 43 | 2 | 0.4% | `chromium`, `iphone` | `issue-page-g-view.e2e.ts` |
+| 40 | 16 | 0.4% | `stub` | `inbox-search.stub.e2e.ts` |
+| 40 | 10 | 0.4% | `chromium` | `inbox-stability.e2e.ts` |
+| 40 | 16 | 0.4% | `chromium` | `mention-composer.e2e.ts` |
+| 38 | 8 | 0.4% | `chromium` | `reference-cards.e2e.ts` |
+| 38 | 4 | 0.4% | `chromium`, `firefox`, `webkit` | `heavy-streamed-turn.e2e.ts` |
+| 38 | 9 | 0.4% | `chromium`, `iphone` | `inbox-reading-pane.e2e.ts` |
+| 37 | 11 | 0.4% | `chromium` | `keyboard-palette.e2e.ts` |
+| 36 | 6 | 0.4% | `chromium`, `webkit` | `collab-cursor.e2e.ts` |
+| 36 | 8 | 0.4% | `chromium` | `overlapping-marks.e2e.ts` |
+| 36 | 18 | 0.4% | `chromium`, `iphone` | `delivery.e2e.ts` |
+| 35 | 10 | 0.4% | `chromium`, `iphone` | `margin-composer-hold.e2e.ts` |
+| 35 | 16 | 0.4% | `stub` | `keyboard-palette.stub.e2e.ts` |
+| 35 | 13 | 0.4% | `chromium`, `iphone` | `settings.e2e.ts` |
+| 34 | 12 | 0.3% | `chromium`, `firefox`, `webkit` | `mermaid.e2e.ts` |
+| 34 | 11 | 0.3% | `chromium` | `keyboard-agents-pin.e2e.ts` |
+| 33 | 11 | 0.3% | `chromium`, `iphone` | `agent-live-views.e2e.ts` |
+| 33 | 13 | 0.3% | `chromium`, `iphone` | `going-bar.e2e.ts` |
+| 32 | 14 | 0.3% | `chromium`, `iphone` | `live.e2e.ts` |
+| 32 | 13 | 0.3% | `chromium`, `iphone` | `gated-step-approvals.e2e.ts` |
+| 32 | 6 | 0.3% | `chromium` | `prefix-links.e2e.ts` |
+| 30 | 4 | 0.3% | `chromium` | `close-withdraws-asks.e2e.ts` |
+| 30 | 11 | 0.3% | `chromium`, `iphone` | `inbox-dismiss.e2e.ts` |
+| 29 | 2 | 0.3% | `chromium` | `asked-of.e2e.ts` |
+| 29 | 2 | 0.3% | `chromium` | `reference-kinds.e2e.ts` |
+| 29 | 3 | 0.3% | `chromium` | `agent-view-cost.e2e.ts` |
+| 28 | 8 | 0.3% | `chromium` | `document-and-comment-read-alike.e2e.ts` |
+| 28 | 7 | 0.3% | `chromium`, `iphone` | `document.e2e.ts` |
+| 27 | 10 | 0.3% | `chromium`, `firefox-download-navigation` | `shell.e2e.ts` |
+| 27 | 5 | 0.3% | `chromium` | `reference-picker.e2e.ts` |
+| 26 | 9 | 0.3% | `chromium` | `reading-conversation.e2e.ts` |
+| 26 | 11 | 0.3% | `chromium` | `keyboard-inbox.e2e.ts` |
+| 26 | 9 | 0.3% | `chromium`, `iphone` | `closed-issue-posting.e2e.ts` |
+| 26 | 4 | 0.3% | `chromium`, `iphone` | `inbox-mark-all.e2e.ts` |
+| 26 | 5 | 0.3% | `chromium`, `iphone` | `agent-name.e2e.ts` |
+| 26 | 8 | 0.3% | `chromium` | `margin-thread-reply.e2e.ts` |
+| 25 | 12 | 0.3% | `chromium`, `iphone` | `search.e2e.ts` |
+| 25 | 8 | 0.3% | `chromium` | `inbox-decline.e2e.ts` |
+| 25 | 9 | 0.3% | `chromium`, `iphone` | `broadcast.e2e.ts` |
+| 24 | 6 | 0.2% | `chromium` | `pictures.e2e.ts` |
+| 24 | 8 | 0.2% | `chromium` | `reading-inbox-asks.e2e.ts` |
+| 22 | 6 | 0.2% | `stub`, `stub-phone` | `inbox-reading-pane.stub.e2e.ts` |
+| 22 | 12 | 0.2% | `chromium` | `margin-kind-switch.e2e.ts` |
+| 21 | 10 | 0.2% | `chromium` | `references.e2e.ts` |
+| 21 | 5 | 0.2% | `chromium` | `block-references.e2e.ts` |
+| 20 | 15 | 0.2% | `stub` | `keyboard-inbox.stub.e2e.ts` |
+| 20 | 6 | 0.2% | `chromium` | `text-typed-blocks.e2e.ts` |
+| 19 | 10 | 0.2% | `chromium`, `iphone` | `agent-rail.e2e.ts` |
+| 19 | 9 | 0.2% | `chromium`, `webkit-iphone` | `delivery-live.e2e.ts` |
+| 19 | 2 | 0.2% | `stub` | `issue-header-layout.stub.e2e.ts` |
+| 19 | 6 | 0.2% | `chromium` | `attention.e2e.ts` |
+| 18 | 10 | 0.2% | `chromium` | `editor-paste.e2e.ts` |
+| 18 | 6 | 0.2% | `chromium`, `iphone` | `phone-landing.e2e.ts` |
+| 18 | 11 | 0.2% | `stub` | `shell.stub.e2e.ts` |
+| 18 | 3 | 0.2% | `chromium` | `inbox-drawer.e2e.ts` |
+| 18 | 10 | 0.2% | `chromium`, `iphone` | `agents-groups.e2e.ts` |
+| 17 | 8 | 0.2% | `stub`, `stub-phone` | `project.stub.e2e.ts` |
+| 17 | 4 | 0.2% | `stub` | `inbox-view.stub.e2e.ts` |
+| 17 | 6 | 0.2% | `chromium` | `post-corrections.e2e.ts` |
+| 17 | 3 | 0.2% | `chromium`, `firefox`, `webkit` | `doc-reload-line.e2e.ts` |
+| 17 | 5 | 0.2% | `chromium` | `keyboard-issue.e2e.ts` |
+| 16 | 10 | 0.2% | `chromium` | `refresh-freshness.e2e.ts` |
+| 16 | 8 | 0.2% | `chromium` | `reading-references.e2e.ts` |
+| 16 | 1 | 0.2% | `chromium` | `parent-status-choice.e2e.ts` |
+| 16 | 4 | 0.2% | `stub` | `threads-order.stub.e2e.ts` |
+| 15 | 4 | 0.2% | `chromium`, `iphone` | `architecture.e2e.ts` |
+| 15 | 5 | 0.2% | `stub` | `keyboard.stub.e2e.ts` |
+| 15 | 5 | 0.1% | `chromium` | `task-items.e2e.ts` |
+| 15 | 7 | 0.1% | `chromium` | `verification.e2e.ts` |
+| 14 | 6 | 0.1% | `chromium` | `delivery-queued.e2e.ts` |
+| 14 | 6 | 0.1% | `chromium` | `reading-documents.e2e.ts` |
+| 14 | 2 | 0.1% | `chromium` | `composer-body-cap.e2e.ts` |
+| 14 | 7 | 0.1% | `chromium` | `mention-reference.e2e.ts` |
+| 14 | 2 | 0.1% | `chromium` | `threads-order.e2e.ts` |
+| 14 | 5 | 0.1% | `chromium` | `activity.e2e.ts` |
+| 14 | 3 | 0.1% | `chromium`, `iphone` | `labels.e2e.ts` |
+| 14 | 2 | 0.1% | `chromium` | `machine-login.e2e.ts` |
+| 13 | 8 | 0.1% | `chromium` | `reading-agents.e2e.ts` |
+| 12 | 3 | 0.1% | `chromium` | `decision-records.e2e.ts` |
+| 12 | 3 | 0.1% | `chromium` | `answers.e2e.ts` |
+| 12 | 3 | 0.1% | `chromium`, `iphone` | `inbox-threads.e2e.ts` |
+| 12 | 5 | 0.1% | `chromium` | `inbox-thread-pane.e2e.ts` |
+| 11 | 2 | 0.1% | `chromium` | `graph-store.e2e.ts` |
+| 11 | 5 | 0.1% | `chromium` | `create-issue-related.e2e.ts` |
+| 11 | 8 | 0.1% | `stub` | `machines.stub.e2e.ts` |
+| 11 | 4 | 0.1% | `chromium` | `claim-unresponsive.e2e.ts` |
+| 10 | 5 | 0.1% | `stub`, `stub-phone` | `agent-name.stub.e2e.ts` |
+| 10 | 4 | 0.1% | `chromium` | `reading-inbox-threads.e2e.ts` |
+| 10 | 3 | 0.1% | `chromium` | `writes.e2e.ts` |
+| 10 | 2 | 0.1% | `chromium` | `traffic.e2e.ts` |
+| 10 | 6 | 0.1% | `chromium` | `recipients-claim.e2e.ts` |
+| 10 | 4 | 0.1% | `chromium`, `iphone` | `going-new-issue.e2e.ts` |
+| 10 | 5 | 0.1% | `stub` | `keyboard-issue.stub.e2e.ts` |
+| 10 | 7 | 0.1% | `chromium`, `iphone` | `agent-skill-completion.e2e.ts` |
+| 10 | 2 | 0.1% | `chromium-plain-http` | `plain-http-origin.e2e.ts` |
+| 10 | 3 | 0.1% | `chromium` | `agent-tokens.e2e.ts` |
+| 9 | 3 | 0.1% | `chromium` | `create-document.e2e.ts` |
+| 9 | 4 | 0.1% | `chromium`, `iphone` | `issue-page-look.e2e.ts` |
+| 9 | 2 | 0.1% | `chromium` | `claim-refilling.e2e.ts` |
+| 9 | 4 | 0.1% | `chromium-alone` | `agent-workspace-timing.e2e.ts` |
+| 9 | 4 | 0.1% | `stub` | `hover-preview.stub.e2e.ts` |
+| 9 | 4 | 0.1% | `stub`, `stub-phone` | `inbox-threads.stub.e2e.ts` |
+| 9 | 5 | 0.1% | `chromium` | `reading-answers.e2e.ts` |
+| 9 | 4 | 0.1% | `chromium`, `iphone` | `going-handoff.e2e.ts` |
+| 8 | 4 | 0.1% | `chromium` | `create-document-refusals.e2e.ts` |
+| 8 | 4 | 0.1% | `chromium`, `firefox` | `code-line-replace.e2e.ts` |
+| 8 | 2 | 0.1% | `chromium` | `inbox-cli.e2e.ts` |
+| 8 | 4 | 0.1% | `chromium` | `held-sends.e2e.ts` |
+| 8 | 4 | 0.1% | `chromium`, `iphone` | `agent-context-ring.e2e.ts` |
+| 8 | 1 | 0.1% | `chromium` | `architecture-sources.e2e.ts` |
+| 8 | 4 | 0.1% | `chromium`, `iphone` | `agents-window.e2e.ts` |
+| 8 | 3 | 0.1% | `stub`, `stub-phone` | `nav.stub.e2e.ts` |
+| 7 | 3 | 0.1% | `chromium`, `iphone` | `nav.e2e.ts` |
+| 7 | 4 | 0.1% | `chromium` | `btw.e2e.ts` |
+| 7 | 4 | 0.1% | `chromium` | `reading-pages.e2e.ts` |
+| 7 | 1 | 0.1% | `chromium` | `asked-of-cli.e2e.ts` |
+| 7 | 3 | 0.1% | `chromium` | `credential-expired.e2e.ts` |
+| 7 | 4 | 0.1% | `chromium` | `agents-search.e2e.ts` |
+| 7 | 5 | 0.1% | `chromium`, `iphone` | `agent-live-layout.e2e.ts` |
+| 7 | 4 | 0.1% | `chromium` | `reading-broadcasts.e2e.ts` |
+| 7 | 2 | 0.1% | `stub` | `layout.stub.e2e.ts` |
+| 7 | 2 | 0.1% | `chromium` | `project-default-assignee.e2e.ts` |
+| 7 | 2 | 0.1% | `chromium`, `firefox` | `picture-link-click.e2e.ts` |
+| 7 | 2 | 0.1% | `chromium` | `going-operators.e2e.ts` |
+| 7 | 1 | 0.1% | `chromium` | `document-way-back.e2e.ts` |
+| 7 | 3 | 0.1% | `chromium` | `typed-block-content-rule.e2e.ts` |
+| 7 | 2 | 0.1% | `chromium`, `iphone` | `polish.e2e.ts` |
+| 6 | 4 | 0.1% | `stub`, `stub-phone` | `search.stub.e2e.ts` |
+| 6 | 3 | 0.1% | `stub`, `stub-phone` | `inbox-drawer.stub.e2e.ts` |
+| 6 | 10 | 0.1% | `stub` | `layout-measure.stub.e2e.ts` |
+| 6 | 1 | 0.1% | `stub` | `theme.stub.e2e.ts` |
+| 6 | 4 | 0.1% | `chromium`, `iphone` | `machines.e2e.ts` |
+| 6 | 3 | 0.1% | `chromium` | `keyboard-document.e2e.ts` |
+| 6 | 3 | 0.1% | `stub` | `block-references.stub.e2e.ts` |
+| 6 | 4 | 0.1% | `chromium` | `inbox-approval-message.e2e.ts` |
+| 6 | 1 | 0.1% | `chromium` | `workspace.e2e.ts` |
+| 6 | 5 | 0.1% | `chromium`, `iphone` | `pipeline.e2e.ts` |
+| 6 | 2 | 0.1% | `chromium` | `ask-part-references.e2e.ts` |
+| 5 | 2 | 0.1% | `chromium` | `keyboard.e2e.ts` |
+| 5 | 2 | 0.1% | `chromium` | `popover-escape.e2e.ts` |
+| 5 | 2 | 0.1% | `chromium` | `claim.e2e.ts` |
+| 5 | 1 | 0.1% | `chromium` | `address-links.e2e.ts` |
+| 5 | 3 | 0.1% | `chromium` | `message-agent.e2e.ts` |
+| 5 | 2 | 0% | `chromium` | `going-key-forms.e2e.ts` |
+| 5 | 2 | 0% | `chromium` | `legion.e2e.ts` |
+| 4 | 2 | 0% | `chromium` | `followers.e2e.ts` |
+| 4 | 4 | 0% | `chromium` | `collaborators.e2e.ts` |
+| 4 | 1 | 0% | `chromium` | `inbox-read-state.e2e.ts` |
+| 4 | 1 | 0% | `chromium` | `anchors.e2e.ts` |
+| 4 | 3 | 0% | `chromium` | `handoffs.e2e.ts` |
+| 4 | 2 | 0% | `chromium` | `delivery-groups.e2e.ts` |
+| 4 | 2 | 0% | `chromium` | `coverage.e2e.ts` |
+| 4 | 1 | 0% | `chromium` | `progress.e2e.ts` |
+| 3 | 3 | 0% | `chromium` | `github-checks.e2e.ts` |
+| 3 | 5 | 0% | `chromium` | `broker-approval.e2e.ts` |
+| 3 | 1 | 0% | `chromium` | `document-table.e2e.ts` |
+| 3 | 2 | 0% | `stub`, `stub-phone` | `spec-primary.stub.e2e.ts` |
+| 3 | 1 | 0% | `chromium` | `visual-guard.e2e.ts` |
+| 3 | 1 | 0% | `stub` | `inbox-grouping.stub.e2e.ts` |
+| 3 | 2 | 0% | `chromium` | `margin-order.e2e.ts` |
+| 3 | 1 | 0% | `chromium` | `pinned-review-events.e2e.ts` |
+| 3 | 1 | 0% | `chromium` | `steps.e2e.ts` |
+| 3 | 1 | 0% | `chromium` | `paste-recovery.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `machine-logins-person-pod.e2e.ts` |
+| 2 | 2 | 0% | `chromium` | `agent-shell-command.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `emphasis-beside-a-tilde.stub.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `create-issue-decision-claim.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `polish.stub.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `stored-text-reading.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `leaf-marks.stub.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `strikethrough.stub.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `result-commit.e2e.ts` |
+| 2 | 2 | 0% | `chromium` | `typed-blocks.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `signins.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `labels-escape-focus.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `text-typed-blocks.stub.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `email-links.e2e.ts` |
+| 2 | 1 | 0% | `chromium` | `spec-suggestion-decoration.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `external-links.stub.e2e.ts` |
+| 2 | 1 | 0% | `iphone` | `hover-preview.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `plan-tab.stub.e2e.ts` |
+| 2 | 2 | 0% | `chromium-alone` | `nested-directive.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `indented-code-whitespace-lines.stub.e2e.ts` |
+| 2 | 1 | 0% | `stub` | `smoke.stub.e2e.ts` |
+| 1 | 1 | 0% | `chromium` | `inbox-view.e2e.ts` |
+| 1 | 1 | 0% | `stub` | `unknown-directive.stub.e2e.ts` |
+| 1 | 1 | 0% | `chromium` | `writer-spelling.e2e.ts` |
+| 1 | 1 | 0% | `chromium` | `agent-name-band.e2e.ts` |
+| 1 | 1 | 0% | `chromium` | `smoke.e2e.ts` |
+| 1 | 1 | 0% | `chromium` | `judged-grant.e2e.ts` |
+| 1 | 1 | 0% | `chromium-plain-http` | `plain-http-proxy.e2e.ts` |
+
+</details>
+
+To measure the lane again, read the report of a passed merge-group run of ci.yaml. A run whose
+change did not select the browser lane holds no such report, and `gh run download` then fails.
+The report of a passed run is the one its last attempt uploaded. This prints every spec with a
+row that ran, the costliest first, and fails on a report that holds none:
+
+```bash
+gh run list --repo cybermonklabs/legion --workflow ci.yaml --event merge_group --status success --limit 10
+run=46047274467 # the run the table above came from: put the newest passed run here
+attempt="$(gh run view "$run" --repo cybermonklabs/legion --json attempt --jq .attempt)"
+dir="$(mktemp -d)"
+gh run download "$run" --repo cybermonklabs/legion --name "dispatch-browser-report-$attempt" --dir "$dir"
+jq -er '
+  [.. | objects | select(has("tests") and has("file")) as $spec
+    | $spec.tests[] | .projectName as $project
+    | [.results[] | select(.status != "skipped") | .duration] | select(length > 0)
+    | {file: $spec.file, project: $project, seconds: (add / 1000)}]
+  | (map(.seconds) | add // 0) as $lane
+  | if $lane == 0 then error("no row of this report ran") else . end
+  | group_by(.file)
+  | map({file: .[0].file, rows: length, seconds: (map(.seconds) | add),
+         projects: (map(.project) | unique | join(" "))})
+  | sort_by(-.seconds)
+  | (["seconds", "rows", "share", "projects", "file"] | @tsv),
+    (.[] | [(.seconds | round), .rows, "\(.seconds / $lane * 1000 | round / 10)%",
+            .projects, .file] | @tsv)
+' "$dir/report.json"
+```
+
+A spec that only the multiprocess, embedder or visual job runs is not in that report. Read the
+time of each job's browser step instead:
+
+```bash
+gh run view "$run" --repo cybermonklabs/legion --json jobs --jq '.jobs[] | select(.name | startswith("dispatch-browser / ")) | .name as $job | .steps[] | select(.name | startswith("Browser-test")) | [$job, .name, .startedAt, .completedAt] | @tsv'
+```
+
+To measure a new spec before it merges, run the full lane on its pull request and read that
+run's report with the same commands. Add the label `lane:dispatch_browser` to the pull request.
+The label takes effect at the next push, or when you close and reopen the pull request, and
+each later push runs the full lane again, so take the label off once the run passes
+(`.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request`). Then set
+`run` to the passed ci.yaml run of the pull request's head, and run the commands above from the
+`attempt=` line on:
+
+```bash
+pr=<number>
+gh pr edit "$pr" --repo cybermonklabs/legion --add-label lane:dispatch_browser
+# after the next push, once the CI run of the new head has passed:
+head="$(gh pr view "$pr" --repo cybermonklabs/legion --json headRefOid --jq .headRefOid)"
+run="$(gh run list --repo cybermonklabs/legion --workflow ci.yaml --event pull_request --commit "$head" --status success --limit 1 --json databaseId --jq '.[].databaseId')"
+```
+
+One run's times move with its runners: the same rows have run 1.75 times slower on one runner
+than on another in the same minute (`.github/ci-notes/dispatch-browser.md`, on the shard job's
+browser step). Compare a spec's row-seconds with the lane's in the same run, not with the table
+above alone.
+
 ## Local instance
 
 `bun run dispatch:local`, from the repository root or from this package, brings up a seeded
