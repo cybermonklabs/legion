@@ -1,0 +1,424 @@
+import { DISPATCH_EVENT_BODY_MAX, dispatchWritingBox } from "@legion/contracts";
+import { useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useContext, useId, useRef, useState } from "react";
+
+import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import { replaceQueryData } from "../../api/query-client";
+import type { Ask, AskRead } from "../../api/types";
+import { heldPress } from "../../components/held-press";
+import { QueryError } from "../../components/QueryError";
+import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
+import { type SubmitGuard, useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import {
+  backdrop40,
+  borderDefault,
+  card,
+  cardHoverBorder,
+  dangerText,
+  focusBorder,
+  pageFailedText,
+  pageHairBorder,
+  pageInkFill,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
+  primaryButtonBg,
+  primaryButtonDisabled,
+  primaryButtonEnabledHoverBg,
+  secondaryButtonBorder,
+  secondaryButtonDisabledText,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
+  textMutedOnSurface,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
+import type { AskPress } from "../inbox/ask-writes";
+import { inboxActionMark } from "../inbox/inbox-action-mark";
+import {
+  AskDeclineWritesContext,
+  type OutstandingAnswerWrite,
+  type OutstandingAnswerWriteOptions,
+  useInboxAnswerWrite,
+  useOwnAnswerWrite,
+} from "../inbox/outstanding-answers";
+import { invalidateOwnerReads } from "../inbox/owner-reads";
+import { useQuestionLabel } from "../inbox/question-label";
+import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { ASK_DECLINE_WORDS } from "./ask-body-words";
+import { type AskPalette, authored, type TextMarks } from "./ask-text";
+
+/**
+ * The colours of Decline to answer and of its dialog by the palette the ask body's host hands
+ * (`AskPalette`), as `issue-page/DecisionActions.tsx` keeps its own: `main`'s are the classes
+ * every surface of today's pages draws, and the new issue page's are the ask body's own actions
+ * for the control (`AskBody`'s `ON_PAGE.action`) and, for the dialog, the page's Request changes
+ * dialog (`doc/ApprovalChip.tsx`'s `ON_PAGE`), which this one follows: the paper inside its
+ * hairline rule over the icon rail's dark, its heading the ink, its words and the field's label
+ * the muted grey, the count and the line under the box the quiet grey, a refusal the failed
+ * red, Cancel the header control's rule and muted words, and Decline to answer filled with the
+ * ink. The box keeps `main`'s focus rule, the application's one focus indicator. A held control
+ * (`heldPress`) is drawn faded with the not-allowed pointer in both palettes, but for `main`'s
+ * filled Decline to answer, whose own held look `primaryButtonDisabled` draws, and its Cancel,
+ * whose words `secondaryButtonDisabledText` greys.
+ */
+const TONES = {
+  main: {
+    backdrop: backdrop40,
+    cancel: `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`,
+    control: `${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`,
+    count: textMutedOnSurface,
+    decline: `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`,
+    dialog: card,
+    explained: textMutedOnSurface,
+    failed: dangerText,
+    field: undefined,
+    heading: textSecondaryOnSurface,
+    hint: undefined,
+    label: undefined,
+  },
+  page: {
+    backdrop: "bg-icon-rail/40",
+    cancel: `${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:cursor-not-allowed refused:opacity-50`,
+    control: `${pageLineBorder} ${pageMutedText}`,
+    count: pageQuietText,
+    decline: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+    dialog: `${pageHairBorder} ${pagePaperBg}`,
+    explained: pageMutedText,
+    failed: pageFailedText,
+    field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
+    heading: pageInkText,
+    hint: `text-xs ${pageQuietText}`,
+    label: `block text-sm font-medium ${pageMutedText}`,
+  },
+} as const;
+
+/**
+ * What a refused decline says: the server's own words where it gave any - the note is too long,
+ * the ask is an approval request, it is already closed - since each says what to do next. A
+ * decline the reader stopped may have been made, and Decline to answer is a press of its own,
+ * under a key of its own. The dialog says it, and inside an Inbox so do the card drawn for the
+ * ask again and the ask's short row (`AskShortRow`).
+ */
+export function declineRefusal(error: Error): string {
+  return error instanceof SendStoppedError
+    ? stoppedWriteNote(ASK_DECLINE_WORDS.stopped.what, ASK_DECLINE_WORDS.stopped.done, {
+        anew: ASK_DECLINE_WORDS.again,
+      })
+    : apiErrorMessage(error, ASK_DECLINE_WORDS.failed);
+}
+
+/**
+ * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
+ * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) - the shared
+ * field and the picker in it, so a note names a party as every other box does - and adds the
+ * count of what they may still write, in the UTF-16 units the server counts
+ * (`DISPATCH_EVENT_BODY_MAX`), which the field names as its own description so a reader who
+ * cannot see it is told it too. Typing stops at that bound, where the count reaches zero. A
+ * pick writes into the box without typing, so a reference taken near the bound can pass it:
+ * the count then reads below zero and **Decline to answer** is disabled until the note is shorter,
+ * so the bound is met here rather than as a refusal from the server. While the decline is out
+ * the note and both controls are held (`held-press.ts`), never disabled: the one the reader
+ * pressed keeps the focus, the dialog's Tab cycle keeps all three, so a Tab never leaves the
+ * open dialog, and a press of either control does nothing. A host that hands `marks`
+ * (`AskBodyProps.marks`) gets the dialog's own words in the mark of the body's words, the count
+ * in the mark of a value, and the shared field, with its hint, and a refusal in the mark of a
+ * value too, as the field's words and the server's are not the body's.
+ */
+function DeclineDialog({
+  error,
+  held,
+  initialNote,
+  issueKey,
+  marks,
+  onClose,
+  onSubmit,
+  palette,
+  project,
+}: {
+  /** What the server answered the last decline with, or null while none was refused. */
+  error: Error | null;
+  /** The decline is out: the note and both buttons keep the focus and their Tab stops, and
+   *  send or close nothing (`heldPress`). */
+  held: boolean;
+  /** The note the dialog opens with: the refused decline's, so pressing Decline to answer again
+   *  sends the same decline. */
+  initialNote: string;
+  /** The issue the question was asked on, where it has one: the picker offers that issue's
+   *  people. */
+  issueKey?: string;
+  marks: TextMarks | undefined;
+  onClose: () => void;
+  onSubmit: (note: string) => void;
+  palette: AskPalette;
+  /** The project of the document the question hangs from, whose components the picker offers. */
+  project?: string;
+}): ReactNode {
+  const tones = TONES[palette];
+  const [note, setNote] = useState(initialNote);
+  const countId = useId();
+  // The dialog moves the focus into the box it opens over, which the field hands back as its
+  // own element (`MentionFieldHandle`).
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Every way out of the dialog is this one: Cancel, Escape (`useDialog`) and the backdrop. While
+  // the decline is out it closes nothing, as the held Cancel button refuses to: the dialog shows
+  // the refusal that may follow over the note it keeps, and outside an Inbox it is the one
+  // surface that refusal is shown on.
+  const close = () => {
+    if (!held) onClose();
+  };
+  const dialog = useDialog<HTMLDivElement>({
+    initialFocusRef: textareaRef,
+    onClose: close,
+    open: true,
+  });
+  const left = DISPATCH_EVENT_BODY_MAX - note.length;
+  // One answer for both ways out of this box, the button and Ctrl/Cmd+Enter: a decline is sent
+  // while none is out and the note is within the bound a pick may have carried it past.
+  const canSend = !held && left >= 0;
+
+  return (
+    <>
+      <div aria-hidden="true" className={`fixed inset-0 z-40 ${tones.backdrop}`} onClick={close} />
+      <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
+        <div
+          aria-label={ASK_DECLINE_WORDS.decline}
+          aria-modal="true"
+          className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${tones.dialog}`}
+          ref={dialog.containerRef}
+          role="dialog"
+          {...marks?.authorText}
+        >
+          <h2 className={`text-sm font-semibold ${tones.heading}`} {...marks?.pageChrome}>
+            {ASK_DECLINE_WORDS.decline}
+          </h2>
+          <p className={`text-sm ${tones.explained}`} {...marks?.pageChrome}>
+            {ASK_DECLINE_WORDS.explained}
+          </p>
+          <MentionField
+            body={note}
+            className="text-sm aria-disabled:opacity-50"
+            describedBy={[countId]}
+            fieldClassName={tones.field}
+            fieldRef={(handle) => {
+              textareaRef.current = handle?.textarea() ?? null;
+            }}
+            held={held}
+            hintClassName={tones.hint}
+            issueKey={issueKey}
+            label={ASK_DECLINE_WORDS.note}
+            labelClassName={tones.label}
+            maxLength={DISPATCH_EVENT_BODY_MAX}
+            onChange={(change) => setNote(change.body)}
+            onKeyDown={(event) =>
+              submitOnModifiedEnter(event, {
+                onFormlessSubmit: () => {
+                  if (canSend) onSubmit(note.trim());
+                },
+              })
+            }
+            project={project}
+            writing={dispatchWritingBox("ask-decline-note", "ask-decline")}
+          />
+          <p className={`text-xs ${tones.count}`} id={countId} {...marks?.pageChrome}>
+            {authored(marks, left)}{" "}
+            {left === 1 ? ASK_DECLINE_WORDS.character : ASK_DECLINE_WORDS.characters}
+            {` ${ASK_DECLINE_WORDS.left}`}
+          </p>
+          {error === null ? null : (
+            <p className={`text-sm ${tones.failed}`} role="alert">
+              {declineRefusal(error)}
+            </p>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            <button
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${tones.cancel}`}
+              {...heldPress(held, close)}
+              type="button"
+              {...marks?.pageChrome}
+            >
+              {ASK_DECLINE_WORDS.cancel}
+            </button>
+            <button
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${tones.decline}`}
+              {...heldPress(held, () => onSubmit(note.trim()))}
+              disabled={left < 0}
+              type="button"
+              {...marks?.pageChrome}
+            >
+              {held ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** One press of the decline: the ask it is of (`AskPress`), what it sends, and its question as
+ *  the label names it (`questionWords`). */
+interface DeclinePress extends AskPress {
+  readonly input: DeclineAskInput;
+  readonly questionWords: string;
+}
+
+/**
+ * The person's **Decline to answer**: they close an open question with no answer, and Dispatch
+ * tells the agent that asked to decide without one. It is drawn on an open question alone -
+ * an approval request is answered with Approve or Request changes, and the server refuses a
+ * decline of one - and, since every surface that shows an ask shows the ask body (`AskBody`),
+ * which draws this, writing it here reaches all of them: the Inbox row, the reading pane, the
+ * Conversation, a document's decision block, the margin, the Answers page and Dashboard.
+ *
+ * The write takes the row out of the Inbox the moment it goes, as the answer write does
+ * (`useOutstandingAnswerWrite`). Inside an Inbox the Inbox holds the write, by ask, as it holds
+ * each row's snooze (`useAskSnoozeWrites`), and keeps the row where the reader saw it while the
+ * write is out, though the reading column's card goes whenever the reader moves the selection.
+ * The write and its refusal outlive the card: the card drawn for the ask again says the refusal
+ * under Decline to answer, which opens the dialog on the refused decline's note, and the ask's
+ * short row says it too. It reaches the Inbox through the context the Inbox provides, since this
+ * card is drawn on surfaces that take no prop of the Inbox's, a document's own decision block
+ * among them (`useInboxAnswerWrite`). Outside an Inbox the control makes its own write
+ * (`OwnDeclineControl`), and the dialog is the one surface a refusal is shown on. `marks` is the
+ * ask body's (`AskBodyProps.marks`), which it draws Decline to answer and its dialog's words in.
+ */
+export function DeclineControl({
+  ask,
+  decline,
+  marks,
+  onDeclined,
+  palette = "main",
+}: {
+  ask: Ask;
+  decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
+  marks?: TextMarks;
+  /** Called once the server has recorded the decline, as an answer from this card calls it. */
+  onDeclined?: (id: string) => void;
+  /** The palette the control and its dialog draw in (`TONES`): `main`'s, unless the ask body's
+   *  host hands the page's. */
+  palette?: AskPalette;
+}): ReactNode {
+  const queryClient = useQueryClient();
+  const submitGuard = useSubmitGuard();
+  const [open, setOpen] = useState(false);
+  // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
+  // the shell's indicator carries it only while it is out. Each press carries the ask it
+  // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
+  // card is drawn for by then. Its label holds the question's plain-text projection, the words
+  // the card draws: the reading list's `write-label` (`DISPATCH_READING_SURFACES`) says why. The
+  // press carries that line as it reads at the press, so it names its own ask's question too.
+  const options: OutstandingAnswerWriteOptions<Ask, DeclinePress> = {
+    label: (press) => `Decline of “${press.questionWords}”`,
+    method: "POST",
+    write: (press, bounds) => decline(press.ask.id, press.input, bounds),
+    onSettled: () => submitGuard.release(),
+    onSuccess: (declined, press) => {
+      setOpen(false);
+      // The card reads its ask from the thread, so the record it swaps to is this decline, over
+      // any read of the thread still out, which was asked before it and would put back the open
+      // ask (`replaceQueryData`).
+      if (declined !== null) {
+        replaceQueryData<AskRead>(queryClient, ["ask-thread", press.ask.id], (current) =>
+          current === undefined ? undefined : { ...current, ask: declined }
+        );
+      }
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
+      invalidateOwnerReads(queryClient, press.ask);
+      onDeclined?.(press.ask.id);
+    },
+  };
+  const inbox = useInboxAnswerWrite(useContext(AskDeclineWritesContext), ask.id, options);
+  const drawn = { ask, marks, open, palette, setOpen, submitGuard };
+  return inbox === undefined ? (
+    <OwnDeclineControl {...drawn} options={options} />
+  ) : (
+    <DeclineButton {...drawn} write={inbox} />
+  );
+}
+
+/** What `DeclineButton` draws from beside the write: the ask, the ask body's marks and palette,
+ *  whether the dialog is open, and the guard that lets one press through at a time. */
+interface DeclineDrawn {
+  readonly ask: Ask;
+  readonly marks: TextMarks | undefined;
+  readonly open: boolean;
+  readonly palette: AskPalette;
+  readonly setOpen: (open: boolean) => void;
+  readonly submitGuard: SubmitGuard;
+}
+
+/** The decline of a card drawn outside an Inbox, as the control's own write
+ *  (`useOwnAnswerWrite`). */
+function OwnDeclineControl({
+  options,
+  ...drawn
+}: DeclineDrawn & { options: OutstandingAnswerWriteOptions<Ask, DeclinePress> }): ReactNode {
+  return <DeclineButton {...drawn} write={useOwnAnswerWrite(options)} />;
+}
+
+/** **Decline to answer**, the refusal under it and the dialog it opens, drawn from `write`: the
+ *  Inbox's decline of the ask, or the control's own. The button is held while the decline is out
+ *  (`heldPress`), never disabled, so the dialog that closes hands the focus back to it. */
+function DeclineButton({
+  ask,
+  marks,
+  open,
+  palette,
+  setOpen,
+  submitGuard,
+  write,
+}: DeclineDrawn & { write: OutstandingAnswerWrite<DeclinePress> }): ReactNode {
+  const held = write.isPending && !write.late;
+  // The words the card draws for the question, which the press carries as its label reads it
+  // (`questionWords`): this is the component that draws them, so it reads them.
+  const question = useQuestionLabel(ask);
+  useReleaseWhenLate(submitGuard, write.late);
+  return (
+    <div className="mt-3">
+      {question.reads}
+      <button
+        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${TONES[palette].control}`}
+        {...inboxActionMark("inbox.decline")}
+        {...heldPress(held, () => setOpen(true))}
+        type="button"
+        {...marks?.pageChrome}
+      >
+        {held ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
+      </button>
+      {/* A decline refused while the dialog was not drawn: the Inbox holds the write, and this
+          card was drawn for the ask again after the reader moved away. */}
+      {open || write.error === null ? null : (
+        <div className="mt-2" {...marks?.authorText}>
+          <QueryError message={declineRefusal(write.error)} />
+        </div>
+      )}
+      {open ? (
+        <DeclineDialog
+          error={write.isError ? write.error : null}
+          held={held}
+          initialNote={write.error === null ? "" : (write.variables?.input.note ?? "")}
+          issueKey={ask.issue_key ?? undefined}
+          marks={marks}
+          onClose={() => {
+            if (!write.isPending) write.reset();
+            setOpen(false);
+          }}
+          onSubmit={(note) =>
+            submitGuard.guard(() =>
+              write.mutate({
+                ask,
+                input: note === "" ? {} : { note },
+                questionWords: question.line(),
+              })
+            )
+          }
+          palette={palette}
+          project={ask.anchor_artifact?.project}
+        />
+      ) : null}
+    </div>
+  );
+}

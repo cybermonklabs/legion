@@ -118,7 +118,7 @@ const HOSTS: readonly Host[] = [
   },
   {
     elements: 1,
-    file: "features/inbox/AskHandOn.tsx",
+    file: "features/ask-body/AskHandOn.tsx",
     rows: "k-choice-writes-on-enter, k-menu-contrast",
     rules: ["keysOnTrigger"],
     surface: "an ask's hand-on",

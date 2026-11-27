@@ -1968,13 +1968,41 @@ test("IssuePage selects the next tab with ] and the previous with [, wrapping at
     await screen.findByRole("tab", { name: "Spec", selected: true });
     expect(route()).toBe("/issues/CORE-1/spec");
 
-    // Before the first tab is the last one, and after the last the first.
-    await user.keyboard("[[");
-    await screen.findByRole("tab", { name: "Collaborators", selected: true });
-    expect(route()).toBe("/issues/CORE-1/collaborators");
-    await user.keyboard("]");
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    expect(route()).toBe("/issues/CORE-1/spec");
+    // Before Spec is Dashboard, the first tab; before it is the last one, and after the last
+    // the first.
+    const legion = spyOn(api, "getLegionIssue").mockResolvedValue({
+      configured: false,
+      state: null,
+    });
+    const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
+      decisions: [],
+      open_questions: [],
+    });
+    const results = spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] });
+    const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+      has_plan: false,
+      issue: "CORE-1",
+      requirements: [],
+      spec_artifact_id: "",
+    });
+    const replies = spyOn(api, "listMyReplies").mockResolvedValue({ rows: [] });
+    try {
+      await user.keyboard("[[");
+      await screen.findByRole("tab", { name: "Dashboard", selected: true });
+      expect(route()).toBe("/issues/CORE-1/dashboard");
+      await user.keyboard("[[");
+      await screen.findByRole("tab", { name: "Collaborators", selected: true });
+      expect(route()).toBe("/issues/CORE-1/collaborators");
+      await user.keyboard("]");
+      await screen.findByRole("tab", { name: "Dashboard", selected: true });
+      expect(route()).toBe("/issues/CORE-1/dashboard");
+    } finally {
+      legion.mockRestore();
+      decisions.mockRestore();
+      results.mockRestore();
+      coverage.mockRestore();
+      replies.mockRestore();
+    }
   } finally {
     view.unmount();
     collaborators.mockRestore();

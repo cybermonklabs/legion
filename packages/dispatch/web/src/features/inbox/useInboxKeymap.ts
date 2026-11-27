@@ -10,6 +10,7 @@ import { flushSync } from "react-dom";
 
 import { focusLost, openerOf } from "../../components/focus-place";
 import { MENU_TRIGGER_SELECTOR, takesText } from "../../components/key-targets";
+import type { AskApprovalAction } from "../ask-body/AskOptionRow";
 import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
 import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
@@ -18,7 +19,6 @@ import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import type { KeymapActionId } from "../shell/keymap-catalogue";
 import { openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
-import type { AskApprovalAction } from "./AskOptionRow";
 import { outsideAskCard } from "./ask-card";
 import { type InboxActionId, inboxActionSelector } from "./inbox-action-mark";
 import { ROW_SELECTOR, rowIn, rowsIn } from "./inbox-row";
@@ -26,12 +26,7 @@ import { type InboxListRow, rowId } from "./list-row";
 import { optionIndex } from "./option-digits";
 import { PANE_READER_MOVE, PANE_SCROLLER_SELECTOR } from "./pane-placement";
 import type { PaneSelection, PlacedRow } from "./pane-selection";
-import {
-  headApprovalSelector,
-  NOTE_DISCLOSURE_SELECTOR,
-  type ReadingViewTarget,
-  useReadingViewLanding,
-} from "./ReadingView";
+import { headApprovalSelector, type ReadingViewTarget, useReadingViewLanding } from "./ReadingView";
 import { BULK_PICKER_SELECTOR, ROW_SNOOZE_SELECTOR } from "./SnoozeControl";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 
@@ -313,7 +308,7 @@ export function useInboxKeymap({
   // the column's wrapper for the column's own hand-off (`paneFocus`), and forgets it wherever the
   // focus lands outside a column still drawn. While the column is being let go, `paneRef` is
   // already null: React detaches the wrapper's ref before the cleanups of the refs inside it, and
-  // the card's form hands the focus to the column's stop from its own (`AskCard`'s
+  // the card's form hands the focus to the column's stop from its own (`AskBody`'s
   // `handOffFocus`), a stop that goes with the column. That focus is no reader leaving the
   // column, so the note stands for the column drawn next to hand the focus to its own stop.
   //
@@ -581,7 +576,7 @@ export function useInboxKeymap({
    *  (`ReadingPaneHead`), and which counts only while it takes a press (`headApprovalSelector`,
    *  which a short row's landing in its view waits for too); else - in the drawer, and in the
    *  card the column falls back to where it cannot read the document - it is the request's own
-   *  option of the card in hand (`data-ask-approval`, `AskCard`). Null on any other item, on a
+   *  option of the card in hand (`data-ask-approval`, `AskBody`). Null on any other item, on a
    *  short row below 1280 px with no row open, which draws neither, and before the read returns,
    *  which the `?` help shows as not available. Inside an ask card in the column the reader is
    *  answering that card, the rule Snooze holds to, so the keys stand down there. */
@@ -720,8 +715,8 @@ export function useInboxKeymap({
       run: () => {
         // Below 1280 px with no row open the focused short row holds no answer box: Enter opens
         // its reading view, the keyboard's way to the pick a click makes, with the caret in the
-        // question's answer box or in the note box its decision block folds it behind (R18). A
-        // row that asks for no answer - an approval, a thread - opens at the view's scroller.
+        // question's answer box (R18). A row that asks for no answer - an approval, a thread -
+        // opens at the view's scroller.
         if (mode === "list") {
           const ask = focusedAsk();
           openFocused(
@@ -729,18 +724,9 @@ export function useInboxKeymap({
           );
           return;
         }
-        // A decision block's compact card folds its answer box behind "Add a note or answer in
-        // your own words"; Enter presses that disclosure, and the card lands the focus in the
-        // box its own render reveals (`AskCard.tsx`) - the box does not exist in this tick, so
-        // nothing here could focus it. Only the column and the reading view draw that compact
-        // card: from a row, and from a disclosure already open, the key goes straight to the
-        // box.
-        const box = inAnswerHand("[data-ask-answer]");
-        if (box === null && keysOnShownRow) {
-          inAnswerHand(NOTE_DISCLOSURE_SELECTOR)?.click();
-          return;
-        }
-        box?.focus();
+        // The answer box stands in place in every ask body (`ask-body/AskBody.tsx`), the compact
+        // one a decision block hosts among them, so Enter puts the caret in it.
+        inAnswerHand("[data-ask-answer]")?.focus();
       },
       // Enter carries the reader from where they stand at the item into its answer box: the
       // row, the page body, the column or the reading view's scroller, an option of its card
@@ -751,13 +737,11 @@ export function useInboxKeymap({
       when: () =>
         mode === "list"
           ? focusedRow() !== null
-          : atItem() &&
-            (inAnswerHand("[data-ask-answer]") !== null ||
-              (keysOnShownRow && inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)),
+          : atItem() && inAnswerHand("[data-ask-answer]") !== null,
     },
     {
       // `0` is the tenth option, and Other is the digit after the last real option: the card
-      // marks it last among its options (`AskCard`). Below 1280 px with no row open the focused
+      // marks it last among its options (`AskBody`). Below 1280 px with no row open the focused
       // question's view opens, and the option is picked there.
       action: "inbox.option",
       run: (event) => {
@@ -790,7 +774,7 @@ export function useInboxKeymap({
     {
       // The head's Request changes opens its box with the focus in the reason, where Ctrl or
       // Cmd+Enter sends and Escape closes it sending nothing (`ApprovalChip`); the card's option
-      // puts the focus in its reason field, where Escape lets go of the pick (`AskCard`) and
+      // puts the focus in its reason field, where Escape lets go of the pick (`AskBody`) and
       // `back` below puts the focus back on the row. Below 1280 px with no row open the focused
       // request's view opens at that box.
       action: "inbox.request-changes",
@@ -920,7 +904,7 @@ export function useInboxKeymap({
       // them. One level out of a thread's reply box is that scroller too: its draft is the box's
       // own. Both boxes leave Escape to the page (`LEFT_BY_ESCAPE`), but for the one that shuts a
       // picker (`MentionField`): the answer box's card only lets go of a Request changes pick
-      // there (`AskCard`), and the reply box's composer ends nothing (`escapeToPage`), so without
+      // there (`AskBody`), and the reply box's composer ends nothing (`escapeToPage`), so without
       // this the boxes Enter and `r` put the caret in (R18) would have no way out by key. Every
       // other text field keeps the key: a comment's edit and a box whose reply the reader can end
       // take it themselves (`MentionComposer`), a menu's text box is its panel's

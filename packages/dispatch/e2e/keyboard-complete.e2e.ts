@@ -7495,6 +7495,7 @@ test("k-remap: a key pressed in Settings and left by a click on the page before 
 
 /** The issue page's tabs in the order of its strip: each tab's address segment and its name. */
 const ISSUE_TABS = [
+  ["dashboard", "Dashboard"],
   ["spec", "Spec"],
   ["verification", "Verification"],
   ["plan", "Plan"],
@@ -7606,16 +7607,17 @@ test("k-issue-tabs: ] and [ walk the tab strip in its order and wrap, t c select
   const hint = page.getByTestId("chord-indicator");
   await page.setViewportSize(WIDE);
   await openSpecTab(page, seed.key, seed.title);
-
-  for (const tab of [...ISSUE_TABS.slice(1), ISSUE_TABS[0]]) {
+  // The row opens on Spec (index 1, after Dashboard), walks forward through Collaborators, wraps
+  // onto Dashboard and back to Spec, then walks back in reverse order.
+  const fromSpec = [...ISSUE_TABS.slice(2), ISSUE_TABS[0], ISSUE_TABS[1]];
+  for (const tab of fromSpec) {
     await page.keyboard.press("]");
     await expectTab(page, seed.key, tab, step(`] selects ${tab[1]}`));
   }
-  for (const tab of [...ISSUE_TABS].reverse()) {
+  for (const tab of [...fromSpec.slice(0, -1)].reverse().concat([ISSUE_TABS[1]])) {
     await page.keyboard.press("[");
     await expectTab(page, seed.key, tab, step(`[ selects ${tab[1]}`));
   }
-
   await page.keyboard.press("t");
   await expect(hint.locator("kbd").first(), step("t shows the chord hint")).toHaveText("t");
   await expect

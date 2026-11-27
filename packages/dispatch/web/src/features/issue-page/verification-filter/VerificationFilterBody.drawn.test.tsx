@@ -27,7 +27,7 @@ import { setActionKeys } from "../../shell/keymap-keys";
 import { userPreferenceStorageKey } from "../../shell/userPreference";
 import { measureNearWords } from "../clamp-fixtures";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
-import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
+import type { IssueTreeReads, TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
 import {
@@ -51,7 +51,7 @@ import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { useVerificationReads } from "../slots/view-verification";
-import { treeContext } from "../tree-drafts";
+import { targetNaming, treeContext } from "../target-naming";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,

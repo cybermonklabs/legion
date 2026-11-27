@@ -2,23 +2,17 @@ import { type ReactNode, type RefCallback, type RefObject, useLayoutEffect, useR
 
 import type { InboxRow } from "../../api/types";
 import { focusVisibleRing, linkHoverText, linkText } from "../../theme/classes";
+import type { AskApprovalAction } from "../ask-body/AskOptionRow";
 import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
 import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
 import { closestMatching } from "../shell/roving";
-import type { AskApprovalAction } from "./AskOptionRow";
 import { ROW_SELECTOR } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { MarkCheckbox, ThreadMarkCheckbox } from "./MarkCheckbox";
 import { PANE_SCROLLER_SELECTOR } from "./pane-placement";
 import { ROW_SNOOZE_SELECTOR } from "./SnoozeControl";
 import { useControlName } from "./useControlName";
-
-/** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
- *  behind in its compact variant - the card a decision block hosts, which is what the reading
- *  column shows for a question written as one - while it is still shut. The card carries the
- *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
-export const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
 
 /** The mark of a thread drawn with no reply box in it and none to come while what it read
  *  stands, whose value is the thread's own id: a decision document draws several asks at once,
@@ -50,14 +44,13 @@ export function headApprovalSelector(action: AskApprovalAction): string {
 }
 
 /** Where the reading view below 1280 px takes the reader once it has drawn the row they opened:
- *  its scroller, the focus stop `l` moves to beside the list; the question's answer box, or the
- *  note box its decision block folds it behind, with the caret in it (Enter, R18); the thread's
- *  reply box, or the "Write a reply" it is folded behind, and the scroller where the thread is
- *  drawn with no box (`r`, `noReplyBoxSelector`); its head's Snooze or priority menu, open (`b`
- *  or `h`, `p`; R4); its head's Approve or Request changes, pressed once the document's read has
- *  enabled it (`a`, Shift+R; R7); its head's Copy reference (`y`); or the question's option at
- *  `index` (the digits), which is pressed, and the scroller where the question has no such
- *  option. */
+ *  its scroller, the focus stop `l` moves to beside the list; the question's answer box with the
+ *  caret in it (Enter, R18); the thread's reply box, or the "Write a reply" it is folded behind,
+ *  and the scroller where the thread is drawn with no box (`r`, `noReplyBoxSelector`); its head's
+ *  Snooze or priority menu, open (`b` or `h`, `p`; R4); its head's Approve or Request changes,
+ *  pressed once the document's read has enabled it (`a`, Shift+R; R7); its head's Copy reference
+ *  (`y`); or the question's option at `index` (the digits), which is pressed, and the scroller
+ *  where the question has no such option. */
 export type ReadingViewTarget =
   | { readonly kind: "answer" }
   | { readonly kind: "approve" }
@@ -96,10 +89,10 @@ function landingIn(view: HTMLElement, askId: string, target: ReadingViewTarget):
       return scroller();
     case "answer": {
       if (card === null) return null;
+      // The answer box stands in place in every ask body; a card that draws none - a settled
+      // ask's record - lands where any pick does.
       const box = card.querySelector<HTMLElement>("[data-ask-answer]");
-      if (box !== null) return { focus: box };
-      const disclosure = card.querySelector<HTMLElement>(NOTE_DISCLOSURE_SELECTOR);
-      return disclosure === null ? scroller() : { press: disclosure };
+      return box === null ? scroller() : { focus: box };
     }
     case "reply": {
       const box = view.querySelector<HTMLElement>(`[data-inbox-thread-body] ${REPLY_BOX}`);

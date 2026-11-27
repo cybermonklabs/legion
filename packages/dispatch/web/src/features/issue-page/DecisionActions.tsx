@@ -32,6 +32,14 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
+import {
+  anchorBlock,
+  anchorQuote,
+  type ChangeAnchor,
+  changeAnchor,
+  changeCommentInput,
+  keptDecisions,
+} from "../decision-card/change-anchor";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
@@ -40,7 +48,6 @@ import { type TextSource, textSourceOf } from "../refs/text-references";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { useOneCreateOut } from "../writes/useOneCreateOut";
-import { anchorBlock, anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -226,23 +233,14 @@ function DecisionControls({
     onSuccess: (kept) => {
       // The tree notes the node before the answer is drawn (`own-act.ts`).
       noteOwnAct(decision.ref);
+      const decisionsKey = issueDecisionsQuery(issueKey, true).queryKey;
       if (kept === null) {
-        void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
+        void queryClient.invalidateQueries({ exact: true, queryKey: decisionsKey });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
-        view === undefined
-          ? view
-          : {
-              ...view,
-              // The Keep is of the text this node showed, which the server took, so it applies
-              // to the row that still holds that text.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
-                  : row
-              ),
-            }
+      // The Keep is of the text this node showed, which the server took (`keptDecisions`).
+      queryClient.setQueryData<IssueDecisions>(decisionsKey, (view) =>
+        keptDecisions(view, kept, decision.text_sha256)
       );
     },
   });
@@ -408,21 +406,8 @@ function ChangeComposer({
     label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
     mutationKey,
-    // A comment on an issue's document is the issue's own write: the artifact route refuses it,
-    // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
-      api.createComment(
-        issueKey,
-        {
-          anchor: {
-            artifact: documentId,
-            occurrence: input.anchor.occurrence,
-            quote: input.anchor.quote,
-          },
-          body: input.body,
-        },
-        bounds
-      ),
+      api.createComment(issueKey, changeCommentInput(documentId, input), bounds),
     // The change is a comment of the issue's, and the comments read is what tells the page a
     // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
     // the review list and draws the change under it as soon as the comment lands.

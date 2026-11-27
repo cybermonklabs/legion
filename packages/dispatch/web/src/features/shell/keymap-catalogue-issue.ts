@@ -50,7 +50,15 @@ export const ISSUE_ACTIONS = {
   // (`issue-page/useIssueKeymap.ts`), where `t c` turns every filter off, and `t h`, which moves
   // to the issue's children in its outline (`issue-page/useTreeKeymap.ts`). Each is one action on
   // both pages, so a key a person gives it works on both, and its label names its purpose first
-  // and says in brackets what it does on the new page.
+  // and says in brackets what it does on the new page. The filter row's sixth chord, `t w`,
+  // turns the new page's Dashboard on or off (`tab-dashboard`); today's page binds no key to its
+  // Dashboard tab (dispatch://INFRA-5702/spec#b-r-today-tab), so it is the new page's alone.
+  "tab-dashboard": {
+    label: "Turn Dashboard on or off",
+    keys: ["t w"],
+    palette: true,
+    surface: "issue-outline",
+  },
   "tab-spec": {
     label: "Spec: open its tab (on the new page, its filter)",
     keys: ["t s"],

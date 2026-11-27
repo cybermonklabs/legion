@@ -431,9 +431,6 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers("useInboxKeymap | - | form | if (!keysOnShownRow) return …", { reason: REASONS[13] }),
   ...answers('useInboxKeymap | - | form | if (mode === "list") return …', { reason: REASONS[13] }),
-  ...answers("useInboxKeymap | - | form | if (box === null && keysOnShownRow) return …", {
-    reason: REASONS[13],
-  }),
   ...answers('useInboxKeymap | - | form | (mode === "list") ? …', { reason: REASONS[13] }),
   ...answers(
     'useInboxKeymap | - | form | if (mode === "list" && handRow()?.kind === "thread") return …',

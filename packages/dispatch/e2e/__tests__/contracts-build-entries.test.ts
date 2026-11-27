@@ -54,7 +54,7 @@ test(
   },
   {
     // This row drives one `bun run build:dispatch` child, which buildInto starts and nothing else
-    // bounds; it bundles four entries in well under a second, so the minute is what stops a build
+    // bounds; it bundles five entries in well under a second, so the minute is what stops a build
     // that hangs, as packages/contracts' own entry-point test bounds the same build.
     timeout: 60_000,
   }

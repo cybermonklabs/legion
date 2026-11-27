@@ -9,6 +9,7 @@ import {
   secondaryButtonCompact,
   textMutedOnCanvas,
 } from "../../theme/classes";
+import { EarlierApprovalDetails, EarlierApprovalToggle } from "../ask-body/EarlierApproval";
 import { ApprovalChip, paneActionBox } from "../doc/ApprovalChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
@@ -21,7 +22,6 @@ import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe, useAskAssign } from "./AssignToMe";
 import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
-import { EarlierApprovalDetails, EarlierApprovalToggle } from "./EarlierApproval";
 import { inboxActionMark } from "./inbox-action-mark";
 import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";

@@ -95,25 +95,37 @@ function toggled(key: string, view: Preset, active: Preset): string {
 }
 
 /**
- * The chords of the view row, which are the `t` table of the spec's Design section for the five
+ * The chords of the view row, which are the `t` table of the spec's Design section for the six
  * views. Each one opens an address and puts the focus in what that address draws.
  *
- * `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification, Plan and Decisions views, and
- * `t c` is the conversation, the page with every view off; each leaves the focus in the
- * outline. Each is the catalogue's action of today's page's tab of the same name
- * (`keymap-catalogue.ts`), which gives it its keys, the person's where they changed them, and a
- * label that names what it does on both pages.
+ * `t w` toggles Dashboard (dispatch://INFRA-5702/spec#b-r-new-page), which draws no outline, so
+ * it leaves the focus where it was. `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification,
+ * Plan and Decisions views, and `t c` is the conversation, the page with every view off; each
+ * leaves the focus in the outline. Each but `t w` is the catalogue's action of today's page's tab
+ * of the same name (`keymap-catalogue.ts`), which gives it its keys, the person's where they
+ * changed them, and a label that names what it does on both pages; `t w` is the new page's own
+ * action, since today's page binds no key to its Dashboard tab. The table is exported for the
+ * inventory of the places that write Conversation's address (`issue-address.test.ts`).
  */
-const CHORDS: readonly {
+export const CHORDS: readonly {
   action: KeymapActionId;
   /** The address the chord opens from the view on. */
   path: (key: string, active: Preset) => string;
-  part: keyof typeof PARTS;
+  /** The part the chord puts the focus in, where the address draws one. */
+  part?: keyof typeof PARTS;
+  /** The view the chord turns on, which is the tab of the same name on today's page. */
+  tab: Preset;
 }[] = [
+  {
+    action: "issue.tab-dashboard",
+    path: (key, active) => toggled(key, "dashboard", active),
+    tab: "dashboard",
+  },
   {
     action: "issue.tab-spec",
     part: "tree",
     path: (key, active) => toggled(key, "spec", active),
+    tab: "spec",
   },
   // `t v` is the activity and `t c` the conversation, so the checks take their own `k`; `t p`
   // is free (`p` alone focuses the priority, which is a different scope of key).
@@ -121,21 +133,25 @@ const CHORDS: readonly {
     action: "issue.tab-verification",
     part: "tree",
     path: (key, active) => toggled(key, "verification", active),
+    tab: "verification",
   },
   {
     action: "issue.tab-plan",
     part: "tree",
     path: (key, active) => toggled(key, "plan", active),
+    tab: "plan",
   },
   {
     action: "issue.tab-decisions",
     part: "tree",
     path: (key, active) => toggled(key, "decisions", active),
+    tab: "decisions",
   },
   {
     action: "issue.tab-conversation",
     part: "tree",
     path: (key) => presetPath(key, "conversation"),
+    tab: "conversation",
   },
 ];
 
@@ -147,11 +163,12 @@ const CHORDS: readonly {
  */
 export function useIssueKeymap(issueKey: string): void {
   const navigate = useNavigate();
-  const { pathname } = useLocation();
-  // The view the address has on, which a view's chord toggles from.
+  const { hash, pathname, search } = useLocation();
+  // The view the address has on, which a view's chord toggles from: the issue's own address is
+  // Dashboard's unless it names a node or words, so the whole address is read.
   const route = parseIssuePath(pathname);
   const active =
-    route === undefined ? "conversation" : issueAddress(route, "", "", undefined).preset;
+    route === undefined ? "conversation" : issueAddress(route, search, hash, undefined).preset;
   useKeymapScope("issue");
   useKeymap(
     "issue",
@@ -162,7 +179,7 @@ export function useIssueKeymap(issueKey: string): void {
         // The part is looked for once the address has drawn: the outline is the same element
         // under every view, and a row of the view being left would take the focus and then be
         // unmounted with it - a view draws its rows at another depth than the outline does.
-        requestAnimationFrame(() => reachPart(part));
+        if (part !== undefined) requestAnimationFrame(() => reachPart(part));
       },
     }))
   );

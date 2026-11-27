@@ -3,16 +3,17 @@
  * A stand-in for the Legion daemon that serves exactly the routes a Legion role's `legion` tool and
  * plugin hit in a skill scenario: the claim registration (`claims/register`, `claims/ready`, the
  * daemon's claim routes the plugin boots through), the session's activity report
- * (`claims/activity`, after each turn), the grant the tool mints in-process before each of its own
+ * (`claims/activity`, after each turn), what the claim owes (`claims/owed`, which the phase
+ * reminder and the stall watch ask), the grant the tool mints in-process before each of its own
  * daemon calls (`grants`), the issue's record (`GET /legion/v1/issues/<key>/record`, the tool's
- * `read_record` and the reminder's own check, with `GET /legion/v1/state` beside it), the health
- * route (`GET /healthz`, which the tool's `read_build` reads for the contract this stand-in states
- * on it), the phase completion (`handoff/complete`, the tool's `handoff_complete`), and an owner's
- * routes: `signoff` (`sign_off`), `phase/backward` (`request_backward_move`), `tasks/stop`
- * (`stop_task`), `waves/release` (`release_children`), `gates/register` (`register_gate`) and
- * `plans/register` (`register_plan`). Each of the last eight redeems a grant. No credential route
- * and no grant file: a pane's `gh` and `git` read the rig's token from the gh files under its
- * `GH_CONFIG_DIR`, which `daemon-pane.go` writes, and no agent runs `legion` from bash.
+ * `read_record`, with `GET /legion/v1/state` beside it), the health route (`GET /healthz`, which
+ * the tool's `read_build` reads for the contract this stand-in states on it), the phase completion
+ * (`handoff/complete`, the tool's `handoff_complete`), and an owner's routes: `signoff`
+ * (`sign_off`), `phase/backward` (`request_backward_move`), `tasks/stop` (`stop_task`),
+ * `waves/release` (`release_children`), `gates/register` (`register_gate`) and `plans/register`
+ * (`register_plan`). Each of the last eight redeems a grant. No credential route and no grant
+ * file: a pane's `gh` and `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`,
+ * which `daemon-pane.go` writes, and no agent runs `legion` from bash.
  *
  * Every request and response body is the Go daemon's (`@legion/contracts/legion-api`): each body is
  * parsed with its route's schema, and one that does not parse is answered 400 naming the schema.
@@ -89,6 +90,9 @@ import {
   LegionGrantRequest,
   LegionHandoffCompleteRequest,
   LegionHealthResponse,
+  type LegionOwed,
+  LegionOwedRequest,
+  LegionOwedResponse,
   LegionPhaseBackwardRequest,
   LegionPlanRegisterRequest,
   LegionSignOffRequest,
@@ -321,6 +325,33 @@ const STATE = stateParse.data;
  * one word the controller's boot check reads. The contract goes in the header beside it
  * (below), where the tool's `read_build` reads it. */
 const HEALTH = LegionHealthResponse.parse({ status: "ok", project });
+
+/** The role that works each phase a phase worker is owed in, the daemon's `phase.RoleFor` for
+ * those phases; a phase no phase worker works is in no row. */
+const ROLE_FOR_PHASE: Readonly<Record<string, string>> = {
+  planning: "planner",
+  implementing: "implementer",
+  testing: "tester",
+  reviewing: "reviewer",
+  retro: "implementer",
+  merging: "merger",
+};
+
+/** `POST /legion/v1/claims/owed`'s answer for the one claim, as the daemon's `owedBy`
+ * (`api/owed.go`) reads it from the record: owed exactly while the record holds the claim's issue
+ * in the phase its role works, named as the daemon names that work, which the stand-in never
+ * moves. A phase worker's answer names the architect that owns the claim, the end of the daemon's
+ * owner walk; no issue of the state holds an architect claim, so the walk ends at the tree root's
+ * architect. An architect's answer names none. */
+function owedAnswer(): LegionOwed {
+  const phase = STATE.issues?.[issue]?.phase ?? "";
+  const owes = ROLE_FOR_PHASE[phase] === role;
+  return LegionOwedResponse.parse({
+    owes,
+    work: owes ? `the ${phase} phase of ${issue}` : "",
+    ...(role === "architect" ? {} : { architect: roleToken(project, TREE, "architect") }),
+  });
+}
 
 /** The response header the daemon states its own contract in
  * (`packages/daemon/internal/api/server.go`). */
@@ -645,6 +676,14 @@ async function handle(route: string, body: unknown): Promise<Answer> {
         return { response: forbidden("Invalid session secret"), logged };
       }
       return { response: new Response(null, { status: 204 }), logged };
+    }
+    case "/legion/v1/claims/owed": {
+      const parsed = parseBody("LegionOwedRequest", LegionOwedRequest.safeParse(body));
+      if ("refusal" in parsed) return { response: parsed.refusal };
+      if (parsed.data.secret !== SESSION_SECRET) {
+        return { response: forbidden("Invalid session secret") };
+      }
+      return { response: json(200, owedAnswer()) };
     }
     case "/legion/v1/grants": {
       const parsed = parseBody("LegionGrantRequest", LegionGrantRequest.safeParse(body));

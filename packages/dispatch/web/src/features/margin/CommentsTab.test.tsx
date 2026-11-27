@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+import { renderWithQueries } from "../../__tests__/query-provider";
 import type { AwayDraft } from "../conversation/unsent-drafts";
 import { MarginSheet } from "./MarginSheet";
 import { DESKTOP_WIDTH, specArtifact, stubViewport } from "./margin-fixture";
@@ -117,7 +118,7 @@ for (const row of [
   test(`Discard my draft on one of ${row.drafts.length} kept drafts hands the focus to ${row.to}, with no scroll`, async () => {
     const restoreViewport = stubViewport(DESKTOP_WIDTH);
     const user = userEvent.setup();
-    const view = render(<KeptDraftsMargin drafts={row.drafts.map(keptFor)} />);
+    const view = renderWithQueries(<KeptDraftsMargin drafts={row.drafts.map(keptFor)} />);
     // The controls the focus can land on, by name: each draft's Discard my draft, by its words,
     // and the Comments tab.
     const buttons = screen.getAllByRole("button", { name: "Discard my draft" });

@@ -1,6 +1,8 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  type Dispatch,
   type FormEvent,
+  type ReactNode,
   type SetStateAction,
   useEffect,
   useId,
@@ -22,12 +24,17 @@ import type {
   AnswerAskInput,
   Ask,
   AskAnswer,
+  AskAnswerWithTrees,
+  AskEditWithTrees,
   AskRead,
   AskWithTrees,
   Comment,
   CreateCommentInput,
 } from "../../api/types";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useTooltips } from "../../components/tooltips";
+import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { appendToDraft, type DraftUpload, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { ASK_FORM_WORDS } from "../ask-body/ask-body-words";
 import { isViewer } from "../refs/actor";
 import { stoppedNote } from "../writes/useKeyedWrite";
 import { useOneCreateOut } from "../writes/useOneCreateOut";
@@ -41,6 +48,7 @@ import type { AskPress } from "./ask-writes";
 import {
   AskAnswerWritesContext,
   AskClarificationWritesContext,
+  type OutstandingAnswerWrite,
   useOutstandingAnswerWrite,
 } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
@@ -64,6 +72,12 @@ interface UseAskAnswerFormOptions {
   onAnswered?: (id: string) => void;
   /** Opens the form for an answer the viewer may change, instead of its completion record. */
   initiallyChanging?: boolean;
+  /** Whether the form reads the ask's thread (`GET /api/v1/asks/{id}`), which the card's thread,
+   *  its recipients and its edit history draw, and which tells the form the ask changed or
+   *  closed under the reader. Default `true`, as every card reads it; a caller that draws no
+   *  thread and sends no such read turns it off, and the form then draws from the ask it is
+   *  handed and the answers it records. */
+  readThread?: boolean;
 }
 
 /** A failed answer, as the card shows it. */
@@ -91,6 +105,78 @@ function changesAnswer({ input }: AnswerPress): boolean {
 interface ClarificationPress extends AskPress {
   readonly questionWords: string;
   readonly text: string;
+}
+
+/** An ask's form, as `useAskAnswerForm` answers it: the state the ask body draws, and the read of
+ *  the ask's thread that its card draws the thread, the recipients and the edit history from.
+ *  Every state of the form lives as long as the form does, so a body drawn again for it - its
+ *  form after its record, or its record after its form - draws what the one before it drew. */
+export interface AskAnswerForm {
+  readonly answerFailure: AskAnswerFailure | null;
+  readonly answerFieldId: string;
+  readonly answerPlaceholder: string;
+  /** Every real answer, oldest first, from the thread read. */
+  readonly answers: AskAnswerWithTrees[];
+  readonly answerText: string;
+  readonly askChanged: boolean;
+  /** Whether Answer is disabled for want of something to send, read from the form as the hold
+   *  found it while the form holds (`refusedWhileOut`). */
+  readonly cannotAnswer: boolean;
+  readonly canChangeAnswer: boolean;
+  readonly cancelChanging: () => void;
+  readonly changing: boolean;
+  /** Whether the choice a question-shaped answer offers is drawn, read as `cannotAnswer` is. */
+  readonly choiceShown: boolean;
+  readonly clarification: OutstandingAnswerWrite<ClarificationPress>;
+  /** Whether a press of Ask back, or of Ask back instead, sent nothing while the question back
+   *  it sent before is still out past its deadline (`useOneCreateOut`). */
+  readonly clarificationStillOut: boolean;
+  /** The settled ask whose record stands in place of the form, or null while the form is drawn. */
+  readonly completed: AskWithTrees | null;
+  /** Lets go of an approval's Request changes, keeping the reason typed so far in the box. */
+  readonly dropReasonPick: () => void;
+  /** Whether the body still owes the focus to the form a card mounted in `change` mode opened
+   *  (`AskCardProps.mode`): the body takes it once, and clears this. */
+  readonly focusFormOnChange: { current: boolean };
+  /** Whether the form holds every press: a write of it is out within its deadline, or, inside
+   *  `NoTooltips`, the read of the thread after its landing is not yet drawn. */
+  readonly held: boolean;
+  /** The ask the form is drawn for: the thread read's once the question changed or the ask
+   *  closed under the reader, else the one its caller handed. */
+  readonly displayedAsk: AskWithTrees;
+  readonly edits: AskEditWithTrees[];
+  readonly isApproval: boolean;
+  readonly mutation: OutstandingAnswerWrite<AnswerPress>;
+  /** Ask back has nothing to send, read as `cannotAnswer` is. */
+  readonly nothingToAskBack: boolean;
+  readonly otherSelected: boolean;
+  /** Reads the names of the references the question's projection holds, for the labels of this
+   *  form's writes; the card mounts it wherever it draws. */
+  readonly questionReads: ReactNode;
+  /** Whether the answer box stood for a reason the option picked needs at the body's last
+   *  commit, so the box takes the focus as it comes to stand for one, and not again when a body
+   *  is drawn again for the form. */
+  readonly reasonFieldShownBefore: { current: boolean };
+  readonly reasonRequired: boolean;
+  /** The hold on every control of the form, as `true` for its `aria-disabled`; undefined while
+   *  the form holds nothing (`held`). */
+  readonly refusedWhileOut: true | undefined;
+  readonly selectRealOption: (label: string) => void;
+  readonly selected: string[];
+  readonly sendAnswer: (text: string) => void;
+  readonly sendClarification: () => void;
+  readonly setAnswerText: Dispatch<SetStateAction<string>>;
+  readonly setQuestionChoice: Dispatch<SetStateAction<boolean>>;
+  readonly startChanging: () => void;
+  readonly submit: (event: FormEvent<HTMLFormElement>) => void;
+  readonly submitGuard: SubmitGuard;
+  readonly submitHint: string | undefined;
+  readonly toggleOther: () => void;
+  readonly threadQuery: UseQueryResult<AskRead, Error>;
+  readonly unsentAnswer: string;
+  /** The files pasted or dropped into the answer box, each uploaded and its text added to the
+   *  answer of the ask it was pasted under. */
+  readonly upload: DraftUpload<string>;
 }
 
 /**
@@ -161,7 +247,11 @@ export function clarificationRefusal(clarification: {
   readonly method: WriteMethod | undefined;
 }): string {
   return (
-    stoppedNote(clarification, "your clarification", "sent") ?? "Could not send your clarification."
+    stoppedNote(
+      clarification,
+      ASK_FORM_WORDS.stopped.clarification,
+      ASK_FORM_WORDS.stopped.clarification_done
+    ) ?? ASK_FORM_WORDS.clarification_failed
   );
 }
 
@@ -174,7 +264,8 @@ export function useAskAnswerForm({
   initialThreadUpdatedAt,
   initiallyChanging = false,
   onAnswered,
-}: UseAskAnswerFormOptions) {
+  readThread = true,
+}: UseAskAnswerFormOptions): AskAnswerForm {
   const queryClient = useQueryClient();
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // Each AskCard instance owns its answer field label so cards with the same
@@ -224,6 +315,7 @@ export function useAskAnswerForm({
       threadBeforeSeed.fetchStatus !== "idle"
   );
   const threadQuery = useQuery<AskRead, Error>({
+    enabled: readThread,
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
     queryKey: ["ask-thread", ask.id],
@@ -455,15 +547,15 @@ export function useAskAnswerForm({
   const canAnswer = canSubmitAnswer();
   const submitHint =
     reasonRequired && trimmedAnswer === ""
-      ? `Add a reason to send ${reasonRequiredFor}`
+      ? `${ASK_FORM_WORDS.reason_hint} ${reasonRequiredFor}`
       : undefined;
   const answerPlaceholder = reasonRequired
-    ? "Why?"
+    ? ASK_FORM_WORDS.placeholder.why
     : isApproval && selected.includes("Approve")
-      ? "Note (optional)"
+      ? ASK_FORM_WORDS.placeholder.note
       : selected.length > 0
-        ? "Add a note (optional)"
-        : "Answer in your own words, or ask a question back";
+        ? ASK_FORM_WORDS.placeholder.add_note
+        : ASK_FORM_WORDS.placeholder.own_words;
   const sendAnswer = (text: string) => {
     if (isSubmitting) return;
     submitGuard.guard(() => {
@@ -536,6 +628,86 @@ export function useAskAnswerForm({
   // it where they can read and copy it, since the box it was in has gone. Their own answer is not
   // this: it left as a draft the moment the server recorded it.
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
+  // Whether the answer box stood for a reason the option picked needs at the body's last commit.
+  const reasonFieldShownBefore = useRef(false);
+  // A file's text joins the answer of the ask it was pasted or dropped under, which its press
+  // carries (`useDraftUpload`, `setAnswerTextOf`); only text added to the field on screen puts its
+  // question choice away.
+  const upload = useDraftUpload((text: string, askId: string) => {
+    setAnswerTextOf(askId, (current) => appendToDraft(current, text));
+    if (askId === ask.id) setQuestionChoice(false);
+  });
+  const tooltips = useTooltips();
+  // The form holds itself from the press of an answer or a clarification until that write is
+  // done with: while it is out, and inside `NoTooltips`, once it lands, until a read of the ask's
+  // thread newer than the landing is drawn as well (`awaitingRead`). Until then the form on that
+  // page is stale: after an answer that landed with no body to show, its options are still
+  // picked, and Answer would send a second answer. A landing that starts no read of the thread
+  // ends the hold as it lands (a first answer that comes back with its body, whose record
+  // replaces the form at once), and so does a read that fails, so the form never stays held.
+  // Outside `NoTooltips` the hold ends as the write is done with. Each control it holds - the
+  // answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it anyway, the
+  // Cancel of a change, and the options with Other - is `aria-disabled` in place of `disabled` on
+  // every page (`heldPress`, `MentionField`'s `held`): the box keeps its text and takes no typing,
+  // and the options are held by their group. `disabled` drops the focus to the body in a browser;
+  // this way the control the reader pressed keeps it. A press of any of them does nothing then,
+  // and neither does Ctrl+Enter, a paste or a drop in the box, or the form's submit. Each is drawn
+  // from the form as it stood when the hold began (`refusedForm`): the landing empties the box and
+  // closes the choice a question-shaped answer offers, and the control that would turn `disabled`
+  // or leave the page with that - Ask back, its text gone, or Ask back instead - stays on the page,
+  // held. So the ask body's hand-off of the focus moves none while the form holds, and nothing
+  // holding the focus leaves. The one move of the focus comes as the hold ends: the form's
+  // hand-off, or Ask back instead's, as it leaves the page, or the body's as Ask back turns
+  // `disabled`; a focus the reader moved out of the form meanwhile stays where they put it. Any
+  // other reason a control cannot be pressed - nothing typed before the press, an upload still out
+  // - still disables it. A write past its deadline holds nothing (`late`, `isSubmitting`).
+  const waitsForRead = !tooltips;
+  // The newest write of the form that has landed, by when it was sent: 0 while none has.
+  const landedWrite = Math.max(
+    mutation.isSuccess ? mutation.submittedAt : 0,
+    clarification.isSuccess ? clarification.submittedAt : 0
+  );
+  // The landing is recorded while rendering, React's pattern for state derived from a change: an
+  // effect would let one render between the landing and the record reach the screen, and a press
+  // then would be taken. `readAfter` is when the thread read on the page at the landing was made;
+  // the form waits for a newer one while the thread is being read. Outside `NoTooltips` nothing
+  // waits, so nothing is recorded and the form holds while the write is out.
+  const [landing, setLanding] = useState<{ readAfter: number | null; write: number }>({
+    readAfter: null,
+    write: landedWrite,
+  });
+  const landedNow = landedWrite > landing.write;
+  let readAfter = landedNow ? threadQuery.dataUpdatedAt : landing.readAfter;
+  const awaitingRead =
+    waitsForRead &&
+    readAfter !== null &&
+    threadQuery.isFetching &&
+    threadQuery.dataUpdatedAt <= readAfter;
+  if (!awaitingRead) readAfter = null;
+  if (waitsForRead && (landedNow || readAfter !== landing.readAfter)) {
+    setLanding({ readAfter, write: Math.max(landedWrite, landing.write) });
+  }
+  // The one flag every hold of the form reads.
+  const held = isSubmitting || awaitingRead;
+  const refusedWhileOut = held || undefined;
+  // What a held control is drawn from, recorded while rendering as the landing is, in the first
+  // render that holds: the press, before the landing empties the box.
+  const formNow = {
+    cannotAnswer: !canAnswer,
+    choice: questionChoice,
+    nothingToAskBack: trimmedAnswer === "",
+  };
+  const [heldForm, setHeldForm] = useState<typeof formNow | null>(null);
+  const refusedForm = refusedWhileOut ? (heldForm ?? formNow) : null;
+  if (refusedForm !== heldForm) setHeldForm(refusedForm);
+  // What the held controls are drawn from: the press as the hold found it while it holds, else
+  // the form now.
+  const shown = refusedForm ?? formNow;
+  // Whether the form still owes the focus its opening in `change` mode: a card the reader's press
+  // of Change answer opened in the place of the button they pressed (the Answers page), which
+  // took the focus away with it to the page's body. The body that draws the form takes it once
+  // (`AskBody`), and a body drawn again for the form - after its record - moves none.
+  const focusFormOnChange = useRef(initiallyChanging);
 
   return {
     answerFailure:
@@ -547,32 +719,32 @@ export function useAskAnswerForm({
     answers,
     answerText,
     askChanged,
-    clarificationStillOut: oneQuestion.refused,
-    canAnswer,
+    cannotAnswer: shown.cannotAnswer,
     canChangeAnswer,
     cancelChanging,
     changing,
+    choiceShown: shown.choice,
     clarification,
+    clarificationStillOut: oneQuestion.refused,
     completed,
     displayedAsk,
     dropReasonPick,
     edits,
+    focusFormOnChange,
+    held,
     isApproval,
-    isSubmitting,
     mutation,
+    nothingToAskBack: shown.nothingToAskBack,
     otherSelected,
-    questionChoice,
-    /** Reads the names of the references the question's projection holds, for the labels of
-     *  this form's writes; the card mounts it wherever it draws. */
     questionReads: question.reads,
+    reasonFieldShownBefore,
     reasonRequired,
-    requiresReason,
+    refusedWhileOut,
     selectRealOption,
     selected,
     sendAnswer,
     sendClarification,
     setAnswerText,
-    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submitGuard,
@@ -580,7 +752,7 @@ export function useAskAnswerForm({
     submitHint,
     toggleOther,
     threadQuery,
-    trimmedAnswer,
     unsentAnswer,
+    upload,
   };
 }

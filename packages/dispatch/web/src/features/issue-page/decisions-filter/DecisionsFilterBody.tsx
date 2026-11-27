@@ -30,10 +30,11 @@ import {
 import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
 import { FoldMark } from "../FoldMark";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
-import { chipName, type TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";

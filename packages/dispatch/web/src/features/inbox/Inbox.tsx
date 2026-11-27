@@ -46,6 +46,8 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
+import { AskHandOn } from "../ask-body/AskHandOn";
+import { declineRefusal } from "../ask-body/DeclineControl";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
 import { issuePriority } from "../issue/issue-priority";
@@ -73,7 +75,6 @@ import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { THREAD_ORDER_LABELS, THREAD_ORDERS, useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
-import { AskHandOn } from "./AskHandOn";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { replyRefusal } from "./AskThread";
 import {
@@ -87,7 +88,6 @@ import { type AskOrdinal, askOrdinals } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { useInboxWrites } from "./ask-writes";
 import { blockedOnYouText, needsYou, waitingOnHuman } from "./BlockedOnYou";
-import { declineRefusal } from "./DeclineControl";
 import { DismissControl, RowDismissContext } from "./DismissControl";
 import {
   ALL_GROUP_KEY,
