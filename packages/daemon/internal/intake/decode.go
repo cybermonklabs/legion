@@ -140,7 +140,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "envoy" {
 			return decodedMessage{}, fmt.Errorf("the listener wake subject has envelope source %q", envelope.Source)
 		}
-		fact, err = decodeListenerWake(envelope.EventID, envelope.Payload)
+		fact, err = decodeListenerWake(envelope.EventID, project, envelope.Payload)
 	case strings.HasPrefix(subject, subjectforms.IssueTopicPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
@@ -211,6 +211,8 @@ func (e envoyEnvelope) factID() string {
 // and the whole of the wake durable's filter (OpenConsumers). It is a new leaf under
 // notifications.legion.>, which the stream already carries, so it needs no stream change and no
 // new grant. Every daemon consumes it: the listener does not know which daemon owns a session.
+// A role report names its project in its token, so a daemon decodes another project's role
+// report to no fact (decodeListenerWake) and acknowledges it with no transaction.
 const legionWakeSubject = "notifications.legion.wake"
 
 // decodeListenerWake decodes one wake report of the Envoy listener (ListenerWake). Its wire shape
@@ -220,6 +222,17 @@ const legionWakeSubject = "notifications.legion.wake"
 // no fact rather than poison: a listener of a later release can report a kind this build has no
 // wake for, and nothing is lost by acknowledging it.
 //
+// A role report is no fact either when its token is not of project, the daemon's Dispatch
+// project. A role token is `legion-<project token>-<issue project>-<number>-<role>`
+// (claim.NewToken), and the controller's is `legion-<project token>-controller`; a project token
+// holds no hyphen (claim.ProjectToken). So a token of this project begins with
+// `legion-<project token>-`, and a token of any other project does not. The role is read in
+// either form of a role's name, the token alone or a project and then the token
+// (roleOfProject), and the fact names the token alone. Every daemon reads every report, and
+// without this test each daemon would record each other project's role report in
+// processed_events, where nothing deletes it. An agent report names a session and no project,
+// and a `listener_ready` report names neither, so both decode for every project.
+//
 // The report's clock is bounded to the daemon's own: a payload naming a time in the future is
 // read as now. The subject is a stream subject, and a publisher that reaches it chooses every
 // field of the envelope and the payload, this `at` and the envelope's source among them; a
@@ -228,7 +241,7 @@ const legionWakeSubject = "notifications.legion.wake"
 // publish could have pods released into a silence nothing wakes them out of. The listener
 // refuses a client publish on its own subject as well (packages/envoy/cmd/listener/api.go), so
 // a forged report has to reach the bus directly; this is the half that holds whatever does.
-func decodeListenerWake(eventID, payload string) (Fact, error) {
+func decodeListenerWake(eventID, project, payload string) (Fact, error) {
 	var report struct {
 		Kind    string `json:"kind"`
 		Role    string `json:"role"`
@@ -241,9 +254,11 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 	switch report.Kind {
 	case ListenerWakeReady:
 	case ListenerWakeRole:
-		if report.Role == "" {
+		role, ok := roleOfProject(report.Role, project)
+		if !ok {
 			return nil, nil
 		}
+		report.Role = role
 	case ListenerWakeAgent:
 		if report.Session == "" {
 			return nil, nil
@@ -259,6 +274,20 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 		at = now
 	}
 	return ListenerWake{Kind: report.Kind, Role: report.Role, Session: report.Session, At: at, Report: eventID}, nil
+}
+
+// roleOfProject reads role in either form of a role's name (subjectforms.CanonicalRole): the
+// token alone, or a Dispatch project and then the token. It returns the token, and whether the
+// token is a role token of project, the daemon's Dispatch project key: the token begins with
+// `legion-<project token>-`, and a name in the new form names project. A project with no token
+// holds no claim, so no role is its.
+func roleOfProject(role, project string) (string, bool) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return "", false
+	}
+	named, name, legacy := subjectforms.CanonicalRole(role)
+	return name, (legacy || named == project) && strings.HasPrefix(name, "legion-"+token+"-")
 }
 
 type dispatchEvent struct {

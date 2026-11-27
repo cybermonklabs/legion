@@ -70,6 +70,7 @@ import {
   HANDOFF_PHASE_RULE_WORDS,
   PLAN_INPUT_CODE,
   PLAN_OTHER_ISSUE_CODE,
+  PLANNED_STEP_STATES,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
@@ -81,10 +82,14 @@ import {
   STEP_KINDS,
   STEP_OTHER_ISSUE_CODE,
   STEP_RESULTS,
+  STEP_TASK_MAX,
+  STEP_TASK_PATTERN,
+  STEP_TASK_RULE_WORDS,
   STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
+  BUS_UNANSWERED_PREFIX,
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
@@ -664,6 +669,14 @@ const (
 	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
 )
 
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = ${JSON.stringify(PLANNED_STEP_STATES[0])}
+	PlannedStepRunning    = ${JSON.stringify(PLANNED_STEP_STATES[1])}
+)
+
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
 // whose plan is the plan of another issue (a writer that is not the daemon's session is refused
 // StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
@@ -683,6 +696,17 @@ const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
 // StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
+
+// StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
+// plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
+// a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
+// side gives. Generated from STEP_TASK_PATTERN, STEP_TASK_MAX and STEP_TASK_RULE_WORDS in
+// packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
+// such an id, whose steps Dispatch could record none of.
+const StepTaskPattern = ${JSON.stringify(STEP_TASK_PATTERN.source)}
+const StepTaskMax = ${STEP_TASK_MAX}
+const StepTaskRule = ${JSON.stringify(STEP_TASK_RULE_WORDS)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -782,6 +806,12 @@ const SessionClaimStale = ${SESSION_CLAIM_STALE_MS} * time.Millisecond
 const ListenerCallTimeout = ${LISTENER_CALL_TIMEOUT_MS} * time.Millisecond
 const ListenerCallRetryDelay = ${LISTENER_CALL_RETRY_DELAY_MS} * time.Millisecond
 const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
+
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = ${JSON.stringify(BUS_UNANSWERED_PREFIX)}
 
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller

@@ -23,6 +23,10 @@ import type { ModLink } from "./mod-link"
  *  wait this long means the mod is gone rather than busy, and the header keeps its last values. */
 const AGENT_STREAM_CALL_TIMEOUT_MS = 5_000
 
+/** How the live view's warning for a read of the mod that failed begins. The thing it read and
+ *  the failure's message follow it (`refreshSettings`, `refreshCommands`). */
+export const LIVE_VIEW_READ_FAILED = "the live view could not read this session's "
+
 /**
  * The most row ids this stream remembers having read, so a row that arrives twice is read once.
  *
@@ -69,8 +73,9 @@ export interface AgentStreamOptions {
    *  rather than a person (`./agent-stream-claude`, `PANE_SEEDED_COMMAND`). */
   readonly isPane?: boolean
   readonly now?: () => number
-  /** Where a failure that must not stop the session is written; the server's stderr by default. */
-  readonly warn?: (text: string) => void
+  /** Where a failure that must not stop the session is written: the server's stderr, through its
+   *  tell gate (`./stop-gates`), so a read the link's close at the stop ends says nothing. */
+  readonly warn: (text: string) => void
   /**
    * Takes every event this stream reads, before the stream records it. The link's events have one
    * consumer and this is it, so whatever else needs them - the router of a person's messages, and
@@ -144,10 +149,8 @@ export interface AgentStreamRunner {
  * publishes no settings and no commands, and its conversation stays empty.
  */
 export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner {
-  const { link } = options
+  const { link, warn } = options
   const now = options.now ?? Date.now
-  const warn =
-    options.warn ?? ((text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`))
   /** The id both subjects name now; it moves with the mod's own id after a `/clear`. */
   let session = options.sessionId
   /** The viewer's control subject, on the session's connection now (`./control-subscription`). */
@@ -225,7 +228,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
         if (!control.stopped) publishSettings()
       })
       .catch((error: unknown) => {
-        warn(`the live view could not read this session's model — ${messageFor(error)}`)
+        warn(`${LIVE_VIEW_READ_FAILED}model — ${messageFor(error)}`)
       })
       .finally(() => {
         readingSettings = false
@@ -242,7 +245,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
         if (!control.stopped) publishCommands()
       })
       .catch((error: unknown) => {
-        warn(`the live view could not read this session's commands — ${messageFor(error)}`)
+        warn(`${LIVE_VIEW_READ_FAILED}commands — ${messageFor(error)}`)
       })
       .finally(() => {
         readingCommands = false

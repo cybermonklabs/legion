@@ -534,7 +534,8 @@ function renewDelay(expiry: number, now: number): number {
  * connection is about to move off, is the renewal's to cure.
  *
  * Returns the function that stops it, its status reader included; the connection closing stops
- * it too.
+ * it too. A stopped keeper warns of nothing and renews nothing more, also where a renewal in
+ * flight at the stop fails after it.
  */
 export function keepNatsCredential(
   connection: Pick<NatsConnection, "reconnect" | "isClosed" | "closed" | "status">,
@@ -580,6 +581,9 @@ export function keepNatsCredential(
       if (stopped) return;
       if (credential.needsReconnect()) await connection.reconnect();
     } catch (error) {
+      // A keeper stopped while its renewal was in flight warns nothing and arms nothing, as its
+      // status reader does: its session stops or its connection closed, and neither renews again.
+      if (stopped) return;
       // The host moved to another session meanwhile: that session's renewal is the one that
       // counts, so the keeper renews again at once, for it, and has nothing to warn of.
       if (error instanceof SessionMovedError) {

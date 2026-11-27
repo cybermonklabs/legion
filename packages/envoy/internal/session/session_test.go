@@ -35,9 +35,9 @@ func newSessionRegistry(t *testing.T) *session.SessionRegistry {
 	return sessions
 }
 
-// deliverThroughEntry resolves the way the listener's core path does: the caller reads the
+// deliverThroughEntry resolves the way the listener's topic fan-out does: the caller reads the
 // target's record (resolvedEntry) and hands it to session.Resolve, which reads no registry of its
-// own, under the core path's stream sequence of 0. Every topic these rows deliver is a session's
+// own, under the core path's stream sequence of 0. Every topic these rows resolve is a session's
 // agent subject, which the stream captures.
 func deliverThroughEntry(t *testing.T, sessions *session.SessionRegistry, item contracts.Envelope, interest store.Interest) error {
 	t.Helper()
@@ -57,8 +57,8 @@ func TestDeliver_NoRegistryEntry(t *testing.T) {
 
 // An entry the previous build wrote for a self-subscribed session names a session on the core
 // path: it holds no consumer of its own, and no subscription of its own takes its messages any
-// more. The resolution fails, which raises a delivery exception, rather than making the silent
-// skip that rule once made.
+// more. The resolution fails, which the fan-out counts as a failed delivery, rather than making
+// the silent skip that rule once made.
 func TestDeliver_NoSessionRecord_whenSessionIsOnlySelfSubscribed(t *testing.T) {
 	// Given
 	sessions := newSessionRegistry(t)

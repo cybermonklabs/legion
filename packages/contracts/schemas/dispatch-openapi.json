@@ -7733,7 +7733,7 @@
     },
     "/api/v1/issues/{key}/plans/{id}": {
       "put": {
-        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps, needs?}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan, its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role, and its needs are the ids of the tasks of the plan it needs, [] for none; a task written with no needs, as a daemon of the release before writes it, records them as not recorded, and the answer and the steps read give them as null. A Dispatch of the release before ignores needs, so a plan written to it also records them as not recorded. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form, a need that names no task of the plan among them, is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyPlansById",
         "parameters": [
           {
@@ -8069,7 +8069,7 @@
         "x-auth": "any"
       },
       "put": {
-        "description": "Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. legion-daemon:\u003cproject\u003e is the session the Legion daemon of the issue's project writes as, \u003cproject\u003e the key up to its first -. With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token publishes: a credential that holds legion-status and proves session legion-daemon:\u003cproject\u003e, or one that holds legion-status, proves session legion-daemon:\u003cP\u003e of another project's daemon and names that project P. Every other credential is 403 ROLE_HOLDER_FORBIDDEN, the shared token whose actor names that session included. With it off, the actor must be session legion-daemon:\u003cproject\u003e, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session, and any other actor is 403 ROLE_HOLDER_FORBIDDEN; a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. While the project's proven_sessions is on (PUT /api/v1/projects/{key}/proven-sessions), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 and 404 refusals below. Each stored pair records whether a daemon's own token wrote it, the issue's own daemon's or another project's daemon's, a pair the write keeps unchanged included, and only such a pair names an architect whose write R26 lets through. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window.",
+        "description": "Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. legion-daemon:\u003cproject\u003e is the session the Legion daemon of the issue's project writes as, \u003cproject\u003e the key up to its first -. With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token publishes: a credential that holds legion-status and proves session legion-daemon:\u003cproject\u003e, or one that holds legion-status, proves session legion-daemon:\u003cP\u003e of another project's daemon and names that project P. Every other credential is 403 ROLE_HOLDER_FORBIDDEN, the shared token whose actor names that session included. With it off, the actor must be session legion-daemon:\u003cproject\u003e, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session, and any other actor is 403 ROLE_HOLDER_FORBIDDEN; a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. While the project's proven_sessions is on (PUT /api/v1/projects/{key}/proven-sessions), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 and 404 refusals below. Each stored pair records whether a daemon's own token wrote it, the issue's own daemon's or another project's daemon's, a pair the write keeps unchanged included, and only such a pair names an architect whose write R26 lets through. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. A write that changes the set of pairs appends one issue event, issue.role_holders_changed, whose payload is {key, holders, previous_holders}: the set it stored and the set it replaced, each in workflow order, each pair {role, session, recorded_at}, as the write's actor and at the write's time; GET /api/v1/issues/{key}/events serves it, so the log says which session held each role at a past time, from the release that writes the event on. A write that keeps every pair appends nothing. The event is quiet and notifies nobody, and the write takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window.",
         "operationId": "putApiV1IssuesByKeyRoleHolders",
         "parameters": [
           {
@@ -8222,7 +8222,7 @@
     },
     "/api/v1/issues/{key}/steps": {
       "get": {
-        "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
+        "description": "The tasks of the issue's workflow and every run of their steps: {issue, tasks: [{task, needs, planned?, steps}]}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not: needs is the ids of the tasks of that plan the task needs, as the plan's node records them ([] for a task that needs none), and null where the node recorded none: a daemon of the release before wrote that plan, or a Dispatch of the release before took the write and dropped its needs, which no later write at the same version puts back; planned is each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. The read takes the plan node and the runs alone, and reads no document. Each task's runs come in the order they ran, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue with no plan and no run reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
         "operationId": "getApiV1IssuesByKeySteps",
         "parameters": [
           {
@@ -12380,7 +12380,7 @@
     },
     "/api/v1/projects/{key}/plans": {
       "get": {
-        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
+        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps, needs}]}, each task's needs null where the write recorded none, and plan null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
         "operationId": "getApiV1ProjectsByKeyPlans",
         "parameters": [
           {
@@ -28149,6 +28149,46 @@
           "id": {
             "type": "string"
           },
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "steps",
+          "needs"
+        ],
+        "type": "object"
+      },
+      "PlanTaskInput": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
           "steps": {
             "items": {
               "type": "string"
@@ -28165,24 +28205,29 @@
         ],
         "type": "object"
       },
-      "PlanTaskInput": {
+      "PlannedStep": {
         "properties": {
-          "id": {
+          "name": {
             "type": "string"
           },
-          "steps": {
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
+          "state": {
+            "enum": [
+              "not started",
+              "running",
+              "passed",
+              "failed",
+              "stopped"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
           }
         },
         "required": [
-          "id",
-          "steps"
+          "step",
+          "name",
+          "state"
         ],
         "type": "object"
       },
@@ -31019,6 +31064,21 @@
       },
       "StepTask": {
         "properties": {
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "planned": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedStep"
+            },
+            "type": "array"
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/StepRecord"
@@ -31034,6 +31094,7 @@
         },
         "required": [
           "task",
+          "needs",
           "steps"
         ],
         "type": "object"
