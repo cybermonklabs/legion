@@ -45,6 +45,7 @@ import {
   markThreadRead,
   patchIssue,
   putArchitectureSource,
+  putIssueState,
   putProjectDefaultRepository,
   requestApproval,
   reviewArtifact,
@@ -10859,6 +10860,9 @@ test("k-default-keys: on the new issue page with Details open an Escape held dow
     `k-default-keys: a held Escape in the new page's title editor: ${text}`;
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  // alice has read the issue through its head, so the page's read mark (`IssueReadMark.tsx`)
+  // writes nothing while she reads it, and every write the row counts is one of its keys.
+  await putIssueState(issue.key, { last_read_seq: (await getIssue(issue.key)).last_seq });
   await withIssuePage(page.context(), "alice");
   await page.setViewportSize(WIDE);
   await gotoIssue(page, `/issues/${issue.key}`);

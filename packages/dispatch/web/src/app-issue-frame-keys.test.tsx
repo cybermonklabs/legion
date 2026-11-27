@@ -83,6 +83,8 @@ async function renderIssue(page: IssuePageChoice): Promise<void> {
     spyOn(api, "getIssueDecisions").mockRejectedValue(unread),
     spyOn(api, "getIssueResults").mockRejectedValue(unread),
     spyOn(api, "getReferenceTargets").mockRejectedValue(unread),
+    // The new page's read mark reads the issue's head from its events (`IssueReadMark.tsx`).
+    spyOn(api, "getIssueEvents").mockRejectedValue(unread),
     // Details, which Shift+M opens in the frame, draws the issue's properties: the Repository
     // row suggests the project's default from the project list, answered above, Components reads
     // the project's architecture sources, and Blocks and Referenced by what references the issue.
