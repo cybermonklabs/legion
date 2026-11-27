@@ -1,15 +1,22 @@
-import { expect, setSystemTime, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { createPhaseReminder } from "./phase-reminder";
 import {
   ASYNC_JOB_KIND,
   asyncJobKinds,
   type RunningAsyncJobs,
+  type SessionActivityPhase,
   SUBAGENT_KIND,
   sameSessionActivity,
   sessionActivity,
   sessionActivityRequest,
 } from "./session-activity";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
+
+// A row that pins the clock with `setSystemTime` and is ended by the command's guard never
+// reaches its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
+});
 
 const implementer = {
   sessionID: "ses_implementer",
@@ -109,16 +116,16 @@ test("a WAITING reply moves the reported wake out by the waiting limit", async (
   // Each wake is stamped on `Date.now()`, held here at one moment so each is read exactly.
   const settledAt = Date.now();
   setSystemTime(new Date(settledAt));
-  let ordinaryAt: unknown;
-  let waitingAt: unknown;
+  let ordinary: SessionActivityPhase;
+  let waiting: SessionActivityPhase;
   try {
     await reminder.settle({ kind: "settle", lastAssistantText: "Still pushing." });
-    ordinaryAt = reminder.phaseWake().nextReminderAt;
+    ordinary = reminder.phaseWake();
     await reminder.settle({
       kind: "settle",
       lastAssistantText: "WAITING on CI to finish the run.",
     });
-    waitingAt = reminder.phaseWake().nextReminderAt;
+    waiting = reminder.phaseWake();
   } finally {
     setSystemTime();
   }
@@ -127,13 +134,12 @@ test("a WAITING reply moves the reported wake out by the waiting limit", async (
     DEFAULT_STALL_LIMITS.reminderMs,
     DEFAULT_STALL_LIMITS.waitingMs,
   ]);
-  expect(ordinaryAt, "the ordinary settle armed a reminder").not.toBeNull();
-  expect(waitingAt, "the WAITING settle armed one too").not.toBeNull();
-  expect(Date.parse(String(ordinaryAt))).toBe(settledAt + DEFAULT_STALL_LIMITS.reminderMs);
-  expect(
-    Date.parse(String(waitingAt)),
-    "the wait buys the waiting limit instead of the ordinary one"
-  ).toBe(settledAt + DEFAULT_STALL_LIMITS.waitingMs);
+  expect(ordinary, "the ordinary settle armed a reminder at the ordinary limit").toEqual({
+    nextReminderAt: new Date(settledAt + DEFAULT_STALL_LIMITS.reminderMs).toISOString(),
+  });
+  expect(waiting, "the wait buys the waiting limit instead of the ordinary one").toEqual({
+    nextReminderAt: new Date(settledAt + DEFAULT_STALL_LIMITS.waitingMs).toISOString(),
+  });
 
   // A turn that starts makes every armed timer stale, so the report says no wake at all, whatever
   // timer is still armed on the host.

@@ -63,6 +63,9 @@ beforeEach(() => {
 afterEach(() => {
   stopSink();
   resetEnvoyPluginInterfaceForTests();
+  // The real clock comes back after every row, whatever a row pinned with `setSystemTime`, so no
+  // pin outlives the row that set it.
+  setSystemTime();
 });
 
 describe("the Envoy plugin interface", () => {

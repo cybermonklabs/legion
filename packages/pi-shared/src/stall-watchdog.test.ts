@@ -1,7 +1,7 @@
-import { expect, jest, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { turn } from "@legion/test-fixtures/fake-clock";
+import { sweepOnFakeClock } from "../test/sweep-on-fake-clock";
 // The `./stall-watchdog` import below is the whole of this file's merge-base check: on the
 // merge base there is no `./stall-watchdog`, so every test here fails to resolve rather than
 // passing vacuously.
@@ -20,54 +20,18 @@ import {
   type StallWatchdogDeps,
 } from "./stall-watchdog";
 
+// A row that holds Bun's fake clock (`sweepOnFakeClock`) and is ended by the command's guard never
+// reaches its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
 
 /** A wall-clock moment to count from, so every number a failure prints is a difference. */
 const START = 1_793_000_000_000;
-
-/** Lets every promise chain queued so far run. A sweep reads no clock between its awaits and
- *  every dependency the rig gives it answers in this process, so once the event loop has turned
- *  the sweep has done all it does before a timer; Bun's fake clock leaves `setImmediate` real. */
-async function drain(): Promise<void> {
-  for (let turns = 0; turns < 25; turns += 1) await turn();
-}
-
-/** What {@link sweepOnFakeClock} hands its row while the sweep runs. */
-interface HeldSweep {
-  /** Whether the sweep has handed back yet. */
-  readonly handedBack: () => boolean;
-  /** Moves Bun's fake clock on by `ms`, then lets the sweep run on. */
-  readonly advance: (ms: number) => Promise<void>;
-}
-
-/** Runs one sweep with Bun's fake clock holding the host timer of the abort's bounded wait
- *  (`abortEnd`), and runs `look` once the sweep has done all it does before that timer. The real
- *  clock comes back however `look` ends. */
-async function sweepOnFakeClock(
-  watchdog: StallWatchdog,
-  look: (sweep: HeldSweep) => Promise<void> | void
-): Promise<void> {
-  jest.useFakeTimers();
-  try {
-    let handedBack = false;
-    const sweeping = watchdog.sweep().then(() => {
-      handedBack = true;
-    });
-    await drain();
-    await look({
-      handedBack: () => handedBack,
-      advance: async (ms) => {
-        jest.advanceTimersByTime(ms);
-        await drain();
-      },
-    });
-    await sweeping;
-  } finally {
-    jest.useRealTimers();
-  }
-}
 
 /** The limits a role runs on with nothing set in its environment. */
 function limitsFor(role: string): StallLimits {

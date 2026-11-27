@@ -13,6 +13,12 @@ import {
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 /** A contract the test's client states on every request. */
 const CONTRACT = 60;
 
@@ -590,12 +596,6 @@ test("the name is taken at the host's first-turn callback and not before it", as
   await booted.claimed;
 
   expect(steps.at(-1)).toBe(`claimRole ${claimToken}`);
-});
-
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `finally`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
 });
 
 test("a boot that gets no first turn claims at the bound", async () => {

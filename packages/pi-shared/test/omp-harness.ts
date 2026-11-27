@@ -20,7 +20,6 @@ import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
-import { span, until } from "@legion/test-fixtures/wait";
 import { Terminal } from "@xterm/headless";
 import { z } from "zod";
 import { linkOmpNatives } from "./omp-natives";
@@ -1084,22 +1083,6 @@ export interface LegionPaneOptions {
    * after that frame, so the terminal frame is not the end of the run's provider traffic.
    */
   readonly quietMs?: number;
-  /**
-   * Settle on the fact that ends the case's run instead of at the host's first terminal
-   * `agent_end`: a turn the pane's own timer or the end of a background job starts, and a
-   * `triggerTurn` steer sent from `agent_end`, come after that frame. The pane settles once `done`
-   * holds over what the stand-in has served and the host has ended a run after the last turn the
-   * gateway took. Where the case claims that nothing follows and no state of the pane shows it,
-   * `quiet` holds a span after that, through the shared wait's `span` with its why. Both wait
-   * through `@legion/test-fixtures/wait`, which ends at the row's deadline, so a row that settles
-   * this way sets no timeout of its own (docs/testing.md, "A Bun test waits for its fact, and its
-   * command sets its one guard"). A pane takes this or `quietMs`, not both.
-   */
-  readonly settledWhen?: {
-    readonly what: string;
-    readonly done: (pane: LegionPaneProgress) => boolean;
-    readonly quiet?: { readonly ms: number; readonly why: string };
-  };
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
   /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
@@ -1112,9 +1095,6 @@ export interface LegionPaneOptions {
    */
   readonly whileUp?: (rpc: Rpc) => Promise<void>;
 }
-
-/** What a pane has done so far, for `LegionPaneOptions.settledWhen`: the stand-in's records. */
-export type LegionPaneProgress = Pick<LegionPane, "requests" | "turns" | "selfChecks">;
 
 /** What a settled Legion pane left behind. */
 export interface LegionPane {
@@ -1172,9 +1152,6 @@ export async function runLegionPane(
   cleanup: Cleanup
 ): Promise<LegionPane> {
   const { name, role, tree, issue } = options;
-  if (options.settledWhen !== undefined && options.quietMs !== undefined) {
-    throw new Error("a Legion pane settles on settledWhen or on quietMs, not on both");
-  }
   const claimToken = `legion-${name}-${issue.toLowerCase()}-${role}`;
   // The pane's secrets: the boot token its registration spends, the secret the stand-in daemon
   // answers it with, and its Dispatch bearer.
@@ -1282,24 +1259,13 @@ export async function runLegionPane(
   });
   await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
 
-  /** The Messages requests that were turns of the conversation, and those that were side turns
-   * (the self-check), each in order. */
-  const turns = (): Request[] =>
-    requests.filter(
-      (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
-    );
-  const selfCheckRequests = (): Request[] =>
-    requests.filter((request) => request.path === "/anthropic/v1/messages" && isSelfCheck(request));
-  const progress: LegionPaneProgress = { requests, turns, selfChecks: selfCheckRequests };
-
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of
    * `prompts` once the run the one before it started has settled, and left once the last has
    * settled. A run has settled when the RPC stream reports its terminal agent_end: a continuation
    * the host scheduled (the follow-up) starts its turn before that, under the same run. A steer
    * the extension sends from `agent_end` instead starts its continuation after that frame, so
-   * `quietMs` waits for the gateway to fall silent rather than for the frame, and `settledWhen`
-   * for the fact the case's run ends on.
+   * `quietMs` waits for the gateway to fall silent rather than for the frame.
    */
   const live = async (
     prompts: readonly string[],
@@ -1307,8 +1273,6 @@ export async function runLegionPane(
     whileUp?: (rpc: Rpc) => Promise<void>
   ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
-    /** How many turns the gateway had taken when the host last ended a run, for `settledWhen`. */
-    let endedAtTurns = -1;
     const rpc = spawnRpc(
       binary,
       {
@@ -1348,7 +1312,6 @@ export async function runLegionPane(
             frame.type === "agent_end" &&
             !("isTerminal" in frame && frame.isTerminal === false)
           ) {
-            endedAtTurns = turns().length;
             settled.resolve();
           }
         },
@@ -1356,24 +1319,11 @@ export async function runLegionPane(
       cleanup
     );
     for (const prompt of prompts) {
-      // Each prompt waits on a run end of its own: one the host ended for the prompt before
-      // would otherwise end the wait below before this prompt's first turn.
       settled = Promise.withResolvers<void>();
-      endedAtTurns = -1;
       lastAnsweredAt = Date.now();
       const started = served;
       rpc.send({ type: "prompt", message: prompt });
-      const settle = options.settledWhen;
-      if (settle !== undefined) {
-        await Promise.race([
-          until(
-            `${settle.what}, and the host to end a run after the last turn the gateway took`,
-            () => settle.done(progress) && endedAtTurns === turns().length
-          ),
-          rpc.closed,
-        ]);
-        if (settle.quiet !== undefined) await span(settle.quiet.ms, settle.quiet.why);
-      } else if (options.quietMs === undefined) {
+      if (options.quietMs === undefined) {
         await Promise.race([settled.promise, rpc.closed]);
       } else {
         const quietMs = options.quietMs;
@@ -1399,6 +1349,10 @@ export async function runLegionPane(
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
   await live(prompts, [], options.whileUp);
 
+  const turns = (): Request[] =>
+    requests.filter(
+      (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
+    );
   // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
   // so nothing is still appending and a trailing fragment is a defect that must throw rather
   // than be withheld (dispatch://INFRA-2188).
@@ -1414,7 +1368,10 @@ export async function runLegionPane(
   return {
     requests,
     turns,
-    selfChecks: selfCheckRequests,
+    selfChecks: () =>
+      requests.filter(
+        (request) => request.path === "/anthropic/v1/messages" && isSelfCheck(request)
+      ),
     toolResults: () => {
       // Every turn carries the whole conversation so far, so the first sighting of each id is
       // its place in the conversation.
