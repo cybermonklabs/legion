@@ -2,6 +2,8 @@
 
 Reply on each thread you answer, one reply a thread: the implementer writes `Fixed in <commit>: <one line>` or `Declined: <reason>`. Only the pull request's author can resolve a thread, and the implementer opens every Legion pull request, so the implementer resolves each thread it answered, one call a thread, never in bulk:
 
+At retro, a thread reported with `report_defect` takes the reply `Reported as defect <id>: <one line>`.
+
 ```bash
 gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
 ```
