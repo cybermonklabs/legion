@@ -3,11 +3,13 @@ package workspace
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,6 +25,11 @@ import (
 
 const testTimeout = 30 * time.Second
 
+// workspaceTestParallelism bounds concurrent tests independently of the host's CPU count.
+// They mostly wait for git and jj children; eight lets those waits overlap on a four-CPU runner.
+// m.Run parses flags afterwards, so an explicit -parallel still wins.
+const workspaceTestParallelism = 8
+
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,
 // remote or credential not the test's own (fixtureenv.MustGuard), and gives the process a home of the
 // package's own (fixtureenv.Home), so every real jj and
@@ -36,6 +43,10 @@ const testTimeout = 30 * time.Second
 // config home under an id of that repository's or workspace's own, so tests that run at once read
 // none of each other's, and no test sets a home on the process but one that runs alone.
 func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(workspaceTestParallelism)); err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)
+		os.Exit(1)
+	}
 	fixtureenv.MustGuard()
 	os.Exit(runUnderAHomeOfThePackagesOwn(m))
 }
@@ -76,7 +87,7 @@ func setupEnvironment() []string {
 	return fixtureenv.Isolated(os.Getenv("HOME"))
 }
 
-// recordingRunner runs every command through the production runner, NewRunner, with the real jj
+// recordingRunner runs every command through the production runner, NewRunnerIn, with the real jj
 // and git, but replaces the GitHub clone URL with the local bare remote, a git transfer's as a
 // file:// URL, so git talks to it over its transport as it does to GitHub rather than copying a
 // local repository's files. That keeps provisioning's argv and credential environment observable,
@@ -314,6 +325,7 @@ func provisionRequest(t *testing.T) Request {
 // A repository whose default branch is not main, and holds a slash, provisions at that branch:
 // the workspace's parent is its head and nothing names main.
 func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"github"} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
@@ -342,6 +354,7 @@ func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // A default branch whose name jj's own parser would read as syntax (`#`, `%`, `|`, `"`) names that

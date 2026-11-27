@@ -244,6 +244,7 @@ func (r timesOut) Run(_ context.Context, command Command) (Result, error) {
 // read as a stale key, which rewrote the clone's helpers, and the repository cache's read of its
 // HEAD as a HEAD that names nothing, which rewrote HEAD. Each is now refused as the timeout it is.
 func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
+	t.Parallel()
 	t.Run("the shared clone's credential read", func(t *testing.T) {
 		dir := t.TempDir()
 		rewrote, err := ConfigureRepositoryCredential(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}}, dir)
@@ -264,6 +265,7 @@ func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
 			t.Errorf("followHead with its symbolic-ref timed out = %v, want the timeout refused", err)
 		}
 	})
+
 }
 
 // killsOne answers a command argv starts with as one a signal ended after it printed said, a

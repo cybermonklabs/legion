@@ -33,8 +33,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
@@ -290,6 +290,7 @@ func TestFetchStartsNoAttemptOnceAWaitEndsPastItsBound(t *testing.T) {
 // A permanent failure is Fetch's answer at once: one fetch, no wait, no retry logged. GitHub not
 // finding the repository is outside the volume.
 func TestFetchFailsAPermanentFetchFailureAtOnce(t *testing.T) {
+	t.Parallel()
 	clock := newTestClock()
 	run := newFailingFetch(t, clock, 0, fatal("remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"))
 	req := fetchRequest(t)
@@ -307,6 +308,7 @@ func TestFetchFailsAPermanentFetchFailureAtOnce(t *testing.T) {
 	if len(run.attempts) != 1 || len(clock.waits) != 0 || len(logged) != 0 {
 		t.Fatalf("Fetch fetched %d times, waited %v and logged %q; want one fetch, no wait, nothing logged", len(run.attempts), clock.waits, logged)
 	}
+
 }
 
 // A fetch whose context ends during a backoff wait — its process stopped — ends with it, running
@@ -334,6 +336,7 @@ func TestFetchEndsWithItsContextDuringAWait(t *testing.T) {
 // temporary name, a lock — is removed and logged before the next attempt, as a clone's retry once
 // started from an empty directory, and the cache holds none of it.
 func TestAFirstFillsRetryStartsWithoutWhatTheFailedAttemptLeft(t *testing.T) {
+	t.Parallel()
 	clock := newTestClock()
 	run := &leavesPartial{recordingRunner: newLocalRunner(t)}
 	req := fetchRequest(t)
@@ -363,6 +366,7 @@ func TestAFirstFillsRetryStartsWithoutWhatTheFailedAttemptLeft(t *testing.T) {
 	if !slices.Equal(clock.waits, fetchBackoff[:1]) {
 		t.Errorf("Fetch waited %v, want one backoff", clock.waits)
 	}
+
 }
 
 // leavesPartial fails the first fetch from GitHub as a transfer cut mid-pack does, a 502 after
@@ -435,8 +439,8 @@ const (
 
 // gitHubStandIn is a real git http-backend that git reaches as https://github.com/acme/widgets:
 // through a CONNECT proxy https_proxy names, with a certificate for github.com that
-// GIT_SSL_CAINFO trusts. So a transfer from GitHub runs as it does in a pod, its one-shot
-// credential included, which the stand-in requires over Basic auth as GitHub does, refusing any
+// GIT_SSL_CAINFO trusts, both supplied only to its runner. A transfer presents its one-shot
+// credential, which the stand-in requires over Basic auth as GitHub does, refusing any
 // password but token. Each pack request (the protocol v2 `command=fetch` POST) fails the next of
 // failures' ways, then the stand-in serves them.
 type gitHubStandIn struct {
@@ -667,23 +671,23 @@ func (s *gitHubStandIn) tokensPresented(t *testing.T, token string) {
 // gitHubTransfers are the two fills from GitHub that transferWithRetries runs a real git for: the
 // repository cache's first fill (Fetch), and an issue pod's fetch into the clone it fills
 // (fetchIssuePod), whose failure decides `workspace-init provision`'s exit. Each runs against GitHub
-// as the process's environment reaches it, on token, clock and log, and answers the git directory
+// on the supplied runner, token, clock and log, and answers the git directory
 // it filled. before is how many transfers each makes ahead of the one that fetches the pack: its
 // read of GitHub's refs.
 var gitHubTransfers = []struct {
 	name     string
 	before   int
-	transfer func(t *testing.T, ctx context.Context, token func() (string, error), clock Clock, log func(string)) (string, error)
+	transfer func(t *testing.T, ctx context.Context, run Runner, token func() (string, error), clock Clock, log func(string)) (string, error)
 }{
-	{name: "the repository cache's first fill", before: 1, transfer: func(t *testing.T, ctx context.Context, token func() (string, error), clock Clock, log func(string)) (string, error) {
+	{name: "the repository cache's first fill", before: 1, transfer: func(t *testing.T, ctx context.Context, run Runner, token func() (string, error), clock Clock, log func(string)) (string, error) {
 		req := fetchRequest(t)
 		req.Token, req.Clock, req.Log = token, clock, log
-		return filepath.Join(req.Root, "acme", "widgets.git"), Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
+		return filepath.Join(req.Root, "acme", "widgets.git"), Fetch(ctx, run, req)
 	}},
-	{name: "the issue pod's fill", before: 1, transfer: func(t *testing.T, ctx context.Context, token func() (string, error), clock Clock, log func(string)) (string, error) {
+	{name: "the issue pod's fill", before: 1, transfer: func(t *testing.T, ctx context.Context, run Runner, token func() (string, error), clock Clock, log func(string)) (string, error) {
 		clone := filepath.Join(t.TempDir(), "widgets")
 		runSetup(t, filepath.Dir(clone), "git", "init", "--quiet", clone)
-		_, _, _, err := fetchIssuePod(ctx, NewRunner(testTimeout, testTools(t)), clone, issuePodRemote(t, token, "", clock, log), true)
+		_, _, _, err := fetchIssuePod(ctx, run, clone, issuePodRemote(t, token, "", clock, log), true)
 		return filepath.Join(clone, ".git"), err
 	}},
 }
@@ -725,6 +729,7 @@ func fillIssueClone(t *testing.T, run Runner, clock Clock, source remote) (strin
 // Every attempt presents the provisioning token. Both the cache's first fill and an issue pod's fill
 // hold to it.
 func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
+	t.Parallel()
 	for _, how := range gitHubTransfers {
 		for _, tc := range []struct {
 			name     string
@@ -745,14 +750,14 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 			},
 		} {
 			t.Run(how.name+", "+tc.name, func(t *testing.T) {
-				newLocalRunner(t)
+				t.Parallel()
 				github := newGitHubStandIn(t, tc.http2, testInstallationToken, tc.failures...)
 				clock := newTestClock()
 				var logged []string
 				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 				defer cancel()
 
-				gitDir, err := how.transfer(t, ctx, staticToken(testInstallationToken), clock, func(line string) { logged = append(logged, line) })
+				gitDir, err := how.transfer(t, ctx, github.runner(t), staticToken(testInstallationToken), clock, func(line string) { logged = append(logged, line) })
 				if err != nil {
 					t.Fatalf("the transfer: %v", err)
 				}
@@ -780,12 +785,14 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 			})
 		}
 	}
+
 }
 
 // Against the same real git, a 403 on the pack request and a token GitHub refuses each fail the
 // transfer on its first attempt: no wait, no retry logged. Each is outside the volume, so an issue
 // pod's provision exits 3 for it.
 func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, how := range gitHubTransfers {
 		for _, tc := range []struct {
 			name, accepts string
@@ -799,14 +806,14 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 			{name: "the token refused", accepts: "ghs_another", says: "fatal: Authentication failed for 'https://github.com/acme/widgets/'", refs: true},
 		} {
 			t.Run(how.name+", "+tc.name, func(t *testing.T) {
-				newLocalRunner(t)
+				t.Parallel()
 				github := newGitHubStandIn(t, false, cmp.Or(tc.accepts, testInstallationToken), tc.failures...)
 				clock := newTestClock()
 				var logged []string
 				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 				defer cancel()
 
-				_, err := how.transfer(t, ctx, staticToken(testInstallationToken), clock, func(line string) { logged = append(logged, line) })
+				_, err := how.transfer(t, ctx, github.runner(t), staticToken(testInstallationToken), clock, func(line string) { logged = append(logged, line) })
 				if err == nil || !strings.Contains(err.Error(), tc.says) {
 					t.Fatalf("the transfer = %v, want git's %q", err, tc.says)
 				}
@@ -825,6 +832,7 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 			})
 		}
 	}
+
 }
 
 // The provisioning token is read as its file stands before every transfer from GitHub, never kept
@@ -835,8 +843,9 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 // and one rewritten during a retry's backoff is the one the retry presents. A read that fails, the
 // first one or a renewal, fails the fetch for a cause outside the issue's volume.
 func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *testing.T) {
+	t.Parallel()
 	t.Run("rewritten during the fill's wait on the repository cache", func(t *testing.T) {
-		local := newLocalRunner(t)
+		t.Parallel()
 		github := newGitHubStandIn(t, false, "ghs_fresh")
 		served := &fakeCache{body: cacheTar(t, cacheOf(t, github.remote)), notReady: 2}
 		pushRemoteBranch(t, github.remote, "legion/WIDGETS-42", "newer.txt")
@@ -844,7 +853,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		clock := &rewritingClock{testClock: newTestClock(), file: file, token: "ghs_fresh"}
 		source := issuePodRemote(t, tokenFrom(file), served.serve(t), clock, func(string) {})
 
-		if _, err := fillIssueClone(t, local.runner, clock, source); err != nil {
+		if _, err := fillIssueClone(t, github.runner(t), clock, source); err != nil {
 			t.Fatalf("the fill: %v", err)
 		}
 		if served.healthAsked != 3 || served.tarAsked != 1 {
@@ -853,7 +862,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		github.tokensPresented(t, "ghs_fresh")
 	})
 	t.Run("rewritten during a retry's backoff", func(t *testing.T) {
-		newLocalRunner(t)
+		t.Parallel()
 		github := newGitHubStandIn(t, false, "ghs_stale", http.StatusRequestTimeout)
 		github.accept("ghs_fresh")
 		req := fetchRequest(t)
@@ -863,7 +872,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
-		if err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req); err != nil {
+		if err := Fetch(ctx, github.runner(t), req); err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
 		presented := github.presented()
@@ -903,6 +912,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 			t.Fatalf("Fetch ran %d transfers, want the first alone", len(run.attempts))
 		}
 	})
+
 }
 
 // tokenFile is a provisioning token file holding token, as a pod mounts one.
@@ -1026,6 +1036,7 @@ func TestFetchFillsTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
 // here an annotated tag on main before the first fill, and another on main's next commit before a
 // refresh, reach the cache in neither.
 func TestFetchBringsNoTagObjectIntoTheCache(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	runSetup(t, t.TempDir(), "git", "--git-dir="+run.remote, "tag", "-a", "v1.0", "-m", "a release", "main")
 	req := fetchRequest(t)
@@ -1047,6 +1058,7 @@ func TestFetchBringsNoTagObjectIntoTheCache(t *testing.T) {
 	if objects := types(); slices.Contains(objects, "tag") {
 		t.Errorf("after a refresh the cache holds objects of the types %q, want no tag", objects)
 	}
+
 }
 
 // A repository cache that holds the repository — the cache's clone at each refresh, or after a
@@ -1054,6 +1066,7 @@ func TestFetchBringsNoTagObjectIntoTheCache(t *testing.T) {
 // names, moved, reaches it through the one-shot credential, bounded as the first fill is, without
 // tags, and no other branch does. The credential is gone once Fetch returns.
 func TestFetchIntoACacheThatHoldsTheRepositoryFetchesItsDefaultBranch(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
 	// The clock stands still, so the fetch is given the whole bound it shares with the read before.
@@ -1089,6 +1102,7 @@ func TestFetchIntoACacheThatHoldsTheRepositoryFetchesItsDefaultBranch(t *testing
 	if entries, err := os.ReadDir(req.CredentialDir); err != nil || len(entries) != 0 {
 		t.Errorf("the one-shot credential outlived Fetch: %v (%v)", entries, err)
 	}
+
 }
 
 // A fetch into a cache that holds the repository points its HEAD at the branch GitHub's HEAD names
@@ -1096,6 +1110,7 @@ func TestFetchIntoACacheThatHoldsTheRepositoryFetchesItsDefaultBranch(t *testing
 // would otherwise leave the cache's HEAD naming a branch the cache's narrowing removes, and the
 // cache could publish no head. The move is logged; a fetch with nothing renamed moves nothing.
 func TestFetchPointsTheCachesHeadAtGitHubsDefaultBranch(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
 	var logged []string
@@ -1135,6 +1150,7 @@ func TestFetchPointsTheCachesHeadAtGitHubsDefaultBranch(t *testing.T) {
 	if want := "the default branch of acme/widgets is now trunk (HEAD named refs/heads/main)"; !slices.Contains(logged, want) {
 		t.Errorf("the move was not logged as %q: %q", want, logged)
 	}
+
 }
 
 // GitHub renaming its default branch between a fetch and that fetch's read of GitHub's HEAD names a
@@ -1188,6 +1204,7 @@ func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
 // planted hook runs, what a planted link named is left as it was, and the cache Fetch leaves is one
 // it wrote.
 func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
+	t.Parallel()
 	for name, plant := range map[string]func(t *testing.T, cache, marker string) (kept string){
 		"a hook": func(t *testing.T, cache, marker string) string {
 			writeExecutable(t, filepath.Join(cache, "hooks", "reference-transaction"), "#!/bin/sh\ntouch "+marker+"\n")
@@ -1311,6 +1328,7 @@ func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // git's update-server-info, which every `git repack` runs (the cache's due repack among them),
@@ -1318,6 +1336,7 @@ func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
 // renames it into place; a repack killed in between leaves that file. git never reads it, so a
 // cache holding one is still one a fetch wrote: kept, never removed and filled again whole.
 func TestFetchKeepsACacheHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
 	var logged []string
@@ -1348,6 +1367,7 @@ func TestFetchKeepsACacheHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 			t.Errorf("Fetch filled the cache afresh: %q", call.Argv)
 		}
 	}
+
 }
 
 // A cache can be garbage-collected between fetches. A completed gc and one killed while its repack
@@ -1355,6 +1375,7 @@ func TestFetchKeepsACacheHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 // A gc killed earlier, while it packs refs, also leaves packed-refs.lock: a lock makes no cache
 // foreign, and Fetch removes it once it takes the cache, so it keeps that cache too.
 func TestFetchKeepsACacheAfterGitGC(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		gc   func(t *testing.T, cache string)
@@ -1406,6 +1427,7 @@ func TestFetchKeepsACacheAfterGitGC(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // killGitGC runs a large, real repack and kills its process group once the repack is writing its
@@ -1523,6 +1545,7 @@ func appendConfig(t *testing.T, gitDir, text string) {
 // so the cache is never blocked for good and carries no pack that never arrived, and every object
 // it already held is kept.
 func TestFetchRemovesTheLocksAnInterruptedFetchLeftInTheCache(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
 	if err := Fetch(context.Background(), run, req); err != nil {
@@ -1578,6 +1601,7 @@ func TestFetchRemovesTheLocksAnInterruptedFetchLeftInTheCache(t *testing.T) {
 			t.Errorf("the cache lost %s, an object it held", object)
 		}
 	}
+
 }
 
 // A first fill that dies mid-transfer leaves nothing at the cache's repository: the fill runs in a
@@ -1586,6 +1610,7 @@ func TestFetchRemovesTheLocksAnInterruptedFetchLeftInTheCache(t *testing.T) {
 // sibling a Fetch killed outright left (no defer ran) is removed by the next one, which fills the
 // cache whole. An issue pod's fill stages its clone the same way (stageBeside).
 func TestFetchLeavesNoHalfFilledRepositoryAtTheCache(t *testing.T) {
+	t.Parallel()
 	req := fetchRequest(t)
 	run := newLocalRunner(t)
 	killed := killedFetch{Runner: run}
@@ -1623,6 +1648,7 @@ func TestFetchLeavesNoHalfFilledRepositoryAtTheCache(t *testing.T) {
 	if main := strings.TrimSpace(runSetup(t, cache, "git", "--git-dir="+cache, "rev-parse", "refs/heads/main")); main != strings.TrimSpace(runSetup(t, cache, "git", "--git-dir="+run.remote, "rev-parse", "main")) {
 		t.Errorf("the cache's main is %s, not the remote's", main)
 	}
+
 }
 
 // killedFetch runs every command through Runner but a fetch from GitHub, which it fails as a fetch
@@ -1693,6 +1719,7 @@ func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
 // and keeps each fetched object in a pack for the cache to stream: a fetch into it leaves no loose
 // object.
 func TestFetchTurnsTheCachesGarbageCollectionOffAndKeepsPacks(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := fetchRequest(t)
 	if err := Fetch(context.Background(), run, req); err != nil {
@@ -1712,6 +1739,7 @@ func TestFetchTurnsTheCachesGarbageCollectionOffAndKeepsPacks(t *testing.T) {
 	if loose := strings.TrimSpace(runSetup(t, cache, "git", "--git-dir="+cache, "count-objects")); !strings.HasPrefix(loose, "0 objects") {
 		t.Errorf("the fetch into the cache left %s", loose)
 	}
+
 }
 
 // What of a bare repository the cache streams and an issue pod's clone takes: its refs, its packs
@@ -1719,6 +1747,7 @@ func TestFetchTurnsTheCachesGarbageCollectionOffAndKeepsPacks(t *testing.T) {
 // reverse index, a bitmap, a commit-graph), no loose object, nothing of its own, nothing that would
 // point it at objects elsewhere, and nothing git is still writing.
 func TestCacheEntryIsTheRepositorysRefsAndPacksAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		dir  bool
@@ -1764,6 +1793,7 @@ func TestCacheEntryIsTheRepositorysRefsAndPacksAlone(t *testing.T) {
 			t.Errorf("CacheEntry(%q, dir %t) = %t, want %t", tc.name, tc.dir, got, tc.want)
 		}
 	}
+
 }
 
 // cacheOf is the repository cache's clone of remote as the cache keeps it: bare, holding the
@@ -2044,6 +2074,7 @@ func assertNoGitHubTransfer(t *testing.T, run *recordingRunner) {
 // carry no credential: the cache's token goes with the tar alone. The index the cache streamed with
 // its pack is the one the clone reads it through: no pack is indexed again.
 func TestStreamCacheWaitsForTheRepositoryCacheToBeReady(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	body := cacheTar(t, cacheOf(t, run.remote))
 	served := &fakeCache{body: body, notReady: 2, wide: 1}
@@ -2078,6 +2109,7 @@ func TestStreamCacheWaitsForTheRepositoryCacheToBeReady(t *testing.T) {
 			t.Errorf("StreamCache indexed again a pack the cache streamed its index with: %q", call.Argv)
 		}
 	}
+
 }
 
 // A cache that never becomes ready within CacheWaitTimeout — answering not ready, answering ready
@@ -2086,6 +2118,7 @@ func TestStreamCacheWaitsForTheRepositoryCacheToBeReady(t *testing.T) {
 // down never costs each new issue a full download. The wait's failure is outside the issue's
 // volume, and nothing is written there.
 func TestStreamCacheFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		url  func(t *testing.T) string
@@ -2115,6 +2148,7 @@ func TestStreamCacheFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // A cache whose tar holds an entry a clone does not take — one whose name leaves the clone's git
@@ -2127,6 +2161,7 @@ func TestStreamCacheFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 // type, or a failure of verifyCache, so none reads as a failure outside the issue's volume, and the
 // provision exits 1.
 func TestStreamCacheRefusesARepositoryCacheItCannotUse(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body func(t *testing.T, remote string) []byte
@@ -2175,6 +2210,7 @@ func TestStreamCacheRefusesARepositoryCacheItCannotUse(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // A stream asks only its own repository's cache, which it proves twice: it takes nothing from a
@@ -2184,6 +2220,7 @@ func TestStreamCacheRefusesARepositoryCacheItCannotUse(t *testing.T) {
 // unpacked. A cache named without its token is refused before anything is asked. Each refusal is
 // outside the issue's volume, and names the cache.
 func TestStreamCacheTakesNothingFromAnotherRepositorysCache(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		cache  *fakeCache
@@ -2240,6 +2277,7 @@ func TestStreamCacheTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 	if served.healthAsked+served.tarAsked != 0 {
 		t.Errorf("StreamCache with no token asked the cache %d times, want none", served.healthAsked+served.tarAsked)
 	}
+
 }
 
 // A pack the cache streamed without its index — a cache on a release that never streamed one — is
@@ -2284,6 +2322,7 @@ func TestAPackWithoutItsIndexIsIndexedInThePod(t *testing.T) {
 // the clone comes from /tar, the fill saying the bucket's check failed. Each other row's cache
 // serves no /packs, which costs no clock time, and the fill says so.
 func TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) {
+	t.Parallel()
 	polls := func(d time.Duration) int { return int(d / CachePoll) }
 	for _, tc := range []struct {
 		name     string
@@ -2342,6 +2381,7 @@ func TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "issue.txt")
 			clock := newTestClock()
@@ -2386,6 +2426,7 @@ func TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T
 			}
 		})
 	}
+
 }
 
 // slowSteps is the local runner with the clock time each step a test names takes: step names the
@@ -2463,6 +2504,7 @@ func fillStep(argv []string) string {
 // after the four and win for its command: 64m windows, a 512m limit and 256m of window memory.
 // Every git the runner started is recorded.
 func TestTheCachesAndTheFillsGitMapPacksInSmallWindows(t *testing.T) {
+	t.Parallel()
 	windows := map[string]string{}
 	for _, setting := range packWindows {
 		windows[strings.ToLower(setting[0])] = setting[1]
@@ -2558,6 +2600,7 @@ func TestTheCachesAndTheFillsGitMapPacksInSmallWindows(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // gitSubcommand is the subcommand of the git arguments args: the first that is neither a `-c`
@@ -2578,13 +2621,9 @@ func gitSubcommand(args []string) string {
 	return ""
 }
 
-// recordPackWindows has run's runner start a recording git, resolved from PATH as boot resolves
-// it (testTools), and answers the file it records in: one line each time it runs, its arguments,
-// a tab, then each line `git config --show-scope --get-regexp` prints for packWindows' four keys
-// under the `-c` pairs and the --git-dir its command line names before its subcommand, and its
-// environment, a space for a tab and each ended by `;`. It then runs the real git with its
-// arguments. PATH is the test's own again once the runner has resolved it, so no fixture command
-// runs the recording git.
+// recordPackWindows gives run a recording git through its tools, without changing PATH.
+// Each line records the arguments and the command's four pack settings with their scopes.
+// Fixture commands continue to run the real git.
 func recordPackWindows(t *testing.T, run *recordingRunner) string {
 	t.Helper()
 	realGit, err := exec.LookPath("git")

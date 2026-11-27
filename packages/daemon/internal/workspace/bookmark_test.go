@@ -464,6 +464,7 @@ func nothingProvisioned(t *testing.T, run *recordingRunner, before int, workspac
 // host's path. The branch's commits are in the workspace, the local bookmark is the remote's, and
 // the issue's next push moves that branch.
 func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"host"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
@@ -496,6 +497,7 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // An issue branch GitHub holds on a commit that shares no history with the repository's default
@@ -507,6 +509,7 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 // pushed from the remote's default branch, so its commit is a descendant of main, and a provisioning
 // that walked main's history instead would still reach it.
 func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"host"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
@@ -545,6 +548,7 @@ func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T)
 			}
 		})
 	}
+
 }
 
 // A merged pull request's branch, deleted on GitHub, leaves no remote row: an issue workspace

@@ -1379,6 +1379,7 @@ func TestNextCodegraphStep(t *testing.T) {
 // wrong thing. The `2>/dev/null` keeps a missing lease silent, since both finds print the path in
 // their error.
 func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
+	t.Parallel()
 	check := ".codegraph/" + warmLeaseName + " -mmin -1 2>/dev/null"
 	for _, part := range []string{
 		filepath.Join("..", "prompts", "roles", "core", "common.md"),
@@ -1401,4 +1402,5 @@ func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
 	if warmLeaseHeartbeat >= warmLeaseStale {
 		t.Errorf("warmLeaseHeartbeat is %s and warmLeaseStale is %s: a holder must refresh its lease before another process reads it as stale", warmLeaseHeartbeat, warmLeaseStale)
 	}
+
 }

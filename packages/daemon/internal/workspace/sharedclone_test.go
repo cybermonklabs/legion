@@ -127,6 +127,7 @@ func TestProvisioningSnapshotsTheSharedCloneOnlyInWorkspaceAdd(t *testing.T) {
 // (configureCloneReads): the clone and the issue's workspace each read one gh-resolved line,
 // `remote.origin.gh-resolved base`, and core.warnAmbiguousRefs as false.
 func TestProvisionMarksOriginAndTurnsOffTheAmbiguousRefWarning(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	working, err := Provision(context.Background(), run, request)
@@ -144,6 +145,7 @@ func TestProvisionMarksOriginAndTurnsOffTheAmbiguousRefWarning(t *testing.T) {
 			t.Errorf("%s %s reads its gh-resolved lines as %q (exit %d), want origin's base alone", place.name, place.dir, output, code)
 		}
 	}
+
 }
 
 // packWindows are the four pack settings every git of an issue pod is to read, written out here

@@ -336,6 +336,8 @@ func moved(t *testing.T, address, host string) string {
 // the report still says why /tar was asked. The .git is a work tree's, as the provision's `git
 // init` makes it, and either source leaves it with the cache's main and a whole history.
 func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
+	// Not parallel: the stalled-download row replaces downloadWindow, which every bucket read uses.
+	// It runs alone before the other rows start together.
 	notFound := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }
 	unavailable := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(CacheRepositoryHeader, "acme/widgets")
