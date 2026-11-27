@@ -14,9 +14,9 @@ import (
 // askServerAttributeNames are the attributes of an ask block the release before kept in agreement
 // with its ask row, which a stored version may hold: `invalid` never reaches stored bytes
 // (pmdoc.BlockAttributeSchema.InMarkdown), and the other seven do wherever that release wrote
-// them. It is the one place the eight are spelled, and the carry its one reader
-// (attributeRemovalCase): it compares against stored versions, which are never rewritten, so it
-// stays after the fleet stops writing them.
+// them. The approval carry uses the list to compare stored versions. The text routes use it to
+// strip server-owned attributes in servedAskTree for readers of the asks member. Both read versions
+// that are never rewritten, so they still need the list after the fleet stops writing these attributes.
 var askServerAttributeNames = [...]string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
 
 // carryCase is one kind of difference between an approved version and a later one that carries
