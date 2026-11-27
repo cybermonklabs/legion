@@ -137,7 +137,7 @@ func (d *driver) withAncestry(ctx context.Context, tx pgx.Tx, issue intake.Dispa
 	if issue.QueuesUnderParent(recorded) {
 		issue.Ancestry = d.shadow.chain(issue.Key, issue.Parent)
 	}
-	if recorded != nil && (storetext.Text(issue.Parent) == intake.ParentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	if recorded != nil && (storetext.Text(issue.Parent) == intake.ParentKey(recorded.Parent) || recorded.Outdates(record.EventSeq, issue.Seq)) {
 		return issue, nil
 	}
 	roots, err := d.records.QueuedRootsUnder(ctx, tx, issue.Key)

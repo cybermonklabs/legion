@@ -1249,7 +1249,7 @@ The checks:
 - `stop-hook-reminds-the-open-phase`: told to answer in one line of prose and call nothing, the implementer ends a turn with `implementing` still open, so the pane's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}` (`legion_phase_hook`, the hook entries of `packages/claude-envoy/legion/hooks/hooks.json`, the endpoint `packages/claude-envoy/src/legion-phase-hook.ts`).
   The transcript holds that reason as one `Stop
   hook feedback` user turn carrying the reminder's own wording
-  — "Your turn ended with your Legion phase still open", a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently
+  — "This reminder repeats at the end of every turn", a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently
   — and an assistant turn follows that feedback, so the block carried the turn on in the same session rather than ending it.
   The run moves no `LEGION_STALL_*` number:
   this first reminder of a run is the hook's own answer as the turn settles, not a timer's, and the instruction before it resets the run of reminders, so no wait here rides on those four delays.
@@ -1386,11 +1386,12 @@ The checks, in order, which is the tmux proof's:
   and the `--mcp-config` it names is a file of this generation's private directory, which the launcher wrote there.
 
 - `stop-hook-reminds-the-open-phase`: while the implementer still holds its phase
-  — open since the daemon's start task, an assignment (`packages/claude-envoy/src/legion-phase-hook.ts`), and not yet completed
+  — open in the daemon's record since its start task, and not yet completed
   — it is told to answer in one line of prose, to call nothing and to begin no line with WAITING, so it ends a turn with that phase open and the pod's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}`.
-  The instruction is an Envoy delivery, which puts an open phase's run of reminders back at zero but never reopens a closed one (the `inbound-event` case of `packages/pi-shared/src/phase-stall.ts`):
-  that is why this check runs before `claude-implementer-handoff` closes the phase, never after.
-  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "Your turn ended with your Legion phase still open" (a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
+  The instruction is an Envoy delivery, which puts the run of reminders back at zero (the `inbound` case of `packages/pi-shared/src/phase-stall.ts`).
+  Once the daemon has the phase's completion, it answers that the claim owes nothing and no reminder comes:
+  that is why this check runs before `claude-implementer-handoff` completes the phase, never after.
+  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "This reminder repeats at the end of every turn" (a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
   The run moves no `LEGION_STALL_*` number.
 
 - `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
@@ -1689,7 +1690,7 @@ No key exists on the devbox; the release is written to no file and appears in no
 the script copies `testdata/previouslayout/live_app_test.go.txt` over that commit's `live_app_test.go` before it builds it, so it mints from the same `LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND`, which its environment carries on.
 
 The `plugins` step packs this checkout's own `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` for `stale-plugin-install`'s own Resume through `lib/pack-plugin.sh`, as every proof that installs a branch-built plugin does:
-it rewrites each package's `omp.extensions` to its built `dist` bundle exactly as the release workflow does before publishing (`scripts/pi-plugin-prepack.sh` packs no other manifest), runs `bun pm pack` with the prepack's build report on stderr, restores the committed manifest on every exit of its own, and prints the tarball's path alone (the checkout needs `bun install --frozen-lockfile` first, since the bundle resolves `@legion/*` through the root's `node_modules`).
+it points a staged copy of each package's manifest at its built `dist` bundle exactly as the release workflow does before publishing (`scripts/pi-plugin-prepack.sh` packs no other manifest), runs `bun pm pack` in that copy with the prepack's build report on stderr, writes nothing in the checkout, and prints the tarball's path alone (the checkout needs `bun install --frozen-lockfile` first, since the bundle resolves `@legion/*` through the root's `node_modules`).
 That checkpoint's negative control packs nothing of its own:
 it names the published `@sjawhar/pi-legion@9.6.1` by exact version, which the daemon-rendered install script resolves to `@sjawhar/pi-legion@9.6.1` for `bun add` and bun fetches from the registry inside the pod.
 
@@ -2564,13 +2565,9 @@ set all four to distinct values and two runs proceed at once, on the same devbox
   once the daemon answers `/healthz`, both ports must be held by that daemon's process, or the boot fails naming the holder.
   A `/healthz` answer alone could come from another daemon on the same address.
 
-**Two lanes need separate checkouts, not just distinct identities above.**
-The controller checkpoint packs both of this checkout's plugins, `@sjawhar/pi-envoy` (`packages/pi-envoy`) and `@sjawhar/pi-legion` (`packages/pi-legion`) ([`lib/pack-plugin.sh`](#libpack-pluginsh)), each rewriting its own `package.json` in place for the few seconds its pack takes, under its own flock on that one file:
-pi-envoy's pack and pi-legion's pack take separate locks, each serializing two lanes' packs of that one plugin against each other (whichever holds it waits its turn, as `release.yaml` and every other branch-built install already rely on);
-neither protects a lane's own [`lib/built-from.sh`](#libbuilt-fromsh)
-— called in `prerequisites` and again before the build — whose `jj diff`/`jj log` read the shared working copy directly, with no lock of their own.
-A second lane's pack landing mid-read reads as this lane's own tree having changed, failing `prerequisites` or the build's own revision check for a reason that has nothing to do with the change under test.
-Run concurrent lanes from separate checkouts (`jj workspace add`, or separate clones) of the same commit.
+**The plugin packs do not need separate checkouts.**
+The controller checkpoint packs both of this checkout's plugins, `@sjawhar/pi-envoy` (`packages/pi-envoy`) and `@sjawhar/pi-legion` (`packages/pi-legion`), through [`lib/pack-plugin.sh`](#libpack-pluginsh), which packs a staged copy of each package and writes nothing in the checkout.
+So a second lane's pack cannot change what a lane's own [`lib/built-from.sh`](#libbuilt-fromsh) reads with `jj diff`/`jj log` in `prerequisites` and again before the build.
 
 **Two lanes can race for the cluster's capacity, and that is a finding, not a bug to fix here.**
 `preflight` reads the room on the nodes the run's pods may use (`run_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only where admission refuses the run's pods: it counts no NodePool's limits and runs on a cluster with no node for those pods now, so it never refuses for want of room for `run_pods_at_once` pods (4, the cap:
@@ -2754,7 +2751,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   Tree 3 is then set todo, and the state reads the cap full of the four issues the daemon has started — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue the daemon has started, so one tree's children fill a cap beside another tree's root.
   Tree 1's planner is then told to plan.
   Tree 2's planner has held for the driver: a tree 2 that left planning before the driver sent it anything fails here by name.
-  The proof's instructions tell every phase worker that the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`) is not the driver's instruction.
+  The proof's instructions tell every phase worker that the daemon's task line (its `Working copy:` line, on a line of its own, then `Continue <title>. Issue: <key>. Phase: <phase>.` on the next line) is not the driver's instruction.
   The memory hog, the pod watch's negative control, runs on the root's node and is OOMKilled by its own 64Mi limit
 
 - `child-release`
@@ -2909,7 +2906,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `completion-closed`
 
   each phase worker of tree 1 — planner, implementer, tester, reviewer
-  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and records the phase stall `closed` after that call, with no phase reminder after its last success:
+  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and holds no phase reminder after that success and before the next assignment, nor after its last success:
   the 4b.13b acceptance's stall check (`stage3-4b13b-acceptance.sh`'s `phase-stall-follow-up`), which a stop inside the call fails (LEGION-283).
   The sessions and each verdict are kept as `completion-<role>.jsonl` and `completion-<role>-verdict.json`.
   Its control: the planner's session cut at its `handoff_complete` call, the transcript such a stop leaves, is refused
@@ -3194,7 +3191,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
   gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, no selector or toleration of the retired Legion pool (`legion.dev/pool`), Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
-  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
+  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, provisioning in `workspace-init` alone, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
   the `boot` row's `issue: { cpu: 2950m, memory: 16Gi }` override, the ephemeral-storage limit and request the daemon's defaults;
   each pod is `Guaranteed`, and none carries an affinity (`lib/stage4b-pods.jq` `reservation_problems`).
@@ -3887,7 +3884,7 @@ those are matched as the complete literal sentence, with the run's own repositor
 Dispatch takes a bearer session's actor id from the request body, so that id is the message's claimed author:
 whoever holds the project's Dispatch bearer can post the same text.
 Such a note shows what Dispatch holds, never who posted it.
-Two such sentences are quoted below with their file:line.
+Two such sentences are quoted below, each with the symbols of the source that writes it.
 
 ```sh
 export LEGION_E2E_REPO_T=<owner>/<toolchain repo> LEGION_E2E_REPO_C=<owner>/<consumer repo>
@@ -4008,7 +4005,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:119-120`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`RefuseRecording` in `packages/daemon/internal/workflow/repository.go`, and `messageSeparator`, `messageMarkerOpen` and `messageMarkerClose` in `packages/daemon/internal/record/outbox.go`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
   A message its author deleted reads with `deleted_at` set and no body (dispatch://INFRA-1523), and is no note ([`lib/multi-repo-none-note.jq`](lib/multi-repo-none-note.jq), tested by `bun test scripts/e2e/lib`).
@@ -4016,12 +4013,17 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative repo-edit before|after <run id>? <child>`
 
   a two-call baseline protocol (the paragraph after this list).
+  Its precondition: `LEGION_E2E_REPO_X` is a repository Legion does not serve for the project, because a GitHub App is not installed on it.
+  When both Apps are installed on X, the daemon moves the record onto X, and the control fails.
   `before` captures the daemon's recorded repository and refuses outright if Dispatch already resolves the issue to X.
   `after` requires: the daemon's record unchanged;
   Dispatch's own `.repo` for the issue now reading X;
   an `issue.updated` event whose `.seq` is above the baseline's own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a wall-clock comparison, and never merely "any `issue.updated`", which the daemon's own routine status writes also emit);
-  and the daemon's exact kept-repository message, word for word, with its claimed actor id and outbox marker (as for `negative no-repo`), built from Dispatch's own resolved spelling of X (`dispatch_repo_now`, read back from the API) rather than the operator's `LEGION_E2E_REPO_X` spelling, since the daemon's real message echoes whatever case Dispatch itself stored
-  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`).
+  and the daemon's kept-repository message, with its claimed actor id and outbox marker (as for `negative no-repo`) (`noteRepositoryChangeWaits` in `packages/daemon/internal/workflow/repository.go`).
+  The message names why X is not served and what a person can do, and ends with when Legion moves the issue itself, so the check matches word for word the opening every variant shares, `"Legion did not move this issue off <repo>: "`, with the baseline's own spelling of the kept repository, and the closing sentence just before the outbox marker.
+  The closing is `"Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on <X>."`, whose `<X>` is Dispatch's spelling and is compared with `LEGION_E2E_REPO_X` case-insensitively.
+  Since dispatch://INFRA-4401 (#4493) the daemon reads no repository mapping, so a mapped X is told that closing too, and a message with another closing, the one a mapped X was told before (`"Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."`) among them, fails the check.
+  The check accepts each refusal the daemon writes between them: `the <role> App is not installed on <X>.` or `the implement and review Apps are not installed on <X>.`, then `Install it on <X>, or set another repository (…).`.
   A message its author deleted is no note ([`lib/multi-repo-kept-note.jq`](lib/multi-repo-kept-note.jq), tested by `bun test scripts/e2e/lib`).
 
 **The two-call baseline protocol** (`negative pr-in-x`, `negative repo-edit`):
@@ -4191,7 +4193,7 @@ node of a hosted runner.
 |`launch`|the driver writes the `legion.yaml` and launches two issue roots on `tmux/tmux` through the runtime's `Spawn` under `runtimeClassName: gvisor`; the first creates the repository cache and the second starts once it is Ready|
 |`provision`|each pod has one `workspace-init=0` init-container status|
 |`no-feed`|each pod lacks `/legion/feed`, and no container mounts that path|
-|`refs`|outside `refs/jj/`, the first clone has `refs/heads/master` and `refs/remotes/origin/master` alone, with no tag|
+|`refs`|outside `refs/jj/`, each pod's clone has its issue's `refs/heads/legion/CLONE-<n>`, `refs/heads/master`, `refs/remotes/origin/HEAD` and `refs/remotes/origin/master` alone, so no tag|
 |`clone-config`|the clone has narrow default-and-issue refspecs, `--no-tags`, `gc.auto=0`, `maintenance.auto=false` and jj's `remotes.origin.fetch-tags=~*`|
 |`gvisor-kernel`|the `roles` container's kernel is gVisor's|
 |`fsck`|`git fsck --connectivity-only --no-dangling` of the clone passes|
@@ -6157,7 +6159,7 @@ Each attempt of a run stages its own world and reads one row off it:
 | `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of one task or two, as `--tasks` says, at eight versions carrying the first three designs above, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), the plan review's approvals of version 1 and version 6, and the session's own task line, which the seed writes from its own constants and its own list of the staged tasks — an edit of `plan.md` the server answers `503 DOC_SERVICE_UNAVAILABLE`, which its document service does between states, is made again, up to five times and a second apart, and that retry matches the status and the code together, so another status whose body quotes the code stands at its first answer |
 | `<arm>-<n> try <k> prompt` | the arm's prompt, composed as above |
 | `<arm>-<n> try <k> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` and an `Approval: approved v6 by …` line |
-| `<arm>-<n> try <k> task` | the task line the seed wrote, printed, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
+| `<arm>-<n> try <k> task` | the task line the seed wrote, printed, whose `Handoff:` sentence is the one the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), read from the daemon's copy of it ([`packages/daemon/internal/workflow/handoff_line_extract.txt`](../../packages/daemon/internal/workflow/handoff_line_extract.txt), which `TestTheHandoffLineExtractIsTheSentenceTheTaskWrites` holds to what `task` writes): the accepted version's command beside the command that reads the `plan` record's newest version and the sentence that a newer version is its writer's correction, and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan document `plan.md` can have moved |
 | `<arm>-<n> try <k> session` | one real headless session, `omp -p --session-dir`, started as a process of the script's own and bounded by `timeout`, so an interrupt stops it at once and the teardown stops its whole tree, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `PG*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), `GH_CONFIG_DIR` an empty directory of the run's own, so the session's own `gh` reads no login of the operator's, the staged server as its Dispatch beside an Envoy address nothing listens on, and the watcher beside it writing plan.md version 9 — the last design change, with the plan review's approval of it when `--mid-approval` is `approved` — the moment the session's first read of the plan's text reaches a transcript, or at its bound when no such read does |
 | `<arm>-<n> try <k> row` | the attempt's row, from every transcript under the session directory, the session's own and each subagent's, and from the file of each task the session wrote |
 | `<arm>-<n> try <k> teardown` | that attempt's Dispatch stopped and its database dropped, before the next attempt or the next arm starts |
@@ -6665,36 +6667,24 @@ any other is refused, since the other workspace packages are not plugins.
 `<out dir>` is created when missing, and refused inside the checkout (jj would snapshot the tarball) or when it already holds a `.tgz`.
 Stdout is exactly one line, the tarball's path; every step's own output goes to stderr.
 
-The steps are the release's, run in the checkout
-— a copy of the package cannot build, because the prepack copies the repository's `skills/` and the bundle resolves `@legion/*` through the root's `node_modules`:
+The steps are the release's, run in a staged copy of the checkout under the run's `mktemp -d` directory, never in the checkout itself:
+a test of this checkout that reads the committed manifest while a pack runs beside it (`bun test --parallel`, where a skill-scenario rig row builds a profile from this checkout) would otherwise read the rewrite, as `packages/pi-legion/src/daemon-api-version.test.ts` did in two merge groups.
 
-1. save the package's `package.json` and arm an `EXIT` trap that copies it back byte-identical (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` jobs rewrite the manifest in "Point extensions at the packed bundle" and discard their tree, so only this script restores);
+1. stage the package: its own files copied with their modes (the prepack takes group and other write from what it ships), its `node_modules` linked, its `dist/` left out, and every other top-level entry of the checkout and every other package a symlink to the checkout's, so the prepack's `../../scripts`, its `skills/` and the bundle's `@legion/*` imports resolve as they do in the checkout (this script's own need: the checkout is read, never written);
 
-2. rewrite `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry (the same step, and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package);
+2. rewrite the staged manifest's `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry, and for `pi-legion` its `legion.daemonApiVersion` to the tree's contract (`scripts/daemon-contract.sh`) (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` jobs, "Point extensions at the packed bundle", and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package);
 
-3. `bun pm pack --destination <out dir>`, whose `prepack` builds `dist/` (the release's "Pack extension" step, `scripts/pi-plugin-prepack.sh`);
-   the bundle inlines `package.json`, so it is built while the manifest names the packed bundle, as the release builds it;
-
-4. copy the saved manifest back and check it byte for byte (this script's own need: the checkout is reused, where the release's build job tree is discarded).
+3. `bun pm pack --destination <out dir>` in the staged copy, whose `prepack` builds the copy's `dist/` (the release's "Pack extension" step, `scripts/pi-plugin-prepack.sh`);
+   the bundle inlines `package.json`, so it is built while the staged manifest names the packed bundle, as the release builds it.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
 The release's version bump (its "Set release version" step) is not a step: the tarball carries the checkout's own version.
-The saved manifest is written to the run's `mktemp -d` directory, never beside `package.json`, so an interrupted run strands no `tmp.json` in the checkout.
 
-The manifest is rewritten only for as long as the pack takes.
-The trap copies it back on every other way out
-— a failed step, `SIGHUP`/`SIGINT`/`SIGTERM` (each routed through `exit`) — so a pack that dies halfway never leaves the rewrite for jj to snapshot.
-The script ignores SIGPIPE, so this holds when whoever read its stderr has gone too:
-bash's `Terminated` notice for an interrupted pack would otherwise kill it before the trap ran.
-It keeps the run's status; if the copy back itself fails, it says where the saved bytes are, leaves them there, and exits non-zero.
-Afterwards `jj status` is as it was before the run: `dist/` is gitignored, and nothing else is written inside the checkout.
-
-Runs in one checkout take turns at each package's manifest from the save to the copy back, under a `flock` on the manifest itself (rewritten and restored in place, so the lock's inode lasts the whole window);
-a run that has to wait says so on stderr.
-Without the lock, a run that starts while another has the manifest rewritten saves that rewrite as its "before" and puts it back at its own exit:
-both runs exit 0 and jj snapshots the rewritten `package.json`.
-Two stage proofs in one checkout, or a stage proof and the skill-scenario rig, can pack at the same time, and the lock takes them in turn;
-the two packages' packs never wait on each other.
+The tarball holds the files, modes, manifest, notices and skills an in-place pack makes, and the bundles' code is the same.
+Only bun's source-path comments above each inlined module differ: bun writes them from the stage to the module's real path, so they name the checkout by its absolute path.
+The stage is removed on every way out, `SIGHUP`/`SIGINT`/`SIGTERM` included (each routed through `exit`), and the script ignores SIGPIPE, so this holds when whoever read its stderr has gone too.
+Nothing is written inside the checkout, so `jj status` is as it was before the run, and two runs in one checkout need no lock.
+`packages/pi-legion/scripts/prepack.test.ts`'s row "packs from a copy" holds the checkout's manifest to its bytes and its change time across a pack.
 
 ## lib/install-plugin-profile.sh
 
@@ -6746,7 +6736,7 @@ Stdout is exactly one line, the installed manifest's path as `HOME=<home> OMP_PR
 for `pi-legion` that is the manifest the daemon's contract gate reads under the same profile (`pluginManifestPath`, `packages/daemon/internal/daemon/bootgate.go`).
 Every step's own output goes to stderr.
 
-The plugin is packed by [`lib/pack-plugin.sh`](#libpack-pluginsh), the release's pack steps run in the checkout, into the run's `mktemp -d` directory (never beside `package.json`, so an interrupted run strands no `.tgz` in the checkout).
+The plugin is packed by [`lib/pack-plugin.sh`](#libpack-pluginsh), the release's pack steps run in a staged copy of the checkout, into the run's `mktemp -d` directory (never beside `package.json`, so an interrupted run strands no `.tgz` in the checkout).
 Then:
 
 1. unpack the tarball into `<dir>` (`worker.Dockerfile`'s `mkdir -p /out/<package>` and `tar xzf ./*.tgz -C /out/<package> --strip-components=1`);
@@ -8124,7 +8114,7 @@ all of it) and fails when it cannot read them:
 the tmux proof `tail`s its local file, the sandbox proof runs the same `tail` in the pod's `roles` container (`roles_exec`).
 Every predicate here reads the transcript through it alone.
 The caller also sets `issue` and `stall_offset` (the transcript's size when it told the implementer to stall), and defines `note`; `role_handoff` is `lib/workflow.sh`'s.
-The file sets `stall_reminder_needle`, the opening of `REMINDER` in `packages/pi-shared/src/phase-stall.ts` ("Your turn ended with your Legion phase still open"), which the caller's notes name.
+The file sets `stall_reminder_needle`, a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry ("This reminder repeats at the end of every turn"), which the caller's notes name.
 
 | function | does |
 | :--- | :--- |

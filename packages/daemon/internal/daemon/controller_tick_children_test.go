@@ -40,6 +40,7 @@ const (
 // with the same fields. Above the bound the one listing the turn makes already takes every
 // summary, the child's among them.
 func TestTheTickRereadReadsTheChildrenOfAnIssueWhosePhasesStarted(t *testing.T) {
+	t.Parallel()
 	parent := startedParent
 	filed := dispatch.IssueSummary{Key: filedChild, Status: "triage", Parent: &parent, LastSeq: 1}
 
@@ -148,6 +149,7 @@ func TestTheTickRereadReadsTheChildrenOfAnIssueWhosePhasesStarted(t *testing.T) 
 // re-read wrote, finds nothing holding the parent and starts its retro. The re-read takes the
 // child from its one listing of the project, as a key the turn waits on, and reads nothing singly.
 func TestTheTickRereadReadsTheChildrenOfAParentHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	parent := startedParent
 	closed := dispatch.IssueSummary{Key: filedChild, Status: "done", Parent: &parent, LastSeq: 2}

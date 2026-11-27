@@ -1126,8 +1126,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with its own change's number, and answers.go's SupportedContracts names the constant rather
-// than its number for that reason.
+// with dispatch://INFRA-4401's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const repositoriesLiveContract = 202
 
 // cachesSourceContract is the daemon contract dispatch://INFRA-4036 landed under (version.go's
@@ -1432,6 +1432,21 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 		issue.Assignments[i].Plan = ""
 	}
 	return issue, true
+}
+
+// withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added to
+// the state; nothing else of that contract is a key of this route. `repo` is left as it is: it
+// names the repository the issue works, which every contract since 31 carries. Each pair is
+// written from one value of the record, a correction (record.Issue.RepoCorrection) or a change
+// still to be made (record.Issue.RepoChange), and only where there is one, so the band reports a
+// move only for an issue that carries one of the four.
+func withoutRepositoryCorrection(issue Issue) (Issue, bool) {
+	moved := issue.RepoBefore != "" || issue.RepoCorrectedAt != nil ||
+		issue.RepoChangePending != "" || issue.RepoChangeReason != ""
+	issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+	issue.RepoChangePending, issue.RepoChangeReason = "", ""
+	return issue, moved
 }
 
 // withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or

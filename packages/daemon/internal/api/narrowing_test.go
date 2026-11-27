@@ -373,6 +373,35 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
+	// The repository correction's narrowing (dispatch://INFRA-3136) is a band like every other,
+	// so a caller below it is told what it lost: a caller one contract below
+	// entryNumber(repositoryCorrectionContract), which states that contract in its header as every
+	// plugin from shapedAnswersContract on does, is served at the recorded contract at or below it
+	// (recordedContractAtOrBelow), stands below that band and every band above it, and the log
+	// holds those bands' lines, the correction's among them, and nothing else. It holds no entry to
+	// be the newest (R4 of dispatch://INFRA-1569). It names the correction's line as a literal, so
+	// taking the band out of the entry and applying the strip beside the loop fails it.
+	t.Run("the repository correction narrowing writes its own line", func(t *testing.T) {
+		const droppedCorrection = "the issues' repoBefore, repoCorrectedAt, repoChangePending and repoChangeReason"
+		state := carriedState(t)
+		below := entryNumber(repositoryCorrectionContract) - 1
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
+
+		for key, issue := range issueViews(t, body) {
+			for _, field := range repositoryCorrectionKeys {
+				if value, carried := issue[field]; carried {
+					t.Errorf("the body served to a caller below %d carries %s's `%s`, a key that entry added: %v",
+						below+1, key, field, value)
+				}
+			}
+		}
+		want := narrowingsExpected(state, below)
+		if !slices.Contains(want, droppedCorrection) {
+			t.Fatalf("a caller at %d expects the lines %v, want the repository correction band's among them", below, want)
+		}
+		wantNarrowings(t, narrowings, below, want)
+	})
+
 	// The priority narrowing is a row of the table like every other, so a caller below it is told
 	// what it lost: a caller one contract below priorityContract, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract

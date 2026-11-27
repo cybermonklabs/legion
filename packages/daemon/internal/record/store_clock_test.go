@@ -139,6 +139,7 @@ func clockRows() []clockRow {
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).ReleaseSlotForWait"}, check: checkSlotWaitReleaseStateDue},
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).ReleaseTreeSlots"}, check: checkTreeSlotsReleaseStateDue},
 		{statement: nowStatement{"internal/record/admission_block.go", "(*Postgres).QueueAdmissionBlock"}, check: checkAdmissionBlockDue},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).clearGeneration"}, check: checkClearedPullRequestAt},
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimActivity"}, check: checkClaimActivity},
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimStep"}, check: checkClaimStep},
 		{statement: nowStatement{"internal/store/claims.go", "upsertClaim"}, check: checkClaimWrite},
@@ -622,5 +623,23 @@ func checkAdmissionBlockDue(t *testing.T) {
 			t.Fatal("the block queued no state event, though ACME had no block stored")
 		}
 		wantClock(t, "the admission block's state event's next_at", stateRowDue(t, tx, OutboxKindStateAdmission, "ACME"))
+	})
+}
+
+// A clear of an issue's generation keeps the clock of its merged pull request in
+// cleared_pull_requests at the store's clock, as a replay's re-admission clears one.
+func checkClearedPullRequestAt(t *testing.T) {
+	ctx := context.Background()
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		records := NewStoreWithClock(clockAt)
+		issue := clockIssue("ACME-7")
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: issue.Key, Repo: "acme/widgets", Number: 7,
+			Branch: "legion/ACME-7", HeadSHA: "head", State: PullRequestMerged}))
+		_, err := records.ClearGeneration(ctx, tx, issue, forgetNothing)
+		must(t, err)
+		var at time.Time
+		must(t, tx.QueryRow(ctx, `select cleared_at from cleared_pull_requests where repo = 'acme/widgets' and number = 7`).Scan(&at))
+		wantClock(t, "the cleared pull request's cleared_at", at)
 	})
 }

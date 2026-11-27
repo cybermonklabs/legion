@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -75,7 +76,8 @@ type DispatchIssue struct {
 	DaemonActor  bool
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
 	// own, else its nearest ancestor's, else its project's default; empty when it resolves to none.
-	// The workflow takes it when it first records the issue, and never after.
+	// The workflow takes it when it first records the issue, and a recorded issue's record follows
+	// it onto another repository (workflow.Engine.ApplyRepositoryChange).
 	ResolvedRepo string
 	// Blockers is the keys of the issues the event says this issue waits on, in Dispatch's own
 	// order. An event retained from a Dispatch that did not yet send them carries none, as an issue
@@ -96,6 +98,31 @@ type DispatchIssue struct {
 	// installs the App is taken at that preparation with no wait and no restart. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
+	// RepositoryRefusalKind is what refused the repository RepositoryRefusal names a reason for,
+	// set beside it by the same preparation, so a reader that acts on the kind reads it here and
+	// never parses the name again: GitHub's answer for a repository name, or a name that is no
+	// <owner>/<name>, which asks GitHub nothing. RefusedNothing for every fact RepositoryRefusal is
+	// empty on.
+	RepositoryRefusalKind RepositoryRefusalKind
+	// RepositoryRead is what GitHub answered this event's preparation for the repository a
+	// recorded issue's resolution moves it onto: GitHub's own spelling of the repository and its
+	// default branch, read at that preparation, with both role Apps answered installed on it (the
+	// daemon's prepareRecorded). The correction writes it (workflow.Engine.ApplyRepositoryChange)
+	// and never a read the daemon kept from an earlier preparation, so an App uninstalled since,
+	// or a default branch renamed since, is what the record follows. Nil for every other fact, the
+	// decode's own among them, and for a preparation whose reads GitHub did not answer or refused:
+	// only a preparation sets it.
+	RepositoryRead *ghbranch.Repository
+	// PreparedAgainst is the repository the issue's record held when this fact was prepared (the
+	// daemon's prepareRecorded, from the record that preparation read), kept in memory with the
+	// fact and never stored. The record's correction is written only while the record still holds
+	// it; workflow.Engine.ApplyRepositoryChange says why. Empty for every fact no preparation of a
+	// recorded issue made, the decode's own among them, an event prepared while its issue had no
+	// record, and an event prepared while its record held no repository (record.Issue.Unfilled),
+	// which the preparation stamps empty: such a fact carries no RepositoryRead, so where it moves
+	// the record its correction writes nothing and asks a follow of the issue instead
+	// (ApplyRepositoryChange says why).
+	PreparedAgainst string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
@@ -151,6 +178,22 @@ type DispatchIssue struct {
 	// value, "" included, keeps today's `triage` wake of the controller.
 	LabelSetter string
 }
+
+// RepositoryRefusalKind is what refused a repository (DispatchIssue.RepositoryRefusal), which is
+// what a person can do about it: install an App on the repository, or set another one.
+type RepositoryRefusalKind uint8
+
+const (
+	// RefusedNothing is no refusal.
+	RefusedNothing RepositoryRefusalKind = iota
+	// RefusedByGitHub is GitHub's answer for a repository name: a role App not installed on it,
+	// or no such repository, which one answer covers. Installing the App, or setting another
+	// repository, answers it.
+	RefusedByGitHub
+	// RefusedName is a name that is no <owner>/<name> at all, which asks GitHub nothing and which
+	// no App can be installed on: only setting a repository answers it.
+	RefusedName
+)
 
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
 // carries the label: the one kind of issue whose label's setter the prepare stage and the boot
@@ -252,6 +295,37 @@ type Handover struct {
 	Issue      string
 	Tree       string
 	Generation uint64
+	// ResolvedRepo is the repository (owner/name) Dispatch resolved the issue to at the read the
+	// outbox made of it just before it applied this fact (its status executor), carried here so
+	// that this door follows Dispatch's resolution as every other one does (the engine's
+	// ApplyRepositoryChange): it raises a generation with no Dispatch event and no PATCH, so a
+	// root handed over while its repository changed in Dispatch would otherwise come back on the
+	// repository the record holds. It is empty where that read answered no repository and where
+	// nothing read one: the absence of a resolution is no statement by Dispatch about which
+	// repository the issue is on, so admission corrects nothing and the record stands, as a
+	// retained event's missing repository leaves it (workflow.SettleRetainedRepository).
+	ResolvedRepo string
+	// Seq is the sequence Dispatch had run to at that read (dispatch.Issue.LastSeq), zero where
+	// nothing read one. A record that took a later event (record.Issue.LastDispatchSeq above it)
+	// holds a newer statement by Dispatch of the issue's repository than this read, so admission
+	// corrects nothing from it, as the daemon's follow pass leaves a record a later event carried
+	// past its listing: the outbox reads GitHub between its Dispatch read and this fact's apply,
+	// and a person's change of the repository applied in that time would otherwise be undone.
+	Seq int64
+	// RepositoryRead, RepositoryRefusal and RepositoryRefusalKind are what the outbox's
+	// preparation of the fact read of GitHub for ResolvedRepo where it names another repository
+	// than the record holds (the daemon's prepareHandover), as an event's preparation carries them
+	// (DispatchIssue.RepositoryRead, RepositoryRefusal, RepositoryRefusalKind): the read the
+	// correction is written from, or GitHub's refusal it waits with. All empty where nothing was
+	// read, and the correction then writes nothing.
+	RepositoryRead        *ghbranch.Repository
+	RepositoryRefusal     string
+	RepositoryRefusalKind RepositoryRefusalKind
+	// PreparedAgainst is the repository the issue's record held at the outbox's preparation of
+	// the fact (the daemon's prepareHandover), as an event's preparation carries it
+	// (DispatchIssue.PreparedAgainst), kept in memory and never stored: admission's correction is
+	// written only while the record still holds it. Empty where nothing prepared the fact.
+	PreparedAgainst string
 }
 
 func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
@@ -2611,9 +2685,14 @@ func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []s
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it
 // applies one: an Observed issue fact's view, as a plain observation, while the workflow records no
 // issue of its key, and once one is recorded the event it was prepared in place of (Delivered),
-// carrying the view's Ancestry and Reread, which the preparation read for the view alone,
-// or nothing when it was prepared in place of none. Every other fact applies as it is, so no
-// handler sees Observed or Delivered.
+// carrying the view's Ancestry and Reread, which the preparation read for the view alone, the
+// repository the record held at that preparation (PreparedAgainst), and what that preparation read
+// of GitHub for the view's repository (RepositoryRead, RepositoryRefusal and its kind) where the
+// event resolves the issue to that same repository, which a recorded issue's correction is written
+// from (workflow.Engine.ApplyRepositoryChange): the daemon's own status write resolves the issue as
+// the view does, so its correction would otherwise read as unread. A view prepared in place of no
+// event applies nothing. Every other fact applies as it is, so no handler sees Observed or
+// Delivered.
 //
 // A view older than an issue fact of the issue the daemon has already applied (the copy's applied
 // sequence, record.Store.DispatchIssueApplied, which blockers.Mirror raises for every applied issue
@@ -2647,7 +2726,11 @@ func settleObserved(ctx context.Context, tx pgx.Tx, records *record.Postgres, fa
 		return nil, false, nil
 	default:
 		delivered := *issue.Delivered
-		delivered.Ancestry, delivered.Reread = issue.Ancestry, issue.Reread
+		delivered.Ancestry, delivered.Reread, delivered.PreparedAgainst = issue.Ancestry, issue.Reread, issue.PreparedAgainst
+		if strings.EqualFold(delivered.ResolvedRepo, issue.ResolvedRepo) {
+			delivered.RepositoryRead, delivered.RepositoryRefusal, delivered.RepositoryRefusalKind =
+				issue.RepositoryRead, issue.RepositoryRefusal, issue.RepositoryRefusalKind
+		}
 		return delivered, true, nil
 	}
 }

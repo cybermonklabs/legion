@@ -389,8 +389,8 @@ type launch struct {
 	// of the kind its labels name (podKindOf).
 	roles []claim.Role
 	// workspace is the launchers' working directory (podKind.prepare): an issue pod's workspace,
-	// which workspace-init provisions on the issue's volume (workspace.Location under TreeRoot), or
-	// the root of the controller's own volume, TreeRoot.
+	// which workspace-init provisions on the issue's volume (WorkspaceDir), or the root of
+	// the controller's own volume, TreeRoot.
 	workspace string
 	// secrets are the claim's launch credentials, each reaching the agent as a `<NAME>_FILE`
 	// pointer into its generation's private directory: the boot token, the spec's but the providers
@@ -404,8 +404,8 @@ type launch struct {
 	// as a file and never as an argv string: launcherCommand carries it in the start command's Files
 	// (systemPromptPath says where the launcher writes it and who can read it).
 	prompt string
-	// cacheURL is the address of the issue's repository's cache (cacheURL, set by
-	// issuePod.provision), which workspace-init is told.
+	// cacheURL is the address of the issue's repository's cache (cacheURL, set by prepare for every
+	// pod but the controller's), which workspace-init is told.
 	cacheURL string
 	// gitHubDirs are the directories of the pod's gh bundle, sorted, whose files each role's gh
 	// volume projects — a GitHub owner, or one of its repositories as `<owner>/<repo>` — and
@@ -1784,10 +1784,10 @@ const (
 )
 
 // initEnvironment is workspace-init provision's contract: the image's PATH, its in-memory TMPDIR,
-// the mounted provisioning token, the repository cache URL and bearer-token file, and the XDG
-// configuration home. Its PATH names no directory on the issue's disk, so the git and jj it
-// resolves are never ones an agent put there; it carries no tool-path variables. A pod's own
-// ephemeral disk is created with the pod and empty, so its provision is the first. A kept volume
+// the mounted provisioning token, the repository cache URL and bearer-token file, and the four XDG
+// base directories (xdgEnvironment). Its PATH names no directory on the issue's disk, so the git
+// and jj it resolves are never ones an agent put there; it carries no tool-path variables. A pod's
+// own ephemeral disk is created with the pod and empty, so its provision is the first. A kept volume
 // (keptVolume) holds the clone and the workspace that the issue's earlier pods left, and its
 // provision reuses what the volume holds (workspace.Provision). Nothing here sizes a wait on
 // another pod: each issue pod provisions its own clone on the issue's own disk, which no other pod

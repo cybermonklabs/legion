@@ -118,3 +118,14 @@ func TestRepositoryExportsNoField(t *testing.T) {
 		t.Errorf("IsZero: the zero Repository must be zero and a parsed one must not")
 	}
 }
+
+// The zero Repository is named "", which a column or a log line holds for no repository, and not
+// String's "/"; a parsed one is named as String names it.
+func TestStringOrEmptyNamesNoRepositoryEmpty(t *testing.T) {
+	if got := (Repository{}).StringOrEmpty(); got != "" {
+		t.Errorf("Repository{}.StringOrEmpty() = %q, want %q", got, "")
+	}
+	if got := MustParse("acme/widgets").StringOrEmpty(); got != "acme/widgets" {
+		t.Errorf("StringOrEmpty of acme/widgets = %q, want %q", got, "acme/widgets")
+	}
+}
