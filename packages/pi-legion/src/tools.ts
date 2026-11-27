@@ -809,7 +809,6 @@ async function documentIdOf(
  * (`refuseOpenDecisionBlocks`). */
 const OPEN_BLOCKS_UNDER_A_BASIS = {
   call: "legion register_gate",
-  blocks: "ask block",
   // kept for one release: stored-ask-state
   decidedBy: "version",
   effect:

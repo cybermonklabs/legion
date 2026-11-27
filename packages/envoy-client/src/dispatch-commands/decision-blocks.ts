@@ -31,12 +31,10 @@ async function blockAsks(
 }
 
 /** The words and rule a refusal over open ask blocks uses around the blocks it names: `call`, the
- * call it refused (`dispatch request-approval`, `legion register_gate`); `blocks`, what its count
- * calls an open block (`ask block` in the words of both); `decidedBy`, below; `effect`, the
- * sentence on why an open block stops that call; `remedy`, what to do instead. */
+ * call it refused (`dispatch request-approval`, `legion register_gate`); `decidedBy`, below;
+ * `effect`, the sentence on why an open block stops that call; `remedy`, what to do instead. */
 export interface OpenDecisionBlockRefusal {
   readonly call: string;
-  readonly blocks: string;
   /** Which state decides a block that is not open live: `"live"` takes the server's live ask
    * state once the live text answers `asks` (which `dispatch request-approval` uses, since
    * approval carry moves an open request to the version an answer writes), whereas `"version"`
@@ -206,7 +204,8 @@ export async function refuseOpenDecisionBlocks(
     const document = copy.copied_from_document;
     const answeredBy = source.answer?.user || undefined;
     const answeredAt = source.answer?.at;
-    // Set optional fields only when present. Readers use the same value for an absent field.
+    // TextAsk under exactOptionalPropertyTypes requires absent optional fields to be omitted.
+    // The readers treat an absent field the same as an explicit undefined.
     return {
       block_id: copy.block_id,
       copied_from: id,
@@ -339,8 +338,7 @@ export async function refuseOpenDecisionBlocks(
     if (line !== undefined) open.push(line);
   }
   if (open.length === 0) return;
-  const noun = refusal.blocks;
-  const count = open.length === 1 ? `1 open ${noun}` : `${open.length} open ${noun}s`;
+  const count = open.length === 1 ? "1 open ask block" : `${open.length} open ask blocks`;
   throw new Error(
     [
       `${refusal.call} was not called: ${artifact.name} (version ${latest}) has ${count}. ${refusal.effect}`,

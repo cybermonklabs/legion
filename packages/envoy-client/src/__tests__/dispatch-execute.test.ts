@@ -8790,6 +8790,33 @@ describe("executeDispatchTool", () => {
       );
     });
 
+    // U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are no control characters, and a reader
+    // that splits lines the Unicode way (Python's `str.splitlines`) ends a line at each, as it does
+    // at U+0085. An opener's answerer or time that holds one is taken as none, as one that holds a
+    // control character is, and each quoted field (the block id, the words and each option chosen)
+    // escapes all three, so each trailer line is one line to that reader too. An honest opener
+    // beside them prints its line as before.
+    test("and an opener's answerer or time that holds a line separator is dropped, and each quoted field escapes one", async () => {
+      const result = await readDocument({
+        markdown:
+          ':::ask{#q-by urgency="med" multiple="false" state="answered" answered_by="carol&#x2028;" answered_at="2026-11-18T12:04:00Z" answer="No."}\nShip it?\n:::\n\n' +
+          ':::ask{#q-at urgency="med" multiple="false" state="answered" answered_by="carol" answered_at="2026-11-18T12:06:00Z&#x2029;" answer="Later."}\nWhen?\n:::\n\n' +
+          ':::ask{#q\u2028b urgency="med" multiple="false" state="answered" answered_by="dave" answered_at="2026-11-18T12:07:00Z" selected="[&#x22;A&#x85;B&#x22;]" answer="Yes&#x2029;no."}\nWhich?\n:::\n\n' +
+          ':::ask{#q-drive urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[]" answer="Plain HTTP."}\nWhich transport?\n:::',
+        token: "sha256:spec",
+        version: 4,
+      });
+      // Split at each character that reader ends a line at and this trailer could hold: a line
+      // feed, a carriage return, U+0085, U+2028 and U+2029.
+      const trailer = result.text.split("\n\n").at(-1) ?? "";
+      expect(trailer.split(/\r\n|[\n\r\u0085\u2028\u2029]/u)).toEqual([
+        "Document token: sha256:spec",
+        'Answered "q-at" by carol at an unrecorded time: "Later."',
+        'Answered "q\\u2028b" by dave at 2026-11-18T12:07:00Z: "Yes\\u2029no." (chose "A\\u0085B")',
+        'Answered "q-drive" by bob at 2026-11-18T12:05:00Z: "Plain HTTP."',
+      ]);
+    });
+
     // A Dispatch of this release sends no asks member for a document that holds no ask block, as
     // the release before sent none for any document, and its markdown opens no ask block.
     test("and a text with no asks member for a document with no ask block names none", async () => {
@@ -21430,7 +21457,6 @@ test("the open ask block test refuses another caller in that caller's own words"
     );
   const words = {
     call: "legion register_gate",
-    blocks: "ask block",
     decidedBy: "version" as const,
     effect: "Answering one writes a version the registration does not name.",
     remedy: "Register the version that carries the answer.",
