@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/metrics"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +49,23 @@ func heapAllocated() uint64 {
 // document may be those of the judgment of the clean one.
 const boundWorkTimes = 3
 
+// cancelAtPoll is a context that ends itself at the poll-th call of its Err. The judgment polls
+// its context once before each text (specform.Check), so it ends partway through the judgment at
+// a place that no clock decides.
+type cancelAtPoll struct {
+	context.Context
+	cancel context.CancelFunc
+	poll   int64
+	polls  atomic.Int64
+}
+
+func (c *cancelAtPoll) Err() error {
+	if c.polls.Add(1) == c.poll {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
 // The read route judges any document, at any setting of the roots, for any signed-in caller, so
 // its judgment of the largest document holds a bound. Two documents stand on an issue, with no
 // root named: one of about 1 MB (the markdown of a document holds at most 1 MiB) whose every
@@ -56,7 +74,9 @@ const boundWorkTimes = 3
 // (cputest.OnThread), and the bytes that the process allocates during it, are each less than
 // boundWorkTimes times those of the clean one, the least of two samples of each. The route answers
 // at most specFormFindingsHeld findings, and counts them all in findings_total. A context that
-// ends stops the judgment: it answers the context's error within a second.
+// ends stops the judgment: it answers the context's error at the next text, and judges no text
+// after it. Each subtest judges what it compares, so each runs alone (`-run`) as it runs among the
+// others.
 func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{})
 	served := tree.deps.SpecForm
@@ -67,29 +87,37 @@ func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 	}
 	awaitSettled(t, tree.database, documents["broken"].ID, documents["clean"].ID)
 
-	findings := 0
-	judge := func(ctx context.Context, name string) (time.Duration, uint64, error) {
+	// judge judges the document name and gives the CPU time of the thread that judged it, the bytes
+	// the process allocated meanwhile, and the count of its findings.
+	judge := func(ctx context.Context, name string) (time.Duration, uint64, int, error) {
 		runtime.GC()
 		before := heapAllocated()
 		named := []model.AskApprovalDocument{{ArtifactID: documents[name].ID, Name: documents[name].Name, Version: 1}}
-		var err error
+		var (
+			findings int
+			err      error
+		)
 		work := cputest.OnThread(func() {
 			var result specFormResult
-			if result, err = served.specFormOf(ctx, tree.database.Pool, named, actRead); err == nil && name == "broken" {
+			if result, err = served.specFormOf(ctx, tree.database.Pool, named, actRead); err == nil {
 				findings = len(result.documents[0].findings)
 			}
 		})
-		return work, heapAllocated() - before, err
+		return work, heapAllocated() - before, findings, err
 	}
 	t.Run("the work", func(t *testing.T) {
 		work, allocated := map[string]time.Duration{}, map[string]uint64{}
+		findings := 0
 		for sample := range 2 {
 			for _, name := range []string{"clean", "broken"} {
-				each, bytes, err := judge(context.Background(), name)
+				each, bytes, found, err := judge(context.Background(), name)
 				if err != nil {
 					t.Fatalf("judge the %s document: %v", name, err)
 				}
 				t.Logf("the %s document: %v of CPU, %.1f MB allocated", name, each, float64(bytes)/1e6)
+				if name == "broken" {
+					findings = found
+				}
 				if sample == 0 || each < work[name] {
 					work[name] = each
 				}
@@ -110,6 +138,10 @@ func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 		}
 	})
 	t.Run("the findings it answers", func(t *testing.T) {
+		_, _, findings, err := judge(context.Background(), "broken")
+		if err != nil {
+			t.Fatalf("judge the broken document: %v", err)
+		}
 		response := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+documents["broken"].ID+"/spec-form", nil, "alice")
 		if response.Code != http.StatusOK {
 			t.Fatalf("read the broken document's form: status=%d body=%.300s", response.Code, response.Body.String())
@@ -124,21 +156,18 @@ func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 		}
 	})
 	t.Run("a context that ends", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		inner, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		done := make(chan error, 1)
-		go func() {
-			_, _, err := judge(ctx, "broken")
-			done <- err
-		}()
-		time.Sleep(300 * time.Millisecond)
-		cancel()
-		cancelled := time.Now()
-		err := <-done
-		ended := time.Since(cancelled)
-		t.Logf("the judgment ended %v after its context did, with the error %v", ended, err)
-		if ended > time.Second || !errors.Is(err, context.Canceled) {
-			t.Errorf("the judgment ended %v after its context did, with the error %v, want within a second and context.Canceled", ended, err)
+		// The context ends at the poll of the text half way through the statements: the reads
+		// before the judgment poll it a few times at most, and the judgment once for each
+		// statement's text.
+		ctx := &cancelAtPoll{Context: inner, cancel: cancel, poll: int64(statements / 2)}
+		_, _, _, err := judge(ctx, "broken")
+		polls := ctx.polls.Load()
+		t.Logf("the judgment polled its context %d times, and ended at poll %d with the error %v", polls, ctx.poll, err)
+		if !errors.Is(err, context.Canceled) || polls != ctx.poll {
+			t.Errorf("the judgment polled its context %d times and ended with the error %v, want context.Canceled at poll %d, the poll that saw the context end",
+				polls, err, ctx.poll)
 		}
 	})
 }
