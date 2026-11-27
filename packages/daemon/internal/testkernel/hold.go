@@ -4,11 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -137,20 +142,74 @@ func schedFields(t testing.TB, path string) []time.Duration {
 // a machine that kept it waiting for a CPU (Hold). From its first act to its last write to its
 // output pipes the command forks nothing: anything it does past that point, such as starting a
 // Child and waiting for it, a Hold cannot read, and HeldBeforeItWrote reads nothing there.
-type Leader struct{ dir string }
+type Leader struct {
+	dir    string
+	starve bool // CONTROL ONLY (r63 leaderstarve)
+}
+
+// CONTROL ONLY (r63 leaderstarve), never merged: the first Leader of each process starts 50 busy
+// loops pinned to the last CPU the process may use, and its command, once past its start mark,
+// spins until the row's goroutine has pinned it there too and then for 20 ms of CPU more, before
+// it writes its answer: a machine that keeps the command waiting for a CPU before its last write.
+var (
+	ctlLeaders atomic.Int64
+	ctlHogs    sync.Once
+	ctlCPU     = -1
+)
 
 // NewLeader is a Leader whose records are in a directory of t's own.
 func NewLeader(t testing.TB) *Leader {
 	t.Helper()
-	return &Leader{dir: t.TempDir()}
+	l := &Leader{dir: t.TempDir(), starve: ctlLeaders.Add(1) == 1}
+	if l.starve {
+		ctlHogs.Do(func() {
+			var set unix.CPUSet
+			if err := unix.SchedGetaffinity(0, &set); err != nil {
+				t.Fatalf("CONTROL: read this process's CPUs: %v", err)
+			}
+			for cpu := range 1024 {
+				if set.IsSet(cpu) {
+					ctlCPU = cpu
+				}
+			}
+			for i := range 50 {
+				hog := exec.Command("taskset", "-c", strconv.Itoa(ctlCPU), "sh", "-c", "while :; do :; done")
+				if err := hog.Start(); err != nil {
+					t.Fatalf("CONTROL: start hog %d: %v", i, err)
+				}
+				t.Cleanup(func() { _ = hog.Process.Kill(); _ = hog.Wait() })
+			}
+			t.Logf("CONTROL: 50 busy loops pinned to CPU %d; the first command's leader is pinned there after its start mark", ctlCPU)
+		})
+		go func() {
+			pidFile := l.path("ctl.pid")
+			for range 30000 {
+				time.Sleep(time.Millisecond)
+				raw, err := os.ReadFile(pidFile)
+				if err != nil || !strings.HasSuffix(string(raw), "\n") {
+					continue
+				}
+				out, err := exec.Command("taskset", "-p", "-c", strconv.Itoa(ctlCPU), strings.TrimSpace(string(raw))).CombinedOutput()
+				_ = os.WriteFile(l.path("ctl.taskset"), []byte(fmt.Sprintf("%v %s\n", err, out)), 0o600)
+				_ = os.WriteFile(l.path("ctl.pinned"), nil, 0o600)
+				return
+			}
+		}()
+	}
+	return l
 }
 
 // Begin is shell for the command's first lines: a SIGTERM trap whose first act records the Hold's
 // end (HoldTrap) and which then exits 143, and the command's first act, its start mark (HoldStart)
 // at Mark.
 func (l *Leader) Begin() string {
-	return `leaderterm() { ` + HoldTrap(shellprefix.Literal(l.path("trapped"))) + `; exit 143; }; trap leaderterm TERM; ` +
+	begin := `leaderterm() { ` + HoldTrap(shellprefix.Literal(l.path("trapped"))) + `; exit 143; }; trap leaderterm TERM; ` +
 		HoldStart(shellprefix.Literal(l.Mark()))
+	if l.starve {
+		begin += `; echo $$ >` + shellprefix.Literal(l.path("ctl.pid")) + `; while [ ! -e ` + shellprefix.Literal(l.path("ctl.pinned")) + ` ]; do :; done; ` +
+			`read -r cs </proc/self/schedstat; c0=${cs%% *}; while :; do read -r cs </proc/self/schedstat; [ $(( ${cs%% *} - c0 )) -ge 20000000 ] && break; done`
+	}
+	return begin
 }
 
 // Wrote is shell for the line just after the command's last write to its output pipes.
