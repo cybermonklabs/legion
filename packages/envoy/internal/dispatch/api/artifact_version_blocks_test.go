@@ -237,6 +237,7 @@ var versionBlocksFixtures = filepath.Join("..", "..", "..", "..", "contracts", "
 // the plan's version 409 DOC_NEWER_CONTENT. The test changes the manifest, a package variable, so
 // it stays serial.
 func TestAVersionsBlocksCarryTheParentOfATaskBlock(t *testing.T) {
+	// Not parallel: it changes pmdoc's schema manifest, a package variable, for the whole process.
 	database := storetest.Open(t)
 	seedPeople(t, database, "alice")
 	const parent = "dispatch://ACME-1/artifact/plan-md#b-default"
