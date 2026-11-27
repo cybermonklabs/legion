@@ -328,6 +328,23 @@ function withScripts(
 }
 
 describe("every start of an e2e script keeps its secrets out of its arguments", () => {
+  // A scan that enumerated nothing answers "no start leaks" exactly as a clean tree does, so what
+  // it read is checked before what it found: the files it must have reached, by name, and a floor
+  // under the count. Without this a wrong directory, a filter that selects nothing or a walk that
+  // ends at the first file all read green.
+  test("the scan reads the scripts and the libraries they reach", () => {
+    const read = scanned().map((path) => relative(repoRoot, path));
+    for (const name of [
+      "scripts/e2e/lib/rig.sh",
+      "scripts/e2e/lib/loopback-dsn.sh",
+      "scripts/e2e/dispatch-session-settings.sh",
+      "packages/envoy/scripts/lib/exec-env.sh",
+    ]) {
+      expect({ name, read: read.includes(name) }).toEqual({ name, read: true });
+    }
+    expect(read.length).toBeGreaterThan(80);
+  });
+
   test("no start writes a secret-named setting in the arguments it gives", () => {
     expect(startsWithSecretArguments()).toEqual([]);
   });
