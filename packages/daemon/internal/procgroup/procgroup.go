@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"golang.org/x/sys/unix"
 )
 
 // WaitDelay is the one value Configure sets: how long Wait keeps waiting, once the command's own
@@ -149,6 +150,19 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 		return err
 	}
 	cmd.WaitDelay = WaitDelayNow()
+	// CONTROL ONLY: a kill planted at the leader's exit. Once the command's own process has exited
+	// (waitid with WNOWAIT, which reaps nothing), its whole group is SIGKILLed, so a child that
+	// still held the output pipe is gone with the leader.
+	go func() {
+		for cmd.Process == nil {
+			time.Sleep(time.Millisecond)
+		}
+		pid := cmd.Process.Pid
+		var info unix.Siginfo
+		for errors.Is(unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil), unix.EINTR) {
+		}
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	}()
 	return KilledByContext(cmd)
 }
 
