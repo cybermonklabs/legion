@@ -335,6 +335,7 @@ packages/envoy:
       - cmd/dev-oidc-issuer                     # 5 s
       - internal/roles                          # 5 s
       - internal/legionagents                   # 4 s
+      - internal/legionrole
       - internal/bus/kvrecords                  # 4 s
       - internal/googleidentity                 # 3 s
       - internal/webhook                        # 3 s
