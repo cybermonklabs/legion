@@ -343,6 +343,8 @@ func publishStored(t *testing.T, js jetstream.JetStream, stream jetstream.Stream
 // that package's tests need and cannot import: keep the two in step.
 func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) {
 	t.Helper()
+	// The row's own wait: a read that never answers holds the poll it is made in until this
+	// context ends, so it takes the wait's share (testwait.Remaining), not the whole.
 	requests, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancel()
 	consumer, err := stream.Consumer(requests, name)

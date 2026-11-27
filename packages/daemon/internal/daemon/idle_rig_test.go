@@ -1140,17 +1140,17 @@ func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
 const idleRigPoll = idleRigTick
 
 // idleRigWaiting waits for condition until it holds, asking it once every pace, and fails naming
-// what it waited for. It sets no span of its own: its one bound is the test binary's deadline
-// less testwait's margin (testwait.Remaining), so the work behind a wait, which a loaded runner
-// with every pod of the rig and a launcher for each, a nats-server, a Postgres and an Envoy
+// what it waited for. It sets no span of its own: its one bound is its share of the test binary's
+// deadline less testwait's margin (testwait.Remaining), so the work behind a wait, which a loaded
+// runner with every pod of the rig and a launcher for each, a nats-server, a Postgres and an Envoy
 // listener on it makes slow, is waited for, and a fault (a release that never happens) fails the
 // wait by name before Go's alarm. A condition that asks the listener is answered as the wait gives
 // up, because the rig's requests to it end only after every wait has (idleRigListenerContext).
-// The cost is testwait's own (its package comment): a fault holds the test binary until that
-// moment, and every later wait in the binary begins with the moment passed, asks its question
-// once and fails, where a span of its own once failed one row and left the rest of the binary its
-// time. Each wait once carried such a span (150 s for a pod, a minute for a record), and on a
-// machine at load5 1,100 to 2,000 a pod whose role process registered late outlasted its span.
+// The cost of a fault is its wait's share (testwait's package comment): it holds the test binary
+// for a quarter of what was left less the margin rather than all of it, and a later wait in the
+// binary begins with a share of what is still left rather than with nothing. Each wait once
+// carried a span of its own (150 s for a pod, a minute for a record), and on a machine at load5
+// 1,100 to 2,000 a pod whose role process registered late outlasted its span.
 // idleRigEventually and idleRigUntil are this wait, each at the pace its callers need.
 func idleRigWaiting(t *testing.T, what string, pace time.Duration, condition func() bool) {
 	t.Helper()

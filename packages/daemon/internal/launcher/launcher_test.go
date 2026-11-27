@@ -142,7 +142,7 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 		select {
 		case <-g.result:
 		case <-time.After(cleanupBeforeDeadline(t)):
-			t.Error("the launcher did not leave after its context ended, to 10 s before the test binary's deadline")
+			t.Error("the launcher did not leave after its context ended, within its share of the test binary's deadline")
 			// The launcher never stopped its generation, so the case ends it: nothing of a case
 			// outlives the test binary.
 			if g.roleConn != nil && g.latest.Child != nil {
@@ -169,7 +169,7 @@ func TestARigJoinedByItsTestLeavesItsCleanupNothingToWaitFor(t *testing.T) {
 		select { // the explicit join, as a test that stops its launcher before another starts joins it
 		case <-g.result:
 		case <-time.After(beforeDeadline(t)):
-			t.Fatalf("the launcher did not stop after its context ended, to 30 s before the test binary's deadline: %s", g.stderr.String())
+			t.Fatalf("the launcher did not stop after its context ended, within its share of the test binary's deadline: %s", g.stderr.String())
 		}
 		joinedAt = time.Now()
 	})
@@ -763,7 +763,7 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 		select {
 		case <-f.result:
 		case <-time.After(cleanupBeforeDeadline(t)):
-			t.Errorf("the launcher did not leave after its context ended, to 10 s before the test binary's deadline; its log: %s", f.stderr.String())
+			t.Errorf("the launcher did not leave after its context ended, within its share of the test binary's deadline; its log: %s", f.stderr.String())
 		}
 	})
 	for range roles {
@@ -787,7 +787,7 @@ func (f *fleet) stop() error {
 		f.result <- err
 		return err
 	case <-time.After(beforeDeadline(f.t)):
-		f.t.Fatalf("the launcher did not leave after its context ended, to 30 s before the test binary's deadline; its log: %s", f.stderr.String())
+		f.t.Fatalf("the launcher did not leave after its context ended, within its share of the test binary's deadline; its log: %s", f.stderr.String())
 		return nil
 	}
 }
@@ -1227,7 +1227,7 @@ func TestAStopOfAReapedGenerationSignalsNothing(t *testing.T) {
 			}
 			return line
 		case <-time.After(beforeDeadline(t)):
-			t.Fatalf("the process holding the reaped generation's number never wrote %s, to 30 s before the test binary's deadline", what)
+			t.Fatalf("the process holding the reaped generation's number never wrote %s, within its share of the test binary's deadline", what)
 		}
 		return ""
 	}
@@ -1945,7 +1945,7 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 				t.Fatalf("Run = %v, want the container's shutdown", err)
 			}
 		case <-time.After(beforeDeadline(t)):
-			t.Fatal("Run did not return after the generation's child ended, to 30 s before the test binary's deadline")
+			t.Fatal("Run did not return after the generation's child ended, within its share of the test binary's deadline")
 		}
 		if conn, err := net.Dial("unix", socket); err == nil {
 			_ = conn.Close()
@@ -1991,7 +1991,7 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 				t.Fatalf("Run = %v, want the container's shutdown", err)
 			}
 		case <-time.After(beforeDeadline(t)):
-			t.Fatal("Run did not return after the wedged child's stop grace, to 30 s before the test binary's deadline")
+			t.Fatal("Run did not return after the wedged child's stop grace, within its share of the test binary's deadline")
 		}
 		if waited := time.Since(stopped); waited < grace {
 			t.Fatalf("Run returned %s after the shutdown, inside the %s grace a child ignoring SIGTERM is owed", waited, grace)
@@ -2145,7 +2145,7 @@ func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdow
 			t.Fatalf("Run = %v, want the container's shutdown", err)
 		}
 	case <-time.After(beforeDeadline(t)):
-		t.Fatal("Run did not return while a holder outside the generation kept its session socket open, to 30 s before the test binary's deadline")
+		t.Fatal("Run did not return while a holder outside the generation kept its session socket open, within its share of the test binary's deadline")
 	}
 	if conn, err := net.Dial("unix", socket); err == nil {
 		_ = conn.Close()

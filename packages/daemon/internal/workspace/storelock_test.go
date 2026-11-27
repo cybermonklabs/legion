@@ -457,8 +457,8 @@ func (l *issueLock) Unlock() { l.shared.holder.Store(nil); l.shared.mu.Unlock() 
 // before its own checkout, so no checkout could ever start beside this one. A provision that
 // returns while a checkout is held is no overlap either, and ends the hold. Any other hold ends
 // when the other checkout starts, however long a loaded machine takes over the other provision's
-// commands; giveUpAt, 30 s before the test binary's deadline (testwait.Bounded, read when the
-// runner is built), bounds only a jj that never returns.
+// commands; giveUpAt, its share of the test binary's deadline less 30 s (testwait.Bounded, read
+// when the runner is built), bounds only a jj that never returns.
 type overlapRunner struct {
 	*recordingRunner
 	lock *sharedStoreLock
@@ -501,7 +501,7 @@ func (r *overlapRunner) Run(ctx context.Context, command Command) (Result, error
 			return Result{}, fmt.Errorf("%s's provision returned while %s's checkout waited for another to start beside it", other, issue)
 		}
 	case <-giveUp.C:
-		return Result{}, fmt.Errorf("the checkouts never overlapped: %s's checkout waited to 30 s before the test binary's deadline for another issue's", issue)
+		return Result{}, fmt.Errorf("the checkouts never overlapped: %s's checkout waited its share of the test binary's deadline for another issue's", issue)
 	}
 	return r.recordingRunner.Run(ctx, command)
 }

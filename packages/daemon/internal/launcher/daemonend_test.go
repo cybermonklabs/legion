@@ -464,7 +464,12 @@ func TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce(t *t
 		})
 		return
 	}
-	out, code := runChild(t, "^TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce$", "silent-to-the-end", testwait.Remaining(t))
+	// The child's whole -test.timeout is the whole of what is left (testwait.WholeRemaining), not a
+	// wait's share: the child runs its own waits under it, and a share of a short parent budget is
+	// less than the child's own 30 s margin, so every wait of the child would begin spent and ask
+	// once. A tester found exactly that under -test.timeout 2m: this row failed 2 of 3 with the share
+	// and passed 3 of 3 at base.
+	out, code := runChild(t, "^TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce$", "silent-to-the-end", testwait.WholeRemaining(t))
 	_, after, _ := strings.Cut(out, "the stray dials from ")
 	stray, _, _ := strings.Cut(after, "\n")
 	stray = strings.TrimSpace(stray)

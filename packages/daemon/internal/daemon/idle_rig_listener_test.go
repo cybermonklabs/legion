@@ -56,12 +56,12 @@ type idleRigListener struct {
 const idleRigAgentWait = 10 * time.Second
 
 // idleRigListenerSpare is how long before the test binary's deadline the rig's requests to the
-// listener end: half of testwait's margin. Every wait of the rig gives up at that margin, 30 s
-// before the deadline, and asks its question once more as it does, so a question that is a
-// request of the listener must still be answered then: a request that ended with the waits would
-// fail its parent test as a listener error from inside the wait, and the wait's own failure, which
-// names what it waited for, would never be written. Ending 15 s before the deadline still leaves
-// the failure and the cleanups time to run before Go's alarm.
+// listener end: half of testwait's margin. Every wait of the rig gives up at its share of the
+// deadline, no later than that margin, 30 s before it, and asks its question once more as it does,
+// so a question that is a request of the listener must still be answered then: a request that
+// ended with the waits would fail its parent test as a listener error from inside the wait, and the
+// wait's own failure, which names what it waited for, would never be written. Ending 15 s before
+// the deadline still leaves the failure and the cleanups time to run before Go's alarm.
 const idleRigListenerSpare = 15 * time.Second
 
 // idleRigListenerContext is the context of the rig's requests to the listener: cancelled when t

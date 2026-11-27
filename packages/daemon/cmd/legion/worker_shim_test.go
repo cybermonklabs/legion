@@ -627,9 +627,9 @@ exit 9
 			command.Stdout, command.Stderr = &printed, &printed
 			// A shim that ran no stop leaves the agent holding these pipes until it gives up on
 			// its own, a minute on, and Wait reads them to their end. The delay that cuts that
-			// read short has no span of its own, only what is left of the test binary's deadline
-			// less 30 s (testwait.Bounded): a span would cut short a read of the shim's last lines
-			// that a loaded machine made slow, and fail the row where the stop ran.
+			// read short has no span of its own, only its share of what is left of the test binary's
+			// deadline less the 30 s margin (testwait.Bounded): a span would cut short a read of the
+			// shim's last lines that a loaded machine made slow, and fail the row where the stop ran.
 			command.WaitDelay = testwait.Bounded(t, 1<<60, 30*time.Second)
 			if err := command.Start(); err != nil {
 				t.Fatalf("start the shim: %v", err)

@@ -614,11 +614,13 @@ func withMeasuredBootTimeout(bound time.Duration) rigOption {
 // launcher's hello or answer), and a loaded machine can put that event off past any fixed span. The
 // 2 s failed TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch in CI run
 // 45752994928: its launch gave up while the controller had not yet deleted the earlier pod. A test
-// that means a launch to give up at its boot timeout sets that timeout itself. The timeout is at
-// most a day: under go test's -timeout 0, Remaining is about 36 years, and the launch's own bound
-// (launchBound), about ten boot timeouts, would wrap a time.Duration.
+// that means a launch to give up at its boot timeout sets that timeout itself. It is the whole of
+// what is left (testwait.WholeRemaining, rather than the share a wait of the test takes, so the
+// launch outlasts the waits watching it), and at most a day: under go test's -timeout 0 that is
+// about 36 years, and the launch's own bound (launchBound), about ten boot timeouts, would wrap a
+// time.Duration.
 func withWaitsToTheDeadline() rigOption {
-	return func(g *rig, o *Options) { o.BootTimeout = min(testwait.Remaining(g.t), 24*time.Hour) }
+	return func(g *rig, o *Options) { o.BootTimeout = min(testwait.WholeRemaining(g.t), 24*time.Hour) }
 }
 
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.

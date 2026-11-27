@@ -18,20 +18,27 @@ const remainingChildEnv = "TESTWAIT_REMAINING_CHILD"
 // left however long the child took to reach it.
 const remainingChildLeft = 10 * time.Second
 
-// Remaining is the time until the test binary's deadline less giveUpMargin: read just before the
-// call that time is no less than Remaining's answer, and read just after it no more. The reads and
-// the answer come from one monotonic clock, so the bounds need no tolerance.
+// WholeRemaining is the time until the test binary's deadline less giveUpMargin, and Remaining is
+// a share (Share) of it: read just before the call that time is no less than the answer, and read
+// just after it no more. The reads and the answers come from one monotonic clock, so the bounds
+// need no tolerance. This row tested Remaining for the whole time before the share rule; that
+// property now belongs to WholeRemaining, the named whole, and Remaining's is its share.
 func TestRemainingIsTheTimeToTheDeadlineLessTheMargin(t *testing.T) {
 	deadline, ok := t.Deadline()
 	if !ok {
 		t.Skip("the binary runs under -timeout 0, so there is no deadline to measure; TestUnderNoTimeoutRemainingHasNoEnd covers that")
 	}
 	most := time.Until(deadline) - giveUpMargin
-	got := Remaining(t)
+	whole := WholeRemaining(t)
+	share := Remaining(t)
 	least := time.Until(deadline) - giveUpMargin
-	if got < least || got > most {
-		t.Fatalf("Remaining = %s, want between %s and %s: the time to the deadline %s less %s",
-			got, least, most, deadline.Format(time.RFC3339Nano), giveUpMargin)
+	if whole < least || whole > most {
+		t.Fatalf("WholeRemaining = %s, want between %s and %s: the time to the deadline %s less %s",
+			whole, least, most, deadline.Format(time.RFC3339Nano), giveUpMargin)
+	}
+	if share < least/Share || share > most/Share {
+		t.Fatalf("Remaining = %s, want between %s and %s: a 1/%d share of the time to the deadline %s less %s",
+			share, least/Share, most/Share, Share, deadline.Format(time.RFC3339Nano), giveUpMargin)
 	}
 }
 

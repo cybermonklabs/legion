@@ -348,15 +348,16 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 
 // hangGuardAckWait is the AckWait of a test's intake consumers whose preparation reads the store:
 // a hang guard that only a hung read reaches. It is all that is left of the test binary's
-// deadline, and under -timeout 0, which sets none, testwait.Remaining's span no wait reaches, so
-// it is always longer than a row's own wait for the event's effect, testwait.Eventually, which
-// gives up 30 s before that deadline: a read that hangs fails the row by the row's own line,
+// deadline, and under -timeout 0, which sets none, testwait.WholeRemaining's span no wait reaches,
+// so it is always longer than a row's own wait for the event's effect, testwait.Eventually, which
+// gives up at its share of what is left of that deadline less the 30 s margin: a read that hangs
+// fails the row by the row's own line,
 // naming what it waited for, while the read is still held, and never by the guard cutting the
 // read and a nak bringing the event back.
 func hangGuardAckWait(t *testing.T) time.Duration {
 	deadline, bounded := t.Deadline()
 	if !bounded {
-		return testwait.Remaining(t)
+		return testwait.WholeRemaining(t)
 	}
 	return time.Until(deadline)
 }

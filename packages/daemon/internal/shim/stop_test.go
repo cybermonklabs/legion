@@ -13,12 +13,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// commandBudget is the budget the requests below carry. It ends a minute past the moment every
-// wait of the test gives up (testwait.Remaining), so no command here is ended by its budget while
+// commandBudget is the budget the requests below carry. It ends a minute past the moment the
+// budget of every wait of the test ends (testwait.WholeRemaining, the whole rather than the share
+// a wait takes, so that it outlasts every one of them whenever each was read), so no command here
+// is ended by its budget while
 // the test waits: a jj that records SIGTERM was signalled by the stop, and a shim that returns did
 // not wait out the budget. A jj the stop did not reach still ends on its own within its minute of
 // sleeps (hangingJJ), so it does not outlive the test binary for long.
-func commandBudget(t *testing.T) time.Duration { return testwait.Remaining(t) + time.Minute }
+func commandBudget(t *testing.T) time.Duration { return testwait.WholeRemaining(t) + time.Minute }
 
 // A shim command ends with the shim itself. Under the tmux runtime a `kill-pane` gives every
 // process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a read or an adoption

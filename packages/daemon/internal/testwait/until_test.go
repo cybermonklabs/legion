@@ -63,19 +63,21 @@ func TestContextEndsWhereAWaitGivesUpAndWithTheTest(t *testing.T) {
 	}
 }
 
-// A wait gives up the margin before the test binary's deadline. A *testing.T names that deadline;
-// a testing.TB without Deadline reads it from the -timeout flag and the process's start, which is
-// no later than testing's own. That the wait then holds to that moment, with no cap of its own, is
-// TestEventuallyHasNoCapOfItsOwn's.
-func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
+// The budget a wait may take ends the margin before the test binary's deadline (giveUpAt), and a
+// wait of Eventually or Until gives up at its share of what is left before that moment, earlier
+// (TestTheWaitsGiveUpChild's first line names the share it took). A *testing.T names that
+// deadline; a testing.TB without Deadline reads it from the -timeout flag and the process's
+// start, which is no later than testing's own. That a wait holds to its share of it, with no cap
+// of its own, is TestEventuallyHasNoCapOfItsOwn's.
+func TestTheBudgetAWaitMayTakeEndsTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline, bounded := t.Deadline()
 	end, ok := giveUpAt(t)
 	if ok != bounded || ok && !end.Equal(deadline.Add(-margin)) {
-		t.Fatalf("a wait in a test whose deadline is %v (%t) gives up at %v (%t), want %s before it", deadline, bounded, end, ok, margin)
+		t.Fatalf("in a test whose deadline is %v (%t) the budget a wait may take ends at %v (%t), want %s before it", deadline, bounded, end, ok, margin)
 	}
 	fromFlag, ok := giveUpAt(noDeadline{t})
 	if ok != bounded || ok && fromFlag.After(end) {
-		t.Fatalf("a wait in a testing.TB without Deadline gives up at %v (%t), want no later than %v (%t)", fromFlag, ok, end, bounded)
+		t.Fatalf("in a testing.TB without Deadline the budget a wait may take ends at %v (%t), want no later than %v (%t)", fromFlag, ok, end, bounded)
 	}
 }
 
@@ -122,8 +124,15 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 		t.Fatalf("the child's count of the reading's asks %.20q (%v), want 6: one a pace over the stepped clock's 50 ms, and one at its end", after, err)
 	}
 	name := "TestTheWaitsGiveUpChild/"
-	ending := " 30s before the test binary's deadline"
-	spent := ending + ", a moment that had passed before this wait began: the first give-up line in time order is the cause"
+	// The line states the moment the wait gave up at, with two figures: how long it ran and the
+	// share it was given. The until wait runs on the stepped clock over its share of the planted
+	// deadline, 50 ms, and its own questions answer at once, so here the two agree; a wait whose
+	// question takes longer than its share runs past it and they differ, which is why the text
+	// names each. The other two begin with the deadline less the margin already passed, so they
+	// give up at once. The literal text is pinned here, not built from the package's format, so a
+	// change to what a reader sees is a change to this row.
+	ending := " after 50ms; its share (1/4) of what was left of the test binary's deadline less the 30s margin was 50ms"
+	spent := " at once: the test binary's deadline less the 30s margin had passed before this wait began, so the first give-up line in time order is the cause"
 	want := []string{
 		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + fmt.Sprintf(`; last read: reading\n%d`, reads),
 		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + spent,
@@ -198,7 +207,9 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 		onClock(t, c)
 		asks := 0
 		t.Cleanup(func() { t.Logf("the reading was asked %d time(s)", asks) })
-		Until(plantedDeadline{t, c.Now().Add(margin + 50*time.Millisecond)}, "a reading that never holds", func() (string, bool) {
+		// The wait takes a share of what is left (Share), so the span it runs over is a quarter of
+		// what is planted here: 50 ms, the span this row's ask count is derived from.
+		Until(plantedDeadline{t, c.Now().Add(margin + Share*50*time.Millisecond)}, "a reading that never holds", func() (string, bool) {
 			asks++
 			return fmt.Sprintf("reading\n%d", asks), false
 		})

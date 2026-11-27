@@ -1056,9 +1056,11 @@ func TestGitCredentialNamesTheForksRouteWhenItsParentHoldsNoToken(t *testing.T) 
 // is recorded: the helper answers nothing, naming the cancel, and the sleep is gone too. Guard.run
 // gives curl the one stop procgroup makes whichever end of the read's context comes, its bound's or
 // this one. In one read under the bound of 2 s, a loaded machine could let the bound stop curl
-// before curl had recorded its sleep. Each wait, the helper's answer included, has the test
-// binary's deadline as its only bound, and each stand-in sleeps about a day, so a stop that never
-// comes fails the row by name and no sleep ends by itself before it.
+// before curl had recorded its sleep. Each wait has no bound but the test binary's deadline: the
+// helper's answer is waited for until the deadline less the margin (testwait.Receive), and each
+// other wait gives up at its share of what is left of it less testBoundMargin (testwait.Bounded).
+// Each stand-in sleeps about a day, so a stop that never comes fails the row by name and no sleep
+// ends by itself before it.
 func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (startGitCredentialGet) and leakguardCurl (useForkRead).
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {

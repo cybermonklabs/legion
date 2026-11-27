@@ -47,11 +47,12 @@ func TestAReviewOfAPullRequestRecordedUnderTheOtherNameOfARenameIsRecorded(t *te
 			// A hang guard, not the subject: AckWait bounds the one store read recordedPullRequest
 			// makes, and any fixed window lets the machine decide whether a slow read comes back as
 			// the row's answer or as context deadline exceeded: at 5 s a loaded runner's read did,
-			// and at one minute a read of 61 s did. The window is what is left of the test
-			// binary's deadline less 30 s (testwait.Remaining), so a read however slow is
+			// and at one minute a read of 61 s did. The window is the whole of what is left of the
+			// test binary's deadline less 30 s (testwait.WholeRemaining, the whole rather than a
+			// wait's share, so that it outlasts the row's own waits), so a read however slow is
 			// waited out and only one that never answers fails the row, by name, before the
 			// binary's own timeout.
-			spec := ConsumerSpec{Project: "LEGION", AckWait: testwait.Remaining(t), Renames: tc.renames}
+			spec := ConsumerSpec{Project: "LEGION", AckWait: testwait.WholeRemaining(t), Renames: tc.renames}
 			got, err := recordedPullRequest(context.Background(), spec, pool, tc.fact)
 			if err != nil || got != tc.want {
 				t.Fatalf("recordedPullRequest(%#v) = %v, %v; want %v and no error", tc.fact, got, err, tc.want)

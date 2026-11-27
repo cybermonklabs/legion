@@ -72,10 +72,11 @@ func aPushFixture(t *testing.T, message string) (dir, line string) {
 
 // leakCheck runs the command as git's hook and a pod's scripts run it: stdin is what they pipe
 // in, and the status and what reached stderr are what they read. Standard output is the hook's
-// own, and the command writes nothing to it. The command's context ends when what is left of the
-// test binary's deadline less testBoundMargin has passed, and a command still running then fails
-// the test by name: a check that a loaded machine makes slow passes. A fixed minute ended a slow
-// check, and the row read the guard's setup failure that followed.
+// own, and the command writes nothing to it. The command's context ends when its share of what
+// is left of the test binary's deadline less testBoundMargin has passed (testwait.Bounded), and a
+// command still running then fails the test by name: a check that a loaded machine makes slow
+// passes. A fixed minute ended a slow check, and the row read the guard's setup failure that
+// followed.
 func leakCheck(t *testing.T, stdin string, args ...string) (int, string) {
 	t.Helper()
 	limit := testwait.Bounded(t, 1<<60, testBoundMargin)
@@ -87,7 +88,7 @@ func leakCheck(t *testing.T, stdin string, args ...string) (int, string) {
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, append([]string{"legion", "leak-check"}, args...), &stdout, &stderr)
 	if ctx.Err() != nil {
-		t.Fatalf("legion leak-check %q still ran when its limit of %s, %s before the test binary's deadline, passed (exit %d): %s", args, limit.Round(time.Millisecond), testBoundMargin, code, stderr.String())
+		t.Fatalf("legion leak-check %q still ran when its limit of %s, its share of what was left of the test binary's deadline less %s, passed (exit %d): %s", args, limit.Round(time.Millisecond), testBoundMargin, code, stderr.String())
 	}
 	if stdout.Len() > 0 {
 		t.Errorf("printed %q on standard output, want nothing", stdout.String())

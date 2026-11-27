@@ -30,9 +30,10 @@ const idleRigStopLine = "the Envoy session of a role whose process is gone was s
 //
 // Steps 1 to 3 fail without stopping, so a run where the session still reads live says what each
 // sender met before the wait for a resume that never comes ends the subtest. Step 1's wait gives
-// up 30 s before the test binary's deadline, as every wait does, and the sends of steps 2 and 3
-// are requests of the listener, which end only 15 s before it (idleRigListenerContext): they are
-// answered after step 1 gave up, and each says what its sender met.
+// up at its share of the test binary's deadline (testwait), no later than 30 s before it, and the
+// sends of steps 2 and 3 are requests of the listener, which end only 15 s before the deadline
+// (idleRigListenerContext): they are answered after step 1 gave up, and each says what its
+// sender met.
 func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	t.Helper()
 	agent, role, routed := rig.issue(idleRigJustReleasedAgent), rig.issue(idleRigJustReleasedRole), rig.issue(idleRigJustReleasedRouted)

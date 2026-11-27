@@ -295,8 +295,8 @@ func runningLegion(t *testing.T) int {
 		_ = probe.Process.Kill()
 		_, _ = probe.Process.Wait()
 	})
-	// The exec is waited for with no span of its own, only what is left of the test binary's
-	// deadline less 30 s (testwait.Bounded): a loaded machine's slow exec passes.
+	// The exec is waited for with no span of its own, only its share of what is left of the test
+	// binary's deadline less the 30 s margin (testwait.Bounded): a loaded machine's slow exec passes.
 	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
 		t.Fatalf("the probe at %s never exec'd", path)
 	}
@@ -325,9 +325,9 @@ func reapedPID(t *testing.T) int {
 }
 
 // healthzOn serves /healthz on one address and returns the port, so a status can be told to dial
-// somewhere other than 127.0.0.1 and be wrong about it. A client's headers have what is left of
-// the test binary's deadline less 30 s to arrive: a status a loaded machine makes slow to write
-// them is still answered.
+// somewhere other than 127.0.0.1 and be wrong about it. A client's headers have, to arrive, a
+// share of what was left of the test binary's deadline less the 30 s margin when the server
+// started (testwait.Bounded): a status a loaded machine makes slow to write them is still answered.
 func healthzOn(t *testing.T, host string) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
@@ -511,15 +511,15 @@ func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, s
 		_ = command.Wait()
 		close(exited)
 	}()
-	// The exit is waited for with no span of its own, only what is left of the test binary's
-	// deadline less 30 s (testwait.Bounded): a loaded machine's slow start passes, and one that
-	// never exits is killed and fails by name.
+	// The exit is waited for with no span of its own, only its share of what is left of the test
+	// binary's deadline less the 30 s margin (testwait.Bounded): a loaded machine's slow start
+	// passes, and one that never exits is killed and fails by name.
 	select {
 	case <-exited:
 	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
 		_ = command.Process.Kill()
 		<-exited
-		t.Fatalf("legion start did not exit 30s before the test binary's deadline; stderr = %q", stderr.String())
+		t.Fatalf("legion start did not exit within its share of the test binary's deadline; stderr = %q", stderr.String())
 	}
 	return command.ProcessState.ExitCode(), stderr.String()
 }

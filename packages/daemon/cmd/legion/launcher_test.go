@@ -44,9 +44,11 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	// Each wait below for what the launcher does has no span of its own: its one bound is what is
-	// left of the test binary's deadline less 30 s (testwait), so a launcher a loaded machine makes
-	// slow passes, and one that never dials, never logs its connection or never leaves fails by name.
+	// Each wait below for what the launcher does has no span of its own: the dials' and the log's
+	// one bound is a share of what is left of the test binary's deadline less the 30 s margin
+	// (testwait.Bounded), and the exit's is the deadline less the margin (testwait.Receive), so a
+	// launcher a loaded machine makes slow passes, and one that never dials, never logs its
+	// connection or never leaves fails by name.
 	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(testwait.Bounded(t, 1<<60, 30*time.Second))); err != nil {
 		t.Fatal(err)
 	}
@@ -513,9 +515,10 @@ func TestTheLauncherCommandWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
 // refusalContext is the context of a launcher run that must refuse what launcher.Run refuses. The
 // command writes that refusal only while its context is live: an error once the context has ended
 // is the container's stop, which exits 0 (newLauncherCommand). So the context has no span of its
-// own, which a refusal a loaded machine makes slow would outlast; its one bound is what is left of
-// the test binary's deadline less 30 s (testwait.Bounded), so a launcher that dials the unreachable
-// daemon instead of refusing still ends, and the row fails naming the refusal it wanted.
+// own, which a refusal a loaded machine makes slow would outlast; its one bound is its share of
+// what is left of the test binary's deadline less the 30 s margin (testwait.Bounded), so a launcher
+// that dials the unreachable daemon instead of refusing still ends, and the row fails naming the
+// refusal it wanted.
 func refusalContext(t *testing.T) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), testwait.Bounded(t, 1<<60, 30*time.Second))
 }

@@ -618,7 +618,7 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 			reached.Load(), fillingLead, 2*fillingLead, drained())
 	case <-time.After(guard):
 		stopWriter()
-		t.Fatalf("the removal had not answered %v after it began, to 30 s before the test binary's deadline, and had reached %d of the writer's names: a removal that never answers; it %s",
+		t.Fatalf("the removal had not answered %v after it began, its share of the test binary's deadline, and had reached %d of the writer's names: a removal that never answers; it %s",
 			guard.Round(time.Second), reached.Load(), drained())
 	}
 	return nil

@@ -1800,7 +1800,7 @@ func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 }
 
 // consumerInfo reads the named consumer's info. A failed read fails the row, so the read waits
-// for the server until the row's hang guards end, the test binary's deadline less 30 s
+// for the server until this read's own bound ends, a share of the test binary's deadline less 30 s
 // (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
 // deadline (its defaultAPITimeout), which would let a NATS server the machine holds decide it.
 func consumerInfo(t *testing.T, stream jetstream.Stream, name string) *jetstream.ConsumerInfo {
@@ -1899,8 +1899,8 @@ func testJetStream(t *testing.T) (jetstream.JetStream, jetstream.Stream) {
 }
 
 // publish publishes data on subject and returns its acknowledgement. The publish waits for the
-// server's answer until the row's hang guards end, the test binary's deadline less 30 s
-// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
+// server's answer until this publish's own bound ends, a share of the test binary's deadline less
+// 30 s (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
 // deadline (its defaultAPITimeout), so a NATS server the machine holds is waited out.
 func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) *jetstream.PubAck {
 	t.Helper()
@@ -1917,8 +1917,11 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
 // deliveries, because one message can be delivered more than once (the delivery mechanism:
 // ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
-// deduplicates and which a delivery count would read as more. Its reads wait for the server until
-// the row's hang guards end (testwait.Remaining), as assertNoAckPending's do.
+// deduplicates and which a delivery count would read as more. Its reads are the row's own wait: a
+// read that never answers holds the poll it is made in until its context ends, so the context takes
+// a share of what is left of the test binary's deadline less 30 s (testwait.Remaining), not the
+// whole, which would hold the row to the margin against a server that never answers;
+// assertNoAckPending's do the same.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
@@ -1933,11 +1936,12 @@ func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer s
 	})
 }
 
-// assertNoAckPending waits for consumer to owe no acknowledgement. Its reads wait for the server
-// until the row's hang guards end (testwait.Remaining), in place of the five seconds nats.go gives
-// a request whose context has no deadline: a read that fails only makes the next poll read again,
-// but each held read spends five seconds of the wait's own bound and the last one it makes decides
-// the row.
+// assertNoAckPending waits for consumer to owe no acknowledgement. Its reads are the row's own
+// wait: a read that never answers holds the poll it is made in until its context ends, so the
+// context takes a share of what is left of the test binary's deadline less 30 s
+// (testwait.Remaining), not the whole, in place of the five seconds nats.go gives a request whose
+// context has no deadline: a read that fails only makes the next poll read again, but each held
+// read spends five seconds of the wait's own bound and the last one it makes decides the row.
 func assertNoAckPending(t *testing.T, stream jetstream.Stream, consumer string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
@@ -2637,8 +2641,10 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// lets the machine decide whether one is cut: consumerSpec's 200 ms is the length of
 			// this handler's own work on a loaded runner - two pool reads and the fact's
 			// transaction - and a minute cuts a permission read of 61 s, whose nak brings a third
-			// read. So the window, and the row's wait for the review to be applied, are what is left
-			// of the test binary's deadline less 30 s (testwait.Remaining): a read however
+			// read. So the window is the whole of what is left of the test binary's deadline less
+			// 30 s (testwait.WholeRemaining, the whole rather than the share the row's own waits
+			// take, so that the window outlasts them), and the row's wait for the review to be
+			// applied takes its share: a read however
 			// slow is waited out, leaving the failed read and its retry as the only two reads, and
 			// only one that never answers fails the row, by name, before the binary's own timeout.
 			// The window is also what makes the count of two sound: a third read needs the whole
@@ -2652,7 +2658,7 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// Where the margin closes, a third read can be made no earlier than a second delivery
 			// of the message (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
 			// consume.go).
-			spec.AckWait = testwait.Remaining(t)
+			spec.AckWait = testwait.WholeRemaining(t)
 			var mu sync.Mutex
 			var asks []time.Time
 			spec.ReviewPermission = func(context.Context, PullRequestReview) (bool, error) {

@@ -669,8 +669,8 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	spec := consumerSpec(logs)
 	// Three times the acknowledgement window, so the redelivery this row measures cannot be read
 	// as the window's own, and a small fraction of the row's patience (testwait.Eventually waits
-	// until 30 s before the test binary's deadline), so a limit that never cuts fails the row
-	// instead of holding it.
+	// its share of what is left of the test binary's deadline less 30 s), so a limit that never
+	// cuts fails the row instead of holding it.
 	spec.HandlerLimit = 600 * time.Millisecond
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {

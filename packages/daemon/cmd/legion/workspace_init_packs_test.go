@@ -122,8 +122,9 @@ func (v *issueVolume) startPacksCache(t *testing.T, bucket bool) (*packsCacheRun
 			t.Errorf("cache exited %d once stopped, stderr %q", code, stderr.String())
 		}
 	})
-	// Each wait, and each request within it, ends when what is left of the test binary's deadline
-	// less 30 s has passed, so a cache that never answers fails the row by name.
+	// Each wait, and each request within it, ends when a share of what is left of the test binary's
+	// deadline less the 30 s margin has passed (testwait.Bounded), so a cache that never answers
+	// fails the row by name.
 	wait := testwait.Bounded(t, 1<<60, 30*time.Second)
 	bounded, boundedCancel := context.WithTimeout(context.Background(), wait)
 	t.Cleanup(boundedCancel)

@@ -59,14 +59,14 @@ func pidNamespace(t *testing.T) []string {
 		t.Skip("PID namespace launcher proof requires Linux")
 	}
 	prefix := []string{"-n", "unshare", "--pid", "--fork", "--mount-proc", "--kill-child", "--setuid", strconv.Itoa(os.Getuid()), "--setgid", strconv.Itoa(os.Getgid())}
-	// The probe is killed 30 s before the test binary's deadline, and a probe killed so fails the
-	// test by name, not a skip: it answers in milliseconds where the prerequisite holds.
+	// The probe is killed at its share of the test binary's deadline, and a probe killed so fails
+	// the test by name, not a skip: it answers in milliseconds where the prerequisite holds.
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second))
 	defer cancel()
 	probe := exec.CommandContext(ctx, "sudo", append(append([]string{}, prefix...), "/bin/true")...)
 	if output, err := probe.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
-			t.Fatalf("PID namespace prerequisite: the probe had not answered 30 s before the test binary's deadline: %v: %s", err, output)
+			t.Fatalf("PID namespace prerequisite: the probe had not answered within its share of the test binary's deadline: %v: %s", err, output)
 		}
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			t.Fatalf("PID namespace prerequisite: %v: %s", err, output)
@@ -85,8 +85,8 @@ const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 // (pidNamespace), with only the test's own PATH, where its jj and git are, and pidOneHelperEnv in
 // its environment, fails t unless the helper ran and passed, and answers what it printed. The
 // helper's own deadline is this test's less helperDeadlineGap, so a helper whose wait gives up
-// near its deadline (reaperBound) prints why and ends, and this test then still has that gap for
-// its own cleanups before its alarm. When what ran before it left the helper less than
+// at its share of that deadline (reaperBound) prints why and ends, and this test then still has
+// that gap for its own cleanups before its alarm. When what ran before it left the helper less than
 // helperLeastTime, t fails by name and no helper starts: one would reach its own alarm before its
 // bounds could give up. The wait for the helper ends 30 s before this test's deadline at the
 // latest, 30 s after the helper's own alarm: sudo is then sent SIGTERM, and 10 s later the wait
@@ -110,7 +110,9 @@ func runAsPIDOne(t *testing.T, helper string) string {
 		}
 	}
 	args = append(append(append(args, self), reentryUntil(end, helper)...), "-test.v", "-test.count=1")
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second))
+	// The whole of what is left, not a share: the helper's own -test.timeout ends
+	// helperDeadlineGap before this test's deadline, and its alarm must come while this wait runs.
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.WholeRemaining(t))
 	defer cancel()
 	command := exec.CommandContext(ctx, "sudo", args...)
 	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
@@ -134,8 +136,9 @@ func runAsPIDOne(t *testing.T, helper string) string {
 const helperDeadlineGap = time.Minute
 
 // helperLeastTime is the least a helper of runAsPIDOne starts with before its own deadline: its
-// waits on the reaper give up 30 s before that deadline (reaperBound), and a wait for an install
-// 15 s before it, so a helper with less would reach its own alarm before either could say why.
+// waits on the reaper give up at their share of what is left of that deadline less 30 s
+// (reaperBound), so with 30 s or less they would have no span at all, and 45 s leaves one that
+// begins as the helper starts a quarter of the 15 s beyond that margin.
 const helperLeastTime = 45 * time.Second
 
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
@@ -225,9 +228,9 @@ func TestPIDOneLauncherReapsOrphansWhileRoleStaysResident(t *testing.T) {
 	resultFile := filepath.Join(t.TempDir(), "reaped")
 	// The role waits for the orphan to be reaped rather than for a count of its own: a loop of
 	// 500 × 0.01 s read a slow machine as a launcher that never reaped (the orphan still there
-	// after 5 s), and the wait for the marker this writes is the test binary's own
-	// (published → beforeDeadline). A launcher that never reaps leaves the marker unwritten, and
-	// that wait fails by name.
+	// after 5 s), and the wait for the marker this writes takes its share of the test binary's
+	// deadline (published → beforeDeadline). A launcher that never reaps leaves the marker
+	// unwritten, and that wait fails by name.
 	script := `/bin/sh -c '/usr/bin/setsid /bin/sh -c '\''/bin/sleep 0.1; printf "%s ready\n" "$$" > "$ORPHAN"; exit 0'\'' &' 
 while [ ! -s "$ORPHAN" ]; do /bin/sleep 0.01; done
 read pid unused < "$ORPHAN"

@@ -111,10 +111,12 @@ type warnings = testlog.Buffer
 func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// requests bounds the row's own NATS requests (publishes, consumer info) by the row's deadline,
-	// the test binary's deadline less 30 s (testwait.Remaining), in place of the five seconds the
-	// client gives a request whose context has no deadline (nats.go's defaultAPITimeout), so a NATS
-	// server the machine holds is waited out.
+	// requests bounds the row's own NATS requests (publishes, consumer info), and is the row's own
+	// wait: a request that never answers holds the poll it is made in until this context ends, so
+	// it takes a share of what is left of the test binary's deadline less 30 s (testwait.Remaining),
+	// not the whole, which would hold the row to the margin against a server that never answers.
+	// It replaces the five seconds the client gives a request whose context has no deadline
+	// (nats.go's defaultAPITimeout), so a NATS server the machine holds is waited out.
 	requests, cancelRequests := context.WithTimeout(ctx, testwait.Remaining(t))
 	defer cancelRequests()
 	dsn := testpg.Clone(t, "legion_intake_drain_test")
@@ -146,7 +148,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	var asked atomic.Int64
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
 		Project: drainProject, Repositories: []ghrepo.Repository{repository},
-		AckWait: testwait.Remaining(t), NakDelay: time.Second, Logger: log,
+		AckWait: testwait.WholeRemaining(t), NakDelay: time.Second, Logger: log,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) {
 			asked.Add(1)
 			return true, nil
@@ -175,8 +177,9 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// pending afterwards, in a goroutine of its own (nats-server's signalConsumersLoop, which
 	// processStreamSignal's npc++ runs under), so a read right after the last ack can trail it by
 	// a message: CI read 5049 of 5050 once. The count must reach the backlog, not be read once, and
-	// the wait for it is bounded by the test binary's deadline less 30 s (testwait.Remaining)
-	// rather than by a span of its own, which a loaded server could outrun.
+	// the wait for it takes its share of the test binary's deadline less 30 s (testwait.Remaining)
+	// rather than a span of its own, which a loaded server could outrun; the requests it makes
+	// outlast it (requests, above).
 	// A read that fails, the server held past the row's deadline among them, makes the next poll
 	// read again, and the wait's own message names the last count read and the last failure.
 	var waiting uint64
@@ -206,9 +209,9 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	defer stop()
 
 	// The drain's own time is measured below and judged only when it is asked for
-	// (LEGION_TEST_DRAIN_MEASURE); the wait for it is a hang guard, bounded by the test binary's
-	// deadline less 30 s (testwait.Remaining) and not by a span the handlers' store work must
-	// finish inside.
+	// (LEGION_TEST_DRAIN_MEASURE); the wait for it is a hang guard, taking its share of the test
+	// binary's deadline less 30 s (testwait.Remaining) and not a span the handlers' store work
+	// must finish inside.
 	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
 		count, err := intake.ConsumerWaiting(requests, github)
 		if unread = err; err != nil {
@@ -240,8 +243,9 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// redelivery the count would see needs the whole window to pass before that handling's
 	// acknowledgement reaches the server. A fixed window let the machine decide that count: a store
 	// read of 61 s was cut at the 30 s this row used to set, and its message naked and delivered
-	// again. The window is what is left of the test binary's deadline less 30 s
-	// (testwait.Remaining), so a read however slow is waited out. This consumer is
+	// again. The window is the whole of what is left of the test binary's deadline less 30 s
+	// (testwait.WholeRemaining, the whole rather than the share the row's waits take, so that it
+	// outlasts them), so a read however slow is waited out. This consumer is
 	// intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
 	// consume.go).
 	info, err := github.Info(requests)

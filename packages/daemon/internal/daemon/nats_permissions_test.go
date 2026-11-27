@@ -313,6 +313,8 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 // (consumer_lag_test.go), which this package's tests cannot import: keep the two in step.
 func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) {
 	t.Helper()
+	// The row's own wait: a read that never answers holds the poll it is made in until this
+	// context ends, so it takes the wait's share (testwait.Remaining), not the whole.
 	requests, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancel()
 	consumer, err := stream.Consumer(requests, name)

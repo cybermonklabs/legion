@@ -8,8 +8,8 @@ import (
 
 // The tests in this file are more of the step's (jj_push_test.go): a push of a long history, with
 // the helpers that make a history above the seed (fastImport, history, mutableHistory) and read a
-// long one's push (rolePushCountRewrites). A long push runs through push, whose limit is what is
-// left of the test binary's deadline (trailerRunLimit). The tests of jj_push_revision_test.go and
+// long one's push (rolePushCountRewrites). A long push runs through push, whose limit is its
+// share of the test binary's deadline (trailerRunLimit). The tests of jj_push_revision_test.go and
 // jj_push_bound_test.go use those helpers too, and no other file does. As jj_push_test.go does,
 // the file names nothing the step's change adds, so it compiles and runs at the base too.
 

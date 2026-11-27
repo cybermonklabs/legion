@@ -42,7 +42,7 @@ func TestAWatchSeesAPlainOpenOfItsFifoAndLetsItGoOn(t *testing.T) {
 				t.Fatalf("Opened: %v", err)
 			}
 		case <-giveUp:
-			t.Fatalf("the watch never answered the plain open of %s, to 30 s before the test binary's deadline", path)
+			t.Fatalf("the watch never answered the plain open of %s, within its share of the test binary's deadline", path)
 		}
 	}
 	select {

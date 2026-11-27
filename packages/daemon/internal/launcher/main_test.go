@@ -185,21 +185,23 @@ func TestACopyStartedAsAMainHelperRunsAsTheHelper(t *testing.T) {
 
 // reentry is the arguments that run this test binary's helper test alone, in a process of its own
 // the test starts: the -test.run of that one test, and a -test.timeout that ends reentryMargin
-// before this process's own deadline. The child's own waits end 30 s before that (beforeDeadline)
-// and its cleanups 10 s before (cleanupBeforeDeadline), so a child whose fact never comes fails
-// with its own text, and its parent prints that text, before the parent's own timeout. Under
-// -timeout 0 this process has no deadline, and the child is given none either.
+// before this process's own deadline. The child's own waits end at their share of that deadline
+// less 30 s (beforeDeadline) and its cleanups at their share of it less 10 s
+// (cleanupBeforeDeadline), so a child whose fact never comes fails with its own text, and its
+// parent prints that text, before the parent's own timeout. Under -timeout 0 this process has no
+// deadline, and the child is given none either.
 //
 // So a test waits for a child it re-entered to end with no bound of its own (cmd.Wait,
 // CombinedOutput), or with one that ends after the child's own deadline (runAsPIDOne's ends 30 s
 // after its helper's): the child's -test.timeout ends it, its alarm's goroutine dump in its output,
 // and each child of its own that is re-entered ends before it, so its failure, its cleanups and its
 // alarm all reach the test while the test still waits. A bound of the test's own there,
-// beforeDeadline say, would give up on the child 25 s before the child's own end and kill it
-// without its report. A wait for something the child does short of its end is an ordinary hang
-// guard: the child's own waits end before it, and the case's cleanup ends the child. What the child
-// starts that is not re-entered ends with it only where the child sees to that: a PID namespace the
-// child is PID 1 of, or a parent-death signal, as the role stage's sleep outside the role has.
+// beforeDeadline say, would give up on the child at its share of the test's deadline, 25 s or
+// more before the child's own end, and kill it without its report. A wait for something the
+// child does short of its end is an ordinary hang guard: the child's own waits end before it, and
+// the case's cleanup ends the child. What the child starts that is not re-entered ends with it
+// only where the child sees to that: a PID namespace the child is PID 1 of, or a parent-death
+// signal, as the role stage's sleep outside the role has.
 //
 // A child started with too little time is still started, with what is left (reentryUntil), and
 // fails at its first wait bounded by beforeDeadline, on a line that names its deadline; a child
