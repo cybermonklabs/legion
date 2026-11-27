@@ -223,29 +223,32 @@ test.each([
     }),
   ],
   ["a network that drops", new TypeError("Failed to fetch")],
-])("ProofDocument keeps its connected editor when a later text refetch meets %s", async (_name, failure) => {
-  const queryClient = createQueryClient();
-  const { connections, editors, sync, toolbar, view } = renderProofDocument({ queryClient });
-  try {
-    await sync();
-    await waitFor(() => expect(editors).toHaveLength(1));
-    const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(failure);
-    const readsBefore = getArtifactText.mock.calls.length;
-    await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id, "text"] });
-    });
-    expect(getArtifactText.mock.calls.length).toBeGreaterThan(readsBefore);
-    expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.status).toBe("error");
-    expect(connections).toHaveLength(1);
-    expect(connections[0]?.destroyed).toBe(false);
-    expect(editors[0]?.destroyed).toBe(false);
-    expect(within(view.container).queryByRole("alert")).not.toBeInTheDocument();
-    expect(within(view.container).getByRole("article").hidden).toBe(false);
-    expect(toolbar.current?.connection).not.toBe("failed");
-  } finally {
-    view.unmount();
+])(
+  "ProofDocument keeps its connected editor when a later text refetch meets %s",
+  async (_name, failure) => {
+    const queryClient = createQueryClient();
+    const { connections, editors, sync, toolbar, view } = renderProofDocument({ queryClient });
+    try {
+      await sync();
+      await waitFor(() => expect(editors).toHaveLength(1));
+      const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(failure);
+      const readsBefore = getArtifactText.mock.calls.length;
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id, "text"] });
+      });
+      expect(getArtifactText.mock.calls.length).toBeGreaterThan(readsBefore);
+      expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.status).toBe("error");
+      expect(connections).toHaveLength(1);
+      expect(connections[0]?.destroyed).toBe(false);
+      expect(editors[0]?.destroyed).toBe(false);
+      expect(within(view.container).queryByRole("alert")).not.toBeInTheDocument();
+      expect(within(view.container).getByRole("article").hidden).toBe(false);
+      expect(toolbar.current?.connection).not.toBe("failed");
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // The server refuses a socket into a room outside the Proof schema. The mounted editor closes, and
 // a fresh read decides what follows: the repair it names, or a new connection once it reads.

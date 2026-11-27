@@ -1,7 +1,13 @@
 // Package sessionanswers is the read model of what people wrote that Dispatch delivered to one
 // session: the read of GET /api/v1/agents/{session_id}/answers and of GET
 // /api/v2/agents/{session_id}/answers alike (List), which the outbox's tests read back through
-// too, so each route reads what the publisher records.
+// too, so each route reads what the publisher records. On a database of production's size and
+// shape, the read finds the session's events in the window through the partial GIN index
+// events_person_words_destinations, of published_destinations and created_at, so it reads no
+// event that only other sessions' topics received, and no event that the session's topic
+// received before the window. Where the window holds far fewer of a person's events, the planner
+// can read them all through events_person_words_with_declines and keep the session's, which costs
+// fewer buffers there and is still bounded by the window (query).
 package sessionanswers
 
 import (
@@ -32,15 +38,25 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
 // $1 since $2, $3 being the session's own topic (contracts.LegacyAgentSubject). Its three sources:
 //
-//   - S1 (reached): events a person wrote of a type that carries a person's words to a session -
-//     ask.answered, comment.created, message.created, message.answered (a reply to a message) and
-//     ask.resolved, of which the list takes the declines alone (an ask a person chose not to
-//     answer) - created since the window's start, whose published_destinations hold the session's
-//     topic: the outbox's own record of each topic it published the event to
+//   - S1 (reached_by_destination): events a person wrote of a type that carries a person's words
+//     to a session - ask.answered, comment.created, message.created, message.answered (a reply to
+//     a message) and ask.resolved, of which the list takes the declines alone (an ask a person
+//     chose not to answer) - created since the window's start, whose published_destinations hold
+//     the session's topic: the outbox's own record of each topic it published the event to
 //     (outbox.publishDestination), so the list holds what the follower, author and session routes
 //     delivered, and never what an issue's role: route delivered to a role topic, which names no
-//     session. It reads the partial index events_person_words_with_declines for the window and
-//     filters the array on those rows.
+//     session. On a database of production's size and shape it finds them through the partial
+//     GIN index events_person_words_destinations: it holds a person's events of these five types
+//     by (published_destinations, created_at), so one index condition holds both the session's
+//     topic and the window's start, and the read reads only the session's events in the window.
+//     Where the window holds far fewer of a person's events, the planner can instead read all of
+//     them through events_person_words_with_declines, by time alone, and keep the session's: that
+//     read costs fewer buffers there, and it too reads no event before the window. The test is
+//     published_destinations @> array[$3], because GIN's array_ops serves @> and not = any.
+//     published_destinations is not null (0020_outbox_retry), and for an array that is not null
+//     the two tests hold for the same rows. events_person_words_with_declines stays for two
+//     reasons: this read takes it on such a window, as above, and a pod of the release before,
+//     whose text still tests = any, reads through it while the new release rolls out.
 //   - S2 (message_ids' second arm): the session's message deliveries the listener took: targeted
 //     messages, direct or on an issue, and broadcast copies. `sent` is one it handed to the
 //     running session, `queued` one it stored for a session that is not running and hands over
@@ -91,20 +107,19 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // events_person_words_with_declines, whose predicate the check implies, and reads every entry of
 // that index for each ask.
 const query = `
-	with reached as (
+	with reached_by_destination as (
 		select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution
 		from events e
 		where e.actor->>'kind' = 'user'
-		  and e.type in ('ask.answered', 'comment.created', 'message.created', 'message.answered',
-		                 'ask.resolved')
+		  and e.type in ` + model.PersonWordsEventTypesSQL + `
 		  and e.created_at >= $2
-		  and $3 = any(e.published_destinations)
+		  and e.published_destinations @> array[$3::text]
 	), mentioned as (
 		select cd.comment_id::text as id
 		from comment_deliveries cd
 		where cd.session_id = $1 and cd.state in ` + model.DeliveryTakenStatesSQL + ` and cd.created_at >= $2 - interval '1 hour'
 	), answer_ids as (
-		select distinct id from reached where type = 'ask.answered'
+		select distinct id from reached_by_destination where type = 'ask.answered'
 	), answer_events as materialized (
 		select e.payload->>'id' as id, e.actor, e.payload->'answer' as answer
 		from events e
@@ -118,19 +133,19 @@ const query = `
 		-- distinct on is what holds the list to one item per ask, the latest decline of it,
 		-- whatever the events hold.
 		select distinct on (id) id, resolution
-		from reached
+		from reached_by_destination
 		where type = 'ask.resolved' and ` + declinedResolution + `
 		order by id, (resolution->>'at')::timestamptz desc
 	), comment_ids as (
 		select id, bool_or(m) as mentioned
 		from (
-			select id, false as m from reached where type = 'comment.created'
+			select id, false as m from reached_by_destination where type = 'comment.created'
 			union all
 			select id, true from mentioned
 		) s
 		group by id
 	), message_ids as (
-		select id from reached where type in ('message.created', 'message.answered')
+		select id from reached_by_destination where type in ('message.created', 'message.answered')
 		union
 		select md.message_id::text
 		from message_deliveries md

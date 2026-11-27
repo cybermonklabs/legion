@@ -254,18 +254,21 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 // with its grant, and the auth callout naming the issuer, $G and the curve key - and routed as
 // StartClusterConfig routes its members, with JetStream clustered across them, as the clustered hub
 // runs. Every member's relay and client port listen on a loopback address of their own, as every
-// server start makes. It returns once one member leads the JetStream meta group, which counts all
-// n, and every member admits the service's own user.
+// server start makes. It returns once the cluster is ready as AwaitReady says, and every member
+// admits the service's own user.
 //
-// No member admits a client with no credential, so the cluster is not awaited as StartCluster's
-// is (AwaitReady, whose last step connects with none and asks JetStream for the account's info): a
-// member holds such a client for its authorization timeout, waiting for a service that answers
-// nothing yet. A test reaches JetStream through a static user of its own, or through a client the
-// service it starts admits.
+// No member admits a client with no credential: a member holds such a client for its
+// authorization timeout, waiting for a service that answers nothing yet. So the configuration
+// lists one more static user, the fixture's own, which may ask JetStream for the account's info
+// and nothing else, and AwaitReady asks each member's JetStream as that user. A test reaches
+// JetStream through a static user of its own, or through a client the service it starts admits.
 func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...StaticUser) *Cluster {
 	t.Helper()
-	cluster := startCluster(t, n, calloutAuthorization(keys, static...))
-	cluster.awaitMeta(t)
+	readySeed, readyKey := User(t)
+	ready := StaticUser{NKey: readyKey, Publish: []string{"$JS.API.INFO"}, Subscribe: []string{"_INBOX.>"}}
+	cluster := startCluster(t, n, calloutAuthorization(keys, append(slices.Clone(static), ready)...))
+	cluster.readySeed = readySeed
+	cluster.AwaitReady(t)
 	for _, server := range cluster.Servers {
 		awaitSeed(t, server.URL(), keys.ServiceSeed)
 	}

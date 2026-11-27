@@ -285,6 +285,7 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 // daemon's bearer proves no session, and each write names the session of the daemon of the
 // issue's project (dispatch.DaemonSession), as it did before the setting.
 func TestTheDaemonsClientNamesTheSessionItsTokenProves(t *testing.T) {
+	t.Parallel()
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	for name, tc := range map[string]struct {
 		broker bool

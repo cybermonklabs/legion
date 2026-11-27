@@ -765,9 +765,9 @@ type PriorityRow struct {
 // and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
 // which is work finished rather than work standing.
 //
-// NewestEventAt is the newest event on any issue that advances the priority, `max(created_at)`
-// over their events: a comment moves it although it writes no issue row, which `issues.updated_at`
-// would not. It is null for a priority no issue advances.
+// NewestEventAt is the newest created_at among the events of last_seq of the issues that advance
+// the priority, one event of each issue read by the unique (issue_key, seq) of events, and it is
+// null when none of those issues has an event.
 type PriorityWork struct {
 	ByStatus        map[string]int `json:"by_status"`
 	Claimed         int            `json:"claimed"`
@@ -3179,6 +3179,19 @@ const DeliveryTakenStatesSQL = "('" + DeliveryStateSent + "', '" + DeliveryState
 func DeliveryTaken(state string) bool {
 	return state == DeliveryStateSent || state == DeliveryStateQueued
 }
+
+// PersonWordsEventTypesSQL is the five event types that carry a person's words to a session, as
+// the SQL list an `in` test over an event's type takes: an answer (ask.answered), a comment
+// (comment.created), a new message (message.created), a reply to a message (message.answered),
+// and an ask's resolution (ask.resolved). Each query that asks it reads this one definition: the
+// agents' answers read (sessionanswers.query, its reached_by_destination), which lists only the
+// declines among the resolutions (declinedResolution), and the rule for the window it is measured
+// over and its sessions (answerswindow.DeliveredPersonEvent and answerswindow.SessionsQuery),
+// whose predicates test the type alone and so hold for every ask.resolved. The predicates of the
+// partial indexes that read is served by hold the same list in the same order, written out in
+// their migrations, which Go cannot reach (events_person_words_with_declines, 20261111002444, and
+// events_person_words_destinations, 20261125131000): a change of this list is a new index too.
+const PersonWordsEventTypesSQL = "('ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved')"
 
 // MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
 // (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a

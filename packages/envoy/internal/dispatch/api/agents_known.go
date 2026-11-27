@@ -45,10 +45,11 @@ type knownSessions struct {
 //
 // An answer delivered to a session is one of these: an ask's answer reaches the ask's followers,
 // a comment its mentions and a message its deliveries. The events whose published_destinations
-// name the session's topic are not read, because no index serves that array and every such event
-// reached the session through one of the rows above. A person's own marks on a conversation
-// (user_agent_state, user_agent_read, user_agent_reply_read) are not counted either: they are one
-// viewer's, and a person may write one for any id at all.
+// name the session's topic are not read: no index serves that array for every event (the partial
+// events_person_words_destinations, 20261125131000, serves it for a person's events of five types
+// alone), and every such event reached the session through one of the rows above. A person's own
+// marks on a conversation (user_agent_state, user_agent_read, user_agent_reply_read) are not
+// counted either: they are one viewer's, and a person may write one for any id at all.
 //
 // A session whose only trace is a live registration younger than the stored copy (at most
 // routeRosterTTL old) has no record here yet; a caller asks this route only for the sessions the

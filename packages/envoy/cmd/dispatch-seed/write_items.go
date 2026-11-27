@@ -64,14 +64,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
 			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
-			var issueKey, artifactID *string
-			if ask.Issue >= 0 {
-				issueKey = &r.plan.issues[ask.Issue].Key
-			}
-			if ask.Document >= 0 {
-				artifactID = &r.plan.documents[ask.Document].ID
-			}
-			if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
+			if owner := r.askOwner(ask); owner != nil {
 				owners = append(owners, *owner)
 			}
 		}
@@ -180,37 +173,8 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// created_at)), so a re-index of it would date its parts as this one did.
 			stored := opening
 			stored.State, stored.Answer = ask.State, answer
-			// The seed's transaction joins no write phase of anyone's, so it reads the index the
-			// ask holds - none, its row having just been inserted - plans the parts against it
-			// and runs the plan's statements at once, as a batch of their own, the way a writer
-			// that queues no write phase indexes an item it wrote (refs.IndexItem). The parts
-			// are read through a reader of the ask's own (refs.NewReader), as every other write
-			// of an ask reads them. A write of the parts alone reconciles the question's own
-			// references after them and settles the ask's row of the forms queue there
-			// (refs.Replacement.SettlingForms), planned against no edge: the ask's row has just
-			// been inserted, so it holds none yet.
-			partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
-			if err != nil {
-				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
-			}
-			reader := refs.NewReader(ctx, tx, stored.Author, "ask", stored.ID, serverURL)
-			parts, err := refs.PlanAskParts(partIndex, reader, stored, ask.CreatedAt)
-			if err != nil {
+			if err := indexAskParts(ctx, tx, stored, ask.CreatedAt); err != nil {
 				return err
-			}
-			questionRefs := refs.PlanReplaceFrom(nil, "ask", stored.ID, text.Refs(reader.Mentions(stored.Question)), &ask.CreatedAt).SettlingForms()
-			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-				parts.Queue(b)
-				questionRefs.Queue(b)
-				return nil
-			}); err != nil {
-				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
-			}
-			// The index records the parts and leaves their windows to the block-index tick's
-			// window arm (refs.queueRecordIndexed), so the seed writes them here as that arm
-			// would: a seeded database a server has to window is one it would rewrite.
-			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, stored.ID); err != nil {
-				return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
 			}
 			// The event is owned by the ask's own owner and dated at the ask, as one appended
 			// with the ask is, and it is published (`notify` false, `published_at` set) like
@@ -246,6 +210,22 @@ func (r *seedRun) itemProject(issue, document int) string {
 	return ""
 }
 
+// askOwner is the owner of ask, whose lock every writer of the ask takes (store.OwnerOf): its
+// issue, or the document that owns it where no issue does. The window write of the ask's parts
+// takes the same lock, read from the ask's row (refs.WriteItemWindows, refs.LockItemOwner), so a
+// batch that writes those windows takes this one first: writeAsks for the asks it writes, and
+// writeDeliveries for the asks it answers or declines.
+func (r *seedRun) askOwner(ask askPlan) *store.Owner {
+	var issueKey, artifactID *string
+	if ask.Issue >= 0 {
+		issueKey = &r.plan.issues[ask.Issue].Key
+	}
+	if ask.Document >= 0 {
+		artifactID = &r.plan.documents[ask.Document].ID
+	}
+	return store.OwnerOf(issueKey, artifactID)
+}
+
 // writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
 // that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
 // batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
@@ -264,6 +244,54 @@ func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node)
 	}
 	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
 		return fmt.Errorf("the ask followers' nodes: %w", err)
+	}
+	return nil
+}
+
+// indexAskParts records the parts of ask as its row stands - its question, each option and the
+// answer it holds - at `at`, with the server's own indexer, in the caller's transaction. The
+// seed's transaction joins no write phase of anyone's, so it reads the index the ask holds - none
+// for an ask whose row was just inserted, the parts it was written with for an ask a delivery
+// answers (writeDeliveries) - plans the parts against it and runs the plan's statements at once,
+// as a batch of their own, the way a writer that queues no write phase indexes an item it wrote
+// (refs.IndexItem). The parts are read through a reader of the ask's own (refs.NewReader), as
+// every other write of an ask reads them.
+//
+// A write of the parts alone reconciles the question's own references after them and settles the
+// ask's row of the forms queue there (refs.Replacement.SettlingForms), as the server's write of an
+// answer does. It plans them with no read of its own (refs.PlanReplaceFrom), against the edges the
+// read of the ask's index found (refs.ItemIndex.HeldRefs), and for each of its two callers those
+// are every edge the ask holds. An ask whose row writeAsks has just inserted holds none: its
+// mentions are written after its parts, at the end of the batch, and the read of an index the ask
+// does not hold yet returns before it reads any reference, so it finds none. An ask that a
+// delivery answers (transitionAsk) is one writeAsks indexed, and the read of an indexed ask's
+// index reads its references, with the predicate refs.HeldTargets reads them by, in the statement
+// that reads its parts' links.
+func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, at time.Time) error {
+	partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
+	if err != nil {
+		return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+	}
+	reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL)
+	parts, err := refs.PlanAskParts(partIndex, reader, ask, at)
+	if err != nil {
+		return err
+	}
+	found := text.Refs(reader.Mentions(ask.Question))
+	held, _ := partIndex.HeldRefs()
+	questionRefs := refs.PlanReplaceFrom(held, "ask", ask.ID, found, &at).SettlingForms()
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		parts.Queue(b)
+		questionRefs.Queue(b)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+	}
+	// The index records the parts and leaves their windows to the block-index tick's window arm
+	// (refs.queueRecordIndexed), so the seed writes them here as that arm would: a seeded
+	// database a server has to window is one it would rewrite.
+	if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, ask.ID); err != nil {
+		return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
 	}
 	return nil
 }
@@ -302,12 +330,9 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 // server wrote does. seedActor's display name is a key no model.Actor carries, so a row holding
 // seedActor would disagree with its own node.
 func (r *seedRun) writeComments(ctx context.Context) error {
-	var hasAnswers bool
-	if err := r.database.Pool.QueryRow(ctx, `select exists (
-		select 1 from information_schema.columns
-		where table_schema = current_schema() and table_name = 'comments' and column_name = 'answers'
-	)`).Scan(&hasAnswers); err != nil {
-		return fmt.Errorf("read whether comments carries answers: %w", err)
+	hasAnswers, err := r.commentsCarryAnswers(ctx)
+	if err != nil {
+		return err
 	}
 	columns := "id, issue_key, artifact_id, author, body, anchor, reply_to, resolved, created_at, ask_id, replies_to_block, edited_at"
 	parameters := "$1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11, $12"
@@ -425,6 +450,20 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
+}
+
+// commentsCarryAnswers reads whether the schema's comments table has the answers column
+// (migration 20261105014808). A database migrated from a release before that column has none,
+// and the seed fills it with --no-migrate, so every writer and reader of a comment row asks first.
+func (r *seedRun) commentsCarryAnswers(ctx context.Context) (bool, error) {
+	var hasAnswers bool
+	if err := r.database.Pool.QueryRow(ctx, `select exists (
+		select 1 from information_schema.columns
+		where table_schema = current_schema() and table_name = 'comments' and column_name = 'answers'
+	)`).Scan(&hasAnswers); err != nil {
+		return false, fmt.Errorf("read whether comments carries answers: %w", err)
+	}
+	return hasAnswers, nil
 }
 
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each

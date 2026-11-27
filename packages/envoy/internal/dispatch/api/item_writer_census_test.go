@@ -76,6 +76,11 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // keeps every entry in one of the two. That any of them still takes or holds it is read off no
 // entry here.
 var itemRowWriters = map[string]map[string]string{
+	"cmd/dispatch-seed/write_deliveries.go": {
+		"transitionAsk": "the ask's owner lock, which its one caller holds: the delivery batch " +
+			"takes the owner lock of every ask it answers or declines before any other statement " +
+			"(writeDeliveries, store.LockOwners, through seedRun.askOwner)",
+	},
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
 		"writeComments": seedLoaderException,
@@ -398,6 +403,15 @@ const itemRowCallersTransaction = "runs inside another writer's transaction, whi
 	"it, or the block-index tick - and then telling the callee's statement from its caller's, " +
 	"which one call on one backend does not tell"
 
+// itemRowSeedDeliveryBatch is why the seed's answer or decline of an ask (transitionAsk) has no row
+// of the lock table: it writes inside the transaction of the delivery batch that calls it
+// (writeDeliveries), which takes the ask's owner lock before any other statement, and the seed's
+// own lock-step test, not the lock table, follows that batch.
+const itemRowSeedDeliveryBatch = "writes inside a transaction its caller opened and locked: the " +
+	"seed's delivery batch takes the owner lock of every ask it answers or declines before any " +
+	"other statement (writeDeliveries, store.LockOwners), and cmd/dispatch-seed's own lock-step " +
+	"test follows that batch (TestTheSeedsDeliveryWriteTakesTheStoreLockOrder)"
+
 // itemRowNoOwnerLock is why a writer that takes no owner lock has no row: there is nothing for it
 // to wait for, and the census entry says why it takes none.
 const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entry's exception: " +
@@ -412,6 +426,7 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 // it needs - and either way nobody has to read the table to find out which writers it left out.
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
+	"cmd/dispatch-seed/write_deliveries.go":    {"transitionAsk": itemRowSeedDeliveryBatch},
 	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
 	"internal/dispatch/api/comment_create.go":  {"queueCommentRow": itemRowCallersTransaction},
 	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},

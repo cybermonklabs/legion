@@ -1,6 +1,6 @@
-// Package repocache is the Kubernetes runtime's per-repository cache: one process per repository
-// the runtime keeps a bare clone on its own volume, fetched from GitHub with the implement App's
-// token on a schedule, and streaming its default branch to issue pods' workspace-init containers.
+// Package repocache is the Kubernetes runtime's per-repository cache: one process per repository,
+// holding a bare clone of it on its own volume, fetched from GitHub with the implement App's token
+// on a schedule, and streaming its default branch to issue pods' workspace-init containers.
 package repocache
 
 import (
@@ -33,8 +33,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// Port is the port a cache pod serves on: its readiness probe's, and the one an issue pod's fetch
-// container reaches it at.
+// Port is the port a cache pod serves on: its readiness probe's, and the one an issue pod's
+// workspace-init reaches it at.
 const Port = 8418
 
 // tokenFileEnv names the variable a cache pod's container points at the implement App's token for
@@ -261,12 +261,10 @@ func Serve(ctx context.Context, opts Options) error {
 			return err
 		}
 		opts.Log("fetch failed; serving the clone as it was: " + oneLine(err))
-		if err := c.publish(ctx, time.Time{}); err != nil {
-			if errors.Is(err, errDefaultBranchOnly) {
-				opts.Log("cache remains unavailable: " + oneLine(err))
-			} else {
-				return err
-			}
+		if err := c.publish(ctx, time.Time{}); errors.Is(err, errDefaultBranchOnly) {
+			opts.Log("cache remains unavailable: " + oneLine(err))
+		} else if err != nil {
+			return err
 		}
 		c.maint.Lock()
 		c.syncUnlisted(ctx)
@@ -579,6 +577,14 @@ func (c *cache) readTime(name string) (time.Time, error) {
 	return time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
 }
 
+// fetch fetches the clone from GitHub under the write lock (workspace.Fetch) and publishes what it
+// then holds, answering when, and whether it was a fresh fill onto a volume that held no clone the
+// cache wrote (workspace.OwnCacheRepository), which gets workspace.CacheFetchTimeout rather than
+// workspace.FetchTimeout. A clone the cache held is narrowed before the fetch (narrow), and the
+// fetch is marked as begun meanwhile (defaultBranchFetchFile), so that the next fetch narrows
+// afresh a clone a killed fetch left; whatever clone is there after the fetch is narrowed then. A
+// fetch that fails is the answer, and a cache that served before it serves the clone again,
+// narrowed, as of its last fetch.
 func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -612,7 +618,6 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 			if err := c.clear(defaultBranchFetchFile); err != nil {
 				return time.Time{}, first, err
 			}
-			interrupted = false
 		}
 	} else if err := c.narrow(ctx, false, interrupted); err != nil {
 		if !errors.Is(err, errCacheHeadMissing) {
@@ -622,13 +627,11 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	} else if previous, err = c.defaultBranchHead(ctx); err != nil {
 		return time.Time{}, first, err
 	}
+	var packsBefore map[string]bool
 	if !first {
 		if err := c.mark(defaultBranchFetchFile); err != nil {
 			return time.Time{}, first, err
 		}
-	}
-	var packsBefore map[string]bool
-	if !first {
 		if packsBefore, err = c.packs(); err != nil {
 			return time.Time{}, first, err
 		}
