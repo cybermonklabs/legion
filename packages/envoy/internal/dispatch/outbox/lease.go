@@ -508,7 +508,12 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // ended, and keeps each such event again or records it undelivered. Those notices arrive over NATS
 // and wake nothing, so the expiry pass also runs by itself every keptExpiryReadEvery while nothing
 // else wakes the holder, with no scan of events before it; a row its pass backed off is taken by
-// the first pass after its wait. A full read or a full claim leaves the holder due again.
+// the first pass after its wait. A full read or a full claim leaves the holder due again. Both
+// runs of the pass are bound to the NATS connection (passKeptExpiriesWhileConnected): none starts
+// while the client reads disconnected, and one in flight ends at the client's next connection
+// event, because serve reads the client's state and arms natsLossGrace only between its passes,
+// and the pass's own read of NATS would otherwise wait up to its 10 s bound for a reconnect first,
+// which holds the grace back and the release past the take-over bound.
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
 	var disconnectedFor, retryDue <-chan time.Time
@@ -541,7 +546,7 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				if ctx.Err() != nil {
 					return stopping
 				}
-				fullExpiries, failedExpiries := o.passKeptExpiries(ctx, hold)
+				fullExpiries, failedExpiries := o.passKeptExpiriesWhileConnected(ctx, hold)
 				if ctx.Err() != nil {
 					return stopping
 				}
@@ -565,7 +570,7 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 			}
 			if expiriesDue {
 				expiriesDue = false
-				full, _ := o.passKeptExpiries(ctx, hold)
+				full, _ := o.passKeptExpiriesWhileConnected(ctx, hold)
 				if ctx.Err() != nil {
 					return stopping
 				}
@@ -601,6 +606,50 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 			expiriesDue = true
 		}
 	}
+}
+
+// passKeptExpiriesWhileConnected is serve's expiry pass (passKeptExpiries), bound to the NATS
+// connection it starts on: it runs no pass while the client reads disconnected, and it ends the
+// pass it runs at the client's next connection event (Publisher.ConnectionChanged). It takes that
+// event's channel before it reads the client's state, so an event between the read and the pass
+// still ends the pass.
+//
+// The pass reads NATS through Deps.KeptLanes, which cmd/dispatch sets to the client it publishes
+// through, and a read made while that client reconnects waits for the reconnect up to the read's
+// own bound (storedMessageWait in internal/bus, 10 s). serve reads the client's state and arms
+// natsLossGrace only between its passes, so a holder cut inside that read would start to count the
+// loss only once the read gave up, and release the hold past the 10 s a take-over has
+// (TestAnOutboxCutFromNATSInItsExpiryReadReleasesThePublisher). Ended at the event, the pass
+// returns at once, and serve counts the loss from then.
+//
+// The pass ends there as it ends at a process's stop: what NATS accepted is recorded and what the
+// pass did not decide is released (keepExpiredCopiesAgain), a notice's record is one transaction,
+// and a read the end cut short is no failure to log (lostToContextEnd). It reports full and failed
+// as passKeptExpiries does, and neither when it runs no pass: serve then reads the client's state
+// again before it waits, and arms natsLossGrace. A publisher whose ConnectionChanged is nil, as a
+// test's is, never ends a pass.
+func (o *Outbox) passKeptExpiriesWhileConnected(ctx context.Context, hold fence) (full, failed bool) {
+	changed := o.deps.Publisher.ConnectionChanged()
+	if !o.deps.Publisher.Connected() {
+		return false, false
+	}
+	// The pass's own context: the connection event ends it, while ctx, which is the process's,
+	// still tells a stop from an end of this pass's own making.
+	pass, endPass := context.WithCancel(ctx)
+	defer endPass()
+	go func() {
+		select {
+		case <-changed:
+			endPass()
+		case <-pass.Done():
+		}
+	}()
+	full, failed = o.passKeptExpiries(pass, hold)
+	if pass.Err() != nil && ctx.Err() == nil {
+		slog.Info("dispatch outbox: the expiry pass ended at a change of its NATS connection; it runs again once the client is connected",
+			"instance", o.instance)
+	}
+	return full, failed
 }
 
 // scanEnd is how a scan ended: fenced, the hold's deadline had passed before a batch, a send of
