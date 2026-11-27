@@ -169,7 +169,8 @@ func TestAMalformedWorkspaceWorkFrameReachesNoAgent(t *testing.T) {
 // of the read.
 func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.T) {
 	bin := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\nexit 3\n",
+	// CONTROL: the jj stalls 121 s, past the read's old 120 s budget, standing in for a loaded machine.
+	script := fmt.Sprintf("#!/bin/sh\nsleep 121\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\nexit 3\n",
 		2*shimwire.MaxFrameBytes)
 	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake jj: %v", err)
@@ -259,6 +260,11 @@ func newWorkFixture(t *testing.T) *workFixture {
 // My Pi read nothing of the read.
 func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 	f.t.Helper()
+	// CONTROL: in the first fixture alone, the read's first jj stalls 121 s, past the read's old
+	// 120 s budget, standing in for a loaded machine (stallFirstJJ).
+	if strings.HasSuffix(f.t.Name(), "/1_a_freshly_added_workspace_is_no_work") {
+		stallFirstJJ(f.t)
+	}
 	path := socketPath(f.t)
 	daemon := listen(f.t, path)
 	child := newOMP(f.t)
@@ -279,6 +285,18 @@ func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 		f.t.Fatalf("OMP read %v; workspace-work is the shim's own", types)
 	}
 	return got
+}
+
+// stallFirstJJ (CONTROL) puts a jj first on PATH that stalls its first run 121 s, standing in for a
+// loaded machine, and then runs PATH's next jj.
+func stallFirstJJ(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\n[ -e '" + bin + "/stalled' ] || { : >'" + bin + "/stalled'; sleep 121; }\nPATH=\"${PATH#*:}\" exec jj \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // sideHead leaves a changed working copy as a side head with no bookmark, beside a new working
