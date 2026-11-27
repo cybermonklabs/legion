@@ -166,12 +166,12 @@ require (
 )
 
 // The fork of ygo keeps the upstream module path; consume its published tag through a remote
-// versioned replacement. Releases are cut on cybermonklabs/ygo with knives (its registry entry
-// is [repos.ygo-fork]: upstream reearth/ygo, work branches on the personal fork, releases on
-// cybermonklabs/ygo), and no release is cut on a personal account. The releases named below by a
-// commit were cut on another organization's fork of reearth/ygo before v1.55.1-legion.1, and
-// cybermonklabs/ygo holds each of those commits too, since the forks of one network share their
-// commits. The fork is upstream ygo v1.55.0,
+// versioned replacement. This change's releases are cut on cybermonklabs/ygo with knives (its
+// registry entry is [repos.ygo-fork]: upstream reearth/ygo, work branches on the personal fork,
+// releases on cybermonklabs/ygo), and none of them is cut on a personal account. The releases
+// named below by a commit were cut on another organization's fork of reearth/ygo before
+// v1.55.1-legion.1, and cybermonklabs/ygo holds each of those commits too, since the forks of one
+// network share their commits. The fork is upstream ygo v1.55.0,
 // through upstream main
 // 510c2cf5, plus fixes, each carried until upstream ships it; RELEASE_NOTES.md in the tagged
 // fork lists every member with its upstream pull request. Thirteen wait in open upstream pull
@@ -351,4 +351,13 @@ require (
 // parking records alone, is never pinned. The tag is on 3a34db68, the head of
 // release/v1.55.1/2026-11-23.2, cut with knives on cybermonklabs/ygo as the member
 // rel/v1.55.1-parked-record-peak.
-replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.4
+// v1.55.1-legion.5 adds no option of its own. It holds legion.4's members on the series base as it
+// stands now, rc/v1.55.1-sami.10 at 1398b7a7, a base commit from other work on the fork
+// (sjawhar/ygo#3, which cybermonklabs/legion#4445 pins on its own): Server.CloseFrameTimeout, the
+// deadline on the close frame ServeHTTP sends for a cancel cause that names a close code, 1 s when
+// it is unset, as before. Dispatch sets no CloseFrameTimeout. The closing handshake of such a
+// cancel (closeForCause, of the member rel/v1.55.1-close-handshake) now takes that deadline too,
+// since the base made it a server field, and rel/v1.55.1-answer-once-stored carries one more test
+// commit, a2ac272f, which reads the relay until it arrives. The tag is on af5157ea, the head of
+// release/v1.55.1/2026-11-27, cut with knives on cybermonklabs/ygo.
+replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.5
