@@ -570,6 +570,92 @@ func TestTheTreeReadAnswersEachTypedBlockOnceWithItsDocument(t *testing.T) {
 	}
 }
 
+// The words TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead writes into the issue's own fragment,
+// each unique in the store, so a block is found by them (blockWithText).
+const (
+	ownTextRequirementWords = "The board answers each urgent ask within a minute."
+	ownTextProseWords       = "A paragraph of the issue's own fragment that no typed block holds."
+	ownTextCalloutWords     = "The callout's own words."
+	ownTextItemWords        = "The first item of the callout's list."
+)
+
+// TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead: alice writes into the issue's own fragment (the
+// tree artifact) a requirement, a paragraph P and a callout holding a paragraph and a list. The
+// store holds the requirement's paragraph as a node placed by the text under the requirement, and
+// the paragraph of the callout's first item two blocks or more below the callout. The read with no
+// view answers the requirement and the callout each as one node whose text holds its words, and no
+// other node holding them: a typed block's own text, the blocks its text holds at any depth, is no
+// node of the read, since the typed block's node holds it whole; P, which no typed block holds, is
+// a node. The dry run of the delete of the requirement counts 1, and of the callout 1. Once alice
+// places P under the requirement through PATCH, the read answers P under the requirement and still
+// no node of the requirement's own paragraph, and the dry run of the requirement counts 2.
+func TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "TOWN")
+	issue := createDigestIssue(t, handler, database, "TOWN", "A typed block's own text", ":::criterion{#k1}\nThe board answers each reader.\n:::\n", false)
+	key := issue.Key
+	tree := readDecisionDocument(t, database, key, issueTreeName)
+	succeeded(t, "alice writes a requirement, a paragraph and a callout into the issue's own fragment", editDocument(t, handler, tree.id, insertAtEnd(
+		":::requirement{#or1}\n"+ownTextRequirementWords+"\n:::\n\n"+ownTextProseWords+"\n\n"+
+			":::callout{#oc1 kind=\"note\" title=\"\"}\n"+ownTextCalloutWords+"\n\n- "+ownTextItemWords+"\n- The second item of the callout's list.\n:::\n")))
+	requirement, callout, prose := tree.address("or1"), tree.address("oc1"), blockWithText(t, database, ownTextProseWords)
+	own := blockWithText(t, database, ownTextRequirementWords)
+	if placed, _ := placementOf(t, database, refs.BlockNodeKind, own); placed.ToID != requirement || placementValue(t, database, own, refs.AttributePlacement) != refs.PlacementText {
+		t.Fatalf("the requirement's paragraph %s stands under %s at the placement %q, want under %s by the text, so this case proves nothing",
+			own, placed.ToID, placementValue(t, database, own, refs.AttributePlacement), requirement)
+	}
+	if item := blockWithText(t, database, ownTextItemWords); placementValue(t, database, item, refs.AttributePlacement) != refs.PlacementText {
+		t.Fatalf("the paragraph of the callout's first item %s is placed %q, want by the text, so this case proves nothing",
+			item, placementValue(t, database, item, refs.AttributePlacement))
+	} else if placed, _ := placementOf(t, database, refs.BlockNodeKind, item); placed.ToID == callout {
+		t.Fatalf("the paragraph of the callout's first item %s stands under the callout itself, want a list between them, so this case proves no depth", item)
+	}
+
+	// read is the read with no view, failing unless it answers each typed block as one node whose
+	// text holds its words, and no other node holding those words.
+	read := func(what string) treeAnswer {
+		t.Helper()
+		answer := treeRead(t, handler, key, "", "alice", false)
+		for address, words := range map[string][]string{requirement: {ownTextRequirementWords}, callout: {ownTextCalloutWords, ownTextItemWords}} {
+			if typed, _ := answer.node(t, refs.BlockNodeKind, address); !strings.Contains(typed.Text, words[0]) {
+				t.Errorf("%s: the tree read answers %s with the text %q, want its words %q", what, address, typed.Text, words[0])
+			}
+			for _, node := range answer.Nodes {
+				holds := slices.ContainsFunc(words, func(word string) bool { return strings.Contains(node.Text, word) })
+				if holds && (node.Kind != refs.BlockNodeKind || node.ID != address) {
+					t.Errorf("%s: the tree read answers %s:%s under %+v with the text %q, want no node of %s's own text but %s",
+						what, node.Kind, node.ID, node.Parent, node.Text, address, address)
+				}
+			}
+		}
+		return answer
+	}
+	alice := personCaller(t, handler, "alice")
+	count := func(what, address string) int {
+		t.Helper()
+		return deletedCount(t, "the dry run of "+what, deleteNodeAs(alice, key, address, true, -1, ""))
+	}
+
+	if node, _ := read("before the move").node(t, refs.BlockNodeKind, prose); node.Parent == nil || node.Parent.ID == requirement {
+		t.Errorf("the tree read answers P under %+v before its move, want it under the node its text places it under, not %s", node.Parent, requirement)
+	}
+	if counted := count("the requirement "+requirement, requirement); counted != 1 {
+		t.Errorf("the dry run of the requirement %s counts %d, want 1: the requirement, and not its own paragraph", requirement, counted)
+	}
+	if counted := count("the callout "+callout, callout); counted != 1 {
+		t.Errorf("the dry run of the callout %s counts %d, want 1: the callout, and none of the blocks its text holds", callout, counted)
+	}
+
+	_, tag := placementOf(t, database, refs.BlockNodeKind, prose)
+	succeeded(t, "alice places P under the requirement", patchNode(t, handler, key, prose, tag, map[string]any{"parent": requirement}, "alice"))
+	if node, _ := read("after the move").node(t, refs.BlockNodeKind, prose); node.Parent == nil || node.Parent.ID != requirement {
+		t.Errorf("the tree read answers P under %+v after its move, want it under the requirement %s", node.Parent, requirement)
+	}
+	if counted := count("the requirement "+requirement+" after the move", requirement); counted != 2 {
+		t.Errorf("the dry run of the requirement %s counts %d after the move, want 2: the requirement and P", requirement, counted)
+	}
+}
+
 // decisionByBlock is the decision of decisions whose block id is block.
 func decisionByBlock(t *testing.T, decisions []model.Decision, block string) model.Decision {
 	t.Helper()
