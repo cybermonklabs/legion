@@ -8413,6 +8413,72 @@ test("a handoff page address whose id is not a UUID opens Details and says no su
   }
 });
 
+// Any session can record a handoff on any open issue nested as deep as the server's JSON check
+// takes, 10,000 levels counting the body's own object, and none is ever changed or deleted. In
+// Chrome's engine `JSON.stringify` recurses once a level and throws the call stack's size from
+// about 4,500 levels, a body of 9 KB, so one walk of the whole value by it - the conversation's
+// indented text of a field, or the text past the bound - throws in render and takes Details down
+// for every reader of the issue. Only a browser that runs that engine shows it: the unit rows run
+// under JavaScriptCore, which does not throw there. The field draws its first 8 levels as lists
+// (`HANDOFF_DATA_LEVELS`) and the rest as its JSON text in one box, and the page reports no
+// error, from before its load to the end of the row.
+// SLOW(>=2s): an issue and a handoff written, a sign-in and one load of the page.
+test("a handoff nested 10,000 deep, the most the server takes, draws its first 8 levels as lists and the rest as text, and the page throws nothing", async ({
+  browser,
+}) => {
+  const depth = 9_999;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    title: "A handoff nested to the server's most",
+  });
+  // Written as text: the runner's own `JSON.stringify` (Node's, the same engine) throws on it.
+  const handoff = await createHandoff(
+    issue.key,
+    "implement",
+    `{"f":${"[".repeat(depth)}1${"]".repeat(depth)}}`,
+    implementer
+  );
+  const alice = await reader(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(`${error.name}: ${error.message}`));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    await gotoIssue(page, `/issues/${issue.key}/handoffs/${handoff.id}`);
+    const fields = handoffFieldsOf(page, handoff.id);
+    // The field, or an error that took Details down before it was drawn.
+    await expect
+      .poll(async () => errors.length > 0 || (await fields.count()) > 0, {
+        message: "the handoff's field is not drawn, and the page reported no error",
+      })
+      .toBe(true);
+    expect(errors, `the page reported an error: ${errors[0]}`).toEqual([]);
+    await expect(
+      historyPanel(page).locator(`[data-history-entry="handoff:${handoff.id}"]`),
+      "the handoff's address opened no entry"
+    ).toHaveAttribute("aria-current", "true");
+    await expect(fields).toHaveCount(1);
+    await expect(fields).toHaveAttribute("data-handoff-field", "f");
+    await expect(fields.locator("[data-handoff-list]")).toHaveCount(8);
+    const texts = fields.locator("pre");
+    await expect(texts, "the levels past 8 are not drawn as one JSON text").toHaveCount(1);
+    const rest = depth - 8;
+    const drawn = (await texts.textContent()) ?? "";
+    expect(drawn.length).toBe(2 * rest + 1);
+    expect(
+      drawn === `${"[".repeat(rest)}1${"]".repeat(rest)}`,
+      "the levels past 8 are not drawn as their JSON text"
+    ).toBe(true);
+    await expect(historyPanel(page).locator("[data-handoff-missing]")).toHaveCount(0);
+    expect(errors, `the page reported an error: ${errors[0]}`).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
 /** The index of the read of the runs that came 9 seconds or more after the one before it: the
  *  catch-up's 15-second read, after its reads at once, at 2 s and at 5 s, of the newest start of
  *  the history's catch-up; undefined until the page has sent it. */

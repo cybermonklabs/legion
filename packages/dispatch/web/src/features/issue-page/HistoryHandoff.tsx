@@ -20,11 +20,11 @@ import {
   pageQuietText,
   pageRowAct,
 } from "../../theme/classes";
-import { type HandoffField, handoffFields } from "../conversation/conversation-model";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { DetailsErrorLine, useRetryHandOff } from "./details-error";
 import type { HandoffBodyReads } from "./handoff-band";
 import { type HandoffBodyLoader, handoffBodyQuery } from "./handoff-body-loader";
+import { handoffRows, jsonText } from "./handoff-rows";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, sentenceCase } from "./page-words";
 
@@ -37,14 +37,17 @@ const handoffBox = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs ${pageMar
  * How many levels of lists and objects inside a handoff's field `HandoffData` draws as lists and
  * keys: a list or an object below them is drawn as its JSON text, in a box of its own
  * (`handoffJsonBox`), with no `HandoffData` inside it. Any agent session can record a handoff on
- * any open issue, nested as deep as the server's JSON check takes, and a handoff is never changed
- * or deleted. Each level drawn is a few elements, which React's commit walks by recursion, so a
- * body of a few KB nested 3,000 deep overflows the call stack: one session's handoff would make
- * Details throw for every reader of the issue. The text is written with no indent, so it is never
- * longer than the body it comes from; an indent of two spaces a level would write a value nested
- * 3,000 deep as millions of characters. The bodies captured from real issues
- * (`fixtures/handoff-bodies.json`) nest at most 3 levels inside a field, so R2's lists and keys
- * hold for every one of them.
+ * any open issue, nested as deep as the server's JSON check takes, 10,000 levels, and a handoff
+ * is never changed or deleted, so no walk of a value recurses past this bound: one session's
+ * handoff would make Details throw for every reader of the issue. Each level drawn is a few
+ * elements, which React's commit walks by recursion, so a body of a few KB drawn to its bottom,
+ * nested 3,000 deep, overflows the call stack. `JSON.stringify` recurses once a level as well,
+ * and in V8, Chrome's engine, throws from about 4,500 levels, a body of 9 KB. So the body is
+ * parsed once (`handoffRows`), each list and object of its rows is the value it was parsed to,
+ * and the text past the bound is written by a loop with no recursion (`jsonText`), with no
+ * indent: an indent of two spaces a level would write a value nested 3,000 deep as millions of
+ * characters. The bodies captured from real issues (`fixtures/handoff-bodies.json`) nest at most
+ * 3 levels inside a field, so R2's lists and keys hold for every one of them.
  */
 const HANDOFF_DATA_LEVELS = 8;
 
@@ -55,12 +58,6 @@ const handoffJsonBox = `${handoffBox} whitespace-pre-wrap [overflow-wrap:anywher
 
 /** The page's names of the fields every Legion handoff record carries. */
 const KNOWN_FIELDS: Readonly<Record<string, string>> = CONTROL_LABELS.handoff_fields;
-
-/** One row of a handoff's opened fields: `handoffFields`' row, and which entry of the `proof`
- *  list it is, counted from 1, where it is one. */
-interface FieldRow extends HandoffField {
-  readonly entry: number | undefined;
-}
 
 /** The handoffs the reader folded on one issue's page (the plan's D12): whether a handoff is
  *  folded, and the fold or the open a press of its control makes. */
@@ -216,7 +213,7 @@ function HandoffFields({
     failure.current?.querySelector<HTMLElement>("button") ?? document.getElementById(id);
   const retry = useRetryHandOff(handOffTo);
   const loadingLeft = useFocusHandOff(handOffTo);
-  const fields = useMemo(() => (body === undefined ? undefined : fieldRows(body.body)), [body]);
+  const fields = useMemo(() => (body === undefined ? undefined : handoffRows(body.body)), [body]);
   // The failure line stands in the fields' place, and in place of the loading line, while the
   // body is not held and its last read failed.
   if (body === undefined && failures > 0) {
@@ -279,7 +276,8 @@ function HandoffFields({
       tabIndex={-1}
       {...authorText}
     >
-      {fields.map(({ entry, field, label, path, shape, text }) => {
+      {fields.map((row) => {
+        const { entry, field, label, path } = row;
         const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
         // The element keeps the field's key, which a reader of the page selects by; the label
         // is the page's name for the field, or the words its key spells.
@@ -297,25 +295,25 @@ function HandoffFields({
               )}
             </dt>
             <dd className="min-w-0">
-              {shape === "prose" ? (
+              {row.shape === "prose" ? (
                 <div className="min-w-0 [overflow-wrap:anywhere]" data-node-words="">
                   <MarkdownBody
-                    markdown={text}
+                    markdown={row.text}
                     surface="issue-page-history-handoff-body"
                     tree={
                       trees !== undefined && Object.hasOwn(trees, path) ? trees[path] : undefined
                     }
                   />
                 </div>
-              ) : shape === "json" ? (
+              ) : row.shape === "json" ? (
                 // The session's data: a list one numbered entry for each item, an object each key
                 // with its value, the reading list's `issue-page-history-handoff-data`.
-                <TopLevelData text={text} />
+                <TopLevelData value={row.value} />
               ) : (
                 <span className="whitespace-pre-wrap [overflow-wrap:anywhere]">
                   {/* A number, a boolean or null, as its JSON text: the reading list's
                       `issue-page-history-handoff-data`. */}
-                  {text}
+                  {row.text}
                 </span>
               )}
             </dd>
@@ -326,12 +324,10 @@ function HandoffFields({
   );
 }
 
-/** A list or an object at the top of a handoff's body, which `handoffFields` gives as its JSON
- *  text: drawn by `HandoffData` in the box that bounds an entry's open height (`handoffBox`), and
- *  an empty one as None, which needs no box. */
-const TopLevelData = memo(function TopLevelData({ text }: { text: string }): ReactNode {
-  // `handoffFields` gives a list or an object alone as JSON text.
-  const value = JSON.parse(text) as object;
+/** A list or an object at the top of a handoff's body, the value its row holds (`handoffRows`):
+ *  drawn by `HandoffData` in the box that bounds an entry's open height (`handoffBox`), and an
+ *  empty one as None, which needs no box. */
+const TopLevelData = memo(function TopLevelData({ value }: { value: object }): ReactNode {
   if (Object.keys(value).length === 0) return <NoValue />;
   return (
     <div className={handoffBox}>
@@ -355,7 +351,8 @@ export function NoValue(): ReactNode {
  * item, an object as each key, in the words it spells (`keyWords`), with its value, each value
  * inside them by the same rule; a string as plain text; a number, a boolean or null as its JSON
  * text; and an empty list or object as None. A list or an object past `HANDOFF_DATA_LEVELS` is
- * its JSON text in a box of its own, so the elements drawn stop there however deep it nests.
+ * its JSON text (`jsonText`) in a box of its own, so the elements drawn stop there however deep
+ * it nests, and so does every walk of it but the loop that writes that text.
  * Every word of it is the session's but None.
  */
 function HandoffData({ level, value }: { level: number; value: unknown }): ReactNode {
@@ -363,7 +360,7 @@ function HandoffData({ level, value }: { level: number; value: unknown }): React
     return <NoValue />;
   }
   if (value !== null && typeof value === "object" && level > HANDOFF_DATA_LEVELS) {
-    return <pre className={handoffJsonBox}>{JSON.stringify(value)}</pre>;
+    return <pre className={handoffJsonBox}>{jsonText(value)}</pre>;
   }
   if (Array.isArray(value)) {
     return (
@@ -400,22 +397,6 @@ function HandoffData({ level, value }: { level: number; value: unknown }): React
       {typeof value === "string" ? value : JSON.stringify(value)}
     </span>
   );
-}
-
-/** `body`'s rows as `handoffFields` reads them, each entry of a `proof` list numbered, or
- *  undefined for a body that is no JSON object. */
-function fieldRows(body: string): FieldRow[] | undefined {
-  const fields = handoffFields(body);
-  if (fields === undefined) return undefined;
-  const rows: FieldRow[] = [];
-  let entries = 0;
-  for (const field of fields) {
-    // `handoffFields` names a `proof` list's entries apart from a `proof` that is no list.
-    const entry = field.field === "proof" && field.label !== field.field;
-    if (entry) entries += 1;
-    rows.push({ ...field, entry: entry ? entries : undefined });
-  }
-  return rows;
 }
 
 /** A handoff field's key as the words its parts spell, in sentence case: `filesChanged`,

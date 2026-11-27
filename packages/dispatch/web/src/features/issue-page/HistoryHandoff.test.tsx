@@ -56,23 +56,29 @@ async function showHandoffs(near: IntersectionControl): Promise<void> {
   });
 }
 
-/** Draws the history of `KEY` with the one handoff `LISTED`, whose body is `body` as the bodies
- *  read answers it, with `trees` beside it where given; brings its entry within one screen of
- *  the view, and waits until its fields are drawn. */
-async function drawBody(
-  body: unknown,
-  trees?: Record<string, DisplayTree>
-): Promise<{
+/** A handoff's fields drawn in the history: the bodies read the row answered, the fields' `dl`,
+ *  the observer that brought them near, and what restores the reads and unmounts it. */
+interface DrawnHandoff {
   bodies: Mock<typeof api.getHandoffBodies>;
   fields: HTMLElement;
   near: IntersectionControl;
   unmount: () => void;
-}> {
+}
+
+/** Draws the history of `KEY` with the one handoff `LISTED`, whose body is `body` as the bodies
+ *  read answers it, with `trees` beside it where given; brings its entry within one screen of
+ *  the view, and waits until its fields are drawn. */
+async function drawBody(body: unknown, trees?: Record<string, DisplayTree>): Promise<DrawnHandoff> {
+  return drawText(JSON.stringify(body), trees);
+}
+
+/** `drawBody`, with the body's text, as the bodies read answers it, written by the row itself. */
+async function drawText(text: string, trees?: Record<string, DisplayTree>): Promise<DrawnHandoff> {
   const near = installIntersectionObserver();
   const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue({
     bodies: [
       {
-        body: JSON.stringify(body),
+        body: text,
         id: LISTED.id,
         ...(trees === undefined ? {} : { field_trees: trees }),
       },
@@ -136,6 +142,23 @@ function nestedIn(levels: number, inner: unknown): unknown {
     value = level % 2 === 1 ? [value] : { deeper: value };
   }
   return value;
+}
+
+/** How deep `value` nests lists and objects: 0 for anything else, 1 for a list or an object
+ *  holding none, and one more for each level inside. Measured by a loop with a stack of its own,
+ *  so a value nested past the call stack's size is measured too; a value met twice is read once. */
+function nesting(value: unknown): number {
+  let deepest = 0;
+  const seen = new Set<object>();
+  const open: [unknown, number][] = [[value, 1]];
+  for (let next = open.pop(); next !== undefined; next = open.pop()) {
+    const [part, level] = next;
+    if (part === null || typeof part !== "object" || seen.has(part)) continue;
+    seen.add(part);
+    deepest = Math.max(deepest, level);
+    for (const inner of Object.values(part)) open.push([inner, level + 1]);
+  }
+  return deepest;
 }
 
 describe("a handoff's values are drawn as lists and keys", () => {
@@ -289,6 +312,40 @@ describe("a handoff's values are drawn as lists and keys", () => {
       );
     } finally {
       drawn.unmount();
+    }
+  });
+
+  // The most the server takes: 10,000 levels counting the body's own object, which any session
+  // can record on any open issue. `JSON.stringify` recurses once a level, and in Chrome's engine
+  // throws the call stack's size from about 4,500 levels, so the page gives it no list or object
+  // nested past the 8 levels it draws as lists and keys, neither to read the field's rows nor to
+  // write the text past those levels. JavaScriptCore, which runs these rows, does not throw there,
+  // so the row reads what each call was given; the browser row of `e2e/issue-page-m.e2e.ts` reads
+  // the page in Chrome's engine.
+  test("H12: a value nested 9,999 deep, the server's most, draws with no JSON.stringify of a value nested past 8 levels", async () => {
+    const depth = 9_999;
+    const stringify = spyOn(JSON, "stringify");
+    let drawn: DrawnHandoff | undefined;
+    try {
+      drawn = await drawText(`{"f":${"[".repeat(depth)}1${"]".repeat(depth)}}`);
+      const given = stringify.mock.calls.map(([value]) => nesting(value));
+      expect(
+        Math.max(0, ...given),
+        "JSON.stringify was given a value nested past the 8 levels drawn as lists"
+      ).toBeLessThanOrEqual(8);
+      const value = fieldValue(drawn.fields, "f");
+      expect(value.querySelectorAll("[data-handoff-list]")).toHaveLength(8);
+      const texts = value.querySelectorAll("pre");
+      expect(texts, "the levels past 8 are not drawn as one JSON text").toHaveLength(1);
+      const rest = depth - 8;
+      expect(texts[0]?.textContent?.length).toBe(2 * rest + 1);
+      expect(
+        texts[0]?.textContent === `${"[".repeat(rest)}1${"]".repeat(rest)}`,
+        "the levels past 8 are not drawn as their JSON text"
+      ).toBe(true);
+    } finally {
+      stringify.mockRestore();
+      drawn?.unmount();
     }
   });
 

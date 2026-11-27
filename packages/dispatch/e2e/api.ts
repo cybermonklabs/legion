@@ -1237,16 +1237,21 @@ export function replyToCommentDelivery(
 
 /** A session records the next version of `phase`'s handoff on the issue, as `dispatch
  *  handoff-write` does: under the agent bearer, naming itself in `actor`. `body` is sent as the
- *  one JSON object's text the server stores verbatim. */
+ *  one JSON object's text the server stores verbatim: an object as `JSON.stringify` writes it,
+ *  and a string as itself, for a body the runner's own `JSON.stringify` cannot write, such as
+ *  one nested deeper than its call stack reaches. */
 export function createHandoff(
   issue: string,
   phase: string,
-  body: object,
+  body: object | string,
   actor: Actor = seedActor
 ) {
   return post(
     "/api/v1/issues/{key}/handoffs/{phase}",
-    { body: { body: JSON.stringify(body) }, params: { key: issue, phase } },
+    {
+      body: { body: typeof body === "string" ? body : JSON.stringify(body) },
+      params: { key: issue, phase },
+    },
     { actor, as: "agent" }
   );
 }
