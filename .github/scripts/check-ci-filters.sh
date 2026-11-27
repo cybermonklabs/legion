@@ -383,20 +383,25 @@
 #      arm, with two, or with one that lists no file, a dispatch-browser.yaml that runs the script
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
-#  25. a go command of .github/workflows/ci-caches.yaml's browser-binaries job's build or
-#      connections step that is not the one dispatch-browser.yaml's binaries job runs in the step
-#      of that name, naming both texts; and a job or step of either side that is gone. That fill
-#      saves the cache family that job restores, and an object's cache key holds the flags and the
-#      CGO_ENABLED of the command that made it, so a command that drifts leaves the fill saving an
-#      entry which answers none of that job's keys: the job finds its entry, compiles everything
+#  25. a step of a ci_job_reads.py BINARIES_FILLS pair - the build and connections steps of
+#      .github/workflows/ci-caches.yaml's browser-binaries job, and the two steps of
+#      dispatch-browser.yaml's binaries job they fill the cache family for - that does not run the
+#      pair's text (compared as an Exact entry compares a step's, the whole text), in the pair's
+#      directory, with no env: name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or
+#      $GITHUB_PATH or running `go env -w`, and no shell or container, naming the file, the step
+#      and its first line that differs; a job or step of either side that is gone; and an entry
+#      that names no pair, an empty text or a workflow the tree does not have. An object's cache
+#      key holds the flags, CGO_ENABLED and every variable go reads of the command that made it,
+#      so a fill that drifts saves an entry the job finds and does not hit: it compiles everything
 #      from nothing, and nothing fails - the shape measured on a go-envoy-test entry, a family
-#      filled with cgo on, which left 427 of the job's 1,034 packages to compile. The two cannot be
-#      one text: a Run pinned to a script's text is reduced over every job of the called workflow,
-#      and the shard and alone jobs run in a container, so a shared script would make that filter
-#      read every Go file of the repository (ci_job_reads.py's browser gate says so where it lists
-#      no script Run). The rule compares the go commands alone, each with the variable assignments
-#      in front of it, since the shell around them differs on purpose: the job writes its binaries
-#      into $RUNNER_TEMP and its count into $GITHUB_OUTPUT, and the fill needs neither.
+#      filled with cgo on, which left 427 of the job's 1,034 packages to compile. Whole texts
+#      rather than the go commands read out of them, so that no shape of a command (a `GOFLAGS=`
+#      prefix, a `time`, a continued line, an `export`) can read as no command on both sides and
+#      pass. The two steps of a pair are two copies of one text rather than one script: a Run
+#      pinned to a script's text is reduced over every job of the called workflow, and the shard
+#      and alone jobs run in a container, so a shared script would make that filter read every Go
+#      file of the repository (ci_job_reads.py's browser gate says so where it lists no script
+#      Run). Not compared: the runner and the Go version, which the family's key carries.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

@@ -1362,9 +1362,10 @@ ci-caches.yaml's browsers job, the only writer of that entry, is gone with the r
 (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-stand in for the install each of their cases is a reading of. An eighth family,
+stand in for the install each of their cases is a reading of. A tenth family, beside the nine
+above,
 `architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, and a ninth,
+.github/actions/architecture-check's own, and an eleventh,
 `spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-build runs
 both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own

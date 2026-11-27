@@ -498,8 +498,8 @@ jobs:
       - name: Mark the restored build cache's entries unused until the builds use them
         run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-browser-binaries-working-set"
 
-      # The binaries job's two build steps, word for word (check-ci-filters.sh holds their go
-      # commands to that job's).
+      # The binaries job's two steps' texts, in its directory (rule 25 of check-ci-filters.sh
+      # holds both sides to the texts ci_job_reads.py's BINARIES_FILLS gives).
       - name: Build the binaries the browser suite runs, as the binaries job does
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
@@ -508,7 +508,10 @@ jobs:
         working-directory: packages/envoy
 
       - name: Read the connections each stack's Postgres must allow, as the binaries job does
-        run: go run ./internal/dispatch/store/cmd/connections
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
 
       - name: Delete the build cache's entries the builds did not use, and the module zips

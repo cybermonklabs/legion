@@ -152,8 +152,8 @@ its own retry arithmetic rather than its measured maximum.
 ## Why the binaries job restores go-browser-binaries
 
 go-browser-binaries, restored only: .github/workflows/ci-caches.yaml fills it on every push to
-main with this job's two build steps word for word, the four `CGO_ENABLED=0` builds and the `go
-run` of the connections command, and saves only what those builds used
+main with the texts of this job's two steps, the build step's four `CGO_ENABLED=0` builds and the
+connections step's `go run`, each in this job's directory, and saves only what those builds used
 (.github/ci-notes/ci-caches.md#the-go-browser-binaries-family). No job here saves it.
 
 go-envoy is no answer: it is filled by a build of ./cmd/listener and

@@ -79,14 +79,15 @@ go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-
 envoy-go-checks, listener-server-change, envoy-e2e-local, envoy-session-stall and envoy-refill,
 and the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go,
 envoy-go-claim-model, which builds the API's test binary of that set, the multiprocess and
-visual jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
-dispatch-browser-pr
-jobs call: those two build the Dispatch server with cgo on, whose packages
+visual jobs of .github/workflows/dispatch-browser.yaml, which run on its full lane alone, the
+lane ci.yaml's dispatch-browser job and dispatch-browser-nightly.yaml call it with: those two
+build the Dispatch server with cgo on, whose packages
 the go-envoy entry's build of the listener and natsd alone does not hold, the two jobs of
 .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step and twobuild test step build
 out of that same set, and dispatch-memory and dispatch-multiprocess, whose ceiling step and tests
-read its modules and objects), go-browser-binaries (that file's binaries job, whose
-`CGO_ENABLED=0` builds share no cache key with a cgo build), go-envoy-race (every leg of
+read its modules and objects), go-browser-binaries (that file's binaries job, which runs for
+every caller of the file and on every lane, and whose `CGO_ENABLED=0` builds share no cache key
+with a cgo build), go-envoy-race (every leg of
 envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane),
 go-envoy-darwin-vet (envoy-go-build's darwin vet, whose build cache is a directory of its own,
 the GOCACHE of that step's env) and go-envoy-infra (envoy-infra-build and envoy-infra-go, and the
@@ -475,9 +476,14 @@ them.
 
 What dispatch-browser.yaml's binaries job compiles, and nothing else: the four `CGO_ENABLED=0`
 builds of its "Build the binaries the browser suite runs" step and the `go run` of its connections
-step. The fill's two steps are that job's word for word, so the entry holds each object under the
-key that job asks for: a change to either side changes those keys, so change both together. Rule
-25 of check-ci-filters.sh fails the check when the go commands of the two differ.
+step. The job runs for every caller of that file - ci.yaml's dispatch-browser,
+dispatch-browser-pr and dispatch-references jobs and dispatch-browser-nightly.yaml - and on
+every lane. Each of the fill's two steps runs the text of the job's step of that name, in its
+directory, so the entry holds each object under the key that job asks for: ci_job_reads.py's
+BINARIES_FILLS gives the two texts, the binaries job's own Exact entries pin them, and rule 25 of
+check-ci-filters.sh fails the check when a step of either side runs another text, in another
+directory or under an env or an earlier step that can move what go compiles. So a change to the
+job's step changes the table and the fill with it.
 
 The job restored go-envoy-test before, whose objects are compiled with cgo on. With
 `CGO_ENABLED=0`, net and os/user build other files, so every package above them has other cache
