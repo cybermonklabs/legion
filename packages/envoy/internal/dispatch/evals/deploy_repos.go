@@ -44,8 +44,10 @@ import (
 // merge-to-production times each pull request a posted deploy names from its merge to the deploy
 // (postedDayAs), where that deploy ships it before a GitHub deploy that counts it for that project
 // does: a pull request's lead times count once for each project, at the first deploy that ships it
-// for that project, and a posted deploy moves no other project's timing (firstShipped). It is kept,
-// recorded and selected as a source repository is, under no job name.
+// for that project, and a posted deploy moves no other project's timing (firstShipped; where the
+// project reads the GitHub deploy's time through an owner key of the repository, its read keeps
+// the first of the two, shippedOnce). It is kept, recorded and selected as a source repository is,
+// under no job name.
 //
 // The repositories kept are the repositories that hold a delivery run and a rule, one a source reads
 // now or one recorded with the rows (readDeployRepos, refresh.keptRepos), and the events repository

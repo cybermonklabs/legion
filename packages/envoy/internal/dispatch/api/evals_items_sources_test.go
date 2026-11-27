@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -286,6 +287,84 @@ func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
 		}
 		if !slices.Equal(listed, stored) {
 			t.Errorf("%s's merge-to-production items time %v, want the samples its day rows hold, %v", project, listed, stored)
+		}
+	}
+}
+
+// TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItem
+// (dispatch://INFRA-978/comment/9cdcf9d2-532d-4431-9332-3ced4d4329f2): acme/omega-app is OMEGA's
+// default repository, which OMEGA's GitHub source reads, beside an events source. #1 and #2 of it,
+// of no issue, merge at 09:00, so each counts for OMEGA through the repository; its GitHub deploy
+// 101 ships both at 10:29, and deploys posted to OMEGA name #1, finished at 09:30, and #2, finished
+// at 11:00. OMEGA's merge-to-production counts each once, from the deploy that finished first: n 2
+// and max 89, one of the two through the repository. Its items list each pull request once, timed
+// to that deploy: #1 to its post, with no run id, 30 minutes, and #2 to run 101, 89 minutes, the
+// one set the number folds.
+func TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItem(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	const app = "acme/omega-app"
+	createTestProject(t, handler, "OMEGA")
+	setDefaultRepository(t, handler, "OMEGA", app)
+	saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{
+		Project: "OMEGA", Delivery: true,
+		Sources:           []delivery.SourceInput{deliveryseed.SourceOf(deployRule(app, "release"), nil), {Kind: delivery.SourceKindEvents}},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+	})
+	at := func(hour, minute int) time.Time {
+		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	posts := map[int]time.Time{1: at(9, 30), 2: at(11, 0)}
+	for number, finished := range posts {
+		upsertPR(t, database, delivery.DeliveryPullRequest{
+			Repo: app, Number: number, Title: "Change " + strconv.Itoa(number), Author: "octocat",
+			URL: "https://github.com/" + app + "/pull/" + strconv.Itoa(number), CreatedAt: new(at(8, 0)), MergedAt: new(at(9, 0)),
+		})
+		writeProductionEvent(t, database.Pool, prodevents.Event{
+			ProjectKey: "OMEGA", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "release-" + strconv.Itoa(number),
+			FinishedAt: new(finished), PullRequests: []string{app + "#" + strconv.Itoa(number)},
+		})
+	}
+	seedSourceRun(t, database, app, 101, 10, "release")
+	leaveAttributionInputsUnread(t, database.Pool)
+	next := sourcesDay.AddDate(0, 0, 1)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, next.Add(-time.Minute))
+
+	window := url.Values{"from": {sourcesDay.Format(time.RFC3339)}, "to": {next.Format(time.RFC3339)}}
+	list := evalGet[evalListResponse](t, handler, "/api/v1/projects/OMEGA/evals?limit=200&"+window.Encode())
+	minutes := seriesValues(t, findEval(t, list.Items, "OMEGA", evals.SlugMergeToProduction), measures.SeriesMinutes)
+	for statistic, want := range map[string]float64{"n": 2, "max": 89} {
+		if got := minutes.Window[statistic]; got == nil || *got != want {
+			t.Errorf("OMEGA's merge-to-production states %s %v, want %v", statistic, got, want)
+		}
+	}
+	if minutes.ViaRepository != 1 {
+		t.Errorf("OMEGA's merge-to-production counts %d pull requests through a repository, want 1", minutes.ViaRepository)
+	}
+
+	query := url.Values{"from": window["from"], "to": window["to"], "row_kind": {evalRowPullRequest}}
+	answer := evalGet[evalItemsResponse](t, handler, evalItemsPath("OMEGA", evals.SlugMergeToProduction)+"?"+query.Encode())
+	rows := map[string]map[string]any{}
+	for _, row := range answer.Items {
+		if _, twice := rows[row.RowKey]; twice {
+			t.Errorf("OMEGA's merge-to-production items list %s twice, want once", row.RowKey)
+		}
+		rows[row.RowKey] = row.Cols
+	}
+	if len(rows) != 2 {
+		t.Errorf("OMEGA's merge-to-production items list %v, want %s#1 and #2", slices.Sorted(maps.Keys(rows)), app)
+	}
+	for _, want := range []struct {
+		key      string
+		finished time.Time
+		run      any
+		minutes  float64
+	}{{app + "#1", at(9, 30), nil, 30}, {app + "#2", at(10, 29), 101.0, 89}} {
+		row := rows[want.key]
+		deployed, _ := row["deployed_at"].(string)
+		when, err := time.Parse(time.RFC3339, deployed)
+		if row == nil || err != nil || !when.Equal(want.finished) || row["deploy_run_id"] != want.run || row["merge_to_production_minutes"] != want.minutes {
+			t.Errorf("OMEGA's item %s is %v, want deployed at %s by run %v, %v minutes from its merge", want.key, row, want.finished.Format(time.RFC3339), want.run, want.minutes)
 		}
 	}
 }

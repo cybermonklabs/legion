@@ -334,10 +334,11 @@ func repoCut(alias, repos, project string) string {
 }
 
 // ownedDayColumns selects the day as the project reads it, with repo its cut and samples the list
-// the items read needs, or SQL null when it needs none.
+// the items read needs, or SQL null when it needs none, and no sample keys, which the folds of an
+// eval's numbers alone read (shippedOnce): scanDay's columns.
 func ownedDayColumns(repo, samples string) string {
 	return `o.project_key, ` + evalIDAs("o.project_key", "d.eval_id", "o.owner") + `, d.deploy_repo, d.series, ` + repo + ` as cut_repo,
-	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, ` + samples + `, d.last_value, d.last_at, d.last_recorded_at,
+	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, ` + samples + `, null::text[], d.last_value, d.last_at, d.last_recorded_at,
 	coalesce(d.last_reading::text, ''), d.counts, ` + viaAsRead("d.via_repository") + `, d.built_by, d.updated_at`
 }
 

@@ -305,12 +305,28 @@ func DeployRunSuccessDay(day time.Time, runs []Run) []DayPart {
 // requests merged that day: the minutes from each deployed one's merge to its deploy
 // (dora.ts:176-184).
 func MergeToProductionDay(day time.Time, prs []PR) []DayPart {
-	return leadTimeDay(day, prs, func(pr PR) (float64, bool) {
-		if pr.DeployedAt == nil {
-			return 0, false
+	return leadTimeDay(day, prs, mergeToProductionMinutes)
+}
+
+// MergeToProductionKeys is the ID of each of prs whose minutes MergeToProductionDay's part holds, in
+// the order of its samples, nil where it holds none: which pull request each sample times.
+func MergeToProductionKeys(prs []PR) []string {
+	var keys []string
+	for _, pr := range prs {
+		if _, timed := mergeToProductionMinutes(pr); timed {
+			keys = append(keys, pr.ID)
 		}
-		return minutesBetween(pr.MergedAt, *pr.DeployedAt), true
-	})
+	}
+	return keys
+}
+
+// mergeToProductionMinutes is the minutes from pr's merge to its deploy, false while no deploy
+// ships it.
+func mergeToProductionMinutes(pr PR) (float64, bool) {
+	if pr.DeployedAt == nil {
+		return 0, false
+	}
+	return minutesBetween(pr.MergedAt, *pr.DeployedAt), true
 }
 
 // FirstCommitToProductionDay is first-commit-to-production's part of one UTC day, from the

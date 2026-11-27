@@ -180,15 +180,15 @@ type DayPoint struct {
 // into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
 // sums depend on the order of its parts answers the stored figures' bits whatever order the read's
 // plan answered its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers
-// what this does, bit for bit.
+// what this does, bit for bit. It folds their parts as those folds do too, each pull request two
+// kinds of row time counted once (shippedOnce).
 func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	listed, headline := listedAndHeadline(entry)
 	sortWindowRows(rows)
 	var windowParts, compareParts []measures.DayPart
 	via := map[string]int{}
-	for _, row := range rows {
-		part := row.Part
-		if row.Range == RangeCompare {
+	for index, part := range shippedOnce(rows) {
+		if rows[index].Range == RangeCompare {
 			compareParts = append(compareParts, part)
 			continue
 		}
@@ -213,6 +213,117 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 		from = to
 	}
 	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
+}
+
+// shippedOnce is the parts of rows, one eval's rows of one read, in their order, as the folds of
+// the eval's numbers read them (SeriesValuesOf, newFigureGroup), with each pull request that a
+// project reads the lead time of in two kinds of row counted once
+// (dispatch://INFRA-978/comment/9cdcf9d2-532d-4431-9332-3ced4d4329f2). A pull request that counts
+// for a project through an owner key of its repository (a pull request no issue attributes, or one
+// whose attribution hangs on the published defaults) and that a deploy posted to the project's
+// route names is timed in two merge-to-production rows of the day it merged: the owner key's,
+// from the first GitHub deploy of its repository that ships it, and the project's events
+// repository's, from the first deploy posted to the project that names it. Each day is built
+// before the published defaults say which projects read the key (firstShipped keeps each pull
+// request's first deploy for each project or owner key alone), so the read keeps, of the pull
+// request's samples in one range, day, series and repository, the one of the deploy that finished
+// first (Shipping.Before: each counts its minutes from the one merge, and the GitHub deploy's
+// stands where both finished at once), and leaves the other out of its row's part: its samples,
+// n, sum and max, and, of an owner key's part the project reads through the repository, one of its
+// via_repository. So a move of a default repository moves the projects that read the key and
+// rewrites no events repository's row (R14). The rows that name each sample's pull request are
+// those the builder keyed (DayRow.sampleKeys); a row whose keys are not one for each sample (a row
+// an earlier release wrote holds none) is taken as it stands. Every part it changes is a copy with
+// samples of its own, so rows that share their samples with another group's (readFoldGroups)
+// keep them; and it keeps and leaves out the same samples, and makes the same sum, whatever order
+// each row's samples are in (newFigureGroup sorts them, a read of the rows does not).
+func shippedOnce(rows []WindowRow) []measures.DayPart {
+	parts := make([]measures.DayPart, len(rows))
+	posted, owned := false, false
+	for index := range rows {
+		row := &rows[index]
+		parts[index] = row.Part
+		if row.sampleKeys != nil && len(row.sampleKeys) == len(row.Part.Samples) {
+			owner := isOwner(row.owner)
+			posted, owned = posted || !owner, owned || owner
+		}
+	}
+	if !posted || !owned {
+		return parts
+	}
+	// timed is one pull request's samples in one range, day, series and repository, and sample one
+	// of them: its row, its place among that row's samples, and the deploy that ships it.
+	type timed struct {
+		within, series, repo, pr string
+		day                      int64
+	}
+	type sample struct {
+		row, at  int
+		shipping Shipping
+	}
+	samples := map[timed][]sample{}
+	for index := range rows {
+		row := &rows[index]
+		if row.sampleKeys == nil || len(row.sampleKeys) != len(row.Part.Samples) {
+			continue
+		}
+		for at, pr := range row.sampleKeys {
+			key := timed{within: row.Range, series: row.Part.Series, repo: row.repo, pr: pr, day: row.Part.Day.Unix()}
+			finished := time.Time{}.Add(time.Duration(math.Round(row.Part.Samples[at] * float64(time.Minute))))
+			samples[key] = append(samples[key], sample{row: index, at: at, shipping: Shipping{At: finished, Posted: !isOwner(row.owner), Repo: row.deployRepo}})
+		}
+	}
+	dropped := map[int][]bool{}
+	for _, of := range samples {
+		if !slices.ContainsFunc(of, func(one sample) bool { return one.shipping.Posted }) ||
+			!slices.ContainsFunc(of, func(one sample) bool { return !one.shipping.Posted }) {
+			continue
+		}
+		first := 0
+		for k := range of {
+			if of[k].shipping.Before(of[first].shipping) {
+				first = k
+			}
+		}
+		for k, one := range of {
+			if k == first {
+				continue
+			}
+			if dropped[one.row] == nil {
+				dropped[one.row] = make([]bool, len(rows[one.row].Part.Samples))
+			}
+			dropped[one.row][one.at] = true
+		}
+	}
+	for index, drops := range dropped {
+		part := &parts[index]
+		kept := make([]float64, 0, len(part.Samples))
+		var lost []float64
+		for at, value := range part.Samples {
+			if drops[at] {
+				lost = append(lost, value)
+			} else {
+				kept = append(kept, value)
+			}
+		}
+		if part.Sum != nil {
+			// In ascending order, so the sum is the same bits whatever order the row's samples are in.
+			slices.Sort(lost)
+			sum := *part.Sum
+			for _, value := range lost {
+				sum -= value
+			}
+			part.Sum = &sum
+		}
+		part.Samples, part.N, part.Max = kept, part.N-len(lost), nil
+		if len(kept) > 0 {
+			part.Max = new(slices.Max(kept))
+		}
+		if isOwner(rows[index].owner) {
+			part.ViaRepository = max(0, part.ViaRepository-len(lost))
+		}
+	}
+	return parts
 }
 
 // sortWindowRows sorts rows in place into the one order a read of the day rows (SeriesValuesOf),

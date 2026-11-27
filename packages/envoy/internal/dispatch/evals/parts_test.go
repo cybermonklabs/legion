@@ -2,6 +2,7 @@ package evals
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -9,16 +10,17 @@ import (
 )
 
 // TestADayRowsPartIsStoredAndReadBackWithNothingLost: a day row is its part (measures.DayPart)
-// beside its key and bookkeeping, and a row written with every field of its part set reads back
-// holding the same part, both as a stored row (scanDay) and as the window read the folds read
-// (DayWindowIn), with its key and bookkeeping kept, so a field added to the part and not to the
-// columns the writes and the reads name fails here. The row is an owner key's (owners.go): the
-// plain key of acme/web, which the project publishes as its default repository and so reads
-// through the repository, the one read that answers a row's via_repository as stored (a project's
-// own rows count none through a repository, viaAsRead); the window read answers the row under the
-// project's eval id of its slug. The window read is of a `last` series over two repositories, the
-// read that sends every field of a part: it sends the write that stored the last value
-// (last_recorded_at, last_reading) only where a `last` fold can tie two rows.
+// beside its key and bookkeeping, and a row written with every field of its part set, and the pull
+// request of each of its samples (DayRow.sampleKeys), reads back holding the same part and keys,
+// both as a stored row (scanDay) and as the window read the folds read (DayWindowIn), with its key
+// and bookkeeping kept, so a field added to the part and not to the columns the writes and the
+// reads name fails here. The row is an owner key's (owners.go): the plain key of acme/web, which
+// the project publishes as its default repository and so reads through the repository, the one
+// read that answers a row's via_repository as stored (a project's own rows count none through a
+// repository, viaAsRead); the window read answers the row under the project's eval id of its
+// slug. The window read is of a `last` series over two repositories, the read that sends every
+// field of a part: it sends the write that stored the last value (last_recorded_at, last_reading)
+// only where a `last` fold can tie two rows.
 func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -41,7 +43,8 @@ func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 		t.Fatalf("publish %s as %s's default repository: %v", repo, r.project, err)
 	}
 	owner := OwnerKey(repo, nil, nil)
-	row := DayRow{ProjectKey: owner, EvalID: EvalID(owner, SlugPRCI), Repo: repo, Listed: true, DayPart: part}
+	row := DayRow{ProjectKey: owner, EvalID: EvalID(owner, SlugPRCI), Repo: repo, Listed: true, DayPart: part,
+		sampleKeys: []string{repo + "#1", repo + "#2", repo + "#3"}}
 	tx, err := r.database.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("begin the write: %v", err)
@@ -58,8 +61,9 @@ func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 	if !reflect.DeepEqual(stored.DayPart, part) {
 		t.Errorf("the stored row's part reads back as\n%+v\nwant\n%+v", stored.DayPart, part)
 	}
-	if stored.ProjectKey != row.ProjectKey || stored.EvalID != row.EvalID || stored.Repo != row.Repo || !stored.Listed || stored.BuiltBy != testBuild {
-		t.Errorf("the stored row's key and bookkeeping are %+v, want those of %+v built by %s", stored, row, testBuild)
+	if stored.ProjectKey != row.ProjectKey || stored.EvalID != row.EvalID || stored.Repo != row.Repo || !stored.Listed || stored.BuiltBy != testBuild ||
+		!slices.Equal(stored.sampleKeys, row.sampleKeys) {
+		t.Errorf("the stored row's key, bookkeeping and sample keys are %+v, want those of %+v built by %s", stored, row, testBuild)
 	}
 	read := EvalID(r.project, SlugPRCI)
 	entry := Entry{Definition: Definition{EvalID: read, ProjectKey: r.project, Source: SourceFoldTiming},
@@ -68,8 +72,8 @@ func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the row's window: %v", err)
 	}
-	if len(window) != 1 || window[0].EvalID != read || !reflect.DeepEqual(window[0].Part, part) {
-		t.Errorf("the window read answers %+v, want the one row's part under %s\n%+v", window, read, part)
+	if len(window) != 1 || window[0].EvalID != read || !reflect.DeepEqual(window[0].Part, part) || !slices.Equal(window[0].sampleKeys, row.sampleKeys) {
+		t.Errorf("the window read answers %+v, want the one row's part under %s with its sample keys %v\n%+v", window, read, row.sampleKeys, part)
 	}
 	t.Logf("%d fields of the part kept through the write and both reads", value.NumField())
 }

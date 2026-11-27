@@ -45,11 +45,12 @@ import (
 // architecture_snapshots.files, a daemon's own readings (legion_current, legion_observations) or
 // github_rate_limits, whose scope names no repository. Nor does it write the eval registry's rows
 // built from the fields it writes: the repositories of the day rows and their members (eval_days
-// and eval_day_members, repo), the stored figures (eval_range_figures and eval_day_figures, repo
-// and deploy_repo), the settings the release before records the rows built under
-// (eval_days_settings) and a rebuild's staged rows, which the refresher builds again from the
-// renamed fields once their changes wake it; nor the eval readings' attributes (eval_readings),
-// which hold what their writers sent, and the logged evals' day rows kept from them. The deploy
+// and eval_day_members, repo), the pull requests the day rows' samples time (eval_days.sample_keys),
+// the stored figures (eval_range_figures and eval_day_figures, repo and deploy_repo), the settings
+// the release before records the rows built under (eval_days_settings) and a rebuild's staged rows,
+// which the refresher builds again from the renamed fields once their changes wake it; nor the
+// eval readings' attributes (eval_readings), which hold what their writers sent, and the logged
+// evals' day rows kept from them. The deploy
 // repository of the day rows and their members (deploy_repo) and the repository of the rule they
 // stand built under (eval_days_rules.repo) it writes, with the owner keys (repoRenameLines).
 //

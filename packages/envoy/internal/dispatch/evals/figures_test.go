@@ -183,10 +183,10 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // before that day that holds one of them folded by FoldStatistics, and every day before it that
 // holds one folded alone over its headline series, each over its rows' parts and, in a
 // repository's cut, the zero part of each series of the eval a day of them holds no row of
-// (cutZeros, withZeros), as a read of the rows folds them. No list is sorted before the fold, so
-// every quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
-// withZeros, encodeFigures), so a few stored figures are held to values worked out by hand as well
-// (expectPinnedFigures).
+// (cutZeros, withZeros), as a read of the rows folds them, each pull request two kinds of row time
+// counted once (shippedOnce). No list is sorted before the fold, so every quantile merges and sorts
+// its samples. The folds are the code's own (FoldStatistics, withZeros, shippedOnce, encodeFigures),
+// so a few stored figures are held to values worked out by hand as well (expectPinnedFigures).
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
 	ctx := t.Context()
@@ -241,10 +241,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 				})
 				key := foldKeyOf(entry)
 				zeros := cutZeros(entry.Definition, held)
-				allParts := make([]measures.DayPart, len(held))
-				for i, row := range held {
-					allParts[i] = row.Part
-				}
+				allParts := shippedOnce(held)
 				within := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
 					lo := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(from) })
 					hi := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(to) })
@@ -258,8 +255,10 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 							continue
 						}
 						via, oldest := map[string]int{}, rows[0].UpdatedAt
+						for _, part := range parts {
+							via[part.Series] += part.ViaRepository
+						}
 						for _, row := range rows {
-							via[row.Part.Series] += row.Part.ViaRepository
 							if row.UpdatedAt.Before(oldest) {
 								oldest = row.UpdatedAt
 							}
@@ -306,7 +305,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 // project (deployRepos, DeployRepos.Of) for its union cut (unionDeployRepo), each row keeping the
 // deploy repository it is stored under for the folds' order, and of none otherwise; its
 // via_repository counted only where the project reads the key through the repository (o.via); and
-// its samples only where its fold reads them, a computed eval's and a logged quantile's.
+// its samples, with their sample keys, only where its fold reads them, a computed eval's and a logged quantile's.
 func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, deployRepos *DeployRepos, entries []Entry, through time.Time) map[string][]WindowRow {
 	t.Helper()
 	evals := make(map[string]Entry, len(entries))
@@ -315,7 +314,7 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, depl
 	}
 	rows, err := r.database.Pool.Query(t.Context(), `
 		select o.project_key || substr(d.eval_id, length(o.owner) + 1), d.writer, d.deploy_repo, o.owner, d.repo, d.series, d.day,
-			d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, nullif(d.counts, '{}'),
+			d.n, d.sum, d.num, d.den, d.max, d.samples, d.sample_keys, d.last_value, d.last_at, nullif(d.counts, '{}'),
 			case when o.via then d.via_repository else 0 end, d.updated_at
 		from eval_project_owners o join eval_days d on d.project_key = o.owner
 		where o.project_key = $1 and d.listed and d.day < $2
@@ -330,7 +329,7 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, depl
 	var writer, deployRepo string
 	part := &row.Part
 	if _, err := pgx.ForEachRow(rows, []any{&row.EvalID, &writer, &deployRepo, &row.owner, &row.repo, &part.Series, &part.Day, &part.N, &part.Sum,
-		&part.Num, &part.Den, &part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
+		&part.Num, &part.Den, &part.Max, &part.Samples, &row.sampleKeys, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
 		entry, held := evals[row.EvalID]
 		ownWriter, ownDeployRepo := "readings", ""
 		if entry.Definition.Computed() {
@@ -341,7 +340,7 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, depl
 		}
 		if held && writer == ownWriter && (deployRepo == ownDeployRepo || ownDeployRepo == unionDeployRepo && deployRepos.hasRepo(project, deployRepo)) {
 			if !entry.Definition.Computed() && !slices.ContainsFunc(entry.Series, func(series Series) bool { return series.Series == part.Series && series.Agg == AggQuantile }) {
-				part.Samples = nil
+				part.Samples, row.sampleKeys = nil, nil
 			}
 			row.Range, row.UpdatedAt, row.deployRepo = RangeWindow, row.UpdatedAt.UTC(), deployRepo
 			utcPart(part)

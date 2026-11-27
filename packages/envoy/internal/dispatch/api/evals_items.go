@@ -764,8 +764,9 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 // delivery.ReadMergedRows reads them beside the same pull requests), or a deploy posted to the
 // project's route (prodevents.PostedDeploysFrom, read once from the range's start where a member
 // names one), whose finish times it and which holds no run id. So a pull request of a GitHub
-// repository that a deploy posted to the project ships first is timed to the post, as the
-// project's day rows time it, whichever repositories the request names.
+// repository that a deploy posted to the project ships first is timed to the post, and one the
+// project reads in an owner key's row and in its events repository's is one item, timed to the
+// deploy the project's fold keeps (evals' shippedOnce), whichever repositories the request names.
 func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {

@@ -562,14 +562,15 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family string, 
 // more than one deploy repository of a project the deploy repository it is stored under, which the
 // folds order a day's rows by (sortWindowRows) and a rebuild's overlay of staged rows reads
 // (readOverlayGroups); a read that names none reads the rows stored under "" alone, and sends no
-// repository. And a sample list only for a series whose fold reads one (readsSamples), so a
-// logged series folded by anything but a quantile, whose rows keep every value of their day, sends
-// none. The write that stored a row's last value (last_recorded_at, last_reading), which the
-// `last` fold breaks a tie of two rows' last_at by (aggStatistics), comes only with a row of a
-// `last` series in a read that names more than one repository or more than one deploy repository
-// of a project: only that read folds two rows of one series and day, which can tie, and the order
-// the folds take its rows in (sortWindowRows) says nothing of which was written later. Every other
-// row answers no write: null and the empty string.
+// repository. And a sample list, with its sample keys where the row holds them (DayRow.sampleKeys,
+// which the folds count a pull request once by: shippedOnce), only for a series whose fold reads
+// one (readsSamples), so a logged series folded by anything but a quantile, whose rows keep every
+// value of their day, sends none. The write that stored a row's last value (last_recorded_at,
+// last_reading), which the `last` fold breaks a tie of two rows' last_at by (aggStatistics), comes
+// only with a row of a `last` series in a read that names more than one repository or more than
+// one deploy repository of a project: only that read folds two rows of one series and day, which
+// can tie, and the order the folds take its rows in (sortWindowRows) says nothing of which was
+// written later. Every other row answers no write: null and the empty string.
 //
 // q is the pool; a transaction that writes the rows it reads, as the stored figures' writes fold
 // them (figures.go), so a fold of the rows a write left reads them as a paint does; or the snapshot
@@ -600,13 +601,14 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
 				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then samples end,
+				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then sample_keys end,
 				last_value, last_at,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then last_recorded_at end,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then coalesce(last_reading::text, '') else '' end,
 				nullif(counts, '{}'), via_repository, updated_at, owner` + storedRepo + storedDeploy + `
 			from (
 				select o.owner, o.project_key, o.project_key || substr(d.eval_id, length(o.owner) + 1) as eval_id, d.writer, d.deploy_repo, d.series, d.day,
-					d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
+					d.n, d.sum, d.num, d.den, d.max, d.samples, d.sample_keys, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
 					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at` + ownedRepo + `
 				from eval_project_owners o join eval_days d on d.project_key = o.owner
 				where o.project_key = any($1::text[]) and ` + ownedKeys("d", "= any($1::text[])") + ` and d.listed

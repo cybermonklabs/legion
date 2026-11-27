@@ -843,22 +843,23 @@ func (s *Store) membersByKey(ctx context.Context, keys []memberKey) (map[memberK
 }
 
 // stageRowsStatement stages day rows as writeDayRows' statement writes them (dayRowRuns' arguments,
-// the writer's place, $18, holding the rebuild's id), each with op $22. A row staged again takes
+// the writer's place, $18, holding the rebuild's id), each with op $23. A row staged again takes
 // the values and the moment of the later staging.
 const stageRowsStatement = `
 	insert into eval_rebuild_days (rebuild_id, op, project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max,
-		samples, last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by)
-	select $18::bigint, $22, project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max,
-		samples::double precision[], last_value, last_at, last_recorded_at, nullif(last_reading, '')::uuid, counts::jsonb, via_repository, $17
+		samples, sample_keys, last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by)
+	select $18::bigint, $23, project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max,
+		samples::double precision[], sample_keys::text[], last_value, last_at, last_recorded_at, nullif(last_reading, '')::uuid, counts::jsonb,
+		via_repository, $17
 	from unnest($1::text[], $2::text[], $21::text[], $3::text[], $4::text[], $5::date[], $6::bool[], $7::int[],
-		$8::double precision[], $9::double precision[], $10::double precision[], $11::double precision[], $12::text[],
+		$8::double precision[], $9::double precision[], $10::double precision[], $11::double precision[], $12::text[], $22::text[],
 		$13::double precision[], $14::timestamptz[], $19::timestamptz[], $20::text[], $15::text[], $16::int[])
-		as given(project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
+		as given(project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples, sample_keys,
 			last_value, last_at, last_recorded_at, last_reading, counts, via_repository)
 	on conflict (rebuild_id, project_key, eval_id, deploy_repo, series, repo, day) do update
 	set op = excluded.op, listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den,
-		max = excluded.max, samples = excluded.samples, last_value = excluded.last_value, last_at = excluded.last_at,
-		last_recorded_at = excluded.last_recorded_at, last_reading = excluded.last_reading, counts = excluded.counts,
+		max = excluded.max, samples = excluded.samples, sample_keys = excluded.sample_keys, last_value = excluded.last_value,
+		last_at = excluded.last_at, last_recorded_at = excluded.last_recorded_at, last_reading = excluded.last_reading, counts = excluded.counts,
 		via_repository = excluded.via_repository, built_by = excluded.built_by, updated_at = excluded.updated_at`
 
 // stageRows stages rows in tx (stageRowsOf), the owner key of each `u` row recorded first
@@ -1047,9 +1048,14 @@ func (s *ruleStaging) flip(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// writeRows writes, in tx, the rows s's rebuild staged (stagedRowWrites); writeMembers its members
-// (stagedMemberWrites).
+// writeRows writes, in tx, the rows s's rebuild staged (stagedRowWrites), their sample keys beside
+// their samples (markSampleKeys); writeMembers its members (stagedMemberWrites).
 func (s *ruleStaging) writeRows(ctx context.Context, tx pgx.Tx) error {
+	if s.rb != nil {
+		if err := markSampleKeys(ctx, tx); err != nil {
+			return err
+		}
+	}
 	return s.write(ctx, tx, stagedRowWrites)
 }
 
@@ -1661,7 +1667,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if len(computed) > 0 && len(stagedDeployRepos) > 0 {
 		rows, err := q.Query(ctx, `
 			select s.project_key, s.repo, s.deploy_repo, s.op, s.listed, `+evalIDAs("o.project_key", "s.eval_id", "o.owner")+`, s.series, s.day, s.n, s.sum, s.num,
-				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), `+viaAsRead("s.via_repository")+`, s.updated_at
+				s.den, s.max, s.samples, s.sample_keys, s.last_value, s.last_at, nullif(s.counts, '{}'), `+viaAsRead("s.via_repository")+`, s.updated_at
 			from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
 			where o.project_key = $2 and s.rebuild_id = $1 and `+evalIDAs("o.project_key", "s.eval_id", "o.owner")+` = any($3)
 				and `+repoCut("s", "$7::text[]", "$2")+` and s.deploy_repo = any($4::text[]) and s.day >= $5::date and s.day < $6::date
@@ -1674,7 +1680,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 		var row WindowRow
 		part := &row.Part
 		if _, err := pgx.ForEachRow(rows, []any{&owner, &repo, &deployRepo, &op, &listed, &row.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den,
-			&part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
+			&part.Max, &part.Samples, &row.sampleKeys, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
 			row.Range, row.UpdatedAt, row.owner, row.repo = RangeWindow, row.UpdatedAt.UTC(), owner, repo
 			if multiDeploy {
 				row.deployRepo = deployRepo
@@ -1956,23 +1962,24 @@ type flipStatement struct{ what, sql string }
 var stagedRowWrites = []flipStatement{
 	{"day rows written", `
 		insert into eval_days (project_key, eval_id, writer, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
-			last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by, updated_at)
+			sample_keys, last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by, updated_at)
 		select s.project_key, s.eval_id, '` + writerComputation + `', s.deploy_repo, s.series, s.repo, s.day, s.listed, s.n, s.sum, s.num, s.den,
-			s.max, s.samples, s.last_value, s.last_at, s.last_recorded_at, s.last_reading, s.counts, s.via_repository, s.built_by, s.updated_at
+			s.max, s.samples, s.sample_keys, s.last_value, s.last_at, s.last_recorded_at, s.last_reading, s.counts, s.via_repository, s.built_by,
+			s.updated_at
 		from eval_rebuild_days s
 		where s.rebuild_id = $1 and s.op = 'u' and (starts_with(s.project_key, '` + ownerPrefix + `') or s.project_key in (select key from projects))
 		order by s.project_key collate "C", s.eval_id collate "C", s.deploy_repo collate "C", s.series collate "C", s.repo collate "C", s.day
 		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den, max = excluded.max,
-			samples = excluded.samples, last_value = excluded.last_value, last_at = excluded.last_at,
+			samples = excluded.samples, sample_keys = excluded.sample_keys, last_value = excluded.last_value, last_at = excluded.last_at,
 			last_recorded_at = excluded.last_recorded_at, last_reading = excluded.last_reading, counts = excluded.counts,
 			via_repository = excluded.via_repository, built_by = excluded.built_by, updated_at = excluded.updated_at
 		where (eval_days.listed, eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max, eval_days.samples,
-				eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at, eval_days.last_reading, eval_days.counts,
-				eval_days.via_repository)
+				eval_days.sample_keys, eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at, eval_days.last_reading,
+				eval_days.counts, eval_days.via_repository)
 			is distinct from (excluded.listed, excluded.n, excluded.sum, excluded.num, excluded.den, excluded.max, excluded.samples,
-				excluded.last_value, excluded.last_at, excluded.last_recorded_at, excluded.last_reading, excluded.counts,
-				excluded.via_repository)`},
+				excluded.sample_keys, excluded.last_value, excluded.last_at, excluded.last_recorded_at, excluded.last_reading,
+				excluded.counts, excluded.via_repository)`},
 	{"day rows deleted", `
 		delete from eval_days d using eval_rebuild_days s
 		where s.rebuild_id = $1 and s.op = 'd' and d.project_key = s.project_key and d.eval_id = s.eval_id and d.writer = '` + writerComputation + `'
@@ -2112,7 +2119,8 @@ var flipStatements = slices.Concat([]flipStatement{
 // rebuild's (MarkRebuild), so the live hub recomputes an evals view of its eval_days changes at
 // once, one change per eval: the flip of a rebuild that staged nothing writes no row, member or
 // figure and logs no change, and moves the rebuild's state, the serving records, the walks and the
-// figures' marker alone. The transaction first locks rb's row and reads it again: a rebuild
+// figures' marker alone. It writes the staged rows' sample keys beside their samples
+// (markSampleKeys). The transaction first locks rb's row and reads it again: a rebuild
 // replaced since the pass read it (replaceRebuild abandoned it)
 // flips nothing, and flipRebuild answers false. It then moves the change log's outbox into the
 // log, logs how many rows each statement wrote and how long the transaction was open, and records
@@ -2133,6 +2141,9 @@ func (r *refresh) flipRebuild(ctx context.Context, rb *rebuildState) (bool, erro
 			return err
 		}
 		if err := markUnionFigures(ctx, tx); err != nil {
+			return err
+		}
+		if err := markSampleKeys(ctx, tx); err != nil {
 			return err
 		}
 		for _, statement := range flipStatements {

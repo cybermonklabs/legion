@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // evalProject is the project every eval below belongs to, and evalID the eval whose rows the
@@ -590,6 +591,63 @@ func TestAnUpdateThatMovesADayRowsDayLogsBothDays(t *testing.T) {
 	if days := changeDays(changes[0]); len(days) == 0 || days[0] != "2026-11-03" || days[len(days)-1] != "2026-11-06" {
 		t.Fatalf("the change's span covers days %v; want 2026-11-03, the old day, through 2026-11-06, the new one", days)
 	}
+}
+
+// TestAnUpdateOfADayRowsSamplesClearsItsSampleKeysUnlessItsTransactionWritesThem: a day row's
+// sample keys name the pull request of each of its samples (migration 20261127230251). An update
+// that moves another column alone keeps them; one that moves the samples and names no keys, as
+// every update of the release before does, leaves the row no keys, so a read takes it as it
+// stands; one in a transaction that says it writes the keys (the transaction-local setting
+// dispatch.sample_keys 'on', evals.markSampleKeys) keeps the keys it writes; and the setting ends
+// with that transaction, so a later update of the samples that names no keys clears them again.
+func TestAnUpdateOfADayRowsSamplesClearsItsSampleKeysUnlessItsTransactionWritesThem(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEvalStore(t)
+	if _, err := store.Pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, samples, sample_keys, built_by)
+		values ($1, $2, 'minutes', '', '2026-11-03', true, 2, 109, '{30,79}', '{acme/app#1,acme/app#2}', 'build-a')
+	`, evalProject, evalID); err != nil {
+		t.Fatalf("store the day row of 2026-11-03: %v", err)
+	}
+	written := []string{"acme/app#1", "acme/app#2"}
+	update := func(what string, q interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	}, set string) {
+		t.Helper()
+		if _, err := q.Exec(ctx, `update eval_days set `+set+` where project_key = $1 and eval_id = $2`, evalProject, evalID); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	expect := func(what string, want []string) {
+		t.Helper()
+		var held []string
+		if err := store.Pool.QueryRow(ctx, `select sample_keys from eval_days where project_key = $1 and eval_id = $2`, evalProject, evalID).Scan(&held); err != nil {
+			t.Fatalf("%s: read the row's sample keys: %v", what, err)
+		}
+		if !slices.Equal(held, want) || (held == nil) != (want == nil) {
+			t.Errorf("%s: the row holds sample keys %v, want %v", what, held, want)
+		}
+	}
+	update("move the row's via_repository", store.Pool, `via_repository = 1`)
+	expect("after an update of another column", written)
+	update("move the row's samples as the release before does", store.Pool, `samples = '{79,79}', sum = 158`)
+	expect("after an update of the samples naming no keys", nil)
+
+	tx, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of the keys: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config('dispatch.sample_keys', 'on', true)`); err != nil {
+		t.Fatalf("say the transaction writes the keys: %v", err)
+	}
+	update("move the row's samples and keys", tx, `samples = '{30,120}', sum = 150, sample_keys = '{acme/app#1,acme/app#2}'`)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the write of the keys: %v", err)
+	}
+	expect("after an update of the samples in a transaction that writes the keys", written)
+	update("move the row's samples again as the release before does", store.Pool, `samples = '{30,79}', sum = 109`)
+	expect("after a later update of the samples naming no keys", nil)
 }
 
 // TestTheTablesARewriteUpdatesHoldTheOptionsThatKeepTheirSize: eval_days, eval_range_figures and

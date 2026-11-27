@@ -306,7 +306,7 @@ func scanReading(row pgx.Row) (Reading, error) {
 }
 
 // dayColumns is the column list scanDay reads from eval_days.
-const dayColumns = `project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
+const dayColumns = `project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples, sample_keys,
 	last_value, last_at, last_recorded_at, coalesce(last_reading::text, ''), counts, via_repository, built_by, updated_at`
 
 func scanDay(row pgx.Row) (DayRow, error) {
@@ -314,7 +314,7 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	var counts []byte
 	if err := row.Scan(
 		&day.ProjectKey, &day.EvalID, &day.DeployRepo, &day.Series, &day.Repo, &day.Day, &day.Listed, &day.N, &day.Sum,
-		&day.Num, &day.Den, &day.Max, &day.Samples, &day.LastValue, &day.LastAt, &day.LastRecordedAt, &day.LastReading,
+		&day.Num, &day.Den, &day.Max, &day.Samples, &day.sampleKeys, &day.LastValue, &day.LastAt, &day.LastRecordedAt, &day.LastReading,
 		&counts, &day.ViaRepository, &day.BuiltBy, &day.UpdatedAt,
 	); err != nil {
 		return DayRow{}, err
@@ -333,8 +333,8 @@ func scanWindowRowOf(row pgx.CollectableRow, repo, deployRepo bool) (WindowRow, 
 	var inWindow bool
 	var day WindowRow
 	part := &day.Part
-	fields := append(make([]any, 0, 20), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
-		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
+	fields := append(make([]any, 0, 21), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
+		&part.Samples, &day.sampleKeys, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
 		&day.UpdatedAt, &day.owner)
 	if repo {
 		fields = append(fields, &day.repo)

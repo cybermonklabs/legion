@@ -1052,7 +1052,8 @@ func diffDayRows(stored []DayRow, built ...[]DayRow) (moved []*DayRow, gone []Da
 func sameDayValues(built, stored *DayRow) bool {
 	return built.Listed == stored.Listed && built.N == stored.N && sameFloat(built.Sum, stored.Sum) && sameFloat(built.Num, stored.Num) &&
 		sameFloat(built.Den, stored.Den) && sameFloat(built.Max, stored.Max) && (built.Samples == nil) == (stored.Samples == nil) &&
-		slices.Equal(built.Samples, stored.Samples) && sameFloat(built.LastValue, stored.LastValue) && sameMoment(built.LastAt, stored.LastAt) &&
+		slices.Equal(built.Samples, stored.Samples) && (built.sampleKeys == nil) == (stored.sampleKeys == nil) &&
+		slices.Equal(built.sampleKeys, stored.sampleKeys) && sameFloat(built.LastValue, stored.LastValue) && sameMoment(built.LastAt, stored.LastAt) &&
 		sameMoment(built.LastRecordedAt, stored.LastRecordedAt) && built.LastReading == stored.LastReading &&
 		maps.Equal(NonNilCounts(built.Counts), NonNilCounts(stored.Counts)) && built.ViaRepository == stored.ViaRepository
 }

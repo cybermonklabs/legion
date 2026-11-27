@@ -279,6 +279,11 @@ type DayRow struct {
 	measures.DayPart
 	BuiltBy   string    `json:"built_by"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// sampleKeys is the pull request each of the part's samples times (eval_days.sample_keys,
+	// measures.MergeToProductionKeys), in their order: on a merge-to-production row of an owner
+	// key or of an events repository, the two kinds of row one project can read one pull request's
+	// lead time in (shippedOnce); nil on every other row, and on a row an earlier release wrote.
+	sampleKeys []string
 }
 
 // WindowRow is one day row as a DayWindowIn read answers it: the range it answers for
@@ -298,9 +303,11 @@ type WindowRow struct {
 	// under when a read folds several deploy repositories (a project's union cut or a multi-source
 	// day-row fallback), and empty otherwise. The folds take a day's rows in the order of those
 	// three and the series (sortWindowRows), and the overlay replaces a row of each whole key.
+	// sampleKeys is the row's sample keys (DayRow.sampleKeys), read with its samples.
 	owner      string
 	repo       string
 	deployRepo string
+	sampleKeys []string
 }
 
 // The two ranges a DayWindowIn read answers rows for.

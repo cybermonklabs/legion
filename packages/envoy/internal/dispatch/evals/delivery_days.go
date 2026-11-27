@@ -628,8 +628,10 @@ func (s Shipping) Before(other Shipping) bool {
 // project, from its merge to the first of the two; a deploy posted to one project moves no other
 // project's timing of it, and no other project's deploy takes it out of the posting project's
 // rows. An owner key is a key of its own, which no posted deploy ships for, since several projects
-// read its rows. A GitHub repository's day keeps a pull request another deploy ships first for the
-// same key as one no deploy of it ships, and an events repository's day drops it.
+// read its rows and the published defaults choose them at read time: a project that reads the
+// owner key's time of a pull request and its own posted time of it counts the first of the two,
+// in the read (shippedOnce). A GitHub repository's day keeps a pull request another deploy ships
+// first for the same key as one no deploy of it ships, and an events repository's day drops it.
 func firstShipped(days []DeliveryDay) {
 	type shipped struct {
 		member, project string
@@ -1242,6 +1244,9 @@ func (d DeliveryDay) build(project, repo string, rows familyRows) []DayRow {
 // evals the read does not keep is not run. An events repository's day (posted) builds
 // deploy-frequency and merge-to-production alone: a posted deploy counts in those two
 // (dispatch://INFRA-978, R1), and has no run whose success, jobs or checks another eval reads.
+// The merge-to-production row of an owner key and of an events repository names the pull request
+// of each of its samples (DayRow.sampleKeys), by which a project that reads both kinds of row
+// counts a pull request they both time once (shippedOnce).
 func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every bool) []DayRow {
 	var built []DayRow
 	keyed := d.deployRepo != ""
@@ -1278,6 +1283,10 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 		} {
 			if readsDeployRepo(builder.slug) == keyed && (!d.posted || builder.slug == SlugMergeToProduction) {
 				add(builder.slug, builder.build(d.Day, prs), builder.build(d.Day, viaPRs))
+				if builder.slug == SlugMergeToProduction && (d.posted || isOwner(project)) {
+					// MergeToProductionDay builds one part, the row add appended last.
+					built[len(built)-1].sampleKeys = measures.MergeToProductionKeys(prs)
+				}
 			}
 		}
 	}

@@ -378,9 +378,11 @@ func rowsStamp(rows []stampedRow) int64 {
 
 // figureGroup is one eval's listed day rows of one cut and deploy repository, in the folds' order
 // (sortWindowRows), and what folds them: the stored figures of every range and day of the rows are
-// folded from it. parts is the rows' parts in the same order and, in a repository's cut, the zero
-// part of each series of the eval each day holds no row of after that day's (withZeros): the parts
-// every fold of the group reads, as SeriesValuesOf folds them.
+// folded from it. parts is the rows' parts in the same order, each pull request two kinds of row
+// time counted once (shippedOnce), and, in a repository's cut, the zero part of each series of the
+// eval each day holds no row of after that day's (withZeros): the parts every fold of the group
+// reads, as SeriesValuesOf folds them. A day's stamp reads the rows themselves (dayFigure), as
+// they are stored.
 type figureGroup struct {
 	entry            Entry
 	listed, headline []Series
@@ -393,13 +395,16 @@ type figureGroup struct {
 // DayWindowIn reads them, whose figures fold under key. It sorts rows into the one order
 // SeriesValuesOf folds its inputs in too (sortWindowRows), so a range's figures are the bits a read
 // folds whatever order either read answered the rows in. Each series whose every row holds samples
-// a sort keeps bit for bit (SortableSamples) has each row's samples sorted in place, once, so every
-// range of the series reads its ranks across them (measures.MergedSamples, which finds them
-// sorted); a series with a -0 or a NaN keeps its rows' samples in the order they were stored, which
-// the merge and sort of each range reads as a read of the rows does, in the same order. A
-// repository cut's zero parts (cutZeros) are added once, here, for every range and day of the
-// group: each is a part of one day alone, so the parts of a range's days are those a read of that
-// range folds.
+// a sort keeps bit for bit (SortableSamples) has each row's samples sorted in place, once, with
+// the row's sample keys beside them (sortSamples), so every range of the series reads its ranks
+// across them (measures.MergedSamples, which finds them sorted); a series with a -0 or a NaN keeps
+// its rows' samples in the order they were stored, which the merge and sort of each range reads as
+// a read of the rows does, in the same order. Its parts are the rows' with each pull request two
+// kinds of row time counted once (shippedOnce), which answers the same parts in any order of the
+// samples: the rows of a union cut share their samples with the rows of each deploy repository's
+// cut (readFoldGroups), which another group may have sorted already. A repository cut's zero parts
+// (cutZeros) are added once, here, for every range and day of the group: each is a part of one
+// day alone, so the parts of a range's days are those a read of that range folds.
 func newFigureGroup(entry Entry, key int64, rows []WindowRow) *figureGroup {
 	sortWindowRows(rows)
 	group := &figureGroup{entry: entry, key: key, rows: rows}
@@ -409,15 +414,36 @@ func newFigureGroup(entry Entry, key int64, rows []WindowRow) *figureGroup {
 		held, seen := sortable[row.Part.Series]
 		sortable[row.Part.Series] = (held || !seen) && measures.SortableSamples(row.Part.Samples)
 	}
-	parts := make([]measures.DayPart, len(rows))
-	for index, row := range rows {
-		if sortable[row.Part.Series] {
-			slices.Sort(row.Part.Samples)
+	for index := range rows {
+		if row := &rows[index]; sortable[row.Part.Series] {
+			sortSamples(row.Part.Samples, row.sampleKeys)
 		}
-		parts[index] = row.Part
 	}
-	group.parts = withZeros(parts, cutZeros(entry.Definition, rows))
+	group.parts = withZeros(shippedOnce(rows), cutZeros(entry.Definition, rows))
 	return group
+}
+
+// sortSamples sorts samples in place, and keys with them where keys holds one for each (a row's
+// sample keys, DayRow.sampleKeys), so each key stays beside the sample it names.
+func sortSamples(samples []float64, keys []string) {
+	if keys == nil || len(keys) != len(samples) {
+		slices.Sort(samples)
+		return
+	}
+	sort.Sort(keyedSamples{samples: samples, keys: keys})
+}
+
+// keyedSamples is a row's samples and their keys, sorted by the samples (sortSamples).
+type keyedSamples struct {
+	samples []float64
+	keys    []string
+}
+
+func (k keyedSamples) Len() int           { return len(k.samples) }
+func (k keyedSamples) Less(i, j int) bool { return k.samples[i] < k.samples[j] }
+func (k keyedSamples) Swap(i, j int) {
+	k.samples[i], k.samples[j] = k.samples[j], k.samples[i]
+	k.keys[i], k.keys[j] = k.keys[j], k.keys[i]
 }
 
 // span is the index range of the group's rows of the days [from, to).
@@ -440,21 +466,25 @@ func rangeOf(n int, end time.Time) Range {
 }
 
 // rangeFigure is the stored row of the n days ending at end: its figures and the oldest updated_at
-// of the rows it folds, and false where the range holds no row of the group.
+// of the rows it folds, and false where the range holds no row of the group. Its via-repository
+// counts are its parts' (a zero part counts none), so a sample shippedOnce leaves out of a row's
+// part leaves its count out too.
 func (g *figureGroup) rangeFigure(n int, end time.Time) ([]byte, time.Time, bool) {
 	r := rangeOf(n, end)
 	first, last := g.span(r.From, r.To)
 	if first == last {
 		return nil, time.Time{}, false
 	}
-	folded := FoldStatistics(g.entry.Definition, g.listed, g.partsIn(r.From, r.To), r)
+	parts := g.partsIn(r.From, r.To)
+	folded := FoldStatistics(g.entry.Definition, g.listed, parts, r)
 	via := map[string]int{}
+	for _, part := range parts {
+		via[part.Series] += part.ViaRepository
+	}
 	oldest := g.rows[first].UpdatedAt
-	for index := first; index < last; index++ {
-		row := &g.rows[index]
-		via[row.Part.Series] += row.Part.ViaRepository
-		if row.UpdatedAt.Before(oldest) {
-			oldest = row.UpdatedAt
+	for index := first + 1; index < last; index++ {
+		if at := g.rows[index].UpdatedAt; at.Before(oldest) {
+			oldest = at
 		}
 	}
 	return encodeFigures(folded, via), oldest, true
@@ -1154,11 +1184,12 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		rows, err := q.Query(ctx, `
 			select given.eval_id, d.deploy_repo, cut.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max,
 				case when (given.eval_id, d.series) in (select * from unnest($6::text[], $7::text[])) then d.samples end,
+				case when (given.eval_id, d.series) in (select * from unnest($6::text[], $7::text[])) then d.sample_keys end,
 				d.last_value, d.last_at, nullif(d.counts, '{}'), `+viaAsRead("d.via_repository")+`, d.updated_at, o.owner, d.repo
 			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
 			cross join eval_project_owners o
 			cross join lateral (
-				select d.project_key, d.deploy_repo, d.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max, d.samples,
+				select d.project_key, d.deploy_repo, d.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max, d.samples, d.sample_keys,
 					d.last_value, d.last_at, d.counts, d.via_repository, d.updated_at
 				from eval_days d
 				where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
@@ -1176,7 +1207,8 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		var row WindowRow
 		part := &row.Part
 		if _, err := pgx.ForEachRow(rows, []any{&key.eval, &key.deployRepo, &key.repo, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num,
-			&part.Den, &part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt, &row.owner, &row.repo}, func() error {
+			&part.Den, &part.Max, &part.Samples, &row.sampleKeys, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt,
+			&row.owner, &row.repo}, func() error {
 			row.Range, row.EvalID, row.UpdatedAt = RangeWindow, key.eval, row.UpdatedAt.UTC()
 			utcPart(part)
 			byGroup[key] = append(byGroup[key], row)
