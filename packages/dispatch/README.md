@@ -1153,7 +1153,7 @@ claims. A baseline comes only from the pinned container, through
 `e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
 machine with no container.
 
-A third layer holds every page to the layout rule of `AGENTS.md` ("Layout"), and
+A third layer holds every page to the layout rule of `web/src/AGENTS.md` ("Layout"), and
 `bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
 reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
 reader's choice in this browser draws another way (the new issue page, the project's board), and
@@ -1182,13 +1182,15 @@ in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagr
 `JetBrains Mono` in DejaVu Sans Mono. A reading fails if any of them does not load. The rows run
 in `en-US` and UTC, so a run on any machine measures the text CI measures.
 `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
-case, and holds the instrument to reporting the one and not the other. A row fails on each breach
-no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints for its
-breach (for a page that scrolls sideways, that of the deepest element past the viewport), matches
-only a breach of that locator, and accepts exactly its `count` of them, so the count is the bound
-of what it lets through - on a page whose own region drew fewer than 100 elements (or the route's
-own `minElements`), and on an entry whose route, state and width it measured and which its
-reading did not match exactly; and
+case, and holds the instrument to reporting the one and not the other.
+`e2e/issue-header-layout.stub.e2e.ts` holds today's issue header below its title to a height at
+360 and 1280 px, and each issue tab whole inside its list and the viewport. A row fails on each
+breach no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints
+for its breach (for a page that scrolls sideways, that of the deepest element past the viewport),
+matches only a breach of that locator, and accepts exactly its `count` of them, so the count is
+the bound of what it lets through - on a page whose own region drew fewer than 100 elements (or
+the route's own `minElements`), and on an entry whose route, state and width it measured and
+which its reading did not match exactly; and
 `e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route or a state the rows
 never read; the type `LayoutWidth` holds its width to the five the rows read. That list holds the
 breaches main still has, in one array per INFRA-5200 fix pull request (the issue page's, the

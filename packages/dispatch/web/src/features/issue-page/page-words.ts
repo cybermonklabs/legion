@@ -1262,6 +1262,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  program: "program",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
@@ -1269,6 +1270,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
+  subject: "subject",
   surface: "surface",
   title: "title",
   urgency: "urgency",

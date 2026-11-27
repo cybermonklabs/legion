@@ -66,8 +66,10 @@
 #
 # A check run whose failure annotations hold RUNNER_SHUTDOWN_RESTATED is passed over, as one with
 # no failure annotation is. Such a check run is a job that only restates other jobs' result: the
-# daemon-go and daemon-go-race jobs of .github/workflows/ci-job-daemon-go.yaml wait for their
-# legs and fail, writing that phrase in their error, when a leg did not pass. Their failure
+# daemon-go and daemon-go-race jobs of .github/workflows/ci-job-daemon-go.yaml, envoy-go of
+# .github/workflows/ci-job-envoy-go.yaml and envoy-go-race of
+# .github/workflows/ci-job-envoy-go-race.yaml wait for their legs and fail, writing that phrase in
+# their error, when a leg did not pass. Their failure
 # follows the leg's, so the leg's own check run is what says whether the platform killed it; read
 # as a fault of its own, the restating job's `exit code 1` would turn every leg's shutdown into a
 # failure of the change. A job whose every failing check run restates carries no failure of its

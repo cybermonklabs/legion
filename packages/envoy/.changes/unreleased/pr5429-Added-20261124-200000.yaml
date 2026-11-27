@@ -6,8 +6,7 @@ body: |-
     resolution that chose that holder. A path checks `roles.ResolutionTooOld` before it publishes,
     which bounds when the publish starts and not when the stream stores it: a process held between
     the two can have its copy stored after the role moved, where no takeover pass reads it. A zero
-    resolution is never too late, as it is never too old. No caller asks either yet, so nothing
-    changes behaviour.
+    resolution is never too late, as it is never too old.
 time: 2026-11-24T20:00:00Z
 custom:
     Issue: pr5429

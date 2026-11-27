@@ -131,6 +131,9 @@ type behindEntryFenceLive struct {
 // longer works, the registered reviewer's own move back into testing, and the same completion at
 // the same head refused because a move back raised the entry the phase now stands on.
 func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share.
 	r := newBehindEntryFenceLive(t)
 	r.step("the tester works its entry", r.testerWorksItsEntry)
 	r.step("testing is entered again by a forward move", r.testingIsEnteredAgain)
