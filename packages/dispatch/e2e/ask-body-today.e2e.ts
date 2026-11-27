@@ -243,14 +243,38 @@ const SURFACES: readonly Surface[] = [
 
 const KIND = /^question$/i;
 
-/** The first text rectangle, not the box of a paragraph that can span several lines. */
-async function firstWords(words: Locator) {
-  return words.evaluate((element) => {
+interface Box {
+  readonly height: number;
+  readonly width: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+/** The words' box, their first text rectangle (not the box of a paragraph that can span several
+ *  lines) and the boxes of the first line's parts, all read in one layout. A row above the ask can
+ *  change height between two reads - the Conversation drops the "New" label above its unread turns
+ *  once it marks the issue read, which moves every turn below it up the page - so boxes read at
+ *  different moments can disagree about where the line is. */
+async function readFirstLine(
+  words: Locator,
+  parts: readonly Locator[]
+): Promise<{ first: { bottom: number; right: number; top: number }; parts: Box[]; words: Box }> {
+  const nodes = await Promise.all([words, ...parts].map((part) => part.elementHandle()));
+  return words.evaluate((_, elements) => {
+    const [wordsNode, ...partNodes] = elements;
     const range = document.createRange();
-    range.selectNodeContents(element);
-    const rect = range.getClientRects()[0] ?? element.getBoundingClientRect();
-    return { bottom: rect.bottom, right: rect.right, top: rect.top };
-  });
+    range.selectNodeContents(wordsNode);
+    const line = range.getClientRects()[0] ?? wordsNode.getBoundingClientRect();
+    const box = (node: Element): Box => {
+      const rect = node.getBoundingClientRect();
+      return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
+    };
+    return {
+      first: { bottom: line.bottom, right: line.right, top: line.top },
+      parts: partNodes.map(box),
+      words: box(wordsNode),
+    };
+  }, nodes);
 }
 
 /** An open ask's first line: the kind, the asker and the time, in that order, after the words. A
@@ -267,15 +291,10 @@ async function expectRow(
   const author = body.getByText(authorName, { exact: true }).first();
   const time = body.locator("time").first();
   for (const part of [words, kind, author, time]) await expect(part).toBeVisible();
-  const boxes: { height: number; width: number; x: number; y: number }[] = [];
-  for (const part of [kind, author, time]) {
-    // The part is visible above, so its layout box is settled and this one read is its place.
-    const box = await part.boundingBox();
-    if (box === null) throw new Error("The first line has a part with no layout box");
-    boxes.push(box);
-  }
+  // One read of one layout: the visibility waits above say each part is drawn, not that the rows
+  // above the ask will not move before a later read.
+  const { first, parts: boxes, words: wordsBox } = await readFirstLine(words, [kind, author, time]);
   if (!stacked) {
-    const first = await firstWords(words);
     let right = first.right;
     for (const box of boxes) {
       expect(box.y, "first-line metadata sits under the words").toBeLessThan(first.bottom);
@@ -290,9 +309,7 @@ async function expectRow(
     }
     return;
   }
-  // The visibility assertion above settled the question before this geometry check.
-  const wordsBox = await words.boundingBox();
-  if (wordsBox === null) throw new Error("The question's words have no layout box");
+  // The words' box comes from the same layout as the parts' boxes.
   const [kindBox, authorBox, timeBox] = boxes;
   expect(
     Math.abs(kindBox.x - wordsBox.x),
