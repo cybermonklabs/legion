@@ -63,6 +63,12 @@ const renamedRepositoriesSeed = `
 	insert into branch_commits (repo, branch, sha, on_branch) values
 		('SJawhar/Legion', 'main', 'c1', true),
 		('sjawhar/dotfiles', 'main', 'c1', true);
+	insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at) values
+		('sjawhar/legion', 'c2', 'm1', true, '2026-01-01T00:00:00Z'),
+		('sjawhar/dotfiles', 'c2', 'm1', true, '2026-01-01T00:00:00Z');
+	insert into deploys (repo, program, commit_sha, deployed_at, source, recorded_by) values
+		('sjawhar/legion', 'dispatch', repeat('d', 40), '2026-01-01T00:00:00Z', 'route', '{"kind":"user","id":"alice"}'),
+		('sjawhar/legion-smoke', 'dispatch', repeat('e', 40), '2026-01-01T00:00:00Z', 'route', '{"kind":"user","id":"alice"}');
 	insert into delivery_pull_requests (repo, number, title, url, author, updated_at,
 			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys) values
 		('sjawhar/legion', 11, 'Eleven', 'https://github.com/sjawhar/legion/pull/11', 'octocat', '2026-01-01T00:00:00Z',
@@ -125,6 +131,9 @@ var renamedRepositoriesAfter = map[string]string{
 	`select string_agg(repo || '#' || number || ' ' || url, ' ' order by number) from pull_request_heads`: "cybermonklabs/legion#7 https://github.com/cybermonklabs/legion/pull/7 " +
 		"sjawhar/legion-smoke#8 https://github.com/sjawhar/legion-smoke/pull/8",
 	`select string_agg(repo, ' ' order by repo) from branch_commits`: "cybermonklabs/legion sjawhar/dotfiles",
+	`select string_agg(repo, ' ' order by repo) from commit_holds`:   "cybermonklabs/legion sjawhar/dotfiles",
+	`select string_agg(repo || ' ' || commit_sha, ' ' order by repo) from deploys`: "cybermonklabs/legion " + strings.Repeat("d", 40) +
+		" sjawhar/legion-smoke " + strings.Repeat("e", 40),
 	`select string_agg(repo || '#' || number || ' ' || url || ' ' || coalesce(attribution_cited_issues::text, 'null'), ' ' order by number) from delivery_pull_requests`: "cybermonklabs/legion#11 https://github.com/cybermonklabs/legion/pull/11 " +
 		"{https://github.com/cybermonklabs/legion/issues/5,https://github.com/sjawhar/legion-smoke/issues/6} " +
 		"sjawhar/legion-smoke#12 https://github.com/sjawhar/legion-smoke/pull/12 null",
@@ -280,7 +289,7 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 	}
 	for field, want := range map[string]float64{
 		"issues.repo": 2, "projects.default_repo": 1, "issue_facts.repo": 1, "check_results.commit_repo": 1, "issue_external_links.url": 2,
-		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1,
+		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1, "commit_holds.repo": 1, "deploys.repo": 1,
 		"delivery_pull_requests.repo": 1, "delivery_pull_requests.url": 1, "delivery_pull_requests.attribution_cited_issues": 1,
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,
 		"delivery_settings.deploy_repo": 1, "delivery_settings.excluded_repos": 1, "delivery_reconcile_progress.scope": 2,
@@ -435,6 +444,9 @@ const renameCollisionsSeed = `
 	insert into branch_commits (repo, branch, sha, on_branch) values
 		('sjawhar/legion', 'main', 'c1', false),
 		('cybermonklabs/legion', 'main', 'c1', true);
+	insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at) values
+		('sjawhar/legion', 'c1', 'm1', false, now()),
+		('cybermonklabs/legion', 'c1', 'm1', true, now());
 	insert into delivery_pull_requests (repo, number, title, url, author) values
 		('sjawhar/legion', 11, 'Old', 'https://github.com/sjawhar/legion/pull/11', 'octocat'),
 		('CybermonkLabs/Legion', 11, 'New', 'https://github.com/CybermonkLabs/Legion/pull/11', 'octocat');
@@ -474,8 +486,8 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 
 	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
 
-	if pass.Deleted != 9 || pass.Failures != 0 || pass.Left != noneLeft {
-		t.Fatalf("the pass = %+v, want 9 rows deleted, no failure and nothing left", pass)
+	if pass.Deleted != 10 || pass.Failures != 0 || pass.Left != noneLeft {
+		t.Fatalf("the pass = %+v, want 10 rows deleted, no failure and nothing left", pass)
 	}
 	for query, want := range map[string]string{
 		`select string_agg(issue_key || ' ' || url, ' | ' order by url) from issue_external_links where url like '%/issues/5'`: "INFRA-2 https://github.com/cybermonklabs/legion/issues/5",
@@ -483,6 +495,7 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 		`select string_agg(repo || ' ' || head_sha, ' | ' order by number) from pull_request_heads where number = 7`:           "cybermonklabs/legion new",
 		`select string_agg(repo, ' | ') from pull_request_heads where number = 9`:                                              "cybermonklabs/legion",
 		`select string_agg(repo || ' ' || on_branch, ' | ') from branch_commits`:                                               "cybermonklabs/legion true",
+		`select string_agg(repo || ' ' || holds, ' | ') from commit_holds`:                                                     "cybermonklabs/legion true",
 		`select string_agg(repo || ' ' || title, ' | ') from delivery_pull_requests`:                                           "CybermonkLabs/Legion New",
 		`select string_agg(repo || '#' || run_id || ' ' || head_sha, ' | ' order by run_id) from delivery_runs`:                "cybermonklabs/legion#100 new | cybermonklabs/legion#101 moved",
 		`select string_agg(repo || '#' || run_id || ' ' || name, ' | ' order by run_id, name) from delivery_run_jobs`:          "cybermonklabs/legion#100 twin-build | cybermonklabs/legion#101 moved-build",
@@ -506,7 +519,7 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 		deleted[record["table"].(string)]++
 	}
 	want := map[string]int{
-		"issue_external_links": 2, "pull_request_heads": 2, "branch_commits": 1, "delivery_pull_requests": 1,
+		"issue_external_links": 2, "pull_request_heads": 2, "branch_commits": 1, "commit_holds": 1, "delivery_pull_requests": 1,
 		"delivery_runs": 1, "delivery_run_warnings": 1, "architecture_sources": 1,
 	}
 	if len(deleted) != len(want) {

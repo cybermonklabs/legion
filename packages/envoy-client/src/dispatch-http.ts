@@ -33,6 +33,9 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DeployInput,
+  DeployResponse,
+  DeploysResponse,
   DispatchApiMethod,
   DispatchEvent,
   DispatchLimits,
@@ -1105,9 +1108,10 @@ const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
 /**
  * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, read by its JSON's code alone,
  * whatever its `error`. Its JSON is read from a clone, so the body stays whole for whoever reads
- * the answer.
+ * the answer. Exported for `dispatch proxy`, which reads a `401` by the rule this client reads it
+ * by.
  */
-async function tokenNotLive(response: Response): Promise<boolean> {
+export async function tokenNotLive(response: Response): Promise<boolean> {
   if (response.status !== 401 || !isJson(response)) return false;
   const body: unknown = await response
     .clone()
@@ -1749,7 +1753,9 @@ export class DispatchClient {
 
   /** `PUT /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting on.
    *  A bearer names its session in `actor`. It answers the project as `listProjects` lists it. A
-   *  token scoped to another project is 403 PROJECT_SCOPE. */
+   *  token scoped to another project turns it on, as the shared token does. A token scoped to one
+   *  project is 403 PROJECT_SCOPE for a project that does not exist and for a private project
+   *  that it does not name. */
   async turnOnProvenSessions(
     project: string,
     input: { readonly actor?: Actor } = {}
@@ -1759,8 +1765,10 @@ export class DispatchClient {
 
   /** `DELETE /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting
    *  off. The route needs the person scope, so a credential without it is 403
-   *  OAUTH_SCOPE_REQUIRED, and its writer is the person the credential acts for. It answers the
-   *  project as `listProjects` lists it. A token scoped to another project is 403 PROJECT_SCOPE. */
+   *  OAUTH_SCOPE_REQUIRED, a token scoped to another project included, and its writer is the
+   *  person the credential acts for. It answers the project as `listProjects` lists it. A token
+   *  scoped to one project is 403 PROJECT_SCOPE for a project that does not exist and for a
+   *  private project that it does not name. */
   async turnOffProvenSessions(project: string): Promise<Project> {
     return this.#json("DELETE", ["api", "v1", "projects", project, "proven-sessions"]);
   }
@@ -2008,11 +2016,10 @@ export class DispatchClient {
     }
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it, and
-   *  for a check CI proves the one result Dispatch derives from its check run.
-   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
-   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
-   *  proves, at the issue's newest pull request head as on every read. */
+  /** Each check's complete results, compared with each open head or the final head of the last
+   *  pull request to merge. A branch result must hold its work's merge. The newest such result
+   *  decides, unless a pass and a fail both count at that commit. A live check reads its
+   *  program's current deploy. `at` names one 40-hex commit and leaves today's deploy out. */
   async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
     return this.#json(
       "GET",
@@ -2020,6 +2027,16 @@ export class DispatchClient {
       undefined,
       at === undefined ? undefined : { at }
     );
+  }
+
+  /** Record a build using the credential's own writer, never an actor selected in the body. */
+  async recordDeploy(input: DeployInput): Promise<DeployResponse> {
+    return this.#json("POST", ["api", "v1", "deploys"], input);
+  }
+
+  /** Each program's current deploy, including its source and the GitHub attempt when known. */
+  async deploys(repo: string): Promise<DeploysResponse> {
+    return this.#json("GET", ["api", "v1", "deploys"], undefined, { repo });
   }
 
   /**

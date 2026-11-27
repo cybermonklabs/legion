@@ -367,6 +367,13 @@ const References = memo(function References({
   );
 });
 
+/**
+ * One artifact of the issue. Its groups, in this order: the name (the kind's icon, an image's
+ * thumbnail, the name, which truncates, and under it the facts - kind, versions, size and when it
+ * was updated - which wrap between facts, never inside one); its state (Primary, and the approval
+ * chip); and its actions (copy the reference, download, remove). When the row is too narrow a
+ * group moves to the next line whole.
+ */
 function ArtifactRow({
   artifact,
   isClosed,
@@ -379,70 +386,81 @@ function ArtifactRow({
   const versions = versionsNewestFirst(artifact.versions);
   const latestVersion = versions[0];
 
-  // The name keeps at least 8 rem; on a phone the trailing controls wrap under it rather than
-  // squeezing the name to nothing.
   return (
     <li
-      className={`flex flex-wrap items-center gap-3 border-b py-3 last:border-b-0 ${borderDefault}`}
+      className={`flex flex-wrap items-center gap-x-3 gap-y-2 border-b py-3 last:border-b-0 ${borderDefault}`}
       data-testid={`artifact-${artifact.slug}`}
     >
-      <span className={`shrink-0 ${textSecondaryOnSurface}`}>{kindIcon(artifact.kind)}</span>
-      {artifact.kind === "image" && latestVersion !== undefined ? (
-        <img
-          alt={`${artifact.name} version ${latestVersion.number}`}
-          className={`h-10 w-10 shrink-0 rounded border object-cover ${borderDefault}`}
-          loading="lazy"
-          src={artifactVersionUrl(artifact.id, latestVersion.number)}
-        />
-      ) : null}
-      <div className="min-w-32 flex-1">
-        {/* `max-w-full`: below 1280 px the link is inline-flex rather than `block`, and an
-            inline-flex box is as wide as its whole name unless something caps it. */}
-        <Link
-          className={`block max-w-full truncate font-medium underline ${linkText} ${linkHoverText}`}
-          to={buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })}
-        >
-          <TruncatedText title={artifact.name}>{artifact.name}</TruncatedText>
-        </Link>
-        {/* The name truncates; its details wrap. Truncating them hid the update time on a row
-            with room to spare. The size is the latest version's as stored (a document's
-            markdown), so a document near the size cap shows here without being opened. */}
-        <p className={`text-xs ${textMutedOnSurface}`}>
-          {artifact.kind} · {versions.length} {versions.length === 1 ? "version" : "versions"} ·
-          {latestVersion?.size === undefined
-            ? null
-            : ` ${formatArtifactBytes(latestVersion.size)} ·`}{" "}
-          Updated <Timestamp at={latestVersion?.created_at ?? artifact.created_at} />
-        </p>
+      <div className="flex min-w-32 flex-1 items-center gap-3">
+        <span className={`shrink-0 ${textSecondaryOnSurface}`}>{kindIcon(artifact.kind)}</span>
+        {artifact.kind === "image" && latestVersion !== undefined ? (
+          <img
+            alt={`${artifact.name} version ${latestVersion.number}`}
+            className={`h-10 w-10 shrink-0 rounded border object-cover ${borderDefault}`}
+            loading="lazy"
+            src={artifactVersionUrl(artifact.id, latestVersion.number)}
+          />
+        ) : null}
+        <div className="min-w-0 flex-1">
+          {/* `max-w-full`: below 1280 px the link is inline-flex rather than `block`, and an
+              inline-flex box is as wide as its whole name unless something caps it. */}
+          <Link
+            className={`block max-w-full truncate font-medium underline ${linkText} ${linkHoverText}`}
+            to={buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })}
+          >
+            <TruncatedText title={artifact.name}>{artifact.name}</TruncatedText>
+          </Link>
+          <p className={`text-xs ${textMutedOnSurface}`}>
+            <span className="whitespace-nowrap">{artifact.kind}</span>
+            {" · "}
+            <span className="whitespace-nowrap">
+              {versions.length} {versions.length === 1 ? "version" : "versions"}
+            </span>
+            {" · "}
+            {latestVersion?.size === undefined ? null : (
+              <>
+                <span className="whitespace-nowrap">{formatArtifactBytes(latestVersion.size)}</span>
+                {" · "}
+              </>
+            )}
+            <span className="whitespace-nowrap">
+              Updated <Timestamp at={latestVersion?.created_at ?? artifact.created_at} />
+            </span>
+          </p>
+        </div>
       </div>
-      {artifact.primary ? (
-        <span
-          className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
-        >
-          Primary
-        </span>
-      ) : null}
-      <CopyRefButton route={documentRoute(artifact)} />
-      <ApprovalChip artifact={artifact} />
-      {latestVersion === undefined ? null : (
-        <a
-          className={`shrink-0 text-sm font-medium underline ${linkText} ${linkHoverText}`}
-          download=""
-          href={artifactVersionUrl(artifact.id, latestVersion.number, { download: true })}
-        >
-          Download version {latestVersion.number}
-        </a>
-      )}
-      {/* A removal is offered only where the server can take one: a document of this issue that
-          is neither its spec nor a document that plays a role, since those are refused whatever
-          state they are in (`removalIsOffered`). Every other refusal is the server's, shown on
-          the row. */}
-      {removalIsOffered(artifact) ? (
-        <RemoveDocument
-          artifact={artifact}
-          refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
-        />
-      ) : null}
+      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 empty:hidden">
+        {artifact.primary ? (
+          <span
+            className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
+          >
+            Primary
+          </span>
+        ) : null}
+        <ApprovalChip artifact={artifact} />
+      </div>
+      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+        <CopyRefButton route={documentRoute(artifact)} />
+        {latestVersion === undefined ? null : (
+          <a
+            className={`shrink-0 text-sm font-medium underline ${linkText} ${linkHoverText}`}
+            download=""
+            href={artifactVersionUrl(artifact.id, latestVersion.number, { download: true })}
+          >
+            Download version {latestVersion.number}
+          </a>
+        )}
+        {/* A removal is offered only where the server can take one: a document of this issue
+            that is neither its spec nor a document that plays a role, since those are refused
+            whatever state they are in (`removalIsOffered`). Every other refusal is the server's,
+            shown on the row. */}
+        {removalIsOffered(artifact) ? (
+          <RemoveDocument
+            artifact={artifact}
+            refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+          />
+        ) : null}
+      </div>
     </li>
   );
 }

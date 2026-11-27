@@ -73,17 +73,10 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	return artifact, documentOwner(artifact.ID), nil
 }
 
-// errProjectNotFound is loadProject's refusal of a key no project row holds: 404
-// PROJECT_NOT_FOUND. It is an *apiError, so a caller that answers it otherwise than a route does
-// (the live hub tells a Legion board's or an evals view's subscribers once and keeps the view
-// open) finds it with errors.As (viewReads.refusal) and reads its code and message from it rather
-// than spelling them again.
-var errProjectNotFound = errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
-
 // loadProject reads the project row, every column model.Project carries but the open-ask count,
 // which only the project list reads. A project.updated event carries what this answers, so its
 // payload is the whole row a reader of the project list sees. An unknown key is 404
-// PROJECT_NOT_FOUND.
+// PROJECT_NOT_FOUND (errProjectNotFound).
 func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.Project, error) {
 	var project model.Project
 	if err := q.QueryRow(ctx, `
@@ -97,11 +90,22 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 		&project.CreatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Project{}, errProjectNotFound
+			return model.Project{}, errProjectNotFound()
 		}
 		return model.Project{}, err
 	}
 	return project, nil
+}
+
+// errProjectNotFound is the 404 PROJECT_NOT_FOUND of a project key that no project holds, which
+// the project routes answer (loadProject). The going POST answers it too, to a caller whose
+// credential names one project, for a private project that the credential does not name
+// (createGoingRequest), so the two answers are one. It is an *apiError, so a caller that answers
+// it otherwise than a route does (the live hub tells a Legion board's or an evals view's
+// subscribers once and keeps the view open) finds it with errors.As (viewReads.refusal) and
+// reads its code and message from it rather than spelling them again.
+func errProjectNotFound() *apiError {
+	return errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
 }
 
 // requireOpenOwner locks the owner before its collaboration rows are changed.

@@ -398,6 +398,24 @@ function floorOf(element: Element): number {
   return floor[2] === "px" ? size : size * remPixels();
 }
 
+/** Reads a float's box and floor, or drops it if it has no height. Reports whether it changed. */
+function measureFloat(floats: Map<Element, Float>, element: Element): boolean {
+  const { height, left, right } = element.getBoundingClientRect();
+  if (height <= 0) return floats.delete(element);
+  const floor = floorOf(element);
+  const held = floats.get(element);
+  if (
+    held?.height === height &&
+    held.floor === floor &&
+    held.left === left &&
+    held.right === right
+  ) {
+    return false;
+  }
+  floats.set(element, { floor, height, left, right });
+  return true;
+}
+
 /** The band of a float while the property it reads holds `inset`: on its floor, or `gap` above
  *  `inset`, whichever is higher, as its own `bottom` places it. */
 function floatBand({ floor, height }: Float, inset: number, gap: number): Band {
@@ -741,6 +759,40 @@ export function afterFootPass(settled: () => void): void {
   afterPass.push(settled);
 }
 
+/**
+ * Reads the boxes of the held floats again, since a float's `ResizeObserver` can arrive after
+ * the frame that runs the foot pass. Runs the pass at once (`clearScrollers`), cancels any
+ * queued frame, and reports whether any scroller's end room changed. The selection bar's
+ * hand-off calls this before fitting the list and again after the landing scrolls the list.
+ * The first pass drops floats that no longer have a box. The second can release room that
+ * the list's scroll kept at its end, before the first painted frame.
+ */
+export function footPassNow(): boolean {
+  let changed = false;
+  for (const floats of layerFloats.values()) {
+    for (const element of floats.keys()) {
+      if (measureFloat(floats, element)) changed = true;
+    }
+  }
+  if (changed) placedFloats = publishFloats();
+  if (clearFrame !== 0) cancelAnimationFrame(clearFrame);
+  const before = new Map(marks);
+  clearScrollers();
+  if (marks.size !== before.size) return true;
+  for (const [scroller, now] of marks) {
+    const prev = before.get(scroller);
+    if (
+      prev === undefined ||
+      prev.way !== now.way ||
+      prev.room !== now.room ||
+      (prev.way === "padding" && now.way === "padding" && prev.own !== now.own)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Asks for a pass at the next animation frame, once however often it is asked. */
 function clearNextFrame(): void {
   if (clearFrame === 0) clearFrame = requestAnimationFrame(clearScrollers);
@@ -797,17 +849,15 @@ function followFloats(placed: readonly PlacedFloat[]): void {
  * Publishes every layer's property, from the bottom up (`FOOT_LAYERS` says what each holds). The
  * obstacles start as the page bands. For each layer that has a property, it chooses that property
  * for the floats of the layer above (`freeInset`), writes it, and adds those floats' bands at that
- * property to the obstacles of the layers higher up. The gap is 1rem. Then it holds every float
- * at the properties it has just chosen, for the scrollers under the floats, and asks for a pass
- * over them while a float has a box, or runs one at once as the last float goes, which takes the
- * room the reader is out of (`followFloats`).
+ * property to the obstacles of the layers higher up. The gap is 1rem. Returns the placed
+ * floats for the pass over the scrollers below them.
  *
  * It measures nothing. A published property moves the floats that read it, but the hook places a
  * float's band from that property, not from where the float is. No page element reads a layer's
  * property, so a published one moves none. End room in a scroller can move a page element the
  * scroller holds that is not fixed: that is why a scroller has a ceiling (`FOOT_LAYERS`).
  */
-function publish(): void {
+function publishFloats(): PlacedFloat[] {
   const style = document.documentElement.style;
   const gap = remPixels();
   const screen = window.innerHeight;
@@ -824,7 +874,12 @@ function publish(): void {
       placed.push({ band, element, left: float.left, right: float.right });
     }
   }
-  followFloats(placed);
+  return placed;
+}
+
+/** Publishes and schedules the usual foot pass, or runs it at once if the last float went. */
+function publish(): void {
+  followFloats(publishFloats());
 }
 
 /**
@@ -850,10 +905,10 @@ function publish(): void {
  * parent element itself, or, where that is `display: contents` and has no box, the nearest
  * ancestor that has one, found again at each measure, since a resize can change which that is.
  *
- * A float is measured only when its own size changes or the window resizes, and the hook holds
- * its height, its floor (`--foot-floor`) and its left and right edges, read again at each
- * measure, since a window resize can cross a breakpoint that changes the floor and moves the
- * edges. A float with no box (height 0) counts nothing.
+ * A float is measured when its own size changes, when the window resizes, and before an
+ * immediate pass (`footPassNow`). The hook reads its height, floor (`--foot-floor`) and left
+ * and right edges each time: a resize can cross a breakpoint that changes the floor or edges.
+ * A float with no box (height 0) counts nothing.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
@@ -917,13 +972,11 @@ export function useFootInset(
       }
       publish();
     };
-    const measureFloat = () => {
-      const { height, left, right } = element.getBoundingClientRect();
-      if (height > 0) floats.set(element, { floor: floorOf(element), height, left, right });
-      else floats.delete(element);
+    const measureLayerFloat = () => {
+      measureFloat(floats, element);
       publish();
     };
-    const measure = layer === "page" ? measurePage : measureFloat;
+    const measure = layer === "page" ? measurePage : measureLayerFloat;
     sizes.observe(element);
     window.addEventListener("resize", measure);
     measure();

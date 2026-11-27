@@ -5,13 +5,19 @@ import { createRef, type ReactNode, useRef, useState } from "react";
 
 import { disarm } from "../__tests__/armed-press";
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
+import { FootFloat } from "../__tests__/foot-float";
 import { nextFrame } from "../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
-import { useFootInset } from "../hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../hooks/useFootInset";
 import type { ControlSize } from "./control-names";
 import { ARM_ON_PRESS, holdHandOff } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
-import { focusListStop, SelectionBar, useLastMarkedPlace } from "./SelectionBar";
+import {
+  focusListStop,
+  type MarkedList as MarkedListModel,
+  SelectionBar,
+  useLastMarkedPlace,
+} from "./SelectionBar";
 
 /**
  * Tailwind's own definition of the utility the bar is placed by. happy-dom applies a stylesheet it
@@ -837,8 +843,7 @@ function PlacedList({
   cards?: boolean;
   count: number;
   /** Draws a listed, undrawn row and lands on its mark once drawn (`MarkedList`'s `drawRow`). */
-  drawRow?: (id: string) => () => void;
-  /** Makes the list's layout current before a landing (`MarkedList`'s `fit`). */
+  drawRow?: (id: string, onLand?: (mark: HTMLElement) => void) => () => void;
   fit?: () => void;
   head?: Element | null;
   headings?: readonly string[];
@@ -1090,12 +1095,9 @@ test("a landing owed on a row the reader cannot see parks the focus on the list'
   }
 });
 
-// INFRA-3135, round 29 (the architect's condition (c) of 2026-11-26 05:5xZ), under the rule of
-// round 31 (the architect, 14:10Z): the focus must not be left to fall to the page's body with the
-// row of a write still out. A wheel of the reader's own moves no focus, so it leaves the focus on
-// the parked mark of a leaving row, and the landing stays owed: nothing moves and nothing scrolls
-// at the wheel, and the commit that takes the press's rows away makes the landing, on the row now
-// at their place. Before that rule the list's own stop took the focus at the wheel.
+// A wheel does not move focus off the parked mark of a leaving row. The landing stays owed so
+// focus won't fall to the body with that row: the wheel moves no focus and requests no scroll,
+// and the commit that removes the departing rows lands on the row now at their place.
 test("a wheel of the reader's own leaves the focus on the parked mark of a leaving row, and the landing is made once the rows go", async () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
@@ -1199,12 +1201,9 @@ function stepKeys(): () => void {
   return () => window.removeEventListener("keydown", keymap);
 }
 
-// INFRA-3135, round 31 (the tester's red row of round 29, builds Jobs infra-3135-i-h7-b6rbn and
-// infra-3135-i-h2-lh6c2, and the architect's rule of 2026-11-26 14:10Z): the hand-off parks the
-// focus on the mark of the row marked last, and the reader's `j` moves it into the other row the
-// press is taking away. A focus left in a row that is going is no place the reader can keep, so the
-// landing stays owed, and once both rows have gone it is made on the row now at their place. Read
-// as the reader's act ending what was owed, the focus fell to the page's body with that row.
+// The hand-off parks focus on the last marked row's checkbox. Pressing `j` moves focus to another
+// leaving row. The landing stays owed so that once both rows are gone, focus moves to the row now
+// at their place instead of falling to the body.
 test("j from the parked mark into another leaving row leaves the landing owed, and it is made once the rows have gone, never on the body", async () => {
   const user = userEvent.setup();
   const laidOut = layRowsOut("[data-row]", 9);
@@ -1319,6 +1318,74 @@ test.each([
   }
 });
 
+test("a click outside the rows leaves focus on the body when the parked row goes before the read", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-13"];
+  const view = render(
+    <PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    const parked = rowBox("CORE-13");
+    expect(focusedName()).toBe("Select CORE-13");
+
+    act(() => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      // The browser blurs the mark on a click on blank space. There is no new focusin.
+      parked.blur();
+    });
+    const kept = without(PLACED_KEYS, "CORE-13");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={kept} />);
+    expect(parked.isConnected).toBe(false);
+    expect(document.activeElement?.tagName).toBe("BODY");
+    await act(afterTask);
+    expect(focusedName()).toBeNull();
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={kept} />);
+    expect(document.activeElement?.tagName).toBe("BODY");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+test("window blur ends the key wait so a later keyup does not owe the landing again", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-13"];
+  const view = render(
+    <PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    const parked = rowBox("CORE-13");
+    expect(focusedName()).toBe("Select CORE-13");
+
+    const key = { bubbles: true, code: "KeyJ", key: "j" };
+    act(() => {
+      parked.dispatchEvent(new KeyboardEvent("keydown", key));
+      window.dispatchEvent(new Event("blur"));
+      parked.dispatchEvent(new KeyboardEvent("keyup", key));
+    });
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-13")} />);
+    expect(focusedName()).toBeNull();
+    expect(document.activeElement?.tagName).toBe("BODY");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
 // INFRA-3135, round 29 (N2a): a modifier pressed alone acts on nothing - it only changes the key
 // pressed with it - so it is none of the reader's acts. Shift on the parked mark of a leaving row
 // moves nothing and ends nothing: the landing is still owed, and the commit that takes the press's
@@ -1391,12 +1458,9 @@ test("Shift+Tab from the parked mark of a leaving row goes to the row before it,
   }
 });
 
-// INFRA-3135, round 29 (N2b), under the rule of round 31 (the architect, 14:10Z): Space ticks a
-// checkbox at its keyup, when the reader lets the key go, a task or more after its keydown. Where
-// the focus stands after a key is read once that key's own keyup has been answered, so Space on the
-// parked mark of a leaving row ticks that mark and leaves the focus on it. The landing stays owed,
-// with nothing moved and nothing scrolled, and the commit that takes the press's rows away makes
-// it. Before that rule the list's own stop took the focus at the keyup.
+// Space ticks the checkbox at keyup. The hand-off reads focus after keyup has been answered, so
+// Space ticks the parked mark and leaves focus on it without scrolling. The landing stays owed
+// until the commit that takes the departing rows away.
 test("Space on the parked mark of a leaving row ticks it, and the landing is made once the rows go", async () => {
   const user = userEvent.setup();
   const laidOut = layRowsOut("[data-row]", 9);
@@ -1719,33 +1783,9 @@ test("a delayed landing whose row marked last is listed but undrawn asks drawRow
   }
 });
 
-/** A float of the foot's status layer, as Pending changes is (`hooks/useFootInset.ts`), with a box
- *  48 px tall at the window's foot, given to it as it is drawn since happy-dom lays nothing out:
- *  while it has a box, a change of the foot's page elements, the bar's going among them, asks for
- *  the foot's pass at the next frame. */
-function FootFloat(): ReactNode {
-  const ref = useRef<HTMLDivElement | null>(null);
-  useFootInset(ref, true, "status");
-  return (
-    <div
-      data-testid="foot-float"
-      ref={(node) => {
-        ref.current = node;
-        if (node !== null) {
-          node.getBoundingClientRect = () => new DOMRect(600, window.innerHeight - 64, 300, 48);
-        }
-      }}
-    />
-  );
-}
-
-// INFRA-3135, round 31 (the architect's rule that every landing, the table's own included, is
-// made after the foot's pass and against the height the list's box keeps): a float stands at the
-// foot, so the foot's pass is still to come as the bar goes. The row marked last is listed and
-// the table's window has not drawn it, so the table draws it and lands on it itself (`drawRow`).
-// Nothing is asked of the list at the bar's going; once the pass has run, the list makes its
-// layout current (`fit`) and the table is asked to draw the row, in that order. Asked at the
-// going, the table's landing was made against the box before the pass gave the list its room.
+// A float at the foot keeps the foot pass pending as the bar goes. The last marked row is listed
+// but undrawn. Once the pass runs, the list makes its layout current (`fit`), then the table is
+// asked to draw and land on the row (`drawRow`). Nothing is asked of the list before the pass.
 test("with the foot's pass still to come as the bar goes, the table's own landing waits for it and follows the list's layout made current", async () => {
   const laidOut = layRowsOut("[data-row]", 9);
   // The foot's pass reads the screen under the float (`clearScrollers`); happy-dom has no hit
@@ -1786,6 +1826,268 @@ test("with the foot's pass still to come as the bar goes, the table's own landin
     float.unmount();
     view.unmount();
     Reflect.deleteProperty(document, "elementsFromPoint");
+    laidOut();
+  }
+});
+
+/** Mounts a list at the foot of a document scroller with a float over its last line. */
+function mountEndRoomPage({
+  id,
+  markTop,
+  drawRow,
+  undrawn,
+}: {
+  id: string;
+  markTop: number;
+  drawRow?: MarkedListModel["drawRow"];
+  undrawn?: readonly string[];
+}) {
+  const viewHeight = 900;
+  const scrollHeight = 2000;
+  let boxHeight = 400;
+  const fitHeights: number[] = [];
+  const mainId = `${id}-main`;
+  const lineId = `${id}-line`;
+  const floatId = `${id}-float`;
+  const head = document.createElement("div");
+  const headBox = spyOn(head, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 300, 800, 40)
+  );
+  const page = (
+    count: number,
+    float: boolean | "boxless",
+    hidden?: readonly string[],
+    listed = PLACED_KEYS
+  ) => (
+    <>
+      <main data-testid={mainId} {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}>
+        <PlacedList
+          count={count}
+          drawRow={drawRow}
+          fit={() => {
+            const main = document.querySelector<HTMLElement>(`[data-testid="${mainId}"]`);
+            const pad = main === null ? 0 : Number.parseFloat(main.style.paddingBottom) || 0;
+            boxHeight = 430 - Math.min(30, pad);
+            fitHeights.push(boxHeight);
+          }}
+          head={head}
+          last="CORE-10"
+          listed={listed}
+          undrawn={hidden}
+        />
+        <p data-testid={lineId}>The last line of the page.</p>
+      </main>
+      <FootFloat
+        active={float !== false}
+        boxHeight={float === "boxless" ? 0 : undefined}
+        height={viewHeight}
+        style={{ position: "fixed" }}
+        testId={floatId}
+      />
+    </>
+  );
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const docScrollTop = document.documentElement.scrollTop;
+  document.documentElement.scrollTop = 0;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: viewHeight });
+  const view = render(page(1, true, undrawn));
+  const main = screen.getByTestId(mainId);
+  const line = screen.getByTestId(lineId);
+  const list = screen.getByRole("list", { name: "Rows" });
+  const mark = undrawn?.includes("CORE-10") ? null : rowBox("CORE-10");
+  list.style.overflowY = "auto";
+  list.append(head);
+  Object.defineProperties(list, {
+    clientHeight: { configurable: true, get: () => boxHeight },
+    scrollHeight: { configurable: true, get: () => scrollHeight },
+  });
+  list.getBoundingClientRect = () => new DOMRect(0, 300, 800, boxHeight);
+  line.getBoundingClientRect = () => new DOMRect(0, viewHeight - 20, 800, 20);
+  const layOutMark = (node: HTMLElement) => {
+    node.getBoundingClientRect = () => new DOMRect(10, markTop, 16, 16);
+  };
+  if (mark !== null) layOutMark(mark);
+  const scrolled = spyOn(list, "scrollBy").mockImplementation(
+    (options?: ScrollToOptions | number) => {
+      const dy = typeof options === "object" ? (options.top ?? 0) : 0;
+      list.scrollTop += dy;
+      markTop -= dy;
+    }
+  );
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: () => {
+      const node = screen.queryByTestId(floatId);
+      return node === null ? [line] : [node, line];
+    },
+  });
+  return {
+    main,
+    list,
+    scrollHeight,
+    get boxHeight() {
+      return boxHeight;
+    },
+    fitHeights,
+    layOutMark,
+    scrolled,
+    rerender: (...props: Parameters<typeof page>) => view.rerender(page(...props)),
+    restore: () => {
+      list.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+      scrolled.mockRestore();
+      headBox.mockRestore();
+      disarm();
+      view.unmount();
+      footPassNow();
+      if (innerHeight === undefined) Reflect.deleteProperty(window, "innerHeight");
+      else Object.defineProperty(window, "innerHeight", innerHeight);
+      document.documentElement.scrollTop = docScrollTop;
+      Reflect.deleteProperty(document, "elementsFromPoint");
+    },
+  };
+}
+
+// When the bar goes and a scroll box inside main is at its end, removing main's foot room would
+// clamp the box. The landing scrolls the box off its end. An early foot pass releases that room,
+// and a second fit updates the box before the first painted frame.
+test("a landing that scrolls a box off its end releases kept foot room and refits the box in the landing's own task", async () => {
+  // CORE-10's checkbox starts 150 px above the sticky head's bottom (340), so the landing
+  // scrolls the box up by 150 px, past main's 80 px of kept end room.
+  const page = mountEndRoomPage({ id: "end", markTop: 190 });
+  const { main, list, scrollHeight, fitHeights, scrolled } = page;
+  const mark = rowBox("CORE-10");
+  try {
+    // Let the foot pass mark main with 80 px of end room while the float is up.
+    await act(nextFrame);
+    expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+    expect(main.style.paddingBottom).toBe("80px");
+    // Put the table box at its scroll's end, then take the float away: main keeps its 80 px room
+    // because taking it now would clamp the box.
+    list.scrollTop = scrollHeight - page.boxHeight;
+    page.rerender(1, false);
+    expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+    expect(main.style.paddingBottom).toBe("80px");
+    // Press Dismiss and let the bar go: the first fit reads main's kept 80 px room (400 px), the
+    // landing scrolls the box 150 px off its end, the early foot pass takes main's room away, and
+    // the second fit sets the kept height (430 px) in the landing's own task, before any frame.
+    pressInBar("Dismiss");
+    page.rerender(0, false);
+    expect(mark).toHaveFocus();
+    expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
+    expect(main.style.paddingBottom).toBe("");
+    expect(page.boxHeight).toBe(430);
+    expect(fitHeights).toEqual([400, 430]);
+    expect(mark.getBoundingClientRect().top).toBe(340);
+    expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -150 }]]);
+  } finally {
+    page.restore();
+  }
+});
+
+test("the first fit releases stale float room before choosing the row now at the marked place", async () => {
+  const page = mountEndRoomPage({ id: "boxless", markTop: 710 });
+  const { main, fitHeights } = page;
+  try {
+    // CORE-11 is below the 400 px box but visible in the 430 px box. CORE-9 is in sight in either.
+    page.layOutMark(rowBox("CORE-11"));
+    rowBox("CORE-9").getBoundingClientRect = () => new DOMRect(10, 650, 16, 16);
+    await act(nextFrame);
+    expect(main.style.paddingBottom).toBe("80px");
+
+    pressInBar("Dismiss");
+    page.rerender(0, "boxless", undefined, without(PLACED_KEYS, "CORE-10"));
+    // The frame's pass still has the old float size. The first fit must use the room without it.
+    expect(main.style.paddingBottom).toBe("80px");
+    expect(fitHeights).toEqual([]);
+    await act(nextFrame);
+    expect(focusedName()).toBe("Select CORE-11");
+    expect(fitHeights).toEqual([430, 430]);
+    expect(main.style.paddingBottom).toBe("");
+  } finally {
+    page.restore();
+  }
+});
+
+// When a windowed table draws and focuses its target row in a later render, `onLand` runs the
+// early foot pass, refits the box and re-checks the landing in the task that lands it. The kept
+// end room is released and the box takes its new height before the next frame.
+test("a deferred drawRow landing that scrolls a box off its end releases kept foot room, refits and re-checks in the landing's own task", async () => {
+  let pendingLand: ((mark: HTMLElement) => void) | undefined;
+  const drawRow = (_id: string, onLand?: (mark: HTMLElement) => void) => {
+    pendingLand = onLand;
+    return () => {
+      pendingLand = undefined;
+    };
+  };
+  // The mark starts at 720–736, 6 px past the bottom of the 430 px box after the refit. The
+  // re-check scrolls it by those remaining 6 px.
+  const undrawn = ["CORE-10"];
+  const page = mountEndRoomPage({ id: "deferred", markTop: 720, drawRow, undrawn });
+  const { main, list, scrollHeight, fitHeights, scrolled } = page;
+  try {
+    await act(nextFrame);
+    expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
+    list.scrollTop = scrollHeight - page.boxHeight;
+    page.rerender(1, false, undrawn);
+    expect(main.style.paddingBottom).toBe("80px");
+    pressInBar("Dismiss");
+    page.rerender(0, false, undrawn);
+    expect(pendingLand).toBeDefined();
+    expect(fitHeights).toEqual([400]);
+    // A later render draws CORE-10 after the table scrolled the box off its end, focuses the mark,
+    // and invokes `onLand` in that same task.
+    page.rerender(0, false, []);
+    const mark = rowBox("CORE-10");
+    page.layOutMark(mark);
+    act(() => {
+      list.scrollTop = 1000;
+      mark.focus({ preventScroll: true });
+      pendingLand?.(mark);
+    });
+    expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
+    expect(main.style.paddingBottom).toBe("");
+    expect(page.boxHeight).toBe(430);
+    expect(fitHeights).toEqual([400, 430]);
+    // Re-checked against the 430 px box (300-730): mark at 720-736 scrolled by 6 px to 714-730.
+    expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: 6 }]]);
+    expect(mark.getBoundingClientRect().bottom).toBe(730);
+  } finally {
+    page.restore();
+  }
+});
+
+// If the bar goes without `returnFocus`, the hook owes a landing only when focus is in a row a
+// reader's press is taking away. A live read that clears selection while focus is in an unnamed
+// row moves nothing, and a later commit does not land focus elsewhere.
+test.each([
+  ["an unnamed row that stays", "CORE-11", "Select CORE-11"],
+  ["an unnamed row a later live read removes", "CORE-13", null],
+] as const)("the bar going for a cause not the reader's with focus in %s owes nothing and a later commit lands nothing", (_kind, heldRow, afterRemoval) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  try {
+    const mark = rowBox(heldRow);
+    act(() => mark.focus());
+    const from = moves.focused.length;
+    // Another person's update clears the selection and takes the bar away: no press of the
+    // reader's is out and no row is named as leaving.
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={PLACED_KEYS} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(mark).toHaveFocus();
+    expect(moves.focused.slice(from)).toEqual([]);
+    expect(moves.scrolled).toEqual([]);
+    // A later live read removes CORE-12 and CORE-13: because nothing was owed, nothing lands.
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(focusedName()).toBe(afterRemoval);
+    expect(moves.focused.slice(from)).toEqual([]);
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
     laidOut();
   }
 });

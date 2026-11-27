@@ -15,14 +15,14 @@ interface ScrollEnds {
 
 /**
  * Whether a strip that scrolls sideways has something out of view past its trailing end: whether
- * it wears the trailing fade. An issue's details rail, the tablist of `components/Tabs.tsx` and
- * the scroll box of each Steps table (`features/steps/StepsTab.tsx`) wear it (`fade`), so the app
- * shows a cut-off strip one way.
+ * it wears the trailing fade. A table's box that asks for it (`TableShell`'s `fadeTrailing`) wears
+ * it (`fade`): the scroll box of each Steps table (`features/steps/StepsTab.tsx`), a data table
+ * the layout rule lets scroll sideways.
  *
  * The strip element is state rather than a ref, so this runs once per strip and not once per
  * render: three things change the answer and none of them is a render of the strip's owner - the
  * reader scrolling it, its box changing with the viewport, and its content arriving or leaving (a
- * label, a count, a tab). One listener covers the first and `observeStrip` the other two.
+ * label, a count, a column). One listener covers the first and `observeStrip` the other two.
  */
 export function useScrollEnds(): ScrollEnds {
   const [node, ref] = useState<HTMLElement | null>(null);

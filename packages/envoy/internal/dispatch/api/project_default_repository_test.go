@@ -166,8 +166,8 @@ func TestADefaultRepositoryThatIsNoRepositoryIsRefused(t *testing.T) {
 	}
 }
 
-// The default belongs to the deployment: a credential that may write one project is refused it
-// by name, though the path names that very project. A person writes it, and so does the
+// The default belongs to the deployment: a credential that names one project is refused it by
+// name, though the path names that very project. A person writes it, and so does the
 // credential the deployment configured, which acts for no person and names no project.
 func TestTheDefaultRepositoryIsADeploymentWrite(t *testing.T) {
 	t.Parallel()
@@ -355,6 +355,7 @@ func TestAResultsReadResolvesTheDefaultRepositoryWithRepoProjectsDropped(t *test
 		t.Fatalf("%s resolves to %s, want its project's default acme/widgets", issue.Key, repoName(issue.ResolvedRepo))
 	}
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	writeKnownMergeOnBase(t, database, "acme/widgets", 73, headCommit, issue.Key, "main", mergeCommit)
 	recorded := recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil))
 	if recorded.Code != http.StatusCreated {
 		t.Fatalf("record a result: status=%d body=%s", recorded.Code, recorded.Body.String())

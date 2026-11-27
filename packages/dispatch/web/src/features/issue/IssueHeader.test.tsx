@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
@@ -276,6 +277,8 @@ test("Enter and Escape that end an IME composition in the title's editor save no
 test("an Escape that ends an IME composition in Safari, at keyCode 229, keeps the route's and the parent's editors open on their drafts", async () => {
   const { unmount, user } = header();
   try {
+    // The route and the parent are rows of the header's Details, which the reader opens.
+    await openIssueDetails(user);
     for (const [opener, box, draft] of [
       ["Messages default to no route", "Message route", "role:reviewer"],
       ["None, set parent issue", "Parent", "CORE-2"],
