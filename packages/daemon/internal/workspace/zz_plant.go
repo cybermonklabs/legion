@@ -68,8 +68,8 @@ func plantBound(timeout time.Duration) time.Duration {
 // reaches no wait of its own; the shell they leave behind ends them.
 func plantHold(detached bool) {
 	if detached {
-		script := `for i in $(seq 1 ` + itoa(plantHogs) + `); do taskset -c 0 sh -c 'while :; do :; done' & done; ` +
-			`sleep ` + plantHoldCPU.String() + `; kill $(jobs -p) 2>/dev/null; wait`
+		script := `pids=; i=0; while [ "$i" -lt ` + itoa(plantHogs) + ` ]; do i=$((i+1)); taskset -c 0 sh -c 'while :; do :; done' & pids="$pids $!"; done; ` +
+			`sleep ` + plantHoldCPU.String() + `; kill $pids 2>/dev/null; wait`
 		cmd := exec.Command("setsid", "sh", "-c", script)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err == nil {
