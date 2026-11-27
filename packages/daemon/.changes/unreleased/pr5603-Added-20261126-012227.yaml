@@ -53,8 +53,9 @@ body: |-
   once, in the minute it ended. The daemon API entry `20261126011643` (`admission-signals`) adds
   the route and its answer; the turn-outcome report and its answer are unchanged, and a minute a
   turn of a host before that entry overlaps reads as not recorded, never as zero. Two optional
-  project keys configure it: `signal_token_limit_per_minute` and `signal_token_model_pattern`, the
-  pattern held at load to a subset Go and JavaScript read alike. A migration adds
+  project keys configure it: `signal_token_limit_per_minute` and `signal_token_model_pattern`, a
+  Go regular expression (RE2 syntax) that the loader refuses, naming the key, where it is empty or
+  where Go does not compile it; a refused file is refused whole. A migration adds
   `model_requests`, `model_request_minutes`, `signal_token_limits` and `claim_turns`; its header
   carries the way back.
 

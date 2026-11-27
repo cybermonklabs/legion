@@ -834,12 +834,12 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// always runs under a number somebody chose.
 	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
 	// The project's token limit and model selector are what admission keeps each boot's limit and
-	// each reported model request by (config.Project.Provider); the loader held the selector to
-	// the shared pattern subset, so it compiles.
+	// each reported model request by (config.Project.Provider); the selector is a Go regular
+	// expression the loader compiled, so it compiles here too.
 	provider := cfg.Projects[cfg.Project].Provider
 	var models *regexp.Regexp
 	if provider.TokenModels != "" {
-		if models, err = config.SharedPattern(provider.TokenModels); err != nil {
+		if models, err = regexp.Compile(provider.TokenModels); err != nil {
 			return nil, fmt.Errorf("signal_token_model_pattern: %w", err)
 		}
 	}

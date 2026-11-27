@@ -95,8 +95,8 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
 // image (ImageEnv), every launch's spec (the role App's git identity, the table of every role's
-// identity, runtime.RoleIdentitiesVariable, which a workflow role's launch alone carries, and
-// each launch secret's `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes
+// identity, runtime.RoleIdentitiesVariable, which a workflow role's launch alone carries, and each
+// launch secret's `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes
 // for each role out of the operator's own value (roleOperatorEnv: the settings overlays, which are
 // hand-added here since `composed` deliberately leaves them out, and every name of `composed`, the
 // spend attributes alone today), and the operator's own pod env. The exchange identity's two

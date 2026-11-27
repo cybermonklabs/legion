@@ -408,6 +408,7 @@ func TestLiveAndReplaySignals(t *testing.T) {
 	moments = append(moments, clock(11, 30))
 	compared := map[time.Time]bool{}
 	verdicts := map[signals.Verdict]bool{}
+	rows := liveReplayRows()
 	var compare func(at time.Time, crossings bool)
 	compare = func(at time.Time, crossings bool) {
 		if compared[at] {
@@ -420,11 +421,11 @@ func TestLiveAndReplaySignals(t *testing.T) {
 		for _, series := range reading.Series {
 			live[series.Name] = series
 		}
-		if rows := liveReplayRows(); len(live) != len(rows) {
+		if len(live) != len(rows) {
 			t.Errorf("at %s the daemon reads %d series, want the %d the replay reads", at.Format(time.TimeOnly), len(live), len(rows))
 		}
 		replaySnapshot := signals.Snapshot{Mode: signals.Ceiling, At: at, Readings: map[string]signals.Reading{}}
-		for _, row := range liveReplayRows() {
+		for _, row := range rows {
 			got, want := live[row.name], row.at(r, at)
 			limit := liveReplayLimits[row.name]
 			replaySnapshot.Readings[row.name] = signals.Reading{Value: want, Limit: &limit}

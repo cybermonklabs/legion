@@ -14,13 +14,13 @@ const modelRequestsVersion = 20261126042544
 // failure to read that block names it.
 const modelRequestsRelease = "the release that keeps each model request its project's hosts report for the provider's headroom"
 
-// 20261126042544 adds model_requests, signal_token_limits and claim_turns, which the provider's
-// headroom reads, and copies into claim_turns the turn each claim is in as it runs: a claim in
-// working whose last turn began after its last turn ended has its turn's start and no end, and a
-// claim out of a turn, one working after its turn ended included, has none, as the claim's own
-// write would keep it (keepClaimTurn), since the turns that ended before the table carry no row a
-// read of the provider's record could tell from a turn that never ran. Each table refuses an empty
-// key and a count below 0.
+// 20261126042544 adds model_requests, model_request_minutes, signal_token_limits and claim_turns,
+// which the provider's headroom reads, and copies into claim_turns the turn each claim is in as it
+// runs: a claim in working whose last turn began after its last turn ended has its turn's start
+// and no end, and a claim out of a turn, one working after its turn ended included, has none, as
+// the claim's own write would keep it (keepClaimTurn), since the turns that ended before the table
+// carry no row a read of the provider's record could tell from a turn that never ran. Each table
+// refuses an empty key and a count below 0.
 // Its way back drops the four tables and the provider's row of signal_inputs, leaves every other
 // input's row and deletes this version row, so a roll-forward runs the file again.
 func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgain(t *testing.T) {

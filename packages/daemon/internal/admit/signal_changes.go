@@ -206,7 +206,8 @@ func (a *Admission) keepSignalSetting(ctx context.Context, tx pgx.Tx, change sto
 // whole minutes of the hour before the minute under way.
 func (l *LiveSignals) State(ctx context.Context, tx pgx.Tx, at time.Time) (store.SignalsReading, error) {
 	a := l.admission
-	reading, minutes, settings, err := l.read(ctx, tx, at)
+	current := at.Truncate(time.Minute)
+	reading, minutes, settings, err := l.read(ctx, tx, at, current.Add(-claim.ModelRequestsSpan))
 	if err != nil {
 		return store.SignalsReading{}, err
 	}
@@ -238,7 +239,6 @@ func (l *LiveSignals) State(ctx context.Context, tx pgx.Tx, at time.Time) (store
 		}
 		state.Series = append(state.Series, row)
 	}
-	current := at.Truncate(time.Minute)
 	state.Provider.Minutes = make([]store.ProviderMinuteReading, 0, int(claim.ModelRequestsSpan/time.Minute))
 	for start := current.Add(-claim.ModelRequestsSpan); start.Before(current); start = start.Add(time.Minute) {
 		minute, held := minutes.Read(start)

@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -160,14 +159,15 @@ func (l *LiveSignals) Read(ctx context.Context, tx pgx.Tx, at time.Time) (signal
 // at counts its tokens so far for the headroom's next crossing alone, at the boundary where it
 // becomes the minute before, and never as the minute before.
 func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, error) {
-	reading, _, _, err := l.read(ctx, tx, at)
+	reading, _, _, err := l.read(ctx, tx, at, signals.MinuteBefore(at))
 	return reading, err
 }
 
-// read is Reading, the provider's minutes of the hour before at to the end of the minute under
-// way, which the state shows, and the store's settings its switch and limits were read from
-// (SignalSwitch), which the state shows beside them.
-func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, record.ProviderMinutes, store.SignalSettings, error) {
+// read is Reading, the provider's minutes from the minute that starts at from to the end of the
+// minute under way (from reaching back at least to the minute before at, which the headroom
+// reads), and the store's settings its switch and limits were read from (SignalSwitch), which the
+// state shows beside them.
+func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at, from time.Time) (LiveReading, record.ProviderMinutes, store.SignalSettings, error) {
 	a := l.admission
 	var minutes record.ProviderMinutes
 	settings, err := l.settings.SignalSwitch(ctx, tx, a.project)
@@ -207,7 +207,7 @@ func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at time.Time) (LiveRe
 	}
 	add(queue)
 
-	headroom, minutes, err := l.provider(ctx, tx, at, limit(signals.Provider))
+	headroom, minutes, err := l.provider(ctx, tx, at, from, limit(signals.Provider))
 	if err != nil {
 		return fail(err)
 	}
@@ -294,13 +294,12 @@ func (l *LiveSignals) kills(ctx context.Context, tx pgx.Tx, at time.Time, limit 
 }
 
 // provider is the provider's headroom at at (signals.ProviderAt), over the project's minutes from
-// the start of the hour before at to the end of the minute under way
+// the minute that starts at from to the end of the minute under way
 // (record.Store.ProviderMinutes), as Reading says, and those minutes.
-func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, headroomLimit *float64) (SeriesReading, record.ProviderMinutes, error) {
+func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at, from time.Time, headroomLimit *float64) (SeriesReading, record.ProviderMinutes, error) {
 	a := l.admission
 	current := at.Truncate(time.Minute)
-	first := current.Add(-claim.ModelRequestsSpan)
-	minutes, err := a.store.ProviderMinutes(ctx, tx, a.project, first, current.Add(time.Minute), l.reporting)
+	minutes, err := a.store.ProviderMinutes(ctx, tx, a.project, from, current.Add(time.Minute), l.reporting)
 	if err != nil {
 		return SeriesReading{}, record.ProviderMinutes{}, err
 	}
@@ -314,7 +313,7 @@ func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, hea
 		case start.Before(current):
 			return minutes.Read(start)
 		case start.Equal(current):
-			return signals.Minute{Uncached: under.Uncached, Limit: under.Limit}, underHeld
+			return under, underHeld
 		}
 		return signals.Minute{Limit: under.Limit}, underHeld
 	}

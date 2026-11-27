@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -103,7 +104,7 @@ func newRequestsRig(t *testing.T) *requestsRig {
 // gives it the project's file (config.Project.Provider).
 func (r *requestsRig) configure(limit int64, models string) {
 	r.t.Helper()
-	pattern, err := config.SharedPattern(models)
+	pattern, err := regexp.Compile(models)
 	if err != nil {
 		r.t.Fatal(err)
 	}

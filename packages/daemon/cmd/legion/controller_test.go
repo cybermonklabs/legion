@@ -295,8 +295,6 @@ type operatorMachine struct {
 type controllerOptions struct {
 	// lines replace the default controller.yaml wholesale.
 	lines []string
-	// extra are lines the default controller.yaml carries after its own.
-	extra []string
 	// tokenMode is the operator token file's mode; tokenContents its contents.
 	tokenMode     os.FileMode
 	tokenContents string

@@ -578,7 +578,7 @@ var nestedKeys = []memberGroup{
 		{Name: "signal_token_limit_per_minute", Default: "no limit: the provider's headroom reads as not recorded", RequiredBy: "no",
 			Description: "The uncached input tokens (fresh input and cache writes, never cache reads) the project's sessions may spend in a minute, a positive whole number; each minute keeps the limit in force when it began, so a changed limit reads no earlier minute again."},
 		{Name: "signal_token_model_pattern", Default: "every model's tokens count against the limit", RequiredBy: "no",
-			Description: "The models whose uncached input tokens count against `signal_token_limit_per_minute`, a pattern of the subset Go and JavaScript read alike matched against the model a host names; a request of another model is kept, and its tokens count nowhere."},
+			Description: "The models whose uncached input tokens count against `signal_token_limit_per_minute`, a Go regular expression (RE2 syntax) matched against the model a host names; a request of another model is kept, and its tokens count nowhere."},
 		{Name: "slack_channels", Default: "no channel's mentions reach the project", RequiredBy: "no",
 			Description: "The Slack channels whose mentions of the Legion app reach this project's controller, which answers in the thread; it needs `controller: daemon` and the secrets broker, and a channel belongs to one project."},
 	}},

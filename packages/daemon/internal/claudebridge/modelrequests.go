@@ -22,9 +22,6 @@ const requestWindow = 15 * time.Second
 // requests go again under the same ids.
 const requestReportTimeout = 10 * time.Second
 
-// requestKeepWindow bounds the age of a report: the daemon reads an hour of request history.
-const requestKeepWindow = time.Hour
-
 var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the report's bound of %s", requestReportTimeout)
 
 // modelRequests is the bridge as the Claude Code backend's producer of model requests (POST
@@ -196,7 +193,7 @@ func (r *modelRequests) sendLocked() {
 		r.due = true
 		return
 	}
-	cutoff := r.clock.Now().Add(-requestKeepWindow)
+	cutoff := r.clock.Now().Add(-claim.ModelRequestsSpan)
 	r.pending = slices.DeleteFunc(r.pending, func(request claim.ModelRequest) bool {
 		if !request.EndedAt.Before(cutoff) {
 			return false

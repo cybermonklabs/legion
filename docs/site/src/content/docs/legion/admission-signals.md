@@ -323,9 +323,8 @@ projects:
 - `signal_token_model_pattern` selects the models whose tokens count against the limit; every model counts where it is unset.
   A request of another model is still kept, and its tokens count nowhere.
 
-The model pattern is a regular expression of the subset that Go and JavaScript read alike:
-characters, `\` before a metacharacter, `.`, `^`, `$`, `\b`, `\B`, `\d`, `\D`, `\w`, `\W`, `\t`, `\n`, `\r`, classes such as `[a-z]` and `[^0-9]`, groups `(…)` and `(?:…)`, `|`, and the repetitions `*`, `+`, `?` and `{n,m}` up to 1000.
-The loader refuses every other construct, naming the key and why: lookarounds, back references, named groups, inline flags such as `(?i)`, `\p`, `\s`, POSIX classes, `\A`, `\Q`, `[]`, a lone `{` or `]`, and an empty pattern.
+The model pattern is a Go regular expression (RE2 syntax), matched against the model a host names.
+The loader refuses, naming the key and why, an empty pattern, which would count every model as leaving the key out does, and a pattern that Go does not compile.
 A refused file is refused whole, so none of its keys takes effect.
 
 ## Before you turn it on
