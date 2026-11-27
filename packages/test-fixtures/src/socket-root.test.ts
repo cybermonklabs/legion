@@ -62,13 +62,16 @@ test("a socket that fits under neither is refused, naming both", () => {
 test.each([
   ["linux", 107],
   ["darwin", 103],
-] as const)("on %s, socketPathRefusal takes a path of %d bytes and refuses one a byte longer", (platform, limit) => {
-  const fits = `/${"x".repeat(limit - 1)}`;
-  expect(socketPathRefusal(fits, platform)).toBeUndefined();
-  expect(socketPathRefusal(`${fits}y`, platform)).toBe(
-    `${fits}y is ${limit + 1} bytes, past the ${limit} a unix socket path holds on ${platform}`
-  );
-});
+] as const)(
+  "on %s, socketPathRefusal takes a path of %d bytes and refuses one a byte longer",
+  (platform, limit) => {
+    const fits = `/${"x".repeat(limit - 1)}`;
+    expect(socketPathRefusal(fits, platform)).toBeUndefined();
+    expect(socketPathRefusal(`${fits}y`, platform)).toBe(
+      `${fits}y is ${limit + 1} bytes, past the ${limit} a unix socket path holds on ${platform}`
+    );
+  }
+);
 
 test("a 105-byte path, which Linux takes, is refused on macOS, whose sun_path holds 104 bytes", () => {
   const path = `/${"x".repeat(104)}`;
