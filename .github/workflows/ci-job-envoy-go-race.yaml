@@ -56,7 +56,7 @@ jobs:
     # Only the legs the change selects start, so a leg none of whose packages it reaches spends no
     # runner; the last leg, which carries the forced-order steps, starts whenever this job runs.
     # why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
-    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['envoy-go-race'].legs[0] }}
+    if: ${{ !inputs.affected-packages || toJSON(fromJSON(inputs.affected-packages)['envoy-go-race'].legs) != '[]' }}
     runs-on: ubuntu-24.04-arm
     strategy:
       # One leg's failure leaves the others running, so each reports its own packages.
@@ -232,13 +232,11 @@ jobs:
       # leg's, and read as its own it would hide the leg's.
       - name: Pass only when every leg passed
         run: |
-          allowed=0
           if [ "${{ needs.envoy-go-race-legs.result }}" = skipped ] && [ "${{ inputs.affected-packages && toJSON(fromJSON(inputs.affected-packages)['envoy-go-race'].legs) == '[]' }}" = true ]; then
             echo "envoy-go-race's legs did not start: the change reaches none of their packages (.github/scripts/go_legs_select.py)"
-            allowed=1
+            exit 0
           fi
-          skipped=$(printf '%s\n' ${{ join(needs.*.result, ' ') }} | grep -c '^skipped$' || true)
-          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = true ] || [ "$skipped" -gt "$allowed" ]; then
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = true ]; then
             echo "::error::envoy-go-race's legs ended ${{ join(needs.*.result, ', ') }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
             exit 1
           fi

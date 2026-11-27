@@ -99,7 +99,7 @@ jobs:
     name: daemon-go (leg ${{ matrix.leg }})
     # Only the legs the change selects start, so a leg none of whose packages it reaches spends no
     # runner. why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
-    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['daemon-go'].legs[0] }}
+    if: ${{ !inputs.affected-packages || toJSON(fromJSON(inputs.affected-packages)['daemon-go'].legs) != '[]' }}
     runs-on: ubuntu-24.04
     strategy:
       # One leg's failure leaves the others running, so each reports its own packages.
@@ -380,7 +380,7 @@ jobs:
   daemon-go-race-legs:
     name: daemon-go-race (leg ${{ matrix.leg }})
     # Only the legs the change selects start. why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
-    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['daemon-go-race'].legs[0] }}
+    if: ${{ !inputs.affected-packages || toJSON(fromJSON(inputs.affected-packages)['daemon-go-race'].legs) != '[]' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false

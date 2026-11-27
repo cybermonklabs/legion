@@ -50,7 +50,7 @@ jobs:
   envoy-go-race-api-legs:
     name: envoy-go-race-api (leg ${{ matrix.leg }})
     # Only the legs the change selects start. why: .github/ci-notes/ci.md#which-packages-a-go-leg-runs
-    if: ${{ !inputs.affected-packages || fromJSON(inputs.affected-packages)['envoy-go-race-api'].legs[0] }}
+    if: ${{ !inputs.affected-packages || toJSON(fromJSON(inputs.affected-packages)['envoy-go-race-api'].legs) != '[]' }}
     runs-on: ubuntu-24.04-arm
     strategy:
       # One leg's failure leaves the others running, so each reports its own tests.

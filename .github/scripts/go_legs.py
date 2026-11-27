@@ -480,12 +480,11 @@ def run_group(module: str, job: str, leg: str, package: str, group: int, by_legs
     return 0
 
 
-def selection(job: str, leg: str, legs: dict, launched: int) -> tuple:
-    """(the packages GO_LEGS_SELECTED gives `job`'s legs to run, or None for all of them; the
-    problems that keep this leg from reading it). Without a selection the matrix must run every
-    leg of the file (leg_problems); with one, it must run exactly the selection's legs, which the
-    file must have, and this leg must be one of them."""
-    raw = os.environ.get(SELECTED, "").strip()
+def selection(raw: str, job: str, leg: str, legs: dict, launched: int) -> tuple:
+    """(the packages the selection `raw`, GO_LEGS_SELECTED's value, gives `job`'s legs to run, or
+    None for all of them; the problems that keep this leg from reading it). Without a selection
+    (`raw` empty) the matrix must run every leg of the file (leg_problems); with one, it must run
+    exactly the selection's legs, which the file must have, and this leg must be one of them."""
     if not raw:
         return None, []
     try:
@@ -531,9 +530,10 @@ def main(argv: list) -> int:
     except RuntimeError as failed:
         print(f"go_legs.py: {failed}", file=sys.stderr)
         return 1
-    chosen, unread = selection(job, leg, legs, launched)
+    raw = os.environ.get(SELECTED, "").strip()
+    chosen, unread = selection(raw, job, leg, legs, launched)
     # With a selection, the matrix is held to it above, and the file's legs to their own numbers here.
-    found = unread + leg_problems(job, legs, launched if not os.environ.get(SELECTED, "").strip() else len(legs))
+    found = unread + leg_problems(job, legs, len(legs) if raw else launched)
     found += problems(module, entry, packages)
     if found:
         say(found, "error", LEGS)
