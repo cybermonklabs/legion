@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -60,12 +61,51 @@ const (
 //
 // A Deps with no kept-lane reader reads no notice and keeps nothing again: the outbox has no
 // stream to read the notices or the copies from, as it makes no keep's handover then
-// (Deps.KeptLanes).
+// (Deps.KeptLanes). The reader the pass is given bounds each of its calls at probeTimeout
+// (boundedKeptLanes), the handover reads behind the pass's own keeps among them; the scan's
+// batches read through Deps.KeptLanes as it is.
 func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
-	readFull, readFailed := readKeptExpiries(ctx, o.deps, hold, o.instance, &o.keptStream)
-	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, o.deps, hold, o.instance)
-	postFull, postFailed := postUndeliveredNotes(ctx, o.deps, hold, o.instance)
+	deps := o.deps
+	if deps.KeptLanes != nil {
+		deps.KeptLanes = boundedKeptLanes{reader: deps.KeptLanes}
+	}
+	readFull, readFailed := readKeptExpiries(ctx, deps, hold, o.instance, &o.keptStream)
+	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, deps, hold, o.instance)
+	postFull, postFailed := postUndeliveredNotes(ctx, deps, hold, o.instance)
 	return readFull || keepFull || postFull, readFailed || keepFailed || postFailed
+}
+
+// boundedKeptLanes is the kept-lane reader of the expiry pass (passKeptExpiries): reader, each of
+// whose calls it makes under a deadline of probeTimeout within the caller's ctx. The pass's ctx
+// ends at a change of its NATS connection or a failed probe of it (serve,
+// passKeptExpiriesWhileNATSAnswers), but that end does not end a stored-message read in flight:
+// the read's flush waits out the call's deadline whatever its ctx's cancellation does (bus
+// confirmFlushed, nats.go's FlushTimeout), and a ctx with no deadline gets storedMessageWait,
+// 10 s. So on a silent connection only a deadline ends the read, and this one ends it by the time
+// the pass's probe has answered, where the holder can give the hold up. A healthy stream answers
+// each read in milliseconds. The role and session buckets need no such bound, since each of their
+// reads honours ctx and is bounded at readTimeout in internal/roles, and nor does a keep, whose
+// answer the pass reads within ctx (awaitAnswer).
+type boundedKeptLanes struct {
+	reader KeptLaneReader
+}
+
+func (b boundedKeptLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.NextStoredMessage(ctx, subject, seq)
+}
+
+func (b boundedKeptLanes) ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.ReadKeptRoleCursor(ctx, role)
+}
+
+func (b boundedKeptLanes) StreamID(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.StreamID(ctx)
 }
 
 // errNotTheHolder is a holder transaction's answer when the publisher hold's row does not name the

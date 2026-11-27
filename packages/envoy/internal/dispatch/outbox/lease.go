@@ -81,8 +81,9 @@ type holdEnd string
 const (
 	// stopping: ctx ended; the hold is released.
 	stopping holdEnd = "stopping"
-	// natsLost: NATS stayed down for natsLossGrace, or a batch's sends failed and the probe of
-	// their connection failed too; the hold is released.
+	// natsLost: NATS stayed down for natsLossGrace, a batch's sends failed and the probe of their
+	// connection failed too, or the expiry pass's probe of its connection failed; the hold is
+	// released.
 	natsLost holdEnd = "NATS lost"
 	// holdLost: the hold reported itself lost, its deadline had passed when a scan was to start
 	// a batch or when a send of one was to be written, or a record found it another's; its
@@ -500,8 +501,8 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // unrelated event's insert and a claim that keeps failing does not spin. It returns why it
 // stopped: ctx ended, the hold was lost or its deadline had passed when a scan was to start a
 // batch or write a send of one, or NATS was lost - down for natsLossGrace without a break and
-// still down when the grace ends, or a batch's sends failed for the connection and a probe of
-// that connection failed too.
+// still down when the grace ends, a batch's sends failed for the connection and a probe of that
+// connection failed too, or the expiry pass's probe of its connection failed.
 //
 // After the fallback pass comes the expiry pass (passKeptExpiries), under the same hold and fenced
 // the same way: it reads the listeners' notices of the copies the outbox kept for roles whose hour
@@ -510,8 +511,10 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // else wakes the holder, with no scan of events before it; a row its pass backed off is taken by
 // the first pass after its wait. A full read or a full claim leaves the holder due again. Both
 // runs of the pass are bound to the NATS connection: none starts while the client reads
-// disconnected, and one in flight ends at the client's next connection event, so natsLossGrace
-// counts a cut inside the pass from the cut (passKeptExpiriesWhileConnected, whose doc holds why).
+// disconnected, one in flight ends at the client's next connection event, so natsLossGrace counts
+// a cut inside the pass from the cut, and a pass that runs past probeTimeout probes the connection
+// and ends as NATS lost when the probe fails (passKeptExpiriesWhileNATSAnswers, whose doc holds
+// why).
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
 	var disconnectedFor, retryDue <-chan time.Time
@@ -544,9 +547,12 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				if ctx.Err() != nil {
 					return stopping
 				}
-				fullExpiries, failedExpiries := o.passKeptExpiriesWhileConnected(ctx, hold)
+				fullExpiries, failedExpiries, silent := o.passKeptExpiriesWhileNATSAnswers(ctx, hold)
 				if ctx.Err() != nil {
 					return stopping
+				}
+				if silent {
+					return natsLost
 				}
 				failedPass = failedPass || failedExpiries
 				due, expiriesDue = fullPass || fullExpiries, false
@@ -568,9 +574,12 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 			}
 			if expiriesDue {
 				expiriesDue = false
-				full, _ := o.passKeptExpiriesWhileConnected(ctx, hold)
+				full, _, silent := o.passKeptExpiriesWhileNATSAnswers(ctx, hold)
 				if ctx.Err() != nil {
 					return stopping
+				}
+				if silent {
+					return natsLost
 				}
 				// A pass that failed is tried again at the next tick.
 				due = full
@@ -606,48 +615,116 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	}
 }
 
-// passKeptExpiriesWhileConnected is serve's expiry pass (passKeptExpiries), bound to the NATS
-// connection it starts on: it runs no pass while the client reads disconnected, and it ends the
-// pass it runs at the client's next connection event (Publisher.ConnectionChanged). It takes that
-// event's channel before it reads the client's state, so an event between the read and the pass
-// still ends the pass.
+// passKeptExpiriesWhileNATSAnswers is serve's expiry pass (passKeptExpiries), run only while the
+// NATS connection it starts on answers: it runs no pass while the client reads disconnected, it
+// ends the pass it runs at the client's next connection event (Publisher.ConnectionChanged), and
+// it ends that pass when a probe finds the connection silent. It takes that event's channel before
+// it reads the client's state, so an event between the read and the pass still ends the pass.
 //
-// The pass reads NATS through Deps.KeptLanes, which cmd/dispatch sets to the client it publishes
-// through, and a read made while that client reconnects waits for the reconnect up to the read's
-// own bound (storedMessageWait in internal/bus, 10 s). serve reads the client's state and arms
-// natsLossGrace only between its passes, so a holder cut inside that read would start to count the
-// loss only once the read gave up, and release the hold past the 10 s a take-over has
-// (TestAnOutboxCutFromNATSInItsExpiryReadReleasesThePublisher). Ended at the event, the pass
-// returns at once, and serve counts the loss from then.
+// The pass reads NATS through Deps.KeptLanes and the role and session buckets and sends its keeps,
+// all on the client cmd/dispatch publishes through, and a call made while that client reconnects
+// waits for the reconnect up to the call's own bound: 2 s for a read (probeTimeout for one through
+// Deps.KeptLanes, boundedKeptLanes; readTimeout in internal/roles for one of the buckets), 5 s for
+// a keep (publishAcknowledgementTimeout in internal/bus). serve reads the client's state and arms
+// natsLossGrace only between its passes, so a holder cut inside such a call would start to count
+// the loss only once the call gave up, and release the hold that much later than natsLossGrace
+// after the cut (TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher). Ended at the event,
+// the pass returns at once, and serve counts the loss from then.
+//
+// A silence - a connection that stays open while nothing answers - sends no event, and the client
+// still reads connected, so each call the pass makes into it waits out its bound, one call after
+// another, and the holder would give the hold up only at the next batch's failed probe, past the
+// take-over too (TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther). So a
+// pass that runs past probeTimeout probes the connection, as answering does, and again every
+// probeTimeout while the pass runs and each probe is answered. A probe that fails with no
+// connection event since the pass began ends the pass and reports silent, with one Error line,
+// and serve gives the hold up for NATS lost, as a batch whose sends failed and whose probe failed
+// too does (publishBatch). A probe that fails once an event has come leaves the loss to that
+// event, as above. A probe still in flight when the pass returns decides too, and the helper waits
+// for its answer, within probeTimeout: a read the silence holds gives up at its 2 s bound, about as
+// the first probe starts, since ending the pass's context does not end a stored-message read whose
+// flush waits on the silence (boundedKeptLanes). A stopping process waits for no probe. A pass
+// shorter than probeTimeout probes nothing, so a healthy holder pays one timer per pass.
 //
 // The pass ends there as it ends at a process's stop: what NATS accepted is recorded and what the
 // pass did not decide is released (keepExpiredCopiesAgain), a notice's record is one transaction,
 // and a read the end cut short is no failure to log (lostToContextEnd). It reports full and failed
 // as passKeptExpiries does, and neither when it runs no pass: serve then reads the client's state
 // again before it waits, and arms natsLossGrace. A publisher whose ConnectionChanged is nil, as a
-// test's is, never ends a pass.
-func (o *Outbox) passKeptExpiriesWhileConnected(ctx context.Context, hold fence) (full, failed bool) {
+// test's is, never ends a pass at an event, and one whose probe always answers, as a test's does
+// (publishOnly), never ends one at a silence.
+func (o *Outbox) passKeptExpiriesWhileNATSAnswers(ctx context.Context, hold fence) (full, failed, silent bool) {
 	changed := o.deps.Publisher.ConnectionChanged()
 	if !o.deps.Publisher.Connected() {
-		return false, false
+		return false, false, false
 	}
-	// The pass's own context: the connection event ends it, while ctx, which is the process's,
-	// still tells a stop from an end of this pass's own making.
+	// The pass's own context: the connection event or a failed probe ends it, while ctx, which is
+	// the process's, still tells a stop from an end of this pass's own making.
 	pass, endPass := context.WithCancel(ctx)
 	defer endPass()
+	// lost is the watcher's finding that the connection does not answer, stored before watched
+	// closes, which is when the watcher has returned.
+	var lost atomic.Bool
+	watched := make(chan struct{})
 	go func() {
-		select {
-		case <-changed:
+		defer close(watched)
+		probe := time.NewTimer(probeTimeout)
+		defer probe.Stop()
+		for {
+			select {
+			case <-changed:
+				endPass()
+				return
+			case <-pass.Done():
+				return
+			case <-probe.C:
+			}
+			// The probe runs beside the watch of the connection's event, so a cut during the
+			// probe still ends the pass at once; a probe left behind answers into its buffer.
+			answer := make(chan error, 1)
+			go func() { answer <- o.deps.Publisher.WindowUntil(nil).Probe(probeTimeout) }()
+			var err error
+			select {
+			case <-changed:
+				endPass()
+				return
+			case err = <-answer:
+			}
+			if err == nil {
+				probe.Reset(probeTimeout)
+				continue
+			}
+			select {
+			case <-changed:
+				// A cut or a reconnect, which the connection's own event decides.
+				endPass()
+				return
+			default:
+			}
+			if ctx.Err() == nil {
+				lost.Store(true)
+				slog.Error("dispatch outbox: the expiry pass's NATS connection does not answer, so the holder gives the publisher hold up",
+					"instance", o.instance, "error", err)
+			}
 			endPass()
-		case <-pass.Done():
+			return
 		}
 	}()
 	full, failed = o.passKeptExpiries(pass, hold)
-	if pass.Err() != nil && ctx.Err() == nil {
+	ended := pass.Err() != nil
+	endPass()
+	select {
+	case <-watched:
+	case <-ctx.Done():
+	}
+	if lost.Load() {
+		return full, failed, true
+	}
+	if ended && ctx.Err() == nil {
 		slog.Info("dispatch outbox: the expiry pass ended at a change of its NATS connection; it runs again once the client is connected",
 			"instance", o.instance)
 	}
-	return full, failed
+	return full, failed, false
 }
 
 // scanEnd is how a scan ended: fenced, the hold's deadline had passed before a batch, a send of
