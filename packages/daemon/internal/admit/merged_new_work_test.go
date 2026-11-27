@@ -698,7 +698,9 @@ func mnwUnread(t *testing.T, pool *pgxpool.Pool, admission *Admission, key strin
 // with no rename configured and no row that bears on their merge: their class is NONE. A todo on
 // each queues the merge read and starts nothing: no generation rises, nothing of the tree clears,
 // and the gate stands. A read that ends with no answering candidate tells the controller
-// (merge-unread), once.
+// (merge-unread), once. A closed root whose design gate never opened, lingering or not, waits the
+// same way with a slot free: the waiting line offers no root a slot while its request waits for
+// its merge read, so no promotion opens its tree at done.
 func TestAnIssueWithNoEvidenceWaitsUnread(t *testing.T) {
 	t.Run("a root", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -724,6 +726,24 @@ func TestAnIssueWithNoEvidenceWaitsUnread(t *testing.T) {
 			t.Fatalf("merge-unread notices of %s = %d, want one", mnwRoot, told)
 		}
 	})
+
+	for _, lingers := range []bool{true, false} {
+		t.Run(fmt.Sprintf("a root whose gate never opened, lingering %t, with a slot free", lingers), func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := quiet(t, 4)
+			root := mnwIssue(mnwRoot, mnwRoot, nil, phase.Done, "done", 1)
+			if lingers {
+				root.LingerUntil = new(fixedNow.Add(30 * time.Minute))
+			}
+			putIssue(t, pool, root)
+			mnwMoves(t, pool, admission, mnwMove(mnwRoot, "", "todo", mnwSeq+1, "person"))
+			mnwWaits(t, pool, mnwRoot, 1, record.RequesterPerson)
+			assertSlots(t, pool, nil)
+			if starts := architectStarts(t, pool, mnwRoot); starts != 0 {
+				t.Fatalf("architect starts of %s = %d, want none: nothing promotes a root whose request waits for its merge read", mnwRoot, starts)
+			}
+		})
+	}
 
 	t.Run("a child", func(t *testing.T) {
 		pool := migratedPool(t)
