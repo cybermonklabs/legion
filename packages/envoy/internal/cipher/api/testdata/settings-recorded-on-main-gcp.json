@@ -1,6 +1,17 @@
 {
   "approver_fields": true,
   "gcp_project": "000000000000",
+  "google_exchange_audience": "agent-secrets-vm",
+  "judge_keys": {
+    "DEEL_READ": {
+      "guidance": "grant for the payroll export job",
+      "seconds": 900,
+      "source": "DEEL_API_KEY"
+    },
+    "SHARED_KEY": {
+      "seconds": 300
+    }
+  },
   "kms_key_name": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
   "secret_type_tag": true,
   "secrets_prefix": "projects/000000000000/secrets/agent-secrets-",

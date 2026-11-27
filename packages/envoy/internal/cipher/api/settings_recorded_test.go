@@ -2,14 +2,21 @@ package api_test
 
 // This file holds GET /v1/settings to what main answered for one broker on each store, before the
 // store packages moved: an AWS or a GCP deployment upgrades with no change to the fields its CLIs
-// read. testdata/settings-recorded-on-main-<store>.json was written once, on main, by this file as
-// it was then:
+// read. testdata/settings-recorded-on-main-<store>.json was written by this file at main
+// 67bcd7c78393, in a worktree of that commit, from the root of the checkout that holds this file:
 //
-//	go test ./internal/cipher/api/ -run TestSettingsRecordedOnMain -args -record
+//	git worktree add --detach <tmp>/main 67bcd7c78393
+//	cp packages/envoy/internal/cipher/api/settings_recorded_test.go <tmp>/main/packages/envoy/internal/cipher/api/
+//	go test -C <tmp>/main/packages/envoy ./internal/cipher/api/ -run TestSettingsRecordedOnMain -args -record
+//	cp <tmp>/main/packages/envoy/internal/cipher/api/testdata/settings-recorded-on-main-*.json packages/envoy/internal/cipher/api/testdata/
+//	git worktree remove --force <tmp>/main
 //
-// Never write the records again from later code: a record written by the code it checks compares
-// that code with itself and proves nothing. A change that means to move a field of either body is
-// a change to the settings every deployed CLI reads, which the records exist to catch.
+// Never write the records again from the code they check: a record written by the code it checks
+// compares that code with itself and proves nothing. Until the stores move, a field main itself
+// adds or changes is recorded again by the commands above at that commit of main, and the change
+// that does so names the commit here and says which lines of the records moved and which change of
+// main moved them. A change that means to move a field changes the settings every deployed CLI
+// reads: it edits the record by hand, where its review shows it.
 
 import (
 	"encoding/json"
@@ -24,6 +31,9 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -31,17 +41,22 @@ var recordSettings = flag.Bool("record", false, "write testdata/settings-recorde
 
 // TestSettingsRecordedOnMain: GET /v1/settings for a broker on AWS Secrets Manager and for one on
 // Google Secret Manager answers, field for field, the body main answered for the same
-// configuration. With -record it writes the records instead, which the head comment allows on main
-// alone.
+// configuration. Each broker also names a Google exchange audience and serves keys the model judge
+// decides (judgedPolicy), so each field the body can carry is in its record: the comparison walks
+// the fields of the body and the record, and a field neither holds is never compared. With -record
+// it writes the records instead, which the head comment allows at a commit of main alone.
 func TestSettingsRecordedOnMain(t *testing.T) {
+	judged := &requests.Machine{Policy: judgedPolicy(t)}
 	for _, row := range []struct {
 		store string
 		deps  api.Deps
 	}{
 		{"aws", api.Deps{SecretsStore: secrets.StoreAWS, SecretsPrefix: "example/agent-secrets/",
-			SecretsKMSKey: "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"}},
+			SecretsKMSKey:          "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+			GoogleExchangeAudience: "agent-secrets-vm", Machine: judged}},
 		{"gcp", api.Deps{SecretsStore: secrets.StoreGCP, SecretsPrefix: "projects/000000000000/secrets/agent-secrets-",
-			SecretsKMSKey: "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"}},
+			SecretsKMSKey:          "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
+			GoogleExchangeAudience: "agent-secrets-vm", Machine: judged}},
 	} {
 		t.Run(row.store, func(t *testing.T) {
 			record := filepath.Join("testdata", "settings-recorded-on-main-"+row.store+".json")
@@ -109,6 +124,19 @@ func TestSettingsRecordedOnMain(t *testing.T) {
 			}
 		})
 	}
+}
+
+// judgedPolicy is a live policy serving two keys the model judge decides, so a body's judge_keys
+// carries each of its fields: DEEL_READ, a profile made from the stored secret DEEL_API_KEY, at that
+// secret's 900 seconds and guidance, naming it as its source; and SHARED_KEY, at 300 seconds with
+// no guidance. The keys' store is the AWS fake for both rows: the settings name the judge keys
+// from the policy alone, whatever store the broker reads.
+func judgedPolicy(t *testing.T) *policy.Current {
+	t.Helper()
+	local := secrets.NewLocal()
+	local.Put(policytest.Judged(policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierHuman, "deel-v1"), 900, "grant for the payroll export job"))
+	local.Put(policytest.Judged(policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"), 300, ""))
+	return policytest.ProfiledCurrent(t, local, policytest.KindsFile(`{"name": "DEEL_READ", "source": "DEEL_API_KEY", "proxy": "example"}`))
 }
 
 // fieldText is a settings field's value as a failure prints it, and "absent" for a field the body

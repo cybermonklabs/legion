@@ -3,14 +3,22 @@ package secrets_test
 // This file holds the source of each secret each store lists, and the source the policy serves it
 // by, to what main answered before the store packages moved. Postgres holds a grant's source
 // (request_secrets.source), so a source whose format changes ends every live grant of an AWS or
-// GCP deployment that upgrades. testdata/source-recorded-on-main-<store>.json was written once, on
-// main, by this file as it was then:
+// GCP deployment that upgrades. testdata/source-recorded-on-main-<store>.json was written by this
+// file and export_test.go at main 67bcd7c78393, in a worktree of that commit, from the root of the
+// checkout that holds this file:
 //
-//	go test ./internal/cipher/secrets/ -run TestSourceFormatRecordedOnMain -args -record
+//	git worktree add --detach <tmp>/main 67bcd7c78393
+//	cp packages/envoy/internal/cipher/secrets/source_recorded_test.go packages/envoy/internal/cipher/secrets/export_test.go <tmp>/main/packages/envoy/internal/cipher/secrets/
+//	go test -C <tmp>/main/packages/envoy ./internal/cipher/secrets/ -run TestSourceFormatRecordedOnMain -args -record
+//	cp <tmp>/main/packages/envoy/internal/cipher/secrets/testdata/source-recorded-on-main-*.json packages/envoy/internal/cipher/secrets/testdata/
+//	git worktree remove --force <tmp>/main
 //
-// Never write the records again from later code: a record written by the code it checks compares
-// that code with itself and proves nothing. A change that means to move a source of either store
-// ends the grants that hold it, which the records exist to catch.
+// Never write the records again from the code they check: a record written by the code it checks
+// compares that code with itself and proves nothing. Until the stores move, a source main itself
+// changes is recorded again by the commands above at that commit of main, and the change that does
+// so names the commit here and says which lines of the records moved and which change of main moved
+// them. A change that means to move a source of either store ends the grants that hold it: it edits
+// the record by hand, where its review shows it.
 
 import (
 	"context"

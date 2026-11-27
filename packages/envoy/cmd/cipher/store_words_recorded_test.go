@@ -4,14 +4,21 @@
 // of the usage's environment table, and the source a line names for each settings body - held to
 // what main printed before the stores moved into packages of their own. An AWS or a GCP deployment
 // upgrades with no change to what its people and scripts read. testdata/recorded-on-main/ was
-// written once, on main, by this file as it was then:
+// written by this file at main 67bcd7c78393, in a worktree of that commit, from the root of the
+// checkout that holds this file:
 //
-//	go test ./cmd/cipher/ -run 'RecordedOnMain' -args -record
+//	git worktree add --detach <tmp>/main 67bcd7c78393
+//	cp packages/envoy/cmd/cipher/store_words_recorded_test.go <tmp>/main/packages/envoy/cmd/cipher/
+//	go test -C <tmp>/main/packages/envoy ./cmd/cipher/ -run RecordedOnMain -args -record
+//	cp <tmp>/main/packages/envoy/cmd/cipher/testdata/recorded-on-main/* packages/envoy/cmd/cipher/testdata/recorded-on-main/
+//	git worktree remove --force <tmp>/main
 //
-// Never write the records again from later code: a record written by the code it checks compares
-// that code with itself and proves nothing. A change that means to move one of these texts for
-// the AWS or the GCP store is a change to what a deployment's CLI prints, which the records exist
-// to catch.
+// Never write the records again from the code they check: a record written by the code it checks
+// compares that code with itself and proves nothing. Until the stores move, a text main itself
+// changes is recorded again by the commands above at that commit of main, and the change that does
+// so names the commit here and says which lines of the records moved and which change of main moved
+// them. A change that means to move one of these texts for the AWS or the GCP store changes what a
+// deployment's CLI prints: it edits the record by hand, where its review shows it.
 package main
 
 import (
@@ -62,7 +69,7 @@ func readRecord(t *testing.T, name string) []byte {
 // TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
 // byte, the refusal main printed, which names the variables each store's own tools read.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
-	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:66); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:73); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
 	var stdout, stderr bytes.Buffer
