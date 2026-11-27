@@ -414,6 +414,66 @@ func TestAMemberMadeRestrictedActsWithNoScopeThroughTheirTokens(t *testing.T) {
 	}
 }
 
+// TestAMemberMadeRestrictedIsToldToReplaceTheirReadOnlyToken (R16): dana minted a read-only token
+// as a full member, holding person beside read and listing no project, as every read-only token
+// lists none, and a token listing ACC. Once ACC's list names her and she is a restricted member,
+// the read-only token acts for nobody: its use is 403 RESTRICTED_MEMBER saying to revoke it at her
+// browser and mint a token naming her one project, and not to name its project with an edit, which
+// a read-only token never takes (refuseMissingToken's 400 TOKEN_SCOPES_INPUT). Her browser's list
+// shows it holding read alone, so Settings can tell it is read-only, and her other token holding
+// none, as before. The remedy works: her browser revokes the read-only token and mints one naming
+// ACC, which writes in ACC.
+//
+// Controls (scratch only), each on its own: personalTokenActor's `if readOnly` branch for a
+// restricted owner removed, so the token is refused with personalTokenListRemedy, fails the row
+// on the refusal's words; listAgentTokens answering '{}' for every token of a restricted member
+// again (its `'read' = any(agent_tokens.scopes)` arm removed) fails it on the list, the read-only
+// token listed holding [].
+func TestAMemberMadeRestrictedIsToldToReplaceTheirReadOnlyToken(t *testing.T) {
+	t.Parallel()
+	r := newRestrictedMintRig(t)
+	seedPeople(t, r.database, accessDana)
+	reader := minted(t, r.mintAt(t, accessDana, map[string]any{"name": "dana's reader", "scopes": []string{model.ScopePerson, model.ScopeRead}}), "dana's read-only mint, as a full member")
+	if !slices.Contains(reader.Scopes, model.ScopeRead) || len(reader.Projects) != 0 {
+		t.Fatalf("dana's read-only mint as a full member holds %v and lists %v, want read and no project", reader.Scopes, reader.Projects)
+	}
+	writer := minted(t, r.mintAt(t, accessDana, map[string]any{"name": "dana's ACC agent", "projects": []string{"ACC"}}), "dana's mint listing ACC, as a full member")
+
+	if listed := dispatchRequest(t, r.handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessDana, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names dana on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	markRestricted(t, r.database, accessDana)
+
+	used := agentRequest(t, r.handler, http.MethodGet, "/api/v1/whoami", nil, reader.Token)
+	wantRestrictedRefusal(t, used, "dana's read-only token once she is restricted", "GET /api/v1/whoami", readOnlyTokenListRemedy)
+	if strings.Contains(used.Body.String(), "PATCH") {
+		t.Fatalf("dana's read-only token once she is restricted is told %s, want no edit named: a read-only token takes none", used.Body.String())
+	}
+
+	listed := dispatchRequest(t, r.handler, http.MethodGet, "/api/v1/me/agent-tokens", nil, accessDana)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("dana lists her tokens: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	held := map[string][]string{}
+	for _, token := range decodeBody[[]heldToken](t, listed) {
+		held[token.ID] = token.Scopes
+	}
+	if scopes, present := held[reader.ID]; !present || !slices.Equal(scopes, []string{model.ScopeRead}) {
+		t.Fatalf("dana's browser lists her read-only token holding %v (listed %t) once she is restricted, want [read]", scopes, present)
+	}
+	if scopes, present := held[writer.ID]; !present || len(scopes) != 0 {
+		t.Fatalf("dana's browser lists her ACC token holding %v (listed %t) once she is restricted, want []", scopes, present)
+	}
+
+	if revoked := dispatchRequest(t, r.handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+reader.ID, nil, accessDana); revoked.Code != http.StatusNoContent {
+		t.Fatalf("dana revokes her read-only token at her browser once she is restricted: status=%d body=%s, want 204", revoked.Code, revoked.Body.String())
+	}
+	replacing := minted(t, r.mintAt(t, accessDana, map[string]any{"name": "dana's replacing agent", "projects": []string{"ACC"}}), "dana's mint naming ACC once she is restricted")
+	if wrote := writesInACC(t, r.handler, replacing.Token, "dana-replacing-agent"); wrote.Code != http.StatusCreated {
+		t.Fatalf("dana's replacing token writes an issue of ACC = %d %s, want 201", wrote.Code, wrote.Body.String())
+	}
+}
+
 // TestTheOwnLoginRefusalHoldsARestrictedCredentialHoldingTheScopes: no credential of a restricted
 // member holds a scope any more (personalTokenActor, brokerTokenActor), so the scope gate refuses
 // each of their tokens on the rows that decide, list or end a machine login before the gates behind

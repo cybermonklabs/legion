@@ -51,6 +51,10 @@ type createAgentTokenResponse struct {
 // while its owner was a full member, is listed holding none, read in the list's own statement
 // from the owner's people row (a join on its key). A read-only token is listed holding read,
 // beside person where it holds it, and lists no project.
+//
+// A restricted member's read-only token is listed holding read alone, so its owner can tell it is
+// read only: read marks the token and is no scope a route can require, and the token acts for
+// nobody, since it lists no project and no edit gives it one (readOnlyTokenListRemedy).
 func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -59,7 +63,8 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select agent_tokens.id::text, agent_tokens.name, agent_tokens.prefix,
-			case when people.member_kind = 'restricted' then '{}'::text[] else agent_tokens.scopes end,
+			case when people.member_kind = 'restricted' and 'read' = any(agent_tokens.scopes) then '{read}'::text[]
+				when people.member_kind = 'restricted' then '{}'::text[] else agent_tokens.scopes end,
 			agent_tokens.projects, agent_tokens.created_at, agent_tokens.last_used_at, agent_tokens.revoked_at
 		from (
 			select id, name, prefix, scopes, projects, created_at, last_used_at, revoked_at, owner
@@ -199,7 +204,7 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := refuseUnboundCredential(actor); err != nil {
+	if err := refuseUnboundCredential(actor, nil); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -344,10 +349,12 @@ func mintCallerStandsSQL(cookieLogin, cookieGeneration, tokenID, recordsAccounts
 // people recorded it: no account that held the address before made it, so what it mints records
 // the holder and the no-account state stops there. One made before is refused
 // (tokenAccountReplaced) and binds nothing; one with no recording to compare with is bound to none,
-// as before. Any other caller is bound to none: a broker-issued token, the approve-only one
-// included, never mints and never decides a credential request (refuseUnboundCredential). So is
-// every caller while the binding does not hold: what is minted then records no account, as a
-// build without the binding mints it.
+// as before. Any other caller is bound to none by this expression: no broker-issued token mints
+// (refuseUnboundCredential), and the one that decides a credential request, the approve-only token,
+// is bound beside it, in the decision's own statement, to the account its credential records
+// (approverStanding). Every caller is bound to none while the binding does not hold, the
+// approve-only token included: what is minted then records no account and an approve names none,
+// as a build without the binding mints and relays them.
 func credentialSubjectSQL(address, cookieLogin, tokenID, recordsAccounts string) string {
 	return "(case when " + cookieLogin + " is not null then (select sub from people where email = " + address + " and " + recordsAccounts + ")" +
 		" when " + tokenID + " is not null then coalesce((select subject from agent_tokens where id = " + tokenID + " and " + recordsAccounts + "), " +
@@ -417,18 +424,22 @@ func mintCallerGone(tokenID *string) error {
 // machine holds has the approve scope these routes require (brokerPersonScopes), so the route's
 // scope gate refuses it first. The approve-only token holds approve (brokerApproveOnlyScopes): it
 // is refused the mint before the route runs, since its approve list leaves the mint out
-// (refuseApproveOnlyToken), but that list names a credential request's approve and deny
-// (approveScopeRoutes), so it reaches their scope gate and passes it, and this refuses it there
-// (approverStanding). This holds the routes to that whatever the gate is given: the re-checks a
-// mint and a decision make once the body has arrived (mintAgentTokenSQL, approverStanding) and
-// the account they bind (credentialSubjectSQL) have an arm for a cookie and a personal token
-// alone, so a broker token holding approve would mint and decide with nothing read again, an
+// (refuseApproveOnlyToken), and the mint passes no binding here, so this refuses it there too. That
+// list names a credential request's approve and deny (approveScopeRoutes), where it is the one
+// broker-issued token that decides: a decision passes the binding decideBrokerToken carried for a
+// verified approve-only token (approveOnlyBindingOf; nil for every other credential), which lets it
+// through to approverStanding, whose re-read binds it to the account its credential records where
+// the account binding holds, and to none, as every caller, where it does not. This holds the routes
+// to that whatever the gate is given: the re-checks a mint and a decision make once the body has
+// arrived (mintAgentTokenSQL, approverStanding) and the account they bind (credentialSubjectSQL)
+// have an arm for a cookie, a personal token and that approve-only token, so any other broker token
+// holding approve would mint a token and decide a credential request with nothing read again, an
 // account replaced while its body was held back included. It answers as the gate does, 403
-// OAUTH_SCOPE_REQUIRED for approve, the approve-only token too.
-func refuseUnboundCredential(actor model.Actor) error {
-	if actor.Act != nil && actor.Act.TokenID == "" {
+// OAUTH_SCOPE_REQUIRED for approve.
+func refuseUnboundCredential(actor model.Actor, approveOnly *approveOnlyBinding) error {
+	if actor.Act != nil && actor.Act.TokenID == "" && approveOnly == nil {
 		return missingScopeError(model.ScopeApprove,
-			"a broker-issued token never mints a token or decides a credential request; the person's browser or a personal token holding approve does")
+			"a broker-issued token never mints a token or decides a credential request, but for the approve-only token the secrets broker's proxy spends, which decides one; the person's browser or a personal token holding approve does")
 	}
 	return nil
 }
@@ -1062,6 +1073,9 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 		return model.Actor{}, err
 	}
 	if restricted {
+		if readOnly {
+			return model.Actor{}, errRestrictedTokenList(len(projects), readOnlyTokenListRemedy)
+		}
 		if len(projects) != 1 {
 			return model.Actor{}, errRestrictedTokenList(len(projects), personalTokenListRemedy)
 		}
@@ -1288,6 +1302,12 @@ func errRestrictedTokenList(listed int, remedy string) error {
 // personalTokenListRemedy is what makes a restricted owner's personal token that lists other than
 // one project act again (errRestrictedTokenList).
 const personalTokenListRemedy = "its owner names its one project at their browser (PATCH /api/v1/me/agent-tokens/{id}) or mints another"
+
+// readOnlyTokenListRemedy is what gives the agent of a restricted owner whose personal token is
+// read-only a token that acts (errRestrictedTokenList): a read-only token lists no project and no
+// edit gives it one, since an edit of one is 400 TOKEN_SCOPES_INPUT whatever it names
+// (refuseMissingToken), so its owner replaces it.
+const readOnlyTokenListRemedy = "its owner revokes it at their browser (DELETE /api/v1/me/agent-tokens/{id}) and mints a token naming their one project in its place"
 
 func newAgentToken() (string, [sha256.Size]byte, error) {
 	var randomBytes [32]byte

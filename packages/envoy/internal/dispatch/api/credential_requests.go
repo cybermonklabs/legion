@@ -309,6 +309,10 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 // whatever account it names: a sign-in that commits between this check and the relay records its
 // revocation at a greater generation. A deny mints nothing and names no account.
 //
+// An approve-only token's approve and deny are relayed as every caller's are. Where the account
+// binding holds, the account its approve names is the one its credential records, which the
+// re-read found the address's (approverStanding); where it does not, the approve names none.
+//
 // The account and the generation go only to a broker whose settings say it takes them
 // (cipher.Client.TakesApproverFields): a broker that answers its settings without approver_fields,
 // one from before them, refuses an approve carrying any of them 400 INVALID_DECISION, so it is
@@ -450,11 +454,28 @@ func (s *server) relayMachineLoginApproval(relay context.Context, w http.Respons
 //     (tokenAccountReplaced: people records another account, or the token records none and was
 //     made before people recorded the address's); its account is the one its mint recorded.
 //
-// A broker-issued token never decides: no such token a machine holds has the approve scope these
+// An approve-only token (approveOnlyBindingOf) decides as its person. Where the account binding
+// holds, it is bound to the account its credential records, which decideBrokerToken carried from
+// the one resolution of its DPoP presentation: the statement compares that account's `sub` and its
+// issuer with the `sub` and `sub_issuer` people records for the address, after the address's lock.
+// It is refused when its credential records no account Dispatch can name (401
+// BROKER_TOKEN_RECORDS_NO_ACCOUNT, as an admission refuses it), and when people records another
+// account for the address, or none, or no row for it (brokerReplacedRefusal: 401
+// BROKER_TOKEN_NOT_ACTIVE where a revocation names the token's account, 401
+// BROKER_ACCOUNT_NOT_SIGNED_IN where none does), so an account replaced after the token's
+// admission, while the body was held back, decides nothing. Where the binding does not hold, it is
+// bound to no account, as every caller is there (below). Either way the same statement reads
+// whether Dispatch records a hold of the person (recordedHoldSQL), 401 MEMBERSHIP_HELD
+// (recordedHoldRefusal) where a Google rule signs people in (Deps.Standing).
+//
+// No other broker-issued token decides: no such token a machine holds has the approve scope these
 // routes require (brokerPersonScopes), so it is refused before it gets here. The approve-only token
 // has it, and its approve list names the approve and the deny (approveScopeRoutes), so it passes
-// their scope gate and gets here; it is refused here, as every broker-issued token is, before any
-// read (refuseUnboundCredential), since nothing below has an arm for it.
+// their scope gate and gets here, to the paragraph above; every other broker-issued token is
+// refused here too, before any read (refuseUnboundCredential), since nothing below has an arm for
+// it. A restricted member's approve-only token is refused before it gets here
+// (restrictedBrokerTokenList: it lists no project), and would hold no scope and carry no binding
+// past that (decideBrokerToken).
 //
 // Each account the statement binds is the address's recorded one, since each that is not is
 // refused in that same statement, so its issuer is the one people records with it
@@ -474,7 +495,9 @@ func (s *server) relayMachineLoginApproval(relay context.Context, w http.Respons
 // Each account check, and the account it answers, is the account binding's, and holds only while
 // the binding does (accountsHeld, read in the same transaction after the address's lock): beside a
 // build without the binding in the fleet the re-read checks no account and answers none, its
-// issuer included, so the approve is relayed naming no account, as that build relays it.
+// issuer included, so the approve is relayed naming no account, as that build relays it. The
+// approve-only token's decision is no exception: there, and on a deployment whose sign-in records
+// no accounts (Deps.SignInIssuer empty), it is relayed with the generation and no account.
 //
 // The same statement reads whether Dispatch holds the caller, as each credential's own check does,
 // and a held caller is then 401 MEMBERSHIP_HELD, so a person held between the request's start and
@@ -486,7 +509,8 @@ func (s *server) relayMachineLoginApproval(relay context.Context, w http.Respons
 // standing is read from Standing once the transaction has ended (browserDeciderHeld). A revocation
 // answers before a hold.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (account credentialAccount, generation int64, err error) {
-	if err := refuseUnboundCredential(actor); err != nil {
+	approveOnly := approveOnlyBindingOf(r, actor)
+	if err := refuseUnboundCredential(actor, approveOnly); err != nil {
 		return credentialAccount{}, 0, err
 	}
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
@@ -495,6 +519,7 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (account c
 		tokenID = &actor.Act.TokenID
 	}
 	var cookieGone, tokenGone bool
+	var boundGone, boundNamed, boundHeld bool
 	var owner *string
 	var hold ownerHold
 	unread := func(err error) (credentialAccount, int64, error) {
@@ -513,6 +538,16 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (account c
 	if err != nil {
 		return unread(err)
 	}
+	// Where the binding holds, an approve-only token's decision is bound to the account its
+	// credential records, and so to none Dispatch cannot name; where it does not, to no account, as
+	// every caller's is.
+	var boundSubject, boundIssuer *string
+	if approveOnly != nil && held {
+		if approveOnly.account.subject == "" {
+			return credentialAccount{}, 0, errBrokerTokenRecordsNoAccount()
+		}
+		boundSubject, boundIssuer = &approveOnly.account.subject, &approveOnly.account.issuer
+	}
 	if err := tx.QueryRow(r.Context(), `
 		select exists (select 1 from user_sessions where login = $2::text and generation <> $3::bigint),
 			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
@@ -520,6 +555,10 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (account c
 			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$5::boolean")+`, ''),
 			coalesce((select sub_issuer from people where email = $1::text and $5::boolean), ''),
 			coalesce((select generation from user_sessions where login = $1::text), 0),
+			$6::text is not null and not exists (select 1 from people
+				where email = $1::text and sub = $6::text and coalesce(sub_issuer, '') = $7::text),
+			$6::text is not null and `+brokerAccountNamed("$1::text", "$6::text")+`,
+			$8::boolean and `+recordedHoldSQL("$1::text")+`,
 			owner.login, coalesce(owner.recorded, false), coalesce(owner.stored, false), owner.age
 		from (select 1) as one
 		left join (
@@ -528,8 +567,10 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (account c
 			left join people on people.email = canonical_login(agent_tokens.owner)
 			where agent_tokens.id = $4::uuid
 		) as owner (login, recorded, stored, age) on true
-	`, actor.ID, cookieLogin, cookieGeneration, tokenID, held).
+	`, actor.ID, cookieLogin, cookieGeneration, tokenID, held,
+		boundSubject, boundIssuer, approveOnly != nil).
 		Scan(&cookieGone, &tokenGone, &account.subject, &account.issuer, &generation,
+			&boundGone, &boundNamed, &boundHeld,
 			&owner, &hold.recorded, &hold.stored, &hold.age); err != nil {
 		return unread(err)
 	}
@@ -543,6 +584,11 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (account c
 		return credentialAccount{}, 0, identity.ErrNoIdentity
 	case tokenGone:
 		return credentialAccount{}, 0, errTokenRevoked()
+	case boundGone:
+		return credentialAccount{}, 0, brokerReplacedRefusal(false, boundNamed)
+	}
+	if boundHeld && s.deps.Standing != nil {
+		return credentialAccount{}, 0, s.recordedHoldRefusal()
 	}
 	if owner != nil {
 		if err := s.personalTokenHeld(r.Context(), *owner, hold); err != nil {
@@ -551,6 +597,10 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (account c
 	}
 	if err := s.browserDeciderHeld(r.Context(), actor); err != nil {
 		return credentialAccount{}, 0, err
+	}
+	if approveOnly != nil && held {
+		// The statement found it the account people records for the address.
+		account = approveOnly.account
 	}
 	return account, generation, nil
 }

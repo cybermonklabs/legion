@@ -36,6 +36,13 @@ import (
 // carried too, so a caller is told why it was refused rather than told its sound proof was
 // spent.
 //
+// For a presentation it admits as an approve-only token (ciphertoken.Caller.ApproveOnly) that
+// holds the approve scope, it carries one thing more (brokerTokenActorBinding): the person that
+// token names and the account its credential records (approveOnlyBinding), which a credential
+// decision binds itself to where the account binding holds (approverStanding). The decision then
+// reads the account the broker answered for the very proof this request spent, and asks no broker
+// again.
+//
 // It answers nothing itself: each route refuses a caller that does not resolve in its own way —
 // a JSON error, a closed socket — and reaches this decision through optionalActor as it always
 // has. A request presenting no such token passes straight through and is resolved where it
@@ -50,10 +57,43 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 			handler(w, r)
 			return
 		}
-		actor, human, err := s.brokerTokenActor(r)
+		var bound *approveOnlyBinding
+		actor, human, err := s.brokerTokenActorBinding(r, &bound)
 		decided := resolvedCaller{actor: actor, human: human, err: err}
-		handler(w, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, decided)))
+		ctx := r.Context()
+		if bound != nil {
+			ctx = context.WithValue(ctx, approveOnlyBindingKey{}, *bound)
+		}
+		handler(w, r.WithContext(context.WithValue(ctx, resolvedCallerKey{}, decided)))
 	}
+}
+
+// approveOnlyBindingKey carries a request's approveOnlyBinding from the one resolution of its DPoP
+// presentation (decideBrokerToken) to a credential decision's re-read of its caller
+// (approverStanding). It is a key of its own because the layers between them carry the resolved
+// caller again from its actor alone (gateRouteScopes, refuseChangedLogin, keyedWrites), and none
+// of them writes this key, while every one of them derives its context from the request's.
+type approveOnlyBindingKey struct{}
+
+// approveOnlyBinding is what a verified approve-only token binds its decision to: the canonical
+// login of the person it names and the account its credential records, as people records accounts
+// (brokerTokenAccount: a subject "" for none Dispatch can name, which no decision accepts where the
+// account binding holds, and its issuer as people.sub_issuer spells it).
+type approveOnlyBinding struct {
+	person  string
+	account credentialAccount
+}
+
+// approveOnlyBindingOf is the binding decideBrokerToken carried for r when actor, as actingPerson
+// resolved it, is the person that binding names and r's resolved credential is marked approve-only
+// (approveOnlyRequest), and nil otherwise: for every other credential, and for a broker token
+// decideBrokerToken carried no binding for, which decides nothing (refuseUnboundCredential).
+func approveOnlyBindingOf(r *http.Request, actor model.Actor) *approveOnlyBinding {
+	bound, carried := r.Context().Value(approveOnlyBindingKey{}).(approveOnlyBinding)
+	if !carried || !approveOnlyRequest(r) || bound.person != actor.ID {
+		return nil
+	}
+	return &bound
 }
 
 // callerStillResolves answers whether the caller a live socket was admitted as still resolves,
@@ -210,8 +250,10 @@ func errBrokerTokenLapsed() error {
 // member, or of a person no people row holds, costs that one read and answers as it always did
 // while its account is theirs; only a restricted member's reads the lists. A token naming a
 // service and no person is not asked. The admission answers whether the person is restricted,
-// which a live socket's heartbeat holds it to. A broker token never mints and never decides a
-// credential request, an approve-only one included (refuseUnboundCredential), so nothing past the
+// which a live socket's heartbeat holds it to. A broker token never mints, and decides a
+// credential request only as an approve-only token, whose account its admission answers
+// (decideBrokerToken) and the decision's re-read compares again, under the address's lock, with the
+// one people records (approverStanding) where the account binding holds; nothing else past the
 // admission reads its account.
 //
 // Last, where a Google rule signs people in (Deps.Standing set), the same statement reads whether
@@ -423,9 +465,10 @@ type brokerAdmission struct {
 // the address's account or less than brokerCredentialMargin after it, or at an unrecorded time.
 // It is false for an address recording no account, and, for a token recording none, with no
 // recording time, so nothing is refused that predates the column. An admission reads it
-// (brokerPersonAdmitted), the one place it is read: a broker token neither mints nor decides a
-// credential request (refuseUnboundCredential), so no read made again once a request's body has
-// arrived asks it.
+// (brokerPersonAdmitted), the one place it is read: the one broker token that decides a credential
+// request, the approve-only token, is held at that decision to its recorded account alone where the
+// account binding holds, which must then be the one people records for the address
+// (approverStanding), and no broker token mints.
 func brokerAccountReplaced(address, subject, issuer, foreign, createdAt, held string) string {
 	return "(exists (select 1 from people where email = " + address + " and sub is not null and (" +
 		foreign + " or (nullif(" + subject + ", '') is not null and (sub <> " + subject + " or coalesce(sub_issuer, '') <> " + issuer + "))" +
@@ -634,6 +677,13 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string, p
 // those, a token naming a restricted member that lists other than one project is 403
 // RESTRICTED_MEMBER (restrictedBrokerTokenList, R16).
 func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
+	return s.brokerTokenActorBinding(r, nil)
+}
+
+// brokerTokenActorBinding is brokerTokenActor that also answers, in *bound when bound is not nil,
+// the binding of a verified approve-only token that holds the approve scope (approveOnlyBinding),
+// which decideBrokerToken carries; it leaves *bound nil for every other caller and every refusal.
+func (s *server) brokerTokenActorBinding(r *http.Request, bound **approveOnlyBinding) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
 	}
@@ -695,9 +745,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// and approve (brokerApproveOnlyScopes), never p0, and is marked approve-only, so
 	// refuseApproveOnlyToken holds it to the routes that state ApproveOnly (routeDecl.ApproveOnly)
 	// before any route runs. Those let it reach the scope gate of a credential request's approve
-	// and deny too, but their handler refuses it (approverStanding, refuseUnboundCredential), as it
-	// refuses every broker-issued token, since nothing there reads a broker token's account again
-	// once the body has arrived. A token scoped to a project gets no person scope, because the
+	// and deny too, and there it is the one broker-issued token that decides, as its person: where
+	// the account binding holds, it is bound to the account its credential records, which this
+	// resolution answers (bound, below) and decideBrokerToken carries, and which the decision's
+	// re-read compares with the one people records for the address under the address's lock
+	// (approverStanding). Their handler refuses every other broker-issued token
+	// (refuseUnboundCredential). A token scoped to a project gets no person scope, because the
 	// deployment mapped that token to a project and not to the person: it proves a session, not
 	// that any person stands behind the request. A token that names a service and no person gets
 	// none either, whatever scope the broker answered: there is no person for it to act as, and a
@@ -826,6 +879,18 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		writer = "service:" + caller.Service
 	}
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)
+	// The shape is the verifier's (ciphertoken.Caller.ApproveOnly), never a scope, a body, a query
+	// or the mere presence of a bearer. A token that holds no approve scope is bound to nothing and
+	// so decides nothing: a restricted member's holds none (above), though
+	// restrictedBrokerTokenList has refused every approve-only token of theirs already, since such
+	// a token lists no project.
+	if bound != nil && caller.ApproveOnly && actor.Credential.Holds(model.ScopeApprove) {
+		subject, issuer := s.brokerTokenAccount(caller)
+		*bound = &approveOnlyBinding{
+			person:  model.CanonicalLogin(caller.Person),
+			account: credentialAccount{subject: subject, issuer: issuer},
+		}
+	}
 	return actor, false, nil
 }
 
