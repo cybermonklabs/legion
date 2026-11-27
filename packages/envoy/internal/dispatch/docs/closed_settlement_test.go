@@ -52,6 +52,8 @@ const (
 )
 
 func TestAClosedIssuesOwedSettlementCompletes(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in its subtests
+	// settleAfterItsStoreWriteIsRefused and settleAfterTheRoomsPersistenceIsRefused).
 	t.Run("AppendInsideTheCloseMargin", settleAnAppendInsideTheCloseMargin)
 	t.Run("RoomLoad", settleOnARoomLoad)
 	t.Run("Resumption", settleOnTheResumption)

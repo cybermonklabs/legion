@@ -3211,15 +3211,18 @@ list (.github/scripts/check-ci-filters.sh). When the changes job's computation f
 cause of the engine's own (a go command, a gate file, a //ci: line), every filter selects this job
 and it fails for the same cause; a fall-open from the Bun install or the TypeScript listing, which
 this job does not run, leaves it green, and the lint job's readers are what turn the run red. go
-list runs with GOPROXY=off over an empty module cache, so the job needs Go but downloads no module
-and restores no cache. The tag sets of the darwin vet steps come from
-.github/scripts/go_build_tags.py, whose go list runs with GOPROXY=off too, over the job's own
-module cache. A run fails naming each file of the tree it changes, a checksum a go command writes
-into a committed go.work.sum among them, but those its mode writes: each workflow
-ci_job_reads.py's PUSH_WORKFLOWS names for `write`, and the filters and the .inputs file beside
-them for `generate`. It also holds every workflow file to 64,000 bytes and to what GitHub's own
-parser reads (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml
-runs a second time, in a file small enough to start when this one is too large to.
+list runs with GOPROXY=off over an empty module cache, so that check needs Go but downloads no
+module. The tag sets of the darwin vet steps come from .github/scripts/go_build_tags.py, whose go
+list runs with GOPROXY=off too, over the job's own module cache. A run fails naming each file of
+the tree it changes, a checksum a go command writes into a committed go.work.sum among them, but
+those its mode writes: each workflow ci_job_reads.py's PUSH_WORKFLOWS names for `write`, and the
+filters and the .inputs file beside them for `generate`. The job's next step,
+.github/scripts/testcontainers_links.py, lists the commands and self-starting test binaries of the
+daemon and envoy modules with their third-party packages, so it downloads the modules they need
+into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox. The job restores
+no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's own parser reads
+(.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a second
+time, in a file small enough to start when this one is too large to.
 
 ## What the proof editor's offline proof shows
 

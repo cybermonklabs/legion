@@ -258,6 +258,17 @@ func probeOptions(t *testing.T) ImageProbe {
 	}
 }
 
+// probeOptionsToDeadline is probeOptions with an attempt budget of what is left before the
+// test's margin (testwait.Remaining), rather than probeOptions' 10 s budget. newProbeRig's parent
+// context still ends all attempts at that margin; this larger per-attempt budget lets its probe
+// pod finish on the event the rig brings when a loaded machine delays it.
+func probeOptionsToDeadline(t *testing.T) ImageProbe {
+	t.Helper()
+	p := probeOptions(t)
+	p.Budget = testwait.Remaining(t)
+	return p
+}
+
 // unfinishedBudget is the attempt budget of a test in which no pod ever answers, so the attempt
 // runs out.
 const unfinishedBudget = 300 * time.Millisecond
@@ -561,7 +572,7 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 			g := newProbeRig(t, nil, exchangeKeyed())
 			g.succeeds(testCase.log + "\n")
 
-			err := g.probe(probeOptions(t))
+			err := g.probe(probeOptionsToDeadline(t))
 
 			wantContains(t, err, append([]string{"worker image sha256:" + testDigestHex + " failed its probe: pod " + probeSandboxName + " " + testCase.want}, why...)...)
 			if n := g.creates.Load(); n != 1 {
@@ -596,7 +607,7 @@ func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testi
 			g := newProbeRig(t, nil, testCase.option, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
 			g.succeeds(testCase.log + "\n")
 
-			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
+			report, err := g.r.ProbeImage(g.ctx, probeOptionsToDeadline(t))
 
 			if err != nil {
 				t.Fatalf("ProbeImage = %v, want a pass", err)
@@ -1624,7 +1635,7 @@ func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 				o.Log = slogTo(logged)
 				o.Pod.Volumes = []corev1.Volume{team}
 				o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
-			}))
+			}), withTestBootTimeout())
 			g.finishes(unplaced(testCase.message, testCase.age))
 			p := rowProbe(t, testCase.refused)
 
@@ -1823,7 +1834,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 	// they run out, and other tests' load could delay that read past them.
 	t.Run("unschedulable past the boot timeout, then placed", func(t *testing.T) {
 		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withTestBootTimeout())
 		g.with(func() { g.log = okLine(3) + "\n" })
 		var pods atomic.Int32
 		g.finishes(func(p *corev1.Pod) {
@@ -1865,7 +1876,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 
 	t.Run("unschedulable within the boot timeout waits to the budget", func(t *testing.T) {
 		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withTestBootTimeout())
 		g.finishes(unschedulable(testOptions().BootTimeout / 2))
 		p := probeOptions(t)
 		p.Budget = unfinishedBudget
@@ -2215,7 +2226,7 @@ func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
 		}
 		return true, &k8sruntime.Unknown{Raw: []byte(log)}, nil
 	})
-	got := g.r.logTail(g.ctx, "legion-pod", fetchContainer)
+	got := g.r.logTail(g.ctx, "legion-pod", initContainer)
 	ruled := redact.Read(got, false)
 	for _, part := range []string{"reader", "@h.example", "planted-query-token-9"} {
 		if strings.Contains(ruled, part) {

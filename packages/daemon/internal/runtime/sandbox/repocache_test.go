@@ -1836,31 +1836,28 @@ func mountsOf(c corev1.Container) []string {
 	return mounts
 }
 
-// The feed lives on the issue's own volume, under the subPath feed: workspace-fetch mounts that
-// alone, read-write, and no other part of the volume; workspace-init and the roles container
-// mount the volume whole and the feed again, read-only, over it, so no agent can write the feed the
-// token-holding container reads. No emptyDir feed is left.
-func TestTheFeedIsOnTheIssueVolumeAndOnlyTheFetchWritesIt(t *testing.T) {
+// Workspace-init mounts the issue volume whole to fill the clone directly. No container mounts a
+// feed subpath or path, and no volume named feed remains.
+func TestWorkspaceInitMountsTheIssueVolumeWithNoFeed(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(rootSpec(t))
 	spec := g.sandbox(loc.Sandbox.Name).Spec.PodTemplate.Spec
-	feed := FeedDir + " " + feedSubPath
-	for _, c := range spec.InitContainers {
-		switch c.Name {
-		case fetchContainer:
-			if got := mountsOf(c); !slices.Equal(got, []string{feed + " rw"}) {
-				t.Errorf("workspace-fetch mounts the issue volume %q, want the feed alone, read-write", got)
-			}
-		case initContainer:
-			if got := mountsOf(c); !slices.Equal(got, []string{TreeRoot + "  rw", feed + " ro"}) {
-				t.Errorf("workspace-init mounts the issue volume %q, want it whole and the feed read-only", got)
-			}
-		}
+	if got := len(spec.InitContainers); got != 1 {
+		t.Fatalf("the issue pod has %d init containers, want workspace-init alone", got)
 	}
-	for _, c := range spec.Containers {
-		if got := mountsOf(c); !slices.Contains(got, feed+" ro") || !slices.Contains(got, TreeRoot+"  rw") || slices.Contains(got, feed+" rw") {
-			t.Errorf("container %s mounts the issue volume %q, want it whole and the feed read-only", c.Name, got)
+	init := spec.InitContainers[0]
+	if init.Name != initContainer {
+		t.Fatalf("the issue pod's init container is %s, want %s", init.Name, initContainer)
+	}
+	if got := mountsOf(init); !slices.Equal(got, []string{TreeRoot + "  rw"}) {
+		t.Errorf("workspace-init mounts the issue volume %q, want it whole", got)
+	}
+	for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
+		for _, mount := range c.VolumeMounts {
+			if mount.MountPath == TreeRoot+"/feed" || mount.SubPath == "feed" {
+				t.Errorf("container %s mounts the removed feed at %s (subPath %q)", c.Name, mount.MountPath, mount.SubPath)
+			}
 		}
 	}
 	for _, v := range spec.Volumes {
@@ -1868,16 +1865,13 @@ func TestTheFeedIsOnTheIssueVolumeAndOnlyTheFetchWritesIt(t *testing.T) {
 			t.Errorf("the pod still has a volume named feed: %+v", v)
 		}
 	}
-	if FeedDir != TreeRoot+"/"+feedSubPath {
-		t.Errorf("FeedDir is %s, want the feed subPath under TreeRoot, where every container sees it", FeedDir)
-	}
 }
 
-// fetchEnv is the workspace-fetch container's environment in the pod template of the Sandbox name.
-func (g *rig) fetchEnv(name string) map[string]string {
+// initEnv is workspace-init's environment in the pod template of the Sandbox name.
+func (g *rig) initEnv(name string) map[string]string {
 	env := map[string]string{}
 	for _, c := range g.sandbox(name).Spec.PodTemplate.Spec.InitContainers {
-		if c.Name == fetchContainer {
+		if c.Name == initContainer {
 			for _, e := range c.Env {
 				env[e.Name] = e.Value
 			}
@@ -1886,21 +1880,21 @@ func (g *rig) fetchEnv(name string) map[string]string {
 	return env
 }
 
-// Every issue pod's fetch container is told its repository's cache — its Service's name, which
-// resolves while the cache's pod is Ready and not before, so the fetch waits on it — and the cache's
-// bearer token, as a file projected from the issue pod's own provisioning Secret, never an
-// environment value. A launch makes the cache when the repository has none yet. The token reaches
-// the fetch container alone, and is the cache's own. With the cache's bucket on, the fetch is told
-// and mounts exactly what it is told and mounts without it, and the issue pod and the controller's
-// pod run as the account every pod but the cache's runs as and are told no bucket: the bucket and
-// the account that holds its grant are the cache pod's alone, and an issue pod holds no grant on
-// the bucket.
-func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
+// Every issue pod's workspace-init is told its repository's cache — its Service's name, which
+// resolves while the cache's pod is Ready and not before, so workspace-init waits on it — and the
+// cache's bearer token and provisioning token as files projected from the issue pod's own
+// provisioning Secret, never environment values. A launch makes the cache when the repository has
+// none yet. The tokens reach workspace-init alone, and the cache's is the cache's own. With the
+// cache's bucket on, workspace-init is told and mounts exactly what it is told and mounts without
+// it, and the issue pod and the controller's pod run as the account every pod but the cache's runs
+// as and are told no bucket: the bucket and the account that holds its grant are the cache pod's
+// alone, and an issue pod holds no grant on the bucket.
+func TestAnIssuePodsWorkspaceInitIsToldItsRepositorysCacheAndTokens(t *testing.T) {
 	t.Parallel()
-	// launched is what a launch gave an issue pod's fetch: its container and the provisioning
-	// volume its token comes from.
+	// launched is what a launch gave an issue pod's workspace-init: its container and the
+	// provisioning volume its tokens come from.
 	type launched struct {
-		fetch        corev1.Container
+		init         corev1.Container
 		provisioning corev1.Volume
 	}
 	launch := func(t *testing.T, configured func(*Options)) launched {
@@ -1913,15 +1907,21 @@ func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
 			t.Fatalf("launching an issue of %s made no cache", repo)
 		}
 		bearer := string(g.secret(cacheSecretName(cache)).Data[cacheTokenKey])
-		env := g.fetchEnv(loc.Sandbox.Name)
+		env := g.initEnv(loc.Sandbox.Name)
 		if want := "http://" + cache + "." + testNamespace + ".svc:8418"; env["LEGION_REPOSITORY_CACHE_URL"] != want {
-			t.Errorf("the fetch is told LEGION_REPOSITORY_CACHE_URL=%q, want %q", env["LEGION_REPOSITORY_CACHE_URL"], want)
+			t.Errorf("workspace-init is told LEGION_REPOSITORY_CACHE_URL=%q, want %q", env["LEGION_REPOSITORY_CACHE_URL"], want)
 		}
 		if env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] != ProvisionDir+"/"+cacheTokenKey {
-			t.Errorf("the fetch is told LEGION_REPOSITORY_CACHE_TOKEN_FILE=%q", env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"])
+			t.Errorf("workspace-init is told LEGION_REPOSITORY_CACHE_TOKEN_FILE=%q", env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"])
 		}
-		if want := rootSpec(t).DefaultBranch; want == "" || env["LEGION_DEFAULT_BRANCH"] != want {
-			t.Errorf("the fetch is told LEGION_DEFAULT_BRANCH=%q, want the issue's recorded default %q", env["LEGION_DEFAULT_BRANCH"], want)
+		if env["LEGION_PROVISION_TOKEN_FILE"] != ProvisionDir+"/"+provisionTokenKey {
+			t.Errorf("workspace-init is told LEGION_PROVISION_TOKEN_FILE=%q", env["LEGION_PROVISION_TOKEN_FILE"])
+		}
+		if env["TMPDIR"] != initTempDir {
+			t.Errorf("workspace-init is told TMPDIR=%q, want %q", env["TMPDIR"], initTempDir)
+		}
+		if legacy, found := env["LEGION_DEFAULT_BRANCH"]; found {
+			t.Errorf("workspace-init is still told LEGION_DEFAULT_BRANCH=%q", legacy)
 		}
 		if issueSecret := g.secret(secretName(loc.Sandbox.Name)); issueSecret == nil || string(issueSecret.Data[cacheTokenKey]) != bearer || bearer == "" {
 			t.Errorf("the issue pod's provisioning Secret holds %v, want the cache's bearer %q", issueSecret, bearer)
@@ -1934,13 +1934,13 @@ func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
 		if v := spec.Volumes[provisioning]; v.Secret == nil || !slices.ContainsFunc(v.Secret.Items, func(k corev1.KeyToPath) bool { return k.Key == cacheTokenKey }) {
 			t.Errorf("the provisioning volume %+v projects no cache token", v)
 		}
-		for _, c := range append(slices.Clone(spec.InitContainers), spec.Containers...) {
+		for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
 			for _, e := range c.Env {
 				if e.Value == bearer {
 					t.Errorf("container %s is told the cache's token in %s", c.Name, e.Name)
 				}
 			}
-			if c.Name != fetchContainer && slices.ContainsFunc(c.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == provisionVolume }) {
+			if c.Name != initContainer && slices.ContainsFunc(c.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == provisionVolume }) {
 				t.Errorf("container %s mounts the provisioning Secret", c.Name)
 			}
 		}
@@ -1960,16 +1960,16 @@ func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
 				}
 			}
 		}
-		return launched{fetch: containerNamed(t, spec, fetchContainer), provisioning: spec.Volumes[provisioning]}
+		return launched{init: containerNamed(t, spec, initContainer), provisioning: spec.Volumes[provisioning]}
 	}
 	without := launch(t, sharedAccount)
 	with := launch(t, withBucket(testBucket, cacheAccount))
-	if !equality.Semantic.DeepEqual(with.fetch.Env, without.fetch.Env) {
-		t.Errorf("with the cache's bucket on the fetch is told\n%+v\nwant what it is told without it\n%+v", with.fetch.Env, without.fetch.Env)
+	if !equality.Semantic.DeepEqual(with.init.Env, without.init.Env) {
+		t.Errorf("with the cache's bucket on workspace-init is told\n%+v\nwant what it is told without it\n%+v", with.init.Env, without.init.Env)
 	}
-	if !equality.Semantic.DeepEqual(with.fetch.VolumeMounts, without.fetch.VolumeMounts) || !equality.Semantic.DeepEqual(with.provisioning, without.provisioning) {
-		t.Errorf("with the cache's bucket on the fetch mounts %+v from %+v, want what it mounts without it, %+v from %+v",
-			with.fetch.VolumeMounts, with.provisioning, without.fetch.VolumeMounts, without.provisioning)
+	if !equality.Semantic.DeepEqual(with.init.VolumeMounts, without.init.VolumeMounts) || !equality.Semantic.DeepEqual(with.provisioning, without.provisioning) {
+		t.Errorf("with the cache's bucket on workspace-init mounts %+v from %+v, want what it mounts without it, %+v from %+v",
+			with.init.VolumeMounts, with.provisioning, without.init.VolumeMounts, without.provisioning)
 	}
 }
 
@@ -2272,7 +2272,7 @@ func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T
 			service := cacheService(cache, "uid-cache")
 			tc.edit(service)
 			logs := &logBuffer{}
-			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs))
+			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs), withTestBootTimeout())
 
 			_, err := g.r.Spawn(g.ctx, spec)
 			if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache) || !strings.Contains(err.Error(), tc.says) {
@@ -2307,11 +2307,19 @@ func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
 	spec := rootSpec(t)
 	cache := CacheSandboxName(testProject, spec.Repository)
 	logs := &logBuffer{}
-	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs))
+	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs), withTestBootTimeout())
 	g.r.serviceFeed.record(errors.New(`services is forbidden: User "legion-daemon" cannot watch resource "services"`), time.Now())
 	says := "cannot be checked: the Service store may be stale"
 
+	start := time.Now()
 	_, err := g.r.Spawn(g.ctx, spec)
+	// Remove the two-second bound and the launch waits on the stale Service store to the test
+	// deadline, then refuses with the same message: this row passes vacuously after about 210 s. The
+	// guard fails it by name instead; one minute is far above the single bounded wait and far below
+	// the deadline.
+	if elapsed := time.Since(start); elapsed > time.Minute {
+		t.Fatalf("Spawn took %s, want it bounded by the two-second boot timeout", elapsed)
+	}
 	if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache+" "+says) {
 		t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, says)
 	}

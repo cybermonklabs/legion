@@ -156,11 +156,9 @@ type measured struct {
 	// refused is how many reads beneath the directory the walk did not make — each the kernel
 	// refused, and each directory deeper than the walk descends (volumeWalkDepth) — and
 	// refusedName and refusedDepth the first of them: the name refused and how many levels below
-	// the directory it lay (refuse). A refusal makes the reading a lower bound of the directory
-	// and ends nothing: /legion/feed is a read-only mount inside the same claim, so the walk
-	// reaches it and its bytes are already in the statfs reading the marks are taken from. run
-	// carries them on the size (refusedPath), where a reader is told the number is at least that
-	// many bytes and where the read was refused.
+	// the directory it lay (refuse). A refusal makes the reading a lower bound of the directory and
+	// ends nothing: the walk carries it on the size (refusedPath), where a reader is told the number
+	// is at least that many bytes and where the read was refused.
 	refused      int
 	refusedName  string
 	refusedDepth int
@@ -581,12 +579,11 @@ func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time)
 // on that order. The first refusal a size names does, and for a level of no more names than a
 // batch it is the first in the order every name of the level sorts in.
 //
-// A directory below the target it cannot open or list is a refused reading and ends nothing:
-// the walk goes on with the rest of the entries, since /legion/feed is a read-only mount inside
-// the same claim and a sweep is deleting in these directories moments before. The target itself
-// refused is the reading unread (fail). A directory more than volumeWalkDepth levels below the
-// target is not opened at all, and is a refused reading the same way, named by its name and its
-// depth (refusedPath).
+// A directory below the target it cannot open or list is a refused reading and ends nothing: the
+// walk goes on with the rest of the entries while a sweep is deleting in these directories moments
+// before. The target itself refused is the reading unread (fail). A directory more than
+// volumeWalkDepth levels below the target is not opened at all, and is a refused reading the same
+// way, named by its name and its depth (refusedPath).
 //
 // It costs one handle per level of the tree, held until the level is done: three descriptors —
 // the handle's two and its listing's — and a batch of names, and no path (dirHandle.path,

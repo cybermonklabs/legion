@@ -88,6 +88,8 @@ func requireClosedForTheSchema(t *testing.T, connection *gws.Conn, what string) 
 // whose OnSwitch closes the document sockets (Service.CloseDocumentSockets) - over a real socket
 // of this package's own server.
 func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSockets(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	ctx := context.Background()
 	// The installed schema is the process's, not this test's: the hook puts back the schema
 	// installed before the test once it is over, after the server's own cleanup has stopped it.
@@ -162,7 +164,7 @@ func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testi
 		}
 	}
 
-	overtaken, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
+	overtaken, response, err := documentDialer(t).Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		status := "no response"
 		if response != nil {
