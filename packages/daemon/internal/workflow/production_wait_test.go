@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,33 +148,30 @@ func TestTheProductionCheckStartsTheTestersClaim(t *testing.T) {
 }
 
 // A fail of a look in verifying records a reason of the next change, of kind production, with the
-// report's summary, and starts the next change (the seam the next change's opener replaces).
+// report's summary, and starts the next change (StartNextChange): a new generation at admitted,
+// carrying that reason. The check closes as a defect.
 func TestAProductionCheckFailStartsTheNextChange(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
-	var started []string
-	rig.engine.nextChange = func(_ context.Context, _ pgx.Tx, issue record.Issue, reason record.Defect) error {
-		started = append(started, issue.Key+"/"+string(reason.Kind))
-		return nil
-	}
 	mergedRoot(t, rig)
 	rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
 	rig.report(waitRoot, 1, "fail", "the widget cache serves a stale page in production", nil)
 	var kind, text string
-	var generation int64
-	if err := rig.pool.QueryRow(t.Context(), "select kind, text, generation from defects where issue = $1", waitRoot).Scan(&kind, &text, &generation); err != nil {
+	var generation, carried int64
+	if err := rig.pool.QueryRow(t.Context(), "select kind, text, generation, coalesce(carried_by, 0) from defects where issue = $1", waitRoot).Scan(
+		&kind, &text, &generation, &carried); err != nil {
 		t.Fatalf("read the reason the fail recorded: %v", err)
 	}
 	if kind != string(record.DefectKindProduction) || text != "the widget cache serves a stale page in production" || generation != waitGeneration {
 		t.Fatalf("the reason = %s %q at generation %d, want a production reason with the report's summary at %d", kind, text, generation, waitGeneration)
 	}
-	if !slices.Equal(started, []string{waitRoot + "/production"}) {
-		t.Fatalf("next changes started = %v, want one for the production reason", started)
+	if carried != waitGeneration+1 {
+		t.Fatalf("the reason is carried by generation %d, want the next change %d", carried, waitGeneration+1)
 	}
 	if check := rig.check(waitRoot); check.Open() || check.Outcome != record.CheckDefect {
 		t.Fatalf("the check after the fail = %+v, want it closed as a defect", check)
 	}
-	rig.stands(waitRoot, phase.Verifying, "testing")
+	rig.started(waitRoot, waitGeneration+1, 1)
 }
 
 // The last look's pending closes the check not_run: the issue stays in verifying, and the owning

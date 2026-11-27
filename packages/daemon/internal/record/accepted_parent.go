@@ -96,6 +96,14 @@ func OpenBeneath(issue Issue, members []Issue) []string {
 	return open
 }
 
+// WorkBeneath is the issues beneath issue whose work has still to happen: OpenBeneath less the
+// issues whose close waits in verifying, whose work merged and is on the base already (D10). It
+// is what the acceptance of an issue waits for — the architect's sign-off and the issue's own
+// first phase — where its close waits for OpenBeneath whole, a child in verifying included.
+func WorkBeneath(issue Issue, members []Issue) []string {
+	return OpenBeneath(issue, members)
+}
+
 // AcceptedAncestorOf is the issue above key, in key's own tree, that the daemon has already
 // accepted (AcceptedAncestor), and "" when none has been or key is not recorded. It reads the
 // tree's records in one query, and it is what the workflow asks when a child of such an ancestor

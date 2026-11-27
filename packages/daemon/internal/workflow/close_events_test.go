@@ -12,9 +12,8 @@ import (
 )
 
 // Each input of what a merged issue's close waits for has an event that judges the close again,
-// one case for each row of the plan's table of events (D15) that this part's merge builds. The
-// production check's close and a defect's withdrawal are the production check's and the next
-// change's cases.
+// one case for each row of the plan's table of events (D15): the production check's close and a
+// defect's withdrawal among them.
 func TestEachEventJudgesTheCloseAgain(t *testing.T) {
 	t.Parallel()
 	t.Run("an issue beneath leaves", func(t *testing.T) {
@@ -152,6 +151,21 @@ func TestEachEventJudgesTheCloseAgain(t *testing.T) {
 		readsQueued(t, rig, 1)
 		rig.stands(waitRoot, phase.Verifying, "testing")
 		rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+		closedOnChecks(t, rig, waitRoot)
+	})
+
+	// A defect's withdrawal: the merger's completion is owed, so the reported defect starts no
+	// change at the read, and the close waits for that defect alone. Its withdrawal closes the issue.
+	t.Run("a defect is withdrawn", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		rig.seedRoot(phase.Merging, "retro")
+		owedMerger(t, rig)
+		rig.mergeRoot()
+		defect := rig.seedDefect(waitRoot, "The page is blank after a save.")
+		rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+		rig.stands(waitRoot, phase.Verifying, "testing")
+		rig.noChange(waitRoot, waitGeneration)
+		rig.withdraw(waitRoot, defect, "same as the merged fix")
 		closedOnChecks(t, rig, waitRoot)
 	})
 }
