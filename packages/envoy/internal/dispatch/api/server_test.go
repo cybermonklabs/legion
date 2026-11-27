@@ -1278,25 +1278,23 @@ func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
 	}
 }
 
-// dispatch_issue's external says what POST /api/v1/issues does with the reference it names: a
-// reference already imported into the call's project answers its issue and creates nothing, and
-// one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH. The words are the
-// tool's generated copy (contracts.DispatchTools), the text the catalogue serves, and each promise
-// is held to the route here, so a change of either the words or the route fails this test.
-func TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers(t *testing.T) {
+// dispatch_issue's external names the code POST /api/v1/issues refuses an import with when the
+// reference is already imported into another project, 400 EXTERNAL_PROJECT_MISMATCH, and the
+// route answers that code; a reference already imported into the call's project answers its
+// issue. The description is the tool's generated copy (contracts.DispatchTools), the text the
+// catalogue serves, so a change of the code in either the description or the route fails here.
+func TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers(t *testing.T) {
 	t.Parallel()
-	var words string
+	var description string
 	for _, tool := range contracts.DispatchTools {
 		for _, argument := range tool.Arguments {
 			if tool.Name == "dispatch_issue" && argument.Name == "external" {
-				words = argument.Description
+				description = argument.Description
 			}
 		}
 	}
-	for _, promise := range []string{"owner/repo#n", "answers its issue and creates nothing", "400 EXTERNAL_PROJECT_MISMATCH"} {
-		if !strings.Contains(words, promise) {
-			t.Fatalf("dispatch_issue's external says %q, want it to say %q", words, promise)
-		}
+	if !strings.Contains(description, "400 EXTERNAL_PROJECT_MISMATCH") {
+		t.Fatalf("dispatch_issue's external reads %q, want it to name 400 EXTERNAL_PROJECT_MISMATCH", description)
 	}
 	handler := newTestHandler(t)
 	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {

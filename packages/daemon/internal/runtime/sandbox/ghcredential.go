@@ -176,15 +176,15 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 
 // refreshGitHubCredential is one role's refresh (refreshGitHubCredentials): the role's Secret in
 // the pod, owned by the Sandbox with uid, rendered for repo, the pod's own repository its caller
-// read off its workspace fetch once for every role of the pod.
+// read off its workspace-init once for every role of the pod.
 //
 // A workflow role's credential is rendered for that repository, and not for the Secret's
 // recorded default, which names an owner and so could never name a repository: the repository
 // is what the bundle's default is routed by (ghconfig.RouteDir). A pod the previous daemon
-// created carries no repository in its Secret and needs none, since its fetch argument names it,
-// so its refresh keeps working and no live issue is stopped. An owner directory the pod lacks is
-// what opens an update round (movedGhDirs), and this refresh writes the tokens of the directories
-// the pod does project (servedLayout), whatever else a bundle built now would hold.
+// created carries no repository in its Secret and needs none, since its workspace-init's --repo
+// names it, so its refresh keeps working and no live issue is stopped. An owner directory the pod
+// lacks is what opens an update round (movedGhDirs), and this refresh writes the tokens of the
+// directories the pod does project (servedLayout), whatever else a bundle built now would hold.
 //
 // The controller's is fetched by owner instead (Options.ControllerCredential), the one its
 // Secret records: it works no repository, so a bundle asked for by repository would take its
