@@ -1300,30 +1300,36 @@ describe("AskGate and the commands whose specs bind their routes", () => {
   test.each([
     ["is live", false],
     ["cannot be read", true],
-  ])("with an AskGate record that %s, a bound write is refused with AskGate's mark, and nothing is sent", async (_, broken) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    const file = writeRecord(stateDir, SESSION);
-    if (broken) writeFileSync(file, "{not json");
-    const ran = await dispatch(DECLINE, sessionEnvironment(broker.url, server.url, stateDir));
-    expect(ran.code).toBe(1);
-    expect(ran.stdout).toStartWith("dispatch decline-ask was not called: ");
-    expect(ran.stdout.trimEnd()).toEqual(broken ? expect.stringContaining(file) : DECLINE_GATED);
-    expect(server.sent).toHaveLength(0);
-    expect(broker.trades).toHaveLength(0);
-    expect(ledgerOf(stateDir, SESSION)).toEqual([
-      {
-        at: expect.any(String),
-        tool: "dispatch_decline_ask",
-        error: ran.stdout.trimEnd(),
-        askgate: { mode: "block", why: broken ? expect.stringContaining(file) : DECLINE_GATED_WHY },
-      },
-    ]);
-    expect(cliRefusals(ran.stdout)).toEqual([
-      { line: ran.stdout.trimEnd(), command: "decline-ask" },
-    ]);
-  });
+  ])(
+    "with an AskGate record that %s, a bound write is refused with AskGate's mark, and nothing is sent",
+    async (_, broken) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      const file = writeRecord(stateDir, SESSION);
+      if (broken) writeFileSync(file, "{not json");
+      const ran = await dispatch(DECLINE, sessionEnvironment(broker.url, server.url, stateDir));
+      expect(ran.code).toBe(1);
+      expect(ran.stdout).toStartWith("dispatch decline-ask was not called: ");
+      expect(ran.stdout.trimEnd()).toEqual(broken ? expect.stringContaining(file) : DECLINE_GATED);
+      expect(server.sent).toHaveLength(0);
+      expect(broker.trades).toHaveLength(0);
+      expect(ledgerOf(stateDir, SESSION)).toEqual([
+        {
+          at: expect.any(String),
+          tool: "dispatch_decline_ask",
+          error: ran.stdout.trimEnd(),
+          askgate: {
+            mode: "block",
+            why: broken ? expect.stringContaining(file) : DECLINE_GATED_WHY,
+          },
+        },
+      ]);
+      expect(cliRefusals(ran.stdout)).toEqual([
+        { line: ran.stdout.trimEnd(), command: "decline-ask" },
+      ]);
+    }
+  );
 
   test("with a live AskGate record, a bound read is sent", async () => {
     const broker = stubBroker(300);
@@ -1369,20 +1375,23 @@ describe("AskGate and the commands whose specs bind their routes", () => {
     ["POST", `/api/v1/asks/${ASK}/decline`, "dispatch decline-ask", GATED_NO_COMMAND],
     // A route a hand-written command sends too: the refusal names that command alone.
     ["POST", "/api/v1/markdown/round-trip", "dispatch check-markdown", `${GATED}dispatch artifact`],
-  ])("dispatch api's refusal of %s %s never names %s, which is refused there too", async (method, path, bound, refusal) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    writeRecord(stateDir, SESSION);
-    const ran = await dispatch(
-      ["api", "--method", method, "--path", path, "--body-file", bodyFile(COMMENT)],
-      sessionEnvironment(broker.url, server.url, stateDir)
-    );
-    expect(ran.code).toBe(1);
-    expect(ran.stdout.trimEnd()).toBe(refusal);
-    expect(ran.stdout).not.toContain(bound);
-    expect(server.sent).toHaveLength(0);
-  });
+  ])(
+    "dispatch api's refusal of %s %s never names %s, which is refused there too",
+    async (method, path, bound, refusal) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      writeRecord(stateDir, SESSION);
+      const ran = await dispatch(
+        ["api", "--method", method, "--path", path, "--body-file", bodyFile(COMMENT)],
+        sessionEnvironment(broker.url, server.url, stateDir)
+      );
+      expect(ran.code).toBe(1);
+      expect(ran.stdout.trimEnd()).toBe(refusal);
+      expect(ran.stdout).not.toContain(bound);
+      expect(server.sent).toHaveLength(0);
+    }
+  );
 });
 
 test("dispatch --help lists dispatch api, and dispatch api --help gives its flags", async () => {
