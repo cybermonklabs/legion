@@ -51,6 +51,7 @@ func (rig wakeRig) declareWait(t *testing.T) record.ClaimWait {
 // wait standing; its start row is queued as before. pods.WakeDelivery is no wake of
 // wakeReleased's: a delivery resumes the claim itself (internal/daemon's wakeForDelivery).
 func TestAWakeForNewsEndsTheWaitAndItsTaskIsQueued(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		id   string

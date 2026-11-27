@@ -92,6 +92,7 @@ func (r *waitRig) due(wait record.ClaimWait) intake.Result {
 // The fact applied again is a duplicate and writes nothing; the same row's fact under another
 // event finds the wait over and writes nothing either.
 func TestAtItsTimeAStandingWaitEndsAndItsOwnTaskIsWritten(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	r.tree(phase.Testing)
 	wait := r.waiting(waitRoot, claim.RoleTester)
@@ -149,6 +150,7 @@ func TestAtItsTimeAStandingWaitEndsAndItsOwnTaskIsWritten(t *testing.T) {
 // comes due all the same, and its fact writes no task, leaves the wait's end as it was and the
 // newer wait standing, and logs that the wait is over, naming the wait that stands.
 func TestTheTimeOfAWaitThatIsOverSendsNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// over ends wait, and answers the wait that stands afterwards, the zero wait for none.
@@ -221,6 +223,7 @@ func TestTheTimeOfAWaitThatIsOverSendsNothing(t *testing.T) {
 // the wake itself ends nothing more (wakeEndsWait), so the wait's one end is that one. The line
 // `wait: its time came` says the task is a wake.
 func TestTheTimeOfAWaitWakesItsReleasedClaim(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	wait := rig.declareWait(t)
 	waits := rig.waits(t)

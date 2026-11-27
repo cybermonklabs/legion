@@ -677,7 +677,7 @@ func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
 				want: preamble + "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."},
 			{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due",
 				want: preamble + "The wake is the release's backstop running out: the backstop armed for LEGION-208's implementer came due. " +
-					"Nothing else asked for you, so take up your phase where you left it."},
+					"Nothing else asked for you, so go on with your phase as it stands."},
 		} {
 			if got := WakeTask(tc.kind, tc.detail, StoppedByRelease); got != tc.want {
 				t.Errorf("WakeTask(%s) = %q, want %q", tc.kind, got, tc.want)

@@ -241,6 +241,7 @@ func waitToken(t *testing.T, issue string, role claim.Role) claim.Token {
 // Once ended the wait no longer stands, so the silence sweep and the backstop read the claim as
 // they did before it declared one.
 func TestAWaitEndsInTheFactThatStopsItsClaimWorkingItsPhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// seed records the tree, declares the wait the fact ends, and answers it.
@@ -401,6 +402,7 @@ func TestAWaitEndsInTheFactThatStopsItsClaimWorkingItsPhase(t *testing.T) {
 // issue, the claim's own session taking a task — ends nothing: the reconciler's read keeps no row
 // whose record has not moved under it, so the wait stands, and no end of it is written or logged.
 func TestAFactThatChangesNothingOfAWaitLeavesItStanding(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	r.tree(phase.Testing)
 	wait := r.waiting(waitRoot, claim.RoleTester)
@@ -419,6 +421,7 @@ func TestAFactThatChangesNothingOfAWaitLeavesItStanding(t *testing.T) {
 // in merging, and both mergers' waits end; the tester of a third member, which the gate holds
 // not, still waits.
 func TestTheDesignGatesClosingEndsTheWaitOfEveryMergerItHolds(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	r.tree(phase.Planning)
 	r.issue(waitChild, phase.Merging)
@@ -447,6 +450,7 @@ func TestTheDesignGatesClosingEndsTheWaitOfEveryMergerItHolds(t *testing.T) {
 // rule names then, ended by the time's own fact, and writes no task (waitDue): the worker was
 // waiting on nothing its time brings, and the gate holds its merge.
 func TestAWaitTheGateHoldsWithNoClosingIsLeftForItsTime(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateOff.Steps())
 	r.issue(waitRoot, phase.Merging)
 	seedGate(r.t, r.pool, record.DesignGate{Issue: waitRoot, ArtifactID: "artifact-208", LatestVersion: 4})
@@ -483,6 +487,7 @@ func TestAWaitTheGateHoldsWithNoClosingIsLeftForItsTime(t *testing.T) {
 // next fact's reconciler ends it, and that row stands no longer the moment the session commits.
 // The answer is keyed by the claim that declared each wait, and carries the wait as recorded.
 func TestStandingWaitsNowAnswersOnlyTheWaitsThatStand(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	r.tree(phase.Testing)
 	r.issue(waitChild, phase.Implementing)

@@ -94,13 +94,6 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.ConflictConfirmDone{}, intake.PullRequestMissing{}, intake.Push{}, intake.BasePush{},
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
-<<<<<<< 7fa22de66d
-		intake.GateRegistered{}, intake.CloseRoot{}, intake.ClaimFailed{}, intake.SessionLost{}, intake.SessionStoreFault{},
-		intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{}, intake.GateRequestFound{},
-		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
-		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
-		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.WaitDeclared{}, intake.WaitNews{}, intake.WaitDue{},
-=======
 		intake.GateRegistered{}, intake.PlanGiven{}, intake.TaskStopped{}, intake.CloseRoot{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},
@@ -109,8 +102,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.CutoverMergerRepair{}, intake.CheckReport{}, intake.CheckWakeDue{}, intake.CheckLookEnded{},
 		intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
-		intake.ReparentRead{},
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		intake.ReparentRead{}, intake.WaitDeclared{}, intake.WaitNews{}, intake.WaitDue{},
 	} {
 		rows = append(rows, row{fact: fact})
 	}

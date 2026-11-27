@@ -278,11 +278,11 @@ func TestACancelAtCommitStillCommitsTheFactAndRunsItsHooks(t *testing.T) {
 	}
 }
 
-<<<<<<< 7fa22de66d
 // Every handler of a fact is told the source and event id ApplyFact applies it under, each fact
 // its own, so a write a handler makes can name the fact that caused it (a wait's end). A context no
 // ApplyFact handed a handler names no fact.
 func TestEveryHandlerIsToldTheSourceAndEventIDOfTheFactItApplies(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	if _, _, ok := AppliedFact(ctx); ok {
@@ -304,7 +304,6 @@ func TestEveryHandlerIsToldTheSourceAndEventIDOfTheFactItApplies(t *testing.T) {
 	}
 }
 
-=======
 // A fact whose context ends while its handlers run, before ApplyFact commits, does not commit and
 // runs no hook, though every handler returned nil: that is how consumeMessage cuts a handling past
 // its limit whose step ignored the context, and how a stop ends a fact still being applied.
@@ -397,7 +396,6 @@ func (tx cancelingTx) Commit(ctx context.Context) error {
 	return tx.Tx.Commit(ctx)
 }
 
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 	t.Parallel()
 	updatedAt := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)

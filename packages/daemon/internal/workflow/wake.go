@@ -21,30 +21,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-<<<<<<< 7fa22de66d
-// A wake brings a released pod back. The release suspended every claim of the pod with the source
-// `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
-// which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Seven things wake a pod, and this file holds four of them: the CI settlement, the
-// role message and the agent message the Envoy listener reports, and the stored backstop. The
-// fifth, the time of a wait the released worker declared, and the sixth, a move of the design gate
-// over a released merger, wake through wakeReleased as they do (waitDue, wait.go; deliverGateMove,
-// gate.go). The seventh — a delivery the daemon already had for a role of the pod — needs
-// nothing here, because a delivery to a suspended claim already resumes it (supervise's
-// deliverResuming) and the delivery is its own account of why the pod came back.
-=======
 // A wake brings a released pod back. The release read the pod's workspace first and went on only
 // where it held nothing that no branch or tag on origin holds; it suspended every claim of the pod
 // with the source `released` and deleted the pod, its disk and its Sandbox, or, where the Sandbox
 // owns a kept volume, kept that Sandbox Suspended with its volume. A wake resumes one of those
 // claims, which relaunches its session in a fresh pod that provisions the workspace from the
 // issue's pushed branch (WorkspaceAfterRelease), or mounts the kept volume as the roles left it.
-// Five things wake a pod, and this file holds four of them: the CI settlement, the role message
-// and the agent message the Envoy listener reports, and the stored backstop. The fifth — a
-// delivery the daemon already had for a role of the pod — needs nothing here, because a delivery
-// to a suspended claim already resumes it (supervise's deliverResuming) and the delivery is its
-// own account of why the pod came back.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+// Seven things wake a pod, and this file holds four of them: the CI settlement, the role message
+// and the agent message the Envoy listener reports, and the stored backstop. The fifth, the time
+// of a wait the released worker declared, and the sixth, a move of the design gate over a released
+// merger, wake through wakeReleased as they do (waitDue, wait.go; deliverGateMove, gate.go). The
+// seventh — a delivery the daemon already had for a role of the pod — needs nothing here, because
+// a delivery to a suspended claim already resumes it (supervise's deliverResuming) and the
+// delivery is its own account of why the pod came back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
@@ -130,17 +119,16 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
-<<<<<<< 7fa22de66d
 	// IssueReleasing is whether an idle release of issue's pod is in progress: the release's mark
 	// stands (issue_releases), so its rows may still stop the pod's roles and take the pod away.
 	// The design gate's move reads it (deliverGateMove): a role message to a merger whose pod is
 	// being released can find no session to reach.
 	IssueReleasing(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
-	// CancelPodBackstops drops the open backstops of issue's role in the caller's transaction:
-	// the design gate's opening cancels the backstop of every merger of the tree in merging, since
-	// the opening's one delivery is that merger's task for the opening (deliverGateMove).
-	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error
-=======
+	// CancelPodBackstopsOfRole drops the open backstops of issue's role in the caller's
+	// transaction: the design gate's opening cancels the backstop of every merger of the tree in
+	// merging, since the opening's one delivery is that merger's task for the opening
+	// (deliverGateMove).
+	CancelPodBackstopsOfRole(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error
 	// WaitsForItsSlot is whether issue owes a worker a start of its current phase and generation
 	// that waits for its admission slot while no slot of the issue stands
 	// (record.SuperviseRequest.NeedsSlot, which the outbox holds back until the slot comes): such
@@ -151,7 +139,6 @@ type Pods interface {
 	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
 	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
 	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
@@ -598,13 +585,8 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if fact.StatusesUnread {
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
-<<<<<<< 7fa22de66d
-	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
-	if err != nil || woken == 0 {
-=======
 	woken, err := e.wakeReleased(ctx, tx, issue, released, pods.WakeChecks, settlementDetail(fact))
 	if err != nil || !woken {
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		return "", err
 	}
 	return role, nil
@@ -695,7 +677,14 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts.
 //
-<<<<<<< 7fa22de66d
+// A backstop of an issue that waits for its admission slot fires and wakes no one
+// (Pods.WaitsForItsSlot). The issue gave its slot back to wait on another, or had its work come
+// back, and owes its worker a start that the outbox holds until the slot comes; the idle rule
+// releases its pod meanwhile. A wake would tell that worker to take up its phase while the
+// admission cap says the issue may not run, and its pod would go idle, be released and be woken
+// again, each idle period and backstop, for the whole wait. The slot's start brings the worker
+// back, with its task.
+//
 // A merger the design gate holds is not woken by its backstop while the gate is closed
 // (dispatch://INFRA-2040 R1, D13 of its plan): its turn would come during the hold with nothing
 // it may do. The hold is read in this fact's own transaction before the row is fired
@@ -707,15 +696,6 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // across a restart. The wake tick passes over such a backstop before it applies any fact
 // (HeldMergers, internal/daemon's fireDueBackstops); this read decides a fact that raced the
 // gate's, closed after the tick read it open.
-=======
-// A backstop of an issue that waits for its admission slot fires and wakes no one
-// (Pods.WaitsForItsSlot). The issue gave its slot back to wait on another, or had its work come
-// back, and owes its worker a start that the outbox holds until the slot comes; the idle rule
-// releases its pod meanwhile. A wake would tell that worker to take up its phase while the
-// admission cap says the issue may not run, and its pod would go idle, be released and be woken
-// again, each idle period and backstop, for the whole wait. The slot's start brings the worker
-// back, with its task.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -749,7 +729,6 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	return intake.Result{}, err
 }
 
-<<<<<<< 7fa22de66d
 // backstopHeld is whether the design gate holds role's work on key (HeldByDesignGate), read in tx
 // as the wake tick's filter reads it (heldMergers): the issue and its tree's gate rows under the
 // deployment's gated steps. Only a merger can be held, so no other role's backstop reads anything;
@@ -838,12 +817,6 @@ func HoldsNow(ctx context.Context, tx pgx.Tx, store record.Store, project string
 	return holds, nil
 }
 
-// wakeReleased is the one act every wake of this file performs, and the one place the gates are
-// read: the claim is still released, its issue is one this daemon records, and its tree is live —
-// neither the issue nor its root has left the workflow and neither lingers
-// (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
-// resume, never a wake's.
-=======
 // wakeReleased is the one act every wake of this file performs. issue is the issue of released,
 // which the caller read and hands in. It reads every gate of a wake, on that one issue: the claim
 // the caller read is released, its issue is one this daemon records (the caller reads no record of
@@ -866,7 +839,6 @@ func HoldsNow(ctx context.Context, tx pgx.Tx, store record.Store, project string
 // brings. The start is read after the release mark's lock (PauseOfWake), as the delivery wake
 // reads it (store.Store.TakeDeliveryWake): a cancel that held the mark has committed its start
 // before this read begins.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
 // and a project's pause stops as released, finds no record here, even where the database it shares
@@ -885,8 +857,8 @@ func HoldsNow(ctx context.Context, tx pgx.Tx, store record.Store, project string
 // writes the one outbox row that resumes the role and gives it the task naming the wake. Both are
 // this transaction's, so a wake this daemon took is a wake whose start row is queued: a take that
 // committed without one is what wedges a role, which is why the outbox's own delivery wake, which
-// resumes a claim in process instead, heals a refused wake (wakeForDelivery). It answers the id of
-// that start row, and 0 where it woke nothing.
+// resumes a claim in process instead, heals a refused wake (wakeForDelivery). It answers whether
+// it woke the role; wakeReleasedWith answers the id of that start row, and 0 where it woke nothing.
 //
 // A wake that takes the pod and whose cause is news — a CI settlement, a message to the role or one
 // to the session — ends the woken claim's wait in the same transaction, before its start row is
@@ -929,30 +901,21 @@ func HoldsNow(ctx context.Context, tx pgx.Tx, store record.Store, project string
 // use ends no wake and so closes no resume, and it still takes the pod, leaving a row that would
 // otherwise refuse every later wake of that role — a CI settlement queueing nothing, and R5's
 // backstop spent on a refusal, since podBackstopDue fires the row before it calls this. So each
-<<<<<<< 7fa22de66d
-// wake first closes a resume of this role written before the issue's newest release
-// (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back, since such a
-// resume was itself written after every release there is.
-func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (int64, error) {
-	return e.wakeReleasedWith(ctx, tx, released, kind, detail, at, record.SuperviseRequest{})
-}
-
-// wakeReleasedWith is wakeReleased whose start row carries marks' WaitID and GateMessage, the marks
-// of the daemon's own task the wake gives (wakeOrStart). marks names nothing else of the row.
-func (e *Engine) wakeReleasedWith(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time,
-	marks record.SuperviseRequest,
-) (int64, error) {
-	issue, err := e.store.Issue(ctx, tx, released.Issue)
-	if err != nil || issue == nil {
-		return 0, err
-	}
-=======
 // wake first closes a resume of this role written before the issue's newest release, recorded or
 // given up on (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back,
 // since such a resume was itself written after every release there is, or dated to the give-up of
 // the release it was taken under.
 func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issue, released supervise.Claim, kind, detail string) (bool, error) {
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	row, err := e.wakeReleasedWith(ctx, tx, issue, released, kind, detail, record.SuperviseRequest{})
+	return row != 0, err
+}
+
+// wakeReleasedWith is wakeReleased whose start row carries marks' WaitID and GateMessage, the marks
+// of the daemon's own task the wake gives (wakeOrStart), and which answers that row's id, 0 where
+// it woke nothing. marks names nothing else of the row.
+func (e *Engine) wakeReleasedWith(ctx context.Context, tx pgx.Tx, issue *record.Issue, released supervise.Claim, kind, detail string,
+	marks record.SuperviseRequest,
+) (int64, error) {
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil {
 		return 0, err
@@ -971,11 +934,11 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 	if queued {
 		e.logOnCommit(ctx, "wake: the role is coming back on a start already queued; this wake takes nothing",
 			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
-		return false, nil
+		return 0, nil
 	}
 	newest, closed, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if closed {
 		e.warnOnCommit(ctx, "wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
@@ -994,13 +957,9 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 	}
 	e.logOnCommit(ctx, "wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
 		"pause", pause, "stopped_by_pause", stopping)
-<<<<<<< 7fa22de66d
-	start := wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop))
+	start := wakeRow(*issue, released.Role, kind, detail, pause, WakeTask(kind, detail, stop))
 	start.WaitID, start.GateMessage = marks.WaitID, marks.GateMessage
 	return e.enqueueID(ctx, tx, issue.Key, start)
-=======
-	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, detail, pause, WakeTask(kind, detail, stop)))
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role

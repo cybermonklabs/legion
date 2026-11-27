@@ -55,7 +55,7 @@ func wakeRigOf(t *testing.T, pool *pgxpool.Pool, steps []record.DesignStep) wake
 	clock := &checkClock{now: wakeAt}
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: steps, Pods: wakePods(t, pool), Linger: time.Hour,
 		ProductionCheckRole: claim.RoleTester, Clock: clock.Now}, slog.New(slog.NewTextHandler(logged, nil)))
-	return wakeRig{pool: pool, engine: engine, logged: logged, apply: applyFacts(t, pool, engine)}
+	return wakeRig{pool: pool, engine: engine, logged: logged, apply: applyFacts(t, pool, engine), clock: clock}
 }
 
 // backstopUnfired is whether backstop id is still armed and not fired.
@@ -87,6 +87,7 @@ func factSpent(t *testing.T, pool *pgxpool.Pool, event string) bool {
 // merger: the backstop left no open resume, so pod_resumes_one_open_per_role refuses nothing, and
 // the wake cancels the backstop as every wake does (TakePodWake).
 func TestAHeldMergersBackstopIsLeftDueAndACIWakeAfterItIsTaken(t *testing.T) {
+	t.Parallel()
 	rig := newHeldMergerWakeRig(t)
 	id := armBackstop(t, rig.pool, claim.RoleMerger, wakeAt.Add(-time.Minute))
 	event := fmt.Sprintf("pod-backstop:%d", id)
@@ -126,6 +127,7 @@ func TestAHeldMergersBackstopIsLeftDueAndACIWakeAfterItIsTaken(t *testing.T) {
 // applies, fires the row and wakes the merger with the backstop's task. It is the merger's one wake
 // of that opening.
 func TestAHeldMergersBackstopIsTakenOnceABootEmptiesTheGatedSteps(t *testing.T) {
+	t.Parallel()
 	rig := newHeldMergerWakeRig(t)
 	id := armBackstop(t, rig.pool, claim.RoleMerger, wakeAt.Add(-time.Minute))
 	event := fmt.Sprintf("pod-backstop:%d", id)
@@ -149,6 +151,7 @@ func TestAHeldMergersBackstopIsTakenOnceABootEmptiesTheGatedSteps(t *testing.T) 
 // phase, for an issue the record does not hold, or for any issue under a deployment that gates no
 // step.
 func TestTheBackstopFilterAnswersTheIssuesWhoseMergerTheDesignGateHolds(t *testing.T) {
+	t.Parallel()
 	rig := newHeldMergerWakeRig(t)
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1,

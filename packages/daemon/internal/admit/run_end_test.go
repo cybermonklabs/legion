@@ -479,17 +479,12 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
-<<<<<<< 7fa22de66d
-		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
-		intake.Handover{}, intake.CloseRoot{}, intake.WaitDeclared{}, intake.WaitNews{}, intake.WaitDue{},
-=======
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.LingerDeadline{},
 		intake.Handover{}, intake.CloseRoot{}, intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
-		intake.BasisChangesRead{}, intake.ReparentRead{},
+		intake.BasisChangesRead{}, intake.ReparentRead{}, intake.WaitDeclared{}, intake.WaitNews{}, intake.WaitDue{},
 		// A change of the P0 bound, which records it and makes the pass every fact that is not a
 		// Dispatch issue makes.
 		intake.P0BoundChanged{Change: store.P0BoundChange{Mode: store.P0BoundUnbounded, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "runaway"}},
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	} {
 		if name := factName(fact); name == kind {
 			return fact

@@ -141,6 +141,7 @@ func (r *waitRig) assertRepaired(issue string, before int, id string) {
 // background report is told to its architect, and, the report cleared, the silence sends the
 // merger its phase's task again and tells its architect.
 func TestASilenceOfAMergerTheDesignGateHoldsWritesNothingUntilTheGateOpens(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	r.tree(phase.Planning)
 	r.issue(waitChild, phase.Merging)
@@ -181,6 +182,7 @@ func TestASilenceOfAMergerTheDesignGateHoldsWritesNothingUntilTheGateOpens(t *te
 // gate is closed and its only unapproved step has no row. Its merger in merging, quiet past the
 // bound, is a worker the sweep repairs as on any open phase.
 func TestAGatedStepWithNoRowHoldsNoMergerAndItsSilenceIsRepaired(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, []record.DesignStep{record.DesignStepSpec, record.DesignStepDecisions})
 	r.tree(phase.Planning)
 	r.issue(waitChild, phase.Merging)
@@ -214,6 +216,7 @@ func TestAGatedStepWithNoRowHoldsNoMergerAndItsSilenceIsRepaired(t *testing.T) {
 // reaches its session, which ends the wait, and the same facts act on the tester as before it
 // declared: the background report is told, and, the report cleared, the silence is repaired.
 func TestASilenceOfAWorkerWhoseWaitStandsWritesNothingUntilTheWaitEnds(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	r.tree(phase.Testing)
 	wait := r.waiting(waitRoot, claim.RoleTester)
@@ -253,6 +256,7 @@ func TestASilenceOfAWorkerWhoseWaitStandsWritesNothingUntilTheWaitEnds(t *testin
 // reads closed and still holds no merger; the spec's version 5 then closes the spec's own row, and
 // the merger is held again.
 func TestTheSilenceSweepsFilterHoldsBackHeldMergersAndStandingWaitsAlone(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	r.tree(phase.Planning)
 	r.issue(waitChild, phase.Merging)
@@ -319,6 +323,7 @@ func TestTheSilenceSweepsFilterHoldsBackHeldMergersAndStandingWaitsAlone(t *test
 // mergerHeld). The merger's issue stands in merging in a tree whose root is recorded under
 // another project, with the spec's version 4 of that tree unapproved. Both filters hold it.
 func TestTheHoldOfAMergerWhoseRootIsUnrecordedIsOneAnswerForBothFilters(t *testing.T) {
+	t.Parallel()
 	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
 	const root, child = "LEGION-220", "LEGION-221"
 	issue := func(key string, project string, at phase.Phase) record.Issue {

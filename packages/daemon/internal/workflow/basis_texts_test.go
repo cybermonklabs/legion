@@ -26,9 +26,9 @@ const basisOpening = " The spec step stands open on an ancestor's approval: a pe
 // An opening of the standing gate on an ancestor's approval names that approval: the ancestor, its
 // document and the version a person approved, and says that no person approved the root's version.
 // It begins with the words roles/merger.md quotes as the release of a merge: `The design gate of
-// <tree> opened: every step the deployment gates now stands open`, or, where a person's approval
-// of another step opens the gate while the spec step stands on a basis, the quote that names that
-// person's approval first; the step on the basis is named after it. Each holder took every
+// <tree> opened: every gated step that someone registered now stands open`, or, where a person's
+// approval of another step opens the gate while the spec step stands on a basis, the quote that
+// names that person's approval first; the step on the basis is named after it. Each holder took
 // approved version before the opening (seedTold), so none is owed news of the approved design and
 // each is sent the opened message, with the clause that nothing changed since the version of the
 // opening step it took (openingDelivery), as the gate messages tests seed it.
@@ -47,17 +47,17 @@ func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t
 		{
 			name:   "a registration on an approved basis opens the gate",
 			steps:  config.DesignGateRootIssues.Steps(),
-			quote:  "The design gate of <tree> opened: every step the deployment gates now stands open",
-			want:   "The design gate of LEGION-208 opened: every step the deployment gates now stands open. A merge the closed gate held is released." + basisOpening,
+			quote:  "The design gate of <tree> opened: every gated step that someone registered now stands open",
+			want:   "The design gate of LEGION-208 opened: every gated step that someone registered now stands open. A merge the closed gate held is released." + basisOpening,
 			took:   map[record.DesignStep]int{record.DesignStepSpec: 4},
 			opened: 4,
 		},
 		{
 			name:  "a person's approval of another step opens the gate beside a step on a basis",
 			steps: twoSteps(),
-			quote: "The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open",
+			quote: "The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every gated step that someone registered now stands open",
 			want: "The design gate of LEGION-208 opened: a person approved version 2 of its criteria document (artifact-criteria), " +
-				"and every step the deployment gates now stands open. A merge the closed gate held is released." + basisOpening,
+				"and every gated step that someone registered now stands open. A merge the closed gate held is released." + basisOpening,
 			took:   map[record.DesignStep]int{record.DesignStepSpec: 4, record.DesignStepCriteria: 2},
 			opened: 2,
 		},

@@ -282,13 +282,8 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 	applyMirrored(t, pool, engine, "criteria-2", intake.DispatchArtifact{
 		Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
 	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
-<<<<<<< 7fa22de66d
-	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 4)},
-=======
 	closed := []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 4)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
 	}
 	assertRoleMessages(t, pool, gatedRoot, closed)
@@ -296,17 +291,8 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 
 	// The spec's own approval is the one that opens every gated step, so it is the one told.
 	applyMirrored(t, pool, engine, "spec-approved-4", stepApproval(gatedRoot, "artifact-208", 4, record.EventMark{Seq: 12}))
-<<<<<<< 7fa22de66d
-	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 4)},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
-	})
-=======
 	assertRoleMessages(t, pool, gatedRoot, closed)
 	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 }
 
 // The message and the merger's start hold ask one question, so they read one predicate

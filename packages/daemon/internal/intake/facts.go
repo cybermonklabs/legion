@@ -2139,62 +2139,19 @@ type Handler interface {
 // giver the version does not name yet (record.Store.AddPlanGiver) and the mark of an id never seen.
 //
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
-<<<<<<< 7fa22de66d
-// sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
-// id stays the same, and writes nothing where it sets it.
-//
-// WaitEnded is a WaitNews fact's answer: the wait it names ended in this fact. It is false for a
-// wait a newer declaration replaced or something already ended, and for a duplicate, which no
-// handler ran for: the first report of that wait is the one that ended it.
-=======
 // sent (ApplyFact), where this transaction marked it. A handler sets it only for a refusal whose
 // cause can clear while the fact's id stays the same, and writes nothing where it sets it. A
 // PlanGiven applies whatever its mark (factApplies), so its Unspent changes only what a release
 // before reads, which decides by the mark alone.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+//
+// WaitEnded is a WaitNews fact's answer: the wait it names ended in this fact. It is false for a
+// wait a newer declaration replaced or something already ended, and for a duplicate, which no
+// handler ran for: the first report of that wait is the one that ended it.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
 	WaitEnded bool
-}
-
-<<<<<<< 7fa22de66d
-type commitHooksKey struct{}
-
-// WithCommitHooks scopes OnCommit to one transaction: the returned function runs, in order, every
-// hook registered on the returned context, and the transaction's owner calls it once the
-// transaction has committed, never when it rolls back. ApplyFact is that owner for every fact.
-// The hook list is not goroutine-safe: a transaction's handlers run one after another on one
-// goroutine, and OnCommit must only be called on that goroutine.
-func WithCommitHooks(ctx context.Context) (context.Context, func()) {
-	hooks := &[]func(){}
-	return context.WithValue(ctx, commitHooksKey{}, hooks), func() {
-		for _, hook := range *hooks {
-			hook()
-		}
-	}
-}
-
-// OnCommit runs fn once the transaction ctx scopes has committed. Handler state kept in memory,
-// and the journal line saying what a fact did, must never claim more than what committed: a later
-// handler's failure rolls the transaction back, and a fact retried after a failed commit would say
-// it twice. OnCommit panics on a context no WithCommitHooks scopes, since a handler run outside
-// ApplyFact has no commit to wait for.
-func OnCommit(ctx context.Context, fn func()) {
-	hooks, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	if !ok {
-		panic("intake.OnCommit outside a transaction's commit scope (intake.WithCommitHooks)")
-	}
-	*hooks = append(*hooks, fn)
-}
-
-// CommitScoped reports whether ctx is within a transaction's commit scope (WithCommitHooks): a
-// caller that wants a hook to run once the write it just made has committed can tell a transaction
-// that will commit from a write made outside any scope, which has no commit to wait for.
-func CommitScoped(ctx context.Context) bool {
-	_, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	return ok
 }
 
 type appliedFactKey struct{}
@@ -2220,8 +2177,6 @@ func WithAppliedFact(ctx context.Context, source, eventID string) context.Contex
 	return context.WithValue(ctx, appliedFactKey{}, appliedFact{source: source, eventID: eventID})
 }
 
-=======
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
 // Reasons is set on a refused plan alone (PlanRefused): the reasons of its causes, each naming
 // its task where it has one, which the route writes beside the code; every other refusal is its
@@ -2565,15 +2520,11 @@ func PlanRatingUnexpected(what string) *Refusal {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-<<<<<<< 7fa22de66d
-// last message it applied (openConsumer). Every handler's context names the fact by the source
-// and event id it applies under (AppliedFact).
-=======
 // last message it applied (openConsumer). A fact a replay applies (withReplayClose) closes the
 // give-up it was stored in, in the same transaction too, as applied or, for a duplicate, as
 // already applied (closeReplayed). The fact commits through store.Transact, so a fact whose
-// commit's reply is lost is reported by what the store says of it.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+// commit's reply is lost is reported by what the store says of it. Every handler's context names
+// the fact by the source and event id it applies under (AppliedFact).
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -2609,68 +2560,13 @@ func PlanRatingUnexpected(what string) *Refusal {
 // Reconcile.
 func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
-<<<<<<< 7fa22de66d
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return Result{}, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	if err := SerializeFacts(ctx, tx); err != nil {
-		return Result{}, fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
-	}
-
-	fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
-	if err != nil {
-		return Result{}, err
-	}
-	// A duplicate records its position too: it is acknowledged as applied, so its consumer is past
-	// it either way.
-	if err := recordStreamPosition(ctx, tx); err != nil {
-		return Result{}, err
-	}
-	if !fresh {
-		if err := tx.Commit(ctx); err != nil {
-			return Result{}, err
-		}
-		committed = true
-		return Result{Duplicate: true}, nil
-	}
-
-	fact, apply, err := settleObserved(ctx, tx, fact)
-	if err != nil {
-		return Result{}, err
-	}
-	if !apply {
-		handlers = nil
-	}
-	ctx, committedHooks := WithCommitHooks(ctx)
-	ctx = WithAppliedFact(ctx, source, eventID)
-	ctx, settle := OpenSettlers(ctx, handlers...)
-	var result Result
-	for _, handler := range handlers {
-		candidate, err := handler.Apply(ctx, tx, fact)
-=======
 	turn := func() {}
 	if turns, ok := pool.(factTurns); ok && !store.CommitScoped(ctx) {
 		release, err := turns.FactTurn(ctx)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		if err != nil {
 			return Result{}, fmt.Errorf("wait for the pool's turn to apply fact %s/%s: %w", source, eventID, err)
 		}
-<<<<<<< 7fa22de66d
-		if result.Refusal == nil && candidate.Refusal != nil {
-			result.Refusal = candidate.Refusal
-		}
-		result.Unspent = result.Unspent || candidate.Unspent
-		result.WaitEnded = result.WaitEnded || candidate.WaitEnded
-=======
 		turn = release
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
 	defer turn()
 	var result Result
@@ -2702,6 +2598,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		if !apply {
 			handlers = nil
 		}
+		ctx = WithAppliedFact(ctx, source, eventID)
 		ctx, settle := OpenSettlers(ctx, handlers...)
 		applied, err := ApplyHandlers(ctx, tx, fact, handlers)
 		if err != nil {
@@ -2735,9 +2632,10 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 
 // ApplyHandlers runs handlers on fact in order, inside the caller's transaction, and combines what
 // they answer: the first refusal any of them gives, every handler run whatever an earlier one
-// refused, and whether any left the fact unspent. The first error stops the run and is the whole
-// answer. It is ApplyFact's one combination of its handlers, which a handler made of handlers
-// (the daemon's test seam that drops a consumed event) answers with as well.
+// refused, whether any left the fact unspent, and whether any ended the wait it names
+// (Result.WaitEnded). The first error stops the run and is the whole answer. It is ApplyFact's one
+// combination of its handlers, which a handler made of handlers (the daemon's test seam that drops
+// a consumed event) answers with as well.
 func ApplyHandlers(ctx context.Context, tx pgx.Tx, fact Fact, handlers []Handler) (Result, error) {
 	var result Result
 	for _, handler := range handlers {
@@ -2749,6 +2647,7 @@ func ApplyHandlers(ctx context.Context, tx pgx.Tx, fact Fact, handlers []Handler
 			result.Refusal = applied.Refusal
 		}
 		result.Unspent = result.Unspent || applied.Unspent
+		result.WaitEnded = result.WaitEnded || applied.WaitEnded
 	}
 	return result, nil
 }

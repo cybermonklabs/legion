@@ -50,11 +50,7 @@ func newWakeRig(t *testing.T) wakeRig {
 		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1", Failing: []string{}})
 	seedReleasedClaim(t, pool, claim.RoleImplementer, "session-implementer")
 	seedReleasedClaim(t, pool, claim.RoleArchitect, "session-architect")
-<<<<<<< 7fa22de66d
 	return wakeRigOf(t, pool, config.DesignGateRootIssues.Steps())
-=======
-	return wakeRig{pool: pool, engine: engine, logged: logged, apply: applyFacts(t, pool, engine), clock: clock}
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 }
 
 // wakePods is the project's pod records as the daemon hands them to the engine
@@ -686,60 +682,6 @@ func TestAWakeDoesNothingOnceTheDaemonTookTheClaimOver(t *testing.T) {
 	}
 }
 
-<<<<<<< 7fa22de66d
-// R6: every wake's task names the wake, so the woken agent's first turn reads why its pod came
-// back without reading anything else.
-func TestWakeTaskNamesItsWake(t *testing.T) {
-	for _, tc := range []struct {
-		kind, detail, want string
-	}{
-		{kind: pods.WakeChecks, detail: "head1 failed build", want: "head1 failed build"},
-		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic"},
-		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session"},
-		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "backstop"},
-		{kind: pods.WakeWaitTime, detail: waitTimeTask(record.ClaimWait{ID: "wait-1", WaitingOn: "the review of the head"}),
-			want: "The time of your wait wait-1 came."},
-		{kind: pods.WakeDesignGate, detail: gateMovedTask("LEGION-208"), want: "The design gate of LEGION-208 moved."},
-	} {
-		t.Run(tc.kind, func(t *testing.T) {
-			task := WakeTask(tc.kind, tc.detail, StoppedByRelease)
-			if !strings.Contains(task, tc.want) || !strings.Contains(task, "released") {
-				t.Fatalf("WakeTask(%s) = %q, want it to name the release and %q", tc.kind, task, tc.want)
-			}
-		})
-	}
-}
-
-// Decision 16 of dispatch://INFRA-3759: a wake of a session a project's pause stopped says so.
-// The project was paused, its pause stopped the session, and the pod, the workspace and the
-// unpushed work are as the session left them; the pod was never released. The lines about the
-// message that woke it stay.
-func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
-	for _, tc := range []struct {
-		kind, detail, want string
-	}{
-		{kind: pods.WakeChecks, detail: "head1 failed build", want: "head1 failed build"},
-		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic (legion-LEGION-208-implementer) while your session was stopped. Envoy keeps a role message for one hour"},
-		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session (session-1) while your session was stopped. A message that Envoy or Dispatch stored for your session reaches you in this session."},
-		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "your backstop running out"},
-	} {
-		t.Run(tc.kind, func(t *testing.T) {
-			task := WakeTask(tc.kind, tc.detail, StoppedByPause)
-			for _, want := range []string{"Your project was paused, and its pause stopped your session.",
-				"Your pod, your workspace and any work you had not pushed are as you left them.", tc.want} {
-				if !strings.Contains(task, want) {
-					t.Fatalf("WakeTask(%s) after a pause = %q, want it to say %q", tc.kind, task, want)
-				}
-			}
-			if strings.Contains(task, "released") || strings.Contains(task, "pod was gone") {
-				t.Fatalf("WakeTask(%s) after a pause = %q, want no word of a release: the pause kept the pod", tc.kind, task)
-			}
-		})
-	}
-}
-
-=======
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 // seedWakePause opens a pause of project LEGION at at, as the pause's own transaction writes it,
 // and answers its id.
 func seedWakePause(t *testing.T, pool *pgxpool.Pool, at time.Time) int64 {

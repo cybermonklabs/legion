@@ -21,6 +21,7 @@ import (
 // release then takes its pod during the hold, so the approval writes the gate's own start of the
 // merger beside the opening message it sends the root's architect.
 func TestNoRowHoldsNoMergerAndTheSpecsApprovalSendsTheOpeningMessage(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedTreeLifecycle(t, pool, gatedRoot)

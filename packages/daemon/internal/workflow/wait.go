@@ -780,7 +780,7 @@ func (e *Engine) wakeOrStart(ctx context.Context, tx pgx.Tx, issue record.Issue,
 			return 0, false, err
 		}
 		if found {
-			row, err := e.wakeReleasedWith(ctx, tx, released, kind, start.Task, e.now(), start)
+			row, err := e.wakeReleasedWith(ctx, tx, &issue, released, kind, start.Task, start)
 			if err != nil || row != 0 {
 				return row, row != 0, err
 			}

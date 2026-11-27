@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // The words a woken role reads: WakeTask for each wake and each stop, and the retells a cancel and
@@ -22,6 +23,9 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic"},
 		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session"},
 		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "backstop"},
+		{kind: pods.WakeWaitTime, detail: waitTimeTask(record.ClaimWait{ID: "wait-1", WaitingOn: "the review of the head"}),
+			want: "The time of your wait wait-1 came."},
+		{kind: pods.WakeDesignGate, detail: gateMovedTask("LEGION-208"), want: "The design gate of LEGION-208 moved."},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			task := WakeTask(tc.kind, tc.detail, StoppedByRelease)

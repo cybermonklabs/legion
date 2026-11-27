@@ -1116,8 +1116,9 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 	applyMirrored(t, pool, engine, "criteria-2", intake.DispatchArtifact{
 		Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
 	closed := gateMovedBody(record.DesignStepCriteria, criteriaDoc, 2, false)
+	mergerClosed := mergerClosedNote(gatedRoot, record.DesignStepCriteria, criteriaDoc, 2)
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosed},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
 	})
 	if engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
@@ -1126,7 +1127,7 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 
 	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosed},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
 	})
 	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")

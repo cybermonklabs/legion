@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -76,6 +77,7 @@ func openSpecGate(root string) record.TreeGate {
 // cause of that term (WaitEndCause). A claim holding no wait row with no end has no wait at all,
 // and nothing to end.
 func TestAWaitStandsUntilOneOfItsTermsFailsAndItsCauseNamesThatTerm(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		start  func() waitTerms
@@ -184,6 +186,7 @@ func TestAWaitStandsUntilOneOfItsTermsFailsAndItsCauseNamesThatTerm(t *testing.T
 // merger. A reading where every term fails at once is repaired one term at a time, in that order,
 // and at each step the cause names the next term still failing, until the wait stands.
 func TestAWaitsEndCauseIsItsFirstFailingTermInOneFixedOrder(t *testing.T) {
+	t.Parallel()
 	w := aMergersStandingWait()
 	merging, declared := w.issue, *w.wait()
 	w.row.CompletedAt = waitNow
@@ -233,6 +236,7 @@ func TestAWaitsEndCauseIsItsFirstFailingTermInOneFixedOrder(t *testing.T) {
 // deployment that gates no step; a merger under an open gate, a merger outside merging and any
 // other role in any phase are never held.
 func TestTheDesignGateHoldsOnlyAMergerInMergingWhereTheOutboxFenceHoldsItsStart(t *testing.T) {
+	t.Parallel()
 	const root = "LEGION-208"
 	approved := 1
 	approvedSpec := record.DesignGate{Issue: root, Step: record.DesignStepSpec, ArtifactID: "spec-artifact",
@@ -299,7 +303,7 @@ func TestTheDesignGateHoldsOnlyAMergerInMergingWhereTheOutboxFenceHoldsItsStart(
 			if held != tc.held {
 				t.Fatalf("HeldByDesignGate = %t, want %t", held, tc.held)
 			}
-			if !held && gate != (record.DesignGate{}) {
+			if !held && !reflect.DeepEqual(gate, record.DesignGate{}) {
 				t.Errorf("HeldByDesignGate answered the gate %+v for a role it does not hold, want none", gate)
 			}
 			if held && (gate.Step != record.DesignStepSpec || gate.ArtifactID != "spec-artifact" || gate.LatestVersion != 2) {

@@ -37,6 +37,7 @@ const gateDeliveryLine = `msg="workflow: a held merger's gate delivery"`
 // since the fence holds the phase's start; at the opening any start with a task counts. A taskless
 // start and a task the claim holds and has not taken count for nothing.
 func TestTheGateDeliveryOfAMergerFollowsItsClaimAndItsQueuedStarts(t *testing.T) {
+	t.Parallel()
 	held := func(state supervise.ClaimState, by supervise.SuspendSource) *record.RoleClaim {
 		return &record.RoleClaim{State: state, SuspendedBy: by}
 	}
@@ -50,6 +51,7 @@ func TestTheGateDeliveryOfAMergerFollowsItsClaimAndItsQueuedStarts(t *testing.T)
 		name      string
 		run       record.RoleRun
 		releasing bool
+		news      bool
 		// atClose and atOpening are the choice at each move, and row the queued start that is the
 		// delivery where the choice is one.
 		atClose, atOpening gateChoice
@@ -60,6 +62,12 @@ func TestTheGateDeliveryOfAMergerFollowsItsClaimAndItsQueuedStarts(t *testing.T)
 		{name: "a retired claim", run: record.RoleRun{Claim: held(supervise.StateRetired, "")}, atClose: gateNothing, atOpening: gateNothing},
 		{name: "a claim an operator suspended", run: record.RoleRun{Claim: held(supervise.StateSuspended, supervise.SuspendedByOperator)},
 			atClose: gateNothing, atOpening: gateNothing},
+		{name: "a claim the controller suspended", run: record.RoleRun{Claim: held(supervise.StateSuspended, supervise.SuspendedByController)},
+			atClose: gateNothing, atOpening: gateNothing},
+		{name: "a live session owed news of the approved design", run: record.RoleRun{Claim: held(supervise.StateIdle, "")}, news: true,
+			atClose: gateRoleMessage, atOpening: gateNews},
+		{name: "a released claim owed news of the approved design", run: record.RoleRun{Claim: released}, news: true,
+			atClose: gateOwnStart, atOpening: gateNews},
 		{name: "a ready session", run: record.RoleRun{Claim: held(supervise.StateReady, "")}, atClose: gateRoleMessage, atOpening: gateRoleMessage},
 		{name: "an idle session", run: record.RoleRun{Claim: held(supervise.StateIdle, "")}, atClose: gateRoleMessage, atOpening: gateRoleMessage},
 		{name: "a working session", run: record.RoleRun{Claim: held(supervise.StateWorking, "")}, atClose: gateRoleMessage, atOpening: gateRoleMessage},
@@ -93,7 +101,7 @@ func TestTheGateDeliveryOfAMergerFollowsItsClaimAndItsQueuedStarts(t *testing.T)
 				open bool
 				want gateChoice
 			}{{open: false, want: tc.atClose}, {open: true, want: tc.atOpening}} {
-				choice, row := gateDelivery(tc.run, tc.releasing, move.open)
+				choice, row := gateDelivery(tc.run, tc.releasing, move.open, tc.news)
 				wantRow := int64(0)
 				if move.want == gateQueuedStart {
 					wantRow = tc.row
@@ -120,6 +128,7 @@ func moveName(open bool) string {
 // approval stands newest, its document and its version. A task that carries no note — another
 // role's, a tree whose gated step has no row — carries no message either.
 func TestTheGatesOwnTaskCarriesTheClosingOrTheOpeningMessageAtItsSend(t *testing.T) {
+	t.Parallel()
 	const root = "LEGION-208"
 	merging := record.Issue{Key: "LEGION-209", Tree: root, Project: "LEGION", Phase: phase.Merging, Generation: 3, Status: "in_progress"}
 	approved := func(step record.DesignStep, document string, version int, seq int64) record.DesignGate {
@@ -137,13 +146,13 @@ func TestTheGatesOwnTaskCarriesTheClosingOrTheOpeningMessageAtItsSend(t *testing
 				"Merge nothing, enqueue nothing, and take a pull request you queued back out of the merge queue.",
 			State: "closed", Step: "spec", Version: 2}},
 		{name: "the gate open", role: claim.RoleMerger, gate: openSpecGate(root), want: supervise.GateNote{
-			Text: gateOpenedMessage(root, record.DesignStepSpec, "spec-artifact", 2), State: "open", Step: "spec", Version: 2}},
+			Text: gateOpenedMessage(root, record.DesignStepSpec, "spec-artifact", 2, nil), State: "open", Step: "spec", Version: 2}},
 		{name: "the gate open over two steps, the second step's approval the newest", role: claim.RoleMerger,
 			gate: record.TreeGate{Steps: twoSteps(), Rows: map[record.DesignStep]record.DesignGate{
 				record.DesignStepCriteria: approved(record.DesignStepCriteria, "criteria-artifact", 5, 4),
 				record.DesignStepSpec:     approved(record.DesignStepSpec, "spec-artifact", 3, 9),
 			}},
-			want: supervise.GateNote{Text: gateOpenedMessage(root, record.DesignStepSpec, "spec-artifact", 3), State: "open", Step: "spec", Version: 3}},
+			want: supervise.GateNote{Text: gateOpenedMessage(root, record.DesignStepSpec, "spec-artifact", 3, nil), State: "open", Step: "spec", Version: 3}},
 		{name: "a tree whose gated step has no row", role: claim.RoleMerger, gate: record.TreeGate{Steps: []record.DesignStep{record.DesignStepSpec}}},
 		{name: "another role's task", role: claim.RoleImplementer, gate: closedSpecGate(root)},
 	} {
@@ -191,12 +200,16 @@ func seedGateDeliveryTree(t *testing.T) (*pgxpool.Pool, wakeRig) {
 		}
 		return issue
 	}
+	took1 := map[record.DesignStep]int{record.DesignStepSpec: 1}
 	for _, key := range []string{liveMerger, releasedMerger, releasedMerger2, retiredMerger, failedMerger, suspendedMerger, unclaimedMerger} {
 		seedIssue(t, pool, member(key, phase.Merging))
+		seedTold(t, pool, key, record.AudienceHolder, took1)
 	}
 	seedIssue(t, pool, member(testingMember, phase.Testing))
+	seedTold(t, pool, testingMember, record.AudienceHolder, took1)
+	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took1)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: heldMergerSpec, LatestVersion: 1,
-		ApprovedVersion: new(1), EverOpened: true})
+		ApprovedVersion: new(1), ApprovedMark: record.EventMark{Seq: 2}, EverOpened: true})
 	seedTreeLifecycle(t, pool, gatedRoot)
 	for key, state := range map[string][2]string{
 		liveMerger:      {string(supervise.StateIdle), ""},
@@ -357,15 +370,16 @@ func wantDeliveryLogged(t *testing.T, rig wakeRig, issue string, open bool, choi
 // so it is that merger's delivery and no second start is written, and the backstop of every
 // merger of the tree in merging is cancelled, whatever its delivery.
 func TestEachMoveOfTheDesignGateGivesEveryMergerOfTheTreeItsOwnDelivery(t *testing.T) {
+	t.Parallel()
 	pool, rig := seedGateDeliveryTree(t)
 	away := []string{retiredMerger, failedMerger, suspendedMerger, unclaimedMerger}
 
-	rig.apply("spec-version-2", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: heldMergerSpec, Kind: intake.DispatchArtifactVersion,
-		Version: 2, Mark: record.EventMark{Seq: 4}})
-	closedNote := mergerClosedNote(gatedRoot, record.DesignStepSpec, heldMergerSpec, 2)
+	rig.apply("spec-changes-1", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: heldMergerSpec, Kind: intake.DispatchArtifactChangesRequested,
+		Version: 1, Reason: "recheck the spec", Mark: record.EventMark{Seq: 4}})
+	closedNote := mergerClosedNote(gatedRoot, record.DesignStepSpec, heldMergerSpec, 1)
 	assertRoleMessages(t, pool, liveMerger, []record.RoleMessage{
 		{Role: string(mergerToken(t, liveMerger)), Body: closedNote},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 2, false)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 1, false)},
 	})
 	for _, says := range []string{"The design gate of LEGION-208 closed", "Merge nothing",
 		"take a pull request you queued back out of the merge queue"} {
@@ -374,7 +388,7 @@ func TestEachMoveOfTheDesignGateGivesEveryMergerOfTheTreeItsOwnDelivery(t *testi
 		}
 	}
 	assertRoleMessages(t, pool, testingMember, []record.RoleMessage{
-		{Role: treeRoleToken(t, testingMember, claim.RoleTester), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 2, false)},
+		{Role: treeRoleToken(t, testingMember, claim.RoleTester), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 1, false)},
 	})
 	closingStarts := map[string]mergerStart{}
 	for _, issue := range []string{releasedMerger, releasedMerger2} {
@@ -398,12 +412,12 @@ func TestEachMoveOfTheDesignGateGivesEveryMergerOfTheTreeItsOwnDelivery(t *testi
 		wantDeliveryLogged(t, rig, issue, false, gateNothing)
 	}
 
-	rig.apply("spec-approved-2", stepApproval(gatedRoot, heldMergerSpec, 2, record.EventMark{Seq: 5}))
+	rig.apply("spec-approved-1", stepApproval(gatedRoot, heldMergerSpec, 1, record.EventMark{Seq: 5}))
 	assertRoleMessages(t, pool, liveMerger, []record.RoleMessage{
 		{Role: string(mergerToken(t, liveMerger)), Body: closedNote},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 2, false)},
-		{Role: string(mergerToken(t, liveMerger)), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 2, true)},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 2, true)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 1, false)},
+		{Role: string(mergerToken(t, liveMerger)), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 1, true) + " " + nothingChangedClause(1)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, heldMergerSpec, 1, true) + " " + treeNothingChangedClause(1)},
 	})
 	wantDeliveryLogged(t, rig, liveMerger, true, gateRoleMessage)
 	for _, issue := range []string{releasedMerger, releasedMerger2} {
@@ -434,23 +448,31 @@ func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 // the phase's start counts too. A start that carries no task, the resume of a cancelled idle
 // release, counts for nothing at either move.
 func TestAMergerWhoseQueueHoldsAStartWithATaskGetsNoSecondGateStart(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// queued is the start of the released merger the outbox holds before the move.
 		queued record.SuperviseRequest
 		open   bool
-		// counts is whether that start is the merger's delivery of the move.
+		// counts is whether that start is the merger's delivery of the move. wake says whether the
+		// gate's own start is written as a wake (false where a start is already queued,
+		// Pods.StartQueued, so wakeOrStart queues a plain start instead).
 		counts bool
+		wake   bool
 	}{
 		{name: "a wake's start at the close", queued: record.SuperviseRequest{Task: WakeTask(pods.WakeChecks, "head1 passed every check", StoppedByRelease)}, counts: true},
-		{name: "a start of its phase at the close", queued: record.SuperviseRequest{Phase: phase.Merging, Task: "Merge the head.", Entry: 1}},
+		{name: "a start of its phase at the close", queued: record.SuperviseRequest{Phase: phase.Merging, Task: "Merge the head.", Entry: 1}, wake: true},
 		{name: "a start of its phase at the opening", queued: record.SuperviseRequest{Phase: phase.Merging, Task: "Merge the head.", Entry: 1},
 			open: true, counts: true},
 		{name: "the resume of a cancelled idle release at the opening", open: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newHeldMergerWakeRig(t)
-			if !tc.open {
+			if tc.open {
+				// The merger already took version 2 (a changes request closed the gate on it), so
+				// it is owed no news at the opening and its queued start is judged by gateDelivery.
+				seedTold(t, rig.pool, gatedRoot, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 2})
+			} else {
 				approved := 2
 				seedGate(t, rig.pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: heldMergerSpec,
 					LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
@@ -483,7 +505,7 @@ func TestAMergerWhoseQueueHoldsAStartWithATaskGetsNoSecondGateStart(t *testing.T
 			if len(starts) != 2 || starts[0].id != queued[0].id || !starts[1].request.GateMessage {
 				t.Fatalf("the merger's starts after the %s = %+v, want the queued start and the gate's own after it", moveName(tc.open), starts)
 			}
-			wantDeliveryLogged(t, rig, gatedRoot, tc.open, gateOwnStart, "wake=true")
+			wantDeliveryLogged(t, rig, gatedRoot, tc.open, gateOwnStart, "wake="+strconv.FormatBool(tc.wake))
 		})
 	}
 }

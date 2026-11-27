@@ -658,15 +658,10 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if id == "" {
 		id = rand.Text()
 	}
-<<<<<<< 7fa22de66d
-	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept, Resume: request.Resume,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed,
-		GateMessage: request.GateMessage}
-=======
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Resume: request.Resume, News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry,
-		CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed,
+		GateMessage: request.GateMessage}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -795,28 +790,17 @@ func (c Claim) openRoundHoldsTask() bool {
 
 // sendPending sends the pending delivery if everything a send needs is true now: the claim is
 // ready or idle, the delivery is neither confirmed nor already on its way, the issue is still in
-<<<<<<< 7fa22de66d
 // the phase the task was queued for, no standing wait of a phase worker holds a task it had taken
-// (waitHolds), the root of a root architect's task of a run has an architect to hear it, the
-// claim's connection is registered, and — for a task that adopts the working copy the issue's
-// roles share (adopts) — no other claim of the issue is in a turn or has a prompt on its way to
-// one. A missing connection is not a failure — the shim's next hello sends it. A delivery an
-// earlier daemon may have sent is sent again only after the agent says it is not already in a
-// turn; if it is, that turn is taken as the delivery's — except for a root architect's task of a
-// run, which no turn of the agent's own is ever taken for, since it may be a task nobody has sent
-// at all (asksRoot).
-=======
-// the phase the task was queued for, a task carrying news of the approved design still has some
-// to say (currentNews, which renders it again from the record), the root of a root architect's
-// task of a run has an architect to hear it, the claim's connection is registered, and — for a
-// task that adopts the working copy the issue's roles share (adopts) — no other claim of the
-// issue is in a turn or has a prompt on its way to one. A missing connection is not a failure —
-// the shim's next hello sends it. A delivery an earlier daemon may have sent is sent again only
-// after the agent says it is not already in a turn; if it is, that turn is taken as the
-// delivery's — except for a root architect's task of a run, which may be a task nobody has sent at
-// all (asksRoot), and a task carrying news of the approved design that no acknowledged prompt
-// carried (unsentNews): no turn of the agent's own is ever taken for either (askFirstNeverTakes).
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+// (waitHolds), a task carrying news of the approved design still has some to say (currentNews,
+// which renders it again from the record), the root of a root architect's task of a run has an
+// architect to hear it, the claim's connection is registered, and — for a task that adopts the
+// working copy the issue's roles share (adopts) — no other claim of the issue is in a turn or has
+// a prompt on its way to one. A missing connection is not a failure — the shim's next hello sends
+// it. A delivery an earlier daemon may have sent is sent again only after the agent says it is not
+// already in a turn; if it is, that turn is taken as the delivery's — except for a root
+// architect's task of a run, which may be a task nobody has sent at all (asksRoot), and a task
+// carrying news of the approved design that no acknowledged prompt carried (unsentNews): no turn
+// of the agent's own is ever taken for either (askFirstNeverTakes).
 //
 // Four states hand the claim nothing and hold the task instead of dropping it: a claim holding a
 // suspension (holdSuspension), a claim that has answered its open update round
@@ -1014,40 +998,27 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 		return nil
 	}
-<<<<<<< 7fa22de66d
 	// A phase worker whose wait stands is sent no task it had taken when it declared (waitHolds,
 	// dispatch://INFRA-2040 R3): the task stays pending and unconfirmed, as a task held for an
 	// answered update round does, and goes at the first send after the wait ends — the sweep's next
 	// observation of the live process, the end of the worker's next turn, a hello, a ready, or a
 	// start that reaches the claim. A task that is new work is not held: the wait it ends is ended
-	// just before the task leaves (endWaitAtSend), once every hold below has let it through, so no
-	// end names a send that did not happen.
+	// just before the task leaves (endWaitAtSend, from startSend), once every hold below has let it
+	// through, so no end names a send that did not happen.
 	//
 	// No send of this daemon carries such a task while the wait stands, so the question a restart
 	// left is false of it, as it is of the task an answered round holds (openRoundHoldsTask), and
 	// it is put down here. Left armed, the first turn of the worker's own — news, which is what a
 	// worker waits on — would be taken for this task's turn (turnStarted), and that turn's end
 	// would retire the task unsent.
-	wait, holds, err := m.waitHolds(ctx, *p)
+	wait, held, err := m.waitHolds(ctx, *p)
 	if err != nil {
 		return err
 	}
-	if holds {
+	if held {
 		m.askFirst = false
 		return nil
 	}
-	// A root architect's task of a run (asksRoot) is the one delivery the question a restart left
-	// never answers: such a task may be one nobody has ever sent — it is held on the claim while
-	// its root has no architect to hear it, across restarts — and the decisions it names are held
-	// by this delivery and told at its confirmation, so a turn of the agent's own taken for this
-	// task's would confirm it unsent and tell a person's decision to nobody. The question is
-	// resolved here rather than asked: while the root does not hear, the task stays pending and
-	// unconfirmed and nothing is sent; once the root hears, it is sent. A send can meet an agent
-	// still in a turn of its own, which answers it busy and leaves the task waiting, charged
-	// nothing, with the claim recorded working for that turn (refused, recordBusyTurn), and the
-	// turn's end sends it again: sending again is the lesser fault of the two. Its phase check
-	// always holds — such a task names no phase — so a dropped task is never this one.
-=======
 	// No prompt goes out under an id a prompt's result has already answered (Machine.resulted).
 	// Every answer that keeps the task takes it back under a new id first (takeBackPending), but a
 	// take-back whose write the store did not take keeps the id it could not move the task from,
@@ -1075,7 +1046,6 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// recordBusyTurn), and the turn's end sends it again: sending again is the lesser fault of the
 	// two. Its phase check always holds — such a task names no phase — so a dropped task is never
 	// this one.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	if m.asksRoot(*p) {
 		m.askFirst = false
 		hears, err := m.rootHears(ctx, *p)
@@ -1094,13 +1064,8 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		if !sends {
 			return m.relaunchAfterDrop(ctx)
 		}
-<<<<<<< 7fa22de66d
-		// A root architect's task carries no design gate's note: only a merger's does (gateNote).
-		m.startSend(conn, *m.claim.Pending, GateNote{})
-		return nil
-=======
-		return m.startSend(ctx, conn)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		// A root architect declares no wait (waitHolds), so its send ends none.
+		return m.startSend(ctx, conn, "")
 	}
 	// The question a restart left — whether the turn the agent may be in is the pending
 	// delivery's — is asked once, here. Left armed, it would make the next task the running
@@ -1122,7 +1087,6 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	m.askFirst = false
 	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
-<<<<<<< 7fa22de66d
 			// The earlier daemon's send reached the agent, which works the task in this turn, so
 			// the wait the task's new work ends is ended here, as at a send (endWaitAtSend). An end
 			// that fails leaves the question armed for the next decision.
@@ -1130,22 +1094,11 @@ func (m *Machine) sendPending(ctx context.Context) error {
 				m.askFirst = true
 				return err
 			}
-			// The agent's answer is the daemon's first word of the turn, so the turn is dated
-			// from it (Claim.LastTurnStart), as recordBusyTurn dates a turn from a busy answer,
-			// and the confirmation's write carries the date: a let-go in this turn reads a report
-			// older than it as no report of the turn (recordEnd), where the start of the turn
-			// before it would count the report that turn's end left as one of this turn.
-			m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
-			// The turn this claim is put in is logged before the write that records it, as
-			// turnStarted logs its own: a line written after the write would say nothing of the
-			// turn whose write failed.
-=======
 			// The agent's answer is the daemon's first word of the turn. The turn this claim is
 			// put in is dated and logged before the write that records it (startTurn,
 			// Claim.LastTurnStart), as turnStarted logs its own: a line written after the write
 			// would say nothing of the turn whose write failed.
 			m.claim.State = StateWorking
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 			m.startTurn(p.ID)
 			m.log.Info("supervise: the agent is in a turn; confirming the delivery an earlier daemon sent", "delivery", p.ID)
 			news, _ := m.turnAnswers()
@@ -1193,21 +1146,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return err
 		}
 	}
-<<<<<<< 7fa22de66d
-	// A merger's task goes with the design gate's state in front of it, read now, at its send
-	// (gateNote), and never stored with the delivery.
-	note, err := m.gateNote(ctx, *p)
-	if err != nil {
-		return err
-	}
-	if err := m.endWaitAtSend(ctx, *p, wait); err != nil {
-		return err
-	}
-	m.startSend(conn, *p, note)
-	return nil
-=======
-	return m.startSend(ctx, conn)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	return m.startSend(ctx, conn, wait)
 }
 
 // asksRoot says whether a delivery's send waits on whether the root of this claim's tree has an
@@ -1802,19 +1741,6 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 	return state.IsStreaming, true
 }
 
-<<<<<<< 7fa22de66d
-// startSend runs one prompt on its own goroutine and posts its outcome back to the machine. The
-// task is marked as put to the agent before the goroutine starts (Delivery.Prompted), whatever
-// the agent then answers: from here on, a prompt of it has gone out. Of the claim's two untold
-// records, this marks which the prompt carries the sentence of, as message composed it
-// (Machine.carried), and tells neither, as confirm states. Whether the send adopts the working
-// copy first is decided here, under the machine's lock, so the goroutine acts on the claim the
-// hold in sendPending was decided against. note is the design gate's state a merger's prompt
-// opens with (gateNote), and the send of a prompt that carries one says so on a line of its own,
-// naming the state, the step and the version, which is what a reading of the log matches against
-// the gate's moves.
-func (m *Machine) startSend(conn runtime.Conn, d Delivery, note GateNote) {
-=======
 // startSend sends the pending delivery: it writes the task's working copy line from the
 // repository the claim's process works first (currentWorkingCopy), then runs one prompt on its own
 // goroutine and posts its outcome back to the machine. It is the one place a prompt goes out, so
@@ -1827,6 +1753,14 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery, note GateNote) {
 // the machine's lock, so the goroutine acts on the claim the hold in sendPending was decided
 // against.
 //
+// A merger's prompt opens with the design gate's state, read here, at this send (gateNote), and
+// never stored with the delivery; the send of a prompt that carries one says so on a line of its
+// own, naming the state, the step and the version, which is what a reading of the log matches
+// against the gate's moves. wait is the standing wait of a phase worker that sendPending's
+// waitHolds named and that does not hold the task, "" for none: it is ended just before the
+// prompt leaves (endWaitAtSend), once the working copy line and the gate's note are read, so an
+// end names a send that happens.
+//
 // The news of the approved design this prompt carries is the pending delivery's own (d.News, as
 // sendPending's render and currentWorkingCopy left it), and nothing keeps a second copy of it:
 // every rendering takes a new id (currentNews, currentRootTask, currentWorkingCopy) and the fence
@@ -1834,12 +1768,18 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery, note GateNote) {
 // delivery's, the pending delivery's News is what it carries. Its acknowledgement records that
 // news with the prompt (acked), and a turn taken for the task's while the send is in flight
 // credits the same (turnAnswers).
-func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
+func (m *Machine) startSend(ctx context.Context, conn runtime.Conn, wait string) error {
 	if err := m.currentWorkingCopy(ctx); err != nil {
 		return err
 	}
 	d := *m.claim.Pending
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	note, err := m.gateNote(ctx, d)
+	if err != nil {
+		return err
+	}
+	if err := m.endWaitAtSend(ctx, d, wait); err != nil {
+		return err
+	}
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
 	prompt, carried := d.message(m.claim, note)

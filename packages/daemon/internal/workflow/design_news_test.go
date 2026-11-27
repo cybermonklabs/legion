@@ -310,9 +310,9 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(closedHolderNews())
 	t.Logf("the news sent after version 6 closed the gate:\n%s", text)
-	closed := mergerQuote(t, "closed", "spec", "artifact-spec", 6)
+	closed := gateClosedWords(newsTree, record.DesignStepSpec, "artifact-spec", 6)
 	if !strings.HasPrefix(text, closed) {
-		t.Fatalf("the news opens %q, want the merger prompt's quoted close at version 6 %q first", firstLine(text), closed)
+		t.Fatalf("the news opens %q, want the closed gate's opening words at version 6 %q first", firstLine(text), closed)
 	}
 	if strings.Contains(text, "opened") {
 		t.Fatalf("news sent while the gate is closed says it opened:\n%s", text)

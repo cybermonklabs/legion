@@ -22,6 +22,7 @@ import (
 // prompt quotes (roles/merger.md, "A closed design gate"), so the merger reads the note as it
 // reads that message.
 func TestMergerGateNoteGivesAMergerInMergingTheGatesStateAndNobodyElseANote(t *testing.T) {
+	t.Parallel()
 	const root = "LEGION-208"
 	merging := record.Issue{Key: "LEGION-209", Tree: root, Project: "LEGION", Phase: phase.Merging, Generation: 3, Status: "in_progress"}
 	inPhase := func(p phase.Phase) record.Issue {
@@ -121,6 +122,7 @@ type mergerClosedNoteFixture struct {
 // packages/pi-shared/src/phase-stall.ts), and its test reads the same fixture, so a change to the
 // sentence on one side alone fails a test.
 func TestMergerClosedGateNoteIsTheContractFixturesNote(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "merger-closed-note.json"))
 	if err != nil {
 		t.Fatalf("read the merger closed note fixture: %v", err)
