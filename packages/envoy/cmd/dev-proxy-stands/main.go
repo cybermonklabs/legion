@@ -284,6 +284,7 @@ func standInAsks(answeredBy string) []proxyrulestest.DispatchAsk {
 }
 
 func main() {
+	time.Sleep(40 * time.Second) // PLANT: the product is late; never merge.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))

@@ -344,7 +344,7 @@ var restartTimeout = helper.InstallRestartTimeout
 // restartHelper runs `systemctl --user restart` on the helper's unit, and stops waiting for it at
 // restartTimeout.
 func restartHelper() error {
-	ctx, cancel := context.WithTimeout(context.Background(), restartTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), restartTimeout/4)
 	defer cancel()
 	err := systemctlContext(ctx, "restart", helper.UnitName)
 	if err != nil && ctx.Err() != nil {

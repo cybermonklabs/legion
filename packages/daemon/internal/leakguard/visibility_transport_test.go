@@ -138,7 +138,7 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 // As the first line of a stand-in, the gap between the two is how long the stand-in took to start
 // once the guard had started it (starts): a loaded machine can make it long, and the guard cannot.
 func startMark(marks string) string {
-	return `read -r stat < /proc/self/stat; read -r up _ < /proc/uptime; printf '%s\t%s\n' "$up" "$stat" >> ` + shQuote(marks) + "\n"
+	return `read -r stat < /proc/self/stat; sleep 0.6; read -r up _ < /proc/uptime; printf '%s\t%s\n' "$up" "$stat" >> ` + shQuote(marks) + "\n" // PLANT: every stand-in starts 0.6 s late; never merge.
 }
 
 // slowStart is how long a stand-in may take to start (starts) before a transport row takes the

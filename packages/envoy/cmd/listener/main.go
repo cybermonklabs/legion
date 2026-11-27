@@ -1057,7 +1057,10 @@ func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweep
 var processStart = time.Now()
 
 // main runs the listener with its production credential wait, listenerCredentialWait.
-func main() { runListener(listenerCredentialWait) }
+func main() {
+	time.Sleep(40 * time.Second) // PLANT: the product is late; never merge.
+	runListener(listenerCredentialWait)
+}
 
 // runListener is the listener, main's whole run, whose start on NATS waits out a refusal of its
 // credential for up to credentialWait (newNATSStart, Phase 5). main passes listenerCredentialWait,
