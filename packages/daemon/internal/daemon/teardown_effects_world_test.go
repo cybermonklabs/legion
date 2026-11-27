@@ -100,12 +100,10 @@ type teardownEffectsStepRun struct {
 
 // teardownEffectsServed is each member of the containers of a world's typed parts that lane D
 // seeds, by container: a member outside it is a part lane D would drop, which teardownEffectsUnserved
-// names. world.dispatch.runsHoldRecords is taken and left unread: it says where lane R's seed writes
-// the step runs' times, and lane D writes each run at the world's own instants, since its replay
-// reads no step run's time.
+// names.
 var teardownEffectsServed = map[string][]string{
 	"world.daemon":              {"phase", "step", "task", "productionCheck", "claim", "issue", "entry", "architect", "records", "admission", "gate"},
-	"world.dispatch":            {"issue", "documents", "handoffs", "comments", "asks", "results", "issues", "steps", "runsHoldRecords"},
+	"world.dispatch":            {"issue", "documents", "handoffs", "comments", "asks", "results", "issues", "steps"},
 	"world.dispatch.issue":      {"key", "title", "status", "spec", "parent", "labels"},
 	"world.github":              {"repository", "pullRequests", "mergeQueue", "settings", "branchRules"},
 	"world.github.pullRequests": {"number", "state", "draft", "head", "base", "title", "body", "mergeCommit", "reviews", "reviewThreads", "checks", "mergeStateStatus", "autoMergeRequest", "nodeId", "diff", "mergeResult"},
@@ -594,16 +592,17 @@ func TestTeardownEffectsWorldParts(t *testing.T) {
 	}
 }
 
-// Catches: lane D refusing a world that states world.dispatch.runsHoldRecords as a part it seeds
-// nothing of, where it takes the field and writes each step run at the world's own instants.
-func TestTeardownEffectsRunsHoldRecords(t *testing.T) {
+// Catches: lane D taking world.dispatch.runsHoldRecords as a part it serves and dropping it, where
+// lane R's seed no longer reads the field and the case file's schema refuses it, so a world that
+// still names it must fail the setup naming it.
+func TestTeardownEffectsRunsHoldRecordsUnserved(t *testing.T) {
 	t.Parallel()
 	world := teardownEffectsExampleWorld(t, "P05", func(world map[string]any) {
 		teardownEffectsEveryPart(world)
 		world["dispatch"].(map[string]any)["runsHoldRecords"] = true
 	})
-	if len(world.unserved) != 0 || len(teardownEffectsSeedFaults(world)) != 0 {
-		t.Fatalf("a world whose runs hold its records is served: unserved %v, faults %v", world.unserved, teardownEffectsSeedFaults(world))
+	if want := []string{"world.dispatch.runsHoldRecords"}; !slices.Equal(world.unserved, want) {
+		t.Fatalf("unserved = %v, want %v", world.unserved, want)
 	}
 }
 

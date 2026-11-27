@@ -89,8 +89,8 @@
 //   seed.ts case-world                     seed the Dispatch part of $SKILL_SCENARIO_RUN/launch-world.json:
 //                                          its records in case time order, its other issues and
 //                                          its step runs, the runs' times among the records' stamps
-//                                          where its runs hold its records (seedCaseDispatch), and
-//                                          read each back; writes dispatch-fixture.json there
+//                                          (seedCaseDispatch), and read each back; writes
+//                                          dispatch-fixture.json there
 //   seed.ts case-readback <run dir>         capture the issue, documents, handoffs, comments,
 //                                          asks, results, step runs and complete event log (with
 //                                          seed cursor)
@@ -1070,101 +1070,202 @@ export function caseDispatchRefs(
   );
 }
 
+/** How finely Dispatch stamps a record, in nanoseconds: a microsecond, the resolution of
+ * PostgreSQL's timestamptz, which each record's created_at is and which each stamp is read from.
+ * A handoff and a check result take the column's `default now()`
+ * (store/migrations/20261101144901_handoffs.up.sql and 20261102122200_check_results.up.sql), an
+ * issue too (0001_init.up.sql), a comment the `select clock_timestamp()` of its write
+ * (api/comment_create.go, queueCommentRow) and an ask the `select ... now()` of its write
+ * (api/asks.go), all in packages/envoy/internal/dispatch. */
+const STAMP_RESOLUTION = 1_000n;
+/** How long the seed waits before it writes a record whose case time is after the one before it
+ * (the issue's creation, before the first record), where the world has step runs: the shortest
+ * wait Bun.sleep gives that is no shorter than STAMP_RESOLUTION. Dispatch's stamp of the later
+ * record is then after the earlier one's, with room between them for the step times placed there
+ * (placeStepTimes), however fast Dispatch answers. */
+const STAMP_WAIT_MS = Number((STAMP_RESOLUTION + 999_999n) / 1_000_000n);
 /** The longest gap the seed keeps between two handoffs it writes one after the other, in
  * nanoseconds: it waits that gap between them, so two versions a case holds seconds apart are
- * seconds apart in the run's Dispatch too. A longer gap, and one between any other two records,
- * is not kept: each record follows the one before it at once. */
+ * seconds apart in the run's Dispatch too. A longer gap, and one between any other two records, is
+ * not kept. Before the later handoff the seed waits the longer of the kept gap and STAMP_WAIT_MS,
+ * never both. */
 const KEPT_HANDOFF_GAP = 60_000_000_000n;
-/** A second in nanoseconds: how far before the first seeded record a step run's time is placed
- * where no record comes before it, and after the last where none comes after it. */
-const SECOND = 1_000_000_000n;
-/** A seeded record's time on the case's clock and Dispatch's stamp of it, in nanoseconds. */
-interface Stamped {
+/** The longest the seed waits, in milliseconds, for its clock to pass the last step time it placed
+ * (passPlacedTimes). */
+const PLACED_WAIT_BOUND_MS = 5_000;
+
+/** One record of the world that the seed wrote (a handoff, a comment, an ask or a result): its
+ * name (the world's id, or `world.dispatch.results[<i>]` for a result), its time on the case's
+ * clock (`at`) and Dispatch's stamp of it (`stamp`), both in nanoseconds since the epoch. */
+export interface Stamped {
+  id: string;
   at: bigint;
   stamp: bigint;
 }
 
-/** The time in the run's Dispatch of each case time of `times`, the starts and ends of the
- * world's step runs, by case time: strictly after Dispatch's stamp of the last of `records` (in
- * seeding order) whose case time comes before it, and strictly before the stamp of the record
- * after that one. A record at the very time a run starts so lies inside the run, and a record at
- * the time it ends outside it. Where no record comes before a time it is one second before the
- * first record's stamp, and where none comes after it one second after the last's. Times between
- * the same two records keep their order: spread evenly between the two stamps, or a second apart
- * before the first record and after the last. */
-function placeStepTimes(
+/** One start or end of a world's step run: its time on the case's clock, in nanoseconds since the
+ * epoch, and the field of the world that holds it (`world.dispatch.steps[2].endedAt`). */
+export interface StepTime {
+  at: bigint;
+  field: string;
+}
+
+/** Each start and end of `runs`, the world's step runs or the instants runTimes wrote of them, in
+ * world order, with the field of the world that holds it; a run that has not ended has no end. */
+function stepTimes(runs: readonly { startedAt: string; endedAt: string | null }[]): StepTime[] {
+  return runs.flatMap(({ startedAt, endedAt }, index) => {
+    const ends: [string, string][] = [["startedAt", startedAt]];
+    if (endedAt !== null) ends.push(["endedAt", endedAt]);
+    return ends.map(([name, text]) => {
+      const field = `world.dispatch.steps[${index}].${name}`;
+      return { at: time(text, field), field };
+    });
+  });
+}
+
+/** The instant in the run's Dispatch of each case time of `times`, by case time. `records` are the
+ * world's records in the order the seed wrote them, and `created` is Dispatch's stamp of `issue`'s
+ * creation, which comes before every record.
+ *
+ * Each time is placed strictly after the stamp of the last record whose case time is before it
+ * (`created` where there is none) and strictly before the stamp of the next record. So a record
+ * at the very case time a run starts lies inside the run, a record at the time the run ends lies
+ * outside it, and a record lies inside a run's placed window exactly where its case time lies
+ * inside the run's window in the world. The times between the same two stamps keep their order and
+ * are spread evenly between them. The times after the last record (after `created`, in a world
+ * with no record) follow its stamp one nanosecond apart, so they are in the past once Dispatch
+ * stamps any later write.
+ *
+ * It throws, naming the step times it cannot place, where `records` are not in case-time order,
+ * where a stamp is before the one before it, where a stamp is not after the one before it although
+ * its case time is, and where two stamps leave no room for the times between them. With no time to
+ * place, it places nothing and reads no stamp. */
+export function placeStepTimes(
   issue: string,
   records: readonly Stamped[],
-  times: readonly bigint[]
+  times: readonly StepTime[],
+  created: bigint
 ): Map<bigint, bigint> {
-  const first = records[0];
-  const last = records.at(-1);
-  if (first === undefined || last === undefined)
-    throw new Error(
-      `${issue}: a step run's times are placed among the stamps of the world's records, and the world holds no handoff, comment, ask or result`
-    );
-  const gapped = [...new Set(times)].map((at) => ({
-    at,
-    after: records.filter((record) => record.at < at).length,
-  }));
   const placed = new Map<bigint, bigint>();
-  for (const { at, after } of gapped) {
-    const peers = gapped
-      .filter((other) => other.after === after)
-      .map((other) => other.at)
-      .sort(byTime);
-    const count = BigInt(peers.length);
-    const rank = BigInt(peers.indexOf(at));
-    const low = records[after - 1];
-    const high = records[after];
-    if (low === undefined) placed.set(at, first.stamp - (count - rank) * SECOND);
-    else if (high === undefined) placed.set(at, last.stamp + (rank + 1n) * SECOND);
-    else {
-      const stamp = low.stamp + ((high.stamp - low.stamp) * (rank + 1n)) / (count + 1n);
-      if (stamp <= low.stamp || stamp >= high.stamp)
-        throw new Error(
-          `${issue}: Dispatch stamped two records seeded one after the other ${instantText(low.stamp)} and ${instantText(high.stamp)}, which leaves no room for a step run's time between them`
-        );
-      placed.set(at, stamp);
+  if (times.length === 0) return placed;
+  const creation = `${issue}'s creation`;
+  /** The fields of the times `chosen` picks, or `issue` where it picks none. */
+  const fields = (chosen: (at: bigint) => boolean) => {
+    const named = new Set(times.filter(({ at }) => chosen(at)).map(({ field }) => field));
+    return named.size === 0 ? issue : [...named].join(", ");
+  };
+  let before: { id: string; at: bigint | undefined; stamp: bigint } = {
+    id: creation,
+    at: undefined,
+    stamp: created,
+  };
+  for (const record of records) {
+    if (before.at !== undefined && record.at < before.at)
+      throw new Error(
+        `${issue}: the seed wrote ${record.id} (case time ${instantText(record.at)}) after ${before.id} (case time ${instantText(before.at)}), out of the world's order`
+      );
+    const rises = before.at === undefined || record.at > before.at;
+    if (rises ? record.stamp <= before.stamp : record.stamp < before.stamp) {
+      const after = before.at;
+      throw new Error(
+        `${fields((at) => after === undefined || at > after)}: Dispatch stamped ${record.id} ${instantText(record.stamp)}, and ${before.id}, which the seed wrote before it, ${instantText(before.stamp)}: the stamps do not keep the world's order, so no step time after ${before.id} can be placed among them`
+      );
     }
+    before = record;
+  }
+  /** Each case time to place, by the index of the first record at or after it. */
+  const gaps = new Map<number, bigint[]>();
+  for (const at of new Set(times.map((each) => each.at))) {
+    const next = records.filter((record) => record.at < at).length;
+    gaps.set(next, [...(gaps.get(next) ?? []), at]);
+  }
+  for (const [next, ats] of gaps) {
+    ats.sort(byTime);
+    const low = records[next - 1];
+    const high = records[next];
+    const from = low?.stamp ?? created;
+    const count = BigInt(ats.length);
+    if (high !== undefined && high.stamp - from <= count)
+      throw new Error(
+        `${fields((at) => ats.includes(at))}: Dispatch stamped ${low?.id ?? creation} ${instantText(from)} and ${high.id}, which the seed wrote after it, ${instantText(high.stamp)}, which leaves no room between them for ${count === 1n ? "a step time" : `${count} step times`}`
+      );
+    ats.forEach((at, index) => {
+      const rank = BigInt(index) + 1n;
+      placed.set(
+        at,
+        high === undefined ? from + rank : from + ((high.stamp - from) * rank) / (count + 1n)
+      );
+    });
   }
   return placed;
 }
 
 /** The start and the end the seed writes of one of the world's step runs (null for a run that
  * has not ended). */
-interface RunTimes {
+export interface RunTimes {
   startedAt: string;
   endedAt: string | null;
 }
 
 /** The start and the end the seed writes of each of `runs`, the world's step runs of `issue`, in
- * world order: the world's own instants, as the world writes them, or, given `stamped` (Dispatch's
- * stamps of the world's records, where the world's runs hold its records, `runsHoldRecords`), the
- * instants placeStepTimes places among those stamps. */
-function runTimes(
+ * world order: the instants placeStepTimes places among `stamped`, Dispatch's stamps of the world's
+ * records, after `created`, Dispatch's stamp of the issue's creation. A run that has not ended has
+ * no end. */
+export function runTimes(
   issue: string,
   runs: readonly StepRun[],
-  stamped: readonly Stamped[] | undefined
+  stamped: readonly Stamped[],
+  created: bigint
 ): RunTimes[] {
-  if (stamped === undefined) return runs.map(({ startedAt, endedAt }) => ({ startedAt, endedAt }));
-  const labelled = runs.map((run, index) => ({ run, label: `world.dispatch.steps[${index}]` }));
-  const placed = placeStepTimes(
-    issue,
-    stamped,
-    labelled.flatMap(({ run: { startedAt, endedAt }, label }) =>
-      (endedAt === null ? [startedAt] : [startedAt, endedAt]).map((at) => time(at, label))
-    )
-  );
-  const placedText = (at: string, label: string): string => {
-    const stamp = placed.get(time(at, label));
-    if (stamp === undefined) throw new Error(`${label}: its time ${at} was not placed`);
-    return instantText(stamp);
+  const placed = placeStepTimes(issue, stamped, stepTimes(runs), created);
+  const placedText = (at: string, field: string) => {
+    const instant = placed.get(time(at, field));
+    if (instant === undefined) throw new Error(`${field}: its time ${at} was not placed`);
+    return instantText(instant);
   };
-  return labelled.map(({ run: { startedAt, endedAt }, label }) => ({
-    startedAt: placedText(startedAt, label),
-    endedAt: endedAt === null ? null : placedText(endedAt, label),
+  return runs.map(({ startedAt, endedAt }, index) => ({
+    startedAt: placedText(startedAt, `world.dispatch.steps[${index}].startedAt`),
+    endedAt:
+      endedAt === null ? null : placedText(endedAt, `world.dispatch.steps[${index}].endedAt`),
   }));
+}
+
+/** The clock seedCaseDispatch reads and waits on: `now`, in nanoseconds since the epoch, and
+ * `sleep`. Dispatch stamps on the same clock: rig.sh's scratch Dispatch and its PostgreSQL run on
+ * the seed's own host (own_dispatch). */
+export interface SeedClock {
+  now: () => bigint;
+  sleep: Sleep;
+}
+
+/** The host's clock, read to the millisecond below, so a time it reads as passed has passed. */
+const HOST_CLOCK: SeedClock = {
+  now: () => BigInt(Date.now()) * 1_000_000n,
+  sleep: (ms) => Bun.sleep(ms),
+};
+
+/** Waits until `clock` has passed the last start or end of `written` (runTimes), so that the seed
+ * writes no step run that starts or ends after Dispatch's clock. It logs each wait, and fails the
+ * seed, naming the run's field, where the wait would pass PLACED_WAIT_BOUND_MS in all. */
+async function passPlacedTimes(written: readonly RunTimes[], clock: SeedClock): Promise<void> {
+  const last = stepTimes(written).reduce<StepTime | undefined>(
+    (latest, each) => (latest === undefined || each.at > latest.at ? each : latest),
+    undefined
+  );
+  if (last === undefined) return;
+  let waited = 0;
+  for (let now = clock.now(); now < last.at; now = clock.now()) {
+    const ms = Number((last.at - now + 999_999n) / 1_000_000n);
+    if (waited + ms > PLACED_WAIT_BOUND_MS)
+      throw new Error(
+        `${last.field}: the seed placed it at ${instantText(last.at)}, and its clock reads ${instantText(now)} after a wait of ${waited} ms: it waits at most ${PLACED_WAIT_BOUND_MS} ms for its clock to pass the step times it placed`
+      );
+    console.log(
+      `waiting ${ms} ms for the clock to pass ${instantText(last.at)}, ${last.field} as the seed placed it`
+    );
+    await clock.sleep(ms);
+    waited += ms;
+  }
 }
 
 /** The fields of a step record a world's step run (`world.dispatch.steps`) does not name, each one
@@ -1219,11 +1320,18 @@ function sameNames(a: readonly string[], b: readonly string[]): boolean {
  * scratch Dispatch does not answer as the world states it, named by its part, as its own reads
  * answer: `GET /api/v1/issues/{key}` (`dispatch read`) and `GET /api/v1/issues/{key}/steps`
  * (`dispatch steps`). A rank is the place on the board, so the issues of rank 1, 2 and on stand in
- * that order, the first before every other issue of its project. A step run's start and end are
- * held to `written`, the instants the seed wrote of it (runTimes), and its every other fact to the
- * world: where the world's runs hold its records (`runsHoldRecords`) those instants are the ones
- * the seed placed among its records' stamps, and otherwise the world's own. */
-async function caseDispatchFaults(world: World, written: readonly RunTimes[]): Promise<string[]> {
+ * that order, the first before every other issue of its project. A step run's task, step, kind,
+ * role, result, rating and place in the list are held to the world's, and its start and end to
+ * `written`, the instants the seed wrote of it (runTimes). Each run as Dispatch lists it is held to
+ * the rule those instants keep, named by the run and the record: each of `stamped`, the world's
+ * records with Dispatch's stamps, is inside the run's listed window exactly where its case time is
+ * inside the run's window in the world (from its start up to its end, with no end for a run that
+ * has not ended). */
+async function caseDispatchFaults(
+  world: World,
+  written: readonly RunTimes[],
+  stamped: readonly Stamped[]
+): Promise<string[]> {
   const reader = { as: "agent" } as const;
   const { issue } = world.dispatch;
   const faults: string[] = [];
@@ -1289,10 +1397,10 @@ async function caseDispatchFaults(world: World, written: readonly RunTimes[]): P
       );
     const instant = (text: string | null | undefined) =>
       text === null || text === undefined ? undefined : parseInstant(text);
-    const placed = world.dispatch.runsHoldRecords === true;
     runs.forEach((run, index) => {
       const got = listedRuns[index];
       if (got === undefined) return;
+      const times = written[index];
       const want = {
         task: run.task,
         step: run.step,
@@ -1311,15 +1419,30 @@ async function caseDispatchFaults(world: World, written: readonly RunTimes[]): P
         rating: got.rating ?? null,
         reason: got.rating_reason ?? null,
       };
-      const times = written[index] ?? run;
+      const start = instant(got.started_at);
+      const end = instant(got.ended_at);
       if (
         JSON.stringify(have) !== JSON.stringify(want) ||
-        instant(got.started_at) !== instant(times.startedAt) ||
-        instant(got.ended_at) !== instant(times.endedAt)
+        start !== instant(times.startedAt) ||
+        end !== instant(times.endedAt)
       )
         faults.push(
-          `world.dispatch.steps[${index}]: Dispatch lists ${JSON.stringify({ ...have, startedAt: got.started_at, endedAt: got.ended_at ?? null })}, and ${placed ? "the seed wrote" : "the world states"} ${JSON.stringify({ ...want, startedAt: times.startedAt, endedAt: times.endedAt })}${placed ? ", the world's run at the times the seed placed among its records' stamps (world.dispatch.runsHoldRecords)" : ""}`
+          `world.dispatch.steps[${index}]: Dispatch lists ${JSON.stringify({ ...have, startedAt: got.started_at, endedAt: got.ended_at ?? null })}, and the seed wrote ${JSON.stringify({ ...want, ...times })}, the world's run at the instants it placed among the records' stamps`
         );
+      const from = time(run.startedAt, `world.dispatch.steps[${index}].startedAt`);
+      const to =
+        run.endedAt === null
+          ? undefined
+          : time(run.endedAt, `world.dispatch.steps[${index}].endedAt`);
+      for (const record of stamped) {
+        const belongs = from <= record.at && (to === undefined || record.at < to);
+        const inside =
+          start !== undefined && start <= record.stamp && (end === undefined || record.stamp < end);
+        if (belongs !== inside)
+          faults.push(
+            `world.dispatch.steps[${index}]: ${record.id} is ${belongs ? "inside" : "outside"} the world's run (case time ${instantText(record.at)}), and Dispatch stamped it ${instantText(record.stamp)}, ${inside ? "inside" : "outside"} the run as Dispatch lists it (${got.started_at ?? "no start"} to ${got.ended_at ?? "no end"})`
+          );
+      }
     });
   }
   return faults;
@@ -1327,28 +1450,33 @@ async function caseDispatchFaults(world: World, written: readonly RunTimes[]): P
 
 /** File in a fresh scratch Dispatch. Dispatch allocates issue numbers; the placeholders reserve
  * preceding keys so the case's own references (including its parent's key) resolve unchanged.
- * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order: a
- * comment with an anchor on its document's words, a reply in the thread of the comment it names,
- * and between two handoffs seeded one after the other at most 60 s apart a wait (`sleep`) of that
- * gap. Then each other issue of the world (`world.dispatch.issues`) takes its status, its
- * `blocked_by` links, its claim and its place on the board, each step run (`world.dispatch.steps`)
- * is written as the project's daemon writes it (`PUT /api/v1/issues/{key}/steps/{id}` and the
- * retro's rating, as the session legion-daemon:<project>, SEEDED_RUN), at the world's instants,
- * or, where the world's runs hold its records (`runsHoldRecords`), at instants among Dispatch's
- * stamps of those records (runTimes), and every one of those facts is read back through Dispatch's
- * own reads (caseDispatchFaults): a fact Dispatch does not answer as the world states it, or a
- * run's time Dispatch lists otherwise than the seed wrote it, fails the seed. The id the scratch
- * Dispatch gives the document of each step of the claim tree's design gate (`world.daemon.gate`,
- * the document of the claim's tree root by its file name) goes in dispatch-fixture.json (`gate`,
- * by step), and the prompt names it wherever it names the world's id of that document.
- * dispatch-fixture.json's `ids` holds each id Dispatch gave a record the world names by an id of
- * its own, under `<kind>/<the world's id>` (`handoff/hnd-acme-12-plan-1`, `comment/c-1`, `ask/a1`,
- * `artifact/<a gate's artifactId>`), absent where there is none: the prompt names each comment,
- * ask and gate document by Dispatch's id, the run reads each handoff by it, and outcome.ts writes
- * each back as the world's. */
+ * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order, a
+ * comment with an anchor on its document's words and a reply in the thread of the comment it
+ * names, and learn Dispatch's stamp of each record from its answer. Then each other issue of the
+ * world (`world.dispatch.issues`) takes its status, its `blocked_by` links, its claim and its place
+ * on the board, and each step run (`world.dispatch.steps`) is written as the project's daemon
+ * writes it (`PUT /api/v1/issues/{key}/steps/{id}` and the retro's rating, as the session
+ * legion-daemon:<project>, SEEDED_RUN). Its start and end are the instants runTimes places among
+ * the records' stamps, so each record falls in the run whose window holds its case time; a world it
+ * cannot place fails the seed, naming the run. Where the world has step runs, the seed waits
+ * STAMP_WAIT_MS on `clock` before each record whose case time is after the one before it, and
+ * before the step writes it waits until `clock` has passed the last instant placed
+ * (passPlacedTimes). Between two handoffs seeded one after the other at most 60 s apart
+ * (KEPT_HANDOFF_GAP) it waits that gap on `clock`, in place of STAMP_WAIT_MS where the gap is the
+ * longer. Every one of those facts is read back through Dispatch's own reads (caseDispatchFaults):
+ * a fact Dispatch does not answer as the world states it, a run's time Dispatch lists otherwise
+ * than the seed wrote it, and a record outside the run its case time is in or inside one it is not
+ * in, fail the seed. The id the scratch Dispatch gives the document of each step of the claim
+ * tree's design gate (`world.daemon.gate`, the document of the claim's tree root by its file name)
+ * goes in dispatch-fixture.json (`gate`, by step), and the prompt names it wherever it names the
+ * world's id of that document. dispatch-fixture.json's `ids` holds each id Dispatch gave a record
+ * the world names by an id of its own, under `<kind>/<the world's id>`
+ * (`handoff/hnd-acme-12-plan-1`, `comment/c-1`, `ask/a1`, `artifact/<a gate's artifactId>`),
+ * absent where there is none: the prompt names each comment, ask and gate document by Dispatch's
+ * id, the run reads each handoff by it, and outcome.ts writes each back as the world's. */
 export async function seedCaseDispatch(
   runDir: string,
-  sleep: Sleep = (ms) => Bun.sleep(ms)
+  clock: SeedClock = HOST_CLOCK
 ): Promise<void> {
   const world = World.parse(
     JSON.parse(readFileSync(path.join(runDir, "launch-world.json"), "utf8"))
@@ -1398,6 +1526,8 @@ export async function seedCaseDispatch(
     const [prefix, n] = keyParts(key);
     through.set(prefix, Math.max(through.get(prefix) ?? 0, n));
   }
+  /** Dispatch's stamp of the case issue's creation, which its answer to the create holds. */
+  let createdAt: string | undefined;
   const createThrough = async (prefix: string, count: number) => {
     await createProject({ key: prefix, name: prefix });
     for (let n = 1; n <= count; n += 1) {
@@ -1432,12 +1562,15 @@ export async function seedCaseDispatch(
       );
       if (created.key !== expected)
         throw new Error(`scratch Dispatch assigned ${created.key}, wanted ${expected}`);
+      if (own) createdAt = created.created_at;
     }
   };
   // The parent's project first, as the case's issue names its parent; the case's own last.
   const place = (prefix: string) => (prefix === project ? 2 : prefix === parent?.[0] ? 0 : 1);
   for (const prefix of [...through.keys()].sort((a, b) => place(a) - place(b)))
     await createThrough(prefix, through.get(prefix) ?? 0);
+  if (createdAt === undefined) throw new Error(`${issue.key}: the seed filed no issue so keyed`);
+  const issueCreated = time(createdAt, `Dispatch's stamp of ${issue.key}`);
   // The case names its documents by name; Dispatch gives each one its own id.
   const documentIds = new Map<string, string>();
   for (const { name, body } of documents) {
@@ -1457,8 +1590,8 @@ export async function seedCaseDispatch(
     if (given === undefined) throw new Error(`${id}: no ${kind} of the world was seeded so named`);
     return given;
   };
-  /** Each record of the world: its case id and time, whether it is a handoff, and its write,
-   * which answers Dispatch's stamp of the record. */
+  /** Each record of the world: its name, its case time, whether it is a handoff, and its write,
+   * which answers Dispatch's stamp of it. */
   const records: { id: string; at: bigint; handoff: boolean; write: () => Promise<string> }[] = [
     ...handoffs.map((record) => ({
       id: record.id,
@@ -1540,9 +1673,9 @@ export async function seedCaseDispatch(
         return opened.created_at;
       },
     })),
-    ...results.map((result) => ({
-      id: `${result.check}/${result.role}`,
-      at: time(result.at, result.check),
+    ...results.map((result, index) => ({
+      id: `world.dispatch.results[${index}]`,
+      at: time(result.at, `world.dispatch.results[${index}]`),
       handoff: false,
       write: async () => {
         const { at: _at, ...fields } = result;
@@ -1555,15 +1688,23 @@ export async function seedCaseDispatch(
       },
     })),
   ];
-  // Two versions of a phase's handoff seconds apart are what a reviewer reads as one double write,
-  // so the gap between two handoffs seeded one after the other is kept when it is a minute or less.
+  // Where the world has step runs, their times are placed among the records' stamps
+  // (placeStepTimes), which must rise as the case times do. So before each record whose case time
+  // is after the one before it (the issue's creation, before the first), the seed waits out the
+  // resolution of Dispatch's stamp. Two versions of a phase's handoff seconds apart are what a
+  // reviewer reads as one double write, so the gap between two handoffs seeded one after the other
+  // is kept when it is a minute or less. The seed waits once before a record, the longer wait.
+  const runs = world.dispatch.steps ?? [];
   const stamped: Stamped[] = [];
   let previous: (typeof records)[number] | undefined;
   for (const record of records.sort((a, b) => byTime(a.at, b.at))) {
     const gap = previous?.handoff && record.handoff ? record.at - previous.at : 0n;
-    if (gap > 0n && gap <= KEPT_HANDOFF_GAP) await sleep(Number(gap / 1_000_000n));
+    const kept = gap > 0n && gap <= KEPT_HANDOFF_GAP ? Number(gap / 1_000_000n) : 0;
+    const rises = previous === undefined || record.at > previous.at;
+    const wait = Math.max(kept, runs.length > 0 && rises ? STAMP_WAIT_MS : 0);
+    if (wait > 0) await clock.sleep(wait);
     const stamp = time(await record.write(), `Dispatch's stamp of ${record.id}`);
-    stamped.push({ at: record.at, stamp });
+    stamped.push({ id: record.id, at: record.at, stamp });
     previous = record;
   }
   // A closed issue refuses a document upload. Finish seeding the evidence before closing it.
@@ -1597,17 +1738,13 @@ export async function seedCaseDispatch(
       .sort((a, b) => ((a.rank ?? "") < (b.rank ?? "") ? -1 : 1))[0];
     if (head !== undefined) await patchIssue(each.key, { rank: { before: head.key } }, seed);
   }
-  // Each run as the project's daemon writes it, under an id of its own, at the world's instants or,
-  // where its runs hold its records, at instants among Dispatch's stamps of those records.
-  const runs = world.dispatch.steps ?? [];
-  const written = runTimes(
-    issue.key,
-    runs,
-    world.dispatch.runsHoldRecords === true ? stamped : undefined
-  );
+  // Each run as the project's daemon writes it, under an id of its own, at the instants placed
+  // among the records' stamps, once the seed's clock has passed the last of them.
+  const written = runTimes(issue.key, runs, stamped, issueCreated);
+  await passPlacedTimes(written, clock);
   const daemon = { kind: "session", id: `legion-daemon:${project}` } as const;
   for (const [index, run] of runs.entries()) {
-    const times = written[index] ?? run;
+    const { startedAt, endedAt } = written[index];
     const route = `/api/v1/issues/${encodeURIComponent(issue.key)}/steps/${randomUUID()}`;
     const write = {
       actor: daemon,
@@ -1618,8 +1755,8 @@ export async function seedCaseDispatch(
       agent: SEEDED_RUN.agent,
       model: SEEDED_RUN.model,
       generation: world.daemon?.issue?.generation ?? 1,
-      started_at: times.startedAt,
-      ...(run.endedAt === null ? {} : { ended_at: times.endedAt, result: run.result }),
+      started_at: startedAt,
+      ...(endedAt === null ? {} : { ended_at: endedAt, result: run.result }),
     };
     await agentCall("PUT", route, write);
     if (run.planRating !== undefined)
@@ -1629,7 +1766,7 @@ export async function seedCaseDispatch(
         rating_reason: run.planReason ?? "",
       });
   }
-  const faults = await caseDispatchFaults(world, written);
+  const faults = await caseDispatchFaults(world, written, stamped);
   if (faults.length > 0)
     throw new Error(`the scratch Dispatch does not hold the case's world: ${faults.join("; ")}`);
   // The id of each gate step's document, the claim tree root's by its file name.
