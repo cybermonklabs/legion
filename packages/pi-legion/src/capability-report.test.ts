@@ -488,6 +488,96 @@ describe("mcp", () => {
     });
   });
 
+  // Oh My Pi's manager never connects a `lazy: true` server at discovery, and answers
+  // `disconnected` for it with no error (`connectServers` and `getConnectionStatus` in
+  // `mcp/manager.ts` at v18.18.6-sami.20261127-055727).
+  const withLazy = (configs: Record<string, unknown>) => async () => ({
+    configs,
+    sources: {
+      alpha: { path: path.join(workspace, ".omp", "mcp.json") },
+      beta: { path: path.join(workspace, ".mcp.json") },
+    },
+  });
+
+  test("a lazy server with no status and no error gives an ok row that names it lazy", async () => {
+    // alpha is lazy too, but connected: a lazy server that connected is a connected one.
+    const fake: FakeManager = {
+      statuses: { alpha: "connected", beta: "disconnected" },
+      calls: [],
+    };
+    const both = await measure(
+      fakeHost({
+        loadMCPConfigs: withLazy({
+          alpha: { command: "alpha", lazy: true },
+          beta: { url: "http://beta", lazy: true },
+        }),
+        discoverMCPServers: async () => ({ manager: manager(fake), errors: [] }),
+      })
+    );
+    expect(both.mcp).toEqual({
+      ok: true,
+      detail: "connected: alpha (.omp/mcp.json); lazy: beta (.mcp.json)",
+    });
+    expect(fake.calls).toEqual(["wait", "disconnectAll"]);
+
+    const alone = await measure(
+      fakeHost({
+        loadMCPConfigs: withLazy({ beta: { url: "http://beta", lazy: true } }),
+        discoverMCPServers: async () => ({
+          manager: manager({ statuses: { beta: "disconnected" }, calls: [] }),
+          errors: [],
+        }),
+      })
+    );
+    expect(alone.mcp).toEqual({ ok: true, detail: "lazy: beta (.mcp.json)" });
+  });
+
+  test("a lazy server with a recorded error fails the row", async () => {
+    const fake: FakeManager = { statuses: { alpha: "connected", beta: "disconnected" }, calls: [] };
+    const rows = await measure(
+      fakeHost({
+        loadMCPConfigs: withLazy({
+          alpha: { command: "alpha" },
+          beta: { type: "stdio", command: "", lazy: true },
+        }),
+        discoverMCPServers: async () => ({
+          manager: manager(fake),
+          errors: [
+            { path: "mcp:beta", error: 'Server "beta": stdio server requires "command" field' },
+          ],
+        }),
+      })
+    );
+    expect(rows.mcp).toEqual({
+      ok: false,
+      detail:
+        'not connected: beta (Server "beta": stdio server requires "command" field); connected: alpha (.omp/mcp.json)',
+    });
+  });
+
+  test("a server that is not lazy and not connected still fails the row", async () => {
+    const fake: FakeManager = {
+      statuses: { alpha: "connected", beta: "disconnected", gamma: "disconnected" },
+      calls: [],
+    };
+    const rows = await measure(
+      fakeHost({
+        loadMCPConfigs: withLazy({
+          alpha: { command: "alpha" },
+          beta: { url: "http://beta", lazy: true },
+          gamma: { command: "gamma", lazy: false },
+        }),
+        discoverMCPServers: async () => ({ manager: manager(fake), errors: [] }),
+      })
+    );
+    // The failed row still names the lazy server, after the connected one.
+    expect(rows.mcp).toEqual({
+      ok: false,
+      detail:
+        "not connected: gamma (status disconnected); connected: alpha (.omp/mcp.json); lazy: beta (.mcp.json)",
+    });
+  });
+
   test("disconnects even when waiting for the connections throws, and the row carries the error", async () => {
     const fake: FakeManager = {
       statuses: {},

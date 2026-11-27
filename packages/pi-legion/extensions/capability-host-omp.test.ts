@@ -87,11 +87,74 @@ test.skipIf(omp === undefined && !onActions)(
       capabilities: {
         // Each a path, as the checks read it, never the host's `{path, scope}` entry.
         extensionPaths: expect.arrayContaining([extension]),
-        row: {
-          name: "repository-extensions",
-          ok: true,
-          detail:
-            "discovered: .omp/extensions/repository-probe.ts, .omp/skills/repository-probe/SKILL.md",
+        rows: {
+          "repository-extensions": {
+            name: "repository-extensions",
+            ok: true,
+            detail:
+              "discovered: .omp/extensions/repository-probe.ts, .omp/skills/repository-probe/SKILL.md",
+          },
+        },
+      },
+    });
+  }
+);
+
+// The mcp row through the production host's `loadMCPConfigs` and `discoverMCPServers`, on a
+// workspace `.mcp.json` of one lazy server. Oh My Pi's manager connects no `lazy: true` server at
+// discovery: it validates the configuration, records the validation's message as the server's
+// error when it fails, and otherwise leaves the server `disconnected` with no error until its
+// first tool call (`connectServers` and `getConnectionStatus` in `mcp/manager.ts` at
+// v18.18.6-sami.20261127-055727). Each case starts the binary once, as the cases above do.
+test.skipIf(omp === undefined && !onActions)(
+  "the production host's mcp row names a lazy server lazy, and the row does not fail, though its command does not exist",
+  async () => {
+    const report = await probeReport((workspace) =>
+      writeFile(
+        path.join(workspace, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { dormant: { command: "legion-test-no-such-mcp-server", lazy: true } },
+        })
+      )
+    );
+
+    expect(report).toMatchObject({
+      capabilities: {
+        rows: { mcp: { name: "mcp", ok: true, detail: "lazy: dormant (.mcp.json)" } },
+      },
+    });
+  }
+);
+
+// The configuration the manager refuses is a `url` under a transport it does not know: discovery
+// passes it (`capability/mcp.ts` asks only for a `command` or a `url`) and hands the manager a
+// stdio server with an empty command (`convertToLegacyConfig` in `mcp/config.ts`), which
+// `validateServerConfig` refuses. A server with neither a `command` nor a `url` never reaches the
+// manager: discovery drops it, and the row reads "no MCP server configured" (measured on
+// 2026-11-27 at that tag).
+test.skipIf(omp === undefined && !onActions)(
+  "the production host's mcp row fails for a lazy server whose configuration the host refuses, naming the host's validation error",
+  async () => {
+    const report = await probeReport((workspace) =>
+      writeFile(
+        path.join(workspace, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            refused: { type: "websocket", url: "http://127.0.0.1:9/mcp", lazy: true },
+          },
+        })
+      )
+    );
+
+    expect(report).toMatchObject({
+      capabilities: {
+        rows: {
+          mcp: {
+            name: "mcp",
+            ok: false,
+            detail:
+              'not connected: refused (Server "refused": stdio server requires "command" field)',
+          },
         },
       },
     });

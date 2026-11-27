@@ -6478,8 +6478,9 @@ Each row's check, and the fact a passing one reports:
 - `web-search`: `web_search` is registered and one `runSearchQuery` for `jujutsu version control` is answered by a provider
   — `web_search registered; provider <name> answered in <n> ms`.
 
-- `mcp`: every server the workspace's `.mcp.json` or `.omp/mcp.json` or the Oh My Pi profile configures is connected, measured through a second, short-lived client per server that the check disconnects (the session's own clients are the host's), so a server that admits one client reads open with its error
-  — `connected: <name> (<config file>), …`, or `no MCP server configured`.
+- `mcp`: every server the workspace's `.mcp.json` or `.omp/mcp.json` or the Oh My Pi profile configures is connected, measured through a second, short-lived client per server that the check disconnects (the session's own clients are the host's), so a server that admits one client reads open with its error;
+  a server configured `lazy: true`, which Oh My Pi connects only at its first tool call, passes unconnected while Oh My Pi has recorded no error for it, and one it recorded an error for (a configuration it refused) fails the row as a server that is not connected does
+  — `connected: <name> (<config file>), …`, then `; lazy: <name> (<config file>), …` for the lazy servers not connected (`lazy: <name> (<config file>), …` alone when no server is connected), or `no MCP server configured`.
 
 - `repository-extensions`: every `.omp/extensions/` module, `.omp/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` the workspace carries is among what Oh My Pi discovers
   — `discovered: <paths>`, or `the repository carries no .omp/extensions, .omp/skills or

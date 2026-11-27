@@ -8,7 +8,8 @@ import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
  * `capabilities` table calls `subagents`, `web-search`, `mcp`, `repository-extensions`,
  * `dispatch-envoy-tools` and `github`. Each check proves the capability from inside the session,
  * the way the agent would use it: the `task` tool resolving the agents the role's prompts
- * dispatch, one real web search, the configured MCP servers connecting, the repository's own
+ * dispatch, one real web search, the configured MCP servers connecting (a lazy one, which
+ * connects only at its first tool call, free of a recorded error), the repository's own
  * extensions and skills loaded, the Envoy tools registered and `dispatch read` answering, and the
  * role's App login through `gh api graphql {viewer{login}}`.
  *
@@ -262,21 +263,34 @@ const checkMCP: Check = async (host, input, signal) => {
   try {
     await manager.waitForPendingConnections();
     const connected: string[] = [];
+    const lazy: string[] = [];
     const unconnected: string[] = [];
+    const located = (name: string) => {
+      const source = sources[name]?.path;
+      return source === undefined ? name : `${name} (${path.relative(input.cwd, source)})`;
+    };
     for (const name of configured) {
       const status = manager.getConnectionStatus(name);
       if (status === "connected") {
-        const source = sources[name]?.path;
-        connected.push(
-          source === undefined ? name : `${name} (${path.relative(input.cwd, source)})`
-        );
-      } else {
-        unconnected.push(`${name} (${mcpErrorFor(errors, name) ?? `status ${status}`})`);
+        connected.push(located(name));
+        continue;
       }
+      // Oh My Pi connects a server configured `lazy: true` at its first tool call, which the check
+      // never makes, so its status reads `disconnected` while nothing is wrong with it. One it
+      // recorded an error for (a configuration it refused) is broken, not dormant.
+      const config = configs[name];
+      const lazyConfig =
+        typeof config === "object" && config !== null && "lazy" in config && config.lazy === true;
+      const error = mcpErrorFor(errors, name);
+      if (error === undefined && lazyConfig) lazy.push(located(name));
+      else unconnected.push(`${name} (${error ?? `status ${status}`})`);
     }
-    if (unconnected.length === 0) return ok(`connected: ${connected.join(", ")}`);
-    const suffix = connected.length === 0 ? "" : `; connected: ${connected.join(", ")}`;
-    return failed(`not connected: ${unconnected.join(", ")}${suffix}`);
+    const usable = [
+      ...(connected.length === 0 ? [] : [`connected: ${connected.join(", ")}`]),
+      ...(lazy.length === 0 ? [] : [`lazy: ${lazy.join(", ")}`]),
+    ];
+    if (unconnected.length === 0) return ok(usable.join("; "));
+    return failed([`not connected: ${unconnected.join(", ")}`, ...usable].join("; "));
   } finally {
     signal.removeEventListener("abort", tearDown);
     await tearDown();
