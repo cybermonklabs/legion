@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A plain send to a session that runs on consumer delivery but advertises no delivery mode, as a
+  Claude Code terminal with no connected mod does, answers 200 with `state: "no_receiver"` and no
+  `recipient_state`, so the answer never says `live`. The message is stored as before.
+  `recipient_state` is left out of an answer that has none.
+time: 2026-11-16T18:39:52Z
+custom:
+    Issue: pr4194

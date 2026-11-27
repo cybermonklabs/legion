@@ -746,9 +746,11 @@ func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frame
 		socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session for want of a fresh repository answer; it answers each such frame nak, unlogged, until a fresh answer decides a GitHub frame of its session, which is logged",
 			slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
 	}
+	// The sockets' connection keeps no reconnect buffer (bus.Connect), so nats.go refuses this
+	// publish at once while it reconnects; the line names the reconnect (bus.Reconnecting).
 	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(answer)); err != nil {
 		socket.sockets.logger.Warn("listener: the relay socket could not answer a frame it withheld; the relay sends it again",
-			slog.String("session_id", socket.session), slog.String("error", err.Error()))
+			slog.String("session_id", socket.session), slog.String("error", bus.Reconnecting(err).Error()))
 	}
 }
 
@@ -892,10 +894,12 @@ func (socket *relaySocket) refuse(sid *int64, code string) {
 }
 
 // endNATS ends the socket 1013 over a NATS call that did not complete, which says nothing about
-// the session: its client opens it again after 5 s, on whichever replica answers.
+// the session: its client opens it again after 5 s, on whichever replica answers. The sockets'
+// connection keeps no reconnect buffer (bus.Connect), so nats.go refuses a publish at once while
+// it reconnects, and the line names that refusal as the reconnect it is (bus.Reconnecting).
 func (socket *relaySocket) endNATS(step string, err error) {
 	socket.sockets.logger.Warn("listener: the relay socket could not reach NATS; it is closed",
-		slog.String("session_id", socket.session), slog.String("step", step), slog.String("error", err.Error()))
+		slog.String("session_id", socket.session), slog.String("step", step), slog.String("error", bus.Reconnecting(err).Error()))
 	socket.end(websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)
 }
 

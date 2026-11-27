@@ -27,6 +27,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -43,6 +44,11 @@ var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
 // packages/envoy/internal/dispatch/text/refs.go) -- duplicated here rather than imported because
 // both are unexported in their own packages and this package does not depend on either.
 var issueKeyCandidate = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
+
+// intakeCaller is the caller kind of every call to GitHub the two intakes make for a webhook
+// event (githubrate.WithCaller), which the rate reading counts the process's own calls by: the
+// GitHub intake's handler (Intake.deliver) and the job intake's reads (JobIntake.Run).
+const intakeCaller = "webhook_intake"
 
 // Intake wires the NATS consumer to the database, the GitHub App client, the event broker the
 // issue.deployed events go through (RecordDeployedEvents) and the importer a push of a branch is
@@ -137,8 +143,9 @@ func (in *Intake) Run(ctx context.Context) {
 // handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, a push to
 // handlePushEnvelope, any other kind nowhere. It is the whole filter: the durable is handed every
 // GitHub notification on the bus (githubIntakeSubject), CI settlements and comments among them,
-// and an envelope with no payload that a caller of the listener's publish route can still put
-// there. The payload is decoded once, into its fields. An empty payload, or one of a kind route
+// and an envelope with no payload, which a NATS user granted the lane can still put there (the
+// listener's publish route refuses GitHub's lane by name). The payload is decoded once, into its
+// fields. An empty payload, or one of a kind route
 // does not handle, is discarded before any GitHub call or write, whatever its other fields hold (a
 // CI settlement's hold arrays, cistore.Summary); only a pull request's, a workflow run's or a
 // push's string fields are read, as the flat string map its handler takes (flatPayload), and every
@@ -440,7 +447,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
+	ctx, cancel := context.WithTimeout(githubrate.WithCaller(handling, intakeCaller), in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope
