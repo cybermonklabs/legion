@@ -230,7 +230,7 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	}},
 	// The waiting_on of GET /api/v1/issues/{key}/legion and of the legion member GET
 	// /api/v2/issues/{key} answers with include=legion (legion_issue.go): null is an issue that waits
-	// on nothing, and an object is the daemon's own as the sampler stored it, which the answer
+	// on nothing, and an object is the daemon's own as the intake stored it, which the answer
 	// sends unparsed so that a field a later daemon adds reaches the page. The fragment names the
 	// fields the daemon writes today and leaves the object open, so the generated type has them.
 	// The answer always carries the field, which its `required:"true"` says.

@@ -64,6 +64,13 @@ type workflowRuntime struct {
 	admission *admit.Admission
 	handlers  []intake.Handler
 	dispatch  dispatch.Client
+	// recordStore is the Postgres store openWorkflow builds records over (projectRecords), kept so
+	// the boot can turn its state events on once the boot event is queued (publishRecordStates).
+	recordStore *record.Postgres
+	// stateRun is the run id the boot turned the state events on under (publishRecordStates), the
+	// `run` of every state message this daemon run publishes, which the state route serves as
+	// `daemon.stateRun` (source.stateRun). The boot writes it once, before the API serves.
+	stateRun string
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -171,6 +178,11 @@ type workflowRuntime struct {
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
+	// lingerWake carries the deadline each admission pass that judges the block reports (admit's
+	// block rule, Admission.Apply), the next moment that block can change with no write, to the
+	// daemon's one timer for it (wakeAtLingerDeadlines); openWorkflow registers it with the
+	// admission pass.
+	lingerWake *lingerWake
 	// outboxSweep is how often the outbox sweeps its lanes (overrides.outboxSweep), which attach
 	// hands the outbox (outbox.sweepEvery); zero is outboxLease.
 	outboxSweep time.Duration
@@ -808,9 +820,12 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The database is shared by every project's daemon: the workflow reads this project's issues.
 	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
 	// through the runtime, since the outbox itself is built later (attach), and each write that can
-	// change the live records asks the refresher to read them again at its commit (wakeLive).
+	// change the live records asks the refresher to read them again at its commit (wakeLive). The
+	// record store is kept beside the scoped records for the switch that turns its state events on
+	// (publishRecordStates).
 	w.catchUps = &catchUpPacing{ctx: ctx, pool: st.Pool(), pacer: pacer, now: clock, wake: w.wakeOutbox, log: log}
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log, catchUps: w.catchUps}
+	w.recordStore = record.NewStore()
+	w.records = projectRecords{Store: w.recordStore, project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log, catchUps: w.catchUps}
 	w.pool = st.Pool()
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
@@ -838,6 +853,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = workflowAdmission(w.records, w.engine, cfg, clock, log)
+	// Every admission pass that judges the block reports the next linger deadline it reads, and
+	// the daemon's one timer for it runs a pass then (wakeAtLingerDeadlines, which run starts). A
+	// pass reports only with the state events on, which the boot turns on after this.
+	w.lingerWake = newLingerWake()
+	w.admission.UseLingerWake(w.lingerWake.arm)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -2408,6 +2428,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 			return nil
 		})
 	}
+	group.Go(func() error {
+		w.wakeAtLingerDeadlines(store.ForConcurrentWorker(running))
+		return nil
+	})
 	group.Go(func() error {
 		// The start read is the daemon's one read of every issue in the workflow: it covers the
 		// deliveries GitHub made while the daemon was down, which nothing redelivers.

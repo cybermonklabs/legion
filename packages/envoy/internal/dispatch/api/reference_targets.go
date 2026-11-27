@@ -50,9 +50,10 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // as it is; this read names no edges at all.
 //
 // A reference the grammar cannot read is refused by name (parseRequestRef, as the per-reference
-// route refuses its own), and so is a set past referenceTargetsMax, which is refused before
-// anything is parsed. A reference that reads but names nothing is answered, gone: a chip whose
-// target was deleted still has to draw.
+// route refuses its own), and so is a reference to a party - a person, an agent's session or a
+// role - which the grammar reads and the graph holds no node for (refs.TargetOf), and a set past
+// referenceTargetsMax, which is refused before anything is parsed. A reference that reads but
+// names nothing is answered, gone: a chip whose target was deleted still has to draw.
 //
 // A member naming a comment or a message, or a block of one, carries its post's marks as every
 // read of the post does (refs.TargetName): edited_at where its author edited it, and deleted_at

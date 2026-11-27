@@ -311,7 +311,7 @@ func (s *server) v2IssueRows() []routeRow {
 				"holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its " +
 				"claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; " +
 				"referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, " +
-				"runs_revision}, its Legion state from what the sampler recorded of the daemon of its project, the body a " +
+				"runs_revision}, its Legion state from what the Legion intake recorded of the daemon of its project, the body a " +
 				"/ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion " +
 				"daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, " +
 				"phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, waiting_on in the shape GET " +

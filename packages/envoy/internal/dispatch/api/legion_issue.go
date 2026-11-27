@@ -1,12 +1,12 @@
 // legion_issue.go serves GET /api/v1/issues/{key}/legion, and the legion member GET
-// /api/v2/issues/{key} answers with include=legion, one issue's Legion state from what the sampler
-// recorded (dispatch://INFRA-4869): whether the issue's project names a daemon, the issue's phase,
-// the claims of its roles, its slot, its place in the daemon's waiting line, what holds it and what
-// it waits on from a person, the newest read of the project's daemon, and the revision of the
-// issue's runs. readLegionIssue computes that body from the key alone, so the `legion_issue` live
-// view of the issue answers through the same function and sends the GET body byte for byte, the
-// hub's rule for every kind (live_frames.go), and the /api/v2 member is that body too, its runs'
-// revision the one the live view carries.
+// /api/v2/issues/{key} answers with include=legion, one issue's Legion state from what the Legion
+// intake recorded (dispatch://INFRA-4869): whether the issue's project names a daemon, the issue's
+// phase, the claims of its roles, its slot, its place in the daemon's waiting line, what holds it
+// and what it waits on from a person, the newest read of the project's daemon, and the revision of
+// the issue's runs. readLegionIssue computes that body from the key alone, so the `legion_issue`
+// live view of the issue answers through the same function and sends the GET body byte for byte,
+// the hub's rule for every kind (live_frames.go), and the /api/v2 member is that body too, its
+// runs' revision the one the live view carries.
 //
 // Like the board (legion_board.go) it reads what Dispatch holds and never calls the daemon, and it
 // reads an issue's observations through the board's own per-issue rule (legion.IssueState), so a
@@ -91,7 +91,7 @@ type legionIssueState struct {
 	// needs no second rule for its absence.
 	BlockedBy []string `json:"blocked_by"`
 	// WaitingOn is what the issue waits on from a person, the daemon's object exactly as the
-	// sampler stored it, null where it waits on nothing. It stays bytes, as legion.IssueState holds
+	// intake stored it, null where it waits on nothing. It stays bytes, as legion.IssueState holds
 	// it, so a field a later daemon adds reaches the page. rawFieldSchemas names the fields the
 	// daemon writes today (its WaitingOnView), which give the generated type its members, and the
 	// card of the board takes three of them (legionBoardWaitOf). The emitter leaves a field that

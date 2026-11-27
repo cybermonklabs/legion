@@ -112,7 +112,7 @@ func TestV2RoleHoldersPublicationOfTheStoredSetWritesNothing(t *testing.T) {
 		if again.Code != http.StatusOK {
 			t.Fatalf("the stored set again, in another order: %d %s, want 200 with the set", again.Code, again.Body.String())
 		}
-		if answer := decodeBody[issueRoleHolders](t, again); !sameRoleHolders(answer, stored) {
+		if answer := decodeBody[issueRoleHolders](t, again); !sameRoleHolderAnswer(answer, stored) {
 			t.Fatalf("the stored set again answered %+v, want the set as it was stored, %+v", answer, stored)
 		}
 	case <-time.After(10 * time.Second):
@@ -126,16 +126,16 @@ func TestV2RoleHoldersPublicationOfTheStoredSetWritesNothing(t *testing.T) {
 
 	moved := tour.publishRoleHolders(t, issue, []issueRoleHolder{tourHolders[0], {Role: "tester", Session: "ses-tour-tester-2"}})
 	kept := issueRoleHolders{Issue: stored.Issue, Holders: stored.Holders[:1]}
-	if len(moved.Holders) != 2 || !sameRoleHolders(issueRoleHolders{Issue: moved.Issue, Holders: moved.Holders[:1]}, kept) ||
+	if len(moved.Holders) != 2 || !sameRoleHolderAnswer(issueRoleHolders{Issue: moved.Issue, Holders: moved.Holders[:1]}, kept) ||
 		moved.Holders[1].Session != "ses-tour-tester-2" || !moved.Holders[1].RecordedAt.After(stored.Holders[1].RecordedAt) {
 		t.Fatalf("the tester moved to another session answered %+v, want the implementer kept as stored (%+v) and the tester's new session recorded anew",
 			moved.Holders, stored.Holders[0])
 	}
 }
 
-// sameRoleHolders reports whether two answers name one issue and one set, each pair recorded at
-// one instant.
-func sameRoleHolders(left, right issueRoleHolders) bool {
+// sameRoleHolderAnswer reports whether two answers name one issue and one set, each pair recorded
+// at one instant (sameRoleHolders, which a write compares by, reads the pairs alone).
+func sameRoleHolderAnswer(left, right issueRoleHolders) bool {
 	return left.Issue == right.Issue && slices.EqualFunc(left.Holders, right.Holders, func(a, b issueRoleHolderRecord) bool {
 		return a.Role == b.Role && a.Session == b.Session && a.RecordedAt.Equal(b.RecordedAt)
 	})

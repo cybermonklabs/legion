@@ -299,8 +299,8 @@ func (tour *routeTour) projectOf(t *testing.T, issue tourIssue) string {
 	return project
 }
 
-// legionState names a Legion daemon for issue's project and records, as the sampler records a
-// good read of it, the issue waiting on a person: its phase, its slot, a claim in a turn and one
+// legionState names a Legion daemon for issue's project and records, as the Legion intake
+// records a good whole read of it, the issue waiting on a person: its phase, its slot, a claim in a turn and one
 // idle, the ask it waits on, a waiting line and a blocker naming it, and the read itself.
 func (tour *routeTour) legionState(t *testing.T, issue tourIssue) {
 	t.Helper()

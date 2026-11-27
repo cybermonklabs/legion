@@ -59,8 +59,13 @@ func (s *server) v2RoleHolderRows() []routeRow {
 				"such a pair names an architect whose write R26 lets through. The body is the "+
 				"issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does "+
 				"not name holds no role of the issue, two writes at once store the set of the one that finishes last, "+
-				"and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody "+
-				"and takes a closed issue. Each write the route takes marks the issue's project, and from then on a "+
+				"and a pair that did not change keeps its recorded_at. A write that changes the set of pairs appends one "+
+				"issue event, issue.role_holders_changed, whose payload is {key, holders, previous_holders}: the set it "+
+				"stored and the set it replaced, each in workflow order, each pair {role, session, recorded_at}, as the "+
+				"write's actor and at the write's time; GET /api/v2/issues/{key}/events serves it, so the log says which "+
+				"session held each role at a past time, from the release that writes the event on. A write that keeps "+
+				"every pair appends nothing. The event is quiet and notifies nobody, and the write takes a closed issue. "+
+				"Each write the route takes marks the issue's project, and from then on a "+
 				"write of the spec or the Verification document of an issue of the project that Legion runs needs a "+
 				"person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). "+
 				"Answers 200 the set this write stored, %s; a body naming the set already stored, in any order, on a "+
