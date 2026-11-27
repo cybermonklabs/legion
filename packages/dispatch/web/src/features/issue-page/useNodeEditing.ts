@@ -1,11 +1,12 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
 import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
 import { useKeptBlockEditor } from "./block-editor";
 import type { DocumentAdmissions } from "./document-admission";
+import { type EarlyCaretHold, openEarlyCaret, replayedKeys } from "./early-caret";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import {
@@ -234,11 +235,24 @@ export function useNodeEditing({
   // The issue page's kept block editor, which a row's block is bound in where the page holds one
   // (R7, `block-editor.tsx`), in place of its document's whole editor.
   const keptEditor = useKeptBlockEditor();
+  const earlyCaret = useRef<EarlyCaretHold | undefined>(undefined);
+  const replayedCaret = useRef(false);
+  const pendingReleases = useRef(new Set<() => void>());
+  const pressAt = useRef(editing?.at);
+  pressAt.current = editing?.at;
 
   const edit = useCallback(
     (row: string, node: TreeNode, at?: CaretAt) => {
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
+        onReport(KEY_REPORTS.no_text);
+        return;
+      }
+      const kept = keptEditor?.available() === true;
+      if (
+        kept &&
+        !container.current?.querySelector(rowSelectorOf(row))?.hasAttribute("data-editable")
+      ) {
         onReport(KEY_REPORTS.no_text);
         return;
       }
@@ -249,11 +263,11 @@ export function useNodeEditing({
         artifactId: place.artifact.id,
         at,
         blockId: place.blockId,
-        ...(keptEditor?.available() === true ? { kept: true } : {}),
+        ...(kept ? { kept: true } : {}),
         row,
       });
     },
-    [artifacts, editing, keptEditor, onReport]
+    [artifacts, container, editing, keptEditor, onReport]
   );
   const stopEditing = useCallback(() => {
     setEditing((held) => {
@@ -331,19 +345,16 @@ export function useNodeEditing({
       });
     }
     // A row bound in the page's kept block editor asks for no document's whole editor.
-    onEditing(editingKept ? undefined : editingArtifact, onEditor);
+    if (editingKept) onEditing(undefined);
+    else onEditing(editingArtifact, onEditor);
     // The outline going - a document opened in its place - takes the row's editing with it, so
     // the page holds no editor for a row that is no longer drawn.
     return () => onEditing(undefined);
   }, [editingArtifact, editingKept, onEditing, onEditor]);
 
-  // A row bound in the page's kept block editor (`block-editor.tsx`): the room binds that editor
-  // to the node's block, drawn where the row's words stood, at once where its work is done and
-  // else once it is, and the caret goes in by the rule below, as in a document's whole editor.
-  // The editor holds that one block, so its hold is on as it is bound, with nothing to load. The
-  // bind ending by itself - another writer deleted or merged the block - or never coming ends
-  // the editing, and the row says why where the focus is in the tree.
-  useEffect(() => {
+  // Place the stand-in before paint unless the room binds synchronously. An edit that leaves
+  // while waiting keeps its place in the room's queue, but no longer owns the active row.
+  useLayoutEffect(() => {
     const box = container.current;
     const row =
       editingRow === undefined
@@ -362,26 +373,89 @@ export function useNodeEditing({
       return;
     }
     load.current = undefined;
-    const release = keptEditor.bind({
+    const words = row.querySelector<HTMLElement>("[data-node-words]");
+    const at = pressAt.current;
+    let early: EarlyCaretHold | undefined;
+    let active = true;
+    let bound = false;
+    let refused = false;
+    let release: (() => void) | undefined;
+    const dispose = () => {
+      pendingReleases.current.delete(dispose);
+      early?.destroy();
+      const stop = release;
+      release = undefined;
+      stop?.();
+    };
+    release = keptEditor.bind({
       artifact,
       blockId: editingBlock,
       row,
+      beforeBind(bind) {
+        if (early === undefined) bind();
+        else early.handover(bind);
+      },
       onBound(view) {
-        editorView.current = view;
-        hold.current = "on";
-        holdChanged.current?.();
+        bound = true;
+        if (active) {
+          editorView.current = view;
+          hold.current = "on";
+        }
+        if (early !== undefined) {
+          if (active) replayedCaret.current = true;
+          try {
+            early.replay(view, dispose);
+          } catch (error) {
+            console.error("Could not replay typing in the block editor", error);
+            early.refuse();
+            dispose();
+            if (active) setEditing(undefined);
+            return;
+          }
+          if (earlyCaret.current === early) earlyCaret.current = undefined;
+        }
+        if (active) holdChanged.current?.();
       },
       onEnd(line) {
-        if (box?.contains(document.activeElement) === true) report.current(line);
-        setEditing(undefined);
+        refused = true;
+        if (!bound && early !== undefined) early.refuse();
+        else if (box?.contains(document.activeElement) === true) report.current(line);
+        if (active) setEditing(undefined);
+        else dispose();
       },
     });
+    if (!bound && !refused && words !== null) {
+      early = openEarlyCaret({
+        row,
+        words,
+        offset: 0,
+        pressed: at,
+        editable: true,
+        report: (line) => report.current(line),
+        onEscape: stopEditing,
+      });
+      earlyCaret.current = early;
+    }
     return () => {
-      release();
+      active = false;
+      if (earlyCaret.current === early) earlyCaret.current = undefined;
+      replayedCaret.current = false;
       hold.current = "awaited";
       editorView.current = undefined;
+      if (!bound && !refused && early !== undefined) {
+        pendingReleases.current.add(dispose);
+        if (early.leave()) return;
+      }
+      dispose();
     };
-  }, [container, editingArtifact, editingBlock, editingKept, editingRow, keptEditor]);
+  }, [container, editingArtifact, editingBlock, editingKept, editingRow, keptEditor, stopEditing]);
+
+  useLayoutEffect(() => {
+    const pending = pendingReleases.current;
+    return () => {
+      for (const dispose of pending) dispose();
+    };
+  }, []);
 
   // The tree going takes the hold off the editor with it, whatever the page does with that editor.
   useEffect(
@@ -662,11 +736,16 @@ export function useNodeEditing({
         // over is seen as it draws the node's block (above).
         return hold.current === "on";
       }
-      if (offRow || unheld) return endUnplaced(row, rowsFocus, offRow);
+      if ((offRow && !replayedCaret.current) || unheld) return endUnplaced(row, rowsFocus, offRow);
       // No caret goes in an editor that does not hold its edits to the node's block yet: the
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
-      if (hold.current !== "on" || !caretInBlock(row, blockId, editing.at)) return false;
+      if (
+        hold.current !== "on" ||
+        (!replayedCaret.current && !caretInBlock(row, blockId, editing.at))
+      ) {
+        return false;
+      }
       // The kept block editor is the block's own size, where the row's words stood: no box is
       // held, scrolled or brought on screen for it.
       settled = editing.kept === true ? () => {} : holdEditorAtBlock(row, blockId, editing.at);
@@ -817,6 +896,7 @@ export function useNodeEditing({
     box.addEventListener(
       "keydown",
       (event) => {
+        if (replayedKeys.has(event)) return;
         const row = box.querySelector<HTMLElement>(rowSelector);
         if (row === null) return;
         confineKey(
@@ -841,6 +921,7 @@ export function useNodeEditing({
           event.metaKey ||
           inputMethodKey(event) ||
           hold.current !== "on" ||
+          (replayedKeys.has(event) && !editorView.current?.hasFocus()) ||
           !(event.target instanceof Element)
         ) {
           return;
@@ -950,6 +1031,8 @@ export function useNodeEditing({
       // editing: it acts on nothing, as every key that ends a composition does
       // (`inputMethodKey`).
       if (event.key !== "Escape" || inputMethodKey(event) || event.defaultPrevented) return;
+      // The stand-in must snapshot while it still has the selection and owns IME Escape.
+      if (earlyCaret.current?.owns(event.target)) return;
       // An Escape pressed anywhere else in the tree is the keymap's, as it is while no row is
       // edited: on another row it leaves the outline, on a link or a control `f` stopped on it
       // gives that control's row back (`useTreeKeymap`'s `tree-leave`), and in a Change field,

@@ -882,18 +882,24 @@ function placeAt(block: HTMLElement, at: CaretAt): Point {
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     if (node instanceof Text && node.parentElement?.isContentEditable === true) texts.push(node);
   }
-  const [before, word, after, into] = at.word ?? ["", "", "", 0];
   const text = texts.map((node) => node.data).join("");
-  const start = at.offset - into - before.length;
-  const later = text.indexOf(before + word + after, start);
-  const earlier = text.lastIndexOf(before + word + after, start);
-  const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
-  let remaining = Math.max(0, found < 0 ? at.offset : found + before.length + into);
+  let remaining = textOffsetAt(text, at);
   for (const node of texts) {
     if (remaining < node.data.length + (at.next ? 0 : 1)) return [node, remaining];
     remaining -= node.data.length;
   }
   return (at.next && afterEndingAtom(block)) ?? lastPlace(block);
+}
+
+/** The editor's character offset for a drawn offset, adjusted by the nearest matching word
+ *  and neighbours when the drawing and the editor's reading differ. */
+export function textOffsetAt(text: string, at: Pick<CaretAt, "offset" | "word">): number {
+  const [before, word, after, into] = at.word ?? ["", "", "", 0];
+  const start = at.offset - into - before.length;
+  const later = text.indexOf(before + word + after, start);
+  const earlier = text.lastIndexOf(before + word + after, start);
+  const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
+  return Math.max(0, found < 0 ? at.offset : found + before.length + into);
 }
 
 /** The place after the atom that ends `block` - an element the caret cannot enter, with no text it

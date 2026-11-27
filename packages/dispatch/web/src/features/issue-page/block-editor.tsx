@@ -53,7 +53,7 @@ export interface BlockEditorView<At> {
    *  attributes (`rebindElement`). */
   rebindElement(element: XmlElement): void;
   /** Puts the caret where the bind asked, once the editor stands in `row`. */
-  setCaret(at: At, row: HTMLElement): void;
+  setCaret?(at: At, row: HTMLElement): void;
   /** Starts a comment on the selection, as the comment chord does, and answers whether it did. */
   commentOnSelection?(): boolean;
   /** Takes back the block's last edit, for an editor whose own keys do not answer `Mod-z`. */
@@ -71,6 +71,8 @@ export interface BlockEditorTarget<At> {
   readonly words: HTMLElement;
   readonly element: XmlElement;
   readonly at: At;
+  /** The early caret's box, still in the row after its editable steps aside. */
+  readonly existingBox?: HTMLElement;
 }
 
 export interface BlockEditorOptions<At> {
@@ -164,7 +166,7 @@ export function bindBlockEditor<At>({
   };
 
   return {
-    bind({ row, words, element, at }) {
+    bind({ row, words, element, at, existingBox }) {
       if (!alive) return () => {};
       const doc = element.doc;
       if (doc === null) throw new Error("A block editor binds a block of a room.");
@@ -174,12 +176,12 @@ export function bindBlockEditor<At>({
         readOnly = false;
         editor.setEditable?.(true);
       }
-      const box = row.ownerDocument.createElement("div");
+      const box = existingBox ?? row.ownerDocument.createElement("div");
       box.className = words.className;
       box.setAttribute(EDITOR_BOX_ATTRIBUTE, "");
       box.setAttribute(BLOCK_EDITOR_ATTRIBUTE, "");
       box.setAttribute(AUTHOR_TEXT_ATTRIBUTE, "");
-      words.before(box);
+      if (existingBox === undefined) words.before(box);
       const wordsHidden = words.hidden;
       words.hidden = true;
       box.append(editor.view.dom);
@@ -197,7 +199,7 @@ export function bindBlockEditor<At>({
       };
       doc.on("afterTransaction", held.watch);
       bound = held;
-      editor.setCaret(at, row);
+      editor.setCaret?.(at, row);
       return () => {
         if (bound === held) park(held);
       };
@@ -265,6 +267,8 @@ export interface RowBind {
   readonly blockId: string;
   /** The row's element, where the editor is drawn in place of its words. */
   readonly row: HTMLElement;
+  /** Run once composition has ended; use the stand-in's box if it is still in the row. */
+  readonly beforeBind: (bind: (box?: HTMLElement) => void) => void;
   /** The editor stands in the row, bound to the block: the row's own caret rule puts the caret
    *  in it (`useNodeEditing.ts`), and holds it there, as it does in the whole document's editor. */
   readonly onBound: (view: EditorView) => void;
@@ -299,18 +303,35 @@ function keptBlockEditor(room: RefObject<BlockRoom<EditorHandle> | null>): KeptB
         return () => {};
       }
       let release: (() => void) | undefined;
+      let cancelled = false;
+      let stopWaiting: (() => void) | undefined;
       const cancel = held.requestBind(
         { id: request.artifact.id, fragment: fragmentOf(request.artifact) },
         {
           onBind: (target) => {
-            release = bindRow(target, request);
+            // The room may readmit the page read-only while the stand-in is still composing.
+            stopWaiting = target.watchAdmission((readOnly) => {
+              if (!readOnly || cancelled) return;
+              cancelled = true;
+              stopWaiting?.();
+              request.onEnd(KEY_REPORTS.editor_closed);
+            });
+            request.beforeBind((box) => {
+              if (cancelled) return;
+              stopWaiting?.();
+              release = bindRow(target, request, box);
+              if (release !== undefined) request.onBound(target.editor.view);
+            });
           },
           onBindRefused: request.onEnd,
         }
       );
       return () => {
-        cancel();
+        // Park this row before asking the room to drain any later bind.
+        cancelled = true;
+        stopWaiting?.();
         release?.();
+        cancel();
       };
     },
   };
@@ -344,9 +365,6 @@ function keptBindingOf(target: BindTarget<EditorHandle>): KeptBinding {
           // own, and reads no attribute of its editable as an edit.
           handle.view.dom.setAttribute(BLOCK_ID_ATTRIBUTE, String(element.getAttribute("blockId")));
         },
-        // The row's own caret rule places the caret, at the block's start or at the pressed
-        // place, once it is told the editor is bound (`useNodeEditing.ts`).
-        setCaret: () => kept.row?.onBound(handle.view),
         commentOnSelection: () => handle.commentOnSelection(),
         setEditable: (editable) => handle.setAccess(editable ? "edit" : "read"),
       },
@@ -363,7 +381,11 @@ function keptBindingOf(target: BindTarget<EditorHandle>): KeptBinding {
 
 /** Binds the kept editor to `request`'s block in `target`'s room, and answers what lets that
  *  bind go; undefined where it could not bind, which `request.onEnd` is told. */
-function bindRow(target: BindTarget<EditorHandle>, request: RowBind): (() => void) | undefined {
+function bindRow(
+  target: BindTarget<EditorHandle>,
+  request: RowBind,
+  existingBox?: HTMLElement
+): (() => void) | undefined {
   const element = blockOf(
     target.connection.doc.getXmlFragment(target.artifact.fragment),
     request.blockId
@@ -380,7 +402,7 @@ function bindRow(target: BindTarget<EditorHandle>, request: RowBind): (() => voi
   kept.row = request;
   let unbind: () => void;
   try {
-    unbind = kept.binding.bind({ row: request.row, words, element, at: undefined });
+    unbind = kept.binding.bind({ row: request.row, words, element, at: undefined, existingBox });
   } catch (error) {
     // A block the editor's schema holds no block type for: `rebindElement` refuses it, and the
     // editor stays where it was, bound to no row.
