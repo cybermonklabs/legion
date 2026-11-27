@@ -203,7 +203,7 @@ test("answerLegionTool closes only a step and answers an update without closing 
   expect(calls).toEqual([])
   await legionTool.answerLegionTool(
     runtime,
-    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    { op: "handoff_complete", summary: "tested" },
     hook,
   )
   expect(calls).toEqual(["closed"])
@@ -310,11 +310,11 @@ test("handoff_complete finds the record and commit for the issue's phase and the
   ])
 })
 
-// A phase completion carries no verdict on this host as on every other: the tool refuses one once
-// the record says the completion is a phase's, and reads no handoff record, mints and posts
-// nothing. The handoff report it would read is a real one, so a tool that took the verdict would
-// go on to mint and post, and the requests and lookups below would say so.
-test("a phase completion naming a verdict is refused after the record read, with nothing minted or posted", async () => {
+// A phase completion carries no verdict on this host as on every other: the tool refuses one on
+// the shape of the call alone, before it reads the record, and reads no handoff record, mints
+// and posts nothing. The handoff report it would read is a real one, so a tool that took the
+// verdict would go on to mint and post, and the requests and lookups below would say so.
+test("a phase completion naming a verdict is refused before any call, with nothing minted or posted", async () => {
   const { client, requests } = await daemon()
   const lookups: string[] = []
   await expect(
@@ -336,7 +336,7 @@ test("a phase completion naming a verdict is refused after the record read, with
     ),
   ).rejects.toThrow()
   expect(lookups).toEqual([])
-  expect(requests.map(({ path }) => path)).toEqual(["/legion/v1/issues/LEGION-208/record"])
+  expect(requests.map(({ path }) => path)).toEqual([])
 })
 
 // The agent that does the retro rates the plan in the completion that ends it, through this tool

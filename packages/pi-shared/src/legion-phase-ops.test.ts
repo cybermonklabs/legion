@@ -171,12 +171,12 @@ test("a look's report names its check and is posted as it is, with no record rea
 test("a call without check_opened_at is a step's completion on every phase", async () => {
   const state = stateAtPhase("done", checkRecord());
   const { ops, lookups, posted } = runtime({ ...implementer, role: "tester" }, state);
-  await executePhaseOp(ops, { op: "handoff_complete", summary: "tests pass", verdict: "pass" });
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "tests pass" });
   expect(lookups).toEqual(["done tester"]);
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     summary: "tests pass",
-    verdict: "pass",
+    verdict: "",
     ...REPORT,
   });
   for (const input of [{ verdict: "pending" }, { verdict: "pass", wake_at: NEXT_LOOK }]) {
@@ -228,14 +228,13 @@ test("a tester's step completion beside an open check of its role sends its repo
   await executePhaseOp(ops, {
     op: "handoff_complete",
     summary: "failed",
-    verdict: "fail",
     return_to: 1,
   });
   expect(lookups).toEqual(["testing tester"]);
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     summary: "failed",
-    verdict: "fail",
+    verdict: "",
     ...REPORT,
     returnTo: 1,
   });
@@ -1025,7 +1024,7 @@ test("a check report's state-independent wrong shapes are refused before any cal
     ],
     [
       { op: "handoff_complete", summary: "Looked.", verdict: "fail", return_to: 1 },
-      "return_to names the step",
+      "only a tester's completion names the step",
     ],
   ] as const) {
     await expect(
