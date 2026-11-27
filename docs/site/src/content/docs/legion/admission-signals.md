@@ -95,6 +95,7 @@ The headroom can read above 1 in a burst, and the daemon cuts no reading.
 Each host of a session of the project reports to the daemon each model request that the provider answered: Oh My Pi through the `pi-legion` plugin, and Claude Code through `legion claude-bridge`.
 The sessions are each role's, each subagent's that a role starts, and the project controller's.
 A host reports a request within 15 seconds of its end, and at the end of the turn at the latest.
+The Claude Code bridge can report a request before its last block arrives, since no block says that it is the last: a later block of it makes the bridge report the request again under the same id with the later end, and the daemon moves the request, with its tokens, to the minute of that end.
 
 The headroom counts the uncached input tokens of the requests that the hosts report, and no others.
 Oh My Pi reports no request made outside its agent loop, such as a title, a classifier, a compaction's summary or a memory extraction, so the headroom does not count those tokens.
@@ -105,6 +106,8 @@ The production check of admission by signals still compares the daemon's uncache
 - where the configuration gives the project no token limit a minute (`the daemon's configuration gives the project no token limit a minute (signal_token_limit_per_minute)`);
 
 - where a request of the minute before was not reported: a host of the project reports none, which is any host on a plugin before admission by signals, or the daemon began to keep the requests after the minute began;
+
+- where a request of the minute before, of a model that the project counts, was reported with no token count, since the minute's tokens are then not known (`a request of the minute before was reported with no token count (uncachedInputTokens), so the minute's tokens are not known`, or the count of such requests where there are more);
 
 - before the daemon began to keep the model requests (`the daemon has not begun keeping the project's model requests`).
 
@@ -157,13 +160,13 @@ The step is for [the record of changes](#the-record-of-changes) and changes no d
 `legion state` prints one line for admission by signals, after the `slots` line and the `P0` line where it prints one:
 
 ```text
-signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded limit none does not hold; provider/headroom 0.42 limit 0.9 does not hold; kills 3 limit 2 holds since 2026-11-26T07:00:00Z; approvals 1 limit none does not hold
+signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded (the daemon keeps the merge queue's events from 2026-11-26T06:00:00Z, so the span this signal counts is whole from 2026-11-26T12:00:00Z) limit none does not hold; provider/headroom 0.42 limit 0.9 does not hold; kills 3 limit 2 holds since 2026-11-26T07:00:00Z; approvals 1 limit none does not hold
 ```
 
-The line gives the switch, and then each series by its signal and part: its value, or `not recorded`; its limit, or `limit none`; and whether it holds admission.
+The line gives the switch, and then each series by its signal and part: its value, or `not recorded` and the reason in parentheses; its limit, or `limit none`; and whether it holds admission.
 `holds since <time>` dates the hold by the pass that recorded it, and `holds, undated` is a hold that no committed pass has recorded yet.
 A series never holds while the rule is off, and the line still gives each value against its limit, so you can read what the rule would do.
-`legion state --json` gives the reason for each series that is not recorded.
+The reason is the `absent` of `legion state --json`, with each character that does not print written as its Go escape (`\n`, `\x1b`), so a reason that quotes GitHub's or Dispatch's answer keeps the line one line.
 A daemon that runs no workflow prints no such line, and neither does a daemon before admission by signals.
 
 ### `legion state --json`
@@ -177,7 +180,7 @@ A daemon that runs no workflow prints no such line, and neither does a daemon be
 - `series`: the five series, in the order `idle`, `queue`, `provider` `headroom`, `kills`, `approvals`.
   Each has `signal`; `part`, `headroom` for the provider and null for every other signal; `value`, null where the daemon cannot compute it; `absent`, the reason it cannot, null where it can; `limit`, null for none; `limitSet`, the last change of the limit, `{setBy, at, reason}`, a clear among them, null before a person first set or cleared it; `holds`, whether it holds admission now, never while the rule is off and never where it is not recorded; and `since`, the moment it began to stand as it does, as the record's newest holds entry of the series dates it, null where no committed pass recorded it so.
 
-- `provider.minutes`: each whole minute of the hour before the minute under way, oldest first: `at`; `held`, whether every request of the minute is known to have been reported, since the headroom is not recorded while the minute before is not held; `uncachedInputTokens`, of the models that `signal_token_model_pattern` selects; and `tokenLimit`, the limit in force when the minute began, 0 for none.
+- `provider.minutes`: each whole minute of the hour before the minute under way, oldest first: `at`; `held`, whether every request of the minute is known to have been reported, each counted one with its token count, since the headroom is not recorded while the minute before is not held; `uncachedInputTokens`, of the models that `signal_token_model_pattern` selects; and `tokenLimit`, the limit in force when the minute began, 0 for none.
   It names no request and no session, so you can compare the daemon's input with another record of the provider.
 
 `setBy` names who made a change in the form in which the state names who paused the project: `{"kind": "operator"}`, or `{"kind": "controller", "session": "<session>"}`.

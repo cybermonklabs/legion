@@ -183,15 +183,20 @@ func printSignalsAnswer(w io.Writer, answer []byte) error {
 }
 
 // signalsLine is `legion state`'s line for admission by signals (api.Admission.Signals): the
-// switch, and each signal by its signal and part with its value, or not recorded where the daemon
-// cannot compute it, its limit, and whether it holds admission, since when where a pass dated the
-// hold, and undated where none did yet, as `legion state --json` gives them.
+// switch, and each signal by its signal and part with its value, or not recorded with the reason
+// where the daemon cannot compute it, its limit, and whether it holds admission, since when where
+// a pass dated the hold, and undated where none did yet, as `legion state --json` gives them. The
+// reason is terminalText: it can quote what GitHub or Dispatch answered, so a line break in it
+// would cut the line and an ESC would reach the terminal.
 func signalsLine(reading api.SignalsReading) string {
 	words := []string{"signals: " + switchWords(reading.On)}
 	for _, series := range reading.Series {
 		value := "not recorded"
-		if series.Value != nil {
+		switch {
+		case series.Value != nil:
 			value = strconv.FormatFloat(*series.Value, 'f', -1, 64)
+		case series.Absent != nil:
+			value += " (" + terminalText(*series.Absent) + ")"
 		}
 		hold := "does not hold"
 		switch {

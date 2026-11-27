@@ -38,14 +38,17 @@ func (s signalsLineState) State(context.Context, pgx.Tx) (api.State, []supervise
 
 // TestStateSignalLine: `legion state` prints one line for admission by signals right after the
 // slots line, with each series' value, limit and hold as `legion state --json` gives them (S2):
-// a series the daemon cannot compute reads as not recorded, a hold no pass dated reads as undated,
-// and every series of store.LiveSeries() is on it (/series-inventory).
+// a series the daemon cannot compute reads as not recorded with its reason, which is shown as
+// terminalText, so a line break or an ESC that GitHub's answer put in it neither breaks the line
+// nor reaches the terminal, a hold no pass dated reads as undated, and every series of
+// store.LiveSeries() is on it (/series-inventory).
 func TestStateSignalLine(t *testing.T) {
 	since := time.Date(2026, 11, 26, 7, 0, 0, 0, time.UTC)
 	reading := store.SignalsReading{On: true}
 	shapes := map[string]store.SignalSeriesReading{
-		signals.Idle:      {Value: new(0.75), Limit: new(0.5), Holds: true},
-		signals.Queue:     {Absent: new("the daemon has not begun keeping the merge queue's events")},
+		signals.Idle: {Value: new(0.75), Limit: new(0.5), Holds: true},
+		signals.Queue: {Absent: new("the boot's read of GitHub's merge queue failed: read the merge queue of acme/widgets: " +
+			"GitHub answered 502\n\x1b]0;owned\a")},
 		signals.Provider:  {Value: new(0.00001)},
 		signals.Kills:     {Value: new(6.0), Limit: new(5.0), Holds: true, Since: &since},
 		signals.Approvals: {Value: new(1.0), Limit: new(1000000.0)},
@@ -86,7 +89,8 @@ func TestStateSignalLine(t *testing.T) {
 	}
 	// A number is printed as a decimal, never in scientific notation: the largest limit of a count
 	// and a headroom far below 1 read as a person wrote them.
-	want := "signals: admission by signals on; idle 0.75 limit 0.5 holds, undated; queue not recorded limit none does not hold; " +
+	want := "signals: admission by signals on; idle 0.75 limit 0.5 holds, undated; queue not recorded (the boot's read of " +
+		`GitHub's merge queue failed: read the merge queue of acme/widgets: GitHub answered 502\n\x1b]0;owned\a) limit none does not hold; ` +
 		"provider/headroom 0.00001 limit none does not hold; kills 6 limit 5 holds since 2026-11-26T07:00:00Z; " +
 		"approvals 1 limit 1000000 does not hold"
 	if lines[at] != want {

@@ -1890,8 +1890,13 @@ export const LEGION_MAX_MODEL_REQUESTS = 200;
  * the claim's launch generation and kept across the host's retries, so a request reported twice is
  * kept once. `session` is the session the request ran in (the role's own, a subagent's or the
  * controller's), `model` the model the host called, and `endedAt` when the request ended, which
- * places it in its UTC minute. `uncachedInputTokens` is its fresh input plus its cache writes,
- * never its cache reads, and absent where the host did not learn it. */
+ * places it in its UTC minute. A host that learns a later end of a request it reported (the Claude
+ * Code bridge, which reads a request as one stream line per content block and may report it before
+ * its last block) reports it again under the same `id` with that end, and the daemon moves the
+ * request to the later end's minute; an earlier or equal end moves nothing. `uncachedInputTokens`
+ * is its fresh input plus its cache writes, never its cache reads, and absent where the host did
+ * not learn it: a request of a model the project counts with none leaves its minute's tokens
+ * unknown, so the headroom of that minute is not recorded, never the sum of the other requests. */
 export const LegionModelRequest = z.strictObject({
   id: nonEmptyString,
   session: nonEmptyString,

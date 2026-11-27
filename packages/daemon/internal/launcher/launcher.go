@@ -328,11 +328,13 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// such process`), and the role's launch with it.
 	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
 	if cfg.RolesDir == "" {
-		return []*manager{{
+		m := &manager{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
 			stderr: redact.Writer(cfg.Stderr), requests: map[string]request{}, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
-		}}, nil
+		}
+		m.memoryReports = newRoleReports(m)
+		return []*manager{m}, nil
 	}
 	log := &roleLog{stdout: redact.Writer(cfg.Stdout), stderr: redact.Writer(cfg.Stderr)}
 	managers := make([]*manager, 0, len(cfg.Roles))
@@ -349,12 +351,14 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 		// each generation's child through writers of its own (command), so no launcher line is
 		// glued onto a line the child has not finished, and no generation's onto another's.
 		_, own := log.writers(role)
-		managers = append(managers, &manager{
+		m := &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
 			log: log, stderr: own, requests: map[string]request{}, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
-		})
+		}
+		m.memoryReports = newRoleReports(m)
+		managers = append(managers, m)
 	}
 	return managers, nil
 }
@@ -732,25 +736,24 @@ type manager struct {
 	// its container's first process, which runs none, and in a microVM pod's launcher, an issue
 	// pod's or the controller's, which runs the guest watch instead (serveMemoryGuard).
 	memoryGuard *memoryguard.Guard
-	// memoryKills are the reports of this role's processes stopped for memory that no connection
-	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
-	// is the connection they go on, this role's current one from its state frame on, nil while
-	// none is up; reportsCarried is whether that connection's acknowledgement says the daemon
-	// behind it knows the report: guard settings for a gVisor pod's launcher, KernelKills for a
-	// microVM pod's (serve, openMemoryReports); reportsNoRole is whether it says, beside that, that
-	// the daemon knows a report of a process of no role (NoRoleKills), which makes the connection
-	// one the pod's reports of no role may go on (noRoleReports). These fields and the queue's
-	// in-flight sequence are guarded by mu, so the carrier and the head are selected together.
-	memoryKills    []shimwire.LauncherMemoryKill
+	// memoryReports is the queue of the kill reports of this role's processes that no connection
+	// has carried yet (queueMemoryKill, newRoleReports). reportWriter is the connection they go
+	// on, this role's current one from its state frame on, nil while none is up; reportsCarried
+	// is whether that connection's acknowledgement says the daemon behind it knows the report:
+	// guard settings for a gVisor pod's launcher, KernelKills for a microVM pod's (serve,
+	// openMemoryReports); reportsNoRole is whether it says, beside that, that the daemon knows a
+	// report of a process of no role (NoRoleKills), which makes the connection one the pod's
+	// reports of no role may go on (noRoleReports). These fields, and the queue's reports and
+	// in-flight sequence, are guarded by mu, so the carrier and the head are selected together.
+	memoryReports  killReportQueue
 	reportWriter   *shimwire.Writer
 	reportsCarried bool
 	reportsNoRole  bool
-	killReportQueue
 	// noRoleReports is the pod's one queue of the reports of processes of no role, which every
 	// role manager of an issue pod's container shares and which sends on the connection of one of
-	// them (serveMemoryGuard). It is nil in the controller pod's single-role form, where every
-	// process is the controller's, and in a launcher that runs no watch.
-	noRoleReports *noRoleReports
+	// them (serveMemoryGuard, newNoRoleReports). It is nil in the controller pod's single-role
+	// form, where every process is the controller's, and in a launcher that runs no watch.
+	noRoleReports *killReportQueue
 	// volumeTrimSettings is what the latest acknowledgement of this role handed the pod's cache
 	// trimmer, and nil when it handed none (shimwire.LauncherHelloAck.VolumeTrim): on nil the
 	// trimmer reads and deletes nothing, as on settings it refuses (volumeTrimRuns), and a report

@@ -1537,7 +1537,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   `--json` carries the same reading as `admission.slots`, with the number of P0 holders as `p0`, and each holder's state and the moment it entered it on its slot (`state`, `since`).
   The controller's tick notice carries the reading as `slots`, and the `legion` tool's `read_state` summary prints the line.
 
-  A daemon that keeps admission by signals prints one more line after the `slots` line, which the sample above leaves out, `signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded limit none does not hold; …`: whether the rule is on, and each of its five series by its signal and part, with its value or `not recorded`, its limit or `limit none`, and whether it holds admission, since when where a pass dated the hold.
+  A daemon that keeps admission by signals prints one more line after the `slots` line, which the sample above leaves out, `signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded (the daemon has not begun keeping the merge queue's events) limit none does not hold; …`: whether the rule is on, and each of its five series by its signal and part, with its value or `not recorded` and the reason, its limit or `limit none`, and whether it holds admission, since when where a pass dated the hold.
   [Admission by signals](/legion/legion/admission-signals/) says what each signal is, how to read it here and in `--json`, and how a person turns the rule on and off and sets or clears each limit.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the

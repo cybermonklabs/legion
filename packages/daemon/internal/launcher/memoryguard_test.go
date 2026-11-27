@@ -924,6 +924,7 @@ func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
 	log := &roleLog{stderr: &lockedBuffer{}}
 	_, own := log.writers("tester")
 	tester := &manager{role: "tester", log: log, stderr: own, child: &child{pid: roleInit}}
+	tester.memoryReports = newRoleReports(tester)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := serveMemoryGuard(ctx, Config{RolesDir: t.TempDir()}, []*manager{tester}, &pidGuard{})
 	t.Cleanup(func() {
@@ -939,7 +940,7 @@ func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
 		t.Fatalf("the guard killed %v, want the agent's command %d alone and never the agent %d; its log:\n%s", kills, test, agent, rig.log())
 	}
 	tester.mu.Lock()
-	waiting := slices.Clone(tester.memoryKills)
+	waiting := slices.Clone(tester.memoryReports.kills)
 	tester.mu.Unlock()
 	if len(waiting) != 1 || waiting[0].PID != test || waiting[0].Sequence != 1 || waiting[0].Guard != rig.id() {
 		t.Fatalf("the tester's manager holds %+v, want the one report of pid %d by guard %s", waiting, test, rig.id())
@@ -1066,8 +1067,8 @@ func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 		t.Fatal("serveMemoryGuard left something running in a launcher that runs no guard")
 	}
 	for _, m := range managers {
-		if m.memoryGuard != nil || m.memoryWake != nil {
-			t.Fatalf("the %s's manager holds the guard %v and the wake %v, want neither", m.role, m.memoryGuard, m.memoryWake)
+		if m.memoryGuard != nil || m.memoryReports.wake != nil {
+			t.Fatalf("the %s's manager holds the guard %v and the wake %v, want neither", m.role, m.memoryGuard, m.memoryReports.wake)
 		}
 	}
 }
@@ -1341,6 +1342,7 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 	}
 	stderr := &lockedBuffer{}
 	m := &manager{role: "tester", stderr: stderr}
+	m.memoryReports = newRoleReports(m)
 	for sequence := 1; sequence <= maxWaitingMemoryKills; sequence++ {
 		m.queueMemoryKill(report(sequence))
 	}
@@ -1388,7 +1390,7 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 		t.Fatalf("the connection carries the reports %v, want %v", sequences, wantSequences)
 	}
 	m.mu.Lock()
-	left := len(m.memoryKills)
+	left := len(m.memoryReports.kills)
 	m.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("%d reports still wait after every write succeeded", left)
@@ -1509,6 +1511,7 @@ func TestMemoryGuardKeepsThirtyTwoWaitingReportsOfNoRoleAndDropsTheOldest(t *tes
 	const first = 900
 	stderr := &lockedBuffer{}
 	m := &manager{role: "tester", stderr: stderr}
+	m.memoryReports = newRoleReports(m)
 	reports := newNoRoleReports([]*manager{m}, func(format string, args ...any) { fmt.Fprintf(stderr, format+"\n", args...) })
 	m.noRoleReports = reports
 	for sequence := 1; sequence <= maxWaitingMemoryKills+1; sequence++ {
@@ -1633,7 +1636,9 @@ func controllerTree(t *testing.T, sizes map[int]uint64) *guardPod {
 // go to the log it answers.
 func controllerManager() (*manager, *lockedBuffer) {
 	log := &lockedBuffer{}
-	return &manager{role: "controller", stderr: log, child: &child{pid: ctlShim}}, log
+	m := &manager{role: "controller", stderr: log, child: &child{pid: ctlShim}}
+	m.memoryReports = newRoleReports(m)
+	return m, log
 }
 
 // serveControllerGuard runs the controller pod's guard for m, with the pid guard pids, as Run's
@@ -1659,7 +1664,7 @@ func serveControllerGuardOf(t *testing.T, cfg Config, m *manager, pids *pidGuard
 func waitingReports(m *manager) []shimwire.LauncherMemoryKill {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return slices.Clone(m.memoryKills)
+	return slices.Clone(m.memoryReports.kills)
 }
 
 // guestControllerTree is controllerTree, with no sizes, as a microVM controller pod's guest watch
@@ -3757,8 +3762,8 @@ func TestControllerPodMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.
 	default:
 		t.Fatal("serveMemoryGuard left something running in a launcher that runs no guard")
 	}
-	if m.memoryGuard != nil || m.memoryWake != nil {
-		t.Fatalf("the controller's manager holds the guard %v and the wake %v, want neither", m.memoryGuard, m.memoryWake)
+	if m.memoryGuard != nil || m.memoryReports.wake != nil {
+		t.Fatalf("the controller's manager holds the guard %v and the wake %v, want neither", m.memoryGuard, m.memoryReports.wake)
 	}
 	if got := guardLines(log, ""); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the controller's memory guard lines are %q, want %q alone", got, want)
@@ -4197,6 +4202,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 	log := &roleLog{stderr: &lockedBuffer{}}
 	_, own := log.writers("tester")
 	tester := &manager{role: "tester", log: log, stderr: own, child: &child{pid: roleInit}}
+	tester.memoryReports = newRoleReports(tester)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := serveMemoryGuard(ctx, Config{RolesDir: t.TempDir(), MicroVM: true}, []*manager{tester}, &pidGuard{})
 	t.Cleanup(func() {

@@ -22,13 +22,16 @@ body: |-
   merged pull request notifications of an issue branch of the project queue a `queue_timeline_read`
   outbox row, which pages GitHub's timeline outside the fact lock, reads again when GitHub's
   timeline lags behind the notified move, and applies the events under GitHub's own event id,
-  canonical repository and `created_at`. At boot the daemon pages GitHub's `mergeQueue` snapshot
-  for each repository and target branch that serves the project's pull requests, to find the pull
-  requests whose timeline it reads, and a failed boot read records `read_error` on `signal_inputs`,
-  so the queue reads absent with its reason rather than as an empty queue. A migration adds
-  `queue_events` and `signal_inputs.read_error`, and its header carries the way back; a second
-  migration, above every list of the outbox's kind check, adds the `queue_timeline_read` outbox
-  kind, and the first one's way back deletes that kind's rows.
+  canonical repository and `created_at`. A timeline GitHub answers with 404 or 410 forgets the
+  kept events of that pull request, so no entry of it stays open for good. At boot the daemon
+  pages GitHub's `mergeQueue` snapshot for each repository and target branch that serves the
+  project's pull requests, to find the pull requests whose timeline it reads, and a failed boot
+  read records `read_error` on `signal_inputs`, so the queue reads absent with its reason rather
+  than as an empty queue. A migration adds `queue_events`, `queue_progress`, each pull request's
+  counts of the entries and the exits kept of it, which the six-hour delete of its events does not
+  remove, and `signal_inputs.read_error`, and its header carries the way back; a second migration,
+  above every list of the outbox's kind check, adds the `queue_timeline_read` outbox kind, and the
+  first one's way back deletes that kind's rows.
 
   The daemon also keeps what the approvals signal of admission by signals needs: each ask of the
   project's issues with the person it was handed to (`asked_of`) and whose turn it is, each issue's
@@ -50,20 +53,25 @@ body: |-
   ended and its uncached input tokens where known, and answers the ids it now holds. A host
   authenticates as for a turn outcome, by the claim's secret or the launch's boot token, and the
   operator's controller by its controller record; the project is the claim's. Each request counts
-  once, in the minute it ended. The daemon API entry `20261126011643` (`admission-signals`) adds
-  the route and its answer; the turn-outcome report and its answer are unchanged, and a minute a
-  turn of a host before that entry overlaps reads as not recorded, never as zero. Two optional
-  project keys configure it: `signal_token_limit_per_minute` and `signal_token_model_pattern`, a
-  Go regular expression (RE2 syntax) that the loader refuses, naming the key, where it is empty or
-  where Go does not compile it; a refused file is refused whole. A migration adds
-  `model_requests`, `model_request_minutes`, `signal_token_limits` and `claim_turns`; its header
-  carries the way back.
+  once, in the minute it ended, and a request reported again under its id with a later end moves
+  to the minute of that end. A counted request reported with no `uncachedInputTokens` leaves its
+  minute not recorded (`model_request_minutes.untold`), never the sum of the minute's other
+  requests. The daemon API entry `20261126011643` (`admission-signals`) adds the route and its
+  answer; the turn-outcome report and its answer are unchanged, and a minute a turn of a host
+  before that entry overlaps reads as not recorded, never as zero. Two optional project keys
+  configure it: `signal_token_limit_per_minute` and `signal_token_model_pattern`, a Go regular
+  expression (RE2 syntax) that the loader refuses, naming the key, where it is empty or where Go
+  does not compile it; a refused file is refused whole. A migration adds `model_requests`,
+  `model_request_minutes`, `signal_token_limits` and `claim_turns`; its header carries the way
+  back.
 
   `legion claude-bridge` reports each model request of its Claude Code session on that route with
-  the launch's boot token: each answered request once, by its message id, however many stream lines
-  it took, ended at its last line, with `input_tokens + cache_creation_input_tokens`, and a
+  the launch's boot token: each answered request by its message id, however many stream lines it
+  took, ended at its last line, with `input_tokens + cache_creation_input_tokens`, and a
   subagent's under its `agent_id`. A request is reported within 15 seconds of its end while the
-  turn goes on, and what is left at each `result` at once; the turn-outcome report is unchanged.
+  turn goes on, and what is left at each `result` at once; a block of a request that comes after
+  its report reports it again under its id with the later end. The turn-outcome report is
+  unchanged.
 
   Each admission pass now reads the five series of admission by signals from what the daemon
   keeps, with the replay's one definition of each: the idle share of the slot holders, the merge
@@ -107,9 +115,9 @@ body: |-
   series read at the state's moment with its value or why it cannot be computed, its limit, whether
   it holds and since when, and the provider's minutes of the last hour, and
   `admission.signalChanges`, the newest 50 entries newest first; `legion state` prints the signals in
-  one line after the slots line. A caller below the `admission-signals` entry is served neither. A
-  migration adds `signal_settings`, `signal_changes` and `signal_change_ids`; its header carries the
-  way back.
+  one line after the slots line, each series not recorded with its reason. A caller below the
+  `admission-signals` entry is served neither. A migration adds `signal_settings`, `signal_changes`
+  and `signal_change_ids`; its header carries the way back.
 
   The replay's kill matcher reads the daemon's line of a kill of a process of no role as its record
   of the launcher's kill of role `none`.

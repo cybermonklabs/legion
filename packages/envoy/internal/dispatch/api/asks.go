@@ -699,14 +699,17 @@ type openAsksResponse struct {
 	Asks           []openAsk `json:"asks"`
 	// DefaultAssignee is, on a ?project= read, the default assignee that project stores: the
 	// person an ask on it reaches while nobody handed the ask on and its issue holds nobody, the
-	// last step of askedOfPersonExpression. Any credential already reads that person on this
-	// route, as the waiting_on_person of such an ask, so the field gives a credential without the
-	// `person` scope (a Legion daemon's, which needs the person when it boots) no new power: the
-	// routes that list every project's default and move one stay a person's
-	// (project_default_assignee.go). It holds the JSON the statement answers, the login or null
-	// where no project has the key, so that absent, null and a login stay three states
-	// (rawFieldSchemas). A ?author_session= read spans projects and leaves it out, which keeps
-	// that answer the one a reader before the field got.
+	// last step of askedOfPersonExpression. A Legion daemon needs that person when it boots, and
+	// its credential holds no `person` scope. Every credential that may read the project's open
+	// asks, which is any authenticated one (listOpenAsks), reads that person here, also where no
+	// open ask waits on that person. Before the field, a credential without the `person` scope saw
+	// that person only as the waiting_on_person of such an ask, and as the assignee of an issue
+	// created with no assignee. This read is all such a credential gains
+	// (dispatch://INFRA-5899/comment/4021ac5d-d8ae-4a07-8cc3-6f91fe7a6af1): the routes that list
+	// every project's default and move one stay a person's (project_default_assignee.go). It holds
+	// the JSON the statement answers, the login or null where no project has the key, so that
+	// absent, null and a login stay three states (rawFieldSchemas). A ?author_session= read spans
+	// projects and leaves it out, which keeps that answer the one a reader before the field got.
 	DefaultAssignee json.RawMessage `json:"default_assignee,omitempty"`
 }
 
