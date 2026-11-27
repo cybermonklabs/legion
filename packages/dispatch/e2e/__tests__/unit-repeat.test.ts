@@ -1283,25 +1283,38 @@ function asSubreaper(): string[] {
  *  that nothing has killed or is ending as `left: <pid> <command line>`, then `left behind: <n>`.
  *  A process counts as ended once its state is Z or X, as killed once SIGKILL stands in its shared
  *  pending set (`ShdPnd`, where a kill of a process or a group puts it, and where it stays until
- *  the process is gone), and as ending once its flags carry PF_EXITING. One whose files are gone
- *  between two reads is gone. Each process left is then killed, so the row leaves nothing running.
- *  The walk reads with builtins only, so it starts no process that it would count itself, and it
- *  reads no process outside the driver's own tree.
+ *  the process is gone), and as ending once its flags carry PF_EXITING. One whose stat cannot be
+ *  read is gone, and so is one whose status reads empty, or fails, once its directory is gone.
+ *  Each process left is then killed, so the row leaves nothing running. The walk reads with
+ *  builtins only, so it starts no process that it would count itself, and it reads no process
+ *  outside the driver's own tree.
+ *
+ *  Each status file is read whole, by one `read -d ''`, and its `ShdPnd:` line is found in that one
+ *  text: that read takes the file to its end with no seek between its reads, so the kernel
+ *  generates the text once. A `while read` took one line per `read`, and after each bash seeks a
+ *  file back to the end of the line it took. A `/proc/<pid>/status` is a seq_file, which generates
+ *  its whole text again at each seek (`seq_lseek`, `traverse`), and the lines above `ShdPnd:`
+ *  change length between two texts: `SigQ:` counts the signals pending for every process of the
+ *  same user, so a 9 that becomes 10 moves each later line by a byte, and `FDSize:`, `Threads:`
+ *  and the `Vm` lines change too. The next `read` then began inside a line and took the key as
+ *  `hdPnd:`, or missed it: in the weekly run 45989962328 a driver read its own live status as one
+ *  with no `ShdPnd:` line, in 1 of a row's 20 runs.
  *
  *  It fails closed, printing `left behind: unknown: <why>`, wherever it could not tell: `capable`,
  *  before the driver starts anything, where the driver's own status has no `ShdPnd:` line, as
  *  under gVisor, or its own children list is missing; `seen`, where that list does not show the
  *  pid the driver started, as `$1`; and `count`, where a process's status reads with no `ShdPnd:`
- *  line, which is unknown and not gone. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the
- *  driver's own pid) are for the row that reads `count` over a stub process tree. */
+ *  line, empty or not, while its directory is still there, which is unknown and not gone.
+ *  `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the driver's own pid) are for the row
+ *  that reads `count` over a stub process tree. */
 const leftBehind = `
 proc=\${PROC_ROOT:-/proc}
 root=\${WALK_ROOT:-$$}
 capable() {
-  local key value shd=no children=no t
-  while read -r key value; do [ "$key" = ShdPnd: ] && shd=yes; done <"$proc/$root/status" 2>/dev/null
+  local status='' children=no t
+  read -r -d '' status <"$proc/$root/status" 2>/dev/null
   for t in "$proc/$root"/task/*/children; do [ -r "$t" ] && children=yes; done
-  [ "$shd" = yes ] || { echo "left behind: unknown: no ShdPnd: line in $proc/$root/status"; return 1; }
+  [[ $'\\n'$status == *$'\\n'ShdPnd:* ]] || { echo "left behind: unknown: no ShdPnd: line in $proc/$root/status"; return 1; }
   [ "$children" = yes ] || { echo "left behind: unknown: no children list under $proc/$root/task"; return 1; }
 }
 seen() {
@@ -1324,7 +1337,7 @@ walk() {
   done
 }
 count() {
-  local p stat fields key value shd found unknown=()
+  local p stat fields status shd unknown=()
   left=()
   walk
   for p in "\${tree[@]}"; do
@@ -1332,12 +1345,13 @@ count() {
     fields=(\${stat##*) })
     case \${fields[0]} in Z | X) continue ;; esac
     ((fields[6] & 4)) && continue
-    { exec 9<"$proc/$p/status"; } 2>/dev/null || continue
-    shd="" found=no
-    while read -r key value <&9; do [ "$key" = ShdPnd: ] && { shd=$value; found=yes; break; }; done
-    exec 9<&-
-    [ "$found" = yes ] || { unknown+=("$p"); continue; }
-    ((0x$shd & 0x100)) && continue
+    status=""; read -r -d '' status <"$proc/$p/status" 2>/dev/null
+    if [[ $'\\n'$status != *$'\\n'ShdPnd:* ]]; then
+      [ -n "$status" ] || [ -d "$proc/$p" ] || continue
+      unknown+=("$p"); continue
+    fi
+    shd=$'\\n'$status; shd=\${shd#*$'\\n'ShdPnd:}; shd=\${shd%%$'\\n'*}
+    ((0x\${shd//[[:space:]]/} & 0x100)) && continue
     left+=("$p")
   done
   for p in "\${left[@]}" "\${unknown[@]}"; do echo "left: $p $(tr '\\0' ' ' <"$proc/$p/cmdline" 2>/dev/null)"; done
@@ -1984,11 +1998,19 @@ test(
     const unknown = await run(unmarked, "count");
     expect(unknown).toContain("left behind: unknown: no ShdPnd: line in the status of 9000006\n");
     expect(() => leftOf(unknown, "")).toThrow("could not list what the leg left behind");
+    // A status that reads empty, of a process whose directory is still there, is unknown too: only
+    // one whose directory has gone is gone.
+    const empty = join(directory, "empty");
+    stubTree(empty, { driver: "0000000000000000", below: "0000000000000000" });
+    writeFileSync(join(empty, "9000006", "status"), "");
+    expect(await run(empty, "count")).toContain(
+      "left behind: unknown: no ShdPnd: line in the status of 9000006\n"
+    );
     const blind = join(directory, "blind");
     stubTree(blind, { driver: null, below: "0000000000000000" });
     expect(await run(blind, "capable || exit 2; echo capable")).toBe(
       `left behind: unknown: no ShdPnd: line in ${blind}/9000001/status\n`
     );
   },
-  rowLimit("short", "short", "short")
+  rowLimit("short", "short", "short", "short")
 );
