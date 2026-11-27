@@ -161,19 +161,21 @@ func WarmCodegraphIndexInBackground(start procgroup.Starter, dir string) {
 // process started — a role shim's Run — which the one line a built index logs reports the build
 // against, beside the build's own duration, so a pod's log says how long after the role's launch
 // its index was ready. start starts each codegraph the warm-up runs (procgroup.Starter, never
-// nil): the daemon's is procgroup.NoReaper, and a shim's is its own guard's (internal/shim's
-// Config.WarmCodegraph), which holds the child out of the reaper of the shim's orphans.
-// The issue pod's guard (podGuard) is on: the shim's warm-up is the issue pod's.
+// nil): a shim's is its own guard's (internal/shim's Config.WarmCodegraph), which holds the child
+// out of the reaper of the shim's orphans. The issue pod's guard (podGuard) is on: the shim's
+// warm-up is the issue pod's.
 func WarmCodegraphIndex(ctx context.Context, start procgroup.Starter, dir string, launched time.Time) {
 	warmCodegraphIndexOn(ctx, clock.Real(), start, true, dir, launched)
 }
 
 // warmCodegraphIndexOn builds a workspace's codegraph index before any worker needs it, each
-// codegraph run bounded by codegraphTimeout on c. Its one caller outside the tests is
-// WarmCodegraphIndex, which passes clock.Real; a test hands it a fake (boundRow). Each role's
-// `impact`, `callers`, `affected` and `explore` queries (the role prompts) need an index already
-// built, not one built on first use. Callers run it through WarmCodegraphIndexInBackground,
-// outside any provisioning serialization: indexing reads only the issue's own workspace directory.
+// codegraph run bounded by codegraphTimeout on c. Its callers outside the tests are
+// WarmCodegraphIndex, the shim's, with podGuard, and WarmCodegraphIndexInBackground, the daemon's
+// for a tmux host, without it; both pass clock.Real, and a test hands it a fake (boundRow). Each
+// role's `impact`, `callers`, `affected` and `explore` queries (the role prompts) need an index
+// already built, not one built on first use. The daemon runs it through
+// WarmCodegraphIndexInBackground, outside any provisioning serialization: indexing reads only the
+// issue's own workspace directory.
 // codegraph is deliberately not one of the tools Runner requires — the daemon must still boot
 // where it is absent (the tmux runtime's host provisioning never installs it) — so this resolves
 // it from PATH on its own, directly with os/exec, and never fails provisioning: a missing CLI, a
@@ -214,7 +216,8 @@ func WarmCodegraphIndex(ctx context.Context, start procgroup.Starter, dir string
 // its parse-worker count and the build in a process group of its own (runCodegraph), and R2's
 // record of the last build, with the wait for a stop that reached the build first. The shim's
 // warm-up runs with it (WarmCodegraphIndex), the daemon's warm-up of a tmux host's workspace
-// without it (WarmCodegraphIndexInBackground), which is the warm-up as it was before the cap.
+// without it (WarmCodegraphIndexInBackground), which is the warm-up as it was before the cap, but
+// with CODEGRAPH_NO_WAL_DEFER=1 (codegraphEnvironment) and the failure line below.
 func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, start procgroup.Starter, podGuard bool, dir string, launched time.Time) {
 	codegraphPath, err := exec.LookPath("codegraph")
 	if err != nil {
@@ -374,6 +377,10 @@ func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, start procgroup.St
 		}
 		if !podGuard {
 			next = "the next provisioning builds again"
+			if subcommand == "index" {
+				// indexed holds the workspace: this daemon repairs it at most once (indexed).
+				next = "this daemon does not repair the index again until it restarts"
+			}
 		}
 		fmt.Fprintf(os.Stderr, "[legion] codegraph %s failed for %s (exit %d; %s): %s\n", subcommand, dir, result.exitCode, next, strings.TrimSpace(result.stderr))
 		return

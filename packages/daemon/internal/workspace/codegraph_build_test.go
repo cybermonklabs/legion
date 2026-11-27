@@ -248,20 +248,29 @@ index) env > '`+seen+`' ;;
 	}
 }
 
-// TestStopCodegraphGroupAnswersAGoneGroupAsDone: runCodegraph's Cancel ends a live build's group,
-// and answers a group already gone as os.ErrProcessDone, which exec does not report as the run's
-// error: a build that exited 0 just as its bound ended is not read as a build that could not run.
+// TestStopCodegraphGroupAnswersAGoneGroupAsDone holds stopCodegraphGroup's mapping, which
+// runCodegraph's Cancel calls: it ends a live build's group, and answers a group already gone as
+// os.ErrProcessDone, which exec does not report as the run's error, so a build that exited 0 just
+// as its bound ended is not read as a build that could not run.
 func TestStopCodegraphGroupAnswersAGoneGroupAsDone(t *testing.T) {
 	cmd := exec.Command("sleep", "60")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	pid := cmd.Process.Pid
+	pid, waited := cmd.Process.Pid, false
+	t.Cleanup(func() {
+		if !waited {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+		}
+	})
 	if err := stopCodegraphGroup(pid); err != nil {
 		t.Fatalf("stopCodegraphGroup of a live group = %v, want nil", err)
 	}
-	if err := cmd.Wait(); procgroup.Ended(err).Signal == "" {
+	err := cmd.Wait()
+	waited = true
+	if procgroup.Ended(err).Signal == "" {
 		t.Fatalf("the group's leader ended with %v, want the SIGTERM", err)
 	}
 	if err := stopCodegraphGroup(pid); !errors.Is(err, os.ErrProcessDone) {
@@ -474,11 +483,56 @@ index) `+tc.indexEnd+` ;;
 	}
 }
 
+// TestWarmCodegraphIndexCountsExitsAnewUnderAnotherRun: the exits are counted in a row under one
+// CodeGraph and one cap in one workspace (warmBuild.sameRun). An exit recorded under another
+// version, another cap, or before the workspace was created holds nothing of the next build's
+// count: one more exit leaves the count at one, and the warm-up after it builds again.
+func TestWarmCodegraphIndexCountsExitsAnewUnderAnotherRun(t *testing.T) {
+	for _, tc := range []struct {
+		name, version string
+		cap           uint64
+		newWorkspace  bool
+	}{
+		{"another CodeGraph version", "1.4.0", codegraphMemoryCap, false},
+		{"another cap", "1.5.0", codegraphMemoryCap + 1<<20, false},
+		{"a workspace created after the exit", "1.5.0", codegraphMemoryCap, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callLog := filepath.Join(t.TempDir(), "calls.log")
+			fakeCodegraphBundle(t, callLog, "1.5.0", `status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
+index) exit 1 ;;
+`)
+			dir := t.TempDir()
+			exited := time.Now().Add(-time.Hour).UTC()
+			if tc.newWorkspace {
+				if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := RecordCreated(dir, exited.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeWarmBuildRecord(t, dir, warmBuild{Subcommand: "index", Started: exited, Outcome: "exit 1", CodeGraph: tc.version, Cap: tc.cap, Exits: 1})
+
+			warmUpOnce(dir)
+			rec, ok := readWarmBuildRecord(t, dir)
+			if !ok || rec.Outcome != "exit 1" || rec.Exits != 1 || rec.CodeGraph != "1.5.0" || rec.Cap != codegraphMemoryCap {
+				t.Fatalf("the warm-up left the record %+v (present: %v), want exit 1 counted as the first of this run", rec, ok)
+			}
+			indexed.Delete(dir)
+			warmUpOnce(dir)
+			if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "index", "status", "index"}) {
+				t.Fatalf("the calls across both warm-ups = %v, want the second to build again after one exit of this run", calls)
+			}
+		})
+	}
+}
+
 // TestWarmCodegraphIndexInBackgroundRunsAHostsBuildWithoutThePodsGuard: the daemon's warm-up of a
-// tmux host's workspace runs as it did before the cap (INFRA-5717 spec v12): its build stays in the
-// daemon's process group, CodeGraph picks its own parse pool, and a build that exited non-zero
-// leaves no record, so the next provisioning builds again. A host's workspace never gets the new
-// disk that would let a record go.
+// tmux host's workspace runs as it did before the cap, but with CODEGRAPH_NO_WAL_DEFER=1
+// (INFRA-5717 spec v12): its build stays in the daemon's process group, CodeGraph picks its own
+// parse pool, and a build that exited non-zero leaves no record, so the next provisioning builds
+// again. A host's workspace never gets the new disk that would let a record go.
 func TestWarmCodegraphIndexInBackgroundRunsAHostsBuildWithoutThePodsGuard(t *testing.T) {
 	scratch := t.TempDir()
 	callLog, seen := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "init.env")
@@ -509,6 +563,9 @@ init) { env; echo "PGRP=$(cut -d' ' -f5 /proc/$$/stat)"; } > '`+seen+`'; exit 1 
 	}
 	if got, want := vars["PGRP"], strconv.Itoa(syscall.Getpgrp()); got != want {
 		t.Errorf("the host's build ran in process group %s, want the daemon's own, %s", got, want)
+	}
+	if got := vars["CODEGRAPH_NO_WAL_DEFER"]; got != "1" {
+		t.Errorf("the host's build ran with CODEGRAPH_NO_WAL_DEFER=%q, want 1, which a host's warm-up keeps", got)
 	}
 	warmOnHost(4)
 	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "init", "status", "init"}) {
