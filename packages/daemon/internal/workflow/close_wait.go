@@ -1052,9 +1052,27 @@ func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.
 }
 
 // closesByChecks says whether issue, a child, closes by its checks and not by its owning
-// architect's done: its work merged (Issue.Merge), so its checks or a person close it (D16, door 7).
-func closesByChecks(issue record.Issue) bool {
-	return issue.Merge.Merged() && !claim.IsTreeRoot(issue.Key, issue.Tree)
+// architect's done: the work of its current generation merged, so its checks or a person close it
+// (D16, door 7). It reads the generation, not the merge snapshot alone: a child run again keeps the
+// snapshot of an earlier generation's merge (Issue.Merge), which no clear touches, and its own work
+// has not merged, so its architect's done is the architect's to make. The current generation's
+// work merged where the issue waits in verifying, where a next change of it runs (NextChange), or
+// where its pull request row merged: each clear of a generation deletes every row that is not open
+// (clearPullRequests), so a merged row is this generation's, as it is for a child whose pull
+// request merged before the child reached merging.
+func (e *Engine) closesByChecks(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return false, nil
+	}
+	if issue.Phase == phase.Verifying || issue.NextChange != 0 {
+		return true, nil
+	}
+	rows, err := e.store.PullRequestsOf(ctx, tx, []string{issue.Key})
+	if err != nil {
+		return false, err
+	}
+	row, ok := rows[issue.Key]
+	return ok && row.State == record.PullRequestMerged, nil
 }
 
 // architectsDoneSetBack tells the owning architect that its done on issue, a merged child, was set

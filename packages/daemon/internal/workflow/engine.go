@@ -743,8 +743,14 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if agent {
 		// The owning architect's done on a child whose work merged is set back like any other
 		// session's write, and the child's close is judged, since its checks decide it (D16, door 7).
-		if fact.Status == record.DoneStatus && closesByChecks(issue) {
-			return true, e.architectsDoneSetBack(ctx, tx, issue.Key)
+		if fact.Status == record.DoneStatus {
+			byChecks, err := e.closesByChecks(ctx, tx, issue)
+			if err != nil {
+				return false, err
+			}
+			if byChecks {
+				return true, e.architectsDoneSetBack(ctx, tx, issue.Key)
+			}
 		}
 		return true, nil
 	}
@@ -758,8 +764,9 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 //   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
 //   - The issue is not the tree root, which leaves the workflow only by the architect's sign-off
 //     or close_root.
-//   - A done is of a child whose work has not merged: a merged child closes by its checks or a
-//     person (closesByChecks), so its architect's done is set back, and it is told why.
+//   - A done is of a child whose current generation's work has not merged: a merged child closes
+//     by its checks or a person (closesByChecks), so its architect's done is set back, and it is
+//     told why.
 //   - The session holds the architect claim of an issue of the tree, in any state
 //     (record.Store.ArchitectIssueOfSession).
 //   - That architect owns the issue by the rule of the API's operations on a child
@@ -771,8 +778,11 @@ func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue reco
 	if !record.OutOfWorkflow(fact.Status) || claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return false, nil
 	}
-	if fact.Status == record.DoneStatus && closesByChecks(issue) {
-		return false, nil
+	if fact.Status == record.DoneStatus {
+		byChecks, err := e.closesByChecks(ctx, tx, issue)
+		if err != nil || byChecks {
+			return false, err
+		}
 	}
 	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, fact.ActorSession)
 	if err != nil || !held {
