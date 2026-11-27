@@ -136,10 +136,7 @@ export function IssuePresets({
       leftByTab.current = false;
       return;
     }
-    const focus = document.activeElement;
-    if (focus === null || focus === document.body || wrapper.current?.contains(focus) === true) {
-      chooser.current?.focus({ preventScroll: true });
-    }
+    returnMenuFocus(wrapper.current, chooser.current);
   }, [open]);
 
   useEffect(() => {
@@ -297,6 +294,9 @@ export function IssuePresets({
                     className={`${pageMenuItem} flex items-baseline gap-1.5`}
                     key={preset}
                     onClick={() => {
+                      // Give the focus back before removing the menu or redrawing the stage.
+                      // Focusing after either change forces layout of the whole issue again.
+                      returnMenuFocus(wrapper.current, chooser.current);
                       setOpen(undefined);
                       if (preset !== shown || preset === "conversation") press(preset);
                     }}
@@ -405,6 +405,14 @@ export function IssuePresets({
       <div className="mb-[7px]">{atTheEnd}</div>
     </div>
   );
+}
+
+function returnMenuFocus(wrapper: HTMLElement | null, chooser: HTMLButtonElement | null): void {
+  const active = document.activeElement;
+  if (chooser === null || active === chooser) return;
+  if (active === null || active === document.body || wrapper?.contains(active) === true) {
+    chooser.focus({ preventScroll: true });
+  }
 }
 
 /** The one control's ▾, drawn one em square so it takes the size of the control's text, in its

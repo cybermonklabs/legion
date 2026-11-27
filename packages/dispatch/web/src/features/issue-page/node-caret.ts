@@ -804,39 +804,22 @@ export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined
   return refocusWhenSettled(place, editable ?? undefined);
 }
 
+/** Reads the height cap for the editor while the row still draws its words. The cap includes
+ *  the header and foot, so binding can apply it without reading style after changing the row. */
+export function measureBlockEditorRow(row: HTMLElement, words: HTMLElement): number {
+  return editorCap(row, words, LEAST_BOX_LINES * lineHeightOf(words)).height;
+}
+
 /**
- * Holds the box of the page's kept block editor (`block-editor.tsx`), bound in `row`, by the
- * rule `holdEditorAtBlock` holds a document's editor's box by, so a row that edits a block is no
- * taller than the window either: a block taller than the room the row leaves its box scrolls
- * inside that box. A box that fits is left as it stands, so nothing the row drew moves, and the
- * page is not scrolled: the editor stands where the row's words stood (R7). Only a box held
- * shorter than its block scrolls, since a box that scrolls makes a box of its own that a float
- * beside the words would push (`styles.css`'s `[data-block-editor]`).
+ * Holds the page's kept block editor (`block-editor.tsx`) to the room the row leaves it, without
+ * scrolling the page. Only a box shorter than its block scrolls, since a scrolling box is pushed
+ * aside by a float next to the words (`styles.css`'s `[data-block-editor]`).
  */
-/** The geometry of a row and its words read while layout is clean, before the block editor
- *  mutates the DOM (`measureBlockEditorRow`), so `holdBlockEditorBox` sets `maxHeight` without
- *  forcing a synchronous style recalc and layout right after `rebindElement`. */
-export interface BlockEditorRowMeasure {
-  readonly boxRect: DOMRect;
-  readonly lineHeight: number;
-  readonly rowRect: DOMRect;
-}
-
-/** Reads `row` and its `words` box while layout is clean, before the block editor mounts into
- *  `row` (`useNodeEditing.ts`). */
-export function measureBlockEditorRow(row: HTMLElement, words: HTMLElement): BlockEditorRowMeasure {
-  return {
-    boxRect: words.getBoundingClientRect(),
-    lineHeight: lineHeightOf(words),
-    rowRect: row.getBoundingClientRect(),
-  };
-}
-
-export function holdBlockEditorBox(row: HTMLElement, measured?: BlockEditorRowMeasure): void {
+export function holdBlockEditorBox(row: HTMLElement, measured?: number): void {
   const box = row.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
   if (box === null) return;
   if (measured !== undefined) {
-    holdBoxInRow(row, box, LEAST_BOX_LINES * measured.lineHeight, false, measured);
+    box.style.maxHeight = `${measured}px`;
     window.requestAnimationFrame(() => {
       if (box.isConnected && box.scrollHeight > box.clientHeight) box.style.overflowY = "auto";
     });
@@ -865,13 +848,14 @@ const NORMAL_LINE_HEIGHT = 1.2;
  * the tag, the author and the time stand beside the words at every width (`NodeRow.tsx`'s
  * `NODE_ROW_LAYOUT`).
  */
-function holdBoxInRow(
-  row: HTMLElement,
-  box: HTMLElement,
-  least: number,
-  bring = true,
-  measured?: BlockEditorRowMeasure
-): void {
+function holdBoxInRow(row: HTMLElement, box: HTMLElement, least: number, bring = true): void {
+  const { boxOnly, height } = editorCap(row, box, least);
+  box.style.maxHeight = `${height}px`;
+  if (bring) bringOnScreen(boxOnly ? box : row);
+}
+
+/** Where the header, foot, row and words leave room for an editor. */
+function editorCap(row: HTMLElement, box: HTMLElement, least: number) {
   const published = getComputedStyle(document.documentElement);
   const height = (property: string) => {
     const value = Number.parseFloat(published.getPropertyValue(property));
@@ -879,8 +863,8 @@ function holdBoxInRow(
   };
   const floor = window.innerHeight - height(FOOT_HEIGHT_PROPERTY);
   const room = floor - height(IDENTITY_HEIGHT_PROPERTY);
-  const rowRect = measured?.rowRect ?? row.getBoundingClientRect();
-  const boxRect = measured?.boxRect ?? box.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const boxRect = box.getBoundingClientRect();
   const below = rowRect.bottom - boxRect.bottom;
   // The room the row leaves its box, and the room under the box's top the body leaves it.
   const fits = room - (boxRect.top - rowRect.top) - below;
@@ -888,8 +872,7 @@ function holdBoxInRow(
   const cap = Math.max(least, Math.min(fits, Math.max(under, fits / 2)));
   // Whole pixels down, so a row that ends on the line the foot's box starts at is not read as
   // reaching under it by a fraction and scrolled for it.
-  box.style.maxHeight = `${Math.floor(cap)}px`;
-  if (bring) bringOnScreen(cap > fits ? box : row);
+  return { boxOnly: cap > fits, height: Math.floor(cap) };
 }
 
 /** One line of `element`'s text, in px, from its computed style. */

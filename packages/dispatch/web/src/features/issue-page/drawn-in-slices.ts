@@ -99,9 +99,8 @@ interface Ledger {
   anchor: string | undefined;
   /** The screens still to fill (`fillScreen`). */
   fills: Fill[];
-  /** The keys drawn as the last commit was laid out, and the row the reader reads then, with its
-   *  top down the document and how many drawn rows stood above it, which the next commit holds in
-   *  place (`keepReference`). It is read again only where it may have changed (`referenceStale`). */
+  /** The last commit's drawn keys and reference row. Its `top` is the desired viewport top
+   *  plus the scroll position, not the realized top after a rounded scroll (`keepReference`). */
   drawnBefore: ReadonlySet<string>;
   reference: { readonly above: number; readonly key: string; readonly top: number } | undefined;
   /** The window's scroll as the hook last read it or left it, the scroll right before a commit
@@ -417,14 +416,6 @@ function nearestDrawn(ledger: Ledger, to: number): number | undefined {
   return undefined;
 }
 
-/**
- * Puts the row the last commit was read by (`Ledger.reference`) back where it stood down the
- * document, where this commit drew rows above it that were not drawn then: rows the hook drew,
- * always, and rows a read or a fold brought, while the reader has not acted (`acted`). The window
- * is scrolled by how far the row moved, before the frame is painted. That row stays the row the
- * reader reads, at the top it was read at and the window's new scroll, so the commit reads no
- * other row's top.
- */
 /** Whether the pending commit draws rows above `ledger.reference` that `keepReference` will hold
  *  in place: pure JS with no layout read, so `window.scrollY` is read before commit only when
  *  `keepReference` will actually run. */
@@ -440,6 +431,7 @@ function willKeepReference(ledger: Ledger, acted: boolean): boolean {
   return false;
 }
 
+/** Restores the reference's viewport position after a commit adds rows above it. */
 function keepReference(
   ledger: Ledger,
   measure: (key: string) => number | undefined,
@@ -451,29 +443,22 @@ function keepReference(
   if (reference === undefined || at === undefined) return;
   const top = measure(reference.key);
   if (top === undefined) return;
-  // Compare the row's viewport top after layout against its viewport top immediately before the
-  // commit (`reference.top - ledger.scrollBefore`), rather than its document top: if the browser's
-  // scroll anchoring already adjusted `window.scrollY` during layout, `top` reflects that
-  // adjustment and `scrollBy` only compensates for the remainder instead of double-scrolling.
-  const scrolled = window.scrollY;
-  const moved = top - (reference.top - ledger.scrollBefore);
+  // Measure in the viewport so any scroll anchoring the browser already did is taken into
+  // account. Keep the same target across slices rather than adopting each rounded result
+  // as the next target: a series of subpixel differences otherwise adds up to whole pixels.
+  const wanted = reference.top - ledger.scrollBefore;
+  const moved = Math.round(top) - Math.round(wanted);
   if (moved !== 0) window.scrollBy({ behavior: "instant", top: moved });
-  ledger.scrollY = window.scrollY;
-  ledger.reference = { above: drawnAbove(ledger, at), key: reference.key, top: top + scrolled };
-}
-/** Reads the row the reader reads as the page stands now, before a slice's commit draws rows
- *  above it: the row read again where the window has scrolled since it was read, or none is
- *  held, else its top alone, which a row above it that grew or shrank since, or a scroll made
- *  after it was read, has moved. */
-function freshReference(ledger: Ledger): void {
-  const reference = ledger.reference;
   const scrolled = window.scrollY;
-  if (reference === undefined || ledger.scrolled || scrolled !== ledger.scrollY) {
+  ledger.scrollY = scrolled;
+  ledger.reference = { above: drawnAbove(ledger, at), key: reference.key, top: wanted + scrolled };
+}
+
+/** Picks a new reference before a slice only if the viewport has moved since it was recorded. */
+function freshReference(ledger: Ledger): void {
+  if (ledger.reference === undefined || ledger.scrolled || window.scrollY !== ledger.scrollY) {
     ledger.reference = referenceRow(ledger, ledger.focused, ledger.measure);
-    return;
   }
-  const top = ledger.measure(reference.key);
-  if (top !== undefined) ledger.reference = { ...reference, top: top + scrolled };
 }
 
 /** Whether the row the reader reads must be read again after this commit: none is held; the

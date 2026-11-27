@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import { memo, Profiler, type ReactNode, useCallback, useRef } from "react";
 
@@ -380,6 +380,33 @@ test("browser scroll anchoring during a slice above the reference does not doubl
     ).toBe(400);
   } finally {
     view.unmount();
+  }
+});
+
+test("rounding the scroll of each slice leaves the anchor at its original pixel", async () => {
+  const layout = layoutByHand({ height: () => 96.375 });
+  const tasks = tasksByHand();
+  const scroll = spyOn(window, "scrollBy").mockImplementation(
+    (options?: number | ScrollToOptions, y?: number) => {
+      const delta = typeof options === "number" ? (y ?? 0) : (options?.top ?? 0);
+      layout.scrollTo(layout.scrolled() + Math.round(delta));
+    }
+  );
+  restores.push(layout.restore, tasks.restore, rowsCost(51));
+  const view = render(<Lines anchor="l59" focused="l59" lines={LINES} reads={[]} />);
+  try {
+    const anchor = view.container.querySelector('[data-line="l59"]');
+    const top = layout.topOf(anchor);
+    if (top === undefined) throw new Error("the first drawing has no anchor");
+    layout.scrollTo(top - 400);
+    for (let at = 1; tasks.pending() > 0; at += 1) {
+      await tasks.runNext();
+      expect(Math.round(layout.topOf(anchor) ?? 0), `slice ${at} moved the anchor`).toBe(400);
+    }
+    expect(linesDrawn(view.container)).toEqual(LINES);
+  } finally {
+    view.unmount();
+    scroll.mockRestore();
   }
 });
 
