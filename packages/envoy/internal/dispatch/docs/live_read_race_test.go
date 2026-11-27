@@ -533,45 +533,57 @@ func keepUp(service *Service, artifactID string, peer *crdt.Doc, stopped <-chan 
 	}
 }
 
-// awaitPeerApplied waits until the room has applied every update peer has made, or until peer's
-// connection has ended, and fails the test in the second case, naming how it ended. The wait has
-// no bound but the test binary's own (waitFor), so only a fact may end it: the room applying the
-// updates, or the connection they travel over ending, after which the room can never apply the
-// ones it has not. Waiting for the first fact alone held a soak whose peer the server had closed
-// until the package's -timeout (TestStoredOrderSoak, job 140239891619: two peers' writes failed
-// with a broken pipe, and the wait for the room never ended).
+// awaitPeerApplied waits until the room holds every update peer has made, or until peer's reader
+// has stopped, and fails the test in the second case, naming what stopped it. The wait has no
+// bound but the test binary's own (waitFor), so only a fact may end it: the room applying the
+// updates, or the reader ending, after which nothing the peer does reaches this wait again.
+// Waiting for the first fact alone held a soak whose peer the server had closed until the
+// package's -timeout (TestStoredOrderSoak, job 140239891619: two peers' writes failed with a
+// broken pipe, and the wait for the room never ended). The reader's end is asked first, and an
+// absent room is no answer: the room is gone only once its sockets are, so its absence leaves the
+// wait to the peer's end rather than passing a peer whose update never landed.
 func awaitPeerApplied(t *testing.T, service *Service, artifactID string, peer *docstest.Peer) {
 	t.Helper()
 	client := peer.Doc.ClientID()
 	sent := peer.Doc.StateVector().Clock(client)
-	applied := func() (uint64, bool) {
+	held := func() (clock uint64, present bool) {
 		room := service.srv.GetDoc(artifactID)
 		if room == nil {
-			return 0, true
+			return 0, false
 		}
-		clock := room.StateVector().Clock(client)
-		return clock, clock >= sent
+		return room.StateVector().Clock(client), true
 	}
 	ended := false
-	waitFor(t, 0, "the room to apply the peer's last update, or the peer's connection to end", func() bool {
-		if _, done := applied(); done {
-			return true
-		}
+	waitFor(t, 0, "the room to apply the peer's last update, or the peer's reader to end", func() bool {
 		select {
 		case <-peer.Ended:
 			ended = true
 			return true
 		default:
-			return false
 		}
+		clock, present := held()
+		return present && clock >= sent
 	})
-	held, done := applied()
-	if !ended || done {
+	if !ended {
+		return
+	}
+	// An update the room applied as the reader ended still counts.
+	clock, present := held()
+	if present && clock >= sent {
+		return
+	}
+	room := fmt.Sprintf("the room holds clock %d of the peer's %d", clock, sent)
+	if !present {
+		room = fmt.Sprintf("the room is gone, and the peer had made clock %d", sent)
+	}
+	if gaveUp, err := peer.ReaderGaveUp(); gaveUp {
+		t.Errorf("the peer's reader stopped at %s with its socket still open, before the room applied its last update: %v; %s",
+			peer.EndedAt().Format(time.RFC3339Nano), err, room)
 		return
 	}
 	dropped, readErr := peer.DroppedWithoutCloseFrame()
-	t.Errorf("the peer's connection ended at %s before the room applied its last update: the room holds clock %d of the peer's %d; close frame %d, close code %d, dropped without a close frame %t, reader's end: %v",
-		peer.EndedAt().Format(time.RFC3339Nano), held, sent, peer.CloseFrame(), peer.CloseCode(), dropped, readErr)
+	t.Errorf("the peer's connection ended at %s before the room applied its last update: %s; close frame %d, close code %d, dropped without a close frame %t, read error: %v",
+		peer.EndedAt().Format(time.RFC3339Nano), room, peer.CloseFrame(), peer.CloseCode(), dropped, readErr)
 }
 
 // allowing is err unless it is want, which the read is expected to meet.
